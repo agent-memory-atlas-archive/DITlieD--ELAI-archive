@@ -12,6 +12,9 @@ docs/*
 # Memory bank (ephemeral per-session context)
 memory-bank/
 
+# Hypothesis test cache
+.hypothesis/
+
 # Python
 __pycache__/
 *.pyc
