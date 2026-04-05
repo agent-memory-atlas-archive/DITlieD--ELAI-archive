@@ -1,0 +1,510 @@
+CRATE: rules/
+Purpose: self-improving deterministic behavior enforcement engine.
+Source: design_document.txt PART 8, PART 15.2 (self-extending rules).
+Depends on: core/
+
+Rules are DATA in SQLite, not files. The engine evaluates them deterministically.
+The system discovers new rules from auditor patterns and proves them through
+deterministic contract tests before promotion.
+
+
+1. RESPONSIBILITIES
+
+  - Rule storage and lifecycle management (SQLite)
+  - Predicate DSL interpretation (5 types, Rust evaluator)
+  - Three-tier enforcement (deterministic, constrained decoding, prompt guidance)
+  - Phase-aware and domain-aware rule activation
+  - Self-discovery: auditor violation patterns crystallize into proposed rules
+  - Rule lifecycle: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE -> RETIRED
+  - Contract test generation and execution for rule validation
+  - Seed data loading from domain rule sets
+
+
+2. STORAGE SCHEMA
+
+  rules.db (per-project, .elai_cc/projects/{id}/rules.db)
+
+  rules(
+    rule_id       TEXT PRIMARY KEY,          -- e.g. "trading.1", "dashboard.4", "auto.127"
+    domain        TEXT NOT NULL,             -- "trading", "dashboard", "application", "game", "re", "security", "engineering", "workflow", "custom"
+    tier          INTEGER NOT NULL CHECK(tier IN (1,2,3)),
+    status        TEXT NOT NULL CHECK(status IN ('PROPOSED','CANDIDATE','SHADOW','ACTIVE','RETIRED')),
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL,             -- human-readable rule statement
+    predicate     TEXT NOT NULL,             -- serialized Predicate DSL (see section 3)
+    phase_mask    INTEGER NOT NULL DEFAULT 255, -- bitmask: which FSM phases this rule applies in
+    severity      TEXT NOT NULL CHECK(severity IN ('BLOCK','WARN','INFO')),
+    mutable       INTEGER NOT NULL DEFAULT 1,  -- 0 = safety/security, never auto-adjusted
+    created_at    INTEGER NOT NULL,
+    promoted_at   INTEGER,                  -- timestamp of last status promotion
+    version       INTEGER NOT NULL DEFAULT 1,
+    source        TEXT NOT NULL CHECK(source IN ('SEED','AUDITOR','HUMAN','SELF_MOD'))
+  )
+
+  rule_metrics(
+    rule_id       TEXT REFERENCES rules,
+    window_start  INTEGER NOT NULL,         -- epoch timestamp
+    evaluations   INTEGER NOT NULL DEFAULT 0,
+    true_positives INTEGER NOT NULL DEFAULT 0,
+    false_positives INTEGER NOT NULL DEFAULT 0,
+    missed        INTEGER NOT NULL DEFAULT 0,  -- auditor caught what rule missed
+    PRIMARY KEY (rule_id, window_start)
+  )
+
+  contract_tests(
+    test_id       TEXT PRIMARY KEY,
+    rule_id       TEXT REFERENCES rules NOT NULL,
+    test_type     TEXT NOT NULL CHECK(test_type IN ('BLOCK','ALLOW','EDGE')),
+    input_code    TEXT NOT NULL,             -- code snippet to evaluate
+    expected      TEXT NOT NULL CHECK(expected IN ('BLOCK','ALLOW','WARN')),
+    language      TEXT NOT NULL DEFAULT 'python',
+    created_at    INTEGER NOT NULL,
+    source        TEXT NOT NULL CHECK(source IN ('SEED','GENERATED','HUMAN'))
+  )
+
+  violation_patterns(
+    pattern_id    TEXT PRIMARY KEY,
+    pattern_hash  BLOB NOT NULL UNIQUE,     -- blake2s of normalized pattern
+    occurrences   INTEGER NOT NULL DEFAULT 1,
+    first_seen    INTEGER NOT NULL,
+    last_seen     INTEGER NOT NULL,
+    proposed_rule TEXT,                      -- rule_id if promoted to PROPOSED
+    domain        TEXT,
+    example_code  TEXT NOT NULL              -- first occurrence snippet
+  )
+
+  Global rules: .elai_cc/global/rules_seed.db (shipped with elai_cc, read-only).
+  Project rules inherit global + add project-specific. Merge at load time.
+
+
+3. PREDICATE DSL
+
+  5 predicate types, all evaluated by Rust interpreter. No LLM.
+
+  AST_PATTERN:
+    tree-sitter query on parsed AST.
+    Fields: language, query (S-expression), scope (file_path glob).
+    Example: detect df[].mean() without .expanding()/.rolling() parent + .shift(1).
+    Example: detect @dataclass without frozen=True on financial types.
+    Covers: structural patterns, import detection, anti-patterns.
+
+  GREP_PATTERN:
+    Regex match on raw source text.
+    Fields: pattern (regex), scope (file_path glob), context_lines (for false-positive reduction).
+    Example: detect raw ticker names in LLM prompt strings.
+    Example: detect bare except:pass.
+    Covers: simple text patterns where AST is overkill.
+
+  SCHEMA_REQUIRED:
+    JSON Schema validation on structured output.
+    Fields: schema (JSON Schema), output_type (signal, report, config, etc.).
+    Example: backtest report must contain { sharpe, dsr, max_drawdown, trial_count }.
+    Example: signal output must contain { opposing_thesis, risk_if_wrong }.
+    Covers: Tier 2 constrained decoding rules.
+
+  METRIC_GATE:
+    Numeric threshold check on computed metrics.
+    Fields: metric_name, operator (lt, gt, eq, between), threshold, source (file, config, runtime).
+    Example: PSI > 0.2 on any feature -> halt.
+    Example: component file > 150 lines -> decompose.
+    Covers: quantitative rules.
+
+  COMPOSITE:
+    AND/OR/NOT combination of other predicates.
+    Fields: operator (AND, OR, NOT), children (list of predicate references).
+    Example: (AST_PATTERN: uses .mean()) AND NOT (AST_PATTERN: has .expanding() parent).
+    Covers: complex rules requiring multiple checks.
+
+  Predicate evaluation returns: Verdict { rule_id, result: BLOCK|ALLOW|WARN, evidence: String }.
+  Evaluation is deterministic: same code + same predicate = same verdict. Always.
+
+
+4. THREE-TIER ENFORCEMENT
+
+  TIER 1 — DETERMINISTIC (Rust code, cannot be bypassed):
+    Predicate types: AST_PATTERN, GREP_PATTERN, METRIC_GATE, COMPOSITE.
+    Evaluated by Rust interpreter in PreToolUse/PostToolUse hooks.
+    The model's output is filtered through deterministic code.
+    Target: <1ms per rule evaluation.
+    Contract tests: minimum 3 per rule (BLOCK + ALLOW + EDGE).
+
+  TIER 2 — CONSTRAINED DECODING (structurally forced output):
+    Predicate type: SCHEMA_REQUIRED.
+    Provider layer enforces output JSON schema via grammar constraints (ollama)
+    or guided generation (vLLM). Model cannot produce output missing required fields.
+    Contract tests: minimum 2 per rule (valid schema + invalid schema).
+
+  TIER 3 — PROMPT GUIDANCE (semantic judgment, auditor-backed):
+    Predicate type: none (no deterministic check possible).
+    Rule description injected into agent prompt for current domain + phase.
+    Auditor double-verifies. Auditor findings go through evidence gates.
+    Least trusted. Self-discovery target: if auditor repeatedly catches same
+    Tier 3 violation, system proposes Tier 1/2 rule to replace it.
+    Contract tests: none (by definition not deterministically testable).
+
+
+5. RULE LIFECYCLE
+
+  PROPOSED:  auto-generated from violation_patterns or human-submitted.
+             Not evaluated against code. Exists only in DB.
+             Entry: violation_patterns.occurrences >= 3 (same pattern caught 3+ times).
+
+  CANDIDATE: has contract tests (auto-generated or human-written).
+             Contract tests must pass: known-bad code -> BLOCK, known-good -> ALLOW.
+             Entry: >= 3 contract tests written AND all pass.
+
+  SHADOW:    evaluated on all relevant code but verdict is LOGGED, not ENFORCED.
+             Runs alongside ACTIVE rules for N pipelines (configurable, default 5).
+             Metrics collected: true_positives, false_positives.
+             Entry: contract tests pass AND human or auditor approves predicate logic.
+
+  ACTIVE:    enforced. Verdicts are binding (BLOCK stops the action).
+             Entry: shadow period complete AND false_positive_rate < 5%
+               AND true_positive_rate > 80% AND no safety regressions.
+             Promotion is a DETERMINISTIC threshold check. No LLM judges.
+
+  RETIRED:   no longer evaluated. Kept for historical reference.
+             Entry: false_positive_rate > 30% sustained over 10 pipelines,
+               OR superseded by better rule, OR human request.
+             Safety/security rules (mutable=0) cannot be auto-retired.
+
+  Every transition is logged with timestamp, metrics snapshot, and reason.
+  Transition checks are pure arithmetic. Zero LLM involvement.
+
+
+6. SELF-DISCOVERY MECHANISM
+
+  Input: auditor BLOCK/WARN findings from AUDITING phase.
+
+  Process:
+    1. After each audit, normalize finding description to pattern hash.
+    2. Increment violation_patterns.occurrences for matching hash.
+    3. When occurrences >= 3 for same pattern:
+       a. Analyze the 3+ example_code snippets for common structure.
+       b. Attempt to generate Predicate DSL (AST_PATTERN or GREP_PATTERN):
+          - Extract tree-sitter query from common AST structure.
+          - If AST too complex, fall back to regex pattern.
+          - If neither works, mark as Tier 3 only (prompt guidance).
+       c. Auto-generate contract tests from the violation examples:
+          - Each example_code becomes a test_type=BLOCK test.
+          - Auditor provides or system generates ALLOW counterexamples.
+       d. Insert as PROPOSED rule. Auditor reviews predicate + tests.
+
+  The auditor is the teacher. Rules are crystallized lessons.
+  The system learns from its own mistakes without human intervention.
+  Humans can also submit rules directly (source=HUMAN, enter at CANDIDATE).
+
+
+7. PHASE-AWARE ACTIVATION
+
+  phase_mask bitmask:
+    bit 0: PLANNING
+    bit 1: FEASIBILITY_PROBE
+    bit 2: TESTING_FIRST
+    bit 3: EXECUTING
+    bit 4: AUDITING
+    bit 5: MEMORIZING
+    bit 6: CONFIGURING
+
+  get_active_rules(fsm_state, file_context) ->
+    SELECT * FROM rules
+    WHERE status = 'ACTIVE'
+      AND (phase_mask & (1 << fsm_state_bit)) != 0
+      AND (domain IN (detect_domains(file_context)) OR domain = 'engineering')
+    ORDER BY tier ASC, severity DESC
+
+  Domain detection from file_context:
+    file path contains "trading", "backtest", "signal", "pipeline" -> domain includes "trading"
+    file path contains "dashboard", "component", "chart", "ui" -> domain includes "dashboard"
+    file path contains "payment", "billing", "tenant", "saas" -> domain includes "application"
+    file path contains "game", "mod", "entity", "spawn" -> domain includes "game"
+    file path contains "ida", "ghidra", "disasm", "hook" -> domain includes "re"
+    Configurable overrides in elai_cc.toml: [rules.domain_mapping].
+
+
+8. SEED DATA — DOMAIN RULE CLASSIFICATION
+
+  All rules from current workflow rule files, classified by enforcement tier.
+  Domain is a column. "trading" is rows in rules.db. "dashboard" is rows.
+  New project in a new domain starts with global seeds and accumulates organically.
+
+
+  8.1 TRADING DOMAIN (40 rules from tradingRules.md)
+
+  TIER 1 — AST_PATTERN (~14 rules):
+    Rule 1:  AST: df[].mean()/std() without .expanding()/.rolling() + .shift(1)
+    Rule 2:  AST: find_peaks, argrelextrema, argrelmin, argrelmax imports/calls
+    Rule 3:  AST: train_test_split(shuffle=True), KFold without Purged/Temporal
+    Rule 4:  AST: signal column without .shift(1) before execution price mapping
+    Rule 5:  AST: fillna('bfill'/'backfill'), scaler.fit(X_full), PCA(X_full)
+    Rule 10: AST: backward/forward-adjusted price columns in ML training
+    Rule 11: AST: OHLCV ingestion without Pydantic/typed schema
+    Rule 18: AST: SL/TP evaluated against close only (no high/low check)
+    Rule 31: AST: pass bodies, TODO, placeholder returns in trading functions
+    Rule 32: AST: bare except:pass, silent try/except in trading code
+    Rule 33: AST: indicator output without length/NaN/inf assertions
+    Rule 34: AST: Any type, @dataclass without frozen=True on financial types
+    Rule 39: AST: missing version pin on data vendor imports
+    Rule 40: GREP: missing workflow/papers/ interface map for known algorithm
+
+  TIER 1 — GREP_PATTERN (~11 rules):
+    Rule 6:  GREP: current index constituents in historical queries (heuristic)
+    Rule 8:  GREP: raw ticker/company names in LLM prompt strings
+    Rule 15: GREP: cross-exchange order without transit delay parameter
+    Rule 19: GREP: short position P&L without funding/borrow cost term
+    Rule 28: GREP: long-only strategy without explicit justification
+    Rule 35: GREP: PSI computed on inputs only (missing output distribution)
+    Rule 36: GREP: full fine-tune call without LoRA/QLoRA wrapper
+    Rule 38: GREP: live trading deployment without shadow backtester config
+
+  TIER 2 — SCHEMA_REQUIRED (5 rules):
+    Rule 12: backtest config requires { commission, slippage, spread }
+    Rule 13: institutional backtest requires { square_root_impact params }
+    Rule 17: backtest report requires { sharpe, dsr, max_drawdown, trial_count }
+    Rule 21: report schema requires { trial_count } (cannot omit)
+    Rule 29: signal output requires { opposing_thesis, risk_if_wrong }
+
+  TIER 3 — PROMPT GUIDANCE + AUDITOR (10 rules):
+    Rule 7:  dynamic universe validation (data inspection judgment)
+    Rule 9:  LAP measurement (statistical analysis judgment)
+    Rule 14: queue position modeling quality (design judgment)
+    Rule 16: HFT sensitivity analysis thoroughness (analytical judgment)
+    Rule 20: FDR procedure selection (statistical judgment per correlation)
+    Rule 22: completeness of reported configurations (judgment)
+    Rule 23: OOS holdout discipline (process judgment)
+    Rule 24: market cycle coverage (data selection judgment)
+    Rule 25: regime classifier expanding-window discipline (process judgment)
+    Rule 26: correlation analysis thoroughness (analytical judgment)
+    Rule 27: multi-agent consensus quality (architecture judgment)
+    Rule 30: CoT decomposition quality (reasoning judgment)
+    Rule 37: tiered review schedule adherence (process judgment)
+
+
+  8.2 DASHBOARD DOMAIN (16 rules from dashboardRules.md)
+
+  TIER 1 — AST_PATTERN (7 rules):
+    Rule 1:  AST: single component with fetch + state + render > 150 lines (God Component)
+    Rule 3:  AST: useEffect/componentDidMount without cleanup return
+    Rule 4:  AST: useState for complex interdependent state (detect rapid-update patterns)
+    Rule 5:  AST: fetch inside useEffect without AbortController
+    Rule 6:  AST: cascading useEffect chains (Effect A -> State B -> Effect B -> State C)
+    Rule 7:  AST: D3 DOM manipulation inside React without useRef isolation
+    Rule 14: AST: dynamic CSS class name construction (string concatenation with utility classes)
+
+  TIER 1 — GREP_PATTERN (3 rules):
+    Rule 8:  GREP: >1000 data points rendered without virtualization/decimation keyword
+    Rule 10: GREP: SVG render without sanitization (missing strip of event handlers, script)
+    Rule 13: GREP: framework API usage without version check (package.json cross-reference)
+
+  TIER 1 — METRIC_GATE (1 rule):
+    Rule 1b: METRIC: component file LOC > 150 -> WARN:decompose
+
+  TIER 3 — PROMPT GUIDANCE + AUDITOR (5 rules):
+    Rule 2:  prop drilling vs hooks/context judgment
+    Rule 9:  multi-chart data contract integrity (format verification judgment)
+    Rule 11: server-side deserialization security (completeness judgment)
+    Rule 12: plugin/connector authorization boundary completeness (judgment)
+    Rule 15: fabricated API/prop detection (hallucination, needs semantic check)
+    Rule 16: debug fix regression check (semantic completeness)
+
+
+  8.3 APPLICATION/SAAS DOMAIN (19 rules from applicationRules.md)
+
+  TIER 1 — AST_PATTERN (5 rules):
+    Rule 3:  AST: business logic in route handlers (detect DB queries in handler body)
+    Rule 4:  AST: monolithic handler (fetch + validate + persist + vendor call in one function)
+    Rule 5:  AST: tenant isolation via WHERE clause only (no RLS/schema isolation)
+    Rule 11: AST: query without LIMIT/pagination (detect SELECT without LIMIT)
+    Rule 13: AST: long-lived API key pattern (hardcoded key, no expiry/rotation)
+
+  TIER 1 — GREP_PATTERN (6 rules):
+    Rule 1:  GREP: multiple string literals for same concept ("postgres", "pg", "postgresql")
+    Rule 2:  GREP: raw env var access in multiple modules (connection string construction)
+    Rule 6:  GREP: missing RESET ALL / DISCARD ALL after tenant-scoped DB ops
+    Rule 7:  GREP: cache key without tenant_id prefix (Redis/Memcached key patterns)
+    Rule 15: GREP: MCP tool registration without whitelist check
+    Rule 16: GREP: LLM-generated security patch without static analysis verification
+
+  TIER 2 — SCHEMA_REQUIRED (2 rules):
+    Rule 8:  payment webhook schema requires { signature_validation, idempotency_key }
+    Rule 18: session state schema requires { goals, constraints, decisions, remaining_tasks }
+
+  TIER 3 — PROMPT GUIDANCE + AUDITOR (6 rules):
+    Rule 9:  subscription state machine completeness (out-of-order webhook judgment)
+    Rule 10: billing debug methodology (cross-system trace judgment)
+    Rule 12: query performance diagnosis method (EXPLAIN ANALYZE before cache)
+    Rule 14: MCP token scope analysis (permission inheritance judgment)
+    Rule 17: context capacity signaling (capacity awareness judgment)
+    Rule 19: paper-grounded implementation completeness
+
+
+  8.4 GAME DOMAIN (17 rules from gameRules.md)
+
+  TIER 1 — AST_PATTERN (8 rules):
+    Rule 1:  AST: initialization without corresponding destruction/cleanup handler
+    Rule 2:  AST: UI element without bind to OnDestroy/OnDeath/OnDisable
+    Rule 5:  AST: entity operation without null/existence check
+    Rule 10: AST: client-side state mutation before server validation (authority bleed)
+    Rule 13: AST: struct offset from theoretical sizes (no sizeof/offsetof assertion)
+    Rule 14: AST: realloc() assigned to original pointer without null check
+    Rule 12: AST: RPC/network call without initialization check
+
+  TIER 1 — GREP_PATTERN (2 rules):
+    Rule 3:  GREP: spawned entity without lifecycle termination keyword
+    Rule 9:  GREP: decompiler output used without distrust annotation
+
+  TIER 3 — PROMPT GUIDANCE + AUDITOR (7 rules):
+    Rule 4:  happy-path-only optimization (edge case completeness judgment)
+    Rule 6:  property-based testing adequacy (invariant quality judgment)
+    Rule 7:  blast radius mapping completeness for hooks (judgment)
+    Rule 8:  upstream dependency tracing for injected data (judgment)
+    Rule 11: network dropout fallback adequacy (dead reckoning judgment)
+    Rule 15: debugging loop anti-spiral (context management judgment)
+    Rule 16: paper-grounded implementation completeness
+    Rule 17: source-grounding for decompiled code completeness
+
+
+  8.5 REVERSE ENGINEERING DOMAIN (12 rules from reRules.md)
+
+  TIER 1 — GREP_PATTERN (5 rules):
+    Rule 1:  GREP: decompiler output used as ground truth without cross-check annotation
+    Rule 3:  GREP: sub_XXXXXX or unnamed function references in analysis output
+    Rule 7:  GREP: analysis finding without IDA comment (mcp_memorize without set_comment)
+    Rule 9:  GREP: vulnerability finding without binary version hash
+    Rule 10: GREP: sensitive RE artifact in non-scratch path
+
+  TIER 1 — AST_PATTERN (2 rules):
+    Rule 2:  AST: patch at address without get_xrefs_to check
+    Rule 6:  AST: VirtualProtect/mprotect without self-modifying code annotation
+
+  TIER 3 — PROMPT GUIDANCE + AUDITOR (5 rules):
+    Rule 4:  opaque predicate verification adequacy (multi-path judgment)
+    Rule 5:  struct reconstruction from allocation sites (judgment)
+    Rule 8:  ida-mcp tool call contract adherence (judgment)
+    Rule 11: paper-grounded implementation completeness
+    Rule 12: source-grounding for decompiled code completeness
+
+
+  8.6 ENGINEERING DOMAIN (cross-cutting, always active)
+
+  TIER 1 — AST_PATTERN:
+    no eval() or exec() in non-sandboxed code
+    no unsanitized user input in SQL/shell/template
+    no TODO/pass/placeholder in non-test code
+    no Any type in strict-typed codebase
+    no mutable global state
+    SOLID violations: class with >7 public methods (heuristic)
+    no hardcoded secrets (API keys, passwords in string literals)
+
+  TIER 1 — GREP_PATTERN:
+    no print() in production code (use tracing/logging)
+    no hardcoded file paths (use config/env)
+    no .unwrap() on user-facing error paths (Rust-specific)
+
+  These are always-active regardless of domain.
+
+
+  8.7 SECURITY DOMAIN (cross-cutting, mutable=0)
+
+  TIER 1 — AST_PATTERN:
+    no eval(), exec(), __import__() on user input
+    no shell=True with unsanitized input (subprocess)
+    no SQL string formatting (use parameterized queries)
+    no deserialization of untrusted data (pickle.loads, yaml.load without SafeLoader)
+    no hardcoded credentials
+    no HTTP without TLS for external calls (http:// in non-localhost URLs)
+
+  All security rules: mutable=0 (never auto-adjusted, never auto-retired).
+  Promotion to ACTIVE requires human approval even from SHADOW.
+
+
+9. CONTRACT TEST SPECIFICATION
+
+  Every Tier 1 rule: minimum 3 tests (BLOCK + ALLOW + EDGE).
+  Every Tier 2 rule: minimum 2 tests (valid schema + invalid schema).
+  Tier 3 rules: no contract tests (not deterministically testable).
+
+  Test structure:
+    test_rule_{domain}_{number}_blocks_violation()  — known-bad code -> BLOCK
+    test_rule_{domain}_{number}_allows_correct()   — known-good code -> ALLOW
+    test_rule_{domain}_{number}_edge_case()        — borderline -> expected verdict
+
+  Self-modification gate: any proposed rule change that breaks a contract test
+  is automatically rejected. Contract tests are READ-LOCKED during self-mod.
+
+  Contract test counts by domain (Tier 1 + Tier 2 rules * min tests):
+    Trading:     25 Tier1 + 5 Tier2 = 25*3 + 5*2 = 85 minimum
+    Dashboard:   11 Tier1 + 0 Tier2 = 11*3 + 0   = 33 minimum
+    Application: 11 Tier1 + 2 Tier2 = 11*3 + 2*2 = 37 minimum
+    Game:        10 Tier1 + 0 Tier2 = 10*3 + 0   = 30 minimum
+    RE:           7 Tier1 + 0 Tier2 =  7*3 + 0   = 21 minimum
+    Engineering: ~10 Tier1          = 10*3        = 30 minimum
+    Security:    ~6 Tier1           =  6*3        = 18 minimum
+    TOTAL MINIMUM: ~254 contract tests for seed rules
+
+  Auto-generated tests from self-discovery add to this count over time.
+  Contract test count is a project health metric tracked in metrics.
+
+
+10. SEED DATA LOADING
+
+  On first project init:
+    1. Copy .elai_cc/global/rules_seed.db into project rules.db.
+    2. All seed rules enter as status=ACTIVE, source=SEED.
+    3. Domain rules only activate when domain detection matches file context.
+    4. Engineering and security rules activate for all code.
+
+  Seed data sources (compiled from current workflow rule files):
+    tradingRules.md       -> 40 rules, domain="trading"
+    dashboardRules.md     -> 16 rules, domain="dashboard"
+    applicationRules.md   -> 19 rules, domain="application"
+    gameRules.md          -> 17 rules, domain="game"
+    reRules.md            -> 12 rules, domain="re"
+    (new) engineering     -> ~10 rules, domain="engineering"
+    (new) security        -> ~6 rules, domain="security"
+
+  Seed rules skip the PROPOSED->CANDIDATE->SHADOW lifecycle.
+  They are pre-validated by the contract test suite.
+  Their contract tests are also shipped as seed data.
+
+
+11. SELF-IMPROVEMENT INTEGRATION
+
+  Self-discovery feeds into self-modification (integration/self-modification.txt):
+
+  Layer 1 (automatic): rule_metrics updated after every evaluation.
+    Trigger counts, false positive rates, catch rates — pure arithmetic.
+
+  Layer 2 (auditor approval): new PROPOSED rules from violation_patterns.
+    Follows the full lifecycle: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE.
+    Auditor validates predicate logic and contract tests.
+    Promotion thresholds are deterministic (section 5).
+
+  Safety invariant: mutable=0 rules cannot be auto-retired or auto-adjusted.
+  Self-mod agent cannot write to contract_tests during self-modification.
+  Contract tests are the constitution. Rules are legislation.
+
+
+12. CLAW-CODE MODULE MAPPING
+
+  policy_engine.rs (581 LOC)          -> RuleEngine core + predicate evaluator
+  permission_enforcer.rs (546 LOC)    -> enforcement layer + hook integration
+
+
+13. TESTABLE INVARIANTS
+
+  - Rule evaluation is deterministic (same code + same predicate = same verdict)
+  - Phase-aware: only active rules for current FSM state evaluated
+  - Domain-aware: only matching domain rules evaluated for file context
+  - Security/safety rules (mutable=0) cannot be auto-adjusted or auto-retired
+  - Every Tier 1 rule has >= 3 contract tests (block, allow, edge)
+  - Every Tier 2 rule has >= 2 contract tests (valid, invalid)
+  - Contract tests READ-LOCKED during self-modification
+  - Tier 2 constrained decoding rejects output missing required fields
+  - Tier 3 violations caught by auditor produce BLOCK findings
+  - PROPOSED -> ACTIVE lifecycle is pure arithmetic (no LLM in promotion)
+  - Violation pattern with occurrences >= 3 auto-proposes rule
+  - Self-extended rules enforce identically to seed rules
+  - Predicate DSL evaluation target: <1ms per rule
+  - Seed rules enter as ACTIVE (skip lifecycle)
+  - Retired rules preserved in DB (never deleted)

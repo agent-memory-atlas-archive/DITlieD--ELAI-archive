@@ -1,0 +1,147 @@
+CRATE: reasoning/
+Purpose: GRC engine + hallucination mitigation + grounding verification + CSQ.
+Source: design_document.txt PART 5 (all subsections), PART 5.3 ADDENDUM, PART 5.9.
+Depends on: core/, providers/ (for model invocation), tools/ (for verification checks)
+
+
+1. RESPONSIBILITIES
+
+  - GRC state machine: structured reasoning protocol replacing model-internal thinking
+  - Budget system: per-topic call and character limits
+  - Grounding verification: claim checking before any action
+  - Plan grounding sweep: validate entire plans before EXECUTING
+  - Fact-based planning protocol: plans assembled only from verified facts
+  - Counterfactual safety (CSQ): "if X wrong, code will Y" checks
+  - Per-agent GRC configuration: different budgets/steps per role
+  - Inline feasibility check: catch ungrounded claims during EXECUTING
+
+
+2. GRC STATE MACHINE (per topic)
+
+  observe(grounding) -> hypothesize(grounding) -> plan_action -> act -> verify(grounding)
+
+  Each step MUST cite grounding source.
+  Steps without grounding are rejected by the engine.
+  The model receives ONLY the structured prompt for the current step.
+  No <thinking> tags, no chain-of-thought tokens consumed by the model.
+
+  Model interaction protocol:
+    GRC sends: "Given these verified facts: [F1, F2, F3]. Produce: [specific output format]."
+    Model returns raw completion.
+    GRC validates: format correct? grounding cited? new claims introduced?
+    New ungrounded claims -> flagged for verification before next step.
+
+
+3. BUDGET SYSTEM
+
+  Per-topic: max_calls (1-12), max_chars (200-1500).
+  Global default configurable in elai_cc.toml.
+  Overflow -> forced convergence (must produce conclusion) or escalation (hand to human).
+  Budget scales: simple=3/600, moderate=5/800, complex=8/1200.
+
+
+4. GROUNDING VERIFICATION
+
+  Verification methods:
+    FILE_CHECK:         does file/function/class exist? (grep/glob)
+    API_CHECK:          does API/library work as claimed? (test call or docs lookup)
+    WEB_CHECK:          is algorithm/method real? (web search)
+    SOURCE_CHECK:       does referenced source code do what we think? (read)
+    TEST_CHECK:         does a test confirm this behavior? (run test)
+    API_REGISTRY_CHECK: does API exist, is it free, does it respond? (design 5.3 addendum)
+      Sources: public-apis GitHub (~1400 free), RapidAPI free tier, package managers.
+      AUTONOMOUS mode: only keyless/free APIs auto-selected.
+      Auth credentials in .elai_cc/projects/{id}/.env (gitignored).
+
+  Grounding levels:
+    VERIFIED:  searched, tested, or read from source
+    HIGH:      code just read in this session
+    UNCERTAIN: from training, not verified — MUST be resolved before acting
+
+  Plan grounding sweep:
+    Before EXECUTING, GRC scans ALL claims in plan.
+    Each classified: GROUNDED, VERIFY_NEEDED, UNGROUNDED.
+    UNGROUNDED blocks execution until resolved.
+
+
+5. FACT-BASED PLANNING PROTOCOL
+
+  1. GRC breaks task into sub-questions (observe step)
+  2. Each sub-question answered via VERIFIED sources (not training)
+  3. If LLM doesn't know -> web search, source read, or "I don't know"
+  4. Plan assembled ONLY from verified facts
+  5. Pre-implementation tests written from plan (TESTING_FIRST)
+  6. Adversarial review by auditor agent
+  7. Only then: EXECUTING
+
+
+6. COUNTERFACTUAL SAFETY (CSQ)
+
+  Before finalizing any non-trivial logic:
+    "If [assumption X] is wrong, code will [consequence Y]."
+    Dangerous consequence (data loss, security, financial) -> MUST add guard.
+    Minimum 1 CSQ per function touching: files, network, money, auth.
+
+
+7. PER-AGENT GRC CONFIGURATION
+
+  executor (Gemma 4 31B):
+    budget: complex (8/1200)
+    required_steps: [observe, hypothesize, plan_action, act, verify]
+    grounding: all steps require source citation
+    csq: mandatory for file/network/money/auth functions
+
+  auditor (DeepSeek-R1-32B):
+    budget: high (10/1200)
+    required_steps: [observe, hypothesize, verify, verify] — double verify
+    grounding: VERIFIED only (no HIGH or UNCERTAIN accepted)
+    extra: must find >= 1 issue per review (anti-rubber-stamp)
+    csq: mandatory on every finding
+
+  context-compiler:
+    budget: low (3/600)
+    required_steps: [observe]
+    grounding: FILE_CHECK and SOURCE_CHECK only
+    no csq (read-only agent)
+
+  prompt-engineer:
+    budget: moderate (5/800)
+    required_steps: [observe, hypothesize, converge]
+    grounding: must cite plan + context package
+
+  memory-writer:
+    budget: minimal (2/400)
+    required_steps: [observe, converge]
+    grounding: must cite diff + test results
+
+  Per-agent FSM sub-states:
+    IDLE -> LOADING -> REASONING -> ACTING -> DONE
+    Persisted in agent checkpoint. Orchestrator reads for scheduling.
+
+
+8. INLINE FEASIBILITY CHECK (design 5.9)
+
+  During EXECUTING, if GRC verify detects a NEW claim not in:
+    PipelineSpec, Research Report, or DKG:
+  Quick check (max 2 GRC calls): web search OR grep OR API_REGISTRY_CHECK.
+  PASS -> grounded, proceed. FAIL -> must use plan's original approach.
+  Fundamentally different approach requires EXECUTING -> BLOCK -> PLANNING.
+
+
+9. KEY TYPES (needs formal Rust struct definitions)
+
+  ThinkStep { step_type, content, topic, grounding, conclusion }
+  GroundingResult { claim, method, level, source, verified_at }
+  VerificationResult { claim, passes, evidence, method_used }
+  GrcBudget { max_calls, max_chars, calls_used, chars_used }
+  AgentGrcConfig { budget, required_steps, grounding_level, csq_required }
+
+
+10. TESTABLE INVARIANTS
+
+  - Every GRC step without grounding is rejected (returns error)
+  - Budget overflow forces convergence or escalation (never silently ignored)
+  - Plan grounding sweep blocks EXECUTING if any UNGROUNDED claims remain
+  - CSQ produces at least 1 check per financial/file/network/auth function
+  - Inline feasibility max 2 calls (bounded)
+  - Per-agent config correctly routes: auditor gets double-verify, compiler gets observe-only

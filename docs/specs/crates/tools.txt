@@ -1,0 +1,131 @@
+CRATE: tools/
+Purpose: file ops, bash, git, validation, AST scan, trace execution, edit matching.
+Source: design_document.txt PART 7.2-7.3, PART 16.1-16.2, design 30.4-30.5, 31.8-31.9, 31.12.
+Depends on: core/, knowledge/ (for tree-sitter AST)
+
+
+1. RESPONSIBILITIES
+
+  - File operations: read (with metadata/outline), write, edit
+  - Bash execution: sandboxed, timeout-controlled
+  - Git operations: auto-commit, undo, branch management (git2 crate)
+  - Validation pipeline: 5 tiers
+  - DAIRA trace execution: runtime tracing with structured markers
+  - ShortCoder: AST-preserving code simplification
+  - Edit matching: 3-tier SEARCH/REPLACE
+  - Failure taxonomy: deterministic error classification
+  - Tool registry: phase-filtered execution
+
+
+2. FILE READING ENHANCEMENT — design 31.12
+
+  read_file(path, start_line?, end_line?) -> FileReadResult
+  FileReadResult { path, total_lines, estimated_tokens, content: Full | Outline }
+
+  Full: complete content with line numbers (files <= 300 lines or range specified).
+  Outline: tree-sitter parsed sections (kind, signature, line range) for large files.
+    Model sees structure, requests specific sections. 5x token savings on 1000-line files.
+
+
+3. 3-TIER EDIT MATCHING — design 31.8
+
+  Tier 1: exact string match.
+  Tier 2: whitespace-normalized match (preserves original indentation on replace).
+  Tier 3: ellipsis-elision ("..." matches any line sequence).
+  On failure: SequenceMatcher similarity hint ("did you mean [nearest chunk]?").
+  Never silently applies wrong match.
+
+
+4. GIT INTEGRATION — design PART 7.2, 31.11
+
+  git2 crate for native operations.
+  Auto-commit after each verified phase completion.
+  Commit messages from phase outcomes (deterministic, not LLM prose).
+  Branch per plan (feature branches). Auto-gitignore heavy data.
+  Session-owned commit tracking with safe undo protocol.
+
+
+5. VALIDATION PIPELINE — design PART 7.3
+
+  Tier 1: Determinism (same input = same output, verified mathematically)
+  Tier 2: Quality (AST analysis, code smells, test quality, branch coverage)
+  Tier 3: Unit tests
+  Tier 4: Integration/contract tests
+  Tier 5: Stress/adversarial tests
+  All run by auditor agent. Executor NEVER runs own tests.
+
+
+6. DAIRA TRACE EXECUTION — design PART 16.1
+
+  trace_execution(script, trace_config) -> TraceReport
+  Lightweight tracer: tracing crate (Rust), sys.settrace (Python).
+  TraceReport: call stack, variable mutations, type transitions, timing.
+  Used in GRC observe step for runtime behavior analysis.
+
+  Structured execution markers (design 30.5):
+    [CALL], [RETURN], [MUTATION], [BRANCH] — execution flow
+    [ERROR], [PANIC], [TIMEOUT] — errors
+    [FINDING], [PATTERN], [ANOMALY] — semantic observations
+    [STAT:name], [DURATION:name], [MEMORY:name] — metrics
+    [CHECKPOINT], [STEP:n] — flow control
+
+  MarkerReport { findings, anomalies, mutations, errors, stats, raw_line_count, marker_line_count }
+  GRC reads markers progressively: findings first, then mutations, then full trace.
+
+  Adaptive scope reduction (DAIRA pattern, generalized):
+    AdaptiveTool<T: Tool> wrapper with budget parameter.
+    run -> check output size -> if > budget, reduce scope -> retry. Max 3 reductions.
+
+
+7. SHORTCODER — design PART 16.2
+
+  code_simplify(code, rules) -> SimplifiedCode
+  10 AST-preserving rules (NOT regex — tree-sitter transforms):
+    R1: remove redundant variable assignments
+    R2: simplify boolean expressions
+    R3: collapse single-use variables
+    R4: convert if/else to ternary (CONFIGURABLE)
+    R5: merge sequential operations
+    R6: convert loops to comprehensions (CONFIGURABLE)
+    R7: remove unnecessary parentheses
+    R8: simplify return statements
+    R9: remove dead code branches
+    R10: normalize string formatting
+  Applied as POST-PROCESSING on executor output, before auditor review.
+  18-38% token savings. No model fine-tuning needed.
+
+
+8. FAILURE TAXONOMY — design 30.4
+
+  classify_failure(error_output) -> FailureClassification
+  Deterministic pattern-match (regex, no LLM):
+    SYNTAX_ERROR, TYPE_ERROR, IMPORT_ERROR, ASSERTION_ERROR,
+    TIMEOUT, EMPTY_OUTPUT, RUNTIME_PANIC, PERMISSION_DENIED, RESOURCE_EXHAUSTED.
+  Each category has deterministic suggested_action.
+  Auditor reads classification BEFORE raw output (reduces context by 200-500 tokens).
+  3+ same-category failures in one phase -> anti-spiral trigger.
+
+
+9. CLAW-CODE MODULE MAPPING
+
+  bash_validation.rs (1,004 LOC) -> pre-execution safety checks
+  lsp_client.rs (746 LOC)       -> potential code intelligence (evaluate)
+  stale_branch.rs (416 LOC)     -> git integration
+  lane_completion only in tools/ -> EXTEND with all tools above
+
+
+10. DEPENDENCIES
+
+  ADD: git2, tree-sitter + grammars (shared with knowledge/)
+  KEEP: existing bash execution infrastructure from claw-code
+
+
+11. TESTABLE INVARIANTS
+
+  - File outline sections cover 100% of file lines (no gaps)
+  - Edit tier 1 tried before tier 2 before tier 3 (strict ordering)
+  - Failed edit never silently applies wrong match
+  - Every trace output contains parseable markers
+  - ShortCoder output is AST-equivalent to input (tree-sitter verify)
+  - Failure classification is deterministic (same input -> same category)
+  - Adaptive scope reduction bounded to 3 attempts

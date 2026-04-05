@@ -1,0 +1,100 @@
+INTEGRATION: PIPELINE FACTORY
+Source: design_document.txt PART 15 (all), PART 23 (Research Agent),
+  PART 25 (Feasibility Probe), PART 26 (Plan Elaboration), PART 29 (QualitySpec).
+
+
+1. PURPOSE
+
+  elai_cc is a universal automation engine, not a code assistant.
+  User provides ANY goal. System DESIGNS the pipeline, BUILDS it, EXECUTES it.
+  LLM handles creative/written work. Everything else is deterministic infrastructure.
+
+
+2. THREE-LAYER ARCHITECTURE
+
+  L1 — PIPELINE DESIGNER (LLM-driven, GRC-grounded):
+    Input: human task description.
+    GRC decomposes into sub-questions, each answered via VERIFIED sources.
+    If needed rule set doesn't exist -> research, propose, auditor review, install.
+    Output: PipelineSpec (TOML/msgpack) + QualitySpec.
+
+  L2 — PIPELINE BUILDER (deterministic, no LLM):
+    Input: PipelineSpec.
+    Validates components exist, creates FSM states, configures agents,
+    installs rules, estimates resources, generates dependency graph,
+    creates test harness skeleton.
+    Output: ExecutablePipeline in .elai_cc/pipelines/{id}/
+
+  L3 — PIPELINE EXECUTOR (existing FSM + agents + rules):
+    Input: ExecutablePipeline. Runs the autonomous execution loop.
+
+
+3. PLAN ELABORATION PIPELINE (4-stage)
+
+  Stage 1 — RESEARCH: Research Agent + GRC. Output: Research Report (structured).
+    >= 1 BENCHMARK or OFFICIAL_DOCS grounded alternative per capability.
+    All-TRAINING capabilities flagged HIGH_RISK -> require human input in both modes.
+
+  Stage 2 — PLAN ASSEMBLY: L1 + GRC. Output: PipelineSpec with grounded steps.
+    L1 can ONLY reference alternatives from Research Report.
+
+  Stage 3 — STRUCTURAL VALIDATION: L2, pure Rust, deterministic.
+    Tools exist, models in registry, no cycles, resources fit hardware.
+
+  Stage 4 — FEASIBILITY PROBE: empirical stub testing of novel steps.
+    < 50 line stubs, max 3 alternatives per step before escalation.
+
+
+4. RESEARCH AGENT — design PART 23
+
+  Role: researcher. Model: cloud preferred or Gemma4 + web search.
+  GRC budget: high (10/1200).
+  Process: decompose -> per-capability structured search -> rank by evidence quality.
+  Evidence levels: BENCHMARK > OFFICIAL_DOCS > BLOG_POST > TRAINING.
+  Output: structured Research Report (not prose).
+
+
+5. QUALITYSPEC — design PART 29
+
+  Defines "quality" in measurable terms per pipeline.
+  QualityMetric { name, target, unit, method, phase, hard_fail }
+  MediaSpec { output_name, format, resolution, ssim_threshold, vlm_check }
+  PerfSpec { name, target, unit, method, sample_count }
+  L2 validates every metric has automated check method. Unmeasurable -> REJECT.
+
+
+6. MODEL CAPABILITY REGISTRY — design PART 15.6
+
+  Per-model: capabilities, vram_required, max_context, strengths, weaknesses, provider.
+  Selection: score = sum(capability_match) * context_fit * vram_feasibility.
+  No LLM judgment — pure numeric ranking.
+  Extension: L1 queries ollama /api/tags, runs capability probe, registers.
+
+
+7. EXTERNAL TOOL AUTO-DISCOVERY — design PART 15.7
+
+  Three levels: AVAILABLE (on PATH), INSTALLABLE (package manager), UNAVAILABLE.
+  Tool wrapper: execute(args)->ToolResult, validate_output()->bool, version()->SemVer.
+  Auto-discovery: query PATH, package managers, web search. Auditor reviews proposals.
+
+
+8. SELF-EXTENDING RULES — design PART 15.2
+
+  L1 creates new rule categories at runtime.
+  Proposed as Rust-evaluable predicates. Auditor validates.
+  Rule templates shipped: SaaS, Trading, Game, Data, Security, ML, Custom.
+
+
+9. PIPELINE COMPOSITION
+
+  Complex tasks = multiple pipelines.
+  Each sub-pipeline has own FSM. Results feed parent via structured handoff.
+
+
+10. PIPELINE TEMPLATES
+
+  Completed pipelines become reusable templates.
+  Stored in .elai_cc/templates/{type}/ as PipelineSpec + outcomes.
+  Versioned. Improvements propagate. Minimum 3 executions before ranking applied.
+  Template ranking formula (PART 22.2):
+    score = first_try_ratio*0.4 + coverage*0.3 + (1-block_ratio)*0.2 + token_efficiency*0.1

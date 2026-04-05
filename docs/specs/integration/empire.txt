@@ -1,0 +1,87 @@
+INTEGRATION: EMPIRE (D2 — deferred until D1 proven)
+Source: design_document.txt PART 9 (all subsections).
+
+
+1. EMPIRE ARCHITECTURE (verified from source)
+
+  Engine hierarchy: EngineMKI -> EngineMKII -> EngineMKIII (inheritance).
+    MKI:   IPC dispatch + hooks + buses + HTTP + events (core)
+    MKII:  +persistence (SQLite) + module management + webhooks + metrics
+    MKIII: +WS broadcast + WS client management
+    Engine selected at build time via brainctl._write_main().
+
+  Two bus layers:
+    IPC engine socket: /tmp/brain-engine.sock (module-to-engine)
+    FactoryLine control socket: /tmp/brain-factory.sock (factory-to-brain)
+    Both: newline-delimited JSON over AF_UNIX SOCK_STREAM.
+
+  Hook system: HookRegistry — {agent: [hook]}, kinds: "route" | "event".
+  Bus system: BusRegistry — named buses with fnmatch pattern subscriptions.
+  Brain = deployment unit (brain.json manifest). Neuron = module registered to brain.
+  FSB binary transport: 12-byte header (frame_id:u32, part_idx:u16, part_total:u16, payload_len:u32).
+
+
+2. WHAT'S BROKEN (must fix in D2)
+
+  - brainctl <-> brain_lifecycle circular dependency (lazy imports)
+  - EngineMKII hard-imports slc at module level (fails if missing)
+  - unique-factory shadows stdlib types module
+  - unique-factory _send_event() is a stub (prints, returns True, sends nothing)
+  - ECS manager does dynamic imports in tight loops
+  - Workforce assembly actions are all lambda: None (placeholder)
+
+
+3. WHAT'S SOLID (leverage in D2)
+
+  - IPC layer (src/lib/ipc.py): pure stdlib, tested
+  - FactoryLine bus (src/core/bus.py): pure stdlib, tested
+  - HookRegistry + BusRegistry: pure Python, no deps
+  - Multi-brain isolation: tested (separate dbs, hooks, neurons, buses)
+  - FSB binary transport: clean framing
+
+
+4. 6-STEP INTEGRATION PLAN (ordered by dependency)
+
+  Step 1: elai_cc speaks FactoryLine protocol
+    Rust tokio UnixStream -> /tmp/brain-factory.sock. Newline-JSON commands.
+    Zero Empire changes needed.
+
+  Step 2: elai_cc registers as a brain
+    Generate brain.json manifest. Register via FactoryLine. Heartbeat monitoring.
+
+  Step 3: elai_cc replaces factory-brain CLI
+    brainctl is broken (circular deps). elai_cc orchestrator drives via FactoryLine.
+    No change to engines.
+
+  Step 4: elai_cc subscribes to Empire events
+    IPC SUBSCRIBE with patterns ["factory:*"]. Empire becomes live GRC data source.
+
+  Step 5: Empire uses elai_cc capabilities
+    elai_cc exposes MCP server. Factory-brain registers elai_cc as neuron.
+
+  Step 6: Fix Empire broken parts using elai_cc
+    Circular deps, stubs, stdlib shadow — elai_cc generates and validates fixes.
+
+  Wire format: start with Option A (newline-JSON) for compatibility. Evaluate FSB/msgpack later.
+
+
+5. NETWORKING (design PART 9.6)
+
+  Empire HAS: SSH+rsync deploy, OpenResty proxy, FastAPI HTTP, Docker, systemd.
+  Empire LACKS: DNS, SSL/TLS, cloud APIs, CDN, load balancing, public routing.
+  Deploy = Tool Auto-Discovery problem. L1 detects hosting need, researches options.
+
+
+6. ECS/WORKFORCE (design PART 9.7) — DEAD CODE
+
+  workforce/assembly/ is entirely stubs. Not a functional ECS.
+  brain.json has no schema validation. Nothing to adopt.
+  PipelineSpec supersedes brain.json (6 layers of enforcement vs zero).
+
+
+7. SELF-IMPROVEMENT (design PART 9.8) — NONEXISTENT
+
+  MetricsStore: 4 counters, no decision logic. In .trash/.
+  SeedState: 7 phases, "optimize" has no implementation.
+  InternAgent: returns {"status": "learning"}, does nothing.
+  elai_cc brings self-improvement TO Empire, not the other way.

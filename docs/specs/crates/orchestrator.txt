@@ -1,0 +1,257 @@
+CRATE: orchestrator/
+Purpose: FSM, agents, sessions, parallelism, lifecycle, SSB, BSP, checkpointing.
+Source: design_document.txt PART 6 (all), PART 7 (workflow), PART 18 (SSB),
+  PART 20 (BSP), PART 21 (context budget), PART 24 (project isolation),
+  PART 25 (feasibility probe), design 31.1-31.4, 31.10-31.11.
+Depends on: core/, providers/ (ModelPool), reasoning/ (GRC), rules/, tools/
+
+Largest crate. Most claw-code modules map here.
+
+
+1. RESPONSIBILITIES
+
+  - FSM engine with phase-aware context/tool loading
+  - Agent spawning, lifecycle, checkpointing, crash recovery
+  - Agent parallelism with resource-aware scheduling
+  - Shared State Board (SSB): inter-agent communication via SQLite WAL
+  - BSP superstep model: deterministic macro-level orchestration
+  - Channel types: LastValue, Topic, UntrackedValue, EphemeralValue
+  - Context budget allocator: fixed-slot ordering with cache breakpoints
+  - Session handoff: structured state transfer (no summarization)
+  - Project isolation namespace
+  - Dual execution modes (AUTONOMOUS / INTERACTIVE)
+  - Evidence gate protocol (DAIRA-derived)
+  - FEASIBILITY_PROBE state
+  - Dynamic fan-out (Send) with namespace disambiguation
+  - Deferred node execution (post-barrier cleanup)
+  - Session-owned commit tracking
+
+
+2. FSM STATES
+
+  IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING
+    -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+
+  Phase-aware loading per state:
+    PLANNING:      rules + knowledge results + plan template. NO edit/bash tools.
+    FEASIBILITY:   stub write (<50 lines) + bash + web search. NO full edit/git.
+    TESTING_FIRST: test framework + plan + rules. NO edit/bash tools.
+    EXECUTING:     edit tools + current phase spec + code context. NO planning tools.
+    AUDITING:      validation tools + test runner + code. NO edit/planning tools.
+    MEMORIZING:    memory-bank write tools only.
+
+
+3. SSB (Shared State Board) — design PART 18
+
+  Single SQLite WAL database per project. Append-only within session.
+  All writes through single-writer tokio::mpsc channel.
+  All reads via read-only connections (WAL lock-free reads).
+
+  Schema:
+    ssb(seq INTEGER PK, project_id, session_id, agent_id, superstep INTEGER,
+        action_type TEXT CHECK(...), payload BLOB, created_at INTEGER)
+    ssb_files(seq REFERENCES ssb, file_path TEXT)
+    Indexes: project_id, session_id, superstep, file_path.
+
+  action_types: file_write, file_read, tool_result, test_outcome, finding,
+    claim, checkpoint, model_swap, phase_transition.
+
+  Conflict detection:
+    SELECT DISTINCT agent_id FROM ssb_files WHERE file_path IN (?)
+    AND session_id != ? AND superstep = ?
+
+  Throughput: ~50K inserts/sec ceiling. Agent rate: ~1-10/sec. No bottleneck.
+
+
+4. BSP SUPERSTEPS — design PART 20
+
+  Phase transitions = superstep boundaries. Channel writes applied atomically.
+
+  loop {
+      tasks = prepare_next_tasks(checkpoint, channels, nodes);
+      if tasks.empty() { break; }
+      writes = execute_tasks(tasks, model_pool, ssb);
+      apply_writes(checkpoint, channels, writes);
+
+      // deferred node phase (design 31.2)
+      for node in get_deferred_nodes(nodes) {
+          if node.all_inputs_satisfied(channels) {
+              deferred_writes = execute_single(node, channels);
+              apply_writes(checkpoint, channels, deferred_writes);
+          }
+      }
+
+      save_checkpoint(checkpoint, channels);
+      if !evidence_gate_passes(checkpoint, channels) { continue; }
+      superstep += 1;
+  }
+
+
+5. CHANNEL TYPES — design 31.1
+
+  LastValue: single value, last writer wins. Deterministic (SSB seq order).
+  Topic(accumulate: bool): append-only list. accumulate=true persists across supersteps.
+  UntrackedValue: in-memory only, NEVER checkpointed. guard=false for multi-writer.
+    Persists until overwritten. Lost on crash (intentional).
+  EphemeralValue: cleared to MISSING on zero-write superstep. Fire-and-forget signals.
+  BinaryOp: DROPPED (non-deterministic with concurrent writes).
+
+
+6. CONTEXT BUDGET ALLOCATOR — design PART 21, 31.10
+
+  Fixed-slot ordering every invocation:
+    Slot 1: system_prompt (GRC structured prompt per role)
+    Slot 2: rules (active for current phase + file context)
+    Slot 3: phase_spec (from PipelineSpec)
+    --- cache breakpoint 1 (slots 1-3 stable, cacheable) ---
+    Slot 4: repo_map (PageRank DKG output, fitted to budget)
+    Slot 5: code_context (BM25 + vector chunks)
+    --- cache breakpoint 2 (slots 4-5 stable within same files) ---
+    Slot 6: ssb_entries (filtered by file overlap)
+    Slot 7: grc_history (prior reasoning for current topic)
+    Slot 8: [output_reserve] (2000 tokens minimum)
+
+  Budget split after fixed slots: repo_map 15%, code_context 40%, ssb 25%, grc 20%.
+  Floors: ssb >= 200, grc >= 500, output >= 2000 tokens.
+  File overlap score: |intersection(entry.files, agent.files)| / |agent.files|
+
+  Adaptive reduction (3 attempts max):
+    1. Filter by relevance score. 2. Reduce granularity. 3. Reduce scope.
+    Terminal: INTERACTIVE -> ESCALATE. AUTONOMOUS -> SPLIT_TASK.
+    Never silently truncate. Every reduction logged to SSB.
+
+
+7. AGENT CHECKPOINTING — design PART 6.5
+
+  Location: .elai_cc/sessions/{sid}/agents/{agent_id}/
+  Files: state.msgpack, grc_history.msgpack, tool_results.msgpack,
+    output_draft.msgpack, checkpoint_ts.
+
+  Triggers (automatic): after GRC step, tool call, file edit, before slow ops.
+
+  Recovery: orchestrator detects stop/crash -> reads checkpoint -> spawns new instance
+    -> injects checkpoint as structured context -> agent continues from last GRC step.
+  Anti-spiral: same_step_count > 3 -> checkpoint + escalate. Stop is safe, always resumable.
+
+
+8. DYNAMIC FAN-OUT — design 31.3
+
+  Agent emits Send(target_role, input_data) objects.
+  Namespace: "{parent_ns}|{subgraph_type}:{counter}" (AtomicU64 per type).
+  Counter checkpointed at superstep boundary.
+  Resource-aware: checks ModelPool. Insufficient VRAM -> serialize, not parallel.
+
+
+9. HIERARCHICAL PLAN MANAGEMENT (large plan coherence)
+
+  Problem: plans can exceed 40k tokens. Local models (8-32k context) cannot load
+  the full plan while elaborating a single phase. Elaboration drifts from plan intent.
+
+  Solution: two-artifact plan representation.
+
+  PLAN SKELETON (~2-4k tokens, always loaded in Slot 3):
+    One-liner per phase/sub-phase: goal, key decision, interface contracts, cross-refs.
+    Version number per section. Updated only when phase elaboration is approved.
+    Format: .elai_cc/pipelines/{id}/skeleton.toml
+      [phase.3B]
+      goal = "SSB single-writer SQLite WAL"
+      inputs = ["AgentPool::write(action)", "FSM::phase_transition()"]
+      outputs = ["ssb::query(filter) -> Vec<SsbRow>"]
+      constraints = ["append-only within session", "conflict detection on file_path"]
+      depends_on = ["3A"]
+      depended_by = ["3C", "3D"]
+      version = 3
+
+  PHASE DETAIL (~5-15k tokens, loaded on demand):
+    Full elaboration of the phase being worked on.
+    Format: .elai_cc/pipelines/{id}/phases/{phase_id}.toml
+    Loaded into Slot 3 alongside skeleton (skeleton first, then active phase detail).
+
+  CONTRACT EXTRACTION (pre-elaboration):
+    Before elaborating Phase X, extract from skeleton:
+      1. Input contracts: what Phase X receives from dependencies (types, invariants).
+      2. Output contracts: what dependents of Phase X expect (types, invariants).
+      3. Shared constraints: cross-cutting invariants (e.g. "SSB seq monotonic").
+    These contracts are prepended to the phase detail. The model elaborates AGAINST
+    contracts, not against the full plan text.
+
+  COHERENCE ENFORCEMENT:
+    After elaboration, auditor checks:
+      1. Phase detail satisfies all input/output contracts from skeleton.
+      2. No new interfaces introduced that skeleton doesn't declare.
+      3. Version number in skeleton incremented if contracts changed.
+    Skeleton contract change -> propagate to all dependent phases (flag for re-review).
+
+  STORAGE: skeleton + phase details in SSB as action_type='plan_update'.
+  NOT in RAG/vector search. Plans are structured — use SQLite queries:
+    SELECT * FROM plan_phases WHERE phase_id IN (?, dependencies_of(?), dependents_of(?))
+
+
+10. SESSION HANDOFF — design PART 6.4
+
+  At token budget threshold (configurable, e.g. 85%):
+    Save to .elai_cc/sessions/{id}/handoff.msgpack:
+      FSM state, phase, step, findings, code changes, tests written.
+    Session ends. New session loads handoff, continues. No summarization.
+  Knowledge engine, RAG, git state persist on disk.
+  Only lost: conversation history (intentional — fresh context window).
+
+  Session-owned commits (design 31.11):
+    commit_hashes: Vec<String> per session. Persists across handoff.
+    Safe undo: only session-owned, working tree clean, not pushed, has parent.
+
+
+11. PROJECT ISOLATION — design PART 24
+
+  project_id: UUID v4.
+  Directory: .elai_cc/projects/{project_id}/ (ssb.db, knowledge.db, index/, rules/, etc.)
+  Global shared: .elai_cc/global/ (model_registry, rule_templates, pipeline_templates, metrics).
+  One project on GPU at a time. FIFO queue with priority override.
+  Switch: checkpoint -> unload -> load new -> resume. ~30-60 seconds.
+
+
+12. EVIDENCE GATE PROTOCOL — design PART 15.8
+
+  PLANNING -> TESTING_FIRST: zero UNGROUNDED claims in grounding_sweep_report.
+  TESTING_FIRST -> EXECUTING: all tests fail for right reasons (not syntax errors).
+  EXECUTING -> AUDITING: at least 1 test flipped FAIL -> PASS.
+  AUDITING -> MEMORIZING: zero BLOCK findings remaining.
+  MEMORIZING -> next: DKG reflects new code, changelog has entry.
+
+  Adaptive context (DAIRA): variable-output tools implement scope reduction.
+  run -> check size -> if > budget * 0.3, reduce scope -> retry. Max 3 attempts.
+
+
+13. CLAW-CODE MODULE MAPPING
+
+  worker_boot.rs (1,069 LOC)         -> AgentPool
+  policy_engine.rs (581 LOC)         -> rules::RuleEngine (shared with rules/)
+  permission_enforcer.rs (546 LOC)   -> rules enforcement layer
+  green_contract.rs (4,061 LOC)      -> evidence gates + contract tests
+  mcp_lifecycle_hardened.rs (839 LOC) -> plugins/ error recovery
+  recovery_recipes.rs (630 LOC)      -> crash recovery
+  trust_resolver.rs (299 LOC)        -> interactive gating
+  session_control.rs (461 LOC)       -> session management
+  task_registry.rs (506 LOC)         -> task tracking
+  lane_events.rs (241 LOC)           -> evaluate for SSB action_types
+  task_packet.rs (162 LOC)           -> structured task data
+
+  STRIP: compact.rs, summary_compression.rs (never compact).
+
+
+14. TESTABLE INVARIANTS
+
+  - SSB seq is monotonically increasing
+  - All SSB writes visible to readers within 1ms (WAL guarantee)
+  - No two agents write to same file simultaneously (SSB conflict detection)
+  - Channel state at superstep N deterministic given N-1 + writes
+  - UntrackedValue never in checkpoint data
+  - EphemeralValue returns MISSING after zero-write superstep
+  - sum(all_context_slots) <= model.max_context
+  - output_reserve >= 2000 always
+  - Evidence gates block transition when artifacts missing
+  - Only session-owned commits can be undone
+  - Plan skeleton fits within 4k tokens (enforced on write)
+  - Phase elaboration satisfies all input/output contracts from skeleton
+  - Skeleton version incremented on any contract change
+  - Contract change propagates dependency flags to all dependent phases

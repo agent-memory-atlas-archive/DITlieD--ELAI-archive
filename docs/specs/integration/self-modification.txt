@@ -1,0 +1,82 @@
+INTEGRATION: SELF-MODIFICATION SYSTEM (GODEL PATTERN)
+Source: design_document.txt PART 22 (self-improvement loop), PART 27 (self-modification).
+References: FunSearch (DeepMind, Nature 2024), Darwin Godel Machine (arxiv 2505.22954).
+
+
+1. CORE SAFETY PROPERTY
+
+  The modifying agent NEVER evaluates its own modifications.
+  Deterministic benchmarks judge. The agent proposes, code decides.
+
+
+2. THREE-LAYER ARCHITECTURE
+
+  LAYER 1 — DATA (automatic, no approval):
+    What changes: template rankings, rule trigger counts, pipeline outcome metrics.
+    Mechanism: pure arithmetic from PipelineOutcome. No LLM.
+    Security/safety/architecture rules NEVER auto-adjusted.
+
+  LAYER 2 — CONFIG (full pipeline, auditor approval):
+    What changes: new rules, GRC budgets, context ratios, model assignments,
+      templates, tool configs.
+    Detection heuristics: low first-try ratio, excessive tokens, too many BLOCKs,
+      repeated anti-spiral triggers, noisy rules.
+
+    Process (a self-modification IS a pipeline task):
+      1. DETECT: metrics trigger after pipeline completion
+      2. RESEARCH: Research Agent investigates root cause
+      3. PLAN: proposed change as PipelineSpec targeting .elai_cc/ config
+         Full 4-stage elaboration (research -> plan -> validate -> probe)
+      4. SANDBOX: copy config to .elai_cc/sandbox/{mod_id}/
+      5. BENCHMARK: re-run SAME task + 3 SWE-bench rotation instances (design 30.3)
+         Comparison is deterministic: subtract two numbers
+      6. GATE: better on trigger task AND no SWE-bench regression
+         AND auditor finds no safety regressions
+         AND no evidence gate definitions modified
+         -> APPLY or DISCARD
+
+    Anti-reward-hacking locks (PreToolUse enforced):
+      READ-LOCKED during self-mod: metrics code, gate definitions,
+      auditor config, benchmark harness, test suite.
+      Modifying agent cannot write to these. Period.
+
+  LAYER 3 — STRUCTURE (human approval, always):
+    What changes: FSM state additions, new agent roles, GRC protocol changes,
+      evidence gate modifications, core pipeline control flow.
+    Same process as Layer 2 but human review required in BOTH modes.
+
+
+3. SELF-IMPROVEMENT METRICS
+
+  PipelineOutcome { template_id, project_id, phases_total, phases_passed_first_try,
+    audit_findings_total, audit_findings_block, test_coverage_final,
+    time_to_complete_seconds, tokens_consumed_total, human_interventions,
+    rules_triggered: Vec<(RuleId, TriggerCount, CatchRate)> }
+
+  Rule weight adjustment:
+    SAFETY RULES (Security, Safety, Architecture): NEVER auto-adjusted.
+    ADJUSTABLE RULES (Style, Custom): high false positive -> flag for REFINEMENT (not removal).
+
+
+4. ROLLBACK PROTOCOL
+
+  Every Layer 2 mod: versioned BEFORE applying, old config archived.
+  Monitored for 3 pipeline runs. Auto-rollback if metrics degrade >10%.
+  Storage: .elai_cc/global/self_mod_history.db
+
+
+5. RESOURCE SCHEDULING
+
+  Lowest priority. Idle time only. User task always preempts.
+  Max 1 self-mod per 5 completed pipelines.
+  SWE-bench rotation adds ~90 min. Acceptable at lowest priority.
+
+
+6. TESTABLE INVARIANTS
+
+  - Self-mod agent cannot write to metrics/gates/auditor-config during pipeline
+  - Layer 2 benchmarked against deterministic metrics (no LLM judgment)
+  - Auto-rollback on >10% degradation over 3 pipelines
+  - Layer 3 always requires human_approved=true
+  - Sandbox physically separate from active config
+  - Old config archived before any modification

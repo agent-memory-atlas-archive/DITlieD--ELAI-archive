@@ -1,0 +1,74 @@
+CRATE: core/
+Purpose: config, paths, logging, serde, platform abstractions, token counting.
+Source: design_document.txt PART 1, PART 2, PART 3 (core/ entries).
+Depends on: (none — leaf crate, no internal deps)
+
+
+1. RESPONSIBILITIES
+
+  - elai_cc.toml configuration parsing and validation
+  - Cross-platform path handling (Windows + Linux, no path assumptions)
+  - Logging via tracing + tracing-subscriber (EVERY action logged for post-run analysis)
+  - Serialization: msgpack (rmp-serde) for storage, postcard for wire format
+  - Heapless stack-allocated structures replacing heap JSON parsing where applicable
+  - Platform detection and capability reporting
+
+
+2. CLAW-CODE MODULE MAPPING
+
+  From claw-code-rust-port runtime/:
+    session_control.rs (461 LOC)  -> core::session (session identity, handoff format)
+    (config handling spread across rusty-claude-cli/main.rs)
+
+  From claw-code-rust-port Cargo.toml deps:
+    serde, serde_json -> KEEP (json for human-readable config, msgpack for storage)
+    crossterm -> KEEP (terminal handling, shared with cli/)
+
+
+3. STRIP/REPLACE FROM BASE
+
+  FIND AND REMOVE:
+    - Any hardcoded system prompt that loads before user message (audit prompt.rs)
+    - Auto-compact / context compaction entirely (gut compact.rs + summary_compression.rs)
+    - Telemetry reporting to external services (replace with tracing)
+    - Anti-distillation, sentinel injection, or bias mechanisms
+
+  REPLACE:
+    - JSON serialization for storage -> msgpack (rmp-serde)
+    - JSON wire format -> postcard where possible
+    - External telemetry -> tracing-based debug logging
+
+  ADD:
+    - Real-time token counting accuracy improvements
+    - Phase-aware tool/context loading (only load what current FSM state needs)
+    - elai_cc.toml config schema (agent roles, GRC budgets, rules, model assignments)
+
+
+4. KEY TYPES
+
+  Config (parsed from elai_cc.toml):
+    project settings, agent role configs, GRC budgets per role, rule sets,
+    model assignments, provider configs, hardware detection settings.
+
+  SessionId:
+    Format: {project_id}:{pid}:{timestamp_ms}
+    PID reuse on Windows eliminated by timestamp component.
+
+  Serialization traits:
+    MsgpackSerialize / MsgpackDeserialize (wrapper around rmp-serde)
+    PostcardSerialize / PostcardDeserialize (wrapper around postcard)
+
+
+5. DEPENDENCIES
+
+  KEEP: serde, serde_json, crossterm
+  ADD: rmp-serde, postcard, heapless, tracing, tracing-subscriber, dirs, uuid, toml
+
+
+6. TESTABLE INVARIANTS
+
+  - Config parsing round-trips: serialize -> deserialize -> serialize == original
+  - SessionId uniqueness: 10,000 IDs generated in tight loop, zero collisions
+  - Path handling: same logical path on Windows and Linux produces equivalent results
+  - Msgpack output is smaller than JSON for same data structure
+  - Tracing captures every tool call and file operation

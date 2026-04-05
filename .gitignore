@@ -1,0 +1,47 @@
+# Workflow internals (session state, audit scratch, reasoning logs)
+workflow/
+
+# Baselines (local benchmarks)
+baselines/
+
+# Docs - ignore everything except specs/
+docs/*
+!docs/specs/
+!docs/specs/**
+
+# Memory bank (ephemeral per-session context)
+memory-bank/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# Archives
+*.rar
+*.zip
+*.7z
+
+# Secrets
+.env
+.env.*
+credentials.json
+*.pem
+*.key
