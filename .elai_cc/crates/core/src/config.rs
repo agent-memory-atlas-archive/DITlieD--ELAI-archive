@@ -252,6 +252,10 @@ impl ConfigLoader {
                 source: ConfigSource::Local,
                 path: self.cwd.join(".claw").join("settings.local.json"),
             },
+            ConfigEntry {
+                source: ConfigSource::Project,
+                path: self.cwd.join("elai_cc.toml"),
+            },
         ]
     }
 

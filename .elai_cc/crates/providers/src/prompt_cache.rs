@@ -729,6 +729,7 @@ mod tests {
                 output_tokens,
             },
             request_id: Some("req_test".to_string()),
+            provider_name: None,
         }
     }
 }

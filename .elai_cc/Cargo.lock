@@ -288,6 +288,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "elai_cc_contracts"
+version = "0.1.0"
+dependencies = [
+ "elai-core",
+ "elai-knowledge",
+ "elai-orchestrator",
+ "elai-plugins",
+ "elai-providers",
+ "elai-reasoning",
+ "elai-rules",
+ "elai-tools",
+ "serde_json",
+]
+
+[[package]]
 name = "endian-type"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

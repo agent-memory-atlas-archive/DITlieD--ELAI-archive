@@ -350,6 +350,7 @@ impl StreamState {
                         output_tokens: 0,
                     },
                     request_id: None,
+                    provider_name: None,
                 },
             }));
         }
@@ -810,6 +811,7 @@ fn normalize_response(
                 .map_or(0, |usage| usage.completion_tokens),
         },
         request_id: None,
+        provider_name: None,
     })
 }
 

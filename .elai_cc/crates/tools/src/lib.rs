@@ -331,12 +331,10 @@ impl GlobalToolRegistry {
         if mvp_tool_specs().iter().any(|spec| spec.name == name) {
             return execute_tool_with_enforcer(self.enforcer.as_ref(), name, input);
         }
-        self.plugin_tools
-            .iter()
-            .find(|tool| tool.definition().name == name)
-            .ok_or_else(|| format!("unsupported tool: {name}"))?
-            .execute(input)
-            .map_err(|error| error.to_string())
+        if let Some(plugin) = self.plugin_tools.iter().find(|tool| tool.definition().name == name) {
+            return plugin.execute(input).map_err(|error| error.to_string());
+        }
+        execute_tool_with_enforcer(self.enforcer.as_ref(), name, input)
     }
 
     fn searchable_tool_specs(&self) -> Vec<SearchableToolSpec> {
@@ -1151,6 +1149,31 @@ pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
     execute_tool_with_enforcer(None, name, input)
 }
 
+fn is_visibility_filtered_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with(".elai_cc/")
+        || normalized.starts_with(".elai_cc\\")
+        || normalized.contains("/.elai_cc/")
+        || normalized.contains("\\.elai_cc\\")
+        || normalized == ".elai_cc"
+        || normalized.ends_with("/rules.db")
+        || normalized == "rules.db"
+}
+
+const HIDDEN_PATH_PATTERNS: &[&str] = &[
+    ".elai_cc/**",
+    ".elai_cc/models/**",
+    "rules.db",
+];
+
+fn structured_error(error_code: &str, message: &str) -> String {
+    serde_json::json!({
+        "error": message,
+        "error_code": error_code,
+    })
+    .to_string()
+}
+
 fn execute_tool_with_enforcer(
     enforcer: Option<&PermissionEnforcer>,
     name: &str,
@@ -1163,22 +1186,49 @@ fn execute_tool_with_enforcer(
         }
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            from_value::<ReadFileInput>(input).and_then(run_read_file)
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                if is_visibility_filtered_path(path) {
+                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                }
+            }
+            from_value::<ReadFileInput>(input).and_then(run_read_file).map_err(|e| {
+                structured_error("file_error", &e)
+            })
         }
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                if is_visibility_filtered_path(path) {
+                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                }
+            }
             from_value::<WriteFileInput>(input).and_then(run_write_file)
         }
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                if is_visibility_filtered_path(path) {
+                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                }
+            }
             from_value::<EditFileInput>(input).and_then(run_edit_file)
         }
         "glob_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
+            if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
+                if is_visibility_filtered_path(pattern) {
+                    return Ok("[]".to_string());
+                }
+            }
             from_value::<GlobSearchInputValue>(input).and_then(run_glob_search)
         }
         "grep_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                if is_visibility_filtered_path(path) {
+                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                }
+            }
             from_value::<GrepSearchInput>(input).and_then(run_grep_search)
         }
         "WebFetch" => from_value::<WebFetchInput>(input).and_then(run_web_fetch),
@@ -1235,6 +1285,29 @@ fn execute_tool_with_enforcer(
         "MCP" => from_value::<McpToolInput>(input).and_then(run_mcp_tool),
         "TestingPermission" => {
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
+        }
+        "fsm_get_state" => {
+            Ok(serde_json::json!({"state": "IDLE", "phase": null}).to_string())
+        }
+        "fsm_transition" => {
+            let target = input
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match target {
+                "IDLE" | "EXECUTING" | "PLANNING" | "TESTING_FIRST" | "AUDITING"
+                | "MEMORIZING" | "COMPLETE" | "CONFIGURING" => {
+                    Ok(serde_json::json!({"state": target, "previous": "IDLE"}).to_string())
+                }
+                _ => Err(structured_error(
+                    "invalid_transition",
+                    &format!("invalid FSM target: {target}"),
+                )),
+            }
+        }
+        "list_hidden_paths" => {
+            let patterns: Vec<&str> = HIDDEN_PATH_PATTERNS.to_vec();
+            Ok(serde_json::json!(patterns).to_string())
         }
         _ => Err(format!("unsupported tool: {name}")),
     }
