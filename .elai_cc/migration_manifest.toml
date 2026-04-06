@@ -1,0 +1,496 @@
+# Migration Manifest - Phase 0
+# Action: KEEP = stays in target crate, STRIP = removed entirely,
+#         REPLACE = rewritten, EXTEND = expanded with new functionality,
+#         DEFERRED = decision postponed, STRIPPED = already removed this phase
+
+# --- telemetry crate (STRIP entire crate) ---
+[[file]]
+path = "crates/telemetry/src/lib.rs"
+action = "STRIP"
+source_crate = "telemetry"
+target_crate = ""
+rationale = "Fork-specific telemetry. Not needed for elai_cc."
+
+# --- compat-harness crate (STRIP entire crate) ---
+[[file]]
+path = "crates/compat-harness/src/lib.rs"
+action = "STRIP"
+source_crate = "compat-harness"
+target_crate = ""
+rationale = "Upstream compatibility shim. Not needed for elai_cc."
+
+# --- mock-anthropic-service crate (STRIP entire crate) ---
+[[file]]
+path = "crates/mock-anthropic-service/src/lib.rs"
+action = "STRIP"
+source_crate = "mock-anthropic-service"
+target_crate = ""
+rationale = "Test mock for anthropic API. Will be replaced by elai_cc test infrastructure."
+
+[[file]]
+path = "crates/mock-anthropic-service/src/main.rs"
+action = "STRIP"
+source_crate = "mock-anthropic-service"
+target_crate = ""
+rationale = "Binary entry for mock service."
+
+# --- api crate (KEEP -> providers) ---
+[[file]]
+path = "crates/api/src/client.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "API client logic moves to providers crate."
+
+[[file]]
+path = "crates/api/src/error.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "API error types."
+
+[[file]]
+path = "crates/api/src/lib.rs"
+action = "REPLACE"
+source_crate = "api"
+target_crate = "providers"
+rationale = "Re-exports rewritten for providers crate structure."
+
+[[file]]
+path = "crates/api/src/prompt_cache.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "Prompt caching logic."
+
+[[file]]
+path = "crates/api/src/providers/anthropic.rs"
+action = "EXTEND"
+source_crate = "api"
+target_crate = "providers"
+rationale = "Anthropic provider. Will be extended for elai_cc multi-provider support."
+
+[[file]]
+path = "crates/api/src/providers/mod.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "Provider module root."
+
+[[file]]
+path = "crates/api/src/providers/openai_compat.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "OpenAI-compatible provider."
+
+[[file]]
+path = "crates/api/src/sse.rs"
+action = "KEEP"
+source_crate = "api"
+target_crate = "providers"
+rationale = "SSE parsing for API streaming."
+
+[[file]]
+path = "crates/api/src/types.rs"
+action = "EXTEND"
+source_crate = "api"
+target_crate = "providers"
+rationale = "API types. TokenUsage import path changes in 0.4a."
+
+[[file]]
+path = "crates/api/tests/client_integration.rs"
+action = "STRIP"
+source_crate = "api"
+target_crate = ""
+rationale = "Integration tests depend on telemetry and mock-anthropic-service. Rewritten later."
+
+[[file]]
+path = "crates/api/tests/openai_compat_integration.rs"
+action = "STRIP"
+source_crate = "api"
+target_crate = ""
+rationale = "Integration test depends on mock-anthropic-service."
+
+[[file]]
+path = "crates/api/tests/provider_client_integration.rs"
+action = "STRIP"
+source_crate = "api"
+target_crate = ""
+rationale = "Integration test depends on mock-anthropic-service."
+
+# --- commands crate (KEEP -> cli) ---
+[[file]]
+path = "crates/commands/src/lib.rs"
+action = "REPLACE"
+source_crate = "commands"
+target_crate = "cli"
+rationale = "28+ slash commands. Audit in 0.2g classifies KEEP/STRIP subset. Absorbed into cli."
+
+# --- plugins crate (KEEP -> plugins) ---
+[[file]]
+path = "crates/plugins/src/hooks.rs"
+action = "KEEP"
+source_crate = "plugins"
+target_crate = "plugins"
+rationale = "Hook definitions. Already cfg-gated for Windows."
+
+[[file]]
+path = "crates/plugins/src/lib.rs"
+action = "KEEP"
+source_crate = "plugins"
+target_crate = "plugins"
+rationale = "Plugin system core. Already cfg-gated for Windows."
+
+# --- tools crate (KEEP -> tools) ---
+[[file]]
+path = "crates/tools/src/lane_completion.rs"
+action = "KEEP"
+source_crate = "tools"
+target_crate = "tools"
+rationale = "Lane completion logic."
+
+[[file]]
+path = "crates/tools/src/lib.rs"
+action = "KEEP"
+source_crate = "tools"
+target_crate = "tools"
+rationale = "Tool implementations. Already cfg-gated for Windows."
+
+# --- rusty-claude-cli crate (KEEP -> cli) ---
+[[file]]
+path = "crates/rusty-claude-cli/src/init.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "CLI initialization."
+
+[[file]]
+path = "crates/rusty-claude-cli/src/input.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "CLI input handling."
+
+[[file]]
+path = "crates/rusty-claude-cli/src/main.rs"
+action = "REPLACE"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "8615 LOC monolith. Target < 500 LOC post-strip. Major restructure."
+
+[[file]]
+path = "crates/rusty-claude-cli/src/render.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "Output rendering."
+
+[[file]]
+path = "crates/rusty-claude-cli/tests/cli_flags_and_config_defaults.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "CLI config tests."
+
+[[file]]
+path = "crates/rusty-claude-cli/tests/mock_parity_harness.rs"
+action = "STRIP"
+source_crate = "rusty-claude-cli"
+target_crate = ""
+rationale = "Depends on mock-anthropic-service which is stripped."
+
+[[file]]
+path = "crates/rusty-claude-cli/tests/output_format_contract.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "Output format contract tests."
+
+[[file]]
+path = "crates/rusty-claude-cli/tests/resume_slash_commands.rs"
+action = "KEEP"
+source_crate = "rusty-claude-cli"
+target_crate = "cli"
+rationale = "Slash command resume tests."
+
+# --- runtime crate files ---
+[[file]]
+path = "crates/runtime/src/bash.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Bash execution. Landed in orchestrator (planned: tools). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/bash_validation.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Bash validation. Landed in orchestrator (planned: tools). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/bootstrap.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "core"
+rationale = "Bootstrap phases. Leaf type, moves to core."
+
+[[file]]
+path = "crates/runtime/src/branch_lock.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Branch lock detection. Landed in orchestrator (planned: tools). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/compact.rs"
+action = "DEFERRED"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Context compaction. 30+ consumers in commands and main.rs. Defer to restructure."
+
+[[file]]
+path = "crates/runtime/src/config.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "core"
+rationale = "Configuration system. Core leaf type."
+
+[[file]]
+path = "crates/runtime/src/conversation.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Conversation loop. Orchestrator responsibility."
+
+[[file]]
+path = "crates/runtime/src/file_ops.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "File operation tools. Landed in orchestrator (planned: tools). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/green_contract.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "rules"
+rationale = "Green contract evaluation. Rules crate."
+
+[[file]]
+path = "crates/runtime/src/hooks.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "plugins"
+rationale = "Hook runner. Moves to plugins."
+
+[[file]]
+path = "crates/runtime/src/json.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "core"
+rationale = "JSON utilities. Core leaf."
+
+[[file]]
+path = "crates/runtime/src/lane_events.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Lane event types. Orchestrator responsibility."
+
+[[file]]
+path = "crates/runtime/src/lib.rs"
+action = "REPLACE"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Monolithic re-export file. Replaced by per-crate lib.rs files."
+
+[[file]]
+path = "crates/runtime/src/lsp_client.rs"
+action = "STRIP"
+source_crate = "runtime"
+target_crate = ""
+rationale = "LSP client. Not needed for elai_cc (not an IDE extension)."
+
+[[file]]
+path = "crates/runtime/src/mcp.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "MCP utilities."
+
+[[file]]
+path = "crates/runtime/src/mcp_client.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "MCP client bootstrap types."
+
+[[file]]
+path = "crates/runtime/src/mcp_lifecycle_hardened.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "MCP lifecycle management."
+
+[[file]]
+path = "crates/runtime/src/mcp_stdio.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "MCP stdio process management. 2944 LOC."
+
+[[file]]
+path = "crates/runtime/src/mcp_tool_bridge.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "MCP tool bridge."
+
+[[file]]
+path = "crates/runtime/src/oauth.rs"
+action = "DEFERRED"
+source_crate = "runtime"
+target_crate = "providers"
+rationale = "OAuth for claude.ai. Defer strip to 0.4a restructure: 20+ call sites in api/anthropic.rs and main.rs make in-place strip too risky."
+
+[[file]]
+path = "crates/runtime/src/permission_enforcer.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Permission enforcement."
+
+[[file]]
+path = "crates/runtime/src/permissions.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Permission types and policies."
+
+[[file]]
+path = "crates/runtime/src/plugin_lifecycle.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Plugin lifecycle. Landed in orchestrator (planned: plugins). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/policy_engine.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "rules"
+rationale = "Policy evaluation engine."
+
+[[file]]
+path = "crates/runtime/src/prompt.rs"
+action = "REPLACE"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "System prompt assembly. Audit for hardcoded prompts, then replace."
+
+[[file]]
+path = "crates/runtime/src/recovery_recipes.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Error recovery recipes."
+
+[[file]]
+path = "crates/runtime/src/remote.rs"
+action = "DEFERRED"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Upstream proxy bootstrap. Evaluate in step 0.2: KEEP if proxy logic useful, STRIP if claude-specific."
+
+[[file]]
+path = "crates/runtime/src/sandbox.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "core"
+rationale = "Sandbox config types. No crate:: imports. Clean leaf extraction."
+
+[[file]]
+path = "crates/runtime/src/session.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Session persistence."
+
+[[file]]
+path = "crates/runtime/src/session_control.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Session identity types. Landed in orchestrator (planned: core). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/sse.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "providers"
+rationale = "SSE parser. Moves with API to providers."
+
+[[file]]
+path = "crates/runtime/src/stale_branch.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Stale branch detection. Landed in orchestrator (planned: tools). Defer split to Phase 1."
+
+[[file]]
+path = "crates/runtime/src/summary_compression.rs"
+action = "STRIP"
+source_crate = "runtime"
+target_crate = ""
+rationale = "Summary compression for claude context. Stripped for elai_cc."
+
+[[file]]
+path = "crates/runtime/src/task_packet.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Task packet types. Evaluate for orchestrator or core."
+
+[[file]]
+path = "crates/runtime/src/task_registry.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Task registry."
+
+[[file]]
+path = "crates/runtime/src/team_cron_registry.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Team cron registry. Evaluate for orchestrator."
+
+[[file]]
+path = "crates/runtime/src/trust_resolver.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "rules"
+rationale = "Trust resolution. cfg(test) only. Rules crate."
+
+[[file]]
+path = "crates/runtime/src/usage.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "core"
+rationale = "TokenUsage + pricing used by api/types.rs and main.rs. Keep intact, extract to core in 0.4a."
+
+[[file]]
+path = "crates/runtime/src/worker_boot.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Worker boot and registry."
+
+[[file]]
+path = "crates/runtime/tests/integration_tests.rs"
+action = "KEEP"
+source_crate = "runtime"
+target_crate = "orchestrator"
+rationale = "Integration tests. Move with runtime to orchestrator."

@@ -1,0 +1,52 @@
+# Phase 0.5 — Post-Restructure Metrics
+# Recorded: 2026-04-07
+# Note: previous sessions only ran `cargo test --workspace` (fail-fast), which
+# stopped after cli's 1 failure. Full results require --no-fail-fast.
+
+compile_time_s = 0.14  # incremental (clean build ~26s)
+total_crates = 9
+
+# Full workspace test results (cargo test --workspace --no-fail-fast)
+test_pass = 578
+test_fail = 40
+test_fail_preexisting = 40  # all 40 failures confirmed pre-existing in old workspace (60 failures there)
+
+[test_per_crate]
+cli = { pass = 133, fail = 1 }
+core = { pass = 25, fail = 0 }
+orchestrator = { pass = 253, fail = 34 }
+plugins = { pass = 31, fail = 2 }
+providers = { pass = 56, fail = 3 }
+rules = { pass = 20, fail = 0 }
+tools = { pass = 60, fail = 0 }
+knowledge = { pass = 0, fail = 0 }
+reasoning = { pass = 0, fail = 0 }
+
+# Failure categories (all pre-existing):
+# - hooks (8): Windows shell escaping with echo/cmd
+# - mcp_stdio (19): subprocess spawning/framing on Windows
+# - conversation (3): hook integration tests
+# - mcp_tool_bridge (2): MCP subprocess routing
+# - prompt (2): instruction file discovery paths
+# - providers (3): SSE/HTTP integration tests
+# - plugins (2): hook process execution
+
+[loc_per_crate]
+core = 2806
+rules = 1035
+providers = 5508
+plugins = 3918
+orchestrator = 19437
+tools = 7528
+cli = 15005
+knowledge = 1
+reasoning = 1
+
+loc_total = 55239
+
+[comparison_to_old_workspace]
+old_test_pass = 611
+old_test_fail = 60
+old_test_ignored = 1
+delta_pass = -33  # lost: stripped crate tests (compat-harness, telemetry, mock-anthropic-service)
+delta_fail = -20  # reduced: stripped crate integration tests that also failed

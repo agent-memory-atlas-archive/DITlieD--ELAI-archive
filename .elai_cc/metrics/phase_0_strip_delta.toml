@@ -1,0 +1,36 @@
+[strip_delta]
+date = "2026-04-07"
+baseline_rs_files = 69
+remaining_rs_files = 63
+files_removed = 6
+baseline_loc = 61420
+remaining_loc = 57942
+loc_removed = 3478
+loc_added = 526
+net_loc_change = -2952
+tests_pass_plugins = 33
+tests_pass_tools = 60
+tests_removed = 0
+tests_broken_expected = 0
+tests_broken_bug = 0
+cargo_check_errors = 0
+cargo_check_warnings = 1
+
+[stripped_files]
+files = [
+    "crates/telemetry/src/lib.rs",
+    "crates/compat-harness/src/lib.rs",
+    "crates/mock-anthropic-service/src/lib.rs",
+    "crates/mock-anthropic-service/src/main.rs",
+    "crates/runtime/src/lsp_client.rs",
+    "crates/runtime/src/summary_compression.rs",
+    "crates/rusty-claude-cli/tests/mock_parity_harness.rs",
+]
+
+[absorbed]
+files = ["crates/runtime/src/telemetry_types.rs"]
+note = "telemetry crate absorbed into runtime as module (526 LOC)"
+
+[deferred]
+files = ["oauth.rs", "compact.rs", "usage.rs"]
+reason = "blast radius too large for in-place strip; defer to restructure phase"

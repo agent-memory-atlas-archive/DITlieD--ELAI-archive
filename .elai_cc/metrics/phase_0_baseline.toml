@@ -1,0 +1,12 @@
+[baseline]
+date = "2026-04-07"
+compile_time_s = 0.17
+cargo_check_errors = 0
+cargo_check_warnings = 0
+total_rs_files = 69
+total_loc = 61420
+test_pass_plugins = 33
+test_pass_tools = 60
+test_pass_total = 93
+workspace_members = 9
+crates = ["api", "commands", "compat-harness", "mock-anthropic-service", "plugins", "runtime", "rusty-claude-cli", "telemetry", "tools"]
