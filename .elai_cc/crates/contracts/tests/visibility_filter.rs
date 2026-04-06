@@ -66,4 +66,12 @@ fn elai_cc_dir_in_default_hidden_paths() {
         "CONTRACT: list_hidden_paths tool must exist — got: {:?}",
         result.err()
     );
+
+    let output = result.unwrap();
+    let paths: Vec<String> = serde_json::from_str(&output)
+        .expect("list_hidden_paths must return a JSON array of strings");
+    assert!(
+        paths.iter().any(|p| p.contains(".elai_cc")),
+        "CONTRACT: hidden paths must include .elai_cc pattern — got: {paths:?}"
+    );
 }

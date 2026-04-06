@@ -13,6 +13,7 @@ memory-bank/
 # All dot-folders in root (except .githooks and .elai_cc)
 .*/
 !.githooks/
+.githooks/.env
 !.elai_cc/
 
 # Hypothesis test cache

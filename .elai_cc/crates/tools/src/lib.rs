@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use elai_providers::{
@@ -1149,6 +1150,22 @@ pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
     execute_tool_with_enforcer(None, name, input)
 }
 
+struct FsmState {
+    current: String,
+    phase: Option<String>,
+}
+
+fn fsm_state() -> &'static Mutex<FsmState> {
+    use std::sync::OnceLock;
+    static STATE: OnceLock<Mutex<FsmState>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(FsmState {
+            current: "IDLE".to_string(),
+            phase: None,
+        })
+    })
+}
+
 fn is_visibility_filtered_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
     normalized.starts_with(".elai_cc/")
@@ -1156,6 +1173,7 @@ fn is_visibility_filtered_path(path: &str) -> bool {
         || normalized.contains("/.elai_cc/")
         || normalized.contains("\\.elai_cc\\")
         || normalized == ".elai_cc"
+        || normalized.ends_with("/.elai_cc")
         || normalized.ends_with("/rules.db")
         || normalized == "rules.db"
 }
@@ -1287,7 +1305,8 @@ fn execute_tool_with_enforcer(
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
         }
         "fsm_get_state" => {
-            Ok(serde_json::json!({"state": "IDLE", "phase": null}).to_string())
+            let state = fsm_state().lock().unwrap();
+            Ok(serde_json::json!({"state": state.current, "phase": state.phase}).to_string())
         }
         "fsm_transition" => {
             let target = input
@@ -1297,7 +1316,13 @@ fn execute_tool_with_enforcer(
             match target {
                 "IDLE" | "EXECUTING" | "PLANNING" | "TESTING_FIRST" | "AUDITING"
                 | "MEMORIZING" | "COMPLETE" | "CONFIGURING" => {
-                    Ok(serde_json::json!({"state": target, "previous": "IDLE"}).to_string())
+                    let mut state = fsm_state().lock().unwrap();
+                    let previous = state.current.clone();
+                    state.current = target.to_string();
+                    if let Some(phase) = input.get("phase").and_then(|v| v.as_str()) {
+                        state.phase = Some(phase.to_string());
+                    }
+                    Ok(serde_json::json!({"state": target, "previous": previous}).to_string())
                 }
                 _ => Err(structured_error(
                     "invalid_transition",
@@ -3831,7 +3856,7 @@ fn execute_tool_search(input: ToolSearchInput) -> ToolSearchOutput {
 }
 
 fn deferred_tool_specs() -> Vec<ToolSpec> {
-    mvp_tool_specs()
+    let mut specs: Vec<ToolSpec> = mvp_tool_specs()
         .into_iter()
         .filter(|spec| {
             !matches!(
@@ -3839,7 +3864,48 @@ fn deferred_tool_specs() -> Vec<ToolSpec> {
                 "bash" | "read_file" | "write_file" | "edit_file" | "glob_search" | "grep_search"
             )
         })
-        .collect()
+        .collect();
+    specs.extend(internal_tool_specs());
+    specs
+}
+
+fn internal_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        ToolSpec {
+            name: "fsm_get_state",
+            description: "Get the current FSM execution state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
+        ToolSpec {
+            name: "fsm_transition",
+            description: "Transition the FSM to a new state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string" },
+                    "phase": { "type": "string" }
+                },
+                "required": ["target"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::WorkspaceWrite,
+        },
+        ToolSpec {
+            name: "list_hidden_paths",
+            description: "List default hidden path patterns for visibility filtering.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
+    ]
 }
 
 fn search_tool_specs(query: &str, max_results: usize, specs: &[SearchableToolSpec]) -> Vec<String> {

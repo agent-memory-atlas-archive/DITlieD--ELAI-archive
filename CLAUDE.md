@@ -7,6 +7,7 @@ GRC trigger rules: MUST call mcp_think (not just status echo) when: (1) debuggin
 
 Hard rules
 
+Always commit and push after ending finishing a task.
 Do not delete templates (like Format:) on files inside memory-bank unless asked to do so.
 Anti-Slopsquatting: NEVER assume a dependency exists. Verify name, existence, and version via terminal before use. - and NEVER assume a architecture of something works the way you think it works, verify the real implementation code/plan.
 Context delegation: NEVER read plan files, memory-bank/, or context-package.md directly. Sub-agents do that. No exceptions.
