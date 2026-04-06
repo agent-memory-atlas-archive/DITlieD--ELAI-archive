@@ -4,16 +4,22 @@ workflow/
 # Baselines (local benchmarks)
 baselines/
 
-# Docs - ignore everything except specs/
-docs/*
-!docs/specs/
-!docs/specs/**
+# Docs
+docs/
 
 # Memory bank (ephemeral per-session context)
 memory-bank/
 
+# All dot-folders in root (except .githooks and .elai_cc)
+.*/
+!.githooks/
+!.elai_cc/
+
 # Hypothesis test cache
 .hypothesis/
+
+# Rust build artifacts
+target/
 
 # Python
 __pycache__/
