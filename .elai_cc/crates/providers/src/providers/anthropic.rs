@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use elai_core::config::OAuthConfig;
 use elai_core::format_usd;
@@ -551,7 +551,7 @@ impl AuthSource {
 pub fn oauth_token_is_expired(token_set: &OAuthTokenSet) -> bool {
     token_set
         .expires_at
-        .is_some_and(|expires_at| expires_at <= now_unix_timestamp())
+        .is_some_and(|expires_at| expires_at <= now_unix_timestamp(&elai_core::OsClock))
 }
 
 pub fn resolve_saved_oauth_token(config: &OAuthConfig) -> Result<Option<OAuthTokenSet>, ApiError> {
@@ -665,8 +665,9 @@ fn load_saved_oauth_token() -> Result<Option<OAuthTokenSet>, ApiError> {
     }))
 }
 
-fn now_unix_timestamp() -> u64 {
-    SystemTime::now()
+fn now_unix_timestamp(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
 }
@@ -864,11 +865,11 @@ use elai_core::config::OAuthConfig;
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn temp_config_home() -> std::path::PathBuf {
+    fn temp_config_home() -> std::path::PathBuf { // TEST_KEEP
         std::env::temp_dir().join(format!(
             "api-oauth-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            SystemTime::now() // TEST_KEEP
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -994,7 +995,7 @@ use elai_core::config::OAuthConfig;
         save_oauth_credentials(&crate::oauth::OAuthTokenSet {
             access_token: "saved-access-token".to_string(),
             refresh_token: Some("refresh".to_string()),
-            expires_at: Some(now_unix_timestamp() + 300),
+            expires_at: Some(now_unix_timestamp(&elai_core::OsClock) + 300),
             scopes: vec!["scope:a".to_string()],
         })
         .expect("save oauth credentials");
@@ -1018,7 +1019,7 @@ use elai_core::config::OAuthConfig;
         assert!(!oauth_token_is_expired(&OAuthTokenSet {
             access_token: "access-token".to_string(),
             refresh_token: None,
-            expires_at: Some(now_unix_timestamp() + 60),
+            expires_at: Some(now_unix_timestamp(&elai_core::OsClock) + 60),
             scopes: Vec::new(),
         }));
     }
@@ -1065,7 +1066,7 @@ use elai_core::config::OAuthConfig;
         save_oauth_credentials(&crate::oauth::OAuthTokenSet {
             access_token: "saved-access-token".to_string(),
             refresh_token: Some("refresh".to_string()),
-            expires_at: Some(now_unix_timestamp() + 300),
+            expires_at: Some(now_unix_timestamp(&elai_core::OsClock) + 300),
             scopes: vec!["scope:a".to_string()],
         })
         .expect("save oauth credentials");

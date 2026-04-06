@@ -6,12 +6,13 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-fn now_secs() -> u64 {
-    SystemTime::now()
+fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -67,7 +68,7 @@ impl TeamRegistry {
     pub fn create(&self, name: &str, task_ids: Vec<String>) -> Team {
         let mut inner = self.inner.lock().expect("team registry lock poisoned");
         inner.counter += 1;
-        let ts = now_secs();
+        let ts = now_secs(&elai_core::OsClock);
         let team_id = format!("team_{:08x}_{}", ts, inner.counter);
         let team = Team {
             team_id: team_id.clone(),
@@ -98,7 +99,7 @@ impl TeamRegistry {
             .get_mut(team_id)
             .ok_or_else(|| format!("team not found: {team_id}"))?;
         team.status = TeamStatus::Deleted;
-        team.updated_at = now_secs();
+        team.updated_at = now_secs(&elai_core::OsClock);
         Ok(team.clone())
     }
 
@@ -152,7 +153,7 @@ impl CronRegistry {
     pub fn create(&self, schedule: &str, prompt: &str, description: Option<&str>) -> CronEntry {
         let mut inner = self.inner.lock().expect("cron registry lock poisoned");
         inner.counter += 1;
-        let ts = now_secs();
+        let ts = now_secs(&elai_core::OsClock);
         let cron_id = format!("cron_{:08x}_{}", ts, inner.counter);
         let entry = CronEntry {
             cron_id: cron_id.clone(),
@@ -200,7 +201,7 @@ impl CronRegistry {
             .get_mut(cron_id)
             .ok_or_else(|| format!("cron not found: {cron_id}"))?;
         entry.enabled = false;
-        entry.updated_at = now_secs();
+        entry.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
     }
 
@@ -211,9 +212,9 @@ impl CronRegistry {
             .entries
             .get_mut(cron_id)
             .ok_or_else(|| format!("cron not found: {cron_id}"))?;
-        entry.last_run_at = Some(now_secs());
+        entry.last_run_at = Some(now_secs(&elai_core::OsClock));
         entry.run_count += 1;
-        entry.updated_at = now_secs();
+        entry.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
     }
 

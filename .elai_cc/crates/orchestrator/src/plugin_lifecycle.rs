@@ -1,13 +1,14 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::RuntimePluginConfig;
 use crate::mcp_tool_bridge::{McpResourceInfo, McpToolInfo};
 
-fn now_secs() -> u64 {
-    SystemTime::now()
+fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -129,7 +130,7 @@ impl PluginHealthcheck {
             plugin_name: plugin_name.into(),
             state,
             servers,
-            last_check: now_secs(),
+            last_check: now_secs(&elai_core::OsClock),
         }
     }
 
@@ -269,7 +270,7 @@ mod tests {
                     plugin_name: self.plugin_name.clone(),
                     state: PluginState::Stopped,
                     servers: self.healthcheck.servers.clone(),
-                    last_check: now_secs(),
+                    last_check: now_secs(&elai_core::OsClock),
                 }
             } else {
                 self.healthcheck.clone()

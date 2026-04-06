@@ -1,11 +1,14 @@
 #![allow(clippy::unnested_or_patterns, clippy::map_unwrap_or)]
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
+
+use elai_core::ClockProvider;
 
 use serde::{Deserialize, Serialize};
 
-fn now_secs() -> u64 {
-    SystemTime::now()
+fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -89,7 +92,7 @@ impl McpErrorSurface {
             message: message.into(),
             context,
             recoverable,
-            timestamp: now_secs(),
+            timestamp: now_secs(&elai_core::OsClock),
         }
     }
 }
@@ -188,7 +191,7 @@ impl McpLifecycleState {
 
     fn record_phase(&mut self, phase: McpLifecyclePhase) {
         self.current_phase = Some(phase);
-        self.phase_timestamps.insert(phase, now_secs());
+        self.phase_timestamps.insert(phase, now_secs(&elai_core::OsClock));
     }
 
     fn record_error(&mut self, error: McpErrorSurface) {
@@ -293,7 +296,8 @@ impl McpLifecycleValidator {
     }
 
     pub fn run_phase(&mut self, phase: McpLifecyclePhase) -> McpPhaseResult {
-        let started = Instant::now();
+        let clock = elai_core::OsClock;
+        let started = clock.now();
 
         if let Some(current_phase) = self.state.current_phase() {
             if current_phase == McpLifecyclePhase::ErrorSurfacing
@@ -337,7 +341,7 @@ impl McpLifecycleValidator {
         self.state.record_phase(phase);
         let result = McpPhaseResult::Success {
             phase,
-            duration: started.elapsed(),
+            duration: clock.elapsed_since(started),
         };
         self.state.record_result(result.clone());
         result

@@ -509,8 +509,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_dir() -> std::path::PathBuf {
-        let nanos = SystemTime::now()
+    fn temp_dir() -> std::path::PathBuf { // TEST_KEEP
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();

@@ -22,7 +22,9 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
+
+use elai_core::ClockProvider;
 
 use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
@@ -3755,7 +3757,8 @@ fn render_session_list(active_session_id: &str) -> Result<String, Box<dyn std::e
 }
 
 fn format_session_modified_age(modified_epoch_millis: u128) -> String {
-    let now = std::time::SystemTime::now()
+    let now = elai_core::OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .map_or(modified_epoch_millis, |duration| duration.as_millis());
@@ -3782,7 +3785,8 @@ fn write_session_clear_backup(
 }
 
 fn session_clear_backup_path(session_path: &Path) -> PathBuf {
-    let timestamp = std::time::SystemTime::now()
+    let timestamp = elai_core::OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .map_or(0, |duration| duration.as_millis());
@@ -4751,7 +4755,8 @@ enum InternalPromptProgressEvent {
 struct InternalPromptProgressShared {
     state: Mutex<InternalPromptProgressState>,
     output_lock: Mutex<()>,
-    started_at: Instant,
+    clock: elai_core::OsClock,
+    started_at: elai_core::LogicalInstant,
 }
 
 #[derive(Debug, Clone)]
@@ -4779,7 +4784,8 @@ impl InternalPromptProgressReporter {
                     saw_final_text: false,
                 }),
                 output_lock: Mutex::new(()),
-                started_at: Instant::now(),
+                clock: elai_core::OsClock,
+                started_at: elai_core::OsClock.now(),
             }),
         }
     }
@@ -4883,7 +4889,7 @@ impl InternalPromptProgressReporter {
     }
 
     fn elapsed(&self) -> Duration {
-        self.shared.started_at.elapsed()
+        self.shared.clock.elapsed_since(self.shared.started_at)
     }
 
     fn write_line(&self, line: &str) {
@@ -6455,8 +6461,8 @@ mod tests {
         .expect("plugin tool registry should build")
     }
 
-    fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
+    fn temp_dir() -> PathBuf { // TEST_KEEP
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
@@ -7815,8 +7821,8 @@ UU conflicted.rs",
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn temp_workspace(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
+    fn temp_workspace(label: &str) -> PathBuf { // TEST_KEEP
+        let nanos = std::time::SystemTime::now() // TEST_KEEP
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();

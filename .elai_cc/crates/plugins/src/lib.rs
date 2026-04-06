@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1125,7 +1125,7 @@ impl PluginManager {
             let _ = fs::remove_dir_all(&staged_source);
         }
 
-        let now = unix_time_ms();
+        let now = unix_time_ms(&elai_core::OsClock);
         let record = InstalledPluginRecord {
             kind: PluginKind::External,
             id: plugin_id.clone(),
@@ -1211,7 +1211,7 @@ impl PluginManager {
         let updated_record = InstalledPluginRecord {
             version: manifest.version.clone(),
             description: manifest.description,
-            updated_at_unix_ms: unix_time_ms(),
+            updated_at_unix_ms: unix_time_ms(&elai_core::OsClock),
             ..record.clone()
         };
         registry
@@ -1366,7 +1366,7 @@ impl PluginManager {
             let plugin_id = plugin_id(&manifest.name, BUNDLED_MARKETPLACE);
             active_bundled_ids.insert(plugin_id.clone());
             let install_path = install_root.join(sanitize_plugin_id(&plugin_id));
-            let now = unix_time_ms();
+            let now = unix_time_ms(&elai_core::OsClock);
             let existing_record = registry.plugins.get(&plugin_id);
             let installed_copy_is_valid =
                 install_path.exists() && load_plugin_from_directory(&install_path).is_ok();
@@ -2093,7 +2093,7 @@ fn materialize_source(
     match source {
         PluginInstallSource::LocalPath { path } => Ok(path.clone()),
         PluginInstallSource::GitUrl { url } => {
-            let destination = temp_root.join(format!("plugin-{}", unix_time_ms()));
+            let destination = temp_root.join(format!("plugin-{}", unix_time_ms(&elai_core::OsClock)));
             let output = Command::new("git")
                 .arg("clone")
                 .arg("--depth")
@@ -2151,8 +2151,9 @@ fn describe_install_source(source: &PluginInstallSource) -> String {
     }
 }
 
-fn unix_time_ms() -> u128 {
-    SystemTime::now()
+fn unix_time_ms(clock: &dyn elai_core::ClockProvider) -> u128 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_millis()
@@ -2210,8 +2211,8 @@ fn ensure_object<'a>(root: &'a mut Map<String, Value>, key: &str) -> &'a mut Map
 mod tests {
     use super::*;
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
+    fn temp_dir(label: &str) -> PathBuf { // TEST_KEEP
+        let nanos = std::time::SystemTime::now() // TEST_KEEP
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();

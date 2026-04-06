@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use elai_core::ClockProvider;
 
 use elai_providers::{
     max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
@@ -2568,7 +2570,8 @@ struct SearchHit {
 }
 
 fn execute_web_fetch(input: &WebFetchInput) -> Result<WebFetchOutput, String> {
-    let started = Instant::now();
+    let clock = elai_core::OsClock;
+    let started = clock.now();
     let client = build_http_client()?;
     let request_url = normalize_fetch_url(&input.url)?;
     let response = client
@@ -2596,13 +2599,14 @@ fn execute_web_fetch(input: &WebFetchInput) -> Result<WebFetchOutput, String> {
         code,
         code_text,
         result,
-        duration_ms: started.elapsed().as_millis(),
+        duration_ms: clock.elapsed_since(started).as_millis(),
         url: final_url,
     })
 }
 
 fn execute_web_search(input: &WebSearchInput) -> Result<WebSearchOutput, String> {
-    let started = Instant::now();
+    let clock = elai_core::OsClock;
+    let started = clock.now();
     let client = build_http_client()?;
     let search_url = build_search_url(&input.query)?;
     let response = client
@@ -2651,7 +2655,7 @@ fn execute_web_search(input: &WebSearchInput) -> Result<WebSearchOutput, String>
                 content: hits,
             },
         ],
-        duration_seconds: started.elapsed().as_secs_f64(),
+        duration_seconds: clock.elapsed_since(started).as_secs_f64(),
     })
 }
 
@@ -4027,7 +4031,8 @@ fn agent_store_dir() -> Result<std::path::PathBuf, String> {
 }
 
 fn make_agent_id() -> String {
-    let nanos = std::time::SystemTime::now()
+    let nanos = elai_core::OsClock
+        .system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
@@ -4071,7 +4076,8 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
 }
 
 fn iso8601_now() -> String {
-    std::time::SystemTime::now()
+    elai_core::OsClock
+        .system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -4516,7 +4522,8 @@ fn execute_repl(input: ReplInput) -> Result<ReplOutput, String> {
         return Err(String::from("code must not be empty"));
     }
     let runtime = resolve_repl_runtime(&input.language)?;
-    let started = Instant::now();
+    let clock = elai_core::OsClock;
+    let started = clock.now();
     let mut process = Command::new(runtime.program);
     process
         .args(runtime.args)
@@ -4537,7 +4544,7 @@ fn execute_repl(input: ReplInput) -> Result<ReplOutput, String> {
                     .wait_with_output()
                     .map_err(|error| error.to_string())?;
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
+            if clock.elapsed_since(started) >= Duration::from_millis(timeout_ms) {
                 child.kill().map_err(|error| error.to_string())?;
                 child
                     .wait_with_output()
@@ -4561,7 +4568,7 @@ fn execute_repl(input: ReplInput) -> Result<ReplOutput, String> {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         exit_code: output.status.code().unwrap_or(1),
-        duration_ms: started.elapsed().as_millis(),
+        duration_ms: clock.elapsed_since(started).as_millis(),
     })
 }
 
@@ -5005,7 +5012,8 @@ fn execute_shell_command(
 
     if let Some(timeout_ms) = timeout {
         let mut child = process.spawn()?;
-        let started = Instant::now();
+        let clock = elai_core::OsClock;
+        let started = clock.now();
         loop {
             if let Some(status) = child.try_wait()? {
                 let output = child.wait_with_output()?;
@@ -5030,7 +5038,7 @@ fn execute_shell_command(
                     sandbox_status: None,
                 });
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
+            if clock.elapsed_since(started) >= Duration::from_millis(timeout_ms) {
                 let _ = child.kill();
                 let output = child.wait_with_output()?;
                 let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -5180,8 +5188,8 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn temp_path(name: &str) -> PathBuf {
-        let unique = std::time::SystemTime::now()
+    fn temp_path(name: &str) -> PathBuf { // TEST_KEEP
+        let unique = std::time::SystemTime::now() // TEST_KEEP
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
@@ -6845,8 +6853,8 @@ mod tests {
     }
 
     #[test]
-    fn sleep_waits_and_reports_duration() {
-        let started = std::time::Instant::now();
+    fn sleep_waits_and_reports_duration() { // TEST_KEEP
+        let started = std::time::Instant::now(); // TEST_KEEP
         let result =
             execute_tool("Sleep", &json!({"duration_ms": 20})).expect("Sleep should succeed");
         let elapsed = started.elapsed();
@@ -6875,10 +6883,10 @@ mod tests {
     }
 
     #[test]
-    fn brief_returns_sent_message_and_attachment_metadata() {
+    fn brief_returns_sent_message_and_attachment_metadata() { // TEST_KEEP
         let attachment = std::env::temp_dir().join(format!(
             "clawd-brief-{}.png",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -6903,13 +6911,13 @@ mod tests {
     }
 
     #[test]
-    fn config_reads_and_writes_supported_values() {
+    fn config_reads_and_writes_supported_values() { // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
             "clawd-config-{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -6969,13 +6977,13 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_exit_plan_mode_round_trip_existing_local_override() {
+    fn enter_and_exit_plan_mode_round_trip_existing_local_override() { // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
             "clawd-plan-mode-{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -7042,13 +7050,13 @@ mod tests {
     }
 
     #[test]
-    fn exit_plan_mode_clears_override_when_enter_created_it_from_empty_local_state() {
+    fn exit_plan_mode_clears_override_when_enter_created_it_from_empty_local_state() { // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
             "clawd-plan-mode-empty-{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -7165,13 +7173,13 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn powershell_runs_via_stub_shell() {
+    fn powershell_runs_via_stub_shell() { // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "clawd-pwsh-bin-{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -7221,14 +7229,14 @@ printf 'pwsh:%s' "$1"
     }
 
     #[test]
-    fn powershell_errors_when_shell_is_missing() {
+    fn powershell_errors_when_shell_is_missing() { // TEST_KEEP
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let original_path = std::env::var("PATH").unwrap_or_default();
         let empty_dir = std::env::temp_dir().join(format!(
             "clawd-empty-bin-{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()

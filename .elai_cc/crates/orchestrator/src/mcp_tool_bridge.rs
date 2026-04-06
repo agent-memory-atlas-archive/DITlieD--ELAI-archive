@@ -325,9 +325,9 @@ mod tests {
         ConfigSource, McpServerConfig, McpStdioServerConfig, ScopedMcpServerConfig,
     };
 
-    fn temp_dir() -> PathBuf {
+    fn temp_dir() -> PathBuf { // TEST_KEEP
         static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();

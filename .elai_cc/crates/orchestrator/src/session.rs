@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::json::{JsonError, JsonValue};
 use crate::usage::TokenUsage;
@@ -132,7 +132,7 @@ impl From<JsonError> for SessionError {
 impl Session {
     #[must_use]
     pub fn new() -> Self {
-        let now = current_time_millis();
+        let now = current_time_millis(&elai_core::OsClock);
         Self {
             version: SESSION_VERSION,
             session_id: generate_session_id(),
@@ -213,7 +213,7 @@ impl Session {
 
     #[must_use]
     pub fn fork(&self, branch_name: Option<String>) -> Self {
-        let now = current_time_millis();
+        let now = current_time_millis(&elai_core::OsClock);
         Self {
             version: self.version,
             session_id: generate_session_id(),
@@ -282,7 +282,7 @@ impl Session {
             .iter()
             .map(ConversationMessage::from_json)
             .collect::<Result<Vec<_>, _>>()?;
-        let now = current_time_millis();
+        let now = current_time_millis(&elai_core::OsClock);
         let session_id = object
             .get("session_id")
             .and_then(JsonValue::as_str)
@@ -380,7 +380,7 @@ impl Session {
             }
         }
 
-        let now = current_time_millis();
+        let now = current_time_millis(&elai_core::OsClock);
         Ok(Self {
             version,
             session_id: session_id.unwrap_or_else(generate_session_id),
@@ -453,7 +453,7 @@ impl Session {
     }
 
     fn touch(&mut self) {
-        self.updated_at_ms = current_time_millis();
+        self.updated_at_ms = current_time_millis(&elai_core::OsClock);
     }
 }
 
@@ -836,15 +836,16 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
     })
 }
 
-fn current_time_millis() -> u64 {
-    SystemTime::now()
+fn current_time_millis(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
 
 fn generate_session_id() -> String {
-    let millis = current_time_millis();
+    let millis = current_time_millis(&elai_core::OsClock);
     let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("session-{millis}-{counter}")
 }
@@ -866,7 +867,7 @@ fn temporary_path_for(path: &Path) -> PathBuf {
         .unwrap_or("session");
     path.with_file_name(format!(
         "{file_name}.tmp-{}-{}",
-        current_time_millis(),
+        current_time_millis(&elai_core::OsClock),
         SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
     ))
 }
@@ -888,7 +889,7 @@ fn rotated_log_path(path: &Path) -> PathBuf {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("session");
-    path.with_file_name(format!("{stem}.rot-{}.jsonl", current_time_millis()))
+    path.with_file_name(format!("{stem}.rot-{}.jsonl", current_time_millis(&elai_core::OsClock)))
 }
 
 fn cleanup_rotated_logs(path: &Path) -> Result<(), SessionError> {
@@ -1206,8 +1207,8 @@ mod tests {
         assert!(error.to_string().contains("unsupported block type"));
     }
 
-    fn temp_session_path(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
+    fn temp_session_path(label: &str) -> PathBuf { // TEST_KEEP
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();

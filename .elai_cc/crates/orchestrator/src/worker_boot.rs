@@ -14,12 +14,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-fn now_secs() -> u64 {
-    SystemTime::now()
+fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -167,7 +168,7 @@ impl WorkerRegistry {
     ) -> Worker {
         let mut inner = self.inner.lock().expect("worker registry lock poisoned");
         inner.counter += 1;
-        let ts = now_secs();
+        let ts = now_secs(&elai_core::OsClock);
         let worker_id = format!("worker_{:08x}_{}", ts, inner.counter);
         let trust_auto_resolve = trusted_roots
             .iter()
@@ -218,7 +219,7 @@ impl WorkerRegistry {
             worker.last_error = Some(WorkerFailure {
                 kind: WorkerFailureKind::TrustGate,
                 message: "worker boot blocked on trust prompt".to_string(),
-                created_at: now_secs(),
+                created_at: now_secs(&elai_core::OsClock),
             });
             push_event(
                 worker,
@@ -279,7 +280,7 @@ impl WorkerRegistry {
             worker.last_error = Some(WorkerFailure {
                 kind: WorkerFailureKind::PromptDelivery,
                 message,
-                created_at: now_secs(),
+                created_at: now_secs(&elai_core::OsClock),
             });
             worker.prompt_in_flight = false;
             push_event(
@@ -500,7 +501,7 @@ impl WorkerRegistry {
             worker.last_error = Some(WorkerFailure {
                 kind: WorkerFailureKind::Provider,
                 message,
-                created_at: now_secs(),
+                created_at: now_secs(&elai_core::OsClock),
             });
             worker.status = WorkerStatus::Failed;
             worker.prompt_in_flight = false;
@@ -557,7 +558,7 @@ fn push_event(
     detail: Option<String>,
     payload: Option<WorkerEventPayload>,
 ) {
-    let timestamp = now_secs();
+    let timestamp = now_secs(&elai_core::OsClock);
     let seq = worker.events.len() as u64 + 1;
     worker.updated_at = timestamp;
     worker.events.push(WorkerEvent {

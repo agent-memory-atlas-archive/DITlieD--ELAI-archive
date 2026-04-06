@@ -487,11 +487,11 @@ mod tests {
         test_env_lock()
     }
 
-    fn temp_config_home() -> std::path::PathBuf {
+    fn temp_config_home() -> std::path::PathBuf { // TEST_KEEP
         std::env::temp_dir().join(format!(
             "runtime-oauth-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            SystemTime::now() // TEST_KEEP
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()

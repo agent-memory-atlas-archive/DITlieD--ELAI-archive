@@ -1453,8 +1453,8 @@ mod tests {
         assert!(runtime.session().fork.is_none());
     }
 
-    fn temp_session_path(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
+    fn temp_session_path(label: &str) -> PathBuf { // TEST_KEEP
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();

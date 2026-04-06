@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -167,7 +167,7 @@ impl PromptCache {
             return None;
         }
 
-        let expired = now_unix_secs().saturating_sub(entry.cached_at_unix_secs) >= ttl.as_secs();
+        let expired = now_unix_secs(&elai_core::OsClock).saturating_sub(entry.cached_at_unix_secs) >= ttl.as_secs();
         let mut inner = self.lock();
         inner.stats.last_completion_cache_key = Some(request_hash.clone());
         if expired {
@@ -281,7 +281,7 @@ impl TrackedPromptState {
     fn from_usage(request: &MessageRequest, usage: &Usage) -> Self {
         let hashes = RequestFingerprints::from_request(request);
         Self {
-            observed_at_unix_secs: now_unix_secs(),
+            observed_at_unix_secs: now_unix_secs(&elai_core::OsClock),
             fingerprint_version: current_fingerprint_version(),
             model_hash: hashes.model,
             system_hash: hashes.system,
@@ -410,7 +410,7 @@ fn write_completion_entry(
 ) {
     let _ = ensure_cache_dirs(paths);
     let entry = CompletionCacheEntry {
-        cached_at_unix_secs: now_unix_secs(),
+        cached_at_unix_secs: now_unix_secs(&elai_core::OsClock),
         fingerprint_version: current_fingerprint_version(),
         response: response.clone(),
     };
@@ -479,8 +479,9 @@ fn base_cache_root() -> PathBuf {
     std::env::temp_dir().join("claude-prompt-cache")
 }
 
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
+fn now_unix_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
 }
@@ -591,7 +592,7 @@ mod tests {
         let temp_root = std::env::temp_dir().join(format!(
             "prompt-cache-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            SystemTime::now() // TEST_KEEP
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -629,7 +630,7 @@ mod tests {
         let temp_root = std::env::temp_dir().join(format!(
             "prompt-cache-distinct-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            SystemTime::now() // TEST_KEEP
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()
@@ -654,7 +655,7 @@ mod tests {
         let temp_root = std::env::temp_dir().join(format!(
             "prompt-cache-expired-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            SystemTime::now() // TEST_KEEP
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
                 .as_nanos()

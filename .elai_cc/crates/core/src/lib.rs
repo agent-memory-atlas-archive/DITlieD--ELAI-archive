@@ -1,5 +1,7 @@
 mod bootstrap;
+pub mod clock;
 pub mod config;
+pub mod entropy;
 pub mod json;
 pub mod sandbox;
 mod usage;
@@ -23,3 +25,42 @@ pub use sandbox::{
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };
+
+// --- Entropy quarantine: all raw time/entropy access goes through these ---
+pub use clock::{ClockProvider, LogicalInstant, OsClock, SeededClock};
+pub use entropy::{EntropySource, OsEntropy, SeededRng};
+
+use std::sync::{Arc, Mutex};
+
+/// Process-wide context carrying deterministic time and entropy.
+/// Created once at startup; passed via Arc clone.
+#[derive(Clone)]
+pub struct RuntimeContext {
+    clock: Arc<dyn ClockProvider>,
+    entropy: Arc<Mutex<dyn EntropySource>>,
+}
+
+impl RuntimeContext {
+    pub fn new(
+        clock: Arc<dyn ClockProvider>,
+        entropy: Arc<Mutex<dyn EntropySource>>,
+    ) -> Self {
+        Self { clock, entropy }
+    }
+
+    /// Production default: OsClock + OsEntropy.
+    pub fn os_default() -> Self {
+        Self {
+            clock: Arc::new(OsClock),
+            entropy: Arc::new(Mutex::new(OsEntropy)),
+        }
+    }
+
+    pub fn clock(&self) -> &dyn ClockProvider {
+        &*self.clock
+    }
+
+    pub fn entropy(&self) -> &Arc<Mutex<dyn EntropySource>> {
+        &self.entropy
+    }
+}

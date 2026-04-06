@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -311,7 +311,7 @@ impl SessionTracer {
             session_id: self.session_id.clone(),
             sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
             name: name.into(),
-            timestamp_ms: current_timestamp_ms(),
+            timestamp_ms: current_timestamp_ms(&elai_core::OsClock),
             attributes,
         };
         self.sink.record(TelemetryEvent::SessionTrace(record));
@@ -418,8 +418,9 @@ fn merge_trace_fields(
     attributes
 }
 
-fn current_timestamp_ms() -> u64 {
-    SystemTime::now()
+fn current_timestamp_ms(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
@@ -510,7 +511,7 @@ mod tests {
     #[test]
     fn jsonl_sink_persists_events() {
         let path =
-            std::env::temp_dir().join(format!("telemetry-jsonl-{}.log", current_timestamp_ms()));
+            std::env::temp_dir().join(format!("telemetry-jsonl-{}.log", current_timestamp_ms(&elai_core::OsClock)));
         let sink = JsonlTelemetrySink::new(&path).expect("sink should create file");
 
         sink.record(TelemetryEvent::Analytics(

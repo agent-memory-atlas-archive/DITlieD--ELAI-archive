@@ -340,8 +340,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
+    fn temp_dir() -> PathBuf { // TEST_KEEP
+        let nanos = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
@@ -362,12 +362,12 @@ mod tests {
         session
     }
 
-    fn wait_for_next_millisecond() {
-        let start = SystemTime::now()
+    fn wait_for_next_millisecond() { // TEST_KEEP
+        let start = SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_millis();
-        while SystemTime::now()
+        while SystemTime::now() // TEST_KEEP
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_millis()

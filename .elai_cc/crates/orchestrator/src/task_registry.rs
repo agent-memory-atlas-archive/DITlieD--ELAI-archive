@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -63,8 +63,9 @@ struct RegistryInner {
     counter: u64,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
+fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
@@ -100,7 +101,7 @@ impl TaskRegistry {
     ) -> Task {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         inner.counter += 1;
-        let ts = now_secs();
+        let ts = now_secs(&elai_core::OsClock);
         let task_id = format!("task_{:08x}_{}", ts, inner.counter);
         let task = Task {
             task_id: task_id.clone(),
@@ -151,7 +152,7 @@ impl TaskRegistry {
         }
 
         task.status = TaskStatus::Stopped;
-        task.updated_at = now_secs();
+        task.updated_at = now_secs(&elai_core::OsClock);
         Ok(task.clone())
     }
 
@@ -165,9 +166,9 @@ impl TaskRegistry {
         task.messages.push(TaskMessage {
             role: String::from("user"),
             content: message.to_owned(),
-            timestamp: now_secs(),
+            timestamp: now_secs(&elai_core::OsClock),
         });
-        task.updated_at = now_secs();
+        task.updated_at = now_secs(&elai_core::OsClock);
         Ok(task.clone())
     }
 
@@ -187,7 +188,7 @@ impl TaskRegistry {
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
         task.output.push_str(output);
-        task.updated_at = now_secs();
+        task.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
     }
 
@@ -198,7 +199,7 @@ impl TaskRegistry {
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
         task.status = status;
-        task.updated_at = now_secs();
+        task.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
     }
 
@@ -209,7 +210,7 @@ impl TaskRegistry {
             .get_mut(task_id)
             .ok_or_else(|| format!("task not found: {task_id}"))?;
         task.team_id = Some(team_id.to_owned());
-        task.updated_at = now_secs();
+        task.updated_at = now_secs(&elai_core::OsClock);
         Ok(())
     }
 
