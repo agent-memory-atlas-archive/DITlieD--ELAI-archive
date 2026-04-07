@@ -93,28 +93,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // -----------------------------------------------------------------
-    // Test-only types (will move to prod code in Step 4)
+    // Query validation now lives in crate::query_validator (Phase 1I.3).
+    // Tests below updated to use the production QueryValidator.
     // -----------------------------------------------------------------
 
-    #[derive(Debug, PartialEq, Eq)]
-    enum ValidationError {
-        EmptyQuery,
-        TooLong,
-        InvalidChars,
-    }
-
-    fn validate_query(q: &str) -> Result<(), ValidationError> {
-        if q.is_empty() {
-            return Err(ValidationError::EmptyQuery);
-        }
-        if q.len() > 10_000 {
-            return Err(ValidationError::TooLong);
-        }
-        if q.bytes().any(|b| b == 0 || (b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')) {
-            return Err(ValidationError::InvalidChars);
-        }
-        Ok(())
-    }
+    use crate::query_validator::{QueryValidator, QueryValidationError};
 
     // Mock embed session for tests that need controllable embed behavior
     struct MockEmbedSession {
@@ -298,24 +281,29 @@ mod tests {
 
     #[test]
     fn test_query_validation_empty() {
-        let result = validate_query("");
-        assert_eq!(result, Err(ValidationError::EmptyQuery));
+        let result = QueryValidator::validate("");
+        assert_eq!(result, Err(QueryValidationError::Empty));
     }
 
     #[test]
     fn test_query_validation_oversized() {
         let big_query = "x".repeat(10_001);
-        let result = validate_query(&big_query);
-        assert_eq!(result, Err(ValidationError::TooLong));
+        assert!(matches!(
+            QueryValidator::validate(&big_query),
+            Err(QueryValidationError::TooLong { .. })
+        ));
     }
 
     #[test]
     fn test_query_validation_control_chars() {
-        let result = validate_query("hello\x00world");
-        assert_eq!(result, Err(ValidationError::InvalidChars));
-
-        let result2 = validate_query("hello\x01world");
-        assert_eq!(result2, Err(ValidationError::InvalidChars));
+        assert!(matches!(
+            QueryValidator::validate("hello\x00world"),
+            Err(QueryValidationError::InvalidChars { .. })
+        ));
+        assert!(matches!(
+            QueryValidator::validate("hello\x01world"),
+            Err(QueryValidationError::InvalidChars { .. })
+        ));
     }
 
     #[test]
