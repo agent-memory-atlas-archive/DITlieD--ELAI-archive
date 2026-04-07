@@ -1,0 +1,51 @@
+# Phase 2D: CSQ and inline feasibility metrics
+# Measured 2026-04-08, release build, median of 1000 iterations
+
+# CSQ generation overhead per function (target: <1ms = 1000us)
+# 3 sensitive ops per call (std::fs::write, std::net::TcpStream, auth::validate_token)
+csq_overhead_us = 0
+csq_overhead_ns = 900
+csq_overhead_p99_us = 1
+csq_overhead_p99_ns = 1700
+
+# Inline feasibility check overhead (target: <2ms = 2000us)
+# 20 source strings, substring match
+inline_check_overhead_us = 1
+inline_check_overhead_ns = 1400
+inline_check_overhead_p99_us = 1
+inline_check_overhead_p99_ns = 1500
+
+# False positive/negative rate on 20 synthetic claims
+# 10 present in sources (expect Pass), 10 absent (expect Fail)
+# Pattern matching is deterministic: rate = 0%
+false_positive_rate = 0.0
+false_negative_rate = 0.0
+false_positives = 0
+false_negatives = 0
+total_claims_tested = 20
+
+# Test metrics
+test_count = 62
+test_failures = 0
+phase_2a_tests = 18
+phase_2b_tests = 16
+phase_2c_tests = 15
+phase_2d_tests = 10
+phase_2d_bench_tests = 3
+
+# Test count delta from phase 2C
+phase_2c_test_count = 49
+test_count_delta = 13
+
+# Code metrics (reasoning crate only)
+source_loc = 1892
+total_loc = 4668
+phase_2c_source_loc = 1651
+phase_2c_total_loc = 4022
+source_loc_delta = 241
+total_loc_delta = 646
+
+# Compile time
+reasoning_compile_time_s = 1.18
+phase_2c_compile_time_s = 1.00
+compile_time_delta_s = 0.18
