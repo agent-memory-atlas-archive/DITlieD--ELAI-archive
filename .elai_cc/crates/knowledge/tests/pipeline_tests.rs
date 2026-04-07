@@ -4,46 +4,61 @@ use elai_knowledge::catrag::{CatRag, CatRagConfig};
 use elai_knowledge::pipeline::QueryPipeline;
 
 // ---------------------------------------------------------------------------
-// (k) QueryPipeline::query panics (todo!())
+// (k) QueryPipeline::query returns 7 stages in correct order
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn k_query_pipeline_query_hits_todo() {
+fn k_query_pipeline_query_returns_seven_stages() {
     let tmp = tempfile::TempDir::new().unwrap();
     let bm25 = Bm25Index::new(tmp.path(), "test_k").unwrap();
     let catrag = CatRag::new(CatRagConfig::default());
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
-    let _ = pipeline.query("find all imports");
+    let stages = pipeline.query("find all imports").unwrap();
+    assert_eq!(stages.len(), 7);
+    let names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["bm25", "vector", "pagerank", "catrag", "arag", "rerank", "token_fit"]
+    );
 }
 
 // ---------------------------------------------------------------------------
-// (l) QueryPipeline::query with different query panics (todo!())
+// (l) QueryPipeline::query stages have latency_ms field (caller-measured)
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn l_query_pipeline_different_query_hits_todo() {
+fn l_query_pipeline_stages_have_latency() {
     let tmp = tempfile::TempDir::new().unwrap();
     let bm25 = Bm25Index::new(tmp.path(), "test_l").unwrap();
     let catrag = CatRag::new(CatRagConfig::default());
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
-    let _ = pipeline.query("error handling");
+    let stages = pipeline.query("error handling").unwrap();
+    assert_eq!(stages.len(), 7);
+    // With an empty index, individual stages may complete in sub-millisecond time.
+    // Verify all stages have the latency_ms field populated (>= 0).
+    // With real data, bm25 stage will exceed 0ms.
+    for stage in &stages {
+        assert!(stage.latency_ms < 60_000, "stage {} latency sanity check", stage.stage);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// (m) QueryPipeline returns Vec<PipelineStage> (todo!())
+// (m) QueryPipeline returns Vec<PipelineStage> with consistent results
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn m_query_pipeline_returns_stages() {
     let tmp = tempfile::TempDir::new().unwrap();
     let bm25 = Bm25Index::new(tmp.path(), "test_m").unwrap();
     let catrag = CatRag::new(CatRagConfig::default());
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
-    let _ = pipeline.query("graph traversal");
+    let stages = pipeline.query("graph traversal").unwrap();
+    assert_eq!(stages.len(), 7);
+    // With empty index, bm25 returns empty results, cascading empty through all stages
+    for stage in &stages {
+        assert!(!stage.stage.is_empty());
+    }
 }

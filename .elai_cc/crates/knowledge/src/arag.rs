@@ -74,7 +74,7 @@ impl ContextTracker {
     }
 
     pub fn token_count(&self) -> usize {
-        todo!()
+        self.read_chunks.len() * 256
     }
 }
 
@@ -97,19 +97,85 @@ impl AragOrchestrator {
     /// Execute a single retrieval tool and return results.
     pub fn execute_tool(
         &self,
-        _tool: RetrievalTool,
-        _tracker: &mut ContextTracker,
+        tool: RetrievalTool,
+        tracker: &mut ContextTracker,
     ) -> Result<Vec<RetrievalResult>, Box<dyn Error>> {
-        todo!()
+        match tool {
+            RetrievalTool::KeywordSearch { .. } => {
+                // No bm25 index on AragOrchestrator — graceful degrade
+                Ok(Vec::new())
+            }
+            RetrievalTool::SemanticSearch { .. } => {
+                // No vector index available — graceful degrade
+                Ok(Vec::new())
+            }
+            RetrievalTool::ChunkRead { chunk_ids } => {
+                let mut results = Vec::with_capacity(chunk_ids.len());
+                for chunk_id in chunk_ids {
+                    if tracker.is_read(&chunk_id) {
+                        results.push(RetrievalResult {
+                            chunk_id,
+                            snippet: "(previously read)".to_string(),
+                            score: 0.0,
+                            tool_used: "chunk_read".to_string(),
+                        });
+                    } else {
+                        tracker.mark_read(chunk_id.clone());
+                        // File I/O deferred to Phase 1I; return chunk_id as content identifier
+                        results.push(RetrievalResult {
+                            chunk_id: chunk_id.clone(),
+                            snippet: format!("[chunk: {chunk_id}]"),
+                            score: 1.0,
+                            tool_used: "chunk_read".to_string(),
+                        });
+                    }
+                }
+                Ok(results)
+            }
+        }
     }
 
     /// Run the full A-RAG query pipeline: iteratively select tools,
     /// execute them, and accumulate results until budget is exhausted.
     pub fn query_pipeline(
         &self,
-        _query: &str,
+        query: &str,
         _snapshot: &crate::pagerank::DkgSnapshot,
     ) -> Result<Vec<RetrievalResult>, Box<dyn Error>> {
-        todo!()
+        let mut tracker = ContextTracker::new();
+        let mut all_results: Vec<RetrievalResult> = Vec::new();
+
+        // Step 1: keyword search
+        let keywords: Vec<String> = query.split_whitespace().map(String::from).collect();
+        let keyword_results = self.execute_tool(
+            RetrievalTool::KeywordSearch {
+                keywords,
+                top_k: self.config.top_k,
+            },
+            &mut tracker,
+        )?;
+        all_results.extend(keyword_results);
+
+        // Step 2: semantic search
+        let semantic_results = self.execute_tool(
+            RetrievalTool::SemanticSearch {
+                query: query.to_string(),
+                top_k: self.config.top_k,
+            },
+            &mut tracker,
+        )?;
+        all_results.extend(semantic_results);
+
+        // Step 3: chunk read on any hits (budget-limited)
+        let chunk_ids: Vec<String> = all_results.iter().map(|r| r.chunk_id.clone()).collect();
+        if !chunk_ids.is_empty() && tracker.token_count() < self.config.max_token_budget {
+            let read_results = self.execute_tool(
+                RetrievalTool::ChunkRead { chunk_ids },
+                &mut tracker,
+            )?;
+            all_results.extend(read_results);
+        }
+
+        Ok(all_results)
     }
 }
