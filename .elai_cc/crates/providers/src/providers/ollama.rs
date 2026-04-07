@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -6,6 +7,247 @@ use serde::{Deserialize, Serialize};
 use crate::error::ApiError;
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
+
+// ---------------------------------------------------------------------------
+// Speculative decoding API probe (Phase 1F.2)
+// ---------------------------------------------------------------------------
+
+/// Result of probing whether the local ollama instance supports speculative
+/// decoding via a `draft_model` parameter in `/api/generate`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProbeResult {
+    /// Ollama accepted and acted on the draft_model parameter.
+    Supported {
+        ollama_version: String,
+        api_params: Vec<String>,
+        draft_model: String,
+    },
+    /// Ollama does NOT support speculative decoding (or silently ignores it).
+    NotSupported {
+        ollama_version: String,
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for ProbeResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Supported {
+                ollama_version,
+                api_params,
+                draft_model,
+            } => write!(
+                f,
+                "SUPPORTED: ollama {ollama_version}, params=[{}], draft_model={draft_model}",
+                api_params.join(", ")
+            ),
+            Self::NotSupported {
+                ollama_version,
+                reason,
+            } => write!(
+                f,
+                "NOT_SUPPORTED: ollama {ollama_version}, reason={reason}"
+            ),
+        }
+    }
+}
+
+/// Low-level response structs for the ollama API (only fields we inspect).
+#[derive(Debug, Deserialize)]
+struct OllamaVersionResponse {
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields deserialized from API; not all read directly
+struct OllamaGenerateResponse {
+    response: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    done_reason: String,
+    #[serde(default)]
+    context: Vec<u64>,
+    #[serde(default)]
+    total_duration: u64,
+    #[serde(default)]
+    load_duration: u64,
+    #[serde(default)]
+    prompt_eval_count: u64,
+    #[serde(default)]
+    prompt_eval_duration: u64,
+    #[serde(default)]
+    eval_count: u64,
+    #[serde(default)]
+    eval_duration: u64,
+    /// Captures ONLY unknown keys (draft-related fields if spec decode is supported).
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+/// Probe the local ollama instance for speculative decoding support.
+///
+/// Strategy (addresses adversarial case — ollama silently ignores unknown
+/// options):
+///   1. GET /api/version  -> record version string.
+///   2. POST /api/generate baseline (no draft param, fixed seed, temp=0).
+///   3. POST /api/generate with `draft_model` in options.
+///   4. Compare: if response contains draft-specific keys (e.g.
+///      `draft_tokens_accepted`) OR timing profile is structurally different,
+///      feature is active. Otherwise it was silently ignored -> NOT_SUPPORTED.
+pub async fn probe_speculative_support(
+    base_url: &str,
+    model: &str,
+    draft_model_candidate: &str,
+    timeout: std::time::Duration,
+) -> Result<ProbeResult, ApiError> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()?;
+
+    // 1. Version
+    let version_url = format!("{base_url}/api/version");
+    let version_resp: OllamaVersionResponse = client
+        .get(&version_url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(ApiError::from)?
+        .json()
+        .await?;
+    let ollama_version = version_resp.version;
+
+    // 2. Baseline generate (no draft, deterministic)
+    let baseline_body = serde_json::json!({
+        "model": model,
+        "prompt": "Count from 1 to 5.",
+        "stream": false,
+        "options": {
+            "seed": 42,
+            "temperature": 0.0,
+            "num_predict": 20
+        }
+    });
+    let baseline_resp: OllamaGenerateResponse = client
+        .post(&format!("{base_url}/api/generate"))
+        .json(&baseline_body)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(ApiError::from)?
+        .json()
+        .await?;
+
+    // 3. Generate WITH draft_model in options
+    let draft_body = serde_json::json!({
+        "model": model,
+        "prompt": "Count from 1 to 5.",
+        "stream": false,
+        "options": {
+            "seed": 42,
+            "temperature": 0.0,
+            "num_predict": 20,
+            "draft_model": draft_model_candidate,
+            "num_draft": 5
+        }
+    });
+    let draft_resp: OllamaGenerateResponse = client
+        .post(&format!("{base_url}/api/generate"))
+        .json(&draft_body)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(ApiError::from)?
+        .json()
+        .await?;
+
+    // 4. Compare: look for draft-specific keys in the response
+    // Exact match against known speculative decoding response keys.
+    // Substring matching risks false positives on unrelated keys.
+    const SPEC_DECODE_KEYS: &[&str] = &[
+        "draft_model",
+        "draft_tokens_accepted",
+        "draft_tokens_generated",
+        "draft_tokens_rejected",
+        "num_draft",
+        "speculative",
+        "speculative_decoding",
+    ];
+    let draft_keys: Vec<String> = draft_resp
+        .extra
+        .keys()
+        .filter(|k| SPEC_DECODE_KEYS.contains(&k.as_str()))
+        .cloned()
+        .collect();
+
+    if !draft_keys.is_empty() {
+        return Ok(ProbeResult::Supported {
+            ollama_version: ollama_version.clone(),
+            api_params: draft_keys,
+            draft_model: draft_model_candidate.to_string(),
+        });
+    }
+
+    // No draft-specific keys. Check if response contains keys absent from baseline.
+    let baseline_key_set: std::collections::HashSet<&String> =
+        baseline_resp.extra.keys().collect();
+    let draft_key_set: std::collections::HashSet<&String> =
+        draft_resp.extra.keys().collect();
+
+    let new_keys: Vec<String> = draft_key_set
+        .difference(&baseline_key_set)
+        .map(|k| (*k).clone())
+        .collect();
+
+    if !new_keys.is_empty() {
+        // Draft response has keys that baseline doesn't — partial support
+        return Ok(ProbeResult::Supported {
+            ollama_version: ollama_version.clone(),
+            api_params: new_keys,
+            draft_model: draft_model_candidate.to_string(),
+        });
+    }
+
+    let mut baseline_keys: Vec<String> = baseline_resp.extra.keys().cloned().collect();
+    let mut draft_extra_keys: Vec<String> = draft_resp.extra.keys().cloned().collect();
+    baseline_keys.sort();
+    draft_extra_keys.sort();
+
+    // Identical response shape -> silently ignored
+    let reason = format!(
+        "ollama {} silently ignores draft_model/num_draft options. \
+         PR #8134 was closed (Jan 2025). Issue #5800 remains open. \
+         No speculative decoding API parameters in /api/generate docs. \
+         Baseline response text: '{}', draft response text: '{}'. \
+         Baseline extra keys: {:?}, draft extra keys: {:?}.",
+        ollama_version,
+        truncate(&baseline_resp.response, 80),
+        truncate(&draft_resp.response, 80),
+        baseline_keys,
+        draft_extra_keys,
+    );
+    Ok(ProbeResult::NotSupported {
+        ollama_version,
+        reason,
+    })
+}
+
+fn truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    // Find the last char boundary at or before max_bytes (UTF-8 safe).
+    let boundary = s
+        .char_indices()
+        .take_while(|(i, _)| *i <= max_bytes)
+        .last()
+        .map_or(0, |(i, _)| i);
+    format!("{}...", &s[..boundary])
+}
 
 pub type LlmFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'a>>;
 
@@ -295,5 +537,109 @@ mod tests {
                 .unwrap_err()
                 .contains("num_draft_tokens must be >= 1")
         );
+    }
+
+    // -- Phase 1F.2: ProbeResult tests --
+
+    #[test]
+    fn test_probe_result_not_supported_display() {
+        let result = ProbeResult::NotSupported {
+            ollama_version: "0.20.2".to_string(),
+            reason: "silently ignores draft_model".to_string(),
+        };
+        let display = result.to_string();
+        assert!(display.starts_with("NOT_SUPPORTED:"));
+        assert!(display.contains("0.20.2"));
+        assert!(display.contains("silently ignores"));
+    }
+
+    #[test]
+    fn test_probe_result_supported_display() {
+        let result = ProbeResult::Supported {
+            ollama_version: "1.0.0".to_string(),
+            api_params: vec!["draft_model".to_string(), "num_draft".to_string()],
+            draft_model: "gemma3:2b".to_string(),
+        };
+        let display = result.to_string();
+        assert!(display.starts_with("SUPPORTED:"));
+        assert!(display.contains("draft_model, num_draft"));
+        assert!(display.contains("gemma3:2b"));
+    }
+
+    #[test]
+    fn test_probe_result_serde_roundtrip_not_supported() {
+        let result = ProbeResult::NotSupported {
+            ollama_version: "0.20.2".to_string(),
+            reason: "no API support".to_string(),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        let deserialized: ProbeResult = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, result);
+    }
+
+    #[test]
+    fn test_probe_result_serde_roundtrip_supported() {
+        let result = ProbeResult::Supported {
+            ollama_version: "1.0.0".to_string(),
+            api_params: vec!["draft_model".to_string()],
+            draft_model: "test:0.5b".to_string(),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        let deserialized: ProbeResult = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, result);
+    }
+
+    #[test]
+    fn test_truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_long_string() {
+        let long = "a".repeat(100);
+        let result = truncate(&long, 10);
+        assert_eq!(result.len(), 13); // 10 + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_multibyte_utf8() {
+        // Each CJK char is 3 bytes. "Hello" = 5 bytes, "世界" = 6 bytes = 11 total.
+        let s = "Hello世界!";
+        let result = truncate(s, 8); // 8 bytes: "Hello" (5) + "世" (3) = 8 fits
+        assert!(result.ends_with("..."));
+        // Must not panic and must cut at a char boundary
+        assert!(result.starts_with("Hello世"));
+    }
+
+    /// Integration test: probes the local ollama instance.
+    /// Requires ollama running with gemma4:e2b loaded.
+    /// Run with: cargo test --package elai-providers -- --ignored test_probe_local_ollama
+    #[tokio::test]
+    #[ignore]
+    async fn test_probe_local_ollama() {
+        let result = probe_speculative_support(
+            DEFAULT_OLLAMA_BASE_URL,
+            "gemma4:e2b",
+            "gemma3:4b",
+            std::time::Duration::from_secs(300),
+        )
+        .await
+        .expect("probe should not error");
+
+        println!("{result}");
+
+        // The probe must return a definitive result
+        match &result {
+            ProbeResult::Supported { ollama_version, api_params, draft_model } => {
+                assert!(!ollama_version.is_empty());
+                assert!(!api_params.is_empty());
+                assert!(!draft_model.is_empty());
+            }
+            ProbeResult::NotSupported { ollama_version, reason } => {
+                assert!(!ollama_version.is_empty());
+                assert!(!reason.is_empty());
+            }
+        }
     }
 }
