@@ -16,7 +16,9 @@ impl LogicalInstant {
         }
     }
 
-    fn from_tick(tick: u64) -> Self {
+    /// Create a tick-only instant (no wall clock). Used by SeededClock
+    /// and custom test clocks that don't need real Instant backing.
+    pub fn from_tick(tick: u64) -> Self {
         Self { tick, inner: None }
     }
 

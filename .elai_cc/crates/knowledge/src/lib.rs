@@ -11,6 +11,7 @@ pub mod query_validator;
 pub mod reranker;
 #[cfg(feature = "splade")]
 pub mod splade;
+pub mod startup;
 pub mod vector;
 
 // ---------------------------------------------------------------------------
