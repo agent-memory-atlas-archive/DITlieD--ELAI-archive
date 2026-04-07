@@ -751,8 +751,9 @@ dependencies = [
 name = "elai-reasoning"
 version = "0.1.0"
 dependencies = [
+ "elai-core",
  "serde",
- "serde_json",
+ "thiserror",
 ]
 
 [[package]]
