@@ -102,6 +102,17 @@ impl CircuitBreaker {
         }
     }
 
+    /// Check elapsed time and transition Open -> HalfOpen if timeout has passed.
+    /// Does not execute any closure — purely updates internal state.
+    pub fn sync_state(&mut self) {
+        if self.state == BreakerState::Open {
+            let elapsed = self.clock.elapsed_since(self.window_start);
+            if elapsed >= Duration::from_secs(HALF_OPEN_AFTER_SECS) {
+                self.state = BreakerState::HalfOpen;
+            }
+        }
+    }
+
     pub fn record_success(&mut self) {
         self.state = BreakerState::Closed;
         self.failure_count = 0;
@@ -228,5 +239,43 @@ mod tests {
         let _ = cb.call(|| Err::<(), &str>("fail"));
         assert_eq!(cb.failure_count, 1);
         assert_eq!(cb.state(), BreakerState::Closed);
+    }
+
+    // --- Step 3 tests ---
+
+    #[test]
+    fn test_circuit_breaker_opens_after_3_failures() {
+        let clock = make_clock();
+        let mut cb = CircuitBreaker::new(clock.clone());
+
+        assert_eq!(cb.state(), BreakerState::Closed);
+
+        // Exactly 3 failures within the 60s window
+        for i in 0..3u32 {
+            let _ = cb.call(|| Err::<(), String>(format!("fail-{i}")));
+        }
+        assert_eq!(cb.state(), BreakerState::Open);
+        assert_eq!(cb.failure_count, 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_half_open_probe() {
+        let clock = make_clock();
+        let mut cb = CircuitBreaker::new(clock.clone());
+
+        // Trip the breaker with 3 failures
+        for _ in 0..3 {
+            let _ = cb.call(|| Err::<(), &str>("fail"));
+        }
+        assert_eq!(cb.state(), BreakerState::Open);
+
+        // Advance 30s (30_000 ticks on SeededClock)
+        for _ in 0..30_000 {
+            let _ = clock.now();
+        }
+
+        // sync_state() transitions Open -> HalfOpen without calling a closure
+        cb.sync_state();
+        assert_eq!(cb.state(), BreakerState::HalfOpen);
     }
 }

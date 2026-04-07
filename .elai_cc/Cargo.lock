@@ -653,6 +653,7 @@ dependencies = [
  "elai-reasoning",
  "elai-rules",
  "elai-tools",
+ "rusqlite",
  "serde_json",
  "tempfile",
 ]

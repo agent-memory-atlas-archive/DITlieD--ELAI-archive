@@ -169,4 +169,68 @@ mod tests {
         // This test verifies the trait compiles and can be used as a bound.
         fn _accepts_index<T: VectorIndex>(_idx: &T) {}
     }
+
+    // --- Step 3 tests (feature-gated) ---
+
+    #[cfg(feature = "usearch-hnsw")]
+    #[test]
+    fn test_hnsw_index_persistence_roundtrip() {
+        let dim = 8; // small dim for test speed
+        let mut idx = UsearchIndex::new(dim).unwrap();
+
+        // Add 10 vectors
+        for key in 0u64..10 {
+            let vec: Vec<f32> = (0..dim).map(|d| (key as f32) * 0.1 + (d as f32) * 0.01).collect();
+            idx.add(key, &vec).unwrap();
+        }
+
+        // Search before save
+        let query: Vec<f32> = (0..dim).map(|d| 0.5 + (d as f32) * 0.01).collect();
+        let before = idx.search(&query, 3).unwrap();
+        assert_eq!(before.len(), 3);
+
+        // Save to tempfile, load into new index, search again
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        // usearch needs the file to not exist for save
+        drop(tmp);
+        idx.save(&path).unwrap();
+
+        let loaded = UsearchIndex::load(&path, dim).unwrap();
+        let after = loaded.search(&query, 3).unwrap();
+        assert_eq!(after.len(), 3);
+
+        // Same keys returned (order may vary by float rounding, check set equality)
+        let before_keys: std::collections::HashSet<u64> = before.iter().map(|(k, _)| *k).collect();
+        let after_keys: std::collections::HashSet<u64> = after.iter().map(|(k, _)| *k).collect();
+        assert_eq!(before_keys, after_keys, "same keys after persistence roundtrip");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "usearch-hnsw")]
+    #[test]
+    fn test_hnsw_filtered_search_project_isolation() {
+        let dim = 8;
+        let mut idx = UsearchIndex::new(dim).unwrap();
+
+        // Keys 0-4: project A, keys 5-9: project B
+        for key in 0u64..10 {
+            let vec: Vec<f32> = (0..dim).map(|d| (key as f32) * 0.1 + (d as f32) * 0.01).collect();
+            idx.add(key, &vec).unwrap();
+        }
+
+        let query: Vec<f32> = (0..dim).map(|d| 0.3 + (d as f32) * 0.01).collect();
+
+        // Filtered search: only project A keys (0-4)
+        let results = idx
+            .filtered_search(&query, 5, &|key| key < 5)
+            .unwrap();
+
+        for (key, _score) in &results {
+            assert!(*key < 5, "filtered_search should only return project A keys, got {key}");
+        }
+        assert!(!results.is_empty(), "filtered_search should return at least one result");
+    }
 }

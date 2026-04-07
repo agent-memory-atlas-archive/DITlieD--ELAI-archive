@@ -254,4 +254,41 @@ mod tests {
         let result = le_bytes_to_f32_vec(&[0u8, 1, 2]);
         assert!(result.is_err());
     }
+
+    // --- Step 3 tests ---
+
+    #[test]
+    fn test_vector_cache_insert_lookup() {
+        let cache = in_memory_cache();
+        let code = vec![0.42f32; CODE_VEC_DIM];
+        let text = vec![0.84f32; TEXT_VEC_DIM];
+        let dv = DualVector::new(code.clone(), text.clone()).unwrap();
+
+        let content = b"pub fn example() -> bool { true }";
+        let hash = VectorCache::content_hash(content);
+        cache.insert(&hash, &dv, 1700000000).unwrap();
+
+        let found = cache.lookup(&hash).unwrap().expect("should find cached entry");
+        assert_eq!(found.code_vec.len(), CODE_VEC_DIM);
+        assert_eq!(found.text_vec.len(), TEXT_VEC_DIM);
+        assert_eq!(found.code_vec, code);
+        assert_eq!(found.text_vec, text);
+    }
+
+    #[test]
+    fn test_vector_cache_invalidation() {
+        let cache = in_memory_cache();
+        let code = vec![1.1f32; CODE_VEC_DIM];
+        let text = vec![2.2f32; TEXT_VEC_DIM];
+        let dv = DualVector::new(code, text).unwrap();
+
+        let content = b"fn invalidate_me() {}";
+        let hash = VectorCache::content_hash(content);
+        cache.insert(&hash, &dv, 1700000000).unwrap();
+        assert!(cache.lookup(&hash).unwrap().is_some());
+
+        let deleted = cache.invalidate_keys(&[&hash]).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(cache.lookup(&hash).unwrap().is_none());
+    }
 }

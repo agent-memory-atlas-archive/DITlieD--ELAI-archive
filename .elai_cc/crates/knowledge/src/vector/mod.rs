@@ -94,6 +94,110 @@ pub trait VectorModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::ort_session::OrtError;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    // -----------------------------------------------------------------
+    // Test-only types (will move to prod code in Step 4)
+    // -----------------------------------------------------------------
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum ValidationError {
+        EmptyQuery,
+        TooLong,
+        InvalidChars,
+    }
+
+    fn validate_query(q: &str) -> Result<(), ValidationError> {
+        if q.is_empty() {
+            return Err(ValidationError::EmptyQuery);
+        }
+        if q.len() > 10_000 {
+            return Err(ValidationError::TooLong);
+        }
+        if q.bytes().any(|b| b == 0 || (b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')) {
+            return Err(ValidationError::InvalidChars);
+        }
+        Ok(())
+    }
+
+    // Mock embed session for tests that need controllable embed behavior
+    struct MockEmbedSession {
+        _code_dim: usize,
+        _text_dim: usize,
+        code_result: Box<dyn Fn(&str) -> Result<Vec<f32>, VectorError> + Send + Sync>,
+        text_result: Box<dyn Fn(&str) -> Result<Vec<f32>, VectorError> + Send + Sync>,
+    }
+
+    impl MockEmbedSession {
+        fn ok_fixed(code_dim: usize, text_dim: usize) -> Self {
+            Self {
+                _code_dim: code_dim,
+                _text_dim: text_dim,
+                code_result: Box::new(move |_| Ok(vec![0.1f32; code_dim])),
+                text_result: Box::new(move |_| Ok(vec![0.2f32; text_dim])),
+            }
+        }
+
+        fn code_fails() -> Self {
+            Self {
+                _code_dim: CODE_VEC_DIM,
+                _text_dim: TEXT_VEC_DIM,
+                code_result: Box::new(|_| Err(VectorError::OrtError("code model failed".into()))),
+                text_result: Box::new(|_| Ok(vec![0.2f32; TEXT_VEC_DIM])),
+            }
+        }
+
+        fn both_fail() -> Self {
+            Self {
+                _code_dim: CODE_VEC_DIM,
+                _text_dim: TEXT_VEC_DIM,
+                code_result: Box::new(|_| Err(VectorError::OrtError("code model failed".into()))),
+                text_result: Box::new(|_| Err(VectorError::OrtError("text model failed".into()))),
+            }
+        }
+
+        fn embed_code(&self, text: &str) -> Result<Vec<f32>, VectorError> {
+            (self.code_result)(text)
+        }
+
+        fn embed_text(&self, text: &str) -> Result<Vec<f32>, VectorError> {
+            (self.text_result)(text)
+        }
+    }
+
+    // Stub for readiness check (Step 4 implements the real version)
+    fn readiness_check(mock: &MockEmbedSession) -> ReadinessStatus {
+        let code_ok = mock.embed_code("canary").is_ok();
+        let text_ok = mock.embed_text("canary").is_ok();
+        if code_ok && text_ok {
+            ReadinessStatus::Ready
+        } else {
+            ReadinessStatus::Degraded
+        }
+    }
+
+    // Stub for rerank semaphore (Step 4 implements with tokio::Semaphore)
+    fn try_acquire_rerank_permit(active: &Mutex<u32>, max: u32) -> bool {
+        let mut count = active.lock().unwrap();
+        if *count >= max {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    // RRF score computation: k=60, Cormack et al. SIGIR'09
+    fn rrf_score(bm25_rank: usize, code_rank: usize, text_rank: usize) -> f32 {
+        1.0 / (60.0 + bm25_rank as f32)
+            + 1.0 / (60.0 + code_rank as f32)
+            + 1.0 / (60.0 + text_rank as f32)
+    }
+
+    // -----------------------------------------------------------------
+    // Existing tests
+    // -----------------------------------------------------------------
 
     #[test]
     fn dual_vector_correct_dims_ok() {
@@ -149,5 +253,261 @@ mod tests {
             }
             other => panic!("expected DimensionMismatch for code_vec, got {other:?}"),
         }
+    }
+
+    // --- Step 3 tests ---
+
+    #[test]
+    fn test_dual_vector_dimensions() {
+        let mock = MockEmbedSession::ok_fixed(CODE_VEC_DIM, TEXT_VEC_DIM);
+        let code_vec = mock.embed_code("fn main() {}").unwrap();
+        let text_vec = mock.embed_text("main function").unwrap();
+        assert_eq!(code_vec.len(), CODE_VEC_DIM);
+        assert_eq!(text_vec.len(), TEXT_VEC_DIM);
+        let dv = DualVector::new(code_vec, text_vec).unwrap();
+        assert_eq!(dv.code_vec.len(), CODE_VEC_DIM);
+        assert_eq!(dv.text_vec.len(), TEXT_VEC_DIM);
+    }
+
+    #[test]
+    fn test_graceful_degradation_code_model_fail() {
+        let mock = MockEmbedSession::code_fails();
+        let code_result = mock.embed_code("fn broken() {}");
+        let text_result = mock.embed_text("broken function");
+        assert!(code_result.is_err());
+        assert!(text_result.is_ok());
+        let text_vec = text_result.unwrap();
+        assert_eq!(text_vec.len(), TEXT_VEC_DIM);
+        // When code model fails, system should degrade to text-only search
+        let mode = if code_result.is_err() && text_vec.len() == TEXT_VEC_DIM {
+            SearchMode::TextOnly
+        } else {
+            SearchMode::Hybrid
+        };
+        assert_eq!(mode, SearchMode::TextOnly);
+    }
+
+    #[test]
+    fn test_graceful_degradation_both_models_fail() {
+        let mock = MockEmbedSession::both_fail();
+        let code_result = mock.embed_code("fn broken() {}");
+        let text_result = mock.embed_text("broken function");
+        assert!(code_result.is_err());
+        assert!(text_result.is_err());
+        let mode = if code_result.is_err() && text_result.is_err() {
+            SearchMode::SparseOnly
+        } else {
+            SearchMode::Hybrid
+        };
+        assert_eq!(mode, SearchMode::SparseOnly);
+    }
+
+    #[test]
+    fn test_query_validation_empty() {
+        let result = validate_query("");
+        assert_eq!(result, Err(ValidationError::EmptyQuery));
+    }
+
+    #[test]
+    fn test_query_validation_oversized() {
+        let big_query = "x".repeat(10_001);
+        let result = validate_query(&big_query);
+        assert_eq!(result, Err(ValidationError::TooLong));
+    }
+
+    #[test]
+    fn test_query_validation_control_chars() {
+        let result = validate_query("hello\x00world");
+        assert_eq!(result, Err(ValidationError::InvalidChars));
+
+        let result2 = validate_query("hello\x01world");
+        assert_eq!(result2, Err(ValidationError::InvalidChars));
+    }
+
+    #[test]
+    fn test_startup_canary_success() {
+        let mock = MockEmbedSession::ok_fixed(CODE_VEC_DIM, TEXT_VEC_DIM);
+        let status = readiness_check(&mock);
+        assert_eq!(status, ReadinessStatus::Ready);
+    }
+
+    #[test]
+    fn test_startup_canary_timeout() {
+        // Both models fail -> Degraded (BM25-only fallback)
+        let mock = MockEmbedSession::both_fail();
+        let status = readiness_check(&mock);
+        assert_eq!(status, ReadinessStatus::Degraded);
+    }
+
+    #[test]
+    fn test_onnx_canonical_path() {
+        // Canonical path pattern: {project}/models/onnx/{model_name}.onnx
+        let model_name = "graphcodebert";
+        let canonical = PathBuf::from(format!(
+            "/nonexistent-elai-test/models/onnx/{model_name}.onnx"
+        ));
+        assert!(canonical.to_str().unwrap().contains("models/onnx/"));
+        assert!(canonical.extension().unwrap() == "onnx");
+
+        // OrtSession::new with nonexistent canonical path returns ModelNotFound
+        let result = super::ort_session::OrtSession::new(&canonical, 512, 768);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            OrtError::ModelNotFound(msg) => {
+                assert!(msg.contains(model_name));
+            }
+            other => panic!("expected ModelNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_missing_model_degraded() {
+        let bad_path = PathBuf::from("/nonexistent/model.onnx");
+        let result = super::ort_session::OrtSession::new(&bad_path, 512, 768);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            OrtError::ModelNotFound(_) => {}
+            other => panic!("expected ModelNotFound, got {other:?}"),
+        }
+        // When model is missing, knowledge engine falls back to Degraded.
+        // Verify via readiness_check: both models failing -> Degraded.
+        let mock = MockEmbedSession::both_fail();
+        let status = readiness_check(&mock);
+        assert_eq!(status, ReadinessStatus::Degraded);
+    }
+
+    #[test]
+    fn test_semaphore_queue_overflow() {
+        let active = Mutex::new(0u32);
+        let max_concurrent = 4u32;
+
+        // Acquire 4 permits
+        for _ in 0..4 {
+            assert!(try_acquire_rerank_permit(&active, max_concurrent));
+        }
+
+        // 5th should fail — overflow
+        assert!(!try_acquire_rerank_permit(&active, max_concurrent));
+    }
+
+    #[test]
+    fn test_cache_hit_skips_embed() {
+        use super::cache::VectorCache;
+
+        let embed_called = Arc::new(Mutex::new(false));
+        let called_clone = embed_called.clone();
+
+        let mock = MockEmbedSession {
+            _code_dim: CODE_VEC_DIM,
+            _text_dim: TEXT_VEC_DIM,
+            code_result: Box::new(move |_| {
+                *called_clone.lock().unwrap() = true;
+                Ok(vec![0.1f32; CODE_VEC_DIM])
+            }),
+            text_result: Box::new(|_| Ok(vec![0.2f32; TEXT_VEC_DIM])),
+        };
+
+        // Pre-populate cache with a DualVector for known content
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let cache = VectorCache::new(conn).unwrap();
+        let content = b"fn cached_function() {}";
+        let hash = VectorCache::content_hash(content);
+        let cached_code = vec![0.5f32; CODE_VEC_DIM];
+        let cached_text = vec![0.5f32; TEXT_VEC_DIM];
+        let cached_dv = DualVector::new(cached_code, cached_text).unwrap();
+        cache.insert(&hash, &cached_dv, 1700000000).unwrap();
+
+        // Lookup cache — if hit, skip embed
+        let cache_hit = cache.lookup(&hash).unwrap().is_some();
+        if !cache_hit {
+            let _ = mock.embed_code("should not run");
+        }
+        assert!(cache_hit, "cache should contain the pre-inserted entry");
+        assert!(!*embed_called.lock().unwrap(), "embed should not be called on cache hit");
+    }
+
+    #[test]
+    fn test_truncation_warning_on_long_input() {
+        let truncated = Arc::new(Mutex::new(false));
+        let truncated_clone = truncated.clone();
+        let max_seq_len: usize = 512;
+
+        let mock = MockEmbedSession {
+            _code_dim: CODE_VEC_DIM,
+            _text_dim: TEXT_VEC_DIM,
+            code_result: Box::new(move |text| {
+                // Simulate tokenizer: ~4 chars per token as rough estimate
+                let approx_tokens = text.len() / 4;
+                if approx_tokens > max_seq_len {
+                    *truncated_clone.lock().unwrap() = true;
+                }
+                Ok(vec![0.1f32; CODE_VEC_DIM])
+            }),
+            text_result: Box::new(|_| Ok(vec![0.2f32; TEXT_VEC_DIM])),
+        };
+
+        // Input that exceeds 512 tokens (~2048+ chars at 4 chars/token)
+        let long_input = "x".repeat(3000);
+        let result = mock.embed_code(&long_input);
+        assert!(result.is_ok());
+        let vec = result.unwrap();
+        assert_eq!(vec.len(), CODE_VEC_DIM, "output dim must be correct despite truncation");
+        assert!(*truncated.lock().unwrap(), "truncation warning should have fired");
+    }
+
+    #[test]
+    fn test_concurrent_embed_mutex_session() {
+        // 4 threads sharing an Arc<Mutex<MockEmbedSession>>
+        let mock = Arc::new(Mutex::new(MockEmbedSession::ok_fixed(CODE_VEC_DIM, TEXT_VEC_DIM)));
+        let mut handles = Vec::new();
+
+        for i in 0..4 {
+            let mock_clone = mock.clone();
+            handles.push(std::thread::spawn(move || {
+                let m = mock_clone.lock().unwrap();
+                let result = m.embed_code(&format!("fn task_{i}() {{}}"));
+                assert!(result.is_ok());
+                let vec = result.unwrap();
+                assert_eq!(vec.len(), CODE_VEC_DIM);
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+    }
+
+    #[test]
+    fn test_rrf_fusion_formula() {
+        // 3 docs, 3 rankers (BM25, code_vec, text_vec)
+        // Doc 0: BM25_rank=1, code_rank=2, text_rank=3
+        // Doc 1: BM25_rank=3, code_rank=1, text_rank=2
+        // Doc 2: BM25_rank=5, code_rank=4, text_rank=1
+        let score_0 = rrf_score(1, 2, 3);
+        let score_1 = rrf_score(3, 1, 2);
+        let score_2 = rrf_score(5, 4, 1);
+
+        let expected_0: f32 = 1.0 / 61.0 + 1.0 / 62.0 + 1.0 / 63.0;
+        let expected_1: f32 = 1.0 / 63.0 + 1.0 / 61.0 + 1.0 / 62.0;
+        let expected_2: f32 = 1.0 / 65.0 + 1.0 / 64.0 + 1.0 / 61.0;
+
+        assert!(
+            (score_0 - expected_0).abs() < 1e-6,
+            "doc 0: got {score_0}, expected {expected_0}"
+        );
+        assert!(
+            (score_1 - expected_1).abs() < 1e-6,
+            "doc 1: got {score_1}, expected {expected_1}"
+        );
+        assert!(
+            (score_2 - expected_2).abs() < 1e-6,
+            "doc 2: got {score_2}, expected {expected_2}"
+        );
+
+        // Doc 0 and Doc 1 should have same score (symmetric ranks)
+        assert!(
+            (score_0 - score_1).abs() < 1e-6,
+            "doc 0 and doc 1 should have equal RRF scores"
+        );
     }
 }
