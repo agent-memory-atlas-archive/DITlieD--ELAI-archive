@@ -126,11 +126,19 @@ impl DkgEngine {
         let mut files_parsed: usize = 0;
         let mut total_node_count: usize = 0;
 
-        let grammar = RustGrammar;
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&grammar.tree_sitter_language())?;
 
         for file_path in &rs_files {
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang_id = match ext {
+                "rs" => "rust",
+                _ => { continue; }
+            };
+            let grammar = match self.grammars.get(lang_id) {
+                Some(g) => g,
+                None => { continue; }
+            };
+            parser.set_language(&grammar.tree_sitter_language())?;
             let source_bytes = std::fs::read(file_path)?;
             let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -303,7 +311,7 @@ impl DkgEngine {
             if let Some(last_segment) = path_str.rsplit("::").next() {
                 // Find a node with that name (not the use node itself)
                 let target: Option<i64> = self.conn.query_row(
-                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND id != ?2 LIMIT 1",
+                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND id != ?2 ORDER BY id ASC LIMIT 1",
                     rusqlite::params![last_segment, use_id],
                     |row| row.get(0),
                 ).ok();
@@ -330,7 +338,7 @@ impl DkgEngine {
             // Check if name contains "for" indicating trait impl: "impl TraitName for TypeName"
             if let Some(trait_name) = extract_trait_from_impl_name(impl_name) {
                 let target: Option<i64> = self.conn.query_row(
-                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND kind = 'trait' LIMIT 1",
+                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND kind = 'trait' ORDER BY id ASC LIMIT 1",
                     [&trait_name],
                     |row| row.get(0),
                 ).ok();
@@ -480,10 +488,7 @@ impl LanguageGrammar for RustGrammar {
     fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
         let mut nodes = Vec::new();
         let mut cursor = tree.root_node().walk();
-        // Map from tree-sitter node id -> index in our nodes vec, for parent tracking
-        let mut ts_id_to_idx: HashMap<usize, usize> = HashMap::new();
-
-        extract_recursive(&mut cursor, source, &mut nodes, &mut ts_id_to_idx, None);
+        extract_recursive(&mut cursor, source, &mut nodes, None);
         nodes
     }
 }
@@ -503,7 +508,6 @@ fn extract_recursive(
     cursor: &mut tree_sitter::TreeCursor,
     source: &[u8],
     nodes: &mut Vec<DkgNode>,
-    ts_id_to_idx: &mut HashMap<usize, usize>,
     parent_idx: Option<usize>,
 ) {
     loop {
@@ -519,8 +523,6 @@ fn extract_recursive(
             let end_line = node.end_position().row as u32 + 1;
 
             let idx = nodes.len();
-            ts_id_to_idx.insert(node.id(), idx);
-
             nodes.push(DkgNode {
                 name,
                 kind: symbol_kind,
@@ -534,7 +536,7 @@ fn extract_recursive(
         }
 
         if cursor.goto_first_child() {
-            extract_recursive(cursor, source, nodes, ts_id_to_idx, current_parent);
+            extract_recursive(cursor, source, nodes, current_parent);
             cursor.goto_parent();
         }
 
@@ -671,6 +673,8 @@ fn parse_symbol_kind(s: &str) -> SymbolKind {
     }
 }
 
+const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules"];
+
 fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -679,8 +683,13 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if EXCLUDED_DIRS.contains(&name) {
+                    continue;
+                }
+            }
             walk_rs_files(&path, out);
-        } else if path.extension().map_or(false, |ext| ext == "rs") {
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path);
         }
     }
