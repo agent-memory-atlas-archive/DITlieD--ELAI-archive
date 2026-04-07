@@ -1,0 +1,256 @@
+{
+  "description": "Cross-encoder reranker benchmark fixture. 1 query, 50 candidates with binary relevance labels. At least 10 relevant candidates. All snippets are real code, not placeholder text.",
+  "query": "How to implement a thread-safe cache with expiration in Rust?",
+  "candidates": [
+    {
+      "chunk_id": "cache_lru_impl",
+      "snippet": "use std::collections::HashMap;\nuse std::sync::{Arc, RwLock};\nuse std::time::{Duration, Instant};\n\npub struct TimedCache<K, V> {\n    inner: Arc<RwLock<HashMap<K, (V, Instant)>>>,\n    ttl: Duration,\n}\n\nimpl<K: Eq + std::hash::Hash, V: Clone> TimedCache<K, V> {\n    pub fn new(ttl: Duration) -> Self {\n        Self { inner: Arc::new(RwLock::new(HashMap::new())), ttl }\n    }\n    pub fn get(&self, key: &K) -> Option<V> {\n        let map = self.inner.read().unwrap();\n        map.get(key).and_then(|(v, t)| {\n            if t.elapsed() < self.ttl { Some(v.clone()) } else { None }\n        })\n    }\n    pub fn insert(&self, key: K, value: V) {\n        let mut map = self.inner.write().unwrap();\n        map.insert(key, (value, Instant::now()));\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "concurrent_map",
+      "snippet": "use dashmap::DashMap;\nuse std::time::{Duration, Instant};\n\npub struct ConcurrentTtlMap<V> {\n    map: DashMap<String, (V, Instant)>,\n    ttl: Duration,\n}\n\nimpl<V: Clone> ConcurrentTtlMap<V> {\n    pub fn new(ttl: Duration) -> Self {\n        Self { map: DashMap::new(), ttl }\n    }\n    pub fn get(&self, key: &str) -> Option<V> {\n        self.map.get(key).and_then(|entry| {\n            let (val, inserted) = entry.value();\n            if inserted.elapsed() < self.ttl { Some(val.clone()) } else { None }\n        })\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "rwlock_cache",
+      "snippet": "pub struct RwLockCache {\n    data: std::sync::RwLock<std::collections::HashMap<String, String>>,\n}\nimpl RwLockCache {\n    pub fn read(&self, key: &str) -> Option<String> {\n        self.data.read().unwrap().get(key).cloned()\n    }\n    pub fn write(&self, key: String, val: String) {\n        self.data.write().unwrap().insert(key, val);\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "arc_mutex_pattern",
+      "snippet": "use std::sync::{Arc, Mutex};\n\nfn shared_state_example() {\n    let data = Arc::new(Mutex::new(Vec::<i32>::new()));\n    let handles: Vec<_> = (0..10).map(|i| {\n        let data = data.clone();\n        std::thread::spawn(move || {\n            let mut lock = data.lock().unwrap();\n            lock.push(i);\n        })\n    }).collect();\n    for h in handles { h.join().unwrap(); }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "ttl_eviction",
+      "snippet": "use std::time::Instant;\n\nstruct CacheEntry<V> {\n    value: V,\n    inserted_at: Instant,\n}\n\nimpl<V> CacheEntry<V> {\n    fn is_expired(&self, ttl_secs: u64) -> bool {\n        self.inserted_at.elapsed().as_secs() >= ttl_secs\n    }\n}\n\nfn evict_expired<V>(entries: &mut Vec<CacheEntry<V>>, ttl_secs: u64) {\n    entries.retain(|e| !e.is_expired(ttl_secs));\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "tokio_rwlock_cache",
+      "snippet": "use tokio::sync::RwLock;\nuse std::collections::HashMap;\nuse std::time::{Duration, Instant};\n\npub struct AsyncCache<V: Clone> {\n    store: RwLock<HashMap<String, (V, Instant)>>,\n    ttl: Duration,\n}\n\nimpl<V: Clone + Send + Sync> AsyncCache<V> {\n    pub async fn get(&self, key: &str) -> Option<V> {\n        let guard = self.store.read().await;\n        guard.get(key).and_then(|(v, t)| {\n            if t.elapsed() < self.ttl { Some(v.clone()) } else { None }\n        })\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "lru_bounded",
+      "snippet": "use lru::LruCache;\nuse std::num::NonZeroUsize;\nuse std::sync::Mutex;\n\npub struct BoundedCache<V> {\n    inner: Mutex<LruCache<String, V>>,\n}\n\nimpl<V> BoundedCache<V> {\n    pub fn new(cap: usize) -> Self {\n        Self { inner: Mutex::new(LruCache::new(NonZeroUsize::new(cap).unwrap())) }\n    }\n    pub fn get(&self, key: &str) -> Option<&V> where V: Clone {\n        // Note: LruCache::get requires &mut self\n        None // simplified\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "cache_invalidation",
+      "snippet": "pub trait CacheInvalidator {\n    fn invalidate(&self, key: &str);\n    fn invalidate_all(&self);\n    fn invalidate_if<F: Fn(&str) -> bool>(&self, predicate: F);\n}\n\nstruct TimestampInvalidator {\n    threshold: std::time::Instant,\n}\n\nimpl CacheInvalidator for TimestampInvalidator {\n    fn invalidate(&self, _key: &str) { /* mark entry stale */ }\n    fn invalidate_all(&self) { /* clear all */ }\n    fn invalidate_if<F: Fn(&str) -> bool>(&self, _predicate: F) { /* conditional */ }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "parking_lot_rwlock",
+      "snippet": "use parking_lot::RwLock;\nuse std::collections::HashMap;\n\npub struct FastCache {\n    store: RwLock<HashMap<String, Vec<u8>>>,\n}\n\nimpl FastCache {\n    pub fn new() -> Self { Self { store: RwLock::new(HashMap::new()) } }\n    pub fn get(&self, key: &str) -> Option<Vec<u8>> {\n        self.store.read().get(key).cloned()\n    }\n    pub fn set(&self, key: String, value: Vec<u8>) {\n        self.store.write().insert(key, value);\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "crossbeam_skiplist",
+      "snippet": "use crossbeam_skiplist::SkipMap;\nuse std::time::Instant;\n\npub struct LockFreeCache {\n    map: SkipMap<String, (String, Instant)>,\n}\n\nimpl LockFreeCache {\n    pub fn new() -> Self { Self { map: SkipMap::new() } }\n    pub fn get(&self, key: &str) -> Option<String> {\n        self.map.get(key).map(|e| e.value().0.clone())\n    }\n    pub fn insert(&self, key: String, val: String) {\n        self.map.insert(key, (val, Instant::now()));\n    }\n}",
+      "relevant": true
+    },
+    {
+      "chunk_id": "binary_search",
+      "snippet": "fn binary_search<T: Ord>(arr: &[T], target: &T) -> Option<usize> {\n    let mut lo = 0;\n    let mut hi = arr.len();\n    while lo < hi {\n        let mid = lo + (hi - lo) / 2;\n        match arr[mid].cmp(target) {\n            std::cmp::Ordering::Equal => return Some(mid),\n            std::cmp::Ordering::Less => lo = mid + 1,\n            std::cmp::Ordering::Greater => hi = mid,\n        }\n    }\n    None\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "quicksort",
+      "snippet": "fn quicksort<T: Ord>(arr: &mut [T]) {\n    if arr.len() <= 1 { return; }\n    let pivot = partition(arr);\n    quicksort(&mut arr[..pivot]);\n    quicksort(&mut arr[pivot + 1..]);\n}\n\nfn partition<T: Ord>(arr: &mut [T]) -> usize {\n    let len = arr.len();\n    let pivot = len - 1;\n    let mut i = 0;\n    for j in 0..pivot {\n        if arr[j] <= arr[pivot] { arr.swap(i, j); i += 1; }\n    }\n    arr.swap(i, pivot);\n    i\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "http_server",
+      "snippet": "use hyper::{Body, Request, Response, Server};\nuse hyper::service::{make_service_fn, service_fn};\n\nasync fn handle(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {\n    Ok(Response::new(Body::from(\"Hello, World!\")))\n}\n\n#[tokio::main]\nasync fn main() {\n    let addr = ([127, 0, 0, 1], 3000).into();\n    let make_svc = make_service_fn(|_conn| async { Ok::<_, hyper::Error>(service_fn(handle)) });\n    Server::bind(&addr).serve(make_svc).await.unwrap();\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "file_reader",
+      "snippet": "use std::fs::File;\nuse std::io::{self, BufRead, BufReader};\n\nfn read_lines(path: &str) -> io::Result<Vec<String>> {\n    let file = File::open(path)?;\n    let reader = BufReader::new(file);\n    reader.lines().collect()\n}\n\nfn count_lines(path: &str) -> io::Result<usize> {\n    let file = File::open(path)?;\n    Ok(BufReader::new(file).lines().count())\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "cli_parser",
+      "snippet": "use clap::Parser;\n\n#[derive(Parser, Debug)]\n#[command(author, version, about)]\nstruct Cli {\n    #[arg(short, long)]\n    input: String,\n    #[arg(short, long, default_value_t = false)]\n    verbose: bool,\n    #[arg(short, long, default_value_t = 8)]\n    threads: usize,\n}\n\nfn main() {\n    let cli = Cli::parse();\n    println!(\"Input: {}, Verbose: {}, Threads: {}\", cli.input, cli.verbose, cli.threads);\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "json_serde",
+      "snippet": "use serde::{Deserialize, Serialize};\n\n#[derive(Serialize, Deserialize, Debug)]\nstruct Config {\n    name: String,\n    port: u16,\n    debug: bool,\n}\n\nfn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {\n    let data = std::fs::read_to_string(path)?;\n    let config: Config = serde_json::from_str(&data)?;\n    Ok(config)\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "regex_matching",
+      "snippet": "use regex::Regex;\n\nfn extract_emails(text: &str) -> Vec<&str> {\n    let re = Regex::new(r\"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\").unwrap();\n    re.find_iter(text).map(|m| m.as_str()).collect()\n}\n\nfn is_valid_ip(s: &str) -> bool {\n    let re = Regex::new(r\"^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$\").unwrap();\n    re.is_match(s)\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "error_handling",
+      "snippet": "#[derive(Debug)]\nenum AppError {\n    Io(std::io::Error),\n    Parse(std::num::ParseIntError),\n    Custom(String),\n}\n\nimpl std::fmt::Display for AppError {\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n        match self {\n            Self::Io(e) => write!(f, \"IO error: {e}\"),\n            Self::Parse(e) => write!(f, \"Parse error: {e}\"),\n            Self::Custom(msg) => write!(f, \"{msg}\"),\n        }\n    }\n}\nimpl std::error::Error for AppError {}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "linked_list",
+      "snippet": "struct Node<T> {\n    value: T,\n    next: Option<Box<Node<T>>>,\n}\n\nstruct LinkedList<T> {\n    head: Option<Box<Node<T>>>,\n    len: usize,\n}\n\nimpl<T> LinkedList<T> {\n    fn new() -> Self { Self { head: None, len: 0 } }\n    fn push(&mut self, val: T) {\n        let node = Box::new(Node { value: val, next: self.head.take() });\n        self.head = Some(node);\n        self.len += 1;\n    }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "trait_object",
+      "snippet": "trait Shape {\n    fn area(&self) -> f64;\n    fn perimeter(&self) -> f64;\n}\n\nstruct Circle { radius: f64 }\nimpl Shape for Circle {\n    fn area(&self) -> f64 { std::f64::consts::PI * self.radius * self.radius }\n    fn perimeter(&self) -> f64 { 2.0 * std::f64::consts::PI * self.radius }\n}\n\nfn total_area(shapes: &[Box<dyn Shape>]) -> f64 {\n    shapes.iter().map(|s| s.area()).sum()\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "iterator_chain",
+      "snippet": "fn process_data(data: &[i32]) -> Vec<i32> {\n    data.iter()\n        .filter(|&&x| x > 0)\n        .map(|&x| x * 2)\n        .take(100)\n        .collect()\n}\n\nfn flatten_nested(nested: Vec<Vec<String>>) -> Vec<String> {\n    nested.into_iter().flatten().collect()\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "async_runtime",
+      "snippet": "#[tokio::main]\nasync fn main() {\n    let handle = tokio::spawn(async {\n        tokio::time::sleep(std::time::Duration::from_secs(1)).await;\n        42\n    });\n    let result = handle.await.unwrap();\n    println!(\"Result: {result}\");\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "channel_mpsc",
+      "snippet": "use tokio::sync::mpsc;\n\nasync fn producer_consumer() {\n    let (tx, mut rx) = mpsc::channel::<String>(32);\n    let producer = tokio::spawn(async move {\n        for i in 0..10 {\n            tx.send(format!(\"msg {i}\")).await.unwrap();\n        }\n    });\n    let consumer = tokio::spawn(async move {\n        while let Some(msg) = rx.recv().await {\n            println!(\"Received: {msg}\");\n        }\n    });\n    producer.await.unwrap();\n    consumer.await.unwrap();\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "database_pool",
+      "snippet": "use sqlx::sqlite::SqlitePoolOptions;\n\nasync fn create_pool(url: &str) -> sqlx::Result<sqlx::SqlitePool> {\n    SqlitePoolOptions::new()\n        .max_connections(5)\n        .connect(url)\n        .await\n}\n\nasync fn query_users(pool: &sqlx::SqlitePool) -> sqlx::Result<Vec<(i64, String)>> {\n    sqlx::query_as(\"SELECT id, name FROM users\")\n        .fetch_all(pool)\n        .await\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "builder_pattern",
+      "snippet": "pub struct RequestBuilder {\n    url: String,\n    method: String,\n    headers: Vec<(String, String)>,\n    body: Option<Vec<u8>>,\n}\n\nimpl RequestBuilder {\n    pub fn new(url: &str) -> Self {\n        Self { url: url.into(), method: \"GET\".into(), headers: Vec::new(), body: None }\n    }\n    pub fn method(mut self, m: &str) -> Self { self.method = m.into(); self }\n    pub fn header(mut self, k: &str, v: &str) -> Self { self.headers.push((k.into(), v.into())); self }\n    pub fn body(mut self, b: Vec<u8>) -> Self { self.body = Some(b); self }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "logging_setup",
+      "snippet": "use tracing_subscriber::{fmt, EnvFilter};\n\nfn init_logging() {\n    let filter = EnvFilter::try_from_default_env()\n        .unwrap_or_else(|_| EnvFilter::new(\"info\"));\n    fmt::Subscriber::builder()\n        .with_env_filter(filter)\n        .with_target(false)\n        .init();\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "test_helper",
+      "snippet": "#[cfg(test)]\nmod tests {\n    use super::*;\n\n    fn setup() -> TempDir {\n        let dir = tempfile::tempdir().unwrap();\n        std::fs::write(dir.path().join(\"test.txt\"), \"hello\").unwrap();\n        dir\n    }\n\n    #[test]\n    fn test_read_file() {\n        let dir = setup();\n        let content = std::fs::read_to_string(dir.path().join(\"test.txt\")).unwrap();\n        assert_eq!(content, \"hello\");\n    }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "graph_bfs",
+      "snippet": "use std::collections::{HashMap, HashSet, VecDeque};\n\nfn bfs(graph: &HashMap<usize, Vec<usize>>, start: usize) -> Vec<usize> {\n    let mut visited = HashSet::new();\n    let mut queue = VecDeque::new();\n    let mut order = Vec::new();\n    visited.insert(start);\n    queue.push_back(start);\n    while let Some(node) = queue.pop_front() {\n        order.push(node);\n        if let Some(neighbors) = graph.get(&node) {\n            for &n in neighbors {\n                if visited.insert(n) { queue.push_back(n); }\n            }\n        }\n    }\n    order\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "macro_derive",
+      "snippet": "use proc_macro::TokenStream;\nuse quote::quote;\nuse syn::{parse_macro_input, DeriveInput};\n\n#[proc_macro_derive(MyTrait)]\npub fn derive_my_trait(input: TokenStream) -> TokenStream {\n    let input = parse_macro_input!(input as DeriveInput);\n    let name = &input.ident;\n    let expanded = quote! {\n        impl MyTrait for #name {\n            fn describe(&self) -> String { stringify!(#name).to_string() }\n        }\n    };\n    TokenStream::from(expanded)\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "string_utils",
+      "snippet": "fn capitalize(s: &str) -> String {\n    let mut chars = s.chars();\n    match chars.next() {\n        None => String::new(),\n        Some(c) => c.to_uppercase().to_string() + chars.as_str(),\n    }\n}\n\nfn truncate(s: &str, max_len: usize) -> &str {\n    if s.len() <= max_len { s } else { &s[..max_len] }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "hash_map_ops",
+      "snippet": "use std::collections::HashMap;\n\nfn word_count(text: &str) -> HashMap<&str, usize> {\n    let mut counts = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word).or_insert(0) += 1;\n    }\n    counts\n}\n\nfn merge_maps(a: HashMap<String, i32>, b: HashMap<String, i32>) -> HashMap<String, i32> {\n    let mut result = a;\n    for (k, v) in b { *result.entry(k).or_insert(0) += v; }\n    result\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "tcp_listener",
+      "snippet": "use std::net::TcpListener;\nuse std::io::{Read, Write};\n\nfn run_echo_server(addr: &str) -> std::io::Result<()> {\n    let listener = TcpListener::bind(addr)?;\n    for stream in listener.incoming() {\n        let mut stream = stream?;\n        let mut buf = [0u8; 1024];\n        let n = stream.read(&mut buf)?;\n        stream.write_all(&buf[..n])?;\n    }\n    Ok(())\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "enum_match",
+      "snippet": "enum Token {\n    Number(f64),\n    Plus,\n    Minus,\n    Star,\n    Slash,\n    Eof,\n}\n\nfn eval(tokens: &[Token]) -> f64 {\n    match &tokens[0] {\n        Token::Number(n) => *n,\n        _ => 0.0,\n    }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "crypto_hash",
+      "snippet": "use sha2::{Sha256, Digest};\n\nfn hash_bytes(data: &[u8]) -> String {\n    let mut hasher = Sha256::new();\n    hasher.update(data);\n    let result = hasher.finalize();\n    hex::encode(result)\n}\n\nfn verify_hash(data: &[u8], expected: &str) -> bool {\n    hash_bytes(data) == expected\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "path_utils",
+      "snippet": "use std::path::{Path, PathBuf};\n\nfn ensure_dir(path: &Path) -> std::io::Result<()> {\n    if !path.exists() { std::fs::create_dir_all(path)?; }\n    Ok(())\n}\n\nfn resolve_relative(base: &Path, relative: &str) -> PathBuf {\n    base.join(relative).canonicalize().unwrap_or_else(|_| base.join(relative))\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "datetime_parse",
+      "snippet": "fn parse_timestamp(s: &str) -> Option<u64> {\n    s.parse::<u64>().ok()\n}\n\nfn format_duration(secs: u64) -> String {\n    let hours = secs / 3600;\n    let mins = (secs % 3600) / 60;\n    let s = secs % 60;\n    format!(\"{hours:02}:{mins:02}:{s:02}\")\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "vec_dedup",
+      "snippet": "fn unique<T: Eq + std::hash::Hash + Clone>(items: &[T]) -> Vec<T> {\n    let mut seen = std::collections::HashSet::new();\n    items.iter().filter(|x| seen.insert((*x).clone())).cloned().collect()\n}\n\nfn remove_consecutive_dupes<T: PartialEq>(mut v: Vec<T>) -> Vec<T> {\n    v.dedup();\n    v\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "option_combinator",
+      "snippet": "fn find_user(id: u64) -> Option<String> {\n    if id > 0 { Some(format!(\"user_{id}\")) } else { None }\n}\n\nfn get_user_email(id: u64) -> Option<String> {\n    find_user(id).map(|name| format!(\"{name}@example.com\"))\n}\n\nfn get_or_default(opt: Option<String>) -> String {\n    opt.unwrap_or_else(|| \"anonymous\".to_string())\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "bit_manipulation",
+      "snippet": "fn count_ones(n: u32) -> u32 { n.count_ones() }\n\nfn is_power_of_two(n: u32) -> bool { n > 0 && (n & (n - 1)) == 0 }\n\nfn set_bit(n: u32, pos: u32) -> u32 { n | (1 << pos) }\n\nfn clear_bit(n: u32, pos: u32) -> u32 { n & !(1 << pos) }\n\nfn toggle_bit(n: u32, pos: u32) -> u32 { n ^ (1 << pos) }",
+      "relevant": false
+    },
+    {
+      "chunk_id": "closure_fn",
+      "snippet": "fn apply<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 { f(x) }\n\nfn make_adder(n: i32) -> impl Fn(i32) -> i32 { move |x| x + n }\n\nfn compose<F, G>(f: F, g: G) -> impl Fn(i32) -> i32\nwhere F: Fn(i32) -> i32, G: Fn(i32) -> i32 {\n    move |x| f(g(x))\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "thread_spawn",
+      "snippet": "use std::thread;\n\nfn parallel_sum(data: &[i32]) -> i32 {\n    let mid = data.len() / 2;\n    let (left, right) = data.split_at(mid);\n    let left = left.to_vec();\n    let right = right.to_vec();\n    let h1 = thread::spawn(move || left.iter().sum::<i32>());\n    let h2 = thread::spawn(move || right.iter().sum::<i32>());\n    h1.join().unwrap() + h2.join().unwrap()\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "result_chain",
+      "snippet": "fn parse_and_double(s: &str) -> Result<i32, String> {\n    s.parse::<i32>().map(|n| n * 2).map_err(|e| e.to_string())\n}\n\nfn chain_operations(input: &str) -> Result<String, String> {\n    let n = parse_and_double(input)?;\n    if n > 100 { Err(\"too large\".into()) } else { Ok(format!(\"result: {n}\")) }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "struct_methods",
+      "snippet": "struct Point { x: f64, y: f64 }\n\nimpl Point {\n    fn new(x: f64, y: f64) -> Self { Self { x, y } }\n    fn distance(&self, other: &Point) -> f64 {\n        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()\n    }\n    fn midpoint(&self, other: &Point) -> Point {\n        Point::new((self.x + other.x) / 2.0, (self.y + other.y) / 2.0)\n    }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "generic_bounds",
+      "snippet": "fn largest<T: PartialOrd>(list: &[T]) -> &T {\n    let mut max = &list[0];\n    for item in &list[1..] {\n        if item > max { max = item; }\n    }\n    max\n}\n\nfn print_all<T: std::fmt::Display>(items: &[T]) {\n    for item in items { println!(\"{item}\"); }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "slice_ops",
+      "snippet": "fn sliding_window(data: &[f64], window: usize) -> Vec<f64> {\n    data.windows(window).map(|w| w.iter().sum::<f64>() / w.len() as f64).collect()\n}\n\nfn chunk_and_process(data: &[u8], chunk_size: usize) -> Vec<u8> {\n    data.chunks(chunk_size).flat_map(|c| c.iter().rev().copied()).collect()\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "type_alias",
+      "snippet": "type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;\ntype Map<V> = std::collections::HashMap<String, V>;\n\nfn do_work() -> Result<()> {\n    let _map: Map<i32> = Map::new();\n    Ok(())\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "mod_visibility",
+      "snippet": "mod inner {\n    pub(crate) struct Config { pub(super) value: String }\n    impl Config {\n        pub fn new(v: &str) -> Self { Self { value: v.into() } }\n    }\n}\n\nfn use_config() {\n    let cfg = inner::Config::new(\"test\");\n    println!(\"{}\", cfg.value);\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "unsafe_raw_ptr",
+      "snippet": "fn swap_values(a: &mut i32, b: &mut i32) {\n    unsafe {\n        let pa: *mut i32 = a;\n        let pb: *mut i32 = b;\n        std::ptr::swap(pa, pb);\n    }\n}\n\nunsafe fn read_raw(ptr: *const u8, len: usize) -> Vec<u8> {\n    std::slice::from_raw_parts(ptr, len).to_vec()\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "drop_impl",
+      "snippet": "struct TempFile { path: std::path::PathBuf }\n\nimpl TempFile {\n    fn new(path: &str) -> Self {\n        std::fs::write(path, \"\").unwrap();\n        Self { path: path.into() }\n    }\n}\n\nimpl Drop for TempFile {\n    fn drop(&mut self) {\n        let _ = std::fs::remove_file(&self.path);\n    }\n}",
+      "relevant": false
+    },
+    {
+      "chunk_id": "matrix_multiply",
+      "snippet": "fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {\n    let rows = a.len();\n    let cols = b[0].len();\n    let inner = b.len();\n    let mut result = vec![vec![0.0; cols]; rows];\n    for i in 0..rows {\n        for j in 0..cols {\n            for k in 0..inner {\n                result[i][j] += a[i][k] * b[k][j];\n            }\n        }\n    }\n    result\n}",
+      "relevant": false
+    }
+  ]
+}
