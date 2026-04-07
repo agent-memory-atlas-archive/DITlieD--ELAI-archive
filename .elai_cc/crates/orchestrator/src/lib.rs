@@ -1,3 +1,4 @@
+pub mod agent_pool;
 mod bash;
 pub mod bash_validation;
 pub mod branch_lock;
@@ -195,6 +196,10 @@ pub use elai_providers::telemetry_types::{
     AnalyticsEvent, AnthropicRequestProfile, ClientIdentity, JsonlTelemetrySink,
     MemoryTelemetrySink, SessionTraceRecord, SessionTracer, TelemetryEvent, TelemetrySink,
     DEFAULT_ANTHROPIC_VERSION,
+};
+pub use agent_pool::{
+    default_grc_config, AgentHandle, AgentMessage, AgentPool, AgentPoolConfig, AgentPoolError,
+    AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,

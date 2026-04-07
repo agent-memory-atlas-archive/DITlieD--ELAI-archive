@@ -734,6 +734,7 @@ dependencies = [
  "elai-core",
  "elai-plugins",
  "elai-providers",
+ "elai-reasoning",
  "elai-rules",
  "glob",
  "proptest",
@@ -749,6 +750,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "uuid",
  "walkdir",
 ]
 
