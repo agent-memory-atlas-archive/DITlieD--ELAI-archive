@@ -7,6 +7,8 @@ pub mod dkg;
 pub mod pagerank;
 pub mod pipeline;
 pub mod reranker;
+#[cfg(feature = "splade")]
+pub mod splade;
 pub mod vector;
 
 // ---------------------------------------------------------------------------

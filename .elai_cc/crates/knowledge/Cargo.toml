@@ -23,6 +23,7 @@ usearch = { version = "2.24.0", default-features = false, optional = true }
 [features]
 default = []
 usearch-hnsw = ["usearch"]
+splade = []
 
 [dev-dependencies]
 proptest = "1"
