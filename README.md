@@ -33,6 +33,6 @@ every state transition gated by artifacts
 
 ---
 
-<sub>built for one user, then the world</sub>
+<sub>built for one user, then the world - empire</sub>
 
 </div>
