@@ -490,3 +490,234 @@ pub fn rrf_fuse(
     result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     result
 }
+
+// ---------------------------------------------------------------------------
+// Measurement utilities (1H.4)
+// ---------------------------------------------------------------------------
+
+/// Jaccard similarity of two token sets.
+///
+/// Returns the size of intersection divided by the size of union.
+/// Returns 0.0 if both sets are empty.
+pub fn jaccard_similarity(a: &[String], b: &[String]) -> f64 {
+    use std::collections::HashSet;
+    let set_a: HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
+    let set_b: HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+/// Compute recall@k: fraction of relevant documents found in the top-k results.
+///
+/// `retrieved` is the list of document IDs in rank order.
+/// `relevant` is the set of ground-truth relevant document IDs.
+pub fn recall_at_k(retrieved: &[String], relevant: &[String], k: usize) -> f64 {
+    if relevant.is_empty() {
+        return 0.0;
+    }
+    let top_k: Vec<&str> = retrieved.iter().take(k).map(|s| s.as_str()).collect();
+    let hits = relevant
+        .iter()
+        .filter(|r| top_k.contains(&r.as_str()))
+        .count();
+    hits as f64 / relevant.len() as f64
+}
+
+/// Wilcoxon signed-rank test (paired, two-sided).
+///
+/// Tests whether the median of the differences between paired observations
+/// is zero. Uses normal approximation (valid for n >= 20 non-zero pairs).
+///
+/// Returns `(w_statistic, p_value, n_nonzero_pairs)`.
+/// - `w_statistic`: the smaller of W+ and W- rank sums.
+/// - `p_value`: two-sided p-value from normal approximation.
+/// - `n_nonzero_pairs`: number of pairs with non-zero difference.
+///
+/// If fewer than 5 non-zero pairs exist, returns p_value = 1.0
+/// (insufficient data for any meaningful test).
+pub fn wilcoxon_signed_rank(x: &[f64], y: &[f64]) -> (f64, f64, usize) {
+    assert_eq!(x.len(), y.len(), "paired samples must have equal length");
+
+    // Compute differences, drop zeros.
+    let diffs: Vec<f64> = x
+        .iter()
+        .zip(y.iter())
+        .map(|(a, b)| a - b)
+        .filter(|d| d.abs() > 1e-12)
+        .collect();
+
+    let n = diffs.len();
+    if n < 5 {
+        return (0.0, 1.0, n);
+    }
+
+    // Rank absolute differences (average ranks for ties).
+    let mut abs_diffs: Vec<(usize, f64)> = diffs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (i, d.abs()))
+        .collect();
+    abs_diffs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    let mut ranks = vec![0.0_f64; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i;
+        while j < n && (abs_diffs[j].1 - abs_diffs[i].1).abs() < 1e-12 {
+            j += 1;
+        }
+        // Average rank for tied group [i, j).
+        let avg_rank = (i + 1 + j) as f64 / 2.0;
+        for k in i..j {
+            ranks[abs_diffs[k].0] = avg_rank;
+        }
+        i = j;
+    }
+
+    // Sum ranks for positive and negative differences.
+    let mut w_plus = 0.0;
+    let mut w_minus = 0.0;
+    for (idx, d) in diffs.iter().enumerate() {
+        if *d > 0.0 {
+            w_plus += ranks[idx];
+        } else {
+            w_minus += ranks[idx];
+        }
+    }
+
+    let w = w_plus.min(w_minus);
+    let nf = n as f64;
+
+    // Normal approximation: E[W] = n(n+1)/4, Var[W] = n(n+1)(2n+1)/24.
+    let mean = nf * (nf + 1.0) / 4.0;
+    let var = nf * (nf + 1.0) * (2.0 * nf + 1.0) / 24.0;
+    let std_dev = var.sqrt();
+
+    if std_dev < 1e-12 {
+        return (w, 1.0, n);
+    }
+
+    // Continuity correction.
+    let z = ((w - mean).abs() - 0.5) / std_dev;
+
+    // Two-sided p-value from standard normal CDF approximation.
+    let p = 2.0 * standard_normal_cdf(-z.abs());
+
+    (w, p, n)
+}
+
+/// Standard normal CDF approximation (Abramowitz and Stegun, formula 7.1.26).
+/// Accurate to ~1.5e-7. No external dependencies needed.
+fn standard_normal_cdf(x: f64) -> f64 {
+    if x < -8.0 {
+        return 0.0;
+    }
+    if x > 8.0 {
+        return 1.0;
+    }
+
+    let t = 1.0 / (1.0 + 0.2316419 * x.abs());
+    let d = 0.3989422804014327; // 1/sqrt(2*pi)
+    let p = d * (-x * x / 2.0).exp()
+        * (t * (0.319381530
+            + t * (-0.356563782
+                + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))));
+    if x > 0.0 {
+        1.0 - p
+    } else {
+        p
+    }
+}
+
+/// Result of a SPLADE measurement run.
+#[derive(Debug)]
+pub struct MeasurementResult {
+    /// Vocabulary coverage on code-specific tokens (0.0-1.0).
+    pub vocab_coverage_code: f64,
+    /// Per-query recall deltas: (query, bm25_recall, splade_recall, delta_percent).
+    pub per_query_results: Vec<QueryResult>,
+    /// Mean recall delta across all valid queries.
+    pub mean_delta_percent: f64,
+    /// Standard deviation of recall deltas.
+    pub std_delta_percent: f64,
+    /// Wilcoxon signed-rank p-value.
+    pub wilcoxon_p_value: f64,
+    /// Number of non-zero paired differences.
+    pub n_nonzero_pairs: usize,
+    /// Final decision.
+    pub decision: MeasurementDecision,
+}
+
+/// Per-query measurement result.
+#[derive(Debug, Clone)]
+pub struct QueryResult {
+    pub query: String,
+    pub bm25_recall: f64,
+    pub splade_recall: f64,
+    pub delta_percent: Option<f64>,
+}
+
+/// Keep/drop decision with rationale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeasurementDecision {
+    /// Vocab coverage below threshold — SPLADE fundamentally mismatched.
+    EarlyDrop { coverage: String },
+    /// Delta < 5% or p >= 0.05 — improvement absent or insignificant.
+    Drop { reason: String },
+    /// Delta >= 5% AND p < 0.05 — improvement significant.
+    Keep,
+    /// Delta >= 5% but p >= 0.05 — promising but inconclusive.
+    Inconclusive { reason: String },
+}
+
+impl MeasurementDecision {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::EarlyDrop { .. } => "EARLY DROP",
+            Self::Drop { .. } => "DROP",
+            Self::Keep => "KEEP",
+            Self::Inconclusive { .. } => "INCONCLUSIVE (default DROP)",
+        }
+    }
+}
+
+/// Apply the keep/drop decision logic from phase 1H.4d.
+///
+/// - KEEP if mean_delta >= 5% AND p_value < 0.05.
+/// - DROP if mean_delta < 5% OR p_value >= 0.05.
+/// - INCONCLUSIVE if delta >= 5% but p >= 0.05.
+pub fn keep_drop_decision(
+    mean_delta_percent: f64,
+    p_value: f64,
+    n_nonzero_pairs: usize,
+) -> MeasurementDecision {
+    if n_nonzero_pairs < 20 {
+        return MeasurementDecision::Drop {
+            reason: format!(
+                "insufficient paired differences (N={n_nonzero_pairs}, need >=20) \
+                 for significance testing"
+            ),
+        };
+    }
+
+    if mean_delta_percent >= 5.0 && p_value < 0.05 {
+        MeasurementDecision::Keep
+    } else if mean_delta_percent >= 5.0 && p_value >= 0.05 {
+        MeasurementDecision::Inconclusive {
+            reason: format!(
+                "delta={mean_delta_percent:.2}% >= 5% but p={p_value:.4} >= 0.05 — \
+                 promising but not statistically significant. Need larger corpus."
+            ),
+        }
+    } else {
+        MeasurementDecision::Drop {
+            reason: format!(
+                "delta={mean_delta_percent:.2}% < 5% threshold OR p={p_value:.4} >= 0.05"
+            ),
+        }
+    }
+}
