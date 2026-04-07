@@ -4,6 +4,7 @@ pub mod branch_lock;
 mod compact;
 mod conversation;
 mod file_ops;
+pub mod fsm;
 mod hooks;
 mod lane_events;
 mod mcp;
@@ -67,6 +68,10 @@ pub use elai_core::{
 };
 
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
+pub use fsm::{
+    EvidenceArtifact, Fsm, FsmError, FsmState, PersistedFsmState, ReplanLogEntry, ReplanRequest,
+    ReplanSeverity, TransitionRecord,
+};
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{
