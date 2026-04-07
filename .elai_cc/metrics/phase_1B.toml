@@ -1,0 +1,12 @@
+# ELAI phase 1B BM25 metrics
+index_build_time_ms = 538
+file_count = 73
+chunk_count = 1544
+binary_skipped = 0
+query_p50_ms = 1
+query_p99_ms = 2
+update_file_p99_ms = 100
+orphan_files = 0
+index_size_bytes = 2456531
+tantivy_version = "0.26.0"
+index_format_version = 7

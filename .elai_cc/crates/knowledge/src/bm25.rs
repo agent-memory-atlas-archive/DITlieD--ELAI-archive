@@ -73,6 +73,8 @@ pub struct IndexStats {
     pub files_indexed: usize,
     pub chunks_indexed: usize,
     pub files_skipped_binary: usize,
+    /// Wall-clock elapsed time. Caller-populated (measurement binary sets this
+    /// externally via std::time::Instant to avoid raw entropy in library code).
     pub elapsed_ms: u64,
 }
 
@@ -131,6 +133,19 @@ impl Bm25Index {
 
         let index = Index::create_in_dir(&index_path, schema.clone())
             .or_else(|_| Index::open_in_dir(&index_path))?;
+
+        // Validate schema fields match expectations (guards against stale index from prior schema)
+        let existing_schema = index.schema();
+        let expected_fields = ["path", "content", "line_start", "line_end", "chunk_kind"];
+        for name in &expected_fields {
+            if existing_schema.get_field(name).is_err() {
+                return Err(format!(
+                    "index schema mismatch: missing field '{name}' — delete index at {} and rebuild",
+                    index_path.display()
+                )
+                .into());
+            }
+        }
 
         let writer = index.writer(WRITER_HEAP_BYTES)?;
         let reader = index
