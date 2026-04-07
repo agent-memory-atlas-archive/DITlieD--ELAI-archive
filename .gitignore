@@ -1,57 +1,16 @@
-# Workflow internals (session state, audit scratch, reasoning logs)
-workflow/
+# Ignore everything
+*
 
-# Baselines (local benchmarks)
-baselines/
-
-# Docs
-docs/
-
-# Memory bank (ephemeral per-session context)
-memory-bank/
-
-# All dot-folders in root (except .githooks and .elai_cc)
-.*/
-!.githooks/
-.githooks/.env
+# Except .elai_cc and .gitignore
+!.gitignore
 !.elai_cc/
+!.elai_cc/**
 
-# Hypothesis test cache
-.hypothesis/
-
-# Rust build artifacts
-target/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-.venv/
-venv/
-dist/
-build/
-
-# IDE / editor
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS junk
-desktop.ini
-Thumbs.db
-.DS_Store
-
-# Archives
-*.rar
-*.zip
-*.7z
-
-# Secrets
-.env
-.env.*
-credentials.json
-*.pem
-*.key
+# Still ignore build artifacts and local state inside .elai_cc
+.elai_cc/target/
+.elai_cc/workflow/
+.elai_cc/rust_archived/target/
+.elai_cc/.clawd-agents/
+.elai_cc/rust_archived/.clawd-agents/
+.elai_cc/rust_archived/crates/**/.claude-plugin/
+.elai_cc/rust_archived/crates/**/.claw/
