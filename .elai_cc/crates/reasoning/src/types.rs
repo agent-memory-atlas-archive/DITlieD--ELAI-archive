@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // ---------------------------------------------------------------------------
 // GrcState: the 7 states in a Grounded Reasoning Chain
 // ---------------------------------------------------------------------------
@@ -162,6 +164,12 @@ pub enum GrcError {
         claim: String,
         reason: String,
     },
+
+    #[error("insufficient findings for role '{role}': expected >= {expected_min}")]
+    InsufficientFindings { role: String, expected_min: usize },
+
+    #[error("config validation failed for role '{role}': {reason}")]
+    ConfigValidation { role: String, reason: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -177,18 +185,95 @@ pub struct ThinkResult {
 }
 
 // ---------------------------------------------------------------------------
-// AgentGrcConfig: per-agent GRC configuration (phase 2C full impl, 2A for scope)
+// AgentGrcConfig: per-agent GRC configuration (phase 2C)
+// 8 fields: role, budget, required_steps, grounding_level, csq_required,
+// allowed_methods, transition_overrides, require_scope_enumeration.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct AgentGrcConfig {
+    /// Agent role name (e.g., "executor", "auditor", "context_compiler").
+    /// Validated against known roles at load time (String, not enum — avoids
+    /// cross-crate coupling with orchestrator's role definitions).
+    pub role: String,
+    /// Per-agent budget (overrides global default when set).
+    pub budget: GrcBudget,
+    /// Required step sequence for this role's GRC chain.
+    /// Must be non-empty. Must form a valid chain through default + overridden transitions.
+    pub required_steps: Vec<GrcState>,
+    /// Minimum accepted grounding level. Steps with weaker grounding are rejected.
+    /// Ordering: Uncertain < High < Verified.
+    pub grounding_level: GroundingLevel,
+    /// Whether counterfactual safety questions are required before finalizing.
+    /// If true, required_steps must include at least one Verify step.
+    pub csq_required: bool,
+    /// Policy restriction: which verification methods this role may request.
+    /// Enforcement is in-process (GRC engine rejects disallowed methods).
+    pub allowed_methods: Vec<VerificationMethod>,
+    /// Additive transition overrides merged with GrcState::allowed_next().
+    /// Cannot remove default transitions, only add new ones.
+    /// Example: auditor needs {Verify: [Verify, Observe]} for double-verify.
+    pub transition_overrides: HashMap<GrcState, Vec<GrcState>>,
+    /// When true, Observe step's scope field must enumerate all task components.
+    /// Orchestrator validates every scope item appears in subsequent PlanAction.
+    /// Default: true for executor/designer, false for memory_writer.
     pub require_scope_enumeration: bool,
 }
 
 impl Default for AgentGrcConfig {
     fn default() -> Self {
         Self {
+            role: String::new(),
+            budget: GrcBudget::default(),
+            required_steps: vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::PlanAction,
+                GrcState::Act,
+                GrcState::Verify,
+            ],
+            grounding_level: GroundingLevel::Uncertain,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+                VerificationMethod::TestCheck,
+                VerificationMethod::WebCheck,
+                VerificationMethod::ApiCheck,
+                VerificationMethod::ApiRegistryCheck,
+            ],
+            transition_overrides: HashMap::new(),
             require_scope_enumeration: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GrcDefaults: global GRC defaults loaded from [grc.defaults] in elai_cc.toml
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct GrcDefaults {
+    pub budget: GrcBudget,
+    pub grounding_level: GroundingLevel,
+    pub csq_required: bool,
+    pub allowed_methods: Vec<VerificationMethod>,
+}
+
+impl Default for GrcDefaults {
+    fn default() -> Self {
+        Self {
+            budget: GrcBudget::default(),
+            grounding_level: GroundingLevel::Uncertain,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+                VerificationMethod::TestCheck,
+                VerificationMethod::WebCheck,
+                VerificationMethod::ApiCheck,
+                VerificationMethod::ApiRegistryCheck,
+            ],
         }
     }
 }

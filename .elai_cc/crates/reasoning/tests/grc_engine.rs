@@ -265,6 +265,7 @@ fn t09_first_step_must_be_observe() {
 fn t10_scope_enumeration_present_when_required() {
     let config = AgentGrcConfig {
         require_scope_enumeration: true,
+        ..AgentGrcConfig::default()
     };
     let mut engine = BasicGrcEngine::with_config(config);
     engine.set_budget("t", 10, 5000);
@@ -308,6 +309,7 @@ fn t10_scope_enumeration_present_when_required() {
 fn t11_scope_enumeration_missing_when_required() {
     let config = AgentGrcConfig {
         require_scope_enumeration: true,
+        ..AgentGrcConfig::default()
     };
     let mut engine = BasicGrcEngine::with_config(config);
 
@@ -335,6 +337,7 @@ fn t11_scope_enumeration_missing_when_required() {
 fn t12_scope_enumeration_optional_when_not_required() {
     let config = AgentGrcConfig {
         require_scope_enumeration: false,
+        ..AgentGrcConfig::default()
     };
     let mut engine = BasicGrcEngine::with_config(config);
 

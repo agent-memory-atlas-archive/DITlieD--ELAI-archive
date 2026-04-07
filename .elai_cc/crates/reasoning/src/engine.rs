@@ -27,6 +27,13 @@ pub trait GrcEngine {
         context: &str,
     ) -> Result<VerificationResult, GrcError>;
     fn ground_plan(&self, plan: &str) -> PlanGroundingResult;
+
+    // Phase 2C: per-agent configuration routing
+    /// Apply an agent-specific GRC configuration. Resets all topic state
+    /// so leftover budget/steps from a previous config do not leak.
+    fn with_agent_config(&mut self, config: AgentGrcConfig);
+    /// Return the current agent config, if any.
+    fn get_agent_config(&self) -> Option<&AgentGrcConfig>;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,7 +42,7 @@ pub trait GrcEngine {
 
 pub struct BasicGrcEngine {
     topics: HashMap<String, TopicState>,
-    config: AgentGrcConfig,
+    agent_config: Option<AgentGrcConfig>,
     verifier: Box<dyn Verifier>,
 }
 
@@ -45,7 +52,7 @@ impl BasicGrcEngine {
         let test_runner = Box::new(NoopTestRunner::new());
         Self {
             topics: HashMap::new(),
-            config: AgentGrcConfig::default(),
+            agent_config: None,
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
         }
     }
@@ -55,7 +62,7 @@ impl BasicGrcEngine {
         let test_runner = Box::new(NoopTestRunner::new());
         Self {
             topics: HashMap::new(),
-            config,
+            agent_config: Some(config),
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
         }
     }
@@ -63,9 +70,16 @@ impl BasicGrcEngine {
     pub fn with_verifier(verifier: Box<dyn Verifier>) -> Self {
         Self {
             topics: HashMap::new(),
-            config: AgentGrcConfig::default(),
+            agent_config: None,
             verifier,
         }
+    }
+
+    /// Returns the effective require_scope_enumeration setting from agent config.
+    fn require_scope_enumeration(&self) -> bool {
+        self.agent_config
+            .as_ref()
+            .map_or(false, |c| c.require_scope_enumeration)
     }
 
     /// Parse a claim string with "type:reference" format into (VerificationMethod, stripped_ref).
@@ -157,6 +171,8 @@ impl Default for BasicGrcEngine {
 impl GrcEngine for BasicGrcEngine {
     fn think(&mut self, step: ThinkStep) -> Result<ThinkResult, GrcError> {
         let topic_key = step.topic.clone();
+        // Capture config-derived values before borrowing self.topics mutably.
+        let scope_enumeration_required = self.require_scope_enumeration();
 
         // Ensure topic exists with default budget if not yet configured.
         let state = self
@@ -261,7 +277,7 @@ impl GrcEngine for BasicGrcEngine {
         }
 
         // --- Scope enumeration validation ---
-        if self.config.require_scope_enumeration {
+        if scope_enumeration_required {
             if step.step_type == GrcState::Observe {
                 match &step.scope {
                     Some(scope_items) => {
@@ -432,5 +448,15 @@ impl GrcEngine for BasicGrcEngine {
             ungrounded,
             verify_needed,
         }
+    }
+
+    fn with_agent_config(&mut self, config: AgentGrcConfig) {
+        // Reset all topic state so leftover budget/steps from previous config don't leak.
+        self.topics.clear();
+        self.agent_config = Some(config);
+    }
+
+    fn get_agent_config(&self) -> Option<&AgentGrcConfig> {
+        self.agent_config.as_ref()
     }
 }

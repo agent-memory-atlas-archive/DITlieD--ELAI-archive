@@ -1,10 +1,12 @@
+pub mod config;
 pub mod engine;
 pub mod types;
 pub mod verification;
 
+pub use config::{AgentGrcConfigLoader, TomlConfigLoader};
 pub use engine::{BasicGrcEngine, GrcEngine};
 pub use types::{
-    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
+    AgentGrcConfig, GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel, GroundingResult,
     PlanGroundingResult, TestRunResult, ThinkResult, ThinkStep, TopicState, VerificationMethod,
     VerificationResult,
 };
