@@ -2,7 +2,7 @@
 
 <br>
 
-<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="580">
+<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="360">
 
 <br><br>
 
@@ -15,16 +15,14 @@ task in - researched, tested, built, audited - result out
 
 <br>
 
-<div align="center">
-
 ---
 
 <br>
 
-models are execution units, not decision-makers
-workflow logic is Rust code, not prompts
-every output verified by deterministic scripts
-every reasoning step grounded in evidence
+models are execution units, not decision-makers<br>
+workflow logic is Rust code, not prompts<br>
+every output verified by deterministic scripts<br>
+every reasoning step grounded in evidence<br>
 every state transition gated by artifacts
 
 <br>
@@ -35,6 +33,6 @@ every state transition gated by artifacts
 
 ---
 
-<div align="center">
 <sub>built for one user, then the world</sub>
+
 </div>
