@@ -371,3 +371,64 @@ fn j_delete_precision_nested_paths() {
         "other.rs must NOT be deleted — guards against tokenized path matching"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (k) Hidden directories skipped during index_directory walk
+// ---------------------------------------------------------------------------
+
+#[test]
+fn k_hidden_dir_skipped() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("project");
+    std::fs::create_dir_all(&src).unwrap();
+
+    // Visible file — should be indexed
+    write_file(&src, "visible.rs", "fn visible_canary_symbol() {}\n");
+
+    // Hidden directory with a file — should be skipped entirely
+    let hidden = src.join(".hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    write_file(&hidden, "secret.rs", "fn hidden_canary_symbol() {}\n");
+
+    // .git-like directory — should also be skipped
+    let dotgit = src.join(".git");
+    std::fs::create_dir_all(&dotgit).unwrap();
+    write_file(&dotgit, "config", "fn dotgit_canary_symbol() {}\n");
+
+    // .elai_cc directory — belt-and-suspenders skip
+    let elai = src.join(".elai_cc");
+    std::fs::create_dir_all(&elai).unwrap();
+    write_file(&elai, "index.dat", "fn elai_cc_canary_symbol() {}\n");
+
+    let mut idx = Bm25Index::new(tmp.path(), "test_k").unwrap();
+    let stats = idx.index_directory(&src).unwrap();
+
+    assert_eq!(stats.files_indexed, 1, "only visible.rs should be indexed");
+    assert_eq!(stats.files_skipped_binary, 0, "no binary files present");
+
+    // Visible content found
+    let visible_hits = idx.query("visible_canary_symbol", 10).unwrap();
+    assert!(
+        !visible_hits.is_empty(),
+        "visible.rs content should be searchable"
+    );
+
+    // Hidden content NOT found
+    let hidden_hits = idx.query("hidden_canary_symbol", 10).unwrap();
+    assert!(
+        hidden_hits.is_empty(),
+        ".hidden/ content must be skipped"
+    );
+
+    let git_hits = idx.query("dotgit_canary_symbol", 10).unwrap();
+    assert!(
+        git_hits.is_empty(),
+        ".git/ content must be skipped"
+    );
+
+    let elai_hits = idx.query("elai_cc_canary_symbol", 10).unwrap();
+    assert!(
+        elai_hits.is_empty(),
+        ".elai_cc/ content must be skipped"
+    );
+}

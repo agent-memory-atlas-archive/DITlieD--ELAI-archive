@@ -97,10 +97,12 @@ struct SchemaFields {
 /// Single writer model: `index_directory` holds exclusive write access.
 /// Callers must not invoke `update_file` concurrently with `index_directory`.
 pub struct Bm25Index {
+    #[allow(dead_code)] // used in Phase 1B.5 measure binary
     index_path: PathBuf,
     index: Index,
     writer: IndexWriter,
     reader: IndexReader,
+    #[allow(dead_code)] // used in Phase 1C schema migration
     schema: Schema,
     fields: SchemaFields,
 }
@@ -254,7 +256,7 @@ impl Bm25Index {
     }
 
     /// Delete all chunks associated with `path` from the index.
-    /// Returns the number of documents that were marked for deletion.
+    /// Returns the tantivy opstamp (monotonic operation counter), not a document count.
     pub fn delete_file(
         &mut self,
         path: &Path,
@@ -264,7 +266,6 @@ impl Bm25Index {
         let opstamp = self.writer.delete_term(term);
         self.writer.commit()?;
         self.reader.reload()?;
-        // delete_term does not return count; return opstamp as proxy
         Ok(opstamp as usize)
     }
 
@@ -371,12 +372,20 @@ impl Bm25Index {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let ft = entry.file_type()?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Skip hidden directories and .elai_cc index store
+            if name_str.starts_with('.') {
+                continue;
+            }
             let path = entry.path();
             if ft.is_dir() {
                 self.walk_dir(&path, stats)?;
             } else if ft.is_file() {
                 let data = match std::fs::read(&path) {
                     Ok(d) => d,
+                    // Intentional: skip unreadable files (permissions, broken symlinks).
+                    // Tracing/counter deferred to Phase 1B.5.
                     Err(_) => continue,
                 };
                 if Self::is_binary(&data) {
