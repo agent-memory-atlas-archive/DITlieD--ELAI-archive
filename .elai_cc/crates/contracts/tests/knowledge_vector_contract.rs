@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 use elai_knowledge::vector::cache::{CacheError, VectorCache};
-use elai_knowledge::vector::circuit_breaker::{BreakerError, BreakerState, CircuitBreaker};
+use elai_knowledge::vector::circuit_breaker::{BreakerError, BreakerState, EmbeddingCircuitBreaker};
 use elai_knowledge::vector::hnsw_index::{IndexError, VectorIndex};
 use elai_knowledge::vector::ort_session::{OrtError, OrtSession};
 use elai_knowledge::vector::{
@@ -61,11 +61,11 @@ fn _assert_ort_session_api() {
 }
 
 // CircuitBreaker API
-fn _assert_circuit_breaker_api(cb: &CircuitBreaker) {
+fn _assert_circuit_breaker_api(cb: &EmbeddingCircuitBreaker) {
     let _: BreakerState = cb.state();
 }
 
-fn _assert_circuit_breaker_mut_api(cb: &mut CircuitBreaker) {
+fn _assert_circuit_breaker_mut_api(cb: &mut EmbeddingCircuitBreaker) {
     cb.sync_state();
 }
 
