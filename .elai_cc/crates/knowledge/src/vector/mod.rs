@@ -35,16 +35,10 @@ impl std::fmt::Display for VectorError {
 impl std::error::Error for VectorError {}
 
 // ---------------------------------------------------------------------------
-// Search mode
+// Search mode (canonical definition in crate::degradation)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchMode {
-    Hybrid,
-    CodeOnly,
-    TextOnly,
-    SparseOnly,
-}
+pub use crate::degradation::SearchMode;
 
 // ---------------------------------------------------------------------------
 // DualVector

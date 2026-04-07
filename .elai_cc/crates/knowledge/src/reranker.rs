@@ -24,28 +24,10 @@ pub enum RerankerError {
 }
 
 // ---------------------------------------------------------------------------
-// SSB degradation events (knowledge.txt L124, L142)
+// SSB degradation events (canonical definition in crate::degradation)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DegradationEvent {
-    pub action_type: &'static str,
-    pub stage: &'static str,
-    pub detail: String,
-}
-
-/// Trait for emitting SSB degradation events. Injectable for testing.
-/// SSB write failure is non-fatal (spec: log warning, continue with fallback).
-pub trait SsbNotifier: Send + Sync {
-    fn emit(&self, event: DegradationEvent);
-}
-
-/// No-op notifier used when SSB is not configured.
-pub struct NoopSsbNotifier;
-
-impl SsbNotifier for NoopSsbNotifier {
-    fn emit(&self, _event: DegradationEvent) {}
-}
+pub use crate::degradation::{DegradationEvent, NoopSsbNotifier, SsbNotifier};
 
 impl std::fmt::Display for RerankerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
