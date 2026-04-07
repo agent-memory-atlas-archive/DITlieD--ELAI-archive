@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use blake2::{Blake2s256, Digest};
 use rusqlite::Connection;
 
 use crate::{
-    DkgNode, DkgNodeInfo, DkgReadiness, LanguageGrammar, SymbolKind,
+    DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, LanguageGrammar, SymbolKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,15 +68,12 @@ pub const EDGE_IMPLEMENTS: &str = "implements";
 pub struct DkgEngine {
     conn: Connection,
     grammars: HashMap<&'static str, Box<dyn LanguageGrammar>>,
+    build_graph_called: bool,
+    index_version_path: Option<PathBuf>,
+    created_at: i64,
 }
 
 impl DkgEngine {
-    /// Open (or create) the DKG SQLite database at `db_path`.
-    ///
-    /// Executes WAL journal mode and foreign key pragmas, then creates the
-    /// schema tables if they do not exist. Inserts initial metadata rows.
-    /// If `index_version_path` is `Some`, writes an `index_version.toml` file
-    /// with the 5 required fields (caller provides `created_at` timestamp).
     pub fn new(
         db_path: &Path,
         index_version_path: Option<&Path>,
@@ -87,7 +85,6 @@ impl DkgEngine {
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
 
-        // Insert initial metadata (ignore if already present).
         conn.execute(
             "INSERT OR IGNORE INTO dkg_meta (key, value) VALUES ('schema_version', '1')",
             [],
@@ -112,11 +109,241 @@ impl DkgEngine {
         let rust_grammar = RustGrammar;
         grammars.insert(rust_grammar.language_id(), Box::new(rust_grammar));
 
-        Ok(Self { conn, grammars })
+        Ok(Self {
+            conn,
+            grammars,
+            build_graph_called: false,
+            index_version_path: index_version_path.map(|p| p.to_path_buf()),
+            created_at,
+        })
     }
 
-    pub fn build_graph(&mut self, project_root: &Path) -> Result<crate::DependencyGraph, Box<dyn std::error::Error>> {
-        todo!("1A.3 stub — implementation in 1A.4")
+    pub fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, Box<dyn std::error::Error>> {
+        let mut rs_files = Vec::new();
+        walk_rs_files(project_root, &mut rs_files);
+        rs_files.sort();
+
+        let mut files_parsed: usize = 0;
+        let mut total_node_count: usize = 0;
+
+        let grammar = RustGrammar;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar.tree_sitter_language())?;
+
+        for file_path in &rs_files {
+            let source_bytes = std::fs::read(file_path)?;
+            let file_path_str = file_path.to_string_lossy().to_string();
+
+            // Compute blake2s hash
+            let mut hasher = Blake2s256::new();
+            hasher.update(&source_bytes);
+            let hash = hasher.finalize();
+            let hash_bytes = hash.as_slice();
+
+            // Check for incremental skip
+            let existing_hash: Option<Vec<u8>> = self.conn.query_row(
+                "SELECT file_hash FROM dkg_files WHERE file_path = ?1",
+                [&file_path_str],
+                |row| row.get(0),
+            ).ok();
+
+            if let Some(ref old_hash) = existing_hash {
+                if old_hash.as_slice() == hash_bytes {
+                    files_parsed += 1;
+                    // Hash unchanged, skip re-parse
+                    let count: i64 = self.conn.query_row(
+                        "SELECT COUNT(*) FROM dkg_nodes WHERE file_path = ?1",
+                        [&file_path_str],
+                        |row| row.get(0),
+                    )?;
+                    total_node_count += count as usize;
+                    continue;
+                }
+                // Hash changed: delete old nodes (edges cascade)
+                self.conn.execute(
+                    "DELETE FROM dkg_nodes WHERE file_path = ?1",
+                    [&file_path_str],
+                )?;
+                self.conn.execute(
+                    "DELETE FROM dkg_files WHERE file_path = ?1",
+                    [&file_path_str],
+                )?;
+            }
+
+            // Binary file detection
+            if std::str::from_utf8(&source_bytes).is_err() {
+                log::warn!("binary file detected, skipping parse: {}", file_path_str);
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
+                     VALUES (?1, ?2, 'failed', 'binary file', ?3)",
+                    rusqlite::params![file_path_str, hash_bytes, self.created_at],
+                )?;
+                files_parsed += 1;
+                continue;
+            }
+
+            // Parse with tree-sitter
+            let tree = match parser.parse(&source_bytes, None) {
+                Some(t) => t,
+                None => {
+                    log::warn!("tree-sitter returned None for: {}", file_path_str);
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
+                         VALUES (?1, ?2, 'failed', 'parse returned None', ?3)",
+                        rusqlite::params![file_path_str, hash_bytes, self.created_at],
+                    )?;
+                    files_parsed += 1;
+                    continue;
+                }
+            };
+
+            // Check for syntax errors
+            if tree.root_node().has_error() {
+                log::warn!("syntax errors in source: {}", file_path_str);
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
+                     VALUES (?1, ?2, 'failed', 'syntax errors in source', ?3)",
+                    rusqlite::params![file_path_str, hash_bytes, self.created_at],
+                )?;
+                files_parsed += 1;
+                continue;
+            }
+
+            // Extract nodes
+            let nodes = grammar.extract_nodes(&tree, &source_bytes);
+
+            // Insert dkg_files row
+            self.conn.execute(
+                "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
+                 VALUES (?1, ?2, 'ok', NULL, ?3)",
+                rusqlite::params![file_path_str, hash_bytes, self.created_at],
+            )?;
+
+            // Insert dkg_nodes, tracking inserted IDs for edge generation
+            let mut node_db_ids: Vec<i64> = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                let kind_str = symbol_kind_to_str(node.kind);
+                self.conn.execute(
+                    "INSERT INTO dkg_nodes (file_path, name, kind, signature, start_line, end_line, concept_stale) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+                    rusqlite::params![
+                        file_path_str,
+                        node.name,
+                        kind_str,
+                        node.signature,
+                        node.start_line,
+                        node.end_line,
+                    ],
+                )?;
+                node_db_ids.push(self.conn.last_insert_rowid());
+            }
+
+            // Generate "contains" edges: parent -> child
+            for (idx, node) in nodes.iter().enumerate() {
+                if let Some(parent_idx) = node.parent_idx {
+                    if parent_idx < node_db_ids.len() {
+                        let parent_db_id = node_db_ids[parent_idx];
+                        let child_db_id = node_db_ids[idx];
+                        self.conn.execute(
+                            "INSERT OR IGNORE INTO dkg_edges (source_id, target_id, edge_type) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![parent_db_id, child_db_id, EDGE_CONTAINS],
+                        )?;
+                    }
+                }
+            }
+
+            total_node_count += nodes.len();
+            files_parsed += 1;
+        }
+
+        // Generate cross-file edges: "imports" and "implements"
+        self.generate_cross_edges()?;
+
+        let edge_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM dkg_edges",
+            [],
+            |row| row.get(0),
+        )?;
+
+        self.build_graph_called = true;
+
+        // Write index_version.toml if path is set
+        if let Some(ref ivp) = self.index_version_path {
+            let content = format!(
+                "version = 1\n\
+                 dkg_schema_version = 1\n\
+                 vector_dimensions = {{ code = 0, text = 0 }}\n\
+                 bm25_format = \"\"\n\
+                 created_at = {}\n",
+                self.created_at
+            );
+            std::fs::write(ivp, content)?;
+        }
+
+        Ok(DependencyGraph {
+            node_count: total_node_count,
+            edge_count: edge_count as usize,
+            files_parsed,
+        })
+    }
+
+    fn generate_cross_edges(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // "imports" edges: use_declaration nodes -> matching named nodes
+        // Gather use_declaration signatures
+        let mut import_stmt = self.conn.prepare(
+            "SELECT id, signature FROM dkg_nodes WHERE signature LIKE 'use %'"
+        )?;
+        let imports: Vec<(i64, String)> = import_stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?.filter_map(|r| r.ok()).collect();
+
+        for (use_id, sig) in &imports {
+            // Extract the last segment of the use path as the target name
+            let path_str = sig.strip_prefix("use ").unwrap_or(sig);
+            if let Some(last_segment) = path_str.rsplit("::").next() {
+                // Find a node with that name (not the use node itself)
+                let target: Option<i64> = self.conn.query_row(
+                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND id != ?2 LIMIT 1",
+                    rusqlite::params![last_segment, use_id],
+                    |row| row.get(0),
+                ).ok();
+                if let Some(target_id) = target {
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO dkg_edges (source_id, target_id, edge_type) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![use_id, target_id, EDGE_IMPORTS],
+                    )?;
+                } else {
+                    log::warn!("unresolved import: {}", path_str);
+                }
+            }
+        }
+
+        // "implements" edges: impl nodes with trait -> trait nodes
+        let mut impl_stmt = self.conn.prepare(
+            "SELECT id, name FROM dkg_nodes WHERE kind = 'impl'"
+        )?;
+        let impls: Vec<(i64, String)> = impl_stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?.filter_map(|r| r.ok()).collect();
+
+        for (impl_id, impl_name) in &impls {
+            // Check if name contains "for" indicating trait impl: "impl TraitName for TypeName"
+            if let Some(trait_name) = extract_trait_from_impl_name(impl_name) {
+                let target: Option<i64> = self.conn.query_row(
+                    "SELECT id FROM dkg_nodes WHERE name = ?1 AND kind = 'trait' LIMIT 1",
+                    [&trait_name],
+                    |row| row.get(0),
+                ).ok();
+                if let Some(trait_id) = target {
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO dkg_edges (source_id, target_id, edge_type) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![impl_id, trait_id, EDGE_IMPLEMENTS],
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn nodes(&self) -> Result<Vec<DkgNodeInfo>, Box<dyn std::error::Error>> {
@@ -228,7 +455,8 @@ impl DkgEngine {
             .query_row("SELECT COUNT(*) FROM dkg_nodes", [], |row| row.get(0));
         match count {
             Ok(n) if n > 0 => DkgReadiness::Ready,
-            Ok(_) => DkgReadiness::Empty,
+            Ok(_) if self.build_graph_called => DkgReadiness::Empty,
+            Ok(_) => DkgReadiness::Unavailable,
             Err(_) => DkgReadiness::Unavailable,
         }
     }
@@ -249,8 +477,177 @@ impl LanguageGrammar for RustGrammar {
         tree_sitter_rust::LANGUAGE.into()
     }
 
-    fn extract_nodes(&self, _tree: &tree_sitter::Tree, _source: &[u8]) -> Vec<DkgNode> {
-        Vec::new()
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        // Map from tree-sitter node id -> index in our nodes vec, for parent tracking
+        let mut ts_id_to_idx: HashMap<usize, usize> = HashMap::new();
+
+        extract_recursive(&mut cursor, source, &mut nodes, &mut ts_id_to_idx, None);
+        nodes
+    }
+}
+
+const EXTRACTED_KINDS: &[&str] = &[
+    "function_item",
+    "struct_item",
+    "impl_item",
+    "use_declaration",
+    "mod_item",
+    "trait_item",
+    "enum_item",
+    "type_alias",
+];
+
+fn extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    ts_id_to_idx: &mut HashMap<usize, usize>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if EXTRACTED_KINDS.contains(&kind) {
+            let name = extract_name(&node, source, kind);
+            let signature = build_signature(&node, source, kind, &name);
+            let symbol_kind = ts_kind_to_symbol_kind(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            ts_id_to_idx.insert(node.id(), idx);
+
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            extract_recursive(cursor, source, nodes, ts_id_to_idx, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+}
+
+fn extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "use_declaration" => {
+            // Full path text minus "use " and ";"
+            node.utf8_text(source)
+                .unwrap_or("")
+                .trim()
+                .strip_prefix("use ")
+                .unwrap_or("")
+                .strip_suffix(';')
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        }
+        "impl_item" => {
+            // "impl TraitName for TypeName" or "impl TypeName"
+            let type_name = node
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?");
+            let trait_name = node
+                .child_by_field_name("trait")
+                .and_then(|n| n.utf8_text(source).ok());
+            match trait_name {
+                Some(t) => format!("impl {} for {}", t, type_name),
+                None => format!("impl {}", type_name),
+            }
+        }
+        _ => {
+            // Most items have a "name" field
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "function_item" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("return_type")
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("fn {}({}) -> {}", name, params.trim_start_matches('(').trim_end_matches(')'), r),
+                None => format!("fn {}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "struct_item" => format!("struct {}", name),
+        "enum_item" => format!("enum {}", name),
+        "trait_item" => format!("trait {}", name),
+        "impl_item" => {
+            // name already contains "impl X" or "impl T for X"
+            name.to_string()
+        }
+        "mod_item" => format!("mod {}", name),
+        "use_declaration" => format!("use {}", name),
+        "type_alias" => format!("type {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn ts_kind_to_symbol_kind(kind: &str) -> SymbolKind {
+    match kind {
+        "function_item" => SymbolKind::Function,
+        "struct_item" => SymbolKind::Struct,
+        "enum_item" => SymbolKind::Enum,
+        "trait_item" => SymbolKind::Trait,
+        "impl_item" => SymbolKind::Impl,
+        "mod_item" => SymbolKind::Module,
+        "type_alias" => SymbolKind::TypeAlias,
+        "use_declaration" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+fn symbol_kind_to_str(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "function",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Impl => "impl",
+        SymbolKind::Module => "module",
+        SymbolKind::Const => "const",
+        SymbolKind::Static => "static",
+        SymbolKind::TypeAlias => "type_alias",
+        SymbolKind::Macro => "macro",
+    }
+}
+
+fn extract_trait_from_impl_name(name: &str) -> Option<String> {
+    // "impl TraitName for TypeName" -> Some("TraitName")
+    let stripped = name.strip_prefix("impl ")?;
+    let parts: Vec<&str> = stripped.splitn(3, ' ').collect();
+    if parts.len() >= 3 && parts[1] == "for" {
+        Some(parts[0].to_string())
+    } else {
+        None
     }
 }
 
@@ -271,5 +668,20 @@ fn parse_symbol_kind(s: &str) -> SymbolKind {
         "type_alias" => SymbolKind::TypeAlias,
         "macro" => SymbolKind::Macro,
         _ => SymbolKind::Function,
+    }
+}
+
+fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_rs_files(&path, out);
+        } else if path.extension().map_or(false, |ext| ext == "rs") {
+            out.push(path);
+        }
     }
 }

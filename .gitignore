@@ -1,12 +1,9 @@
-# Ignore everything
 *
 
-# Except .elai_cc and .gitignore
 !.gitignore
 !.elai_cc/
 !.elai_cc/**
 
-# Still ignore build artifacts and local state inside .elai_cc
 .elai_cc/target/
 .elai_cc/workflow/
 .elai_cc/rust_archived/target/
