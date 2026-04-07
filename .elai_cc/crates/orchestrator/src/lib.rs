@@ -28,6 +28,7 @@ mod session;
 #[cfg(test)]
 mod session_control;
 pub mod ssb;
+pub mod supervision;
 pub mod stale_branch;
 pub mod task_packet;
 pub mod task_registry;
@@ -210,6 +211,9 @@ pub use worker_boot::{
 pub use ssb::{
     Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPragmaApplier,
     SsbReader, SsbWriteRequest,
+};
+pub use supervision::{
+    EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,
 };
 
 #[cfg(test)]

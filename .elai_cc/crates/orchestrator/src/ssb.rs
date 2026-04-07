@@ -25,7 +25,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'knowledge_degradation', 'isolation_metric', 'plan_update',
         'replan_request', 'stub_reference', 'reasoning_trace',
         'phase_complete', 'memory_monitoring',
-        'death_event', 'recovery_event'
+        'death_event', 'recovery_event',
+        'supervision_exhausted', 'spiral_detected'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -68,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 19 action types recorded in SSB entries.
+/// All 21 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -91,6 +92,8 @@ pub enum SsbActionType {
     MemoryMonitoring,
     DeathEvent,
     RecoveryEvent,
+    SupervisionExhausted,
+    SpiralDetected,
 }
 
 impl SsbActionType {
@@ -116,6 +119,8 @@ impl SsbActionType {
             Self::MemoryMonitoring => "memory_monitoring",
             Self::DeathEvent => "death_event",
             Self::RecoveryEvent => "recovery_event",
+            Self::SupervisionExhausted => "supervision_exhausted",
+            Self::SpiralDetected => "spiral_detected",
         }
     }
 }
@@ -141,6 +146,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "memory_monitoring" => Ok(SsbActionType::MemoryMonitoring),
         "death_event" => Ok(SsbActionType::DeathEvent),
         "recovery_event" => Ok(SsbActionType::RecoveryEvent),
+        "supervision_exhausted" => Ok(SsbActionType::SupervisionExhausted),
+        "spiral_detected" => Ok(SsbActionType::SpiralDetected),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -293,11 +300,28 @@ pub struct RecoveryEventPayload {
     pub recovery_step_index: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisionExhaustedPayload {
+    pub agent_id: String,
+    pub phase_id: String,
+    pub restart_count: u32,
+    pub max_restarts: u32,
+    pub restart_history: Vec<i64>,
+    pub escalation_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpiralDetectedPayload {
+    pub agent_id: String,
+    pub phase_id: String,
+    pub spiral_depth: u32,
+}
+
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 19 action-type payloads)
+// SsbPayload enum (typed wrapper over all 21 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (19 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (21 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -320,6 +344,8 @@ pub enum SsbPayload {
     MemoryMonitoring(MemoryMonitoringPayload),
     DeathEvent(DeathEventPayload),
     RecoveryEvent(RecoveryEventPayload),
+    SupervisionExhausted(SupervisionExhaustedPayload),
+    SpiralDetected(SpiralDetectedPayload),
 }
 
 impl SsbPayload {
@@ -346,6 +372,8 @@ impl SsbPayload {
             Self::MemoryMonitoring(_) => SsbActionType::MemoryMonitoring,
             Self::DeathEvent(_) => SsbActionType::DeathEvent,
             Self::RecoveryEvent(_) => SsbActionType::RecoveryEvent,
+            Self::SupervisionExhausted(_) => SsbActionType::SupervisionExhausted,
+            Self::SpiralDetected(_) => SsbActionType::SpiralDetected,
         }
     }
 }
@@ -1719,6 +1747,19 @@ mod tests {
                 prior_step_index: 10,
                 recovery_step_index: 11,
             }),
+            SsbPayload::SupervisionExhausted(SupervisionExhaustedPayload {
+                agent_id: "agent-exhausted".into(),
+                phase_id: "phase-3C".into(),
+                restart_count: 4,
+                max_restarts: 3,
+                restart_history: vec![1, 5, 9, 13],
+                escalation_action: "terminate".into(),
+            }),
+            SsbPayload::SpiralDetected(SpiralDetectedPayload {
+                agent_id: "agent-spiral".into(),
+                phase_id: "phase-3C".into(),
+                spiral_depth: 5,
+            }),
         ]
     }
 
@@ -1728,7 +1769,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 19, "must cover all 19 action types");
+        assert_eq!(payloads.len(), 21, "must cover all 21 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
