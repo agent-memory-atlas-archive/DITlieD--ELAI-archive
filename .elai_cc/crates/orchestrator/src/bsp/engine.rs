@@ -3,8 +3,8 @@
 //! The engine wires together channels, agent pool, SSB recording, and checkpoint
 //! persistence into the core loop that all subsequent phases build on.
 //! Loop order: snapshot -> prepare_next_tasks -> clear_non_accumulating_topics
-//! -> execute_tasks_parallel -> apply_writes -> clear_ephemeral ->
-//! evidence_gate_passes -> save_checkpoint -> superstep++.
+//! -> execute_tasks_parallel -> apply_writes -> deferred_phase ->
+//! clear_ephemeral -> evidence_gate_passes -> save_checkpoint -> superstep++.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -142,6 +142,9 @@ pub struct BspCheckpoint {
 pub struct BspResult {
     pub supersteps_completed: u64,
     pub final_snapshot: ChannelSnapshot,
+    /// Final status of every node (including deferred). Callers can inspect
+    /// for Pending/TimedOut/Failed to detect stranded or timed-out nodes.
+    pub node_statuses: BTreeMap<String, NodeStatus>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +235,56 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
             // agents don't produce ChannelWrite results from spawn_parallel)
             // In future phases, apply_writes will sort by ssb_seq and apply.
 
-            // 3D.3: deferred phase hook here
+            // 5b. Deferred phase: single-pass execution of deferred nodes
+            //     whose dependencies are all Complete after the main barrier.
+            let deferred_tasks: Vec<(String, AgentRole, String)> = nodes
+                .iter()
+                .filter(|n| n.is_deferred)
+                .filter(|n| {
+                    matches!(
+                        node_statuses.get(&n.id).copied().unwrap_or(NodeStatus::Pending),
+                        NodeStatus::Pending
+                    )
+                })
+                .filter(|n| {
+                    n.depends_on.iter().all(|dep| {
+                        matches!(
+                            node_statuses.get(dep).copied().unwrap_or(NodeStatus::Pending),
+                            NodeStatus::Complete
+                        )
+                    })
+                })
+                .map(|n| (n.id.clone(), n.role, n.task.clone()))
+                .collect();
+
+            if !deferred_tasks.is_empty() {
+                let (deferred_completed, deferred_timed_out) = self
+                    .execute_tasks_with_timeout(&deferred_tasks, ssb, superstep)
+                    .await?;
+
+                for (node_id, _handle) in &deferred_completed {
+                    node_statuses.insert(node_id.clone(), NodeStatus::Complete);
+                }
+
+                for (node_id, handle) in &deferred_timed_out {
+                    let agent_id_str = handle.agent_id.to_string();
+                    let death_payload = SsbPayload::DeathEvent(DeathEventPayload {
+                        agent_id: agent_id_str.clone(),
+                        classification: "timeout".to_owned(),
+                        prior_step_index: superstep as i64,
+                        checkpoint_path: String::new(),
+                        had_checkpoint: false,
+                    });
+                    ssb.write_payload(
+                        &agent_id_str,
+                        superstep as i64,
+                        death_payload,
+                        vec![],
+                    )
+                    .await?;
+                    node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
+                }
+            }
 
             // 6. Clear ephemeral channels and record in SSB
             let cleared = channels.clear_ephemeral();
@@ -275,6 +327,7 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
         Ok(BspResult {
             supersteps_completed: superstep,
             final_snapshot,
+            node_statuses,
         })
     }
 
@@ -781,5 +834,173 @@ mod tests {
             .await
             .expect("empty run");
         assert_eq!(result.supersteps_completed, 0);
+    }
+
+    // 10. test_deferred_fires_after_barrier
+    // Deferred node with all deps satisfied fires after the main barrier.
+    #[tokio::test]
+    async fn test_deferred_fires_after_barrier() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut channels = InMemoryChannelRegistry::new();
+
+        let nodes = vec![
+            NodeSpec {
+                id: "a".into(),
+                role: AgentRole::Executor,
+                task: "task_a".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+            NodeSpec {
+                id: "b".into(),
+                role: AgentRole::Executor,
+                task: "task_b".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+            NodeSpec {
+                id: "deferred_c".into(),
+                role: AgentRole::Executor,
+                task: "task_c".into(),
+                depends_on: vec!["a".into(), "b".into()],
+                is_deferred: true,
+            },
+        ];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        let result = engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        // Both non-deferred run in superstep 0, deferred fires after barrier
+        // in the same superstep. Total: 1 superstep.
+        assert_eq!(result.supersteps_completed, 1);
+
+        // Verify via checkpoint that deferred_c reached Complete
+        let ckpt_bytes = tokio::fs::read(
+            tmp.path().join("checkpoints/superstep_0.msgpack"),
+        )
+        .await
+        .expect("read checkpoint");
+        let ckpt: BspCheckpoint =
+            rmp_serde::from_slice(&ckpt_bytes).expect("deserialize");
+        assert_eq!(
+            ckpt.node_statuses.get("deferred_c").copied(),
+            Some(NodeStatus::Complete),
+            "deferred node must be Complete in checkpoint"
+        );
+    }
+
+    // 11. test_deferred_unsatisfied_does_not_fire
+    // Deferred node whose deps are not all satisfied stays Pending.
+    #[tokio::test]
+    async fn test_deferred_unsatisfied_does_not_fire() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut channels = InMemoryChannelRegistry::new();
+
+        let nodes = vec![
+            NodeSpec {
+                id: "a".into(),
+                role: AgentRole::Executor,
+                task: "task_a".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+            // "missing_dep" is never created as a node, so it stays Pending
+            NodeSpec {
+                id: "deferred_d".into(),
+                role: AgentRole::Executor,
+                task: "task_d".into(),
+                depends_on: vec!["a".into(), "missing_dep".into()],
+                is_deferred: true,
+            },
+        ];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        let result = engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        assert_eq!(result.supersteps_completed, 1);
+
+        let ckpt_bytes = tokio::fs::read(
+            tmp.path().join("checkpoints/superstep_0.msgpack"),
+        )
+        .await
+        .expect("read checkpoint");
+        let ckpt: BspCheckpoint =
+            rmp_serde::from_slice(&ckpt_bytes).expect("deserialize");
+        // deferred_d should remain Pending because "missing_dep" is never Complete
+        assert_eq!(
+            ckpt.node_statuses.get("deferred_d").copied(),
+            Some(NodeStatus::Pending),
+            "unsatisfied deferred node must remain Pending"
+        );
+    }
+
+    // 12. test_cascading_deferred_impossible
+    // Two deferred nodes depending on each other. Neither fires. No panic.
+    #[tokio::test]
+    async fn test_cascading_deferred_impossible() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut channels = InMemoryChannelRegistry::new();
+
+        let nodes = vec![
+            // One non-deferred node so the engine has work to do
+            NodeSpec {
+                id: "anchor".into(),
+                role: AgentRole::Executor,
+                task: "anchor_task".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+            NodeSpec {
+                id: "def_x".into(),
+                role: AgentRole::Executor,
+                task: "task_x".into(),
+                depends_on: vec!["def_y".into()],
+                is_deferred: true,
+            },
+            NodeSpec {
+                id: "def_y".into(),
+                role: AgentRole::Executor,
+                task: "task_y".into(),
+                depends_on: vec!["def_x".into()],
+                is_deferred: true,
+            },
+        ];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        let result = engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        // Engine completes (no infinite loop, no panic)
+        assert_eq!(result.supersteps_completed, 1);
+
+        let ckpt_bytes = tokio::fs::read(
+            tmp.path().join("checkpoints/superstep_0.msgpack"),
+        )
+        .await
+        .expect("read checkpoint");
+        let ckpt: BspCheckpoint =
+            rmp_serde::from_slice(&ckpt_bytes).expect("deserialize");
+        // Neither deferred node should fire — both must remain Pending
+        assert_eq!(
+            ckpt.node_statuses.get("def_x").copied(),
+            Some(NodeStatus::Pending),
+            "cascading deferred def_x must remain Pending"
+        );
+        assert_eq!(
+            ckpt.node_statuses.get("def_y").copied(),
+            Some(NodeStatus::Pending),
+            "cascading deferred def_y must remain Pending"
+        );
     }
 }
