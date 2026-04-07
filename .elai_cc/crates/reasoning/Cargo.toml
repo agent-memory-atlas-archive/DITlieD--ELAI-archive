@@ -15,6 +15,10 @@ regex = "1"
 name = "grc_bench"
 harness = false
 
+[[bench]]
+name = "verification_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
 

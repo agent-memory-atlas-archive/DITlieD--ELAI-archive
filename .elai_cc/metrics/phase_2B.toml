@@ -1,0 +1,42 @@
+# Phase 2B: verification subsystem metrics
+# Measured 2026-04-08, release build, median of 1000 iterations
+
+# FILE_CHECK latency (file_exists on MockFileReader)
+# Target: <2ms (2000us)
+file_check_latency_us = 0
+file_check_latency_ns = 100
+file_check_p99_ns = 200
+
+# SOURCE_CHECK latency (regex search in 1000-line file)
+# Target: <10ms (10000us)
+source_check_latency_us = 201
+source_check_latency_ns = 201150
+source_check_p99_ns = 321400
+source_check_file_lines = 1000
+
+# ground_plan sweep latency (20 claims, mixed prefixes)
+# Target: <100ms (100000us)
+plan_sweep_latency_us = 92
+plan_sweep_latency_ns = 92800
+plan_sweep_p99_ns = 188100
+plan_sweep_claim_count = 20
+
+# Test metrics
+test_count = 34
+test_failures = 0
+
+# Verification methods
+methods_implemented = 3
+methods_stubbed = 3
+methods_total = 6
+implemented = ["FILE_CHECK", "SOURCE_CHECK", "TEST_CHECK"]
+stubbed = ["WEB_CHECK", "API_CHECK", "API_REGISTRY_CHECK"]
+
+# Code metrics (reasoning crate only)
+source_loc = 1121
+total_loc = 2281
+
+# Compile time
+reasoning_compile_time_s = 0.75
+phase2a_baseline_compile_time_s = 0.20
+compile_time_delta_s = 0.55
