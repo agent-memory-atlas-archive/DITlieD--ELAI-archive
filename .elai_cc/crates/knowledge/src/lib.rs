@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod bm25;
 pub mod dkg;
 
 // ---------------------------------------------------------------------------

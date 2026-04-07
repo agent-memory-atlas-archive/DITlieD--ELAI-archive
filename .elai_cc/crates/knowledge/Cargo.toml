@@ -13,6 +13,7 @@ tree-sitter-rust = "0.24"
 rusqlite = { version = "0.39", features = ["bundled"] }
 blake2 = "0.10"
 log = "0.4"
+tantivy = "0.26"
 
 [dev-dependencies]
 proptest = "1"
