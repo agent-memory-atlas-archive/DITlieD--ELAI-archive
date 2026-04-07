@@ -8,6 +8,8 @@ use crate::{
     DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, LanguageGrammar, SymbolKind,
 };
 
+type EdgeList = Vec<(i64, i64, String)>;
+
 // ---------------------------------------------------------------------------
 // Schema SQL
 // ---------------------------------------------------------------------------
@@ -379,7 +381,7 @@ impl DkgEngine {
         Ok(result)
     }
 
-    pub fn edges(&self) -> Result<Vec<(i64, i64, String)>, Box<dyn std::error::Error>> {
+    pub fn edges(&self) -> Result<EdgeList, Box<dyn std::error::Error>> {
         let mut stmt = self
             .conn
             .prepare("SELECT source_id, target_id, edge_type FROM dkg_edges")?;
