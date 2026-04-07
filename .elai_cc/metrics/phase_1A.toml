@@ -1,0 +1,13 @@
+# ELAI phase 1A DKG metrics — 2026-04-07
+build_time_ms = 9670
+query_p50_ms = 0.009
+query_p99_ms = 0.018
+db_size_bytes = 2842624
+total_nodes = 8075
+total_edges = 4148
+files_parsed = 135
+files_skipped = 0
+edges_imports = 249
+edges_contains = 3830
+edges_implements = 69
+signatures_populated = 8075
