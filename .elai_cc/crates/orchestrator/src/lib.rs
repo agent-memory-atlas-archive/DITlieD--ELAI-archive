@@ -24,6 +24,7 @@ mod remote;
 mod session;
 #[cfg(test)]
 mod session_control;
+pub mod ssb;
 pub mod stale_branch;
 pub mod task_packet;
 pub mod task_registry;
@@ -198,6 +199,10 @@ pub use elai_providers::telemetry_types::{
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
+};
+pub use ssb::{
+    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPragmaApplier,
+    SsbReader, SsbWriteRequest,
 };
 
 #[cfg(test)]
