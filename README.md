@@ -6,7 +6,7 @@
 
 <br><br>
 
-<img src="https://img.shields.io/badge/Rust-1B7A6E?style=flat-square&logo=rust&logoColor=0d1117" alt="Rust"> &nbsp; <img src="https://img.shields.io/badge/Phase_1A-1B7A6E?style=flat-square" alt="Phase 1A"> &nbsp; <img src="https://img.shields.io/badge/local--first-1B7A6E?style=flat-square" alt="local-first">
+<img src="https://img.shields.io/badge/Rust-1B7A6E?style=flat-square&logo=rust&logoColor=0d1117" alt="Rust"> &nbsp; <img src="https://img.shields.io/badge/Phase_1A-1B7A6E?style=flat-square" alt="Phase 2"> &nbsp; <img src="https://img.shields.io/badge/local--first-1B7A6E?style=flat-square" alt="local-first">
 
 <br>
 
@@ -19,7 +19,7 @@ task in - researched, tested, built, audited - result out
 
 <br>
 
-models are execution units, not decision-makers<br>
+models are execution units, not decision makers<br>
 workflow logic is Rust code, not prompts<br>
 every output verified by deterministic scripts<br>
 every reasoning step grounded in evidence<br>
@@ -27,7 +27,7 @@ every state transition gated by artifacts
 
 <br>
 
-9 crates &nbsp;·&nbsp; current 72K LOC - estimate 1M+ LOC &nbsp;·&nbsp; entropy-quarantined &nbsp;·&nbsp; model-agnostic &nbsp;·&nbsp; self-improving
+9 crates &nbsp;·&nbsp; current 78K LOC - estimate 1M+ LOC &nbsp;·&nbsp; entropy-quarantined &nbsp;·&nbsp; model-agnostic &nbsp;·&nbsp; self-improving
 
 <br>
 
