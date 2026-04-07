@@ -17,3 +17,4 @@ elai-knowledge = { path = "../knowledge" }
 elai-reasoning = { path = "../reasoning" }
 elai-orchestrator = { path = "../orchestrator" }
 serde_json = { workspace = true }
+tempfile = "3"
