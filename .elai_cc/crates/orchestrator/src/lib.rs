@@ -6,6 +6,7 @@ mod conversation;
 mod file_ops;
 pub mod fsm;
 mod hooks;
+pub mod tool_filter;
 mod lane_events;
 mod mcp;
 mod mcp_client;
@@ -72,6 +73,7 @@ pub use fsm::{
     EvidenceArtifact, Fsm, FsmError, FsmState, PersistedFsmState, ReplanLogEntry, ReplanRequest,
     ReplanSeverity, TransitionRecord,
 };
+pub use tool_filter::{RuleCategory, ToolCategory};
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{

@@ -158,6 +158,13 @@ pub enum FsmError {
     TransitionConflict,
     /// I/O error during state persistence.
     PersistenceError(String),
+    /// Tool is not allowed in the current FSM state.
+    /// Phase 3A.2: enforced at ToolRegistry::execute() level.
+    ToolBlockedByState {
+        tool_name: String,
+        state: FsmState,
+        category: crate::tool_filter::ToolCategory,
+    },
 }
 
 impl std::fmt::Display for FsmError {
@@ -183,6 +190,16 @@ impl std::fmt::Display for FsmError {
             }
             FsmError::PersistenceError(detail) => {
                 write!(f, "persistence error: {detail}")
+            }
+            FsmError::ToolBlockedByState {
+                tool_name,
+                state,
+                category,
+            } => {
+                write!(
+                    f,
+                    "tool {tool_name} ({category:?}) blocked in state {state}"
+                )
             }
         }
     }
@@ -419,6 +436,20 @@ impl Fsm {
         }
 
         Ok(entry)
+    }
+
+    /// Check whether a tool is allowed in the current FSM state.
+    /// Returns `Ok(())` if allowed, `Err(ToolBlockedByState)` if blocked.
+    /// Phase 3A.2: enforcement point. Source: phase-3A.txt L125-126.
+    pub async fn check_tool_allowed(&self, tool_name: &str) -> Result<(), FsmError> {
+        let state = self.inner.lock().await.state;
+        state.check_tool_allowed(tool_name).map_err(|category| {
+            FsmError::ToolBlockedByState {
+                tool_name: tool_name.to_string(),
+                state,
+                category,
+            }
+        })
     }
 
     /// Reset FSM to IDLE. Escape hatch from any state.
