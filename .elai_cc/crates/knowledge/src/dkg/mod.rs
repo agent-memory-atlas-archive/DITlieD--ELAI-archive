@@ -53,6 +53,14 @@ CREATE INDEX IF NOT EXISTS idx_files_status ON dkg_files(parse_status);
 ";
 
 // ---------------------------------------------------------------------------
+// Edge-type constants
+// ---------------------------------------------------------------------------
+
+pub const EDGE_IMPORTS: &str = "imports";
+pub const EDGE_CONTAINS: &str = "contains";
+pub const EDGE_IMPLEMENTS: &str = "implements";
+
+// ---------------------------------------------------------------------------
 // DkgEngine
 // ---------------------------------------------------------------------------
 
@@ -105,6 +113,10 @@ impl DkgEngine {
         grammars.insert(rust_grammar.language_id(), Box::new(rust_grammar));
 
         Ok(Self { conn, grammars })
+    }
+
+    pub fn build_graph(&mut self, project_root: &Path) -> Result<crate::DependencyGraph, Box<dyn std::error::Error>> {
+        todo!("1A.3 stub — implementation in 1A.4")
     }
 
     pub fn nodes(&self) -> Result<Vec<DkgNodeInfo>, Box<dyn std::error::Error>> {
