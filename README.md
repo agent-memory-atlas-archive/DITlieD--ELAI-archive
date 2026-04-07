@@ -2,7 +2,7 @@
 
 <br>
 
-<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="360">
+<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="100%">
 
 <br><br>
 
