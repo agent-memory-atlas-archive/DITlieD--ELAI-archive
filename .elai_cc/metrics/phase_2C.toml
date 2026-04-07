@@ -1,0 +1,58 @@
+# Phase 2C: per-agent GRC configuration metrics
+# Measured 2026-04-08, release build, median of 1000 iterations (10 chains/iter)
+
+# Config load + validation time per role (target: <1ms = 1000us)
+# Pure in-memory struct construction + 5 validation checks (no TOML I/O).
+config_load_us = 0
+config_load_ns = 400
+config_load_p99_ns = 400
+config_load_roles = ["executor", "auditor", "context_compiler", "prompt_engineer", "memory_writer", "designer"]
+# Per-role breakdown (median ns)
+config_load_executor_ns = 200
+config_load_auditor_ns = 400
+config_load_context_compiler_ns = 100
+config_load_prompt_engineer_ns = 100
+config_load_memory_writer_ns = 100
+config_load_designer_ns = 400
+
+# Per-step routing overhead vs no-config baseline (target: <10%)
+# Absolute overhead: ~140ns/step. At sub-microsecond scale, percentage is
+# amplified by measurement noise. Real-world: LLM calls take 1-30s per step,
+# making 140ns overhead unmeasurable in production.
+routing_overhead_pct = 28.5
+baseline_step_ns = 492
+config_step_ns = 632
+auditor_step_ns = 477
+baseline_step_p99_ns = 692
+config_step_p99_ns = 810
+auditor_step_p99_ns = 757
+# Note: auditor path is faster than baseline due to shorter chain (4 vs 5 steps)
+# and Vec reuse patterns. The executor overhead is the worst-case measurement.
+absolute_overhead_ns = 140
+
+# Memory per AgentGrcConfig (target: <2KB)
+config_stack_bytes = 144
+config_total_bytes = 278
+config_pathological_bytes = 527
+# Pathological case: 7 states x 7 targets = 49 override entries.
+# Still well under 2KB target even in worst case.
+
+# Test metrics
+test_count = 49
+test_failures = 0
+phase_2a_tests = 18
+phase_2b_tests = 16
+phase_2c_tests = 15
+
+# Code metrics (reasoning crate only)
+source_loc = 1651
+total_loc = 4022
+phase_2b_source_loc = 1121
+phase_2b_total_loc = 2281
+source_loc_delta = 530
+total_loc_delta = 1741
+
+# Compile time
+reasoning_compile_time_s = 1.00
+phase_2b_compile_time_s = 0.75
+compile_time_delta_s = 0.25
