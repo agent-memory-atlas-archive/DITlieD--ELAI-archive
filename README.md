@@ -27,7 +27,7 @@ every state transition gated by artifacts
 
 <br>
 
-9 crates &nbsp;·&nbsp; 61K LOC &nbsp;·&nbsp; entropy-quarantined &nbsp;·&nbsp; model-agnostic &nbsp;·&nbsp; self-improving
+9 crates &nbsp;·&nbsp; current 72K LOC - estimate 1M+ LOC &nbsp;·&nbsp; entropy-quarantined &nbsp;·&nbsp; model-agnostic &nbsp;·&nbsp; self-improving
 
 <br>
 
