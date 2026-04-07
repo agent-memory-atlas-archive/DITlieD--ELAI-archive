@@ -56,6 +56,25 @@ impl RuntimeContext {
         }
     }
 
+    /// Build from environment. If ELAI_SEED is set to a valid u64, use SeededClock + SeededRng.
+    /// If ELAI_SEED is set but invalid, logs a warning and falls back to os_default().
+    /// If ELAI_SEED is unset, falls back to os_default().
+    pub fn from_env() -> Self {
+        match std::env::var("ELAI_SEED") {
+            Ok(val) if !val.is_empty() => match val.parse::<u64>() {
+                Ok(seed) => Self {
+                    clock: Arc::new(SeededClock::new()),
+                    entropy: Arc::new(Mutex::new(SeededRng::new(seed))),
+                },
+                Err(e) => {
+                    eprintln!("WARN: ELAI_SEED={val:?} is not a valid u64 ({e}), falling back to OS providers");
+                    Self::os_default()
+                }
+            },
+            _ => Self::os_default(),
+        }
+    }
+
     pub fn clock(&self) -> &dyn ClockProvider {
         &*self.clock
     }

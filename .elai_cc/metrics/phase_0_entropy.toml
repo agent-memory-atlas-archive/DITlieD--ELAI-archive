@@ -1,0 +1,31 @@
+[phase]
+id = "0.10"
+name = "Verify Entropy Quarantine + Determinism Proof"
+timestamp = "2026-04-07"
+
+[results]
+ci_gate_status = "PASS"
+seeded_run_result = "PASS — seeded_determinism.rs compiles and all 3 tests pass (EntropySource import fixed, ENV_MUTEX guard added)"
+determinism_diff_lines = -1  # cannot run — determinism_proof.sh aborts at Step 2 due to pre-existing cli test failure (build_runtime_plugin_state_discovers_mcp_tools: Windows path escape bug in settings.json, unrelated to entropy)
+timestamp_violations = -1   # cannot run — blocked by proof script structural flaw (see audit WARN)
+contract_tests_passed = 14
+contract_tests_failed = 0
+integration_tests_passed = 3
+integration_tests_failed = 0
+quarantine_check = "PASS"
+determinism_proof_script = "FAIL — set -euo pipefail causes script to exit at Step 2 when cargo test --workspace exits 101 (pre-existing cli failure). Diff and timestamp checks never execute."
+
+[audit]
+auditor_session = "s-439848"
+phase = "0.10"
+audit_cycle = 2
+blocks = 0
+warns = 4
+findings_summary = "All 3 BLOCKs from cycle 1 resolved. Remaining WARNs: (1) determinism_proof.sh cannot complete due to scoped --workspace failure, should target --test seeded_determinism --test clock_entropy_contracts instead. (2) SeededClock not seeded by ELAI_SEED value (clock always starts at tick 0, only RNG is seeded). (3) LogicalInstant derived Ord cross-provider hazard: SeededClock None < OsClock Some at same tick. (4) OS_CLOCK_TICK global static shared across all OsClock instances invalidates elapsed_since semantics in concurrent multi-instance test scenarios."
+
+[notes]
+windows_failures_excluded = 1
+windows_failure_scope = "cli: build_runtime_plugin_state_discovers_mcp_tools_and_surfaces_pending_servers — Windows path backslash escape in temp settings.json. Not entropy-related. Pre-existing from P0.5."
+mechanism = "RuntimeContext::from_env() reads ELAI_SEED env var"
+seed_used = 42
+entropy_domain_tests = "17/17 pass (3 seeded_determinism + 14 clock_entropy_contracts)"
