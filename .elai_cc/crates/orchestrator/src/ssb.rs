@@ -25,7 +25,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'claim', 'checkpoint', 'model_swap', 'phase_transition',
         'knowledge_degradation', 'isolation_metric', 'plan_update',
         'replan_request', 'stub_reference', 'reasoning_trace',
-        'phase_complete', 'memory_monitoring'
+        'phase_complete', 'memory_monitoring',
+        'death_event', 'recovery_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -67,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 17 action types recorded in SSB entries.
+/// All 19 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -88,6 +89,8 @@ pub enum SsbActionType {
     ReasoningTrace,
     PhaseComplete,
     MemoryMonitoring,
+    DeathEvent,
+    RecoveryEvent,
 }
 
 impl SsbActionType {
@@ -111,6 +114,8 @@ impl SsbActionType {
             Self::ReasoningTrace => "reasoning_trace",
             Self::PhaseComplete => "phase_complete",
             Self::MemoryMonitoring => "memory_monitoring",
+            Self::DeathEvent => "death_event",
+            Self::RecoveryEvent => "recovery_event",
         }
     }
 }
@@ -134,6 +139,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "reasoning_trace" => Ok(SsbActionType::ReasoningTrace),
         "phase_complete" => Ok(SsbActionType::PhaseComplete),
         "memory_monitoring" => Ok(SsbActionType::MemoryMonitoring),
+        "death_event" => Ok(SsbActionType::DeathEvent),
+        "recovery_event" => Ok(SsbActionType::RecoveryEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -266,11 +273,31 @@ pub struct MemoryMonitoringPayload {
     pub action_taken: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeathEventPayload {
+    pub agent_id: String,
+    pub classification: String,
+    pub prior_step_index: i64,
+    pub checkpoint_path: String,
+    pub had_checkpoint: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryEventPayload {
+    pub agent_id: String,
+    pub classification: String,
+    pub recovered_from_checkpoint: bool,
+    pub degraded: bool,
+    pub first_grounding_source: String,
+    pub prior_step_index: i64,
+    pub recovery_step_index: i64,
+}
+
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 17 action-type payloads)
+// SsbPayload enum (typed wrapper over all 19 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`].
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (19 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -291,6 +318,8 @@ pub enum SsbPayload {
     ReasoningTrace(ReasoningTracePayload),
     PhaseComplete(PhaseCompletePayload),
     MemoryMonitoring(MemoryMonitoringPayload),
+    DeathEvent(DeathEventPayload),
+    RecoveryEvent(RecoveryEventPayload),
 }
 
 impl SsbPayload {
@@ -315,6 +344,8 @@ impl SsbPayload {
             Self::ReasoningTrace(_) => SsbActionType::ReasoningTrace,
             Self::PhaseComplete(_) => SsbActionType::PhaseComplete,
             Self::MemoryMonitoring(_) => SsbActionType::MemoryMonitoring,
+            Self::DeathEvent(_) => SsbActionType::DeathEvent,
+            Self::RecoveryEvent(_) => SsbActionType::RecoveryEvent,
         }
     }
 }
@@ -1204,6 +1235,8 @@ mod tests {
             SsbActionType::ReasoningTrace,
             SsbActionType::PhaseComplete,
             SsbActionType::MemoryMonitoring,
+            SsbActionType::DeathEvent,
+            SsbActionType::RecoveryEvent,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1223,7 +1256,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 17);
+        assert_eq!(count, 19);
     }
 
     #[tokio::test]
@@ -1670,6 +1703,22 @@ mod tests {
                 threshold: 1024.0,
                 action_taken: "none".into(),
             }),
+            SsbPayload::DeathEvent(DeathEventPayload {
+                agent_id: "agent-dead".into(),
+                classification: "crash".into(),
+                prior_step_index: 10,
+                checkpoint_path: "sessions/default/agents/abc/abc".into(),
+                had_checkpoint: true,
+            }),
+            SsbPayload::RecoveryEvent(RecoveryEventPayload {
+                agent_id: "agent-dead".into(),
+                classification: "crash".into(),
+                recovered_from_checkpoint: true,
+                degraded: false,
+                first_grounding_source: "CHECKPOINT:sessions/default/agents/abc/abc".into(),
+                prior_step_index: 10,
+                recovery_step_index: 11,
+            }),
         ]
     }
 
@@ -1679,7 +1728,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 17, "must cover all 17 action types");
+        assert_eq!(payloads.len(), 19, "must cover all 19 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();

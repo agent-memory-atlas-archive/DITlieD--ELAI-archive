@@ -21,6 +21,7 @@ pub mod permission_enforcer;
 mod permissions;
 pub mod plugin_lifecycle;
 mod prompt;
+pub mod recovery;
 pub mod recovery_recipes;
 mod remote;
 mod session;
