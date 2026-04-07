@@ -77,10 +77,10 @@ impl OrtSession {
         }
     }
 
-    /// Embed text into a vector. Stub — returns Err until Step 3 verifies tensor formats.
+    /// Embed text into a vector. Stub — returns Err until Step 4 implements tensor construction.
     pub fn embed(&self, _text: &str) -> Result<Vec<f32>, OrtError> {
         Err(OrtError::InferenceFailed(
-            "tensor construction blocked until Step 3 tensor format verification".into(),
+            "embed() not implemented — requires Step 4 tensor construction".into(),
         ))
     }
 
@@ -115,10 +115,10 @@ mod tests {
         // Cannot construct a real OrtSession without a model file,
         // but we verify the embed stub returns the expected error message
         // by testing the error type directly.
-        let err = OrtError::InferenceFailed("tensor construction blocked until Step 3 tensor format verification".into());
+        let err = OrtError::InferenceFailed("embed() not implemented — requires Step 4 tensor construction".into());
         match err {
             OrtError::InferenceFailed(msg) => {
-                assert!(msg.contains("Step 3"));
+                assert!(msg.contains("Step 4"));
             }
             other => panic!("expected InferenceFailed, got {other:?}"),
         }

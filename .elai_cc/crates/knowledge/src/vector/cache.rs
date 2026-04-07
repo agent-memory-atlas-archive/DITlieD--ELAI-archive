@@ -153,7 +153,7 @@ fn f32_slice_to_le_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 fn le_bytes_to_f32_vec(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(format!(
             "byte length {} is not a multiple of 4",
             bytes.len()
