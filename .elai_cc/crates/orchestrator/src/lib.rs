@@ -4,6 +4,7 @@ pub mod branch_lock;
 mod compact;
 mod conversation;
 mod file_ops;
+pub mod evidence;
 pub mod fsm;
 mod hooks;
 pub mod tool_filter;
@@ -72,6 +73,13 @@ pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use fsm::{
     EvidenceArtifact, Fsm, FsmError, FsmState, PersistedFsmState, ReplanLogEntry, ReplanRequest,
     ReplanSeverity, TransitionRecord,
+};
+pub use evidence::{
+    all_gates, check_transition, daira_adaptive_run, gates_for_transition, AuditFinding,
+    DairaScope, DairaScopeResult, DkgChangelogGate, EvidenceError, EvidenceGate,
+    FindingSeverity, GroundingSweepGate, KnowledgeReadiness, KnowledgeReadinessGate,
+    ReplanFastTrackGate, TestFailReasonsGate, TestFlippedGate, TestOutcome,
+    TransitionContext, ZeroBlocksGate,
 };
 pub use tool_filter::{RuleCategory, ToolCategory};
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
