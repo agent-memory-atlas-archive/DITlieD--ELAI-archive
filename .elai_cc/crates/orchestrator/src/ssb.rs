@@ -27,6 +27,10 @@ use elai_core::clock::ClockProvider;
 
 const SCHEMA_VERSION: i64 = 1;
 
+/// Maximum serialized payload size in bytes (1 MiB).
+/// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
+const PAYLOAD_MAX_BYTES: usize = 1_048_576;
+
 const CREATE_SSB_TABLE: &str = "\
 CREATE TABLE IF NOT EXISTS ssb (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +139,200 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
 }
 
 // ---------------------------------------------------------------------------
+// Typed payload structs (3B.4)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileWritePayload {
+    pub path: String,
+    pub size_bytes: u64,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileReadPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolResultPayload {
+    pub tool_id: String,
+    pub success: bool,
+    pub output_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestOutcomePayload {
+    pub test_name: String,
+    pub passed: bool,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FindingPayload {
+    pub severity: String,
+    pub category: String,
+    pub message: String,
+    pub file_path: Option<String>,
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimPayload {
+    pub claim_text: String,
+    pub grounding_source: String,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointPayload {
+    pub agent_state_hash: String,
+    pub grc_history_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelSwapPayload {
+    pub from_model: String,
+    pub to_model: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseTransitionPayload {
+    pub from_state: String,
+    pub to_state: String,
+    pub evidence_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeDegradationPayload {
+    pub stage: String,
+    pub from_mode: String,
+    pub to_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IsolationMetricPayload {
+    pub metric_name: String,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanUpdatePayload {
+    pub plan_hash: String,
+    pub phase: String,
+    pub step: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplanRequestPayload {
+    pub reason: String,
+    pub requesting_agent: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StubReferencePayload {
+    pub original_seq: i64,
+    pub stub_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningTracePayload {
+    pub step_type: String,
+    pub content: String,
+    pub topic: String,
+    pub grounding: String,
+    pub conclusion: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseCompletePayload {
+    pub phase_id: String,
+    pub agent_id: String,
+    pub fsm_state: String,
+    pub evidence_artifacts: Vec<String>,
+    pub commit_hashes: Vec<String>,
+    pub test_outcomes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryMonitoringPayload {
+    pub metric_name: String,
+    pub value: f64,
+    pub threshold: f64,
+    pub action_taken: String,
+}
+
+// ---------------------------------------------------------------------------
+// SsbPayload enum (typed wrapper over all 17 action-type payloads)
+// ---------------------------------------------------------------------------
+
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`].
+/// Serialized to msgpack via `rmp_serde` before storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SsbPayload {
+    FileWrite(FileWritePayload),
+    FileRead(FileReadPayload),
+    ToolResult(ToolResultPayload),
+    TestOutcome(TestOutcomePayload),
+    Finding(FindingPayload),
+    Claim(ClaimPayload),
+    Checkpoint(CheckpointPayload),
+    ModelSwap(ModelSwapPayload),
+    PhaseTransition(PhaseTransitionPayload),
+    KnowledgeDegradation(KnowledgeDegradationPayload),
+    IsolationMetric(IsolationMetricPayload),
+    PlanUpdate(PlanUpdatePayload),
+    ReplanRequest(ReplanRequestPayload),
+    StubReference(StubReferencePayload),
+    ReasoningTrace(ReasoningTracePayload),
+    PhaseComplete(PhaseCompletePayload),
+    MemoryMonitoring(MemoryMonitoringPayload),
+}
+
+impl SsbPayload {
+    /// Returns the [`SsbActionType`] corresponding to this payload variant.
+    /// This is the single source of truth for the discriminant→action_type mapping.
+    pub fn action_type(&self) -> SsbActionType {
+        match self {
+            Self::FileWrite(_) => SsbActionType::FileWrite,
+            Self::FileRead(_) => SsbActionType::FileRead,
+            Self::ToolResult(_) => SsbActionType::ToolResult,
+            Self::TestOutcome(_) => SsbActionType::TestOutcome,
+            Self::Finding(_) => SsbActionType::Finding,
+            Self::Claim(_) => SsbActionType::Claim,
+            Self::Checkpoint(_) => SsbActionType::Checkpoint,
+            Self::ModelSwap(_) => SsbActionType::ModelSwap,
+            Self::PhaseTransition(_) => SsbActionType::PhaseTransition,
+            Self::KnowledgeDegradation(_) => SsbActionType::KnowledgeDegradation,
+            Self::IsolationMetric(_) => SsbActionType::IsolationMetric,
+            Self::PlanUpdate(_) => SsbActionType::PlanUpdate,
+            Self::ReplanRequest(_) => SsbActionType::ReplanRequest,
+            Self::StubReference(_) => SsbActionType::StubReference,
+            Self::ReasoningTrace(_) => SsbActionType::ReasoningTrace,
+            Self::PhaseComplete(_) => SsbActionType::PhaseComplete,
+            Self::MemoryMonitoring(_) => SsbActionType::MemoryMonitoring,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SsbTraceable trait (orchestrator-local, no cross-crate dep)
+// ---------------------------------------------------------------------------
+
+/// Trait for types that can produce an [`SsbPayload`] for recording in the SSB.
+/// Defined in `orchestrator` only — never in `reasoning` or `tools` crates.
+pub trait SsbTraceable {
+    fn to_ssb_payload(&self) -> SsbPayload;
+}
+
+impl SsbTraceable for ReasoningTracePayload {
+    fn to_ssb_payload(&self) -> SsbPayload {
+        SsbPayload::ReasoningTrace(self.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry + file entry structs
 // ---------------------------------------------------------------------------
 
@@ -221,6 +419,15 @@ pub enum SsbError {
 
     #[error("unknown SSB action type: {0}")]
     UnknownActionType(String),
+
+    #[error("msgpack serialization error: {0}")]
+    Serialization(#[from] rmp_serde::encode::Error),
+
+    #[error("msgpack deserialization error: {0}")]
+    Deserialization(#[from] rmp_serde::decode::Error),
+
+    #[error("payload exceeds maximum size of {PAYLOAD_MAX_BYTES} bytes")]
+    PayloadTooLarge,
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +583,30 @@ impl Ssb {
         tx.send(WriteMessage { request, respond })
             .map_err(|_| SsbError::Shutdown)?;
         rx.await.map_err(|_| SsbError::ChannelClosed)?
+    }
+
+    /// Submit a typed payload write. Derives `action_type` from the enum variant,
+    /// serializes via msgpack, enforces the size guard, and delegates to [`write()`].
+    pub async fn write_payload(
+        &self,
+        agent_id: &str,
+        superstep: i64,
+        payload: SsbPayload,
+        files: Vec<String>,
+    ) -> Result<i64, SsbError> {
+        let action_type = payload.action_type();
+        let bytes = rmp_serde::to_vec_named(&payload)?;
+        if bytes.len() > PAYLOAD_MAX_BYTES {
+            return Err(SsbError::PayloadTooLarge);
+        }
+        self.write(SsbWriteRequest {
+            action_type,
+            agent_id: agent_id.to_owned(),
+            superstep,
+            payload: bytes,
+            files,
+        })
+        .await
     }
 
     /// Subscribe to broadcast notifications of committed entries.
@@ -1338,5 +1569,305 @@ mod tests {
         assert!(seq > 0, "write should succeed (INSERT allowed by hook)");
 
         ssb.shutdown();
+    }
+
+    // -----------------------------------------------------------------------
+    // 3B.4 — Typed payload tests
+    // -----------------------------------------------------------------------
+
+    fn all_test_payloads() -> Vec<SsbPayload> {
+        vec![
+            SsbPayload::FileWrite(FileWritePayload {
+                path: "src/main.rs".into(),
+                size_bytes: 1024,
+                hash: "abc123".into(),
+            }),
+            SsbPayload::FileRead(FileReadPayload {
+                path: "src/lib.rs".into(),
+            }),
+            SsbPayload::ToolResult(ToolResultPayload {
+                tool_id: "grep".into(),
+                success: true,
+                output_summary: "found 3 matches".into(),
+            }),
+            SsbPayload::TestOutcome(TestOutcomePayload {
+                test_name: "test_foo".into(),
+                passed: true,
+                duration_ms: 42,
+            }),
+            SsbPayload::Finding(FindingPayload {
+                severity: "high".into(),
+                category: "security".into(),
+                message: "SQL injection".into(),
+                file_path: Some("src/db.rs".into()),
+                line: Some(99),
+            }),
+            SsbPayload::Claim(ClaimPayload {
+                claim_text: "blake3 is faster".into(),
+                grounding_source: "benchmark".into(),
+                verified: true,
+            }),
+            SsbPayload::Checkpoint(CheckpointPayload {
+                agent_state_hash: "deadbeef".into(),
+                grc_history_hash: "cafebabe".into(),
+            }),
+            SsbPayload::ModelSwap(ModelSwapPayload {
+                from_model: "sonnet".into(),
+                to_model: "opus".into(),
+                reason: "complex task".into(),
+            }),
+            SsbPayload::PhaseTransition(PhaseTransitionPayload {
+                from_state: "PLANNING".into(),
+                to_state: "EXECUTING".into(),
+                evidence_summary: "all tests pass".into(),
+            }),
+            SsbPayload::KnowledgeDegradation(KnowledgeDegradationPayload {
+                stage: "compaction".into(),
+                from_mode: "full".into(),
+                to_mode: "summary".into(),
+            }),
+            SsbPayload::IsolationMetric(IsolationMetricPayload {
+                metric_name: "memory_mb".into(),
+                value: 256.5,
+            }),
+            SsbPayload::PlanUpdate(PlanUpdatePayload {
+                plan_hash: "plan123".into(),
+                phase: "3B".into(),
+                step: "4".into(),
+            }),
+            SsbPayload::ReplanRequest(ReplanRequestPayload {
+                reason: "scope change".into(),
+                requesting_agent: "agent-0".into(),
+            }),
+            SsbPayload::StubReference(StubReferencePayload {
+                original_seq: 42,
+                stub_reason: "compacted".into(),
+            }),
+            SsbPayload::ReasoningTrace(ReasoningTracePayload {
+                step_type: "observe".into(),
+                content: "read file".into(),
+                topic: "debug".into(),
+                grounding: "file:src/main.rs".into(),
+                conclusion: "ACTION: proceed".into(),
+            }),
+            SsbPayload::PhaseComplete(PhaseCompletePayload {
+                phase_id: "3B.4".into(),
+                agent_id: "agent-main".into(),
+                fsm_state: "COMPLETE".into(),
+                evidence_artifacts: vec!["test-results.json".into()],
+                commit_hashes: vec!["abc1234".into()],
+                test_outcomes: vec!["20 passed, 0 failed".into()],
+            }),
+            SsbPayload::MemoryMonitoring(MemoryMonitoringPayload {
+                metric_name: "heap_mb".into(),
+                value: 512.0,
+                threshold: 1024.0,
+                action_taken: "none".into(),
+            }),
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_typed_payloads() {
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        let payloads = all_test_payloads();
+        assert_eq!(payloads.len(), 17, "must cover all 17 action types");
+
+        for (i, payload) in payloads.iter().enumerate() {
+            let expected_action = payload.action_type();
+            let seq = ssb
+                .write_payload(
+                    &format!("agent-{i}"),
+                    i as i64,
+                    payload.clone(),
+                    vec![format!("file-{i}.rs")],
+                )
+                .await
+                .unwrap_or_else(|e| panic!("write_payload variant {i} failed: {e}"));
+            assert!(seq > 0, "seq must be positive for variant {i}");
+
+            // Read back via query_by_type and verify round-trip
+            let entries = ssb
+                .query_by_type(expected_action)
+                .unwrap_or_else(|e| panic!("query_by_type {expected_action:?} failed: {e}"));
+            assert!(
+                !entries.is_empty(),
+                "query_by_type should return entries for {expected_action:?}"
+            );
+            let entry = entries.last().expect("at least one entry");
+            let deserialized: SsbPayload =
+                rmp_serde::from_slice(&entry.payload)
+                    .unwrap_or_else(|e| panic!("deserialize variant {i} failed: {e}"));
+            assert_eq!(
+                &deserialized, payload,
+                "round-trip mismatch for variant {i}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_payload_size_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        // Build a payload that serializes to > 1 MiB
+        let big_content = "x".repeat(2 * 1024 * 1024);
+        let big_payload = SsbPayload::ReasoningTrace(ReasoningTracePayload {
+            step_type: "observe".into(),
+            content: big_content,
+            topic: "t".into(),
+            grounding: "g".into(),
+            conclusion: "c".into(),
+        });
+
+        let result = ssb.write_payload("agent-big", 0, big_payload, vec![]).await;
+        assert!(result.is_err(), "oversized payload must be rejected");
+        match result.unwrap_err() {
+            SsbError::PayloadTooLarge => {}
+            other => panic!("expected PayloadTooLarge, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trace_integration() {
+        let trace = ReasoningTracePayload {
+            step_type: "hypothesize".into(),
+            content: "maybe X".into(),
+            topic: "debug".into(),
+            grounding: "test:unit".into(),
+            conclusion: "".into(),
+        };
+
+        let payload = trace.to_ssb_payload();
+        match &payload {
+            SsbPayload::ReasoningTrace(inner) => {
+                assert_eq!(inner.step_type, "hypothesize");
+                assert_eq!(inner.content, "maybe X");
+            }
+            other => panic!("expected ReasoningTrace variant, got: {other:?}"),
+        }
+        assert_eq!(payload.action_type(), SsbActionType::ReasoningTrace);
+    }
+
+    // Type mismatch is impossible at the type level: write_payload() derives
+    // action_type from the SsbPayload enum variant via action_type(). There is
+    // no runtime string matching and no way to pass a mismatched pair. This is
+    // a compile-time guarantee, not a runtime check.
+
+    #[tokio::test]
+    async fn test_payload_empty_vecs() {
+        // PhaseCompletePayload with empty Vec fields must not error
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        let payload = SsbPayload::PhaseComplete(PhaseCompletePayload {
+            phase_id: "3B.4".into(),
+            agent_id: "a".into(),
+            fsm_state: "COMPLETE".into(),
+            evidence_artifacts: vec![],
+            commit_hashes: vec![],
+            test_outcomes: vec![],
+        });
+        let seq = ssb
+            .write_payload("agent-empty", 0, payload, vec![])
+            .await
+            .expect("empty vecs must be accepted");
+        assert!(seq > 0);
+    }
+
+    mod proptest_payloads {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_payload() -> impl Strategy<Value = SsbPayload> {
+            prop_oneof![
+                ("[a-z]{1,20}", 0u64..10000, "[a-f0-9]{8}")
+                    .prop_map(|(path, size_bytes, hash)| SsbPayload::FileWrite(
+                        FileWritePayload { path, size_bytes, hash }
+                    )),
+                "[a-z]{1,20}".prop_map(|path| SsbPayload::FileRead(FileReadPayload { path })),
+                ("[a-z]{1,10}", any::<bool>(), "[a-z ]{0,30}")
+                    .prop_map(|(tool_id, success, output_summary)| SsbPayload::ToolResult(
+                        ToolResultPayload { tool_id, success, output_summary }
+                    )),
+                ("[a-z_]{1,20}", any::<bool>(), 0u64..100000)
+                    .prop_map(|(test_name, passed, duration_ms)| SsbPayload::TestOutcome(
+                        TestOutcomePayload { test_name, passed, duration_ms }
+                    )),
+                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,30}", any::<Option<String>>(), any::<Option<u32>>())
+                    .prop_map(|(severity, category, message, file_path, line)| SsbPayload::Finding(
+                        FindingPayload { severity, category, message, file_path, line }
+                    )),
+                ("[a-z ]{1,30}", "[a-z]{1,10}", any::<bool>())
+                    .prop_map(|(claim_text, grounding_source, verified)| SsbPayload::Claim(
+                        ClaimPayload { claim_text, grounding_source, verified }
+                    )),
+                ("[a-f0-9]{16}", "[a-f0-9]{16}")
+                    .prop_map(|(agent_state_hash, grc_history_hash)| SsbPayload::Checkpoint(
+                        CheckpointPayload { agent_state_hash, grc_history_hash }
+                    )),
+                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,20}")
+                    .prop_map(|(from_model, to_model, reason)| SsbPayload::ModelSwap(
+                        ModelSwapPayload { from_model, to_model, reason }
+                    )),
+                ("[A-Z]{1,10}", "[A-Z]{1,10}", "[a-z ]{1,30}")
+                    .prop_map(|(from_state, to_state, evidence_summary)| SsbPayload::PhaseTransition(
+                        PhaseTransitionPayload { from_state, to_state, evidence_summary }
+                    )),
+                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z]{1,10}")
+                    .prop_map(|(stage, from_mode, to_mode)| SsbPayload::KnowledgeDegradation(
+                        KnowledgeDegradationPayload { stage, from_mode, to_mode }
+                    )),
+                ("[a-z_]{1,15}", any::<f64>().prop_filter("finite", |v| v.is_finite()))
+                    .prop_map(|(metric_name, value)| SsbPayload::IsolationMetric(
+                        IsolationMetricPayload { metric_name, value }
+                    )),
+                ("[a-f0-9]{8}", "[0-9A-Z]{1,5}", "[0-9]{1,3}")
+                    .prop_map(|(plan_hash, phase, step)| SsbPayload::PlanUpdate(
+                        PlanUpdatePayload { plan_hash, phase, step }
+                    )),
+                ("[a-z ]{1,30}", "[a-z-]{1,15}")
+                    .prop_map(|(reason, requesting_agent)| SsbPayload::ReplanRequest(
+                        ReplanRequestPayload { reason, requesting_agent }
+                    )),
+                (any::<i64>(), "[a-z ]{1,20}")
+                    .prop_map(|(original_seq, stub_reason)| SsbPayload::StubReference(
+                        StubReferencePayload { original_seq, stub_reason }
+                    )),
+                ("[a-z]{1,10}", "[a-z ]{1,30}", "[a-z]{1,10}", "[a-z:]{1,20}", "[a-z ]{0,20}")
+                    .prop_map(|(step_type, content, topic, grounding, conclusion)| SsbPayload::ReasoningTrace(
+                        ReasoningTracePayload { step_type, content, topic, grounding, conclusion }
+                    )),
+                ("[0-9A-Z.]{1,10}", "[a-z-]{1,10}", "[A-Z]{1,10}",
+                 proptest::collection::vec("[a-z.]{1,10}", 0..3),
+                 proptest::collection::vec("[a-f0-9]{7}", 0..3),
+                 proptest::collection::vec("[a-z ]{1,20}", 0..3))
+                    .prop_map(|(phase_id, agent_id, fsm_state, evidence_artifacts, commit_hashes, test_outcomes)|
+                        SsbPayload::PhaseComplete(PhaseCompletePayload {
+                            phase_id, agent_id, fsm_state, evidence_artifacts, commit_hashes, test_outcomes,
+                        })
+                    ),
+                ("[a-z_]{1,15}",
+                 any::<f64>().prop_filter("finite", |v| v.is_finite()),
+                 any::<f64>().prop_filter("finite", |v| v.is_finite()),
+                 "[a-z]{1,10}")
+                    .prop_map(|(metric_name, value, threshold, action_taken)| SsbPayload::MemoryMonitoring(
+                        MemoryMonitoringPayload { metric_name, value, threshold, action_taken }
+                    )),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn test_payload_round_trip(payload in arb_payload()) {
+                let bytes = rmp_serde::to_vec_named(&payload)
+                    .expect("serialize must succeed");
+                let decoded: SsbPayload = rmp_serde::from_slice(&bytes)
+                    .expect("deserialize must succeed");
+                prop_assert_eq!(&decoded, &payload);
+            }
+        }
     }
 }
