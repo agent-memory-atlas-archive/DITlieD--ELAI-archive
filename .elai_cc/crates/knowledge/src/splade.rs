@@ -13,7 +13,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 
-use crate::vector::circuit_breaker::{CircuitBreaker, BreakerError};
+use crate::vector::circuit_breaker::{EmbeddingCircuitBreaker, BreakerError, FailureKind};
 use elai_core::ClockProvider;
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ pub struct SpladeExpander {
     top_k: usize,
     /// Maps vocab index -> token string for sparse vector decoding.
     id_to_token: Vec<String>,
-    circuit_breaker: Mutex<CircuitBreaker>,
+    circuit_breaker: Mutex<EmbeddingCircuitBreaker>,
 }
 
 impl SpladeExpander {
@@ -137,7 +137,7 @@ impl SpladeExpander {
             }
         }
 
-        let circuit_breaker = Mutex::new(CircuitBreaker::new(clock));
+        let circuit_breaker = Mutex::new(EmbeddingCircuitBreaker::with_defaults("splade", clock));
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
@@ -252,7 +252,7 @@ impl SpladeExpander {
 
         let result = cb.call(|| {
             Self::run_inference(&session, &encoding, variant)
-        });
+        }, FailureKind::Transient);
 
         match result {
             Ok(sparse_vec) => self.decode_sparse_vector(&sparse_vec),

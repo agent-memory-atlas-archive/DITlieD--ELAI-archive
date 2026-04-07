@@ -7,7 +7,7 @@ use ort::value::Tensor;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::arag::RetrievalResult;
-use crate::vector::circuit_breaker::{BreakerState, CircuitBreaker};
+use crate::vector::circuit_breaker::{BreakerState, EmbeddingCircuitBreaker, FailureKind};
 use elai_core::ClockProvider;
 
 // ---------------------------------------------------------------------------
@@ -129,8 +129,8 @@ pub struct CrossEncoderReranker {
     fallback_session: Option<Arc<std::sync::Mutex<Session>>>,
     semaphore: Arc<Semaphore>,
     request_tx: mpsc::Sender<RerankerRequest>,
-    circuit_breaker: std::sync::Mutex<CircuitBreaker>,
-    fallback_breaker: std::sync::Mutex<CircuitBreaker>,
+    circuit_breaker: std::sync::Mutex<EmbeddingCircuitBreaker>,
+    fallback_breaker: std::sync::Mutex<EmbeddingCircuitBreaker>,
     #[allow(dead_code)] // Used in tests and future startup canary (1G.5)
     clock: Arc<dyn ClockProvider>,
     ssb_notifier: Arc<dyn SsbNotifier>,
@@ -151,8 +151,8 @@ impl CrossEncoderReranker {
     ) -> Self {
         let queue_depth = config.max_queue_depth;
         let (request_tx, _request_rx) = mpsc::channel::<RerankerRequest>(queue_depth);
-        let circuit_breaker = CircuitBreaker::new(clock.clone());
-        let fallback_breaker = CircuitBreaker::new(clock.clone());
+        let circuit_breaker = EmbeddingCircuitBreaker::with_defaults("cross_encoder", clock.clone());
+        let fallback_breaker = EmbeddingCircuitBreaker::with_defaults("cross_encoder_fallback", clock.clone());
 
         Self {
             config,
@@ -366,7 +366,7 @@ impl CrossEncoderReranker {
     /// Try reranking through a circuit breaker. Returns Ok(ranked) or Err on breaker open/failure.
     fn try_rerank_with_breaker(
         &self,
-        breaker: &std::sync::Mutex<CircuitBreaker>,
+        breaker: &std::sync::Mutex<EmbeddingCircuitBreaker>,
         session_opt: &Option<Arc<std::sync::Mutex<Session>>>,
         query: &str,
         candidates: &[RetrievalResult],
@@ -387,7 +387,7 @@ impl CrossEncoderReranker {
 
         let result = cb.call(|| {
             Self::score_pairs(session_arc, tokenizer, query, candidates)
-        });
+        }, FailureKind::Transient);
 
         match result {
             Ok(scores) => Ok(Self::apply_scores(candidates.to_vec(), &scores)),
@@ -412,7 +412,7 @@ impl CrossEncoderReranker {
     /// Emit SSB recovery event if breaker just transitioned back to Closed.
     fn emit_recovery_if_needed(
         &self,
-        breaker: &std::sync::Mutex<CircuitBreaker>,
+        breaker: &std::sync::Mutex<EmbeddingCircuitBreaker>,
         model_tier: &str,
     ) {
         if let Ok(cb) = breaker.lock() {
@@ -672,8 +672,8 @@ impl CrossEncoderReranker {
     ) -> (Self, mpsc::Receiver<RerankerRequest>) {
         let queue_depth = config.max_queue_depth;
         let (request_tx, request_rx) = mpsc::channel::<RerankerRequest>(queue_depth);
-        let circuit_breaker = CircuitBreaker::new(clock.clone());
-        let fallback_breaker = CircuitBreaker::new(clock.clone());
+        let circuit_breaker = EmbeddingCircuitBreaker::with_defaults("cross_encoder", clock.clone());
+        let fallback_breaker = EmbeddingCircuitBreaker::with_defaults("cross_encoder_fallback", clock.clone());
 
         let reranker = Self {
             config,
@@ -729,8 +729,7 @@ impl CrossEncoderReranker {
     #[cfg(test)]
     pub(crate) fn record_l12_failure(&self) {
         if let Ok(mut cb) = self.circuit_breaker.lock() {
-            let now = self.clock.now();
-            cb.record_failure(now);
+            cb.record_failure(FailureKind::Transient);
         }
     }
 
@@ -738,8 +737,7 @@ impl CrossEncoderReranker {
     #[cfg(test)]
     pub(crate) fn record_l6_failure(&self) {
         if let Ok(mut cb) = self.fallback_breaker.lock() {
-            let now = self.clock.now();
-            cb.record_failure(now);
+            cb.record_failure(FailureKind::Transient);
         }
     }
 
