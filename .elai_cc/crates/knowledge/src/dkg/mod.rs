@@ -97,14 +97,8 @@ impl DkgEngine {
         )?;
 
         if let Some(ivp) = index_version_path {
-            let content = format!(
-                "version = 1\n\
-                 dkg_schema_version = 1\n\
-                 vector_dimensions = {{ code = 0, text = 0 }}\n\
-                 bm25_format = \"\"\n\
-                 created_at = {created_at}\n"
-            );
-            std::fs::write(ivp, content)?;
+            let version_file = crate::index_version::current_version(created_at);
+            crate::index_version::write(ivp, &version_file)?;
         }
 
         let mut grammars: HashMap<&'static str, Box<dyn LanguageGrammar>> = HashMap::new();
@@ -279,15 +273,8 @@ impl DkgEngine {
 
         // Write index_version.toml if path is set
         if let Some(ref ivp) = self.index_version_path {
-            let content = format!(
-                "version = 1\n\
-                 dkg_schema_version = 1\n\
-                 vector_dimensions = {{ code = 0, text = 0 }}\n\
-                 bm25_format = \"\"\n\
-                 created_at = {}\n",
-                self.created_at
-            );
-            std::fs::write(ivp, content)?;
+            let version_file = crate::index_version::current_version(self.created_at);
+            crate::index_version::write(ivp, &version_file)?;
         }
 
         Ok(DependencyGraph {

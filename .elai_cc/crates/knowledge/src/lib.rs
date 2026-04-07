@@ -5,6 +5,7 @@ pub mod bm25;
 pub mod catrag;
 pub mod degradation;
 pub mod dkg;
+pub mod index_version;
 pub mod pagerank;
 pub mod pipeline;
 pub mod query_trace;

@@ -18,6 +18,7 @@ elai-core = { path = "../core" }
 ort = "2.0.0-rc.12"
 tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 tokio = { version = "1", features = ["sync"] }
+toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 usearch = { version = "2.24.0", default-features = false, optional = true }
