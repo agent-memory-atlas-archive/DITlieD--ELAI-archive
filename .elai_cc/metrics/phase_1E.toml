@@ -1,0 +1,11 @@
+# ELAI phase 1E pipeline metrics
+pipeline_p50_ms = 1
+pipeline_p99_ms = 1
+token_savings_mean_pct = 96.1
+catrag_overlay_size = 0
+arag_tools_per_query = 2.0
+stages_skipped = "vector,catrag,arag"
+degraded_mode = true
+index_build_time_ms = 295
+files_indexed = 103
+chunks_indexed = 1709
