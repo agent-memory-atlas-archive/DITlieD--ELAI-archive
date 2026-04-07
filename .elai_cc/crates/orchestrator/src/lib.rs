@@ -6,6 +6,7 @@ mod conversation;
 mod file_ops;
 pub mod evidence;
 pub mod fsm;
+pub mod gate;
 mod hooks;
 pub mod tool_filter;
 mod lane_events;
@@ -81,6 +82,12 @@ pub use evidence::{
     ReplanFastTrackGate, TestFailReasonsGate, TestFlippedGate, TestOutcome,
     TransitionContext, ZeroBlocksGate,
 };
+pub use gate::{
+    default_risk_level, run_interactive_gate, EvidenceSummary, GateDecision, GateResult,
+    InteractiveGate, InteractiveGateOutcome, RiskLevel,
+};
+#[cfg(test)]
+pub use gate::MockInteractiveGate;
 pub use tool_filter::{RuleCategory, ToolCategory};
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};

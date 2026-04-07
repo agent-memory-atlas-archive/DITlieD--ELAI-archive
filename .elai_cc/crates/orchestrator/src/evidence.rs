@@ -94,7 +94,7 @@ pub struct AuditFinding {
 /// All evidence data a caller can provide for gate evaluation.
 /// Each gate reads only the fields it needs; unset fields are None.
 /// Source: phase-3A.txt L164.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitionContext {
     pub source: Option<FsmState>,
     pub target: Option<FsmState>,
