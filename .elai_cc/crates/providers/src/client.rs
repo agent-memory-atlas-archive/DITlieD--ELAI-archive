@@ -34,6 +34,9 @@ impl ProviderClient {
             ProviderKind::OpenAi => Ok(Self::OpenAi(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::openai(),
             )?)),
+            ProviderKind::Ollama => Err(ApiError::Auth(
+                "Ollama provider not yet implemented".to_string(),
+            )),
         }
     }
 

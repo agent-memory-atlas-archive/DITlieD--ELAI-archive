@@ -8,6 +8,7 @@ use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
 
 pub mod anthropic;
+pub mod ollama;
 pub mod openai_compat;
 
 #[allow(dead_code)]
@@ -33,6 +34,7 @@ pub enum ProviderKind {
     Anthropic,
     Xai,
     OpenAi,
+    Ollama,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +146,7 @@ pub fn resolve_model_alias(model: &str) -> String {
                     "grok-2" => "grok-2",
                     _ => trimmed,
                 },
-                ProviderKind::OpenAi => trimmed,
+                ProviderKind::OpenAi | ProviderKind::Ollama => trimmed,
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
@@ -169,7 +171,23 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         });
     }
+    if canonical.contains(':') || is_ollama_model_family(&canonical) {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::Ollama,
+            auth_env: "OLLAMA_API_KEY",
+            base_url_env: "OLLAMA_BASE_URL",
+            default_base_url: ollama::DEFAULT_OLLAMA_BASE_URL,
+        });
+    }
     None
+}
+
+fn is_ollama_model_family(model: &str) -> bool {
+    const OLLAMA_PREFIXES: &[&str] = &[
+        "gemma", "llama", "mistral", "qwen", "codellama", "deepseek",
+        "starcoder", "vicuna", "orca", "neural-chat", "tinyllama",
+    ];
+    OLLAMA_PREFIXES.iter().any(|prefix| model.starts_with(prefix))
 }
 
 #[must_use]
