@@ -74,11 +74,7 @@ pub fn phi(score: u8) -> f64 {
         5.0, // 10
     ];
     debug_assert!(score <= 10, "phi() score must be 0..=10, got {score}");
-    if (score as usize) < TABLE.len() {
-        TABLE[score as usize]
-    } else {
-        *TABLE.last().unwrap()
-    }
+    TABLE.get(score as usize).copied().unwrap_or(TABLE[TABLE.len() - 1])
 }
 
 // ---------------------------------------------------------------------------

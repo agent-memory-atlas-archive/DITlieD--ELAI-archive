@@ -561,7 +561,7 @@ pub fn wilcoxon_signed_rank(x: &[f64], y: &[f64]) -> (f64, f64, usize) {
         .enumerate()
         .map(|(i, d)| (i, d.abs()))
         .collect();
-    abs_diffs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    abs_diffs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut ranks = vec![0.0_f64; n];
     let mut i = 0;

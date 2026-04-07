@@ -1307,7 +1307,7 @@ fn execute_tool_with_enforcer(
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
         }
         "fsm_get_state" => {
-            let state = fsm_state().lock().unwrap();
+            let state = fsm_state().lock().map_err(|e| structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}")))?;
             Ok(serde_json::json!({"state": state.current, "phase": state.phase}).to_string())
         }
         "fsm_transition" => {
@@ -1318,7 +1318,7 @@ fn execute_tool_with_enforcer(
             match target {
                 "IDLE" | "EXECUTING" | "PLANNING" | "TESTING_FIRST" | "AUDITING"
                 | "MEMORIZING" | "COMPLETE" | "CONFIGURING" => {
-                    let mut state = fsm_state().lock().unwrap();
+                    let mut state = fsm_state().lock().map_err(|e| structured_error("FSM_LOCK_POISONED", &format!("FSM lock poisoned: {e}")))?;
                     let previous = state.current.clone();
                     state.current = target.to_string();
                     if let Some(phase) = input.get("phase").and_then(|v| v.as_str()) {
