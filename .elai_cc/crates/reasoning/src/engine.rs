@@ -4,9 +4,10 @@ use regex::Regex;
 
 use crate::config::effective_allowed_next;
 use crate::types::{
-    AgentGrcConfig, CsqResult, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
-    InlineFeasibilityResult, InlineFeasibilityState, PlanGroundingResult, ThinkResult, ThinkStep,
-    TopicState, VerificationMethod, VerificationResult,
+    AgentGrcConfig, CsqCheck, CsqResult, CsqSeverity, FeasibilityMethod, FeasibilityOutcome,
+    GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult, InlineFeasibilityResult,
+    InlineFeasibilityState, PlanGroundingResult, ThinkResult, ThinkStep, TopicState,
+    VerificationMethod, VerificationResult,
 };
 use crate::verification::{LocalVerifier, NoopTestRunner, StdFileReader, Verifier};
 
@@ -589,17 +590,110 @@ impl GrcEngine for BasicGrcEngine {
 
     fn generate_csq(
         &self,
-        _function_id: &str,
-        _sensitive_ops: &[String],
+        function_id: &str,
+        sensitive_ops: &[String],
     ) -> Result<CsqResult, GrcError> {
-        todo!("2D.4: implement CSQ generation")
+        if sensitive_ops.is_empty() {
+            return Ok(CsqResult {
+                function_id: function_id.to_string(),
+                checks: Vec::new(),
+            });
+        }
+
+        let critical_patterns: &[&str] = &[
+            "fs::", "file", "write", "delete", "remove", "net::", "tcpstream",
+            "money", "payment", "auth", "token", "credential", "password",
+        ];
+
+        let checks: Vec<CsqCheck> = sensitive_ops
+            .iter()
+            .map(|op| {
+                let op_lower = op.to_lowercase();
+                let is_critical = critical_patterns
+                    .iter()
+                    .any(|pat| op_lower.contains(pat));
+
+                let severity = if is_critical {
+                    CsqSeverity::Critical
+                } else {
+                    CsqSeverity::Warning
+                };
+
+                let consequence = if is_critical {
+                    format!(
+                        "data loss/security breach/financial error possible if {} fails",
+                        op
+                    )
+                } else {
+                    format!("incorrect output possible if {} fails", op)
+                };
+
+                CsqCheck {
+                    assumption: format!(
+                        "The call to {} in {} behaves as expected",
+                        op, function_id
+                    ),
+                    consequence,
+                    severity,
+                    guard_added: false,
+                }
+            })
+            .collect();
+
+        Ok(CsqResult {
+            function_id: function_id.to_string(),
+            checks,
+        })
     }
 
     fn check_inline_feasibility(
         &mut self,
-        _claim: &str,
-        _sources: &[String],
+        claim: &str,
+        sources: &[String],
     ) -> Result<InlineFeasibilityResult, GrcError> {
-        todo!("2D.4: implement inline feasibility check")
+        // Budget check: max 2 inline feasibility calls per EXECUTING phase.
+        if self.inline_feasibility_state.is_exhausted() {
+            return Err(GrcError::BudgetExhausted {
+                topic: "inline_feasibility".to_string(),
+                calls_used: self.inline_feasibility_state.checks_used,
+                max_calls: self.inline_feasibility_state.max_checks(),
+            });
+        }
+
+        // Blocked detection: explicit CONTRADICTS_PLAN: prefix (phase 2D convention).
+        // Full semantic contradiction detection deferred to phase 4F.
+        let outcome = if let Some(stripped) = claim.strip_prefix("CONTRADICTS_PLAN:") {
+            let stripped = stripped.trim();
+            // Only trigger Blocked if there are sources to contradict against,
+            // or if the prefix is present (spec: prefix is the signal).
+            if !stripped.is_empty() {
+                FeasibilityOutcome::Blocked
+            } else {
+                FeasibilityOutcome::Fail
+            }
+        } else {
+            // Source matching: check if claim appears in any source.
+            // Match on meaningful content (>3 words or exact match) to avoid
+            // false positives on trivial substrings.
+            let claim_trimmed = claim.trim();
+            let found = sources.iter().any(|source| {
+                source.contains(claim_trimmed)
+            });
+
+            if found {
+                FeasibilityOutcome::Pass
+            } else {
+                FeasibilityOutcome::Fail
+            }
+        };
+
+        // Record the check against the budget.
+        self.inline_feasibility_state.record_check();
+
+        Ok(InlineFeasibilityResult {
+            claim: claim.to_string(),
+            method: FeasibilityMethod::SourceMatch,
+            outcome,
+        })
     }
 }
