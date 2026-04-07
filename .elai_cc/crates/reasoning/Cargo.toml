@@ -10,5 +10,9 @@ elai-core = { path = "../core" }
 thiserror = "2"
 serde.workspace = true
 
+[[bench]]
+name = "grc_bench"
+harness = false
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }

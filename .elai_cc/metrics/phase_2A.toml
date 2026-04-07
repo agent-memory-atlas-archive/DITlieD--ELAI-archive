@@ -1,0 +1,29 @@
+# Phase 2A: GRC state machine metrics
+# Measured 2026-04-08, release build, median of 1000 iterations
+
+# Validation overhead per think() step (5-step chain: Observe->Hypothesize->PlanAction->Act->Verify)
+validation_overhead_us = 0
+validation_overhead_ns = 380
+validation_overhead_p99_ns = 560
+
+# Rejection overhead (invalid transition path)
+rejection_overhead_us = 0
+rejection_overhead_ns = 100
+rejection_overhead_p99_ns = 300
+
+# Memory per topic (TopicState stack base, excludes heap-allocated step history)
+topic_base_bytes = 96
+
+# Test metrics
+test_count = 18
+test_failures = 0
+
+# Code metrics (reasoning crate only)
+source_loc = 535
+total_loc = 1148
+
+# Compile time
+reasoning_compile_time_s = 0.20
+workspace_compile_time_s = 34.49
+phase0_baseline_compile_time_s = 0.17
+compile_time_delta_s = 0.03
