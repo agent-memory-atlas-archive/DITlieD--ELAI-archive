@@ -1,0 +1,11 @@
+# ELAI phase 1D PageRank metrics — 2026-04-07
+test_count = 24
+# fresh build after cargo clean --package elai-knowledge
+compile_time_seconds = 9.45
+pagerank_loc = 913
+ranking_quality = true
+# upper bound: T6 asserts <= 15%, P3 proptest confirms; exact deviation not printed
+token_budget_accuracy = 15.0
+density_guard_correct = true
+# upper bound: T10 asserts fit_iterations <= 10; exact count not printed
+binary_search_max_iterations = 10
