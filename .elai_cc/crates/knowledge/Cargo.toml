@@ -16,7 +16,7 @@ log = "0.4"
 tantivy = "0.26"
 elai-core = { path = "../core" }
 ort = "2.0.0-rc.12"
-tokenizers = { version = "0.22", features = ["http"] }
+tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 tokio = { version = "1", features = ["sync"] }
 usearch = { version = "2.24.0", default-features = false, optional = true }
 
@@ -27,6 +27,7 @@ usearch-hnsw = ["usearch"]
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

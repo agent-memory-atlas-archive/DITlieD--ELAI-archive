@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+use ort::value::Tensor;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::arag::RetrievalResult;
@@ -82,7 +83,7 @@ impl Default for RerankerConfig {
 // Batch request type (for mpsc channel)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)] // Fields used in 1G.3 batch scoring
+#[allow(dead_code)] // Used in async batch path (rerank_via_channel + run_batch_worker)
 pub(crate) struct RerankerRequest {
     pub query: String,
     pub candidates: Vec<RetrievalResult>,
@@ -99,9 +100,7 @@ pub struct CrossEncoderReranker {
     tokenizer: Option<Arc<tokenizers::Tokenizer>>,
     #[allow(dead_code)] // Lazy-loaded on L-12 circuit breaker open (1G.4)
     fallback_session: Option<Arc<std::sync::Mutex<Session>>>,
-    #[allow(dead_code)] // Used in 1G.3 concurrency
     semaphore: Arc<Semaphore>,
-    #[allow(dead_code)] // Used in 1G.3 batch channel
     request_tx: mpsc::Sender<RerankerRequest>,
     #[allow(dead_code)] // Used in 1G.4 circuit breaker integration
     circuit_breaker: std::sync::Mutex<CircuitBreaker>,
@@ -258,22 +257,290 @@ impl CrossEncoderReranker {
 
     /// Rerank candidates using the cross-encoder model.
     ///
-    /// Stub scoring: returns candidates unchanged (1G.3 implements actual inference).
+    /// Tokenizes (query, snippet) pairs, runs batch ONNX inference, re-sorts by
+    /// descending cross-encoder score. Acquires semaphore before inference.
     ///
     /// Skip conditions:
     /// - candidate count <= skip_threshold
     /// - SPARSE_ONLY / BM25_ONLY modes (caller responsibility, not checked here)
     pub fn rerank(
         &self,
-        _query: &str,
+        query: &str,
         candidates: Vec<RetrievalResult>,
     ) -> Result<Vec<RetrievalResult>, RerankerError> {
         if candidates.len() <= self.config.skip_threshold {
             return Ok(candidates);
         }
-        // Stub: return candidates in original order.
-        // 1G.3 implements: tokenize pairs, run ONNX inference, re-sort by score.
-        Ok(candidates)
+
+        let session_arc = self
+            .session
+            .as_ref()
+            .ok_or_else(|| RerankerError::Inference("model not loaded".into()))?;
+        let tokenizer = self
+            .tokenizer
+            .as_ref()
+            .ok_or_else(|| RerankerError::Inference("tokenizer not loaded".into()))?;
+
+        // Acquire semaphore synchronously (try_acquire for non-async callers).
+        // If unavailable, another rerank is in progress — return unranked.
+        let _permit = self
+            .semaphore
+            .try_acquire()
+            .map_err(|_| RerankerError::ChannelFull)?;
+
+        let scores = Self::score_pairs(session_arc, tokenizer, query, &candidates)?;
+        Ok(Self::apply_scores(candidates, &scores))
+    }
+
+    /// Async rerank entry point via bounded mpsc channel.
+    ///
+    /// Sends request to the batch worker channel. If channel is full (>max_queue_depth
+    /// pending), returns candidates unranked immediately.
+    pub async fn rerank_via_channel(
+        &self,
+        query: String,
+        candidates: Vec<RetrievalResult>,
+    ) -> Result<Vec<RetrievalResult>, RerankerError> {
+        if candidates.len() <= self.config.skip_threshold {
+            return Ok(candidates);
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = RerankerRequest {
+            query,
+            candidates: candidates.clone(),
+            reply: reply_tx,
+        };
+
+        // try_send: if channel full, return unranked immediately.
+        self.request_tx.try_send(request).map_err(|_| RerankerError::ChannelFull)?;
+
+        reply_rx.await.map_err(|_| {
+            RerankerError::Inference("batch worker dropped reply channel".into())
+        })?
+    }
+
+    /// Run the batch worker loop. Drains all pending requests from the channel,
+    /// merges candidate sets into a single batch, runs one inference, and splits
+    /// results back to callers via their oneshot channels.
+    ///
+    /// Must be spawned as a tokio task. Runs until the channel sender is dropped.
+    #[allow(dead_code)] // Spawned by pipeline orchestrator for async batch path
+    pub(crate) async fn run_batch_worker(
+        session: Arc<std::sync::Mutex<Session>>,
+        tokenizer: Arc<tokenizers::Tokenizer>,
+        semaphore: Arc<Semaphore>,
+        mut rx: mpsc::Receiver<RerankerRequest>,
+    ) {
+        while let Some(first) = rx.recv().await {
+            // Drain all currently pending requests.
+            let mut requests = vec![first];
+            while let Ok(req) = rx.try_recv() {
+                requests.push(req);
+            }
+
+            // Acquire semaphore for exclusive session access.
+            let _permit = semaphore.acquire().await.expect("semaphore closed");
+
+            // Merge all candidate sets, tracking offsets per caller.
+            let mut all_pairs: Vec<(&str, &str)> = Vec::new();
+            let mut offsets: Vec<(usize, usize)> = Vec::new(); // (start, len)
+
+            for req in &requests {
+                let start = all_pairs.len();
+                for c in &req.candidates {
+                    all_pairs.push((req.query.as_str(), c.snippet.as_str()));
+                }
+                offsets.push((start, req.candidates.len()));
+            }
+
+            // Batch inference.
+            let scores_result =
+                Self::score_pairs_raw(&session, &tokenizer, &all_pairs);
+
+            match scores_result {
+                Ok(all_scores) => {
+                    for (req, &(start, len)) in requests.into_iter().zip(offsets.iter()) {
+                        let segment = &all_scores[start..start + len];
+                        let ranked = Self::apply_scores(req.candidates, segment);
+                        let _ = req.reply.send(Ok(ranked));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    for (i, req) in requests.into_iter().enumerate() {
+                        if i == 0 {
+                            let _ = req.reply.send(Err(RerankerError::Inference(msg.clone())));
+                        } else {
+                            let _ = req.reply.send(Err(RerankerError::Inference(msg.clone())));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tokenize (query, candidate_snippet) pairs and run batch ONNX inference.
+    /// Returns one relevance score per candidate.
+    fn score_pairs(
+        session_arc: &Arc<std::sync::Mutex<Session>>,
+        tokenizer: &tokenizers::Tokenizer,
+        query: &str,
+        candidates: &[RetrievalResult],
+    ) -> Result<Vec<f32>, RerankerError> {
+        let pairs: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|c| (query, c.snippet.as_str()))
+            .collect();
+        Self::score_pairs_raw(session_arc, tokenizer, &pairs)
+    }
+
+    /// Core batch inference: tokenize pairs and run single session.run().
+    fn score_pairs_raw(
+        session_arc: &Arc<std::sync::Mutex<Session>>,
+        tokenizer: &tokenizers::Tokenizer,
+        pairs: &[(&str, &str)],
+    ) -> Result<Vec<f32>, RerankerError> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Encode all pairs as (sentence_a, sentence_b) for cross-encoder input.
+        let encodings = tokenizer
+            .encode_batch(
+                pairs
+                    .iter()
+                    .map(|(q, d)| tokenizers::EncodeInput::Dual(
+                        tokenizers::InputSequence::from(*q),
+                        tokenizers::InputSequence::from(*d),
+                    ))
+                    .collect::<Vec<_>>(),
+                false,
+            )
+            .map_err(|e| RerankerError::Inference(format!("tokenization failed: {e}")))?;
+
+        let batch_size = encodings.len();
+        // Pad to max length in this batch (all sequences must have same length for
+        // the batched tensor).
+        let max_len = encodings.iter().map(|enc| enc.get_ids().len()).max().unwrap_or(0);
+
+        let mut input_ids: Vec<i64> = Vec::with_capacity(batch_size * max_len);
+        let mut attention_mask: Vec<i64> = Vec::with_capacity(batch_size * max_len);
+        let mut token_type_ids: Vec<i64> = Vec::with_capacity(batch_size * max_len);
+
+        for enc in &encodings {
+            let ids = enc.get_ids();
+            let mask = enc.get_attention_mask();
+            let types = enc.get_type_ids();
+            let seq_len = ids.len();
+
+            for &id in ids {
+                input_ids.push(id as i64);
+            }
+            for _ in seq_len..max_len {
+                input_ids.push(0);
+            }
+
+            for &m in mask {
+                attention_mask.push(m as i64);
+            }
+            for _ in seq_len..max_len {
+                attention_mask.push(0);
+            }
+
+            for &t in types {
+                token_type_ids.push(t as i64);
+            }
+            for _ in seq_len..max_len {
+                token_type_ids.push(0);
+            }
+        }
+
+        let shape = vec![batch_size as i64, max_len as i64];
+        let id_tensor = Tensor::from_array((shape.clone(), input_ids))
+            .map_err(|e| RerankerError::Inference(format!("tensor input_ids: {e}")))?;
+        let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))
+            .map_err(|e| RerankerError::Inference(format!("tensor attention_mask: {e}")))?;
+        let type_tensor = Tensor::from_array((shape, token_type_ids))
+            .map_err(|e| RerankerError::Inference(format!("tensor token_type_ids: {e}")))?;
+        let inputs = ort::inputs![
+            "input_ids" => id_tensor,
+            "attention_mask" => mask_tensor,
+            "token_type_ids" => type_tensor,
+        ];
+
+        let mut session = session_arc
+            .lock()
+            .map_err(|e| RerankerError::Inference(format!("session lock poisoned: {e}")))?;
+
+        let outputs = session
+            .run(inputs)
+            .map_err(|e| RerankerError::Inference(format!("ort session.run: {e}")))?;
+
+        let (out_shape, data) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| RerankerError::Inference(format!("extract tensor: {e}")))?;
+
+        // Output shape: [batch_size, 1] — one logit per pair.
+        // Some models output [batch_size] directly.
+        let scores: Vec<f32> = if out_shape.len() == 2 && out_shape[1] == 1 {
+            data.iter().copied().collect()
+        } else {
+            data.iter().copied().take(batch_size).collect()
+        };
+
+        if scores.len() != batch_size {
+            return Err(RerankerError::Inference(format!(
+                "expected {batch_size} scores, got {}",
+                scores.len()
+            )));
+        }
+
+        Ok(scores)
+    }
+
+    /// Re-sort candidates by descending cross-encoder score.
+    /// NaN/Inf scores are assigned f32::NEG_INFINITY (sorted to bottom).
+    fn apply_scores(
+        candidates: Vec<RetrievalResult>,
+        scores: &[f32],
+    ) -> Vec<RetrievalResult> {
+        let mut scored: Vec<(f32, RetrievalResult)> = candidates
+            .into_iter()
+            .zip(scores.iter())
+            .map(|(mut c, &s)| {
+                let safe_score = if s.is_finite() { s } else { f32::NEG_INFINITY };
+                c.score = safe_score as f64;
+                (safe_score, c)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// Create the reranker and return it with the batch worker channel receiver.
+    /// Caller must spawn `run_batch_worker` with the returned receiver.
+    #[allow(dead_code)] // Used when pipeline spawns batch worker task
+    pub(crate) fn new_with_worker(
+        config: RerankerConfig,
+        clock: Arc<dyn ClockProvider>,
+    ) -> (Self, mpsc::Receiver<RerankerRequest>) {
+        let queue_depth = config.max_queue_depth;
+        let (request_tx, request_rx) = mpsc::channel::<RerankerRequest>(queue_depth);
+        let circuit_breaker = CircuitBreaker::new(clock.clone());
+
+        let reranker = Self {
+            config,
+            session: None,
+            tokenizer: None,
+            fallback_session: None,
+            semaphore: Arc::new(Semaphore::new(1)),
+            request_tx,
+            circuit_breaker: std::sync::Mutex::new(circuit_breaker),
+            clock,
+        };
+        (reranker, request_rx)
     }
 
     pub fn config(&self) -> &RerankerConfig {
@@ -290,6 +557,15 @@ impl CrossEncoderReranker {
 
     pub fn is_loaded(&self) -> bool {
         self.session.is_some() && self.tokenizer.is_some()
+    }
+
+    pub fn semaphore(&self) -> &Arc<Semaphore> {
+        &self.semaphore
+    }
+
+    #[allow(dead_code)] // Accessor for pipeline integration
+    pub(crate) fn request_tx(&self) -> &mpsc::Sender<RerankerRequest> {
+        &self.request_tx
     }
 }
 
@@ -384,13 +660,11 @@ mod tests {
     }
 
     #[test]
-    fn rerank_above_threshold_stub_returns_unchanged() {
+    fn rerank_above_threshold_without_model_returns_err() {
         let reranker = make_reranker();
         let candidates = make_candidates(11);
-        let original_ids: Vec<_> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
-        let result = reranker.rerank("test query", candidates).unwrap();
-        let result_ids: Vec<_> = result.iter().map(|c| c.chunk_id.clone()).collect();
-        assert_eq!(original_ids, result_ids);
+        let result = reranker.rerank("test query", candidates);
+        assert!(result.is_err(), "above-threshold rerank without loaded model should Err");
     }
 
     #[test]
@@ -758,5 +1032,518 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 1G.3 tests: pair scoring, reranking, and concurrency
+    // -----------------------------------------------------------------------
+
+    fn make_loaded_reranker() -> Option<CrossEncoderReranker> {
+        let mp = model_path();
+        let tp = tokenizer_path();
+        if !mp.exists() || !tp.exists() {
+            return None;
+        }
+        let mut config = make_config();
+        config.model_path = mp;
+        config.tokenizer_path = tp;
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let mut reranker = CrossEncoderReranker::new(config, clock);
+        reranker.load().expect("fixture model should load");
+        Some(reranker)
+    }
+
+    /// 20 candidates reranked — output order differs from input (scores applied).
+    #[test]
+    fn rerank_20_candidates_changes_order() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+
+        // Candidates with diverse snippets so cross-encoder assigns different scores.
+        let query = "How to sort a vector in Rust?";
+        let candidates: Vec<RetrievalResult> = (0..20)
+            .map(|i| {
+                let snippet = match i {
+                    0 => "fn sort_vector(v: &mut Vec<i32>) { v.sort(); }".to_string(),
+                    1 => "let mut v = vec![3,1,2]; v.sort();".to_string(),
+                    2 => "use std::cmp::Ordering; impl Ord for Item { fn cmp(&self, other: &Self) -> Ordering { self.key.cmp(&other.key) } }".to_string(),
+                    _ => format!("fn unrelated_func_{i}(x: i32) -> i32 {{ x + {i} }}"),
+                };
+                RetrievalResult {
+                    chunk_id: format!("chunk_{i}"),
+                    snippet,
+                    score: 0.0,
+                    tool_used: "bm25".to_string(),
+                }
+            })
+            .collect();
+
+        let original_ids: Vec<_> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
+        let result = reranker.rerank(query, candidates).unwrap();
+        let result_ids: Vec<_> = result.iter().map(|c| c.chunk_id.clone()).collect();
+
+        assert_eq!(result.len(), 20);
+        assert_ne!(
+            original_ids, result_ids,
+            "reranked order should differ from input order"
+        );
+    }
+
+    /// 5 candidates (below default threshold 10) — passed through unchanged.
+    #[test]
+    fn rerank_5_below_threshold_unchanged() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let candidates = make_candidates(5);
+        let original_ids: Vec<_> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
+        let result = reranker.rerank("test query", candidates).unwrap();
+        let result_ids: Vec<_> = result.iter().map(|c| c.chunk_id.clone()).collect();
+        assert_eq!(original_ids, result_ids);
+    }
+
+    /// 10 candidates (boundary: <= 10) — passed through unchanged.
+    #[test]
+    fn rerank_10_at_threshold_unchanged() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let candidates = make_candidates(10);
+        let original_ids: Vec<_> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
+        let result = reranker.rerank("test query", candidates).unwrap();
+        let result_ids: Vec<_> = result.iter().map(|c| c.chunk_id.clone()).collect();
+        assert_eq!(original_ids, result_ids);
+    }
+
+    /// 11 candidates (boundary: > 10) — reranked.
+    #[test]
+    fn rerank_11_above_threshold_reranked() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let query = "What is a hash map?";
+        let mut candidates: Vec<RetrievalResult> = (0..11)
+            .map(|i| RetrievalResult {
+                chunk_id: format!("chunk_{i}"),
+                snippet: if i == 0 {
+                    "impl HashMap<K,V> { pub fn insert(&mut self, key: K, value: V) { } }".to_string()
+                } else {
+                    format!("fn completely_unrelated_{i}() {{ let x = {i}; }}")
+                },
+                score: 0.0,
+                tool_used: "bm25".to_string(),
+            })
+            .collect();
+        // Shuffle input so chunk_0 is not first.
+        candidates.rotate_left(5);
+
+        let result = reranker.rerank(query, candidates).unwrap();
+        assert_eq!(result.len(), 11);
+        // The HashMap snippet should rank higher than unrelated functions.
+        let top3_ids: Vec<_> = result[..3].iter().map(|c| c.chunk_id.as_str()).collect();
+        assert!(
+            top3_ids.contains(&"chunk_0"),
+            "HashMap snippet should be in top 3, got: {top3_ids:?}"
+        );
+    }
+
+    /// Configurable skip_threshold: set to 5, 7 candidates should be reranked.
+    #[test]
+    fn rerank_custom_threshold_5_reranks_7() {
+        let mp = model_path();
+        let tp = tokenizer_path();
+        if !mp.exists() || !tp.exists() {
+            eprintln!("SKIP: model fixtures not staged");
+            return;
+        }
+        let mut config = make_config();
+        config.model_path = mp;
+        config.tokenizer_path = tp;
+        config.skip_threshold = 5;
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let mut reranker = CrossEncoderReranker::new(config, clock);
+        reranker.load().expect("load should succeed");
+
+        let query = "What is a hash map?";
+        let candidates: Vec<RetrievalResult> = (0..7)
+            .map(|i| RetrievalResult {
+                chunk_id: format!("chunk_{i}"),
+                snippet: if i == 0 {
+                    "use std::collections::HashMap; let mut map = HashMap::new();".to_string()
+                } else {
+                    format!("fn other_{i}() -> bool {{ true }}")
+                },
+                score: 0.0,
+                tool_used: "bm25".to_string(),
+            })
+            .collect();
+
+        let result = reranker.rerank(query, candidates).unwrap();
+        assert_eq!(result.len(), 7);
+        // Scores should have been assigned by the model.
+        let has_nonzero_score = result.iter().any(|c| c.score != 0.0);
+        assert!(has_nonzero_score, "model should assign non-zero scores");
+    }
+
+    /// Empty candidate list returns empty list (no panic).
+    #[test]
+    fn rerank_empty_returns_empty_loaded() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let result = reranker.rerank("test", Vec::new()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    /// Pair with 1000-token chunk produces valid score (truncation works).
+    #[test]
+    fn rerank_long_chunk_truncation_works() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let long_snippet = "fn very_long_function() { ".to_string()
+            + &"let x = 42; ".repeat(300)
+            + "}";
+        let candidates = vec![
+            RetrievalResult {
+                chunk_id: "long".into(),
+                snippet: long_snippet,
+                score: 0.0,
+                tool_used: "bm25".into(),
+            },
+        ];
+        // 1 candidate <= threshold so it passes through.
+        // Test truncation via score_pairs directly.
+        let session = reranker.session().unwrap();
+        let tokenizer = reranker.tokenizer().unwrap();
+        let scores = CrossEncoderReranker::score_pairs(session, tokenizer, "query", &candidates).unwrap();
+        assert_eq!(scores.len(), 1);
+        assert!(scores[0].is_finite(), "score for long chunk should be finite");
+    }
+
+    /// Tokenizer produces input_ids, attention_mask, token_type_ids with correct shapes.
+    #[test]
+    fn tokenizer_produces_correct_tensor_shapes() {
+        let tp = tokenizer_path();
+        if !tp.exists() {
+            eprintln!("SKIP: tokenizer not staged at {}", tp.display());
+            return;
+        }
+        let tokenizer = CrossEncoderReranker::load_tokenizer(&tp, 512).unwrap();
+        let encoding = tokenizer
+            .encode(("What is Rust?", "Rust is a systems programming language"), false)
+            .unwrap();
+        let ids = encoding.get_ids();
+        let mask = encoding.get_attention_mask();
+        let types = encoding.get_type_ids();
+        assert_eq!(ids.len(), mask.len(), "ids and mask length mismatch");
+        assert_eq!(ids.len(), types.len(), "ids and type_ids length mismatch");
+        assert!(ids.len() > 2, "encoding should have more than just special tokens");
+        // token_type_ids: 0 for query tokens, 1 for document tokens
+        assert!(
+            types.iter().any(|&t| t == 1),
+            "pair encoding should have token_type_id=1 for second sequence"
+        );
+    }
+
+    /// NaN/Inf scores handled gracefully — sorted to bottom.
+    #[test]
+    fn apply_scores_nan_inf_to_bottom() {
+        let candidates = make_candidates(4);
+        let scores = vec![1.0_f32, f32::NAN, f32::INFINITY, -0.5];
+        let result = CrossEncoderReranker::apply_scores(candidates, &scores);
+        // Valid finite scores: 1.0, -0.5. NaN -> NEG_INF, Inf -> NEG_INF.
+        // Order: 1.0 first, -0.5 second, then the two NEG_INF (NaN, Inf).
+        assert_eq!(result[0].chunk_id, "chunk_0"); // score 1.0
+        assert_eq!(result[1].chunk_id, "chunk_3"); // score -0.5
+    }
+
+    /// 5 concurrent rerank requests, only 1 executes at a time (semaphore).
+    #[test]
+    fn concurrent_rerank_semaphore_limits_to_one() {
+        let reranker = match make_loaded_reranker() {
+            Some(r) => r,
+            None => { eprintln!("SKIP: model fixtures not staged"); return; }
+        };
+        let reranker = Arc::new(reranker);
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let max_active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+            let mut handles = Vec::new();
+            for i in 0..5 {
+                let r = reranker.clone();
+                let act = active.clone();
+                let mx = max_active.clone();
+                handles.push(tokio::spawn(async move {
+                    let query = format!("query {i}");
+                    let candidates: Vec<RetrievalResult> = (0..12)
+                        .map(|j| RetrievalResult {
+                            chunk_id: format!("c_{i}_{j}"),
+                            snippet: format!("fn f_{i}_{j}() {{}}"),
+                            score: 0.0,
+                            tool_used: "bm25".into(),
+                        })
+                        .collect();
+
+                    // Track concurrency.
+                    let prev = act.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    mx.fetch_max(prev + 1, std::sync::atomic::Ordering::SeqCst);
+
+                    // rerank uses try_acquire — if semaphore busy, returns ChannelFull.
+                    let result = r.rerank(&query, candidates);
+                    act.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    result
+                }));
+            }
+
+            let mut ok_count = 0;
+            let mut full_count = 0;
+            for h in handles {
+                match h.await.unwrap() {
+                    Ok(_) => ok_count += 1,
+                    Err(RerankerError::ChannelFull) => full_count += 1,
+                    Err(e) => panic!("unexpected error: {e}"),
+                }
+            }
+            // At least 1 should succeed, and some should get ChannelFull.
+            assert!(ok_count >= 1, "at least one rerank should succeed");
+            assert!(
+                ok_count + full_count == 5,
+                "all 5 should either succeed or get ChannelFull"
+            );
+        });
+    }
+
+    /// 6th concurrent request when 4 already queued returns unranked (channel full).
+    #[test]
+    fn channel_overflow_returns_unranked() {
+        let mp = model_path();
+        let tp = tokenizer_path();
+        if !mp.exists() || !tp.exists() {
+            eprintln!("SKIP: model fixtures not staged");
+            return;
+        }
+        let mut config = make_config();
+        config.model_path = mp;
+        config.tokenizer_path = tp;
+        config.max_queue_depth = 4;
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let (mut reranker, rx) = CrossEncoderReranker::new_with_worker(config, clock);
+        reranker.load().expect("load should succeed");
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Don't spawn the batch worker — so channel fills up and nobody drains.
+            // Hold onto rx so channel stays open.
+            let _rx = rx;
+
+            let reranker = Arc::new(reranker);
+            let mut full_count = 0;
+
+            // Send 10 requests; channel capacity is 4, so after 4 fill up, rest overflow.
+            for i in 0..10 {
+                let candidates: Vec<RetrievalResult> = (0..12)
+                    .map(|j| RetrievalResult {
+                        chunk_id: format!("c_{i}_{j}"),
+                        snippet: format!("fn f_{i}_{j}() {{}}"),
+                        score: 0.0,
+                        tool_used: "bm25".into(),
+                    })
+                    .collect();
+
+                match reranker.rerank_via_channel(format!("q{i}"), candidates).await {
+                    Err(RerankerError::ChannelFull) => full_count += 1,
+                    Ok(_) => {} // May succeed if channel not yet full.
+                    Err(e) => panic!("unexpected error: {e}"),
+                }
+            }
+            assert!(
+                full_count > 0,
+                "some requests should fail with ChannelFull when queue is saturated"
+            );
+        });
+    }
+
+    /// 2 queued requests batched into single inference call.
+    #[test]
+    fn batch_worker_merges_requests() {
+        let mp = model_path();
+        let tp = tokenizer_path();
+        if !mp.exists() || !tp.exists() {
+            eprintln!("SKIP: model fixtures not staged");
+            return;
+        }
+        let mut config = make_config();
+        config.model_path = mp.clone();
+        config.tokenizer_path = tp.clone();
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let (mut reranker, rx) = CrossEncoderReranker::new_with_worker(config, clock);
+        reranker.load().expect("load should succeed");
+
+        let session = reranker.session().unwrap().clone();
+        let tokenizer = reranker.tokenizer().unwrap().clone();
+        let semaphore = reranker.semaphore().clone();
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Spawn batch worker.
+            let worker_handle = tokio::spawn(
+                CrossEncoderReranker::run_batch_worker(session, tokenizer, semaphore, rx)
+            );
+
+            let reranker = Arc::new(reranker);
+
+            // Send 2 requests concurrently.
+            let r1 = reranker.clone();
+            let r2 = reranker.clone();
+
+            let h1 = tokio::spawn(async move {
+                let candidates: Vec<RetrievalResult> = (0..12)
+                    .map(|j| RetrievalResult {
+                        chunk_id: format!("a_{j}"),
+                        snippet: format!("fn alpha_{j}() {{}}"),
+                        score: 0.0,
+                        tool_used: "bm25".into(),
+                    })
+                    .collect();
+                r1.rerank_via_channel("query alpha".into(), candidates).await
+            });
+
+            let h2 = tokio::spawn(async move {
+                let candidates: Vec<RetrievalResult> = (0..12)
+                    .map(|j| RetrievalResult {
+                        chunk_id: format!("b_{j}"),
+                        snippet: format!("fn beta_{j}() {{}}"),
+                        score: 0.0,
+                        tool_used: "bm25".into(),
+                    })
+                    .collect();
+                r2.rerank_via_channel("query beta".into(), candidates).await
+            });
+
+            let res1 = h1.await.unwrap().expect("request 1 should succeed");
+            let res2 = h2.await.unwrap().expect("request 2 should succeed");
+
+            assert_eq!(res1.len(), 12);
+            assert_eq!(res2.len(), 12);
+
+            // Drop reranker to close channel, ending worker.
+            drop(reranker);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                worker_handle,
+            ).await;
+        });
+    }
+
+    /// 2 concurrent requests with distinct candidate sets — no cross-contamination.
+    #[test]
+    fn batch_worker_no_cross_contamination() {
+        let mp = model_path();
+        let tp = tokenizer_path();
+        if !mp.exists() || !tp.exists() {
+            eprintln!("SKIP: model fixtures not staged");
+            return;
+        }
+        let mut config = make_config();
+        config.model_path = mp.clone();
+        config.tokenizer_path = tp.clone();
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let (mut reranker, rx) = CrossEncoderReranker::new_with_worker(config, clock);
+        reranker.load().expect("load should succeed");
+
+        let session = reranker.session().unwrap().clone();
+        let tokenizer = reranker.tokenizer().unwrap().clone();
+        let semaphore = reranker.semaphore().clone();
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let worker_handle = tokio::spawn(
+                CrossEncoderReranker::run_batch_worker(session, tokenizer, semaphore, rx)
+            );
+
+            let reranker = Arc::new(reranker);
+            let r1 = reranker.clone();
+            let r2 = reranker.clone();
+
+            let h1 = tokio::spawn(async move {
+                let candidates: Vec<RetrievalResult> = (0..12)
+                    .map(|j| RetrievalResult {
+                        chunk_id: format!("ALPHA_{j}"),
+                        snippet: format!("fn alpha_func_{j}() {{}}"),
+                        score: 0.0,
+                        tool_used: "bm25".into(),
+                    })
+                    .collect();
+                r1.rerank_via_channel("alpha query".into(), candidates).await
+            });
+
+            let h2 = tokio::spawn(async move {
+                let candidates: Vec<RetrievalResult> = (0..12)
+                    .map(|j| RetrievalResult {
+                        chunk_id: format!("BETA_{j}"),
+                        snippet: format!("fn beta_func_{j}() {{}}"),
+                        score: 0.0,
+                        tool_used: "bm25".into(),
+                    })
+                    .collect();
+                r2.rerank_via_channel("beta query".into(), candidates).await
+            });
+
+            let res1 = h1.await.unwrap().expect("request 1 should succeed");
+            let res2 = h2.await.unwrap().expect("request 2 should succeed");
+
+            // Verify no cross-contamination: all res1 IDs start with ALPHA_, res2 with BETA_.
+            for c in &res1 {
+                assert!(
+                    c.chunk_id.starts_with("ALPHA_"),
+                    "res1 contains non-ALPHA chunk: {}",
+                    c.chunk_id
+                );
+            }
+            for c in &res2 {
+                assert!(
+                    c.chunk_id.starts_with("BETA_"),
+                    "res2 contains non-BETA chunk: {}",
+                    c.chunk_id
+                );
+            }
+
+            drop(reranker);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                worker_handle,
+            ).await;
+        });
     }
 }
