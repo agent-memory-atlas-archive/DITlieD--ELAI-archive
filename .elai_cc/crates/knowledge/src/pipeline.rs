@@ -13,13 +13,18 @@ use crate::reranker::CrossEncoderReranker;
 
 /// Result of a single stage in the retrieval pipeline.
 ///
-/// `latency_ms` is always 0 here; callers measure wall time externally
-/// (entropy quarantine: raw Instant confined to core/src/clock.rs).
+/// Maps to knowledge.txt Section 12 StageTrace. `latency_ms` is always 0 here;
+/// callers measure wall time externally (entropy quarantine: raw Instant confined
+/// to core/src/clock.rs).
 #[derive(Debug, Clone)]
 pub struct PipelineStage {
     pub stage: String,
     pub results: Vec<RetrievalResult>,
     pub latency_ms: u64,
+    /// Circuit breaker state for stages that use one (rerank, vector).
+    pub circuit_breaker_state: Option<String>,
+    /// Error message if stage failed (for StageTrace).
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +74,8 @@ impl QueryPipeline {
             stage: "bm25".to_string(),
             results: bm25_results,
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 1: vector (stub — no vector index, graceful degrade)
@@ -76,6 +83,8 @@ impl QueryPipeline {
             stage: "vector".to_string(),
             results: Vec::new(),
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 2: pagerank (empty DkgSnapshot — no DkgEngine field)
@@ -87,6 +96,8 @@ impl QueryPipeline {
             stage: "pagerank".to_string(),
             results: Vec::new(),
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 3: catrag (empty snapshot triggers density guard -> empty overlay)
@@ -95,6 +106,8 @@ impl QueryPipeline {
             stage: "catrag".to_string(),
             results: Vec::new(),
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 4: arag
@@ -103,6 +116,8 @@ impl QueryPipeline {
             stage: "arag".to_string(),
             results: arag_results,
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 5: rerank (RRF fusion across all stages that produced results)
@@ -111,24 +126,34 @@ impl QueryPipeline {
             stage: "rerank".to_string(),
             results: reranked,
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         // Stage 6: cross_encoder (cross-encoder reranking after RRF fusion)
         // In SPARSE_ONLY / BM25_ONLY modes, caller should not attach a cross_encoder.
         // When cross_encoder is None, pass through RRF results unchanged.
         let ce_input = stages.last().map(|s| s.results.clone()).unwrap_or_default();
-        let ce_results = if let Some(ref ce) = self.cross_encoder {
-            ce.rerank(query, ce_input).unwrap_or_else(|_| {
-                // Graceful degradation: on reranker error, use RRF order
-                stages.last().map(|s| s.results.clone()).unwrap_or_default()
-            })
+        let (ce_results, ce_breaker_state, ce_error) = if let Some(ref ce) = self.cross_encoder {
+            let breaker_state = ce
+                .breaker_state()
+                .map(|s| format!("{s:?}"));
+            match ce.rerank(query, ce_input.clone()) {
+                Ok(ranked) => (ranked, breaker_state, None),
+                Err(e) => {
+                    log::debug!("cross_encoder stage error: {e}");
+                    (ce_input, breaker_state, Some(e.to_string()))
+                }
+            }
         } else {
-            ce_input
+            (ce_input, None, None)
         };
         stages.push(PipelineStage {
             stage: "cross_encoder".to_string(),
             results: ce_results,
             latency_ms: 0,
+            circuit_breaker_state: ce_breaker_state,
+            error: ce_error,
         });
 
         // Stage 7: token_fit (passthrough — budget enforcement is A-RAG internal)
@@ -141,6 +166,8 @@ impl QueryPipeline {
             stage: "token_fit".to_string(),
             results: token_fit_results,
             latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
         });
 
         Ok(stages)
