@@ -5,6 +5,7 @@ use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
 use crate::catrag::CatRag;
 use crate::pagerank::DkgSnapshot;
+use crate::reranker::CrossEncoderReranker;
 
 // ---------------------------------------------------------------------------
 // PipelineStage
@@ -25,21 +26,27 @@ pub struct PipelineStage {
 // QueryPipeline
 // ---------------------------------------------------------------------------
 
-/// End-to-end retrieval pipeline: bm25 -> vector -> pagerank -> catrag -> arag -> rerank -> token_fit.
+/// End-to-end retrieval pipeline: bm25 -> vector -> pagerank -> catrag -> arag -> rerank -> cross_encoder -> token_fit.
 pub struct QueryPipeline {
     pub bm25: Bm25Index,
     pub catrag: CatRag,
     pub arag: AragOrchestrator,
+    pub cross_encoder: Option<CrossEncoderReranker>,
 }
 
 impl QueryPipeline {
     pub fn new(bm25: Bm25Index, catrag: CatRag, arag: AragOrchestrator) -> Self {
-        Self { bm25, catrag, arag }
+        Self { bm25, catrag, arag, cross_encoder: None }
+    }
+
+    pub fn with_cross_encoder(mut self, reranker: CrossEncoderReranker) -> Self {
+        self.cross_encoder = Some(reranker);
+        self
     }
 
     /// Execute the full retrieval pipeline for a query.
     ///
-    /// Returns 7 stages in order. `latency_ms` is 0 for all stages;
+    /// Returns 8 stages in order. `latency_ms` is 0 for all stages;
     /// callers should measure overall pipeline time externally.
     pub fn query(
         &self,
@@ -106,9 +113,27 @@ impl QueryPipeline {
             latency_ms: 0,
         });
 
-        // Stage 6: token_fit (passthrough — budget enforcement is A-RAG internal)
-        let token_fit_results = if let Some(rerank_stage) = stages.last() {
-            rerank_stage.results.clone()
+        // Stage 6: cross_encoder (cross-encoder reranking after RRF fusion)
+        // In SPARSE_ONLY / BM25_ONLY modes, caller should not attach a cross_encoder.
+        // When cross_encoder is None, pass through RRF results unchanged.
+        let ce_input = stages.last().map(|s| s.results.clone()).unwrap_or_default();
+        let ce_results = if let Some(ref ce) = self.cross_encoder {
+            ce.rerank(query, ce_input).unwrap_or_else(|_| {
+                // Graceful degradation: on reranker error, use RRF order
+                stages.last().map(|s| s.results.clone()).unwrap_or_default()
+            })
+        } else {
+            ce_input
+        };
+        stages.push(PipelineStage {
+            stage: "cross_encoder".to_string(),
+            results: ce_results,
+            latency_ms: 0,
+        });
+
+        // Stage 7: token_fit (passthrough — budget enforcement is A-RAG internal)
+        let token_fit_results = if let Some(ce_stage) = stages.last() {
+            ce_stage.results.clone()
         } else {
             Vec::new()
         };

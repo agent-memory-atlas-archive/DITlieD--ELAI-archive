@@ -6,6 +6,7 @@ pub mod catrag;
 pub mod dkg;
 pub mod pagerank;
 pub mod pipeline;
+pub mod reranker;
 pub mod vector;
 
 // ---------------------------------------------------------------------------

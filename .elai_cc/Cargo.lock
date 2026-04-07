@@ -731,6 +731,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "tokenizers",
+ "tokio",
  "tree-sitter",
  "tree-sitter-rust",
  "usearch",

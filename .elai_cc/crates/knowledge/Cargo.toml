@@ -17,6 +17,7 @@ tantivy = "0.26"
 elai-core = { path = "../core" }
 ort = "2.0.0-rc.12"
 tokenizers = { version = "0.22", features = ["http"] }
+tokio = { version = "1", features = ["sync"] }
 usearch = { version = "2.24.0", default-features = false, optional = true }
 
 [features]

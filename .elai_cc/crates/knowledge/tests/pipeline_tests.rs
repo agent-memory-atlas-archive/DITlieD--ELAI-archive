@@ -4,22 +4,22 @@ use elai_knowledge::catrag::{CatRag, CatRagConfig};
 use elai_knowledge::pipeline::QueryPipeline;
 
 // ---------------------------------------------------------------------------
-// (k) QueryPipeline::query returns 7 stages in correct order
+// (k) QueryPipeline::query returns 8 stages in correct order
 // ---------------------------------------------------------------------------
 
 #[test]
-fn k_query_pipeline_query_returns_seven_stages() {
+fn k_query_pipeline_query_returns_eight_stages() {
     let tmp = tempfile::TempDir::new().unwrap();
     let bm25 = Bm25Index::new(tmp.path(), "test_k").unwrap();
     let catrag = CatRag::new(CatRagConfig::default());
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
     let stages = pipeline.query("find all imports").unwrap();
-    assert_eq!(stages.len(), 7);
+    assert_eq!(stages.len(), 8);
     let names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
     assert_eq!(
         names,
-        vec!["bm25", "vector", "pagerank", "catrag", "arag", "rerank", "token_fit"]
+        vec!["bm25", "vector", "pagerank", "catrag", "arag", "rerank", "cross_encoder", "token_fit"]
     );
 }
 
@@ -35,7 +35,7 @@ fn l_query_pipeline_stages_have_latency() {
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
     let stages = pipeline.query("error handling").unwrap();
-    assert_eq!(stages.len(), 7);
+    assert_eq!(stages.len(), 8);
     // With an empty index, individual stages may complete in sub-millisecond time.
     // Verify all stages have the latency_ms field populated (>= 0).
     // With real data, bm25 stage will exceed 0ms.
@@ -56,7 +56,7 @@ fn m_query_pipeline_returns_stages() {
     let arag = AragOrchestrator::new(AragConfig::default());
     let pipeline = QueryPipeline::new(bm25, catrag, arag);
     let stages = pipeline.query("graph traversal").unwrap();
-    assert_eq!(stages.len(), 7);
+    assert_eq!(stages.len(), 8);
     // With empty index, bm25 returns empty results, cascading empty through all stages
     for stage in &stages {
         assert!(!stage.stage.is_empty());
