@@ -1,5 +1,6 @@
 pub mod agent_pool;
 pub mod anti_spiral;
+pub mod bsp;
 mod bash;
 pub mod checkpoint;
 pub mod bash_validation;
