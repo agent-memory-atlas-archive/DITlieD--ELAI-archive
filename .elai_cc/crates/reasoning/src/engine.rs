@@ -4,8 +4,9 @@ use regex::Regex;
 
 use crate::config::effective_allowed_next;
 use crate::types::{
-    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
-    PlanGroundingResult, ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
+    AgentGrcConfig, CsqResult, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
+    InlineFeasibilityResult, InlineFeasibilityState, PlanGroundingResult, ThinkResult, ThinkStep,
+    TopicState, VerificationMethod, VerificationResult,
 };
 use crate::verification::{LocalVerifier, NoopTestRunner, StdFileReader, Verifier};
 
@@ -41,6 +42,25 @@ pub trait GrcEngine {
     fn with_agent_config(&mut self, config: AgentGrcConfig);
     /// Return the current agent config, if any.
     fn get_agent_config(&self) -> Option<&AgentGrcConfig>;
+
+    // Phase 2D: CSQ and inline feasibility
+    /// Generate counterfactual safety questions for a function.
+    /// sensitive_ops: list of sensitive API calls found by the caller (e.g., "std::fs::write").
+    /// Empty sensitive_ops -> empty checks (no CSQ needed).
+    fn generate_csq(
+        &self,
+        function_id: &str,
+        sensitive_ops: &[String],
+    ) -> Result<CsqResult, GrcError>;
+
+    /// Check inline feasibility of a claim during EXECUTING.
+    /// Returns Err(BudgetExhausted) if max 2 checks already used.
+    /// &mut self: mutates InlineFeasibilityState counter.
+    fn check_inline_feasibility(
+        &mut self,
+        claim: &str,
+        sources: &[String],
+    ) -> Result<InlineFeasibilityResult, GrcError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +71,7 @@ pub struct BasicGrcEngine {
     topics: HashMap<String, TopicState>,
     agent_config: Option<AgentGrcConfig>,
     verifier: Box<dyn Verifier>,
+    pub inline_feasibility_state: InlineFeasibilityState,
 }
 
 impl BasicGrcEngine {
@@ -61,6 +82,7 @@ impl BasicGrcEngine {
             topics: HashMap::new(),
             agent_config: None,
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
+            inline_feasibility_state: InlineFeasibilityState::default(),
         }
     }
 
@@ -71,6 +93,7 @@ impl BasicGrcEngine {
             topics: HashMap::new(),
             agent_config: Some(config),
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
+            inline_feasibility_state: InlineFeasibilityState::default(),
         }
     }
 
@@ -79,6 +102,7 @@ impl BasicGrcEngine {
             topics: HashMap::new(),
             agent_config: None,
             verifier,
+            inline_feasibility_state: InlineFeasibilityState::default(),
         }
     }
 
@@ -561,5 +585,21 @@ impl GrcEngine for BasicGrcEngine {
 
     fn get_agent_config(&self) -> Option<&AgentGrcConfig> {
         self.agent_config.as_ref()
+    }
+
+    fn generate_csq(
+        &self,
+        _function_id: &str,
+        _sensitive_ops: &[String],
+    ) -> Result<CsqResult, GrcError> {
+        todo!("2D.4: implement CSQ generation")
+    }
+
+    fn check_inline_feasibility(
+        &mut self,
+        _claim: &str,
+        _sources: &[String],
+    ) -> Result<InlineFeasibilityResult, GrcError> {
+        todo!("2D.4: implement inline feasibility check")
     }
 }

@@ -393,3 +393,109 @@ pub struct TestRunResult {
     pub output: String,
     pub duration_ms: u64,
 }
+
+// ---------------------------------------------------------------------------
+// CSQ types: Counterfactual Safety Questions (phase 2D)
+// ---------------------------------------------------------------------------
+
+/// Severity of a counterfactual safety check.
+/// Critical: data_loss, security_breach, financial_error, auth_bypass — guard MANDATORY.
+/// Warning: incorrect_output, performance_degradation — guard recommended, does not block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsqSeverity {
+    Critical,
+    Warning,
+}
+
+/// A single counterfactual safety question check.
+/// "If [assumption] is wrong, [consequence] happens."
+/// guard_added must be explicitly set to true by the caller after adding guard code.
+#[derive(Debug, Clone)]
+pub struct CsqCheck {
+    pub assumption: String,
+    pub consequence: String,
+    pub severity: CsqSeverity,
+    pub guard_added: bool,
+}
+
+/// Aggregate CSQ result for a single function.
+/// passed() is computed dynamically — no stored field.
+#[derive(Debug, Clone)]
+pub struct CsqResult {
+    pub function_id: String,
+    pub checks: Vec<CsqCheck>,
+}
+
+impl CsqResult {
+    /// True iff all CRITICAL checks have guard_added == true.
+    /// Empty checks -> true (no sensitive ops = no CSQ needed).
+    pub fn passed(&self) -> bool {
+        self.checks
+            .iter()
+            .all(|c| c.severity != CsqSeverity::Critical || c.guard_added)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inline feasibility types (phase 2D)
+// ---------------------------------------------------------------------------
+
+/// Outcome of an inline feasibility check during EXECUTING.
+/// Pass: claim verified, proceed. Fail: use original plan. Blocked: emit ReplanRequest(MAJOR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeasibilityOutcome {
+    Pass,
+    Fail,
+    Blocked,
+}
+
+/// Method used for inline feasibility verification.
+/// Phase 2D: SourceMatch only. Phase 4F adds WebSearch, Grep, ApiRegistryCheck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeasibilityMethod {
+    SourceMatch,
+}
+
+/// Result of a single inline feasibility check.
+#[derive(Debug, Clone)]
+pub struct InlineFeasibilityResult {
+    pub claim: String,
+    pub method: FeasibilityMethod,
+    pub outcome: FeasibilityOutcome,
+}
+
+/// Tracks inline feasibility check usage within an EXECUTING phase.
+/// max_checks is hardcoded to 2 (reasoning.txt s8). Not publicly constructible
+/// with arbitrary max_checks — use Default or reset().
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineFeasibilityState {
+    pub checks_used: u32,
+    max_checks: u32,
+}
+
+impl Default for InlineFeasibilityState {
+    fn default() -> Self {
+        Self {
+            checks_used: 0,
+            max_checks: 2,
+        }
+    }
+}
+
+impl InlineFeasibilityState {
+    pub fn is_exhausted(&self) -> bool {
+        self.checks_used >= self.max_checks
+    }
+
+    pub fn record_check(&mut self) {
+        self.checks_used = self.checks_used.saturating_add(1);
+    }
+
+    pub fn reset(&mut self) {
+        self.checks_used = 0;
+    }
+
+    pub fn max_checks(&self) -> u32 {
+        self.max_checks
+    }
+}
