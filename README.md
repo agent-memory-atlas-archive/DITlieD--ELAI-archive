@@ -2,7 +2,7 @@
 
 <br>
 
-<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="420">
+<img src=".elai_cc/assets/logo.svg" alt="ELAI" width="580">
 
 <br><br>
 
@@ -11,21 +11,21 @@
 <br>
 
 a development engine, not an assistant<br>
-task in — researched, tested, built, audited — result out
+task in - researched, tested, built, audited - result out
 
 <br>
 
-</div>
+<div align="center">
 
 ---
 
 <br>
 
-models are execution units, not decision-makers.
-workflow logic is Rust code, not prompts.
-every output verified by deterministic scripts.
-every reasoning step grounded in evidence.
-every state transition gated by artifacts.
+models are execution units, not decision-makers
+workflow logic is Rust code, not prompts
+every output verified by deterministic scripts
+every reasoning step grounded in evidence
+every state transition gated by artifacts
 
 <br>
 
