@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::dkg::DkgEngine;
@@ -24,8 +25,63 @@ pub struct DkgSnapshot {
 }
 
 impl DkgSnapshot {
-    pub fn from_engine(_engine: &DkgEngine) -> Result<DkgSnapshot, Box<dyn std::error::Error>> {
-        todo!()
+    pub fn from_engine(engine: &DkgEngine) -> Result<DkgSnapshot, Box<dyn std::error::Error>> {
+        let raw_nodes = engine.nodes()?;
+        let raw_edges = engine.edges()?;
+
+        // Map node_id (i64) -> index in the nodes vec
+        let id_to_idx: HashMap<i64, usize> = raw_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.node_id, i))
+            .collect();
+
+        // Count inbound edges per node and track connectivity
+        let mut inbound_count: HashMap<i64, usize> = HashMap::new();
+        let mut has_outbound = vec![false; raw_nodes.len()];
+        let mut has_inbound = vec![false; raw_nodes.len()];
+
+        for (src_id, tgt_id, _) in &raw_edges {
+            *inbound_count.entry(*tgt_id).or_insert(0) += 1;
+            if let Some(&src_idx) = id_to_idx.get(src_id) {
+                has_outbound[src_idx] = true;
+            }
+            if let Some(&tgt_idx) = id_to_idx.get(tgt_id) {
+                has_inbound[tgt_idx] = true;
+            }
+        }
+
+        // Build PageRankNodeInfo vec with derived ref_count
+        let nodes: Vec<PageRankNodeInfo> = raw_nodes
+            .iter()
+            .map(|n| PageRankNodeInfo {
+                node_id: n.node_id,
+                symbol_name: n.symbol_name.clone(),
+                file_path: n.file_path.clone(),
+                signature: n.signature.clone(),
+                kind: n.kind,
+                ref_count: inbound_count.get(&n.node_id).copied().unwrap_or(0),
+            })
+            .collect();
+
+        // Build edge vec: map i64 IDs to usize indices, weight=1.0 for all types
+        let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(raw_edges.len());
+        for (src_id, tgt_id, _edge_type) in &raw_edges {
+            if let (Some(&src_idx), Some(&tgt_idx)) =
+                (id_to_idx.get(src_id), id_to_idx.get(tgt_id))
+            {
+                edges.push((src_idx, tgt_idx, 1.0));
+            }
+        }
+
+        // Orphan nodes (zero inbound AND zero outbound) get a self-edge
+        for i in 0..nodes.len() {
+            if !has_inbound[i] && !has_outbound[i] {
+                edges.push((i, i, 0.1));
+            }
+        }
+
+        Ok(DkgSnapshot { nodes, edges })
     }
 }
 
