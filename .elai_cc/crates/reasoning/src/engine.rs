@@ -47,12 +47,6 @@ impl BasicGrcEngine {
         }
     }
 
-    fn get_or_create_topic(&mut self, topic: &str) -> &mut TopicState {
-        self.topics
-            .entry(topic.to_string())
-            .or_insert_with(|| TopicState::new(GrcBudget::default()))
-    }
-
     /// Parse grounding string into (source_type, reference) pairs.
     /// Valid types: "file", "grep", "test", "search", "tool", "training".
     /// Format: "type:reference" comma-separated.
@@ -122,9 +116,10 @@ impl GrcEngine for BasicGrcEngine {
         let topic_key = step.topic.clone();
 
         // Ensure topic exists with default budget if not yet configured.
-        self.get_or_create_topic(&topic_key);
-
-        let state = self.topics.get_mut(&topic_key).expect("just inserted");
+        let state = self
+            .topics
+            .entry(topic_key.clone())
+            .or_insert_with(|| TopicState::new(GrcBudget::default()));
         let mut warnings = Vec::new();
 
         // --- State transition validation ---
