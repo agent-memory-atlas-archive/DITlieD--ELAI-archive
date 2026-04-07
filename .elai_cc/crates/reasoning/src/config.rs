@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{AgentGrcConfig, GrcDefaults, GrcError, GrcState, VerificationMethod};
+use crate::types::{AgentGrcConfig, GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel, VerificationMethod};
 
 // ---------------------------------------------------------------------------
 // AgentGrcConfigLoader: trait for loading per-role GRC configuration
@@ -51,23 +51,137 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
         role: &str,
         global_defaults: &GrcDefaults,
     ) -> Result<AgentGrcConfig, GrcError> {
-        // Stub: returns defaults merged with role name only.
-        // Full implementation in phase 2C.4 (I5) will read from core::Config.
-        let config = AgentGrcConfig {
-            role: role.to_string(),
-            budget: global_defaults.budget,
-            required_steps: vec![
-                GrcState::Observe,
-                GrcState::Hypothesize,
-                GrcState::PlanAction,
-                GrcState::Act,
-                GrcState::Verify,
-            ],
-            grounding_level: global_defaults.grounding_level,
-            csq_required: global_defaults.csq_required,
-            allowed_methods: global_defaults.allowed_methods.clone(),
-            transition_overrides: HashMap::new(),
-            require_scope_enumeration: false,
+        // Per-role overrides merged with global defaults (field-by-field, not deep merge).
+        // In phase 4A, these overrides come from core::Config parsing of elai_cc.toml
+        // [agents.{role}.grc] tables. For now, known role definitions are hardcoded
+        // per reasoning.txt section 7.
+        let config = match role {
+            "executor" => {
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(8, 1200),
+                    required_steps: vec![
+                        GrcState::Observe,
+                        GrcState::Hypothesize,
+                        GrcState::PlanAction,
+                        GrcState::Act,
+                        GrcState::Verify,
+                    ],
+                    grounding_level: global_defaults.grounding_level,
+                    csq_required: true,
+                    allowed_methods: global_defaults.allowed_methods.clone(),
+                    transition_overrides: HashMap::new(),
+                    require_scope_enumeration: true,
+                }
+            }
+            "auditor" => {
+                let mut overrides = HashMap::new();
+                overrides.insert(GrcState::Hypothesize, vec![GrcState::Verify]);
+                overrides.insert(GrcState::Verify, vec![GrcState::Verify, GrcState::Observe]);
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(10, 1200),
+                    required_steps: vec![
+                        GrcState::Observe,
+                        GrcState::Hypothesize,
+                        GrcState::Verify,
+                        GrcState::Verify,
+                    ],
+                    grounding_level: GroundingLevel::Verified,
+                    csq_required: true,
+                    allowed_methods: global_defaults.allowed_methods.clone(),
+                    transition_overrides: overrides,
+                    require_scope_enumeration: false,
+                }
+            }
+            "context_compiler" => {
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(3, 600),
+                    required_steps: vec![GrcState::Observe],
+                    grounding_level: GroundingLevel::High,
+                    csq_required: false,
+                    allowed_methods: vec![
+                        VerificationMethod::FileCheck,
+                        VerificationMethod::SourceCheck,
+                    ],
+                    transition_overrides: HashMap::new(),
+                    require_scope_enumeration: false,
+                }
+            }
+            "prompt_engineer" => {
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(5, 800),
+                    required_steps: vec![
+                        GrcState::Observe,
+                        GrcState::Hypothesize,
+                        GrcState::Converge,
+                    ],
+                    grounding_level: GroundingLevel::High,
+                    csq_required: false,
+                    allowed_methods: vec![
+                        VerificationMethod::FileCheck,
+                        VerificationMethod::SourceCheck,
+                    ],
+                    transition_overrides: HashMap::new(),
+                    require_scope_enumeration: false,
+                }
+            }
+            "memory_writer" => {
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(2, 400),
+                    required_steps: vec![GrcState::Observe, GrcState::Converge],
+                    grounding_level: global_defaults.grounding_level,
+                    csq_required: false,
+                    allowed_methods: vec![
+                        VerificationMethod::FileCheck,
+                        VerificationMethod::SourceCheck,
+                    ],
+                    transition_overrides: HashMap::new(),
+                    require_scope_enumeration: false,
+                }
+            }
+            "designer" => {
+                let mut overrides = HashMap::new();
+                overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: GrcBudget::new(8, 1200),
+                    required_steps: vec![
+                        GrcState::Observe,
+                        GrcState::Hypothesize,
+                        GrcState::PlanAction,
+                        GrcState::Verify,
+                        GrcState::Converge,
+                    ],
+                    grounding_level: GroundingLevel::High,
+                    csq_required: true,
+                    allowed_methods: global_defaults.allowed_methods.clone(),
+                    transition_overrides: overrides,
+                    require_scope_enumeration: true,
+                }
+            }
+            // Unknown role: use defaults only (allows dynamic roles).
+            _ => {
+                AgentGrcConfig {
+                    role: role.to_string(),
+                    budget: global_defaults.budget,
+                    required_steps: vec![
+                        GrcState::Observe,
+                        GrcState::Hypothesize,
+                        GrcState::PlanAction,
+                        GrcState::Act,
+                        GrcState::Verify,
+                    ],
+                    grounding_level: global_defaults.grounding_level,
+                    csq_required: global_defaults.csq_required,
+                    allowed_methods: global_defaults.allowed_methods.clone(),
+                    transition_overrides: HashMap::new(),
+                    require_scope_enumeration: false,
+                }
+            }
         };
         self.validate_config(&config)?;
         Ok(config)

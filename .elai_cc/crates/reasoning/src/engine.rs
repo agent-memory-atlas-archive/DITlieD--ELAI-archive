@@ -2,11 +2,18 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
+use crate::config::effective_allowed_next;
 use crate::types::{
     AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
     PlanGroundingResult, ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
 };
 use crate::verification::{LocalVerifier, NoopTestRunner, StdFileReader, Verifier};
+
+/// Finding marker prefix for anti-rubber-stamp enforcement.
+/// A finding is any Verify step whose content starts with this prefix
+/// (case-sensitive, after trimming leading whitespace).
+/// Internal protocol between GRC engine and auditor prompt.
+const FINDING_PREFIX: &str = "FINDING:";
 
 // ---------------------------------------------------------------------------
 // GrcEngine trait: the contract for grounded reasoning
@@ -81,6 +88,34 @@ impl BasicGrcEngine {
             .as_ref()
             .map_or(false, |c| c.require_scope_enumeration)
     }
+
+    /// Compute effective allowed transitions from a state, considering agent config.
+    /// When agent config is set:
+    ///   1. Merge default transitions with transition_overrides (additive union)
+    ///   2. Filter to step whitelist: only states in required_steps + [Status, Converge]
+    /// When no agent config: use default allowed_next unchanged.
+    fn effective_transitions(&self, state: GrcState) -> Vec<GrcState> {
+        match &self.agent_config {
+            None => state.allowed_next().to_vec(),
+            Some(config) => {
+                let merged = effective_allowed_next(state, &config.transition_overrides);
+                // Step whitelist: restrict to states that appear in required_steps
+                // plus Status and Converge (always allowed).
+                let mut whitelist: Vec<GrcState> = config.required_steps.clone();
+                if !whitelist.contains(&GrcState::Status) {
+                    whitelist.push(GrcState::Status);
+                }
+                if !whitelist.contains(&GrcState::Converge) {
+                    whitelist.push(GrcState::Converge);
+                }
+                merged
+                    .into_iter()
+                    .filter(|s| whitelist.contains(s))
+                    .collect()
+            }
+        }
+    }
+
 
     /// Parse a claim string with "type:reference" format into (VerificationMethod, stripped_ref).
     /// The "type:" prefix is ALWAYS stripped before dispatching to the Verifier.
@@ -173,12 +208,27 @@ impl GrcEngine for BasicGrcEngine {
         let topic_key = step.topic.clone();
         // Capture config-derived values before borrowing self.topics mutably.
         let scope_enumeration_required = self.require_scope_enumeration();
+        let config_budget = self
+            .agent_config
+            .as_ref()
+            .map(|c| GrcBudget::new(c.budget.max_calls, c.budget.max_chars));
+        let config_min_grounding = self.agent_config.as_ref().map(|c| c.grounding_level);
+        let config_allowed_methods: Option<Vec<VerificationMethod>> = self
+            .agent_config
+            .as_ref()
+            .map(|c| c.allowed_methods.clone());
+        let config_role = self.agent_config.as_ref().map(|c| c.role.clone());
+        // Pre-compute effective transitions for the last state (needed before mutable borrow).
+        // We'll read last_state from topics, compute transitions, then proceed.
+        let last_state_for_topic = self.topics.get(&topic_key).and_then(|s| s.last_state);
+        let effective_allowed = last_state_for_topic.map(|last| self.effective_transitions(last));
 
-        // Ensure topic exists with default budget if not yet configured.
+        // Ensure topic exists. Use agent config budget if set, else default.
+        let default_budget = config_budget.unwrap_or_default();
         let state = self
             .topics
             .entry(topic_key.clone())
-            .or_insert_with(|| TopicState::new(GrcBudget::default()));
+            .or_insert_with(|| TopicState::new(default_budget));
         let mut warnings = Vec::new();
 
         // --- State transition validation ---
@@ -206,18 +256,38 @@ impl GrcEngine for BasicGrcEngine {
                     }
                 }
                 Some(last) => {
-                    let allowed = last.allowed_next();
+                    let allowed = effective_allowed.unwrap_or_else(|| last.allowed_next().to_vec());
                     if !allowed.contains(&step.step_type) {
                         return Err(GrcError::InvalidTransition {
                             from: Some(last),
                             to: step.step_type,
-                            allowed: allowed.to_vec(),
+                            allowed,
                         });
                     }
                 }
             }
         }
         // Converge is allowed from any state (including as first step).
+
+        // Anti-rubber-stamp: auditor must have >= 1 FINDING: before Converge.
+        if step.step_type == GrcState::Converge {
+            if let Some(ref role) = config_role {
+                if role == "auditor" {
+                    let finding_count = state
+                        .steps
+                        .iter()
+                        .filter(|s| s.step_type == GrcState::Verify)
+                        .filter(|s| s.content.trim_start().starts_with(FINDING_PREFIX))
+                        .count();
+                    if finding_count < 1 {
+                        return Err(GrcError::InsufficientFindings {
+                            role: role.clone(),
+                            expected_min: 1,
+                        });
+                    }
+                }
+            }
+        }
 
         // --- Budget enforcement (check-then-increment) ---
         if state.budget.is_exhausted() {
@@ -259,7 +329,40 @@ impl GrcEngine for BasicGrcEngine {
                 }
                 Some(raw) => {
                     let citations = Self::parse_grounding(raw)?;
+                    // Allowed methods enforcement: reject citations using disallowed methods.
+                    if let Some(ref allowed_methods) = config_allowed_methods {
+                        for (source_type, reference, _) in &citations {
+                            let method = match source_type.as_str() {
+                                "file" | "grep" => VerificationMethod::FileCheck,
+                                "tool" => VerificationMethod::SourceCheck,
+                                "test" => VerificationMethod::TestCheck,
+                                "search" => VerificationMethod::WebCheck,
+                                "training" => continue,
+                                _ => continue,
+                            };
+                            if !allowed_methods.contains(&method) {
+                                return Err(GrcError::VerificationError {
+                                    method,
+                                    claim: format!("{}:{}", source_type, reference),
+                                    reason: format!(
+                                        "method {:?} not in allowed_methods for role '{}'",
+                                        method,
+                                        config_role.as_deref().unwrap_or("unknown")
+                                    ),
+                                });
+                            }
+                        }
+                    }
                     let level = Self::overall_grounding_level(&citations);
+                    // Grounding level enforcement: reject if below agent config minimum.
+                    if let Some(min_level) = config_min_grounding {
+                        if level < min_level {
+                            return Err(GrcError::UngroundedStep {
+                                step_type: step.step_type,
+                                topic: topic_key,
+                            });
+                        }
+                    }
                     if level == GroundingLevel::Uncertain {
                         warnings.push(format!(
                             "UNCERTAIN grounding on {:?} step in topic '{}' — should be resolved before acting",

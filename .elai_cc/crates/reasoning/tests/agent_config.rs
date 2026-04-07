@@ -571,7 +571,8 @@ fn t11_transition_overrides_are_additive() {
         .expect("Observe should succeed");
 
     // Verify directly from Observe — should work via override {Observe: [Verify]}
-    let r_ver = engine.think(step(GrcState::Verify, "t", Some("test:passed")));
+    // Use file: grounding (allowed by config) instead of test: (not in allowed_methods).
+    let r_ver = engine.think(step(GrcState::Verify, "t", Some("file:src/verified.rs")));
     assert!(
         r_ver.is_ok(),
         "Verify from Observe should succeed via transition override: {:?}",
@@ -590,22 +591,29 @@ fn t12_auditor_budget_10_1200() {
     engine.with_agent_config(config);
     engine.set_budget("t", 10, 10000);
 
-    // Run 9 calls (leave 1 for must_converge)
-    let chain = [
-        (GrcState::Observe, Some("test:claim1")),
-        (GrcState::Hypothesize, Some("test:claim2")),
-        (GrcState::Verify, Some("test:claim3")),         // first verify
-        (GrcState::Verify, Some("test:claim4")),         // double verify
-        (GrcState::Observe, Some("test:claim5")),        // new chain
-        (GrcState::Hypothesize, Some("test:claim6")),
-        (GrcState::Verify, Some("test:claim7")),
-        (GrcState::Observe, Some("test:claim8")),
-        (GrcState::Hypothesize, Some("test:claim9")),
-    ];
-    for (i, (st, g)) in chain.iter().enumerate() {
-        let r = engine.think(step(*st, "t", *g));
-        assert!(r.is_ok(), "call {} ({:?}) should succeed: {:?}", i + 1, st, r);
-    }
+    // Run 9 calls (leave 1 for must_converge).
+    // At least one Verify step must have FINDING: prefix for anti-rubber-stamp.
+    engine.think(step(GrcState::Observe, "t", Some("test:claim1")))
+        .expect("call 1 Observe");
+    engine.think(step(GrcState::Hypothesize, "t", Some("test:claim2")))
+        .expect("call 2 Hypothesize");
+    engine.think(step_with_content(GrcState::Verify, "t", Some("test:claim3"),
+        "FINDING: issue in module A"))
+        .expect("call 3 Verify (with finding)");
+    engine.think(step_with_content(GrcState::Verify, "t", Some("test:claim4"),
+        "FINDING: issue in module B"))
+        .expect("call 4 Verify (double verify)");
+    engine.think(step(GrcState::Observe, "t", Some("test:claim5")))
+        .expect("call 5 Observe");
+    engine.think(step(GrcState::Hypothesize, "t", Some("test:claim6")))
+        .expect("call 6 Hypothesize");
+    engine.think(step_with_content(GrcState::Verify, "t", Some("test:claim7"),
+        "FINDING: issue in module C"))
+        .expect("call 7 Verify");
+    engine.think(step(GrcState::Observe, "t", Some("test:claim8")))
+        .expect("call 8 Observe");
+    engine.think(step(GrcState::Hypothesize, "t", Some("test:claim9")))
+        .expect("call 9 Hypothesize");
 
     // Call 10: must_converge
     let r10 = engine.think(step_with_content(GrcState::Converge, "t", None, "done"));
