@@ -1,5 +1,6 @@
 pub mod agent_pool;
 mod bash;
+pub mod checkpoint;
 pub mod bash_validation;
 pub mod branch_lock;
 mod compact;

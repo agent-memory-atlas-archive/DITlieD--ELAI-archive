@@ -822,9 +822,12 @@ dependencies = [
  "elai-reasoning",
  "elai-rules",
  "elai-tools",
+ "rmp-serde",
  "rusqlite",
  "serde_json",
  "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

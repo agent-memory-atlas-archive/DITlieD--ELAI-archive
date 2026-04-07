@@ -188,6 +188,9 @@ pub struct ClaimPayload {
 pub struct CheckpointPayload {
     pub agent_state_hash: String,
     pub grc_history_hash: String,
+    pub agent_id: String,
+    pub step_index: u64,
+    pub file_sizes: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1610,6 +1613,9 @@ mod tests {
             SsbPayload::Checkpoint(CheckpointPayload {
                 agent_state_hash: "deadbeef".into(),
                 grc_history_hash: "cafebabe".into(),
+                agent_id: "agent-001".into(),
+                step_index: 5,
+                file_sizes: vec![("state.msgpack".into(), 1024)],
             }),
             SsbPayload::ModelSwap(ModelSwapPayload {
                 from_model: "sonnet".into(),
@@ -1804,9 +1810,9 @@ mod tests {
                     .prop_map(|(claim_text, grounding_source, verified)| SsbPayload::Claim(
                         ClaimPayload { claim_text, grounding_source, verified }
                     )),
-                ("[a-f0-9]{16}", "[a-f0-9]{16}")
-                    .prop_map(|(agent_state_hash, grc_history_hash)| SsbPayload::Checkpoint(
-                        CheckpointPayload { agent_state_hash, grc_history_hash }
+                ("[a-f0-9]{16}", "[a-f0-9]{16}", "[a-z0-9-]{1,20}", any::<u64>())
+                    .prop_map(|(agent_state_hash, grc_history_hash, agent_id, step_index)| SsbPayload::Checkpoint(
+                        CheckpointPayload { agent_state_hash, grc_history_hash, agent_id, step_index, file_sizes: vec![] }
                     )),
                 ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,20}")
                     .prop_map(|(from_model, to_model, reason)| SsbPayload::ModelSwap(
