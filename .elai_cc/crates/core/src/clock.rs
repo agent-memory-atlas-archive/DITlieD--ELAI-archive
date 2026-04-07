@@ -94,6 +94,15 @@ impl SeededClock {
     }
 }
 
+impl Clone for SeededClock {
+    fn clone(&self) -> Self {
+        Self {
+            tick: AtomicU64::new(self.tick.load(Ordering::Relaxed)),
+            epoch: self.epoch,
+        }
+    }
+}
+
 impl Default for SeededClock {
     fn default() -> Self {
         Self::new()

@@ -30,56 +30,63 @@ pub use usage::{
 pub use clock::{ClockProvider, LogicalInstant, OsClock, SeededClock};
 pub use entropy::{EntropySource, OsEntropy, SeededRng};
 
-use std::sync::{Arc, Mutex};
-
 /// Process-wide context carrying deterministic time and entropy.
-/// Created once at startup; passed via Arc clone.
-#[derive(Clone)]
-pub struct RuntimeContext {
-    clock: Arc<dyn ClockProvider>,
-    entropy: Arc<Mutex<dyn EntropySource>>,
+/// Static dispatch: zero vtable overhead, no Mutex on entropy.
+pub struct RuntimeContext<C, E> {
+    clock: C,
+    entropy: E,
 }
 
-impl RuntimeContext {
-    pub fn new(
-        clock: Arc<dyn ClockProvider>,
-        entropy: Arc<Mutex<dyn EntropySource>>,
-    ) -> Self {
+impl<C: Clone, E: Clone> Clone for RuntimeContext<C, E> {
+    fn clone(&self) -> Self {
+        Self {
+            clock: self.clock.clone(),
+            entropy: self.entropy.clone(),
+        }
+    }
+}
+
+/// Production: OsClock + OsEntropy.
+pub type ProductionContext = RuntimeContext<OsClock, OsEntropy>;
+/// Deterministic tests: SeededClock + SeededRng.
+pub type TestContext = RuntimeContext<SeededClock, SeededRng>;
+
+impl<C: ClockProvider, E: EntropySource> RuntimeContext<C, E> {
+    pub fn new(clock: C, entropy: E) -> Self {
         Self { clock, entropy }
     }
 
+    pub fn clock(&self) -> &C {
+        &self.clock
+    }
+
+    pub fn entropy_mut(&mut self) -> &mut E {
+        &mut self.entropy
+    }
+}
+
+impl ProductionContext {
     /// Production default: OsClock + OsEntropy.
     pub fn os_default() -> Self {
         Self {
-            clock: Arc::new(OsClock),
-            entropy: Arc::new(Mutex::new(OsEntropy)),
+            clock: OsClock,
+            entropy: OsEntropy,
         }
     }
 
-    /// Build from environment. If ELAI_SEED is set to a valid u64, use SeededClock + SeededRng.
-    /// If ELAI_SEED is set but invalid, logs a warning and falls back to os_default().
-    /// If ELAI_SEED is unset, falls back to os_default().
+    /// Build from environment. Returns ProductionContext (os_default).
+    /// For seeded/test contexts, use `TestContext::from_seed(seed)` directly.
     pub fn from_env() -> Self {
-        match std::env::var("ELAI_SEED") {
-            Ok(val) if !val.is_empty() => match val.parse::<u64>() {
-                Ok(seed) => Self {
-                    clock: Arc::new(SeededClock::new()),
-                    entropy: Arc::new(Mutex::new(SeededRng::new(seed))),
-                },
-                Err(e) => {
-                    eprintln!("WARN: ELAI_SEED={val:?} is not a valid u64 ({e}), falling back to OS providers");
-                    Self::os_default()
-                }
-            },
-            _ => Self::os_default(),
+        Self::os_default()
+    }
+}
+
+impl TestContext {
+    /// Build a deterministic test context from a u64 seed.
+    pub fn from_seed(seed: u64) -> Self {
+        Self {
+            clock: SeededClock::new(),
+            entropy: SeededRng::new(seed),
         }
-    }
-
-    pub fn clock(&self) -> &dyn ClockProvider {
-        &*self.clock
-    }
-
-    pub fn entropy(&self) -> &Arc<Mutex<dyn EntropySource>> {
-        &self.entropy
     }
 }

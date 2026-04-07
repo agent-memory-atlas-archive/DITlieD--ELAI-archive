@@ -134,24 +134,18 @@ mod runtime_context_contracts {
 
     #[test]
     fn runtime_context_constructable_and_cloneable() {
-        let ctx = RuntimeContext::new(
-            Arc::new(OsClock),
-            Arc::new(Mutex::new(OsEntropy)),
-        );
+        let mut ctx = RuntimeContext::new(OsClock, OsEntropy);
         let ctx2 = ctx.clone();
         // Both should work independently
         let _ = ctx.clock().now();
         let _ = ctx2.clock().system_now();
-        let _ = ctx.entropy().lock().unwrap().next_u64();
+        let _ = ctx.entropy_mut().next_u64();
     }
 
     #[test]
-    fn runtime_context_clock_returns_dyn_clock_provider() {
-        let ctx = RuntimeContext::new(
-            Arc::new(OsClock),
-            Arc::new(Mutex::new(OsEntropy)),
-        );
-        let clock: &dyn ClockProvider = ctx.clock();
+    fn runtime_context_clock_returns_concrete_type() {
+        let ctx = RuntimeContext::new(OsClock, OsEntropy);
+        let clock = ctx.clock();
         let _ = clock.now();
     }
 }

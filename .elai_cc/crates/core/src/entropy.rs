@@ -14,6 +14,7 @@ pub trait EntropySource: Send {
 // ---------------------------------------------------------------------------
 
 /// Delegates to the OS random number generator.
+#[derive(Clone)]
 pub struct OsEntropy;
 
 impl EntropySource for OsEntropy {
@@ -31,6 +32,7 @@ impl EntropySource for OsEntropy {
 // ---------------------------------------------------------------------------
 
 /// Deterministic RNG backed by ChaCha8. Same seed = same sequence.
+#[derive(Clone)]
 pub struct SeededRng {
     inner: ChaCha8Rng,
 }
