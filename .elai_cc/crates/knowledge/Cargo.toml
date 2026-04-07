@@ -18,6 +18,8 @@ elai-core = { path = "../core" }
 ort = "2.0.0-rc.12"
 tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 tokio = { version = "1", features = ["sync"] }
+tracing.workspace = true
+uuid.workspace = true
 usearch = { version = "2.24.0", default-features = false, optional = true }
 
 [features]
@@ -29,6 +31,7 @@ splade = []
 proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

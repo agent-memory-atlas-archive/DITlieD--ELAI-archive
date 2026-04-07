@@ -7,6 +7,7 @@ pub mod degradation;
 pub mod dkg;
 pub mod pagerank;
 pub mod pipeline;
+pub mod query_trace;
 pub mod query_validator;
 pub mod reranker;
 #[cfg(feature = "splade")]
