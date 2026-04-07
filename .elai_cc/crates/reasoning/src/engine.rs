@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use regex::Regex;
+
 use crate::types::{
-    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, PlanGroundingResult,
-    ThinkResult, ThinkStep, TopicState, VerificationResult,
+    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult,
+    PlanGroundingResult, ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
 };
+use crate::verification::{LocalVerifier, NoopTestRunner, StdFileReader, Verifier};
 
 // ---------------------------------------------------------------------------
 // GrcEngine trait: the contract for grounded reasoning
@@ -33,20 +36,57 @@ pub trait GrcEngine {
 pub struct BasicGrcEngine {
     topics: HashMap<String, TopicState>,
     config: AgentGrcConfig,
+    verifier: Box<dyn Verifier>,
 }
 
 impl BasicGrcEngine {
     pub fn new() -> Self {
+        let file_reader = Box::new(StdFileReader::new());
+        let test_runner = Box::new(NoopTestRunner::new());
         Self {
             topics: HashMap::new(),
             config: AgentGrcConfig::default(),
+            verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
         }
     }
 
     pub fn with_config(config: AgentGrcConfig) -> Self {
+        let file_reader = Box::new(StdFileReader::new());
+        let test_runner = Box::new(NoopTestRunner::new());
         Self {
             topics: HashMap::new(),
             config,
+            verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
+        }
+    }
+
+    pub fn with_verifier(verifier: Box<dyn Verifier>) -> Self {
+        Self {
+            topics: HashMap::new(),
+            config: AgentGrcConfig::default(),
+            verifier,
+        }
+    }
+
+    /// Parse a claim string with "type:reference" format into (VerificationMethod, stripped_ref).
+    /// The "type:" prefix is ALWAYS stripped before dispatching to the Verifier.
+    fn parse_claim_prefix(claim: &str) -> (VerificationMethod, &str) {
+        if let Some(rest) = claim.strip_prefix("file:") {
+            (VerificationMethod::FileCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("grep:") {
+            (VerificationMethod::FileCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("test:") {
+            (VerificationMethod::TestCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("search:") {
+            (VerificationMethod::WebCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("tool:") {
+            (VerificationMethod::SourceCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("training:") {
+            // training: claims have no direct verification method; attempt FileCheck
+            (VerificationMethod::FileCheck, rest)
+        } else {
+            // No recognized prefix — treat as FileCheck with the full claim
+            (VerificationMethod::FileCheck, claim)
         }
     }
 
@@ -284,17 +324,113 @@ impl GrcEngine for BasicGrcEngine {
         self.topics.remove(topic);
     }
 
-    // Phase 2B stubs — signatures updated per D6, D7
     fn verify_claim(
         &self,
-        _claim: &str,
-        _source: &str,
-        _context: &str,
+        claim: &str,
+        source: &str,
+        context: &str,
     ) -> Result<VerificationResult, GrcError> {
-        unimplemented!("verify_claim is phase 2B.3+ — not yet implemented")
+        let (method, stripped) = Self::parse_claim_prefix(claim);
+        let ctx = if !context.is_empty() {
+            context
+        } else if !source.is_empty() {
+            source
+        } else {
+            ""
+        };
+        let mut result = self.verifier.verify(method, stripped, ctx)?;
+        // Ensure the claim in the result is the stripped reference, not the raw prefix form.
+        result.claim = stripped.to_string();
+        Ok(result)
     }
 
-    fn ground_plan(&self, _plan: &str) -> PlanGroundingResult {
-        unimplemented!("ground_plan is phase 2B.3+ — not yet implemented")
+    fn ground_plan(&self, plan: &str) -> PlanGroundingResult {
+        if plan.trim().is_empty() {
+            return PlanGroundingResult {
+                claims: Vec::new(),
+                all_grounded: true,
+                ungrounded: Vec::new(),
+                verify_needed: Vec::new(),
+            };
+        }
+
+        let claim_re = Regex::new(r"(?m)^(?:\s*Grounding:\s*)((file|grep|test|search|tool|training):[^\s]+)")
+            .expect("claim regex is valid");
+
+        let mut claims = Vec::new();
+        let mut ungrounded = Vec::new();
+        let mut verify_needed = Vec::new();
+
+        for cap in claim_re.captures_iter(plan) {
+            let raw_claim = cap[1].to_string();
+            let source_type = cap[2].to_string();
+
+            if source_type == "training" {
+                // Attempt auto-resolution: try FileCheck or SourceCheck
+                let (method, stripped) = Self::parse_claim_prefix(&raw_claim);
+                let auto_result = self.verifier.verify(method, stripped, "");
+                match auto_result {
+                    Ok(vr) if vr.passes => {
+                        claims.push(GroundingResult {
+                            claim: raw_claim,
+                            method: VerificationMethod::FileCheck,
+                            level: GroundingLevel::Verified,
+                            source: source_type,
+                            verified_at: 0,
+                        });
+                    }
+                    _ => {
+                        verify_needed.push(raw_claim.clone());
+                        ungrounded.push(raw_claim.clone());
+                        claims.push(GroundingResult {
+                            claim: raw_claim,
+                            method: VerificationMethod::FileCheck,
+                            level: GroundingLevel::Uncertain,
+                            source: source_type,
+                            verified_at: 0,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let result = self.verify_claim(&raw_claim, &source_type, "");
+            match result {
+                Ok(vr) => {
+                    let level = if vr.passes {
+                        GroundingLevel::Verified
+                    } else {
+                        ungrounded.push(raw_claim.clone());
+                        GroundingLevel::Uncertain
+                    };
+                    claims.push(GroundingResult {
+                        claim: raw_claim,
+                        method: vr.method_used,
+                        level,
+                        source: source_type,
+                        verified_at: 0,
+                    });
+                }
+                Err(_) => {
+                    ungrounded.push(raw_claim.clone());
+                    let (method, _) = Self::parse_claim_prefix(&raw_claim);
+                    claims.push(GroundingResult {
+                        claim: raw_claim,
+                        method,
+                        level: GroundingLevel::Uncertain,
+                        source: source_type,
+                        verified_at: 0,
+                    });
+                }
+            }
+        }
+
+        let all_grounded = ungrounded.is_empty();
+        PlanGroundingResult {
+            claims,
+            all_grounded,
+            ungrounded,
+            verify_needed,
+        }
     }
 }

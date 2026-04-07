@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use regex::Regex;
+
 use crate::types::{GrcError, TestRunResult, VerificationMethod, VerificationResult};
 
 // ---------------------------------------------------------------------------
@@ -120,6 +122,63 @@ impl FileReader for MockFileReader {
 }
 
 // ---------------------------------------------------------------------------
+// StdFileReader: real filesystem implementation of FileReader
+// ---------------------------------------------------------------------------
+
+pub struct StdFileReader;
+
+impl StdFileReader {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for StdFileReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileReader for StdFileReader {
+    fn read_file(&self, path: &str) -> Result<String, String> {
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path, e))
+    }
+
+    fn file_exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NoopTestRunner: default test runner that always returns "not available"
+// Production CargoTestRunner lives in tools/ and is injected at construction.
+// ---------------------------------------------------------------------------
+
+pub struct NoopTestRunner;
+
+impl NoopTestRunner {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for NoopTestRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestRunner for NoopTestRunner {
+    fn run_test(&self, name: &str, _crate_name: &str) -> TestRunResult {
+        TestRunResult {
+            passed: false,
+            output: format!("test runner not available for '{}'", name),
+            duration_ms: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LocalVerifier: handles FileCheck, SourceCheck, TestCheck (phase 2B)
 // Uses FileReader for file ops, TestRunner for test execution.
 // ---------------------------------------------------------------------------
@@ -163,15 +222,35 @@ impl Verifier for LocalVerifier {
                 let file_path = context;
                 match self.file_reader.read_file(file_path) {
                     Ok(contents) => {
-                        let found = contents.contains(claim);
+                        let pattern = format!(
+                            r"(fn|struct|enum|trait|impl|const|static|type|mod)\s+{}\b",
+                            regex::escape(claim)
+                        );
+                        let re = Regex::new(&pattern).map_err(|e| GrcError::VerificationError {
+                            method: VerificationMethod::SourceCheck,
+                            claim: claim.to_string(),
+                            reason: format!("invalid regex for symbol '{}': {}", claim, e),
+                        })?;
+                        let mut found_kind = None;
+                        let mut found_line = 0usize;
+                        for (i, line) in contents.lines().enumerate() {
+                            if let Some(m) = re.find(line) {
+                                let matched = m.as_str();
+                                found_kind = matched.split_whitespace().next().map(String::from);
+                                found_line = i + 1;
+                                break;
+                            }
+                        }
+                        let passes = found_kind.is_some();
+                        let evidence = if let Some(kind) = &found_kind {
+                            format!("Found {} {} at {}:{}", kind, claim, file_path, found_line)
+                        } else {
+                            format!("Symbol {} not found in {}", claim, file_path)
+                        };
                         Ok(VerificationResult {
                             claim: claim.to_string(),
-                            passes: found,
-                            evidence: if found {
-                                format!("symbol '{}' found in {}", claim, file_path)
-                            } else {
-                                format!("symbol '{}' not found in {}", claim, file_path)
-                            },
+                            passes,
+                            evidence,
                             method_used: VerificationMethod::SourceCheck,
                         })
                     }

@@ -752,6 +752,7 @@ name = "elai-reasoning"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "regex",
  "serde",
  "tempfile",
  "thiserror",

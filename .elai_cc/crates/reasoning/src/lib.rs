@@ -9,5 +9,6 @@ pub use types::{
     VerificationResult,
 };
 pub use verification::{
-    FileReader, LocalVerifier, MockFileReader, MockTestRunner, NetworkVerifier, TestRunner, Verifier,
+    FileReader, LocalVerifier, MockFileReader, MockTestRunner, NetworkVerifier, NoopTestRunner,
+    StdFileReader, TestRunner, Verifier,
 };

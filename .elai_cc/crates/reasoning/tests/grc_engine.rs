@@ -402,20 +402,21 @@ fn adversarial_reset_topic_removes_entry() {
 // This is validated by the deterministic check command, not a runtime test.
 // Included here as documentation that the constraint was considered.
 
-// A5. Stubs for phase 2B methods use unimplemented!(), not placeholder Ok.
-// Signature updated per D6, D7 (verify_claim now takes 3 args, ground_plan returns PlanGroundingResult).
+// A5. Phase 2B.4: verify_claim and ground_plan are now implemented (no longer stubs).
+// These tests validate that they return results without panicking.
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn adversarial_verify_claim_is_stub() {
+fn verify_claim_is_implemented() {
     let engine = BasicGrcEngine::new();
-    let _ = engine.verify_claim("claim", "source", "context");
+    let result = engine.verify_claim("file:Cargo.toml", "", "");
+    assert!(result.is_ok(), "verify_claim should return Ok, not panic");
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn adversarial_ground_plan_is_stub() {
+fn ground_plan_is_implemented() {
     let engine = BasicGrcEngine::new();
-    let _ = engine.ground_plan("plan");
+    let result = engine.ground_plan("Grounding: file:Cargo.toml");
+    // Should not panic; returns a PlanGroundingResult
+    assert!(!result.claims.is_empty(), "ground_plan should find at least one claim");
 }
 
 // A6. Chars budget checked before increment — verify no state corruption on error.
