@@ -14,12 +14,17 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 blake2 = "0.10"
 log = "0.4"
 tantivy = "0.26"
+elai-core = { path = "../core" }
+ort = "2.0.0-rc.12"
+usearch = { version = "2.24.0", default-features = false, optional = true }
+
+[features]
+default = []
+usearch-hnsw = ["usearch"]
 
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
-rusqlite = { version = "0.39", features = ["bundled"] }
-blake2 = "0.10"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
