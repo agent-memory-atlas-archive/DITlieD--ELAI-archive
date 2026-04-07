@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::types::{
-    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, GroundingResult, ThinkResult,
-    ThinkStep, TopicState, VerificationResult,
+    AgentGrcConfig, GrcBudget, GrcError, GrcState, GroundingLevel, PlanGroundingResult,
+    ThinkResult, ThinkStep, TopicState, VerificationResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -16,11 +16,14 @@ pub trait GrcEngine {
     fn get_budget(&self, topic: &str) -> Option<&GrcBudget>;
     fn reset_topic(&mut self, topic: &str);
 
-    // Phase 2B stubs (present for trait stability)
-    #[allow(unused)]
-    fn verify_claim(&self, claim: &str, source: &str) -> Result<VerificationResult, GrcError>;
-    #[allow(unused)]
-    fn ground_plan(&self, plan: &str) -> Vec<GroundingResult>;
+    // Phase 2B: grounding verification (D6, D7 breaking changes from 2A)
+    fn verify_claim(
+        &self,
+        claim: &str,
+        source: &str,
+        context: &str,
+    ) -> Result<VerificationResult, GrcError>;
+    fn ground_plan(&self, plan: &str) -> PlanGroundingResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,12 +284,17 @@ impl GrcEngine for BasicGrcEngine {
         self.topics.remove(topic);
     }
 
-    // Phase 2B stubs
-    fn verify_claim(&self, _claim: &str, _source: &str) -> Result<VerificationResult, GrcError> {
-        unimplemented!("verify_claim is phase 2B — not yet implemented")
+    // Phase 2B stubs — signatures updated per D6, D7
+    fn verify_claim(
+        &self,
+        _claim: &str,
+        _source: &str,
+        _context: &str,
+    ) -> Result<VerificationResult, GrcError> {
+        unimplemented!("verify_claim is phase 2B.3+ — not yet implemented")
     }
 
-    fn ground_plan(&self, _plan: &str) -> Vec<GroundingResult> {
-        unimplemented!("ground_plan is phase 2B — not yet implemented")
+    fn ground_plan(&self, _plan: &str) -> PlanGroundingResult {
+        unimplemented!("ground_plan is phase 2B.3+ — not yet implemented")
     }
 }

@@ -403,11 +403,12 @@ fn adversarial_reset_topic_removes_entry() {
 // Included here as documentation that the constraint was considered.
 
 // A5. Stubs for phase 2B methods use unimplemented!(), not placeholder Ok.
+// Signature updated per D6, D7 (verify_claim now takes 3 args, ground_plan returns PlanGroundingResult).
 #[test]
 #[should_panic(expected = "not yet implemented")]
 fn adversarial_verify_claim_is_stub() {
     let engine = BasicGrcEngine::new();
-    let _ = engine.verify_claim("claim", "source");
+    let _ = engine.verify_claim("claim", "source", "context");
 }
 
 #[test]

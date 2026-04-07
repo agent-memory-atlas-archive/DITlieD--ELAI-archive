@@ -120,7 +120,7 @@ impl GrcBudget {
 // GroundingLevel: strength of evidence behind a claim
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum GroundingLevel {
     /// From training, not verified. Must be resolved before acting.
     Uncertain,
@@ -155,6 +155,13 @@ pub enum GrcError {
 
     #[error("malformed grounding: '{raw}' — {reason}")]
     MalformedGrounding { raw: String, reason: String },
+
+    #[error("verification failed: {method:?} on '{claim}' — {reason}")]
+    VerificationError {
+        method: VerificationMethod,
+        claim: String,
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -213,23 +220,91 @@ impl TopicState {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2B stub types (forward references, #[allow(dead_code)] until 2B)
+// VerificationMethod: the 6 verification strategies (phase 2B)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum VerificationMethod {
+    FileCheck,
+    SourceCheck,
+    TestCheck,
+    WebCheck,
+    ApiCheck,
+    ApiRegistryCheck,
+}
+
+impl VerificationMethod {
+    /// Methods requiring network access (cannot run in offline/sandboxed mode).
+    pub fn requires_network(&self) -> bool {
+        matches!(
+            self,
+            VerificationMethod::WebCheck
+                | VerificationMethod::ApiCheck
+                | VerificationMethod::ApiRegistryCheck
+        )
+    }
+
+    /// Methods requiring tools/ crate file operations.
+    pub fn requires_tools(&self) -> bool {
+        matches!(
+            self,
+            VerificationMethod::FileCheck
+                | VerificationMethod::SourceCheck
+                | VerificationMethod::TestCheck
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VerificationResult: outcome of a single claim verification (phase 2B)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VerificationResult {
     pub claim: String,
     pub passes: bool,
     pub evidence: String,
-    pub method_used: String,
+    pub method_used: VerificationMethod,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
+// ---------------------------------------------------------------------------
+// GroundingResult: claim + method + level + source + timestamp (phase 2B)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroundingResult {
     pub claim: String,
-    pub method: String,
+    pub method: VerificationMethod,
     pub level: GroundingLevel,
     pub source: String,
+    /// Unix timestamp from TimeSource (u64). Injected via entropy-quarantined
+    /// trait when TimeSource is added to core. For now, caller provides directly.
+    pub verified_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// PlanGroundingResult: aggregate of all claims in a plan sweep (phase 2B)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PlanGroundingResult {
+    pub claims: Vec<GroundingResult>,
+    /// True iff ungrounded.is_empty().
+    pub all_grounded: bool,
+    /// Claims that remain ungrounded after verification attempts.
+    pub ungrounded: Vec<String>,
+    /// Claims that were "training:" and could NOT be auto-resolved.
+    /// Subset of ungrounded.
+    pub verify_needed: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// TestRunResult: outcome of running a single test (phase 2B)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TestRunResult {
+    pub passed: bool,
+    pub output: String,
+    pub duration_ms: u64,
 }
