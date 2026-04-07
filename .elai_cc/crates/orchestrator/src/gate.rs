@@ -561,6 +561,101 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // FsmConfig risk overrides (3A.5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_risk_level_default_without_override() {
+        // FsmConfig::default() has no overrides — falls back to default_risk_level.
+        let config = crate::fsm::FsmConfig::default();
+        assert_eq!(
+            crate::fsm::resolve_risk_level(&config, FsmState::Planning, FsmState::TestingFirst),
+            RiskLevel::Medium,
+        );
+        assert_eq!(
+            crate::fsm::resolve_risk_level(&config, FsmState::Memorizing, FsmState::Complete),
+            RiskLevel::Low,
+        );
+        assert_eq!(
+            crate::fsm::resolve_risk_level(&config, FsmState::Executing, FsmState::Planning),
+            RiskLevel::High,
+        );
+    }
+
+    #[test]
+    fn resolve_risk_level_config_override_applies() {
+        // Override MEMORIZING->COMPLETE from Low to High via config.
+        let mut config = crate::fsm::FsmConfig::default();
+        config
+            .risk_overrides
+            .insert("MEMORIZING->COMPLETE".to_string(), RiskLevel::High);
+        assert_eq!(
+            crate::fsm::resolve_risk_level(&config, FsmState::Memorizing, FsmState::Complete),
+            RiskLevel::High,
+        );
+    }
+
+    #[test]
+    fn resolve_risk_level_config_override_does_not_affect_other_transitions() {
+        // An override for one transition does not affect others.
+        let mut config = crate::fsm::FsmConfig::default();
+        config
+            .risk_overrides
+            .insert("MEMORIZING->COMPLETE".to_string(), RiskLevel::High);
+        // PLANNING->TESTING_FIRST should still be Medium (no override).
+        assert_eq!(
+            crate::fsm::resolve_risk_level(&config, FsmState::Planning, FsmState::TestingFirst),
+            RiskLevel::Medium,
+        );
+    }
+
+    #[test]
+    fn all_valid_transitions_have_risk_level() {
+        // Coverage: every valid transition in the matrix returns a RiskLevel
+        // without panic. Ensures no gaps in default_risk_level.
+        for &src in FsmState::ALL.iter() {
+            for &tgt in src.valid_targets() {
+                let risk = default_risk_level(src, tgt);
+                // Just asserting it's one of the three variants (no panic).
+                assert!(
+                    matches!(risk, RiskLevel::Low | RiskLevel::Medium | RiskLevel::High),
+                    "Missing risk level for {src}->{tgt}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn risk_level_for_transition_delegates_to_default() {
+        // crate::fsm::risk_level_for_transition is a convenience re-export.
+        for &src in FsmState::ALL.iter() {
+            for &tgt in src.valid_targets() {
+                assert_eq!(
+                    crate::fsm::risk_level_for_transition(src, tgt),
+                    default_risk_level(src, tgt),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fsm_config_serde_round_trip() {
+        // FsmConfig must survive serde round-trip (required for elai_cc.toml loading).
+        let mut config = crate::fsm::FsmConfig::default();
+        config
+            .risk_overrides
+            .insert("IDLE->PLANNING".to_string(), RiskLevel::High);
+        let json = serde_json::to_string(&config).expect("serialize FsmConfig");
+        let loaded: crate::fsm::FsmConfig =
+            serde_json::from_str(&json).expect("deserialize FsmConfig");
+        assert_eq!(loaded.risk_overrides.len(), 1);
+        assert_eq!(
+            loaded.risk_overrides.get("IDLE->PLANNING").copied(),
+            Some(RiskLevel::High),
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // APPROVE decision
     // -----------------------------------------------------------------------
 

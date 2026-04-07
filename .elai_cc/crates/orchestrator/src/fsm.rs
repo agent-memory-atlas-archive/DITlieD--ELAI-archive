@@ -1,13 +1,17 @@
 //! FSM engine: 9-state machine with validated transitions, msgpack persistence,
-//! concurrent safety, and ReplanRequest support.
+//! concurrent safety, ReplanRequest support, and risk-level classification.
 //!
-//! Phase 3A.1 deliverable. See docs/specs/crates/orchestrator.txt §2, §13
+//! Phase 3A.1 + 3A.5 deliverable. See docs/specs/crates/orchestrator.txt §2, §13
 //! and docs/specs/architecture-overview.txt §4, §6.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+
+// Re-export RiskLevel from gate module so consumers can access it via fsm::.
+pub use crate::gate::{default_risk_level, RiskLevel};
 
 // ---------------------------------------------------------------------------
 // FsmState enum (9 states)
@@ -81,6 +85,46 @@ impl std::fmt::Display for FsmState {
         };
         f.write_str(name)
     }
+}
+
+// ---------------------------------------------------------------------------
+// FsmConfig — per-project FSM configuration (risk overrides)
+// ---------------------------------------------------------------------------
+
+/// FSM configuration, including per-transition risk overrides.
+/// Loaded from elai_cc.toml [fsm] section. All fields optional with sensible defaults.
+///
+/// Key format for risk_overrides: "SOURCE->TARGET" (e.g., "PLANNING->TESTING_FIRST").
+/// UNGROUNDED: inferred from architecture-overview.txt §9 L295 "All routing
+/// configurable in elai_cc.toml".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FsmConfig {
+    /// Per-transition risk overrides. Key: "SOURCE->TARGET", Value: RiskLevel.
+    #[serde(default)]
+    pub risk_overrides: HashMap<String, RiskLevel>,
+}
+
+/// Build the canonical transition key for risk override lookup.
+fn transition_key(source: FsmState, target: FsmState) -> String {
+    format!("{}->{}", source, target)
+}
+
+/// Resolve the effective risk level for a transition, consulting config overrides first.
+/// Falls back to `default_risk_level` if no override is configured.
+pub fn resolve_risk_level(config: &FsmConfig, source: FsmState, target: FsmState) -> RiskLevel {
+    let key = transition_key(source, target);
+    config
+        .risk_overrides
+        .get(&key)
+        .copied()
+        .unwrap_or_else(|| RiskLevel::from(default_risk_level(source, target)))
+}
+
+/// Convenience function: get the default risk level for a transition without config.
+/// Re-exported from gate module. Uses `RiskLevel::Low`, `RiskLevel::Medium`,
+/// `RiskLevel::High` classification from architecture-overview.txt §6 L227-230.
+pub fn risk_level_for_transition(source: FsmState, target: FsmState) -> RiskLevel {
+    default_risk_level(source, target)
 }
 
 // ---------------------------------------------------------------------------
