@@ -9,11 +9,14 @@ use elai_core::{SeededClock, SeededRng};
 use elai_orchestrator::agent_pool::{
     AgentPoolConfig, AgentRole, InProcessAgentPool, ModelPool,
 };
-use elai_orchestrator::bsp::channels::InMemoryChannelRegistry;
+use elai_orchestrator::bsp::channels::{
+    ChannelId, ChannelRegistry, InMemoryChannelRegistry, UntrackedValue,
+    UNTRACKED_DEFAULT_LIMIT_BYTES,
+};
 use elai_orchestrator::bsp::engine::{
     BspCheckpoint, BspConfig, BspEngine, BspError, NodeSpec,
 };
-use elai_orchestrator::ssb::{Ssb, SsbConfig};
+use elai_orchestrator::ssb::{Ssb, SsbActionType, SsbConfig, SsbPayload};
 
 struct MockModelPool;
 impl ModelPool for MockModelPool {
@@ -207,4 +210,77 @@ async fn max_superstep_safety_valve() {
         }
         other => panic!("expected MaxSuperstepsReached, got: {other}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Contract 4: Memory monitoring force-clear integration
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn memory_monitoring_force_clear_contract() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = contract_config(tmp.path().join("checkpoints"));
+
+    let pool = test_pool();
+    let clock = SeededClock::new();
+    let ssb = test_ssb().await;
+    let mut rx = ssb.subscribe();
+    let mut channels = InMemoryChannelRegistry::new();
+
+    // 25 MB Vec<u8> — exceeds force-clear threshold (10 MB * 2 = 20 MB)
+    let id: ChannelId<UntrackedValue<Vec<u8>>> = ChannelId::new("contract_big");
+    channels
+        .write_untracked(&id, vec![0u8; 25 * 1024 * 1024])
+        .expect("write untracked");
+
+    let nodes = vec![NodeSpec {
+        id: "agent_0".into(),
+        role: AgentRole::Executor,
+        task: "contract_task_0".into(),
+        depends_on: vec![],
+        is_deferred: false,
+    }];
+
+    let mut engine = BspEngine::new(config, pool, clock);
+    engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+    // Verify SSB contains MemoryMonitoring with action_taken="force_clear"
+    let mut found = false;
+    while let Ok(entry) = rx.try_recv() {
+        if entry.action_type == SsbActionType::MemoryMonitoring {
+            let payload: SsbPayload =
+                rmp_serde::from_slice(&entry.payload).expect("deser");
+            if let SsbPayload::MemoryMonitoring(mm) = payload {
+                if mm.metric_name == "contract_big" {
+                    assert_eq!(
+                        mm.action_taken, "force_clear",
+                        "25 MB channel must trigger force_clear"
+                    );
+                    assert!(
+                        mm.value >= 25_000_000.0,
+                        "reported size must be >= 25 MB, got {}",
+                        mm.value
+                    );
+                    assert_eq!(
+                        mm.threshold,
+                        UNTRACKED_DEFAULT_LIMIT_BYTES as f64,
+                        "threshold must match UNTRACKED_DEFAULT_LIMIT_BYTES"
+                    );
+                    found = true;
+                }
+            }
+        }
+    }
+    assert!(
+        found,
+        "SSB must contain MemoryMonitoring force_clear event for contract_big"
+    );
+
+    // Channel must have been force-cleared
+    let erased = ChannelId::<()>::new("contract_big");
+    assert_eq!(
+        channels.deep_size_untracked(&erased),
+        0,
+        "force-cleared channel must have size 0 after engine run"
+    );
 }

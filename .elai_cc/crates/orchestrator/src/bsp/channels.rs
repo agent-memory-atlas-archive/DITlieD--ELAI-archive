@@ -453,6 +453,18 @@ impl InMemoryChannelRegistry {
         }
     }
 
+    /// Iterate all untracked channels, returning (name, deep_size_bytes) pairs.
+    /// Does not expose ErasedUntracked internals — callers see only names and sizes.
+    pub fn iter_untracked_sizes(&self) -> Vec<(String, usize)> {
+        self.untracked
+            .iter()
+            .map(|(name, erased)| {
+                let size = (erased.size_fn)(&*erased.value);
+                (name.clone(), size)
+            })
+            .collect()
+    }
+
     /// Clear non-accumulating Topic channels. Call at superstep boundary
     /// after snapshot but before new writes.
     pub fn clear_non_accumulating_topics(&mut self) {

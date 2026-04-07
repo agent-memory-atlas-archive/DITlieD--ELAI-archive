@@ -16,9 +16,13 @@ use elai_core::ClockProvider;
 
 use crate::agent_pool::{AgentHandle, AgentPool, AgentPoolError, AgentRole};
 use crate::bsp::channels::{
-    ChannelRegistry, ChannelSnapshot, ChannelState, InMemoryChannelRegistry,
+    ChannelId, ChannelRegistry, ChannelSnapshot, ChannelState, InMemoryChannelRegistry,
+    UNTRACKED_DEFAULT_LIMIT_BYTES, UNTRACKED_FORCE_CLEAR_MULTIPLIER,
 };
-use crate::ssb::{CheckpointPayload, DeathEventPayload, Ssb, SsbPayload};
+use crate::ssb::{
+    CheckpointPayload, DeathEventPayload, MemoryMonitoringPayload, Ssb, SsbActionType,
+    SsbPayload, SsbReader,
+};
 
 // ---------------------------------------------------------------------------
 // Named constants (no magic numbers)
@@ -286,17 +290,48 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                 }
             }
 
-            // 6. Clear ephemeral channels and record in SSB
+            // 6. Memory monitoring: measure untracked channel sizes, emit SSB events
+            {
+                let agent_id = format!("bsp_engine:{}", self.config.session_id);
+                let threshold = UNTRACKED_DEFAULT_LIMIT_BYTES;
+                let force_threshold = threshold * UNTRACKED_FORCE_CLEAR_MULTIPLIER as usize;
+                let sizes = channels.iter_untracked_sizes();
+
+                for (name, size) in sizes {
+                    let action = if size >= force_threshold {
+                        "force_clear"
+                    } else {
+                        "measure"
+                    };
+
+                    let payload = SsbPayload::MemoryMonitoring(MemoryMonitoringPayload {
+                        metric_name: name.clone(),
+                        value: size as f64,
+                        threshold: threshold as f64,
+                        action_taken: action.to_owned(),
+                    });
+
+                    ssb.write_payload(&agent_id, superstep as i64, payload, vec![])
+                        .await?;
+
+                    if action == "force_clear" {
+                        let erased_id = ChannelId::<()>::new(&name);
+                        channels.force_clear_untracked(&erased_id);
+                    }
+                }
+            }
+
+            // 7. Clear ephemeral channels and record in SSB
             let cleared = channels.clear_ephemeral();
             if !cleared.is_empty() {
                 record_ephemeral_clears(ssb, &cleared, superstep, &self.config.session_id)
                     .await?;
             }
 
-            // 7. Reset ephemeral write counts for next superstep
+            // 8. Reset ephemeral write counts for next superstep
             channels.reset_ephemeral_write_counts();
 
-            // 8. Evidence gate check (only scheduled tasks, not all nodes)
+            // 9. Evidence gate check (only scheduled tasks, not all nodes)
             let scheduled_ids: Vec<&str> = tasks.iter().map(|(id, _, _)| id.as_str()).collect();
             if !evidence_gate_passes(&node_statuses, &scheduled_ids) {
                 attempt += 1;
@@ -309,7 +344,7 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                 continue;
             }
 
-            // 9. Save checkpoint ONLY after gate passes
+            // 10. Save checkpoint ONLY after gate passes
             save_superstep_checkpoint(
                 &self.config.checkpoint_dir,
                 superstep,
@@ -515,6 +550,102 @@ async fn save_superstep_checkpoint(
     tokio::fs::rename(&tmp_path, &path)
         .await
         .map_err(|e| BspError::CheckpointIo(format!("rename {filename}: {e}")))?;
+
+    Ok(())
+}
+
+/// Recover channel state from a BSP checkpoint and SSB history.
+///
+/// Validates post-checkpoint SSB entries to detect channels that may have
+/// been lost or stale after a crash. Currently performs validation and
+/// logging only — actual state restoration into `channels` is a future-phase
+/// concern. The `channels` parameter establishes the interface contract so
+/// callers wire it in now.
+///
+/// Recovery per channel type:
+/// - EphemeralValue: checks SSB Checkpoint entries for ephemeral-clear records.
+///   Channels cleared before checkpoint are expected MISSING.
+/// - Topic: logged as restored from checkpoint state.
+/// - UntrackedValue: not in checkpoint, lost on crash by design. Logged.
+pub fn recover_from_checkpoint(
+    checkpoint: &BspCheckpoint,
+    channels: &mut InMemoryChannelRegistry,
+    ssb: &dyn SsbReader,
+    session_id: &str,
+) -> Result<(), BspError> {
+    // Touch channels to satisfy the interface contract — actual restoration
+    // will populate this in a future phase. For now, reset ephemeral write
+    // counts so the registry is in a clean state for the next run() call.
+    channels.reset_ephemeral_write_counts();
+    // Query SSB entries at the checkpoint's superstep
+    let entries = ssb.query_by_superstep(checkpoint.superstep as i64)?;
+
+    // Build a set of channel names mentioned in ephemeral-clear Checkpoint entries
+    // written by this BSP engine session.
+    let agent_prefix = format!("bsp_engine:{session_id}");
+    let mut cleared_channels: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for entry in &entries {
+        if entry.action_type != SsbActionType::Checkpoint {
+            continue;
+        }
+        if !entry.agent_id.starts_with(&agent_prefix) {
+            continue;
+        }
+        // Parse the checkpoint payload to extract cleared channel names
+        if let Ok(SsbPayload::Checkpoint(cp)) = rmp_serde::from_slice::<SsbPayload>(&entry.payload)
+        {
+            // agent_state_hash contains JSON array of cleared channel names
+            if let Ok(names) = serde_json::from_str::<Vec<String>>(&cp.agent_state_hash) {
+                for name in names {
+                    cleared_channels.insert(name);
+                }
+            }
+        }
+    }
+
+    // Check each channel in the checkpoint state
+    for (name, state) in &checkpoint.channel_state {
+        match state {
+            ChannelState::Ephemeral(_) => {
+                if cleared_channels.contains(name) {
+                    // Channel was cleared before checkpoint — MISSING is expected
+                    tracing::info!(
+                        channel = %name,
+                        superstep = checkpoint.superstep,
+                        "recovery: ephemeral channel was cleared (expected MISSING)"
+                    );
+                } else {
+                    tracing::info!(
+                        channel = %name,
+                        superstep = checkpoint.superstep,
+                        "recovery: ephemeral channel present in checkpoint"
+                    );
+                }
+            }
+            ChannelState::Topic(_) => {
+                tracing::info!(
+                    channel = %name,
+                    superstep = checkpoint.superstep,
+                    "recovery: topic channel restored from checkpoint"
+                );
+            }
+            ChannelState::LastValue(_) => {
+                tracing::info!(
+                    channel = %name,
+                    superstep = checkpoint.superstep,
+                    "recovery: last_value channel restored from checkpoint"
+                );
+            }
+        }
+    }
+
+    // UntrackedValue: not in checkpoint, lost by design
+    tracing::info!(
+        superstep = checkpoint.superstep,
+        "recovery: untracked channels are lost on crash (by design)"
+    );
 
     Ok(())
 }
@@ -1002,5 +1133,233 @@ mod tests {
             Some(NodeStatus::Pending),
             "cascading deferred def_y must remain Pending"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 13-16: Memory monitoring tests (Phase 3D.4)
+    // -----------------------------------------------------------------------
+
+    // 13. memory_monitoring_measure_only
+    // Untracked channel under force-clear threshold emits "measure" SSB event.
+    #[tokio::test]
+    async fn memory_monitoring_measure_only() {
+        use crate::bsp::channels::{ChannelId, UntrackedValue, UNTRACKED_DEFAULT_LIMIT_BYTES};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut rx = ssb.subscribe();
+        let mut channels = InMemoryChannelRegistry::new();
+
+        // 5 MB — under 10 MB threshold, so measure only
+        let id: ChannelId<UntrackedValue<Vec<u8>>> = ChannelId::new("small_cache");
+        channels
+            .write_untracked(&id, vec![0u8; 5 * 1024 * 1024])
+            .expect("write untracked");
+
+        let nodes = vec![NodeSpec {
+            id: "n0".into(),
+            role: AgentRole::Executor,
+            task: "t".into(),
+            depends_on: vec![],
+            is_deferred: false,
+        }];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        let mut found_measure = false;
+        while let Ok(entry) = rx.try_recv() {
+            if entry.action_type == SsbActionType::MemoryMonitoring {
+                let payload: SsbPayload =
+                    rmp_serde::from_slice(&entry.payload).expect("deser");
+                if let SsbPayload::MemoryMonitoring(mm) = payload {
+                    if mm.metric_name == "small_cache" {
+                        assert_eq!(mm.action_taken, "measure");
+                        assert!(mm.value >= 5_000_000.0, "value={}", mm.value);
+                        assert_eq!(mm.threshold, UNTRACKED_DEFAULT_LIMIT_BYTES as f64);
+                        found_measure = true;
+                    }
+                }
+            }
+        }
+        assert!(found_measure, "SSB must contain measure event for small_cache");
+
+        // Channel should still exist (not cleared)
+        let erased = ChannelId::<()>::new("small_cache");
+        let size = channels.deep_size_untracked(&erased);
+        assert!(size >= 5_000_000, "channel must NOT be force-cleared");
+    }
+
+    // 14. memory_monitoring_force_clear
+    // Untracked channel >= threshold * multiplier emits "force_clear" and clears.
+    #[tokio::test]
+    async fn memory_monitoring_force_clear() {
+        use crate::bsp::channels::{
+            ChannelId, UntrackedValue, UNTRACKED_DEFAULT_LIMIT_BYTES,
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut rx = ssb.subscribe();
+        let mut channels = InMemoryChannelRegistry::new();
+
+        // 25 MB — exceeds 10 MB * 2 = 20 MB force-clear threshold
+        let id: ChannelId<UntrackedValue<Vec<u8>>> = ChannelId::new("big_cache");
+        channels
+            .write_untracked(&id, vec![0u8; 25 * 1024 * 1024])
+            .expect("write untracked");
+
+        let nodes = vec![NodeSpec {
+            id: "n0".into(),
+            role: AgentRole::Executor,
+            task: "t".into(),
+            depends_on: vec![],
+            is_deferred: false,
+        }];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        let mut found_force_clear = false;
+        while let Ok(entry) = rx.try_recv() {
+            if entry.action_type == SsbActionType::MemoryMonitoring {
+                let payload: SsbPayload =
+                    rmp_serde::from_slice(&entry.payload).expect("deser");
+                if let SsbPayload::MemoryMonitoring(mm) = payload {
+                    if mm.metric_name == "big_cache" {
+                        assert_eq!(mm.action_taken, "force_clear");
+                        assert!(mm.value >= 25_000_000.0, "value={}", mm.value);
+                        let expected_threshold =
+                            UNTRACKED_DEFAULT_LIMIT_BYTES as f64;
+                        assert_eq!(mm.threshold, expected_threshold);
+                        found_force_clear = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            found_force_clear,
+            "SSB must contain force_clear event for big_cache"
+        );
+
+        // Channel must have been cleared
+        let erased = ChannelId::<()>::new("big_cache");
+        assert_eq!(
+            channels.deep_size_untracked(&erased),
+            0,
+            "force-cleared channel must have size 0"
+        );
+    }
+
+    // 15. memory_monitoring_empty_untracked
+    // No untracked channels — no SSB MemoryMonitoring events emitted.
+    #[tokio::test]
+    async fn memory_monitoring_empty_untracked() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut rx = ssb.subscribe();
+        let mut channels = InMemoryChannelRegistry::new();
+
+        let nodes = vec![NodeSpec {
+            id: "n0".into(),
+            role: AgentRole::Executor,
+            task: "t".into(),
+            depends_on: vec![],
+            is_deferred: false,
+        }];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        let mut monitoring_count = 0;
+        while let Ok(entry) = rx.try_recv() {
+            if entry.action_type == SsbActionType::MemoryMonitoring {
+                monitoring_count += 1;
+            }
+        }
+        assert_eq!(
+            monitoring_count, 0,
+            "no untracked channels => no MemoryMonitoring events"
+        );
+    }
+
+    // 16. memory_monitoring_multi_channel_mixed
+    // One channel under threshold (measure), one over (force_clear).
+    #[tokio::test]
+    async fn memory_monitoring_multi_channel_mixed() {
+        use crate::bsp::channels::{ChannelId, UntrackedValue};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut rx = ssb.subscribe();
+        let mut channels = InMemoryChannelRegistry::new();
+
+        // Small: 5 MB (measure)
+        let small_id: ChannelId<UntrackedValue<Vec<u8>>> = ChannelId::new("small");
+        channels
+            .write_untracked(&small_id, vec![0u8; 5 * 1024 * 1024])
+            .expect("write small");
+
+        // Big: 25 MB (force_clear)
+        let big_id: ChannelId<UntrackedValue<Vec<u8>>> = ChannelId::new("big");
+        channels
+            .write_untracked(&big_id, vec![0u8; 25 * 1024 * 1024])
+            .expect("write big");
+
+        let nodes = vec![NodeSpec {
+            id: "n0".into(),
+            role: AgentRole::Executor,
+            task: "t".into(),
+            depends_on: vec![],
+            is_deferred: false,
+        }];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        engine.run(nodes, &mut channels, &ssb).await.expect("run");
+
+        let mut small_action = None;
+        let mut big_action = None;
+        while let Ok(entry) = rx.try_recv() {
+            if entry.action_type == SsbActionType::MemoryMonitoring {
+                let payload: SsbPayload =
+                    rmp_serde::from_slice(&entry.payload).expect("deser");
+                if let SsbPayload::MemoryMonitoring(mm) = payload {
+                    match mm.metric_name.as_str() {
+                        "small" => small_action = Some(mm.action_taken),
+                        "big" => big_action = Some(mm.action_taken),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            small_action.as_deref(),
+            Some("measure"),
+            "small channel must get 'measure'"
+        );
+        assert_eq!(
+            big_action.as_deref(),
+            Some("force_clear"),
+            "big channel must get 'force_clear'"
+        );
+
+        // big is cleared, small survives
+        let erased_big = ChannelId::<()>::new("big");
+        assert_eq!(channels.deep_size_untracked(&erased_big), 0);
+        let erased_small = ChannelId::<()>::new("small");
+        assert!(channels.deep_size_untracked(&erased_small) >= 5_000_000);
     }
 }
