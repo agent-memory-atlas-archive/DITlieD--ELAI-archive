@@ -14,5 +14,8 @@ serde.workspace = true
 name = "grc_bench"
 harness = false
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }
