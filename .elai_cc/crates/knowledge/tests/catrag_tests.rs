@@ -45,7 +45,6 @@ fn sparse_snapshot() -> DkgSnapshot {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn a_compute_overlay_dense_graph_hits_todo() {
     let catrag = CatRag::new(CatRagConfig::default());
     let snapshot = dense_snapshot();
@@ -58,7 +57,6 @@ fn a_compute_overlay_dense_graph_hits_todo() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn b_compute_overlay_returns_overlay_structure() {
     let catrag = CatRag::new(CatRagConfig::default());
     let snapshot = dense_snapshot();
@@ -73,7 +71,6 @@ fn b_compute_overlay_returns_overlay_structure() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn c_compute_overlay_custom_config_past_density_guard() {
     let config = CatRagConfig {
         damping: 0.85,
