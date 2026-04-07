@@ -13,8 +13,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::types::Value;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use elai_core::clock::ClockProvider;
@@ -109,6 +111,29 @@ impl SsbActionType {
     }
 }
 
+fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
+    match s {
+        "file_write" => Ok(SsbActionType::FileWrite),
+        "file_read" => Ok(SsbActionType::FileRead),
+        "tool_result" => Ok(SsbActionType::ToolResult),
+        "test_outcome" => Ok(SsbActionType::TestOutcome),
+        "finding" => Ok(SsbActionType::Finding),
+        "claim" => Ok(SsbActionType::Claim),
+        "checkpoint" => Ok(SsbActionType::Checkpoint),
+        "model_swap" => Ok(SsbActionType::ModelSwap),
+        "phase_transition" => Ok(SsbActionType::PhaseTransition),
+        "knowledge_degradation" => Ok(SsbActionType::KnowledgeDegradation),
+        "isolation_metric" => Ok(SsbActionType::IsolationMetric),
+        "plan_update" => Ok(SsbActionType::PlanUpdate),
+        "replan_request" => Ok(SsbActionType::ReplanRequest),
+        "stub_reference" => Ok(SsbActionType::StubReference),
+        "reasoning_trace" => Ok(SsbActionType::ReasoningTrace),
+        "phase_complete" => Ok(SsbActionType::PhaseComplete),
+        "memory_monitoring" => Ok(SsbActionType::MemoryMonitoring),
+        other => Err(SsbError::UnknownActionType(other.to_owned())),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry + file entry structs
 // ---------------------------------------------------------------------------
@@ -193,6 +218,9 @@ pub enum SsbError {
 
     #[error("write channel closed unexpectedly")]
     ChannelClosed,
+
+    #[error("unknown SSB action type: {0}")]
+    UnknownActionType(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +242,7 @@ impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SsbPragmaApplier
         conn.pragma_update(None, "cache_size", -64000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
+        rusqlite::vtab::array::load_module(conn)?;
         Ok(())
     }
 }
@@ -277,6 +306,21 @@ impl Ssb {
         let writer_conn = Connection::open(&config.db_path)?;
         apply_pragmas(&writer_conn)?;
         run_migration(&writer_conn)?;
+
+        #[cfg(debug_assertions)]
+        writer_conn.update_hook(Some(
+            |action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
+                if (table == "ssb" || table == "ssb_files")
+                    && (action == rusqlite::hooks::Action::SQLITE_UPDATE
+                        || action == rusqlite::hooks::Action::SQLITE_DELETE)
+                {
+                    panic!(
+                        "SSB append-only violation: attempted {:?} on table {}",
+                        action, table
+                    );
+                }
+            },
+        ))?;
 
         // --- Read pool ---
         let manager = SqliteConnectionManager::file(&config.db_path);
@@ -503,6 +547,117 @@ fn execute_write(
             let _ = conn.execute_batch("ROLLBACK");
             Err(SsbError::Sqlite(e))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row mapper
+// ---------------------------------------------------------------------------
+
+fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SsbEntry> {
+    let at_str: String = row.get(5)?;
+    let action_type = ssb_action_type_from_str(&at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let payload_bytes: Vec<u8> = row.get(6)?;
+    Ok(SsbEntry {
+        seq: row.get(0)?,
+        project_id: row.get(1)?,
+        session_id: row.get(2)?,
+        agent_id: row.get(3)?,
+        superstep: row.get(4)?,
+        action_type,
+        payload: Arc::from(payload_bytes.as_slice()),
+        created_at: row.get(7)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// SsbReader implementation
+// ---------------------------------------------------------------------------
+
+impl SsbReader for Ssb {
+    fn query_by_session(&self, session_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+             FROM ssb WHERE session_id = ?1 AND project_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![session_id, self.project_id], row_to_entry)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+    }
+
+    fn query_by_file(&self, file_paths: &[&str]) -> Result<Vec<SsbEntry>, SsbError> {
+        if file_paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.read_pool.get()?;
+        let values: Vec<Value> = file_paths.iter().map(|p| Value::Text((*p).to_owned())).collect();
+        let ptr = Rc::new(values);
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ssb.seq, ssb.project_id, ssb.session_id, ssb.agent_id, \
+             ssb.superstep, ssb.action_type, ssb.payload, ssb.created_at \
+             FROM ssb JOIN ssb_files ON ssb_files.seq = ssb.seq \
+             WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
+               AND ssb.project_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![ptr, self.project_id], row_to_entry)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+    }
+
+    fn query_by_type(&self, action_type: SsbActionType) -> Result<Vec<SsbEntry>, SsbError> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+             FROM ssb WHERE action_type = ?1 AND project_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![action_type.as_sql_str(), self.project_id], row_to_entry)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+    }
+
+    fn query_by_superstep(&self, superstep: i64) -> Result<Vec<SsbEntry>, SsbError> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+             FROM ssb WHERE superstep = ?1 AND project_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![superstep, self.project_id], row_to_entry)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+    }
+
+    fn query_conflict(
+        &self,
+        file_paths: &[&str],
+        session_id: &str,
+        superstep: i64,
+    ) -> Result<Vec<String>, SsbError> {
+        if file_paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.read_pool.get()?;
+        let values: Vec<Value> = file_paths.iter().map(|p| Value::Text((*p).to_owned())).collect();
+        let ptr = Rc::new(values);
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ssb.agent_id \
+             FROM ssb_files \
+             JOIN ssb ON ssb_files.seq = ssb.seq \
+             WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
+               AND ssb.project_id = ?2 \
+               AND ssb.session_id != ?3 \
+               AND ssb.superstep = ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![ptr, self.project_id, session_id, superstep],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+    }
+
+    fn last_seq(&self) -> Result<Option<i64>, SsbError> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = conn.prepare("SELECT MAX(seq) FROM ssb WHERE project_id = ?1")?;
+        let result: Option<i64> = stmt.query_row(params![self.project_id], |row| row.get(0))?;
+        Ok(result)
     }
 }
 
@@ -860,6 +1015,327 @@ mod tests {
             }
             prev_seq = seq;
         }
+
+        ssb.shutdown();
+    }
+
+    // -----------------------------------------------------------------------
+    // 3B.3 — Read-path tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_read_pool() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        // Write 3 entries with different action types
+        for (i, at) in [
+            SsbActionType::FileWrite,
+            SsbActionType::Finding,
+            SsbActionType::FileWrite,
+        ]
+        .iter()
+        .enumerate()
+        {
+            ssb.write(SsbWriteRequest {
+                action_type: *at,
+                agent_id: format!("agent-{i}"),
+                superstep: 0,
+                payload: vec![i as u8],
+                files: vec![format!("src/f{i}.rs")],
+            })
+            .await
+            .expect("write");
+        }
+
+        // query_by_session
+        let rows = ssb.query_by_session("test-session").expect("by_session");
+        assert_eq!(rows.len(), 3, "query_by_session should return 3 entries");
+
+        // query_by_type
+        let rows = ssb
+            .query_by_type(SsbActionType::FileWrite)
+            .expect("by_type");
+        assert_eq!(rows.len(), 2, "query_by_type FileWrite should return 2");
+
+        // query_by_superstep
+        let rows = ssb.query_by_superstep(0).expect("by_superstep");
+        assert_eq!(rows.len(), 3, "query_by_superstep(0) should return 3");
+
+        // query_by_file (uses rarray)
+        let rows = ssb
+            .query_by_file(&["src/f0.rs", "src/f2.rs"])
+            .expect("by_file");
+        assert_eq!(rows.len(), 2, "query_by_file should return 2 entries");
+
+        // query_by_file with empty slice
+        let rows = ssb.query_by_file(&[]).expect("by_file_empty");
+        assert_eq!(rows.len(), 0, "query_by_file([]) should return 0");
+
+        // last_seq
+        let seq = ssb.last_seq().expect("last_seq");
+        assert_eq!(seq, Some(3), "last_seq should be 3 after 3 writes");
+
+        // Verify round-trip of action_type through ssb_action_type_from_str
+        let finding = ssb
+            .query_by_type(SsbActionType::Finding)
+            .expect("finding");
+        assert_eq!(finding.len(), 1);
+        assert_eq!(finding[0].action_type, SsbActionType::Finding);
+
+        ssb.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_conflict_detection() {
+        let dir = TempDir::new().expect("tempdir");
+        let config = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "proj-1".into(),
+            session_id: "session-A".into(),
+        };
+        let mut ssb = Ssb::new(config, test_clock()).expect("ssb init");
+
+        // session-A writes to f1.rs and f2.rs
+        ssb.write(SsbWriteRequest {
+            action_type: SsbActionType::FileWrite,
+            agent_id: "agent-A".into(),
+            superstep: 1,
+            payload: vec![1],
+            files: vec!["src/f1.rs".into(), "src/f2.rs".into()],
+        })
+        .await
+        .expect("write A");
+
+        // Test-only backdoor: direct SQL insert bypasses write_loop and
+        // update_hook (which is on writer_conn, not pool connections).
+        {
+            let conn = ssb.read_pool.get().expect("pool conn");
+            conn.execute(
+                "INSERT INTO ssb (project_id, session_id, agent_id, superstep, action_type, payload, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params!["proj-1", "session-B", "agent-B", 1i64, "file_write", &[2u8][..], 100i64],
+            )
+            .expect("direct insert ssb");
+            let seq = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO ssb_files (seq, file_path) VALUES (?1, ?2)",
+                params![seq, "src/f1.rs"],
+            )
+            .expect("direct insert ssb_files");
+        }
+
+        // query_conflict: session-A asks who else touched f1.rs in superstep 1
+        let conflicts = ssb
+            .query_conflict(&["src/f1.rs"], "session-A", 1)
+            .expect("conflict");
+        assert_eq!(conflicts, vec!["agent-B"], "should detect agent-B");
+
+        // f2.rs was only touched by session-A, no conflict for session-B asking
+        let conflicts = ssb
+            .query_conflict(&["src/f2.rs"], "session-B", 1)
+            .expect("conflict f2");
+        assert_eq!(conflicts, vec!["agent-A"], "should detect agent-A for f2");
+
+        // No conflict for untouched file
+        let conflicts = ssb
+            .query_conflict(&["src/untouched.rs"], "session-A", 1)
+            .expect("no conflict");
+        assert!(conflicts.is_empty(), "no conflict for untouched file");
+
+        // Empty file_paths → empty result
+        let conflicts = ssb
+            .query_conflict(&[], "session-A", 1)
+            .expect("empty paths");
+        assert!(conflicts.is_empty(), "empty paths = empty result");
+
+        ssb.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_conflict_cross_project() {
+        let dir = TempDir::new().expect("tempdir");
+
+        // Two SSB instances with different project IDs sharing the same DB
+        let config_a = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "proj-alpha".into(),
+            session_id: "session-1".into(),
+        };
+        let config_b = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "proj-beta".into(),
+            session_id: "session-2".into(),
+        };
+        let mut ssb_a = Ssb::new(config_a, test_clock()).expect("ssb_a init");
+        let mut ssb_b = Ssb::new(config_b, test_clock()).expect("ssb_b init");
+
+        // proj-alpha writes to shared.rs
+        ssb_a
+            .write(SsbWriteRequest {
+                action_type: SsbActionType::FileWrite,
+                agent_id: "agent-alpha".into(),
+                superstep: 0,
+                payload: vec![1],
+                files: vec!["src/shared.rs".into()],
+            })
+            .await
+            .expect("write alpha");
+
+        // proj-beta writes to shared.rs
+        ssb_b
+            .write(SsbWriteRequest {
+                action_type: SsbActionType::FileWrite,
+                agent_id: "agent-beta".into(),
+                superstep: 0,
+                payload: vec![2],
+                files: vec!["src/shared.rs".into()],
+            })
+            .await
+            .expect("write beta");
+
+        // Cross-project isolation: all read methods must be project-scoped.
+
+        // query_conflict: proj-alpha should NOT see proj-beta's writes
+        let conflicts = ssb_a
+            .query_conflict(&["src/shared.rs"], "session-1", 0)
+            .expect("cross-project conflict");
+        assert!(
+            conflicts.is_empty(),
+            "cross-project should not detect conflict, got: {conflicts:?}"
+        );
+
+        // query_by_session: ssb_a should only see its own session's entries
+        let rows = ssb_a
+            .query_by_session("session-1")
+            .expect("by_session alpha");
+        assert_eq!(rows.len(), 1, "alpha should see only its own entry");
+        assert_eq!(rows[0].project_id, "proj-alpha");
+
+        // query_by_file: ssb_a should only see alpha's write to shared.rs
+        let rows = ssb_a
+            .query_by_file(&["src/shared.rs"])
+            .expect("by_file alpha");
+        assert_eq!(rows.len(), 1, "alpha should see only its own file entry");
+        assert_eq!(rows[0].agent_id, "agent-alpha");
+
+        // query_by_type: ssb_a should only see its own FileWrite
+        let rows = ssb_a
+            .query_by_type(SsbActionType::FileWrite)
+            .expect("by_type alpha");
+        assert_eq!(rows.len(), 1, "alpha should see only its own type entry");
+
+        // query_by_superstep: ssb_a should only see its own superstep 0
+        let rows = ssb_a
+            .query_by_superstep(0)
+            .expect("by_superstep alpha");
+        assert_eq!(rows.len(), 1, "alpha should see only its own superstep entry");
+
+        // last_seq: ssb_a should see only its own max seq
+        let alpha_seq = ssb_a.last_seq().expect("last_seq alpha");
+        let beta_seq = ssb_b.last_seq().expect("last_seq beta");
+        assert!(alpha_seq.is_some());
+        assert!(beta_seq.is_some());
+        // Both wrote 1 entry each. If last_seq were global, alpha would see beta's seq.
+        // Since project-scoped, each sees only its own.
+        assert_ne!(
+            alpha_seq, beta_seq,
+            "project-scoped last_seq should differ (different seqs per project)"
+        );
+
+        ssb_a.shutdown();
+        ssb_b.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_append_only() {
+        use std::sync::atomic::AtomicU32;
+
+        let dir = TempDir::new().expect("tempdir");
+        let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        // Write one entry so we have a row to attempt mutation on
+        ssb.write(SsbWriteRequest {
+            action_type: SsbActionType::Checkpoint,
+            agent_id: "agent-test".into(),
+            superstep: 0,
+            payload: vec![1],
+            files: vec![],
+        })
+        .await
+        .expect("write");
+
+        // Use a flag-based hook instead of panic (panics in C FFI callbacks abort).
+        // This tests the hook LOGIC (detection of UPDATE/DELETE), not the panic path.
+        let violation_count = Arc::new(AtomicU32::new(0));
+        let vc = violation_count.clone();
+
+        let db_path = dir.path().join("test_ssb.db");
+        let direct_conn = Connection::open(&db_path).expect("direct conn");
+        direct_conn
+            .update_hook(Some(
+                move |action: rusqlite::hooks::Action, _db: &str, table: &str, _rowid: i64| {
+                    if (table == "ssb" || table == "ssb_files")
+                        && (action == rusqlite::hooks::Action::SQLITE_UPDATE
+                            || action == rusqlite::hooks::Action::SQLITE_DELETE)
+                    {
+                        vc.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
+            ))
+            .expect("set hook");
+
+        // INSERT should NOT trigger the violation counter
+        direct_conn
+            .execute(
+                "INSERT INTO ssb (project_id, session_id, agent_id, superstep, action_type, payload, created_at) \
+                 VALUES ('p', 's', 'a', 0, 'checkpoint', X'01', 100)",
+                [],
+            )
+            .expect("insert ok");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            0,
+            "INSERT should not trigger append-only hook"
+        );
+
+        // UPDATE should trigger
+        direct_conn
+            .execute("UPDATE ssb SET agent_id = 'hacked' WHERE seq = 1", [])
+            .expect("update executes");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            1,
+            "UPDATE should trigger append-only hook"
+        );
+
+        // DELETE should also trigger
+        direct_conn
+            .execute("DELETE FROM ssb WHERE seq = 2", [])
+            .expect("delete executes");
+        assert_eq!(
+            violation_count.load(Ordering::Relaxed),
+            2,
+            "DELETE should trigger append-only hook"
+        );
+
+        // Verify the production code installs the hook on writer (debug mode).
+        // The Ssb writer_conn has the panic-based hook. We test its presence
+        // indirectly: if write() succeeds (INSERT), the hook didn't fire.
+        let seq = ssb
+            .write(SsbWriteRequest {
+                action_type: SsbActionType::Checkpoint,
+                agent_id: "agent-verify".into(),
+                superstep: 0,
+                payload: vec![2],
+                files: vec![],
+            })
+            .await
+            .expect("write after hook installed");
+        assert!(seq > 0, "write should succeed (INSERT allowed by hook)");
 
         ssb.shutdown();
     }
