@@ -19,7 +19,6 @@ pub enum RerankerError {
     ModelLoad(String),
     TokenizerLoad(String),
     Inference(String),
-    ChannelFull,
     CircuitBreakerOpen,
 }
 
@@ -35,7 +34,6 @@ impl std::fmt::Display for RerankerError {
             Self::ModelLoad(e) => write!(f, "reranker model load failed: {e}"),
             Self::TokenizerLoad(e) => write!(f, "reranker tokenizer load failed: {e}"),
             Self::Inference(e) => write!(f, "reranker inference failed: {e}"),
-            Self::ChannelFull => write!(f, "reranker queue full, returning unranked"),
             Self::CircuitBreakerOpen => {
                 write!(f, "reranker circuit breaker open, returning unranked")
             }
@@ -297,11 +295,15 @@ impl CrossEncoderReranker {
         }
 
         // Acquire semaphore synchronously (try_acquire for non-async callers).
-        // If unavailable, another rerank is in progress — return unranked.
-        let _permit = self
-            .semaphore
-            .try_acquire()
-            .map_err(|_| RerankerError::ChannelFull)?;
+        // If unavailable, another rerank is in progress — return candidates unranked.
+        // Spec: "6th concurrent request overflows: returns unranked results immediately"
+        let _permit = match self.semaphore.try_acquire() {
+            Ok(p) => p,
+            Err(_) => {
+                log::debug!("reranker semaphore busy, returning {} candidates unranked", candidates.len());
+                return Ok(candidates);
+            }
+        };
 
         // Try L-12 via circuit breaker.
         match self.try_rerank_with_breaker(
@@ -411,7 +413,8 @@ impl CrossEncoderReranker {
     /// Async rerank entry point via bounded mpsc channel.
     ///
     /// Sends request to the batch worker channel. If channel is full (>max_queue_depth
-    /// pending), returns candidates unranked immediately.
+    /// pending), returns candidates unranked immediately (not an error).
+    /// Spec: "6th concurrent request overflows: returns unranked results immediately"
     pub async fn rerank_via_channel(
         &self,
         query: String,
@@ -428,8 +431,11 @@ impl CrossEncoderReranker {
             reply: reply_tx,
         };
 
-        // try_send: if channel full, return unranked immediately.
-        self.request_tx.try_send(request).map_err(|_| RerankerError::ChannelFull)?;
+        // try_send: if channel full, return candidates unranked (preserving input order).
+        if self.request_tx.try_send(request).is_err() {
+            log::debug!("reranker channel full, returning {} candidates unranked", candidates.len());
+            return Ok(candidates);
+        }
 
         reply_rx.await.map_err(|_| {
             RerankerError::Inference("batch worker dropped reply channel".into())
@@ -723,17 +729,6 @@ impl CrossEncoderReranker {
         }
     }
 
-    /// Access to the clock for testing (advance time for half-open transitions).
-    #[cfg(test)]
-    pub(crate) fn clock(&self) -> &Arc<dyn ClockProvider> {
-        &self.clock
-    }
-
-    /// Access to the SSB notifier (for test assertions).
-    #[cfg(test)]
-    pub(crate) fn ssb_notifier(&self) -> &Arc<dyn SsbNotifier> {
-        &self.ssb_notifier
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1478,32 +1473,67 @@ mod tests {
                     let prev = act.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     mx.fetch_max(prev + 1, std::sync::atomic::Ordering::SeqCst);
 
-                    // rerank uses try_acquire — if semaphore busy, returns ChannelFull.
+                    // rerank uses try_acquire — if semaphore busy, returns Ok(unranked).
+                    let input_len = candidates.len();
                     let result = r.rerank(&query, candidates);
                     act.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    result
+                    (result, input_len)
                 }));
             }
 
-            let mut ok_count = 0;
-            let mut full_count = 0;
             for h in handles {
-                match h.await.unwrap() {
-                    Ok(_) => ok_count += 1,
-                    Err(RerankerError::ChannelFull) => full_count += 1,
-                    Err(e) => panic!("unexpected error: {e}"),
-                }
+                let (result, input_len) = h.await.unwrap();
+                // All calls return Ok — either ranked or unranked (semaphore busy).
+                let ranked = result.expect("rerank should always return Ok");
+                assert_eq!(
+                    ranked.len(),
+                    input_len,
+                    "result count must equal input count (ranked or unranked)"
+                );
             }
-            // At least 1 should succeed, and some should get ChannelFull.
-            assert!(ok_count >= 1, "at least one rerank should succeed");
-            assert!(
-                ok_count + full_count == 5,
-                "all 5 should either succeed or get ChannelFull"
-            );
         });
     }
 
-    /// 6th concurrent request when 4 already queued returns unranked (channel full).
+    /// Sync rerank returns candidates unranked when semaphore busy (not error/empty).
+    /// Spec: "Overflow returns candidates (not empty): test asserts result.len() == input.len() on overflow"
+    #[test]
+    fn semaphore_busy_returns_unranked_candidates() {
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        let config = make_config();
+        let reranker = CrossEncoderReranker::new(config, clock);
+        // Don't load model — reranker not loaded, but semaphore logic is what we test.
+
+        // Manually hold the semaphore permit so rerank() finds it busy.
+        let permit = reranker.semaphore().clone().try_acquire_owned().unwrap();
+
+        let input_len = 20;
+        let candidates: Vec<RetrievalResult> = (0..input_len)
+            .map(|j| RetrievalResult {
+                chunk_id: format!("chunk_{j}"),
+                snippet: format!("fn test_{j}() {{}}"),
+                score: j as f64 * 0.1,
+                tool_used: "bm25".into(),
+            })
+            .collect();
+        let original_ids: Vec<String> = candidates.iter().map(|c| c.chunk_id.clone()).collect();
+        let original_scores: Vec<f64> = candidates.iter().map(|c| c.score).collect();
+
+        let result = reranker.rerank("test query", candidates);
+
+        // Must return Ok with all candidates in original order.
+        let returned = result.expect("semaphore busy should return Ok, not Err");
+        assert_eq!(returned.len(), input_len, "must return all candidates");
+        let returned_ids: Vec<String> = returned.iter().map(|c| c.chunk_id.clone()).collect();
+        assert_eq!(returned_ids, original_ids, "candidates must be in original input order");
+        let returned_scores: Vec<f64> = returned.iter().map(|c| c.score).collect();
+        assert_eq!(returned_scores, original_scores, "scores must be preserved");
+
+        drop(permit);
+    }
+
+    /// Channel overflow returns unranked candidates (not error, not empty).
+    /// Spec: "Overflow returns candidates (not empty): test asserts result.len() == input.len() on overflow"
+    /// Spec: "1 active + 4 queued = 5 in-flight, 6th returns unranked immediately"
     #[test]
     fn channel_overflow_returns_unranked() {
         let mp = model_path();
@@ -1521,40 +1551,80 @@ mod tests {
         reranker.load().expect("load should succeed");
 
         let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(4)
             .enable_all()
             .build()
             .unwrap();
 
         rt.block_on(async {
             // Don't spawn the batch worker — so channel fills up and nobody drains.
-            // Hold onto rx so channel stays open.
             let _rx = rx;
 
             let reranker = Arc::new(reranker);
-            let mut full_count = 0;
+            let overflow_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let queued_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
-            // Send 10 requests; channel capacity is 4, so after 4 fill up, rest overflow.
+            // Spawn 10 concurrent requests. Channel capacity is 4, so after 4 fill up,
+            // the remaining overflow and return unranked immediately.
+            let mut handles = Vec::new();
             for i in 0..10 {
-                let candidates: Vec<RetrievalResult> = (0..12)
-                    .map(|j| RetrievalResult {
-                        chunk_id: format!("c_{i}_{j}"),
-                        snippet: format!("fn f_{i}_{j}() {{}}"),
-                        score: 0.0,
-                        tool_used: "bm25".into(),
-                    })
-                    .collect();
+                let r = reranker.clone();
+                let oc = overflow_count.clone();
+                let qc = queued_count.clone();
+                handles.push(tokio::spawn(async move {
+                    let input_len = 12usize;
+                    let candidates: Vec<RetrievalResult> = (0..input_len)
+                        .map(|j| RetrievalResult {
+                            chunk_id: format!("c_{i}_{j}"),
+                            snippet: format!("fn f_{i}_{j}() {{}}"),
+                            score: 0.0,
+                            tool_used: "bm25".into(),
+                        })
+                        .collect();
 
-                match reranker.rerank_via_channel(format!("q{i}"), candidates).await {
-                    Err(RerankerError::ChannelFull) => full_count += 1,
-                    Ok(_) => {} // May succeed if channel not yet full.
-                    Err(e) => panic!("unexpected error: {e}"),
-                }
+                    // Use timeout: queued requests block on reply_rx (no worker),
+                    // overflows return immediately.
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        r.rerank_via_channel(format!("q{i}"), candidates),
+                    )
+                    .await;
+
+                    match result {
+                        Ok(Ok(returned)) => {
+                            // Overflow: returned immediately with unranked candidates.
+                            assert_eq!(
+                                returned.len(),
+                                input_len,
+                                "overflow must return all candidates"
+                            );
+                            oc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(_timeout) => {
+                            // Queued: blocked on reply_rx (batch worker not running).
+                            qc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Ok(Err(e)) => panic!("unexpected error: {e}"),
+                    }
+                }));
             }
+
+            for h in handles {
+                h.await.unwrap();
+            }
+
+            let ov = overflow_count.load(std::sync::atomic::Ordering::SeqCst);
+            let qu = queued_count.load(std::sync::atomic::Ordering::SeqCst);
             assert!(
-                full_count > 0,
-                "some requests should fail with ChannelFull when queue is saturated"
+                ov > 0,
+                "some requests must overflow and return unranked (got {ov} overflow, {qu} queued)"
             );
+            // Channel capacity is 4, so at most 4 can be queued.
+            assert!(
+                qu <= 4,
+                "at most 4 requests can be queued (got {qu})"
+            );
+            assert_eq!(ov + qu, 10, "all 10 requests accounted for");
         });
     }
 
