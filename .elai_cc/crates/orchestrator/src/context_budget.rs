@@ -1,5 +1,7 @@
 use std::fmt;
 
+use blake3;
+
 pub const SLOT_COUNT: usize = 8;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
 
@@ -264,6 +266,48 @@ impl ContextBudget {
     }
 }
 
+impl ContextBudget {
+    /// Update cache breakpoint validity by hashing the prefix content for each breakpoint.
+    ///
+    /// `slot_contents` must have exactly `SLOT_COUNT` entries (one per slot, in order).
+    /// Each breakpoint covers slots `0..=after_slot as usize`. If the prefix hash is
+    /// unchanged from the previous call, `valid` is set to `true`; otherwise `false`.
+    /// On the first call (stored hash is 0), the hash is stored but `valid` remains `false`.
+    pub fn update_breakpoints(&mut self, slot_contents: &[&[u8]]) {
+        debug_assert_eq!(
+            slot_contents.len(),
+            SLOT_COUNT,
+            "slot_contents must have exactly SLOT_COUNT entries"
+        );
+        if slot_contents.len() != SLOT_COUNT {
+            return;
+        }
+
+        for bp in &mut self.cache_breakpoints {
+            let bound = bp.after_slot as usize;
+            let mut hasher = blake3::Hasher::new();
+            for slot_bytes in &slot_contents[..=bound] {
+                // Length-prefix each slot to prevent boundary ambiguity:
+                // [b"ab", b"cd"] must hash differently from [b"a", b"bcd"].
+                hasher.update(&(slot_bytes.len() as u64).to_le_bytes());
+                hasher.update(slot_bytes);
+            }
+            let h = hasher.finalize();
+            // blake3 output is [u8; 32]; extracting first 8 bytes is infallible.
+            let b = h.as_bytes();
+            let new_hash = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+
+            let prev_hash = bp.prefix_hash;
+            if prev_hash == 0 || prev_hash != new_hash {
+                bp.valid = false;
+                bp.prefix_hash = new_hash;
+            } else {
+                bp.valid = true;
+            }
+        }
+    }
+}
+
 impl fmt::Display for ContextBudget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -439,6 +483,125 @@ mod tests {
         let budget = ContextBudget::compute(10000, [100, 200, 300], 500).unwrap();
         assert_eq!(budget.slots[7].allocated_tokens, FLOOR_OUTPUT_RESERVE);
         assert_eq!(budget.total_allocated, 10000);
+    }
+
+    fn make_slot_contents() -> Vec<&'static [u8]> {
+        vec![
+            b"system_prompt",
+            b"rules_v1",
+            b"phase_spec",
+            b"repo_map",
+            b"code_context",
+            b"ssb_entries",
+            b"grc_history",
+            b"output_reserve",
+        ]
+    }
+
+    #[test]
+    fn bp0_valid_on_repeated_same_content() {
+        let mut budget = ContextBudget::new(131072);
+        let contents = make_slot_contents();
+        budget.update_breakpoints(&contents);
+        assert!(!budget.cache_breakpoints[0].valid, "first call must be invalid");
+        budget.update_breakpoints(&contents);
+        assert!(budget.cache_breakpoints[0].valid, "second call with same content must be valid");
+    }
+
+    #[test]
+    fn bp0_invalid_on_changed_slot1() {
+        let mut budget = ContextBudget::new(131072);
+        let contents_a = make_slot_contents();
+        budget.update_breakpoints(&contents_a);
+        let contents_b: Vec<&[u8]> = vec![
+            b"system_prompt",
+            b"rules_v2",
+            b"phase_spec",
+            b"repo_map",
+            b"code_context",
+            b"ssb_entries",
+            b"grc_history",
+            b"output_reserve",
+        ];
+        budget.update_breakpoints(&contents_b);
+        assert!(!budget.cache_breakpoints[0].valid, "BP0 must be invalid when slot 1 changes");
+    }
+
+    #[test]
+    fn bp1_valid_when_only_slot5_changes() {
+        let mut budget = ContextBudget::new(131072);
+        let contents_a = make_slot_contents();
+        budget.update_breakpoints(&contents_a);
+        let contents_b: Vec<&[u8]> = vec![
+            b"system_prompt",
+            b"rules_v1",
+            b"phase_spec",
+            b"repo_map",
+            b"code_context",
+            b"ssb_entries_changed",
+            b"grc_history",
+            b"output_reserve",
+        ];
+        budget.update_breakpoints(&contents_b);
+        assert!(budget.cache_breakpoints[1].valid, "BP1 must be valid when only slot 5 changes");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "slot_contents must have exactly SLOT_COUNT entries")]
+    fn wrong_length_input_panics_in_debug() {
+        let mut budget = ContextBudget::new(131072);
+        let short: Vec<&[u8]> = vec![b"a", b"b", b"c", b"d", b"e", b"f", b"g"];
+        budget.update_breakpoints(&short);
+    }
+
+    #[test]
+    fn bp1_invalid_when_slot3_changes_bp0_unaffected() {
+        let mut budget = ContextBudget::new(131072);
+        let contents_a = make_slot_contents();
+        budget.update_breakpoints(&contents_a);
+        budget.update_breakpoints(&contents_a); // establish valid=true
+        assert!(budget.cache_breakpoints[0].valid);
+        assert!(budget.cache_breakpoints[1].valid);
+        // Change slot 3 (RepoMap) — inside BP1 (0..=4) but outside BP0 (0..=2).
+        let contents_b: Vec<&[u8]> = vec![
+            b"system_prompt",
+            b"rules_v1",
+            b"phase_spec",
+            b"repo_map_v2",
+            b"code_context",
+            b"ssb_entries",
+            b"grc_history",
+            b"output_reserve",
+        ];
+        budget.update_breakpoints(&contents_b);
+        assert!(budget.cache_breakpoints[0].valid, "BP0 must stay valid (slot 3 is outside 0..=2)");
+        assert!(!budget.cache_breakpoints[1].valid, "BP1 must be invalid (slot 3 is inside 0..=4)");
+    }
+
+    #[test]
+    fn first_call_sets_hash_not_valid() {
+        let mut budget = ContextBudget::new(131072);
+        let contents = make_slot_contents();
+        budget.update_breakpoints(&contents);
+        assert_ne!(budget.cache_breakpoints[0].prefix_hash, 0, "hash must be set after first call");
+        assert!(!budget.cache_breakpoints[0].valid, "first call must leave valid=false");
+        assert_ne!(budget.cache_breakpoints[1].prefix_hash, 0, "BP1 hash must be set after first call");
+        assert!(!budget.cache_breakpoints[1].valid, "BP1 first call must leave valid=false");
+    }
+
+    #[test]
+    fn hash_deterministic_1000_calls() {
+        let mut budget = ContextBudget::new(131072);
+        let contents = make_slot_contents();
+        budget.update_breakpoints(&contents);
+        let bp0_hash = budget.cache_breakpoints[0].prefix_hash;
+        let bp1_hash = budget.cache_breakpoints[1].prefix_hash;
+        for _ in 0..1000 {
+            budget.update_breakpoints(&contents);
+            assert_eq!(budget.cache_breakpoints[0].prefix_hash, bp0_hash, "BP0 hash must be deterministic");
+            assert_eq!(budget.cache_breakpoints[1].prefix_hash, bp1_hash, "BP1 hash must be deterministic");
+        }
     }
 
     #[test]

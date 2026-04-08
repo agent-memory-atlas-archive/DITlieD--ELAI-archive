@@ -97,6 +97,49 @@ fn budget_infeasible_when_dynamic_too_small() {
 }
 
 #[test]
+fn update_breakpoints_validity_detection() {
+    // Contract: BP0 transitions from invalid (first call) to valid (same content) to invalid (changed slot).
+    let mut budget = ContextBudget::new(131072);
+    let contents_a: Vec<&[u8]> = vec![
+        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out",
+    ];
+    budget.update_breakpoints(&contents_a);
+    assert!(!budget.cache_breakpoints[0].valid, "first call: BP0 must be invalid");
+    assert!(!budget.cache_breakpoints[1].valid, "first call: BP1 must be invalid");
+    assert_ne!(budget.cache_breakpoints[0].prefix_hash, 0);
+
+    // Same content -> valid.
+    budget.update_breakpoints(&contents_a);
+    assert!(budget.cache_breakpoints[0].valid, "same content: BP0 must be valid");
+    assert!(budget.cache_breakpoints[1].valid, "same content: BP1 must be valid");
+
+    // Change slot 2 (PhaseSpec) -> BP0 and BP1 both invalid (slot 2 is in both prefixes).
+    let contents_b: Vec<&[u8]> = vec![
+        b"sys", b"rules", b"spec_v2", b"repo", b"code", b"ssb", b"grc", b"out",
+    ];
+    budget.update_breakpoints(&contents_b);
+    assert!(!budget.cache_breakpoints[0].valid, "changed slot 2: BP0 must be invalid");
+    assert!(!budget.cache_breakpoints[1].valid, "changed slot 2: BP1 must be invalid");
+}
+
+#[test]
+fn update_breakpoints_bp1_ignores_post_bp1_slots() {
+    // Contract: changing slots 5, 6, 7 does not invalidate BP1 (which covers 0..=4).
+    let mut budget = ContextBudget::new(131072);
+    let contents_a: Vec<&[u8]> = vec![
+        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb", b"grc", b"out",
+    ];
+    budget.update_breakpoints(&contents_a);
+    // Second call with same 0..=4 but different 5,6,7.
+    let contents_b: Vec<&[u8]> = vec![
+        b"sys", b"rules", b"spec", b"repo", b"code", b"ssb_changed", b"grc_changed", b"out_changed",
+    ];
+    budget.update_breakpoints(&contents_b);
+    assert!(budget.cache_breakpoints[0].valid, "BP0 must be valid (slots 0-2 unchanged)");
+    assert!(budget.cache_breakpoints[1].valid, "BP1 must be valid (slots 0-4 unchanged)");
+}
+
+#[test]
 fn large_budget_no_stealing_needed() {
     // Contract: large model contexts produce valid budgets with no floor stealing.
     let budget = ContextBudget::compute(100_000, [100, 200, 300], 2000).unwrap();
