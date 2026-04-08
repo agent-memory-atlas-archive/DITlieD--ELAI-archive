@@ -12,6 +12,9 @@ use elai_core::entropy::EntropySource;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_ACTIVE_BRANCHES: usize = 3;
 pub const MAX_PARENT_DEPTH: usize = 1000;
+pub const STUB_THRESHOLD_MIN: usize = 100;
+pub const STUB_THRESHOLD_MAX: usize = 1000;
+pub const PROMPT_CACHE_PREFIX_BOUNDARY: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -37,6 +40,10 @@ pub enum SessionDagError {
     InvalidBranchName,
     #[error("snapshot not found")]
     SnapshotNotFound,
+    #[error("trim budget exceeded: {actual} tokens > {target} target")]
+    TrimBudgetExceeded { actual: usize, target: usize },
+    #[error("invalid trim config: {reason}")]
+    InvalidTrimConfig { reason: &'static str },
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -125,6 +132,14 @@ pub struct Stub {
     pub ssb_seq: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrimConfig {
+    pub stub_threshold: usize,
+    pub model_context_window: usize,
+    pub allocated_slots_tokens: usize,
+    pub output_reserve: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchRef {
     pub name: String,
@@ -176,6 +191,12 @@ CREATE INDEX IF NOT EXISTS idx_context_stubbed ON snapshot_context(snap_id) WHER
 // ---------------------------------------------------------------------------
 // SessionDag
 // ---------------------------------------------------------------------------
+
+// FIXME(3H.6): replace with LlmProvider::token_count when implemented.
+// Current heuristic: ~4 bytes per token (conservative estimate for English text).
+fn estimate_tokens(bytes: &[u8]) -> usize {
+    bytes.len().saturating_add(3) / 4
+}
 
 fn nonneg_u64(val: i64) -> Result<u64, SessionDagError> {
     u64::try_from(val).map_err(|_| SessionDagError::DatabaseCorrupted)
@@ -606,6 +627,148 @@ impl SessionDag {
 
         Ok(chain)
     }
+
+    // ------------------------------------------------------------------
+    // Context trimming (3H.3)
+    // ------------------------------------------------------------------
+
+    /// 3-pass structurally lossless context trimming.
+    ///
+    /// Pass 1 (identify): find Tool messages with seq > PROMPT_CACHE_PREFIX_BOUNDARY
+    ///   whose estimated token count exceeds `config.stub_threshold`.
+    /// Pass 2 (stub): replace identified candidates with msgpack-serialized Stub
+    ///   payloads, preserving recovery metadata (blake3 hash, ssb_seq).
+    /// Pass 3 (validate + budget): unstub any message whose ssb_seq is not in
+    ///   `valid_ssb_seqs`, then check the total token budget.
+    ///
+    /// Pure function — no DB writes, no side effects.
+    pub fn trim_context(
+        &self,
+        messages: &[TrimmedMessage],
+        config: TrimConfig,
+        valid_ssb_seqs: &HashSet<u64>,
+    ) -> Result<Vec<TrimmedMessage>, SessionDagError> {
+        // Validate config
+        if config.stub_threshold < STUB_THRESHOLD_MIN
+            || config.stub_threshold > STUB_THRESHOLD_MAX
+        {
+            return Err(SessionDagError::InvalidTrimConfig {
+                reason: "stub_threshold must be in [100, 1000]",
+            });
+        }
+
+        if config.model_context_window == 0
+            || config.allocated_slots_tokens.saturating_add(config.output_reserve)
+                >= config.model_context_window
+        {
+            return Err(SessionDagError::InvalidTrimConfig {
+                reason: "model_context_window must exceed allocated_slots + output_reserve",
+            });
+        }
+
+        let target_tokens = config
+            .model_context_window
+            .saturating_sub(config.allocated_slots_tokens)
+            .saturating_sub(config.output_reserve);
+
+        if messages.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Pass 1: identify stub candidates
+        // candidate_indices maps index -> original token count
+        let mut candidate_indices: Vec<(usize, usize)> = Vec::new();
+        let token_counts: Vec<usize> = messages
+            .iter()
+            .map(|m| estimate_tokens(&m.content))
+            .collect();
+
+        for (i, msg) in messages.iter().enumerate() {
+            if msg.role != DagMessageRole::Tool {
+                continue;
+            }
+            if msg.is_stubbed {
+                // Already stubbed — never double-stub
+                continue;
+            }
+            if msg.seq <= PROMPT_CACHE_PREFIX_BOUNDARY {
+                continue;
+            }
+            if msg.stub_ssb_seq.is_none() {
+                // Cannot recover from SSB without a seq — skip stubbing
+                continue;
+            }
+            if token_counts[i] > config.stub_threshold {
+                candidate_indices.push((i, token_counts[i]));
+            }
+        }
+
+        // Pass 2: stub candidates
+        let mut result: Vec<TrimmedMessage> = messages.to_vec();
+
+        for &(idx, original_tokens) in &candidate_indices {
+            let msg = &messages[idx];
+            let ssb_seq = match msg.stub_ssb_seq {
+                Some(seq) => seq,
+                None => continue, // defensive — already filtered in Pass 1
+            };
+
+            let hash: [u8; 32] = blake3::hash(&msg.content).into();
+            let stub = Stub {
+                original_type: "tool_result".to_owned(),
+                original_tokens,
+                summary_hash: hash,
+                ssb_seq,
+            };
+
+            let stub_bytes = rmp_serde::to_vec(&stub).map_err(|_| {
+                SessionDagError::DatabaseCorrupted
+            })?;
+
+            result[idx] = TrimmedMessage {
+                seq: msg.seq,
+                role: msg.role,
+                content: stub_bytes,
+                is_stubbed: true,
+                stub_ssb_seq: Some(ssb_seq),
+            };
+        }
+
+        // Pass 3: validate SSB refs + budget check
+        // Unstub messages whose ssb_seq is not in valid_ssb_seqs
+        for (idx, _) in &candidate_indices {
+            let trimmed = &result[*idx];
+            if !trimmed.is_stubbed {
+                continue;
+            }
+            let ssb_seq = match trimmed.stub_ssb_seq {
+                Some(seq) => seq,
+                None => continue,
+            };
+            if !valid_ssb_seqs.contains(&ssb_seq) {
+                // Restore original — SSB cannot recover this message
+                result[*idx] = messages[*idx].clone();
+            }
+        }
+
+        // Budget check: compute total tokens after stubbing decisions
+        let total_tokens: usize = result.iter().enumerate().map(|(i, msg)| {
+            if msg.is_stubbed {
+                estimate_tokens(&msg.content)
+            } else {
+                token_counts[i]
+            }
+        }).sum();
+
+        if total_tokens > target_tokens {
+            return Err(SessionDagError::TrimBudgetExceeded {
+                actual: total_tokens,
+                target: target_tokens,
+            });
+        }
+
+        Ok(result)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1190,7 @@ mod tests {
             .map(|i| make_message(i, DagMessageRole::User, &[0xAA; 128]))
             .collect();
 
-        let start = std::time::Instant::now();
+        let start = std::time::Instant::now(); // TEST_KEEP: wall-clock perf gate for batch insert
         dag.save_snapshot(&snap, &msgs).unwrap();
         let elapsed = start.elapsed();
 
@@ -1048,5 +1211,376 @@ mod tests {
 
         let result = dag.latest_snapshot(None).unwrap();
         assert!(result.is_none(), "empty db should return Ok(None)");
+    }
+
+    // ------------------------------------------------------------------
+    // 3H.3 trim_context tests
+    // ------------------------------------------------------------------
+
+    fn default_trim_config() -> TrimConfig {
+        TrimConfig {
+            stub_threshold: 500,
+            model_context_window: 100_000,
+            allocated_slots_tokens: 10_000,
+            output_reserve: 5_000,
+        }
+    }
+
+    fn make_tool_message(seq: u32, content_bytes: usize, ssb_seq: Option<u64>) -> TrimmedMessage {
+        TrimmedMessage {
+            seq,
+            role: DagMessageRole::Tool,
+            content: vec![0xAA; content_bytes],
+            is_stubbed: false,
+            stub_ssb_seq: ssb_seq,
+        }
+    }
+
+    #[test]
+    fn trim_no_stubs_needed() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = default_trim_config();
+        // All messages small enough (100 bytes = 25 tokens < 500 threshold)
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"system prompt"),
+            make_message(4, DagMessageRole::User, b"hello"),
+            make_tool_message(5, 100, Some(10)),
+        ];
+        let valid_seqs: HashSet<u64> = [10].into_iter().collect();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(!result[2].is_stubbed, "small tool message should not be stubbed");
+        assert_eq!(result[2].content, msgs[2].content, "content should be identical");
+    }
+
+    #[test]
+    fn trim_tool_result_stubbed() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = default_trim_config();
+        // 4000 bytes = 1000 tokens > 500 threshold
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"sys"),
+            make_tool_message(4, 4000, Some(42)),
+        ];
+        let valid_seqs: HashSet<u64> = [42].into_iter().collect();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert!(result[1].is_stubbed, "large tool message should be stubbed");
+        assert_eq!(result[1].stub_ssb_seq, Some(42));
+
+        // Verify stub content is valid msgpack
+        let stub: Stub = rmp_serde::from_slice(&result[1].content).unwrap();
+        assert_eq!(stub.original_type, "tool_result");
+        assert_eq!(stub.original_tokens, 1000); // 4000 bytes / 4
+        assert_eq!(stub.ssb_seq, 42);
+    }
+
+    #[test]
+    fn trim_user_assistant_never_stubbed() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 1_000_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        // User and Assistant messages well above threshold
+        let msgs = vec![
+            TrimmedMessage {
+                seq: 4,
+                role: DagMessageRole::User,
+                content: vec![0xBB; 5000],
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            },
+            TrimmedMessage {
+                seq: 5,
+                role: DagMessageRole::Assistant,
+                content: vec![0xCC; 5000],
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            },
+        ];
+        let valid_seqs: HashSet<u64> = HashSet::new();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert!(!result[0].is_stubbed, "User messages must never be stubbed");
+        assert!(!result[1].is_stubbed, "Assistant messages must never be stubbed");
+    }
+
+    #[test]
+    fn trim_slot13_never_stubbed() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 1_000_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        // Tool messages in slots 1-3 (seq <= PROMPT_CACHE_PREFIX_BOUNDARY)
+        let msgs = vec![
+            make_tool_message(1, 5000, Some(10)),
+            make_tool_message(2, 5000, Some(11)),
+            make_tool_message(3, 5000, Some(12)),
+        ];
+        let valid_seqs: HashSet<u64> = [10, 11, 12].into_iter().collect();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        for (i, msg) in result.iter().enumerate() {
+            assert!(
+                !msg.is_stubbed,
+                "Slot {} (seq {}) must never be stubbed",
+                i + 1,
+                msg.seq
+            );
+        }
+    }
+
+    #[test]
+    fn trim_stub_ssb_not_in_set() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 1_000_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        // Large tool message with ssb_seq=99, but 99 is NOT in valid set
+        let original_content = vec![0xAA; 2000];
+        let msgs = vec![make_tool_message(5, 2000, Some(99))];
+        let valid_seqs: HashSet<u64> = [100, 101].into_iter().collect(); // 99 missing
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert!(
+            !result[0].is_stubbed,
+            "message with ssb_seq not in valid set must be unstubbed"
+        );
+        assert_eq!(
+            result[0].content, original_content,
+            "original content must be restored"
+        );
+        assert_eq!(result[0].stub_ssb_seq, Some(99));
+    }
+
+    #[test]
+    fn trim_budget_exceeded() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        // Very tight budget: target = 100 - 0 - 0 = 100 tokens
+        let config = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 100,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        // 2000 bytes = 500 tokens, way over budget. ssb_seq not in valid set so unstubbed.
+        let msgs = vec![make_tool_message(5, 2000, Some(99))];
+        let valid_seqs: HashSet<u64> = HashSet::new(); // empty — will unstub
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs);
+        assert!(
+            matches!(result, Err(SessionDagError::TrimBudgetExceeded { .. })),
+            "should return TrimBudgetExceeded when total exceeds target"
+        );
+    }
+
+    #[test]
+    fn trim_threshold_validation() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let msgs: Vec<TrimmedMessage> = Vec::new();
+        let valid_seqs: HashSet<u64> = HashSet::new();
+
+        // Below minimum
+        let config_low = TrimConfig {
+            stub_threshold: 50,
+            model_context_window: 100_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        assert!(
+            matches!(
+                dag.trim_context(&msgs, config_low, &valid_seqs),
+                Err(SessionDagError::InvalidTrimConfig { .. })
+            ),
+            "threshold 50 should be rejected"
+        );
+
+        // Above maximum
+        let config_high = TrimConfig {
+            stub_threshold: 1001,
+            model_context_window: 100_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        assert!(
+            matches!(
+                dag.trim_context(&msgs, config_high, &valid_seqs),
+                Err(SessionDagError::InvalidTrimConfig { .. })
+            ),
+            "threshold 1001 should be rejected"
+        );
+
+        // At minimum boundary
+        let config_min = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 100_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        assert!(
+            dag.trim_context(&msgs, config_min, &valid_seqs).is_ok(),
+            "threshold 100 should be accepted"
+        );
+
+        // At maximum boundary
+        let config_max = TrimConfig {
+            stub_threshold: 1000,
+            model_context_window: 100_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+        assert!(
+            dag.trim_context(&msgs, config_max, &valid_seqs).is_ok(),
+            "threshold 1000 should be accepted"
+        );
+    }
+
+    #[test]
+    fn trim_deterministic() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = default_trim_config();
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"system"),
+            make_message(2, DagMessageRole::User, b"query"),
+            make_tool_message(4, 4000, Some(50)),
+            make_tool_message(5, 3000, Some(51)),
+        ];
+        let valid_seqs: HashSet<u64> = [50, 51].into_iter().collect();
+
+        let result1 = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        let result2 = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+
+        assert_eq!(result1.len(), result2.len());
+        for (a, b) in result1.iter().zip(result2.iter()) {
+            assert_eq!(a.content, b.content, "outputs must be byte-identical");
+            assert_eq!(a.is_stubbed, b.is_stubbed);
+            assert_eq!(a.stub_ssb_seq, b.stub_ssb_seq);
+        }
+    }
+
+    #[test]
+    fn trim_summary_hash_correct() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = default_trim_config();
+        let original_content = vec![0xEE; 4000];
+        let expected_hash: [u8; 32] = blake3::hash(&original_content).into();
+
+        let msgs = vec![TrimmedMessage {
+            seq: 5,
+            role: DagMessageRole::Tool,
+            content: original_content,
+            is_stubbed: false,
+            stub_ssb_seq: Some(77),
+        }];
+        let valid_seqs: HashSet<u64> = [77].into_iter().collect();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert!(result[0].is_stubbed);
+
+        let stub: Stub = rmp_serde::from_slice(&result[0].content).unwrap();
+        assert_eq!(
+            stub.summary_hash, expected_hash,
+            "summary_hash must equal blake3::hash(original_content)"
+        );
+    }
+
+    #[test]
+    fn trim_already_stubbed_not_double_stubbed() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-test", &path, &mut entropy, &clock).unwrap();
+
+        let config = TrimConfig {
+            stub_threshold: 100,
+            model_context_window: 1_000_000,
+            allocated_slots_tokens: 0,
+            output_reserve: 0,
+        };
+
+        // Pre-stubbed message (e.g., from a prior trim_context pass)
+        let stub = Stub {
+            original_type: "tool_result".to_owned(),
+            original_tokens: 2000,
+            summary_hash: [0xAB; 32],
+            ssb_seq: 55,
+        };
+        let stub_bytes = rmp_serde::to_vec(&stub).unwrap();
+
+        let msgs = vec![TrimmedMessage {
+            seq: 5,
+            role: DagMessageRole::Tool,
+            content: stub_bytes.clone(),
+            is_stubbed: true,
+            stub_ssb_seq: Some(55),
+        }];
+        let valid_seqs: HashSet<u64> = [55].into_iter().collect();
+
+        let result = dag.trim_context(&msgs, config, &valid_seqs).unwrap();
+        assert!(result[0].is_stubbed, "should remain stubbed");
+        assert_eq!(
+            result[0].content, stub_bytes,
+            "stub content must not be re-wrapped"
+        );
+        // Verify the original stub is still decodable
+        let decoded: Stub = rmp_serde::from_slice(&result[0].content).unwrap();
+        assert_eq!(decoded.ssb_seq, 55);
+        assert_eq!(decoded.original_tokens, 2000);
     }
 }
