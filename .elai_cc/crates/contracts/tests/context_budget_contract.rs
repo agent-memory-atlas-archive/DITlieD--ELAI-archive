@@ -1,6 +1,7 @@
 use elai_orchestrator::context_budget::{
-    AdaptiveLevel, CacheBreakpoint, ContextBudget, ContextSlot, SlotAllocation,
-    CACHE_BREAKPOINT_COUNT, SLOT_COUNT,
+    AdaptiveLevel, BudgetError, CacheBreakpoint, ContextBudget, ContextSlot, SlotAllocation,
+    CACHE_BREAKPOINT_COUNT, FLOOR_GRC_HISTORY, FLOOR_OUTPUT_RESERVE, FLOOR_SSB_ENTRIES,
+    SLOT_COUNT, SUM_DYNAMIC_FLOORS,
 };
 
 const _: () = assert!(SLOT_COUNT == 8);
@@ -58,4 +59,53 @@ fn display_impl_exists() {
     let output = format!("{budget}");
     assert!(output.contains("max=131072"));
     assert!(output.contains("BP0"));
+}
+
+#[test]
+fn floor_enforcement_steal_from_code_context() {
+    // Contract: compute() enforces GrcHistory floor by stealing from CodeContext.
+    // compute(4000, [100,200,300], 2000) -> dynamic=1400, grc starts at 280, needs 500.
+    let budget = ContextBudget::compute(4000, [100, 200, 300], 2000).unwrap();
+    assert!(budget.slots[6].allocated_tokens >= FLOOR_GRC_HISTORY);
+    assert!(budget.slots[5].allocated_tokens >= FLOOR_SSB_ENTRIES);
+    assert_eq!(budget.slots[7].allocated_tokens, FLOOR_OUTPUT_RESERVE);
+    assert_eq!(budget.total_allocated, 4000);
+    // Zero-sum over dynamic slots.
+    let dynamic_sum: usize = (3..=6).map(|i| budget.slots[i].allocated_tokens).sum();
+    assert_eq!(dynamic_sum, 1400);
+    // Floor tokens are set correctly.
+    assert_eq!(budget.slots[5].floor_tokens, FLOOR_SSB_ENTRIES);
+    assert_eq!(budget.slots[6].floor_tokens, FLOOR_GRC_HISTORY);
+    assert_eq!(budget.slots[7].floor_tokens, FLOOR_OUTPUT_RESERVE);
+}
+
+#[test]
+fn budget_infeasible_when_dynamic_too_small() {
+    // Contract: compute() returns BudgetInfeasible when dynamic_budget < SUM_DYNAMIC_FLOORS.
+    let result = ContextBudget::compute(3000, [100, 200, 300], 2000);
+    assert!(result.is_err());
+    match result {
+        Err(BudgetError::BudgetInfeasible {
+            dynamic_budget,
+            sum_floors,
+        }) => {
+            assert_eq!(dynamic_budget, 400);
+            assert_eq!(sum_floors, SUM_DYNAMIC_FLOORS);
+        }
+        Ok(_) => panic!("expected BudgetInfeasible"),
+    }
+}
+
+#[test]
+fn large_budget_no_stealing_needed() {
+    // Contract: large model contexts produce valid budgets with no floor stealing.
+    let budget = ContextBudget::compute(100_000, [100, 200, 300], 2000).unwrap();
+    assert!(budget.slots[5].allocated_tokens >= FLOOR_SSB_ENTRIES);
+    assert!(budget.slots[6].allocated_tokens >= FLOOR_GRC_HISTORY);
+    assert!(budget.slots[7].allocated_tokens >= FLOOR_OUTPUT_RESERVE);
+    assert_eq!(budget.total_allocated, 100_000);
+    // All slot allocations are non-zero for dynamic slots.
+    for i in 3..=6 {
+        assert!(budget.slots[i].allocated_tokens > 0, "slot {} should be non-zero", i);
+    }
 }
