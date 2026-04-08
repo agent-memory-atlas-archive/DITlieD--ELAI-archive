@@ -1,8 +1,14 @@
-//! Contract tests for PlanSkeleton::extract_contracts.
-//! Verifies contract extraction, conflict detection, and constraint merging.
+//! Contract tests for PlanSkeleton and coherence_check.
+//! Verifies contract extraction, conflict detection, constraint merging,
+//! and coherence enforcement.
 
+use elai_orchestrator::coherence_check::{
+    check_contracts_satisfied, check_no_undeclared_interfaces,
+    check_version_incremented, run_coherence_checks, CoherenceError,
+};
 use elai_orchestrator::plan_skeleton::{
-    ContractRef, PhaseEntry, PlanSkeleton, PlanSkeletonError,
+    ContractRef, ExtractedContracts, PhaseDetail, PhaseEntry,
+    PlanSkeleton, PlanSkeletonError,
 };
 
 fn contract(name: &str, sig: &str) -> ContractRef {
@@ -252,4 +258,154 @@ fn test_extract_contracts_missing_depended_by_phase() {
         }
         other => panic!("expected PhaseNotFound for missing depended_by, got: {other}"),
     }
+}
+
+// ---- Coherence check contract tests ----
+
+fn make_detail_for_contract(
+    phase_id: &str,
+    implemented: Vec<ContractRef>,
+    declared: Vec<ContractRef>,
+) -> PhaseDetail {
+    PhaseDetail {
+        phase_id: phase_id.into(),
+        skeleton_version: 1,
+        contracts: ExtractedContracts {
+            input_contracts: Vec::new(),
+            output_contracts: Vec::new(),
+            shared_constraints: Vec::new(),
+        },
+        implemented_contracts: implemented,
+        declared_interfaces: declared,
+        content: String::new(),
+        token_count: 0,
+    }
+}
+
+#[test]
+fn contract_coherence_check1_subset_enforcement() {
+    let detail = make_detail_for_contract(
+        "A",
+        vec![contract("x", "fn() -> X")],
+        vec![contract("x", "fn() -> X")],
+    );
+    let extracted = ExtractedContracts {
+        input_contracts: vec![contract("x", "fn() -> X")],
+        output_contracts: vec![contract("missing", "fn() -> M")],
+        shared_constraints: Vec::new(),
+    };
+    let violations = check_contracts_satisfied(&detail, &extracted);
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].check_number, 1);
+    assert_eq!(violations[0].severity, "BLOCK");
+}
+
+#[test]
+fn contract_coherence_check2_undeclared_detection() {
+    let skel = make_chain_skeleton();
+    let detail = make_detail_for_contract(
+        "B",
+        vec![],
+        vec![
+            contract("x", "fn() -> X"), // exists in skeleton (A's output)
+            contract("phantom", "fn() -> P"), // not in skeleton
+        ],
+    );
+    let violations =
+        check_no_undeclared_interfaces(&detail, &skel).unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].check_number, 2);
+    assert!(violations[0].message.contains("'phantom'"));
+}
+
+#[test]
+fn contract_coherence_check2_empty_declared_err() {
+    let skel = make_chain_skeleton();
+    let detail = make_detail_for_contract("B", vec![], vec![]);
+    let err =
+        check_no_undeclared_interfaces(&detail, &skel).unwrap_err();
+    assert!(matches!(err, CoherenceError::EmptyDeclaredInterfaces));
+}
+
+#[test]
+fn contract_coherence_check3_version_enforcement() {
+    let mut prev = PlanSkeleton::new("pipe");
+    prev.version = 1;
+    let mut pa = PhaseEntry::new("A", "phase A").unwrap();
+    pa.outputs.push(contract("x", "fn() -> X"));
+    pa.version = 1;
+    prev.add_phase(pa).unwrap();
+
+    let mut curr = PlanSkeleton::new("pipe");
+    curr.version = 1; // NOT incremented
+    let mut ca = PhaseEntry::new("A", "phase A").unwrap();
+    ca.outputs.push(contract("x", "fn() -> X2")); // changed
+    ca.version = 1; // NOT incremented
+    curr.add_phase(ca).unwrap();
+
+    let detail = make_detail_for_contract(
+        "A",
+        vec![],
+        vec![contract("x", "fn() -> X2")],
+    );
+    let violations =
+        check_version_incremented(&detail, &prev, &curr).unwrap();
+    assert_eq!(violations.len(), 2); // both phase + skeleton
+    assert!(violations.iter().all(|v| v.check_number == 3));
+    assert!(violations.iter().all(|v| v.severity == "BLOCK"));
+}
+
+#[test]
+fn contract_coherence_run_all_aggregation() {
+    let mut skel = PlanSkeleton::new("pipe");
+    let mut a = PhaseEntry::new("A", "phase A").unwrap();
+    a.outputs.push(contract("x", "fn() -> X"));
+    skel.add_phase(a).unwrap();
+
+    let detail = make_detail_for_contract(
+        "A",
+        vec![], // missing implementation -> check 1 violation
+        vec![
+            contract("x", "fn() -> X"),
+            contract("ghost", "fn() -> G"), // undeclared -> check 2 violation
+        ],
+    );
+    let extracted = ExtractedContracts {
+        input_contracts: vec![contract("x", "fn() -> X")],
+        output_contracts: Vec::new(),
+        shared_constraints: Vec::new(),
+    };
+    let report =
+        run_coherence_checks(&detail, &extracted, &skel, None);
+    // check 1: 'x' not in implemented -> 1 violation
+    // check 2: 'ghost' not in skeleton -> 1 violation
+    assert_eq!(report.block_count, 2);
+    assert!(report.structural_errors.is_empty());
+    assert!(report.violations.iter().any(|v| v.check_number == 1));
+    assert!(report.violations.iter().any(|v| v.check_number == 2));
+}
+
+#[test]
+fn contract_coherence_mixed_violations_and_structural_err() {
+    // Check 1 violations must be preserved even when Check 2 returns Err.
+    let mut skel = PlanSkeleton::new("pipe");
+    let mut a = PhaseEntry::new("A", "phase A").unwrap();
+    a.outputs.push(contract("x", "fn() -> X"));
+    skel.add_phase(a).unwrap();
+
+    let detail = make_detail_for_contract(
+        "A",
+        vec![], // missing -> check 1 violation
+        vec![], // empty -> check 2 structural error
+    );
+    let extracted = ExtractedContracts {
+        input_contracts: vec![contract("x", "fn() -> X")],
+        output_contracts: Vec::new(),
+        shared_constraints: Vec::new(),
+    };
+    let report =
+        run_coherence_checks(&detail, &extracted, &skel, None);
+    assert_eq!(report.violations.len(), 1);
+    assert_eq!(report.violations[0].check_number, 1);
+    assert_eq!(report.structural_errors.len(), 1);
 }

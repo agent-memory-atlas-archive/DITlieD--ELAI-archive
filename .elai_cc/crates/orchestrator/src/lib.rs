@@ -3,6 +3,7 @@ pub mod anti_spiral;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
+pub mod coherence_check;
 pub mod context_budget;
 pub mod bash_validation;
 pub mod branch_lock;
