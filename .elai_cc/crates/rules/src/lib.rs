@@ -7,3 +7,6 @@ pub mod rule_engine;
 pub mod schema;
 pub mod self_discovery;
 pub mod trust_resolver;
+
+#[cfg(test)]
+mod contract_tests;
