@@ -28,3 +28,5 @@ tracing = "0.1"
 rusqlite = { version = "0.39", features = ["bundled", "array", "hooks"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
+regex = "1"
+jsonschema = { version = "0.45", default-features = false }
