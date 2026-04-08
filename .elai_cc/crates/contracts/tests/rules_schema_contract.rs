@@ -42,6 +42,7 @@ fn contract_all_tables_created() {
         "rule_metrics",
         "contract_tests",
         "violation_patterns",
+        "rule_transitions",
         "schema_version",
     ] {
         assert!(
@@ -71,11 +72,14 @@ fn contract_migration_idempotent() {
     run_migration(&conn, &test_clock()).unwrap();
     run_migration(&conn, &test_clock()).unwrap();
     assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
-    // schema_version table must have exactly 1 row (not duplicated).
+    // schema_version table must have exactly SCHEMA_VERSION rows (one per version applied).
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "idempotent migration must not duplicate version rows");
+    assert_eq!(
+        count, SCHEMA_VERSION,
+        "idempotent migration must not duplicate version rows"
+    );
 }
 
 // ---------------------------------------------------------------------------

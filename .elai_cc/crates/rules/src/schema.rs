@@ -18,7 +18,7 @@ use crate::error::RulesDbError;
 // ---------------------------------------------------------------------------
 
 /// Current schema version. Bump when any CREATE/ALTER statement changes.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -94,6 +94,24 @@ CREATE TABLE IF NOT EXISTS violation_patterns (
     score_clarity   INTEGER CHECK(score_clarity BETWEEN 0 AND 5),
     score_frequency INTEGER CHECK(score_frequency BETWEEN 0 AND 5),
     score_precision INTEGER CHECK(score_precision BETWEEN 0 AND 5)
+)";
+
+const CREATE_RULE_TRANSITIONS_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS rule_transitions (
+    transition_id    TEXT PRIMARY KEY,
+    rule_id          TEXT NOT NULL REFERENCES rules(rule_id),
+    from_status      TEXT NOT NULL,
+    to_status        TEXT NOT NULL,
+    reason           TEXT NOT NULL,
+    approver_id      TEXT,
+    timestamp        INTEGER NOT NULL,
+    tp               INTEGER,
+    fp               INTEGER,
+    causal_catches   INTEGER,
+    spurious_catches INTEGER,
+    fpr              REAL,
+    tpr              REAL,
+    ccr              REAL
 )";
 
 // ---------------------------------------------------------------------------
@@ -175,7 +193,23 @@ pub fn run_migration(conn: &Connection, clock: &impl ClockProvider) -> Result<()
 
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
-            rusqlite::params![SCHEMA_VERSION, now_epoch],
+            rusqlite::params![1_i64, now_epoch],
+        )?;
+    }
+
+    // Version 1 → 2: add rule_transitions table for lifecycle tracking.
+    if current < 2 {
+        conn.execute_batch(CREATE_RULE_TRANSITIONS_TABLE)?;
+
+        let now_epoch = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![2_i64, now_epoch],
         )?;
     }
 
@@ -215,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn all_four_tables_exist() {
+    fn all_five_tables_exist() {
         let conn = mem_db();
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -228,6 +262,7 @@ mod tests {
         assert!(tables.contains(&"rule_metrics".to_string()));
         assert!(tables.contains(&"contract_tests".to_string()));
         assert!(tables.contains(&"violation_patterns".to_string()));
+        assert!(tables.contains(&"rule_transitions".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
     }
 
@@ -384,9 +419,9 @@ mod tests {
     #[test]
     fn future_schema_version_rejected() {
         let conn = mem_db();
-        // Manually bump version beyond current.
+        // Insert a future version row beyond current.
         conn.execute(
-            "UPDATE schema_version SET version = ?1",
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, 0)",
             rusqlite::params![SCHEMA_VERSION + 1],
         )
         .unwrap();
