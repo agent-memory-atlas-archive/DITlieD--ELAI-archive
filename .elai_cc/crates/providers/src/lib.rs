@@ -7,6 +7,8 @@ mod providers;
 mod sse;
 pub mod telemetry_types;
 mod types;
+#[cfg(feature = "turboquant")]
+pub mod turboquant;
 #[cfg(feature = "vllm")]
 pub mod vllm_client;
 
