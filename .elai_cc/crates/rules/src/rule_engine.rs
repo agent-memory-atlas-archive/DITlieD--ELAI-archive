@@ -172,6 +172,44 @@ pub enum RuleEngineError {
 const ALWAYS_INCLUDED_DOMAINS: &[&str] = &["engineering", "security"];
 
 // ---------------------------------------------------------------------------
+// Domain detection from file paths
+// ---------------------------------------------------------------------------
+
+/// Keyword table for domain detection. Each entry maps a domain name to its
+/// trigger keywords. Used by [`detect_domains`] to classify file paths.
+///
+/// Note: "engineering" and "security" are intentionally absent — those are
+/// handled by [`ALWAYS_INCLUDED_DOMAINS`] in [`get_active_rules`].
+const DOMAIN_KEYWORDS: &[(&str, &[&str])] = &[
+    ("trading", &["trading", "backtest", "signal", "pipeline"]),
+    ("dashboard", &["dashboard", "component", "chart", "ui"]),
+    ("application", &["payment", "billing", "tenant", "saas"]),
+    ("game", &["game", "mod", "entity", "spawn"]),
+    ("re", &["ida", "ghidra", "disasm", "hook"]),
+];
+
+/// Detect applicable domains for a file path by keyword matching.
+///
+/// Lowercases the entire path before matching. Returns a deduplicated
+/// `Vec<String>` of matched domain names. Never returns "engineering"
+/// or "security" — those are always-included via [`ALWAYS_INCLUDED_DOMAINS`].
+///
+/// # Caveats
+///
+/// The "game" domain keyword "mod" will match Rust module paths like
+/// `src/mod.rs`. This is spec-mandated behavior.
+pub fn detect_domains(file_path: &str) -> Vec<String> {
+    let lower = file_path.to_lowercase();
+    let mut domains = Vec::new();
+    for &(domain, keywords) in DOMAIN_KEYWORDS {
+        if keywords.iter().any(|kw| lower.contains(kw)) {
+            domains.push(domain.to_owned());
+        }
+    }
+    domains
+}
+
+// ---------------------------------------------------------------------------
 // RuleEngine trait (object-safe)
 // ---------------------------------------------------------------------------
 
@@ -1589,7 +1627,7 @@ mod tests {
         let source = "a".repeat(100);
         let ctx = make_context(&source, "src/main.rs");
 
-        let start = std::time::Instant::now();
+        let start = std::time::Instant::now(); // TEST_KEEP
         let result = engine.evaluate(&[(rule, compiled)], &ctx);
         let elapsed = start.elapsed();
 
@@ -1663,6 +1701,111 @@ mod tests {
             result[0].result,
             VerdictResult::Escalate(EscalationTarget::NextTierRule("r-99".into())),
             "ESCALATE must route to NextTierRule when specified"
+        );
+    }
+
+    // -- detect_domains unit tests --
+
+    #[test]
+    fn detect_domains_trading_keywords() {
+        for kw in ["trading", "backtest", "signal", "pipeline"] {
+            let path = format!("src/{kw}/main.rs");
+            let domains = super::detect_domains(&path);
+            assert!(
+                domains.contains(&"trading".to_owned()),
+                "keyword '{kw}' must produce domain 'trading', got: {domains:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_domains_dashboard_keywords() {
+        for kw in ["dashboard", "component", "chart", "ui"] {
+            let path = format!("src/{kw}/main.rs");
+            let domains = super::detect_domains(&path);
+            assert!(
+                domains.contains(&"dashboard".to_owned()),
+                "keyword '{kw}' must produce domain 'dashboard', got: {domains:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_domains_application_keywords() {
+        for kw in ["payment", "billing", "tenant", "saas"] {
+            let path = format!("src/{kw}/main.rs");
+            let domains = super::detect_domains(&path);
+            assert!(
+                domains.contains(&"application".to_owned()),
+                "keyword '{kw}' must produce domain 'application', got: {domains:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_domains_game_keywords() {
+        for kw in ["game", "mod", "entity", "spawn"] {
+            let path = format!("src/{kw}/main.rs");
+            let domains = super::detect_domains(&path);
+            assert!(
+                domains.contains(&"game".to_owned()),
+                "keyword '{kw}' must produce domain 'game', got: {domains:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_domains_re_keywords() {
+        for kw in ["ida", "ghidra", "disasm", "hook"] {
+            let path = format!("src/{kw}/main.rs");
+            let domains = super::detect_domains(&path);
+            assert!(
+                domains.contains(&"re".to_owned()),
+                "keyword '{kw}' must produce domain 're', got: {domains:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_domains_case_insensitive() {
+        let domains = super::detect_domains("src/Trading/Backtest.rs");
+        assert!(
+            domains.contains(&"trading".to_owned()),
+            "uppercase 'Trading/Backtest' must still match, got: {domains:?}"
+        );
+        // Must be deduplicated — both keywords match "trading" domain
+        assert_eq!(
+            domains.iter().filter(|d| d.as_str() == "trading").count(),
+            1,
+            "domain 'trading' must appear exactly once"
+        );
+    }
+
+    #[test]
+    fn detect_domains_empty_path() {
+        let domains = super::detect_domains("");
+        assert!(domains.is_empty(), "empty path must return empty vec");
+    }
+
+    #[test]
+    fn detect_domains_no_match() {
+        let domains = super::detect_domains("src/lib.rs");
+        assert!(
+            domains.is_empty(),
+            "path with no keywords must return empty vec, got: {domains:?}"
+        );
+    }
+
+    #[test]
+    fn detect_domains_multi_domain() {
+        let domains = super::detect_domains("trading_dashboard_module.rs");
+        assert!(
+            domains.contains(&"trading".to_owned()),
+            "must detect 'trading', got: {domains:?}"
+        );
+        assert!(
+            domains.contains(&"dashboard".to_owned()),
+            "must detect 'dashboard', got: {domains:?}"
         );
     }
 }

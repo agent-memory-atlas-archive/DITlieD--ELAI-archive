@@ -12,6 +12,7 @@ use elai_rules::predicate::{
 };
 use elai_rules::rule_engine::{
     CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine,
+    detect_domains,
 };
 
 // ---------------------------------------------------------------------------
@@ -845,4 +846,120 @@ fn contract_escalate_routes_to_next_tier_rule() {
         VerdictResult::Escalate(EscalationTarget::NextTierRule("r-99".into())),
         "ESCALATE must route to NextTierRule when specified"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 27. detect_domains: trading path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_trading_path() {
+    let domains = detect_domains("src/trading/backtest_runner.rs");
+    assert!(
+        domains.contains(&"trading".to_owned()),
+        "path containing 'backtest' must return 'trading', got: {domains:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 28. detect_domains: dashboard path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_dashboard_path() {
+    let domains = detect_domains("src/dashboard/main_panel.rs");
+    assert!(
+        domains.contains(&"dashboard".to_owned()),
+        "path containing 'dashboard' must return 'dashboard', got: {domains:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 29. detect_domains: case insensitive
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_case_insensitive() {
+    let domains = detect_domains("src/Trading/engine.rs");
+    assert!(
+        domains.contains(&"trading".to_owned()),
+        "path with uppercase 'Trading' must still return 'trading', got: {domains:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 30. detect_domains: multi-domain path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_multi_domain_path() {
+    let domains = detect_domains("src/signal_billing_module.rs");
+    assert!(
+        domains.contains(&"trading".to_owned()),
+        "path with 'signal' must return 'trading', got: {domains:?}"
+    );
+    assert!(
+        domains.contains(&"application".to_owned()),
+        "path with 'billing' must return 'application', got: {domains:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 31. detect_domains: unknown path returns empty
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_unknown_path() {
+    let domains = detect_domains("src/utils/helpers.rs");
+    assert!(
+        domains.is_empty(),
+        "unknown path must return empty vec, got: {domains:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 32. detect_domains: never returns engineering or security
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_detect_domains_engineering_not_returned() {
+    // Try paths that might contain the words but should NOT be detected
+    let paths = [
+        "src/engineering/core.rs",
+        "src/security/audit.rs",
+        "src/engineering_security_module.rs",
+    ];
+    for path in paths {
+        let domains = detect_domains(path);
+        assert!(
+            !domains.contains(&"engineering".to_owned()),
+            "detect_domains must never return 'engineering' for path '{path}', got: {domains:?}"
+        );
+        assert!(
+            !domains.contains(&"security".to_owned()),
+            "detect_domains must never return 'security' for path '{path}', got: {domains:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 33. phase_mask=0 rule never active for any FSM phase
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_phase_mask_zero_never_active() {
+    let e = engine();
+    let rules = vec![
+        make_rule("r-zero", "engineering", 1, "BLOCK", 0),
+    ];
+
+    // Check all 7 FSM phases (bits 0..=6)
+    for bit in 0..=6u8 {
+        let phase = FsmPhaseBit::from_raw(bit).unwrap();
+        let active = e.get_active_rules(&rules, phase, &["engineering"]);
+        assert!(
+            active.is_empty(),
+            "phase_mask=0 rule must never be active, but was active for bit={bit}"
+        );
+    }
 }
