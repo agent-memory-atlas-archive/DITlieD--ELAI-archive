@@ -1,5 +1,6 @@
 mod client;
 mod error;
+pub mod layer_config;
 pub mod oauth;
 mod prompt_cache;
 mod providers;

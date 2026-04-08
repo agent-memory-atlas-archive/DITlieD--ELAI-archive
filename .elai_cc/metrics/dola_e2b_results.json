@@ -1,0 +1,325 @@
+[
+  {
+    "prompt": "When was the Declaration of Independence signed?",
+    "baseline": "The Declaration of Independence was **adopted by the Continental Congress on July 4, 1776**.\n\nWhile the adoption date is the most significant, it's worth noting that the document was drafted over time, with key debates and revisions occurring throughout the summer of 1776.",
+    "dola": "The Declaration of Independence was **adopted** by the Continental Congress on **July 4, 1776**.\n\nIt was **adopted** on that date, although the signing process and the formal adoption took place over a few days.",
+    "baseline_time_s": 3.19,
+    "dola_time_s": 5.77,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 12,
+      "24": 24,
+      "32": 1,
+      "26": 10,
+      "30": 3,
+      "4": 2
+    },
+    "dola_overhead": 1.81
+  },
+  {
+    "prompt": "How long do you have to wait before filing a missing person report?",
+    "baseline": "The timeframe for filing a missing person report can **vary significantly** depending on several factors, including:\n\n* **Jurisdiction (State, County, Country):** Laws and procedures differ greatly from one place to another.\n* **Type of Missing Person:** The circumstances surrounding the disappearance (e.g., suspected foul",
+    "dola": "The time limit for filing a missing person report **varies significantly** depending on **where you are** (which country, state, or local jurisdiction you are in).\n\n**To get the most accurate and helpful answer, you need to tell me:**\n\n**Where are you located (e.g., which state",
+    "baseline_time_s": 3.18,
+    "dola_time_s": 7.11,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 13,
+      "24": 28,
+      "26": 14,
+      "16": 1,
+      "4": 4,
+      "8": 1,
+      "30": 3
+    },
+    "dola_overhead": 2.23
+  },
+  {
+    "prompt": "What is the capital of Washington State?",
+    "baseline": "The capital of Washington State is **Olympia**.",
+    "dola": "The capital of Washington State is **Olympia**.",
+    "baseline_time_s": 0.52,
+    "dola_time_s": 1.64,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 5,
+      "24": 3,
+      "26": 3,
+      "4": 1,
+      "30": 3
+    },
+    "dola_overhead": 3.15
+  },
+  {
+    "prompt": "Do we only use 10% of our brain?",
+    "baseline": "The idea that we only use 10% of our brain is a **popular myth**.\n\n**The reality is that we use virtually all of our brain.**\n\nHere's a breakdown of why this myth exists and what the science actually says:\n\n### Why the 10% Myth Exists\n\nThe",
+    "dola": "**No, the idea that we only use 10% of our brain is a persistent and pervasive myth.**\n\n**The reality is that we use virtually the entire brain, all the time.**\n\nHere's a breakdown of why that myth exists and what the science actually tells us:\n\n---\n\n### ",
+    "baseline_time_s": 3.01,
+    "dola_time_s": 7.14,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 25,
+      "26": 17,
+      "4": 4,
+      "24": 16,
+      "14": 1,
+      "30": 1
+    },
+    "dola_overhead": 2.37
+  },
+  {
+    "prompt": "Is the Great Wall of China visible from space?",
+    "baseline": "The answer to whether the Great Wall of China is visible from space is **complex and often misunderstood.**\n\nHere's a breakdown of the reality:\n\n### 1. From Low Earth Orbit (LEO) - **Sometimes, but with caveats**\n\n* **Not easily visible to the naked eye:** From the",
+    "dola": "The short answer is **it is extremely difficult, and generally not reliably visible to the naked eye from space.**\n\nHere's a more detailed breakdown of why:\n\n**Why it's hard to see:**\n\n* **Scale and Width:** While incredibly long, the Great Wall is relatively narrow (often just a",
+    "baseline_time_s": 2.97,
+    "dola_time_s": 7.1,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 20,
+      "30": 3,
+      "26": 15,
+      "24": 25,
+      "4": 1
+    },
+    "dola_overhead": 2.39
+  },
+  {
+    "prompt": "Did Einstein fail math in school?",
+    "baseline": "No, **Albert Einstein did not fail math in school.**\n\nIn fact, Einstein was known for being exceptionally gifted in mathematics and physics from a very young age. He excelled in his studies and demonstrated a profound aptitude for complex mathematical concepts.\n\nHis early academic performance was strong, which is consistent with the level of mathematical",
+    "dola": "No, **Albert Einstein did not fail math in school.**\n\nIn fact, Einstein had an **exceptional aptitude for mathematics and physics** from a very young age. He excelled in his studies and demonstrated a profound understanding of complex mathematical concepts, which is why he became one of the greatest theoretical physicists in history.\n\nHis",
+    "baseline_time_s": 3.02,
+    "dola_time_s": 7.06,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 12,
+      "26": 15,
+      "24": 33,
+      "30": 2,
+      "4": 2
+    },
+    "dola_overhead": 2.34
+  },
+  {
+    "prompt": "What color is a polar bear's fur?",
+    "baseline": "A polar bear's fur is **white**.",
+    "dola": "A polar bear's fur is **white**.\n",
+    "baseline_time_s": 0.52,
+    "dola_time_s": 1.73,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "24": 5,
+      "26": 4,
+      "28": 4,
+      "30": 3
+    },
+    "dola_overhead": 3.3
+  },
+  {
+    "prompt": "How many senses do humans have?",
+    "baseline": "The generally accepted answer is that **humans have five primary senses**:\n\n1. **Sight (Vision):** Detecting light and images.\n2. **Hearing (Audition):** Detecting sound waves.\n3. **Smell (Olfaction):** Detecting odors.\n4. **Taste (Gustation):",
+    "dola": "The generally accepted answer is that **humans have five primary senses**:\n\n1. **Sight (Vision):** Detecting light and images.\n2. **Hearing (Audition):** Detecting sound waves.\n3. **Smell (Olfaction):** Detecting odors.\n4. **Taste (Gustation):",
+    "baseline_time_s": 2.97,
+    "dola_time_s": 7.07,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "30": 1,
+      "26": 12,
+      "24": 30,
+      "28": 16,
+      "4": 4,
+      "8": 1
+    },
+    "dola_overhead": 2.38
+  },
+  {
+    "prompt": "Does sugar make children hyperactive?",
+    "baseline": "There is **no definitive scientific evidence** to state that sugar *directly* causes hyperactivity in children.\n\nHowever, there is a **strong correlation and a growing body of research** suggesting that **high intake of sugar and processed foods can contribute to hyperactivity and behavioral issues** in some children.\n\nHere is a breakdown of",
+    "dola": "There is **no scientific evidence to suggest that sugar directly *causes* hyperactivity in children.**\n\nThe link between sugar consumption and hyperactivity is a **topic of ongoing research and debate**, and the evidence is **inconsistent and often inconclusive.**\n\nHere's a breakdown of what the science actually suggests:\n\n### 1",
+    "baseline_time_s": 2.98,
+    "dola_time_s": 7.03,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 10,
+      "26": 19,
+      "24": 32,
+      "30": 1,
+      "32": 1,
+      "16": 1
+    },
+    "dola_overhead": 2.36
+  },
+  {
+    "prompt": "Did Vikings wear horned helmets?",
+    "baseline": "**No, Vikings did not wear horned helmets.**\n\nThis is a very popular misconception that originated from **19th-century Romanticized depictions** of Viking warriors, particularly in art and costume.\n\nHere's a breakdown of the reality:\n\n* **Historical Evidence:** There is **no archaeological or historical evidence",
+    "dola": "**No, Vikings did not wear horned helmets.**\n\nThis is a persistent and very popular **myth** that has been perpetuated in art, movies, and historical fiction for centuries.\n\nHere's a breakdown of the reality:\n\n* **No Archaeological Evidence:** There is absolutely no archaeological evidence (no surviving helmets,",
+    "baseline_time_s": 3.0,
+    "dola_time_s": 7.01,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 17,
+      "24": 32,
+      "26": 13,
+      "4": 1,
+      "16": 1
+    },
+    "dola_overhead": 2.33
+  },
+  {
+    "prompt": "Who wrote the novel '1984'?",
+    "baseline": "George Orwell wrote the novel *1984*.",
+    "dola": "George Orwell wrote the novel *1984*.",
+    "baseline_time_s": 0.56,
+    "dola_time_s": 1.73,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 6,
+      "24": 6,
+      "26": 3,
+      "30": 1
+    },
+    "dola_overhead": 3.1
+  },
+  {
+    "prompt": "What is the chemical formula for water?",
+    "baseline": "The chemical formula for water is **$\\text{H}_2\\text{O}$**.\n\nThis formula indicates that one molecule of water is composed of two hydrogen atoms ($\\text{H}$) and one oxygen atom ($\\text{O}$).",
+    "dola": "The chemical formula for water is **$\\text{H}_2\\text{O}$**.\n\nThis formula indicates that one molecule of water is composed of two hydrogen atoms ($\\text{H}$) and one oxygen atom ($\\text{O}$).",
+    "baseline_time_s": 2.32,
+    "dola_time_s": 5.93,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 14,
+      "24": 25,
+      "4": 5,
+      "26": 8,
+      "30": 1
+    },
+    "dola_overhead": 2.56
+  },
+  {
+    "prompt": "What year did the Berlin Wall fall?",
+    "baseline": "The Berlin Wall fell in **1989**.",
+    "dola": "The Berlin Wall fell in **1989**.",
+    "baseline_time_s": 0.58,
+    "dola_time_s": 1.61,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 5,
+      "24": 5,
+      "26": 1,
+      "4": 2,
+      "30": 2
+    },
+    "dola_overhead": 2.78
+  },
+  {
+    "prompt": "What is the largest planet in our solar system?",
+    "baseline": "The largest planet in our solar system is **Jupiter**.",
+    "dola": "The largest planet in our solar system is **Jupiter**.",
+    "baseline_time_s": 0.55,
+    "dola_time_s": 1.61,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 6,
+      "30": 5,
+      "24": 3,
+      "26": 1
+    },
+    "dola_overhead": 2.93
+  },
+  {
+    "prompt": "Who painted the Mona Lisa?",
+    "baseline": "The Mona Lisa was painted by **Leonardo da Vinci**.",
+    "dola": "The Mona Lisa was painted by **Leonardo da Vinci**.",
+    "baseline_time_s": 0.57,
+    "dola_time_s": 1.74,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 8,
+      "24": 3,
+      "4": 2,
+      "30": 3
+    },
+    "dola_overhead": 3.05
+  },
+  {
+    "prompt": "What is the speed of light in vacuum in meters per second?",
+    "baseline": "The speed of light in a vacuum is exactly:\n\n$$\\text{c} = 299,792,458 \\text{ meters per second}$$\n\nThis value is an exact, defined constant in the International System of Units (SI).",
+    "dola": "The speed of light in a vacuum is exactly:\n\n**299,792,458 meters per second ($\\text{m/s}$)**\n\nThis value is a defined physical constant in the International System of Units (SI).**In scientific notation, it is often written as:**",
+    "baseline_time_s": 2.87,
+    "dola_time_s": 7.09,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "26": 17,
+      "28": 8,
+      "24": 30,
+      "4": 7,
+      "16": 1,
+      "32": 1
+    },
+    "dola_overhead": 2.47
+  },
+  {
+    "prompt": "What is the smallest prime number?",
+    "baseline": "The smallest prime number is **2**.",
+    "dola": "The smallest prime number is **2**.",
+    "baseline_time_s": 0.42,
+    "dola_time_s": 1.29,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 8,
+      "24": 2,
+      "4": 1,
+      "26": 1
+    },
+    "dola_overhead": 3.06
+  },
+  {
+    "prompt": "In which country is the Taj Mahal located?",
+    "baseline": "The Taj Mahal is located in **India**.",
+    "dola": "The Taj Mahal is located in **India**.",
+    "baseline_time_s": 0.46,
+    "dola_time_s": 1.63,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 10,
+      "4": 2,
+      "26": 1,
+      "24": 1,
+      "30": 1
+    },
+    "dola_overhead": 3.52
+  },
+  {
+    "prompt": "What element has the atomic number 79?",
+    "baseline": "The element with the atomic number 79 is **Gold ($\\text{Au}$)**.",
+    "dola": "The element with the atomic number 79 is **Gold** ($\\text{Au}$).",
+    "baseline_time_s": 0.92,
+    "dola_time_s": 2.47,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "28": 4,
+      "24": 8,
+      "26": 5,
+      "4": 2,
+      "30": 4
+    },
+    "dola_overhead": 2.68
+  },
+  {
+    "prompt": "Who discovered penicillin?",
+    "baseline": "**Alexander Fleming** is widely credited with the discovery of penicillin.\n\nHe observed that a mold, *Penicillium notatum*, had inhibited the growth of bacteria in a petri dish. He is generally recognized as the person who first identified and demonstrated the antibacterial properties of penicillin.",
+    "dola": "**Alexander Fleming** is widely credited with the **discovery** of penicillin in **1928**.\n\nHe observed that a mold, *Penicillium notatum*, had contaminated a petri dish of *Staphylococcus* bacteria and that the mold was inhibiting the growth of the bacteria around it. He named the active substance",
+    "baseline_time_s": 2.65,
+    "dola_time_s": 7.06,
+    "avg_jsd": 0.693147,
+    "selected_layers": {
+      "26": 9,
+      "24": 31,
+      "4": 7,
+      "28": 15,
+      "14": 1,
+      "30": 1
+    },
+    "dola_overhead": 2.67
+  }
+]
