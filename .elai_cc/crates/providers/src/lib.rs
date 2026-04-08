@@ -6,6 +6,8 @@ mod providers;
 mod sse;
 pub mod telemetry_types;
 mod types;
+#[cfg(feature = "vllm")]
+pub mod vllm_client;
 
 pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
@@ -24,6 +26,10 @@ pub use providers::ollama::{
 };
 pub use providers::{
     detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind,
+};
+#[cfg(feature = "vllm")]
+pub use vllm_client::{
+    InferenceBackend, VllmConfig, VllmHealthStatus, VllmModelPool, VllmProvider,
 };
 pub use sse::{parse_frame, SseParser};
 pub use types::{

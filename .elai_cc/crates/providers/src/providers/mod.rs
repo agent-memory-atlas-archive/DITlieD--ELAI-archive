@@ -35,6 +35,8 @@ pub enum ProviderKind {
     Xai,
     OpenAi,
     Ollama,
+    #[cfg(feature = "vllm")]
+    Vllm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +149,8 @@ pub fn resolve_model_alias(model: &str) -> String {
                     _ => trimmed,
                 },
                 ProviderKind::OpenAi | ProviderKind::Ollama => trimmed,
+                #[cfg(feature = "vllm")]
+                ProviderKind::Vllm => trimmed,
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)

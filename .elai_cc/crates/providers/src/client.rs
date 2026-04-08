@@ -37,6 +37,10 @@ impl ProviderClient {
             ProviderKind::Ollama => Err(ApiError::Auth(
                 "Ollama provider not yet implemented".to_string(),
             )),
+            #[cfg(feature = "vllm")]
+            ProviderKind::Vllm => Err(ApiError::Auth(
+                "vLLM provider uses VllmProvider directly, not ProviderClient".to_string(),
+            )),
         }
     }
 

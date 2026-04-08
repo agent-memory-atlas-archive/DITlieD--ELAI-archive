@@ -7,12 +7,17 @@ publish.workspace = true
 
 [dependencies]
 elai-core = { path = "../core" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tracing = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 getrandom = "0.2"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+vllm = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

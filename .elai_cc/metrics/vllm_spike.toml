@@ -1,0 +1,27 @@
+[meta]
+phase = "3J.1"
+date = "2026-04-09"
+model = "gemma4:e2b"
+gpu = "RTX 3060 12GB"
+backend = "vLLM 0.19.0 (WSL2 Ubuntu)"
+note = "Latency spike — requires live vLLM server for real measurements"
+
+[latency]
+# Placeholder — fill after running 100 requests against live vLLM server
+# wsl -d Ubuntu -- bash -c "source ~/vllm-env/bin/activate && vllm serve gemma4:e2b"
+p50_ms = 0
+p95_ms = 0
+p99_ms = 0
+requests = 0
+
+[deterministic_checks]
+cargo_check_workspace = true
+cargo_check_workspace_features_vllm = true
+vllm_provider_found = true
+impl_llm_provider_found = true
+inference_backend_found = true
+vllm_config_found = true
+tensor_parallelism_found = true
+no_unwrap_in_production = true
+tests_passed = 17
+tests_failed = 0
