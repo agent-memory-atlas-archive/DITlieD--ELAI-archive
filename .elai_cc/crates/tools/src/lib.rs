@@ -6554,7 +6554,16 @@ mod tests {
         assert_eq!(success_output["stdout"], "hello");
         assert_eq!(success_output["interrupted"], false);
 
-        let failure = execute_tool("bash", &json!({ "command": "printf 'oops' >&2; exit 7" }))
+        // On Windows, cmd.exe uses `&` as the command separator (not `;`), and
+        // `echo ... 1>&2` to write to stderr.  Using `;` would make cmd.exe
+        // treat the whole string as printf arguments, so printf exits 0 and
+        // `exit 7` is never reached, causing the return_code_interpretation to
+        // be null rather than "exit_code:7".
+        #[cfg(windows)]
+        let failure_cmd = "echo oops 1>&2 & exit 7";
+        #[cfg(not(windows))]
+        let failure_cmd = "printf 'oops' >&2; exit 7";
+        let failure = execute_tool("bash", &json!({ "command": failure_cmd }))
             .expect("bash failure should still return structured output");
         let failure_output: serde_json::Value = serde_json::from_str(&failure).expect("json");
         assert_eq!(failure_output["returnCodeInterpretation"], "exit_code:7");

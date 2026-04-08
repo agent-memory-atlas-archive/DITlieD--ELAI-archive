@@ -32,6 +32,7 @@ walkdir = "2"
 
 [dev-dependencies]
 proptest = "1.11"
+proptest-state-machine = "0.8"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
