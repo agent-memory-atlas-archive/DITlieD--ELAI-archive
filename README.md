@@ -10,7 +10,7 @@
 
 <br>
 
-a development engine, not an assistant<br>
+a deterministic development engine, not an assistant<br>
 task in - researched, tested, built, audited - result out
 
 <br>
