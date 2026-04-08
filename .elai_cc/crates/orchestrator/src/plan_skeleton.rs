@@ -3,6 +3,7 @@
 //! Phase 3G.1 types + Phase 3G.2 serialization with token budget enforcement,
 //! SSB recording, and version tracking.
 
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -91,6 +92,14 @@ pub enum PlanSkeletonError {
         detail_version: u32,
         current_version: u32,
     },
+
+    #[error(
+        "dependency cycle detected among phases: {phases:?}"
+    )]
+    CycleDetected { phases: Vec<PhaseId> },
+
+    #[error("split depth exceeded: max 2 levels")]
+    SplitDepthExceeded,
 }
 
 // ---- OutputType -----------------------------------------------------------
@@ -219,6 +228,8 @@ pub struct PhaseEntry {
     pub output_type: Option<OutputType>,
     #[serde(default)]
     pub visual_check: bool,
+    #[serde(default)]
+    pub split_depth: u8,
 }
 
 impl PhaseEntry {
@@ -243,6 +254,7 @@ impl PhaseEntry {
             version: 0,
             output_type: None,
             visual_check: false,
+            split_depth: 0,
         })
     }
 
@@ -297,6 +309,345 @@ impl PlanSkeleton {
             .version
             .checked_add(1)
             .ok_or(PlanSkeletonError::VersionOverflow)?;
+        Ok(())
+    }
+
+    /// Kahn's algorithm cycle detection on the dependency DAG.
+    ///
+    /// Returns `Ok(())` if the graph is acyclic, or
+    /// `Err(CycleDetected)` with a sorted list of phases
+    /// involved in cycles.
+    fn kahn_cycle_check(
+        &self,
+    ) -> Result<(), PlanSkeletonError> {
+        // Build in_degree from depends_on (authoritative edge source).
+        // A phase with depends_on=[X,Y] has in_degree 2.
+        let mut in_degree: HashMap<&PhaseId, usize> =
+            self.phases
+                .keys()
+                .map(|k| (k, 0usize))
+                .collect();
+        // Build adjacency list from depends_on edges (reverse direction).
+        // If B.depends_on contains A, then A has an outgoing edge to B.
+        let mut forward_edges: HashMap<
+            &PhaseId,
+            Vec<&PhaseId>,
+        > = self
+            .phases
+            .keys()
+            .map(|k| (k, Vec::new()))
+            .collect();
+        for (phase_id, phase) in &self.phases {
+            for dep in &phase.depends_on {
+                if let Some(edges) =
+                    forward_edges.get_mut(dep)
+                {
+                    edges.push(phase_id);
+                }
+                if let Some(d) =
+                    in_degree.get_mut(phase_id)
+                {
+                    *d += 1;
+                }
+            }
+        }
+        let mut queue: VecDeque<&PhaseId> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut visited_count: usize = 0;
+        while let Some(node) = queue.pop_front() {
+            visited_count += 1;
+            if let Some(neighbors) =
+                forward_edges.get(node)
+            {
+                for neighbor in neighbors {
+                    if let Some(d) =
+                        in_degree.get_mut(*neighbor)
+                    {
+                        *d -= 1;
+                        if *d == 0 {
+                            queue.push_back(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+        if visited_count != self.phases.len() {
+            let cycle_phases: Vec<PhaseId> = in_degree
+                .into_iter()
+                .filter(|(_, d)| *d > 0)
+                .map(|(k, _)| k.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            return Err(PlanSkeletonError::CycleDetected {
+                phases: cycle_phases,
+            });
+        }
+        Ok(())
+    }
+
+    /// BFS propagation of contract changes through dependents.
+    ///
+    /// Starting from `changed_phase_id`, traverses `depended_by`
+    /// edges via BFS. Each reached phase (except the source) is
+    /// flagged and recorded in SSB as a `plan_update`.
+    /// Returns the list of flagged phase IDs.
+    ///
+    /// Uses a visited set to prevent diamond-topology duplicates.
+    pub async fn propagate_changes(
+        &self,
+        changed_phase_id: &PhaseId,
+        ssb: &Ssb,
+    ) -> Result<Vec<PhaseId>, PlanSkeletonError> {
+        if !self.phases.contains_key(changed_phase_id) {
+            return Err(PlanSkeletonError::PhaseNotFound(
+                changed_phase_id.clone(),
+            ));
+        }
+        let mut visited: HashSet<PhaseId> =
+            HashSet::new();
+        let mut queue: VecDeque<PhaseId> =
+            VecDeque::new();
+        let mut flagged: Vec<PhaseId> = Vec::new();
+
+        queue.push_back(changed_phase_id.clone());
+        visited.insert(changed_phase_id.clone());
+
+        while let Some(current) = queue.pop_front() {
+            let phase = match self.phases.get(&current) {
+                Some(p) => p,
+                // Phantom depended_by ref — skip silently.
+                None => continue,
+            };
+            if current != *changed_phase_id {
+                flagged.push(current.clone());
+                let payload =
+                    SsbPayload::PlanUpdate(
+                        PlanUpdatePayload {
+                            plan_hash: self
+                                .pipeline_id
+                                .clone(),
+                            phase: current.clone(),
+                            step: changed_phase_id
+                                .clone(),
+                        },
+                    );
+                ssb.write_payload(
+                    "plan_skeleton",
+                    0,
+                    payload,
+                    vec![],
+                )
+                .await
+                .map_err(|e| {
+                    PlanSkeletonError::SsbWrite(
+                        e.to_string(),
+                    )
+                })?;
+            }
+            for dep in &phase.depended_by {
+                if !visited.contains(dep) {
+                    visited.insert(dep.clone());
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+        Ok(flagged)
+    }
+
+    /// Split a phase into sub-phases at the given split points.
+    ///
+    /// `split_points` determines boundaries: N split points produce
+    /// N+1 sub-phases. Sub-phase IDs: `{phase_id}_1` .. `{phase_id}_{n}`.
+    ///
+    /// When `preserve_contracts` is true:
+    /// - First sub-phase inherits original inputs.
+    /// - Last sub-phase inherits original outputs.
+    /// - Adjacent sub-phases get internal contracts.
+    ///
+    /// Max split depth is 2. Attempting to split a phase at depth >= 2
+    /// returns `SplitDepthExceeded`.
+    pub fn split_phase(
+        &mut self,
+        phase_id: &PhaseId,
+        split_points: &[String],
+        preserve_contracts: bool,
+    ) -> Result<(), PlanSkeletonError> {
+        let original = self
+            .phases
+            .get(phase_id)
+            .ok_or_else(|| {
+                PlanSkeletonError::PhaseNotFound(
+                    phase_id.clone(),
+                )
+            })?
+            .clone();
+
+        if original.split_depth >= 2 {
+            return Err(
+                PlanSkeletonError::SplitDepthExceeded,
+            );
+        }
+
+        let sub_count = split_points.len() + 1;
+        let new_depth = original.split_depth + 1;
+        let mut sub_phases: Vec<PhaseEntry> =
+            Vec::with_capacity(sub_count);
+
+        for i in 1..=sub_count {
+            let sub_id =
+                format!("{phase_id}_{i}");
+            let goal = if i <= split_points.len() {
+                split_points[i - 1].clone()
+            } else {
+                original.goal.clone()
+            };
+            let truncate_at = goal
+                .char_indices()
+                .nth(GOAL_MAX_LEN)
+                .map_or(goal.len(), |(idx, _)| idx);
+            let goal_str = &goal[..truncate_at];
+            let mut entry =
+                PhaseEntry::new(&sub_id, goal_str)?;
+            entry.split_depth = new_depth;
+            entry.version = original.version;
+
+            if preserve_contracts {
+                if i == 1 {
+                    entry.inputs =
+                        original.inputs.clone();
+                }
+                if i == sub_count {
+                    entry.outputs =
+                        original.outputs.clone();
+                }
+                // Internal contracts: output of Bi -> input of Bi+1
+                if i < sub_count {
+                    let internal_name = format!(
+                        "{}::split_output",
+                        sub_id
+                    );
+                    entry.outputs.push(ContractRef {
+                        name: internal_name.clone(),
+                        type_signature:
+                            "fn() -> SplitData"
+                                .to_owned(),
+                        invariants: vec![],
+                    });
+                }
+                if i > 1 {
+                    let prev_id = format!(
+                        "{phase_id}_{}",
+                        i - 1
+                    );
+                    let internal_name = format!(
+                        "{}::split_output",
+                        prev_id
+                    );
+                    entry.inputs.push(ContractRef {
+                        name: internal_name,
+                        type_signature:
+                            "fn() -> SplitData"
+                                .to_owned(),
+                        invariants: vec![],
+                    });
+                }
+            }
+
+            // Wire dependency chain: Bi depends on Bi-1
+            if i > 1 {
+                let prev_id = format!(
+                    "{phase_id}_{}",
+                    i - 1
+                );
+                entry.depends_on.push(prev_id);
+            } else {
+                // First sub-phase inherits original's depends_on
+                entry.depends_on =
+                    original.depends_on.clone();
+            }
+
+            // Last sub-phase inherits original's depended_by
+            if i == sub_count {
+                entry.depended_by =
+                    original.depended_by.clone();
+            }
+
+            entry.constraints =
+                original.constraints.clone();
+
+            sub_phases.push(entry);
+        }
+
+        // Wire depended_by for adjacent sub-phases
+        for i in 0..sub_phases.len() - 1 {
+            let next_id =
+                sub_phases[i + 1].phase_id.clone();
+            sub_phases[i].depended_by.push(next_id);
+        }
+
+        // Update upstream phases: replace phase_id in their depended_by with first sub-phase
+        let first_sub_id =
+            sub_phases[0].phase_id.clone();
+        for dep_id in &original.depends_on {
+            if let Some(dep) =
+                self.phases.get_mut(dep_id)
+            {
+                if let Some(pos) = dep
+                    .depended_by
+                    .iter()
+                    .position(|d| d == phase_id)
+                {
+                    dep.depended_by[pos] =
+                        first_sub_id.clone();
+                }
+            }
+        }
+
+        // Update downstream phases: replace phase_id in their depends_on with last sub-phase
+        let last_sub_id =
+            sub_phases.last()
+                .map(|p| p.phase_id.clone())
+                .unwrap_or_default();
+        for dep_id in &original.depended_by {
+            if let Some(dep) =
+                self.phases.get_mut(dep_id)
+            {
+                if let Some(pos) = dep
+                    .depends_on
+                    .iter()
+                    .position(|d| d == phase_id)
+                {
+                    dep.depends_on[pos] =
+                        last_sub_id.clone();
+                }
+            }
+        }
+
+        // Replace original with sub-phases preserving insertion order.
+        // Rebuild the map: entries before original, then sub-phases,
+        // then entries after original.
+        let mut new_phases: IndexMap<PhaseId, PhaseEntry> =
+            IndexMap::with_capacity(
+                self.phases.len() - 1 + sub_phases.len(),
+            );
+        for (id, entry) in self.phases.drain(..) {
+            if id == *phase_id {
+                for sub in sub_phases.drain(..) {
+                    new_phases.insert(
+                        sub.phase_id.clone(),
+                        sub,
+                    );
+                }
+            } else {
+                new_phases.insert(id, entry);
+            }
+        }
+        self.phases = new_phases;
+
         Ok(())
     }
 
@@ -668,6 +1019,9 @@ impl PlanSkeleton {
         ssb: &Ssb,
         previous: Option<&PlanSkeleton>,
     ) -> Result<(), PlanSkeletonError> {
+        // Cycle detection: reject invalid DAGs before any write.
+        self.kahn_cycle_check()?;
+
         // Version enforcement: if contracts changed, versions must
         // have been incremented.
         if let Some(prev) = previous {
@@ -1806,5 +2160,443 @@ mod tests {
         assert!(ctx.contracts.input_contracts.is_empty());
         assert!(ctx.contracts.output_contracts.is_empty());
         assert!(!ctx.reduced);
+    }
+
+    // -- 3G.6 cycle detection tests --
+
+    fn make_linear_dag() -> PlanSkeleton {
+        let mut skel = PlanSkeleton::new("dag-pipe");
+        let mut a =
+            PhaseEntry::new("A", "phase A").unwrap();
+        a.depended_by.push("B".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.depends_on.push("A".into());
+        b.depended_by.push("C".into());
+        skel.add_phase(b).unwrap();
+
+        let mut c =
+            PhaseEntry::new("C", "phase C").unwrap();
+        c.depends_on.push("B".into());
+        c.depended_by.push("D".into());
+        skel.add_phase(c).unwrap();
+
+        let mut d =
+            PhaseEntry::new("D", "phase D").unwrap();
+        d.depends_on.push("C".into());
+        skel.add_phase(d).unwrap();
+
+        skel
+    }
+
+    #[test]
+    fn kahn_acyclic_linear_chain() {
+        let skel = make_linear_dag();
+        assert!(skel.kahn_cycle_check().is_ok());
+    }
+
+    #[test]
+    fn kahn_cycle_detected_three_phases() {
+        let mut skel = PlanSkeleton::new("cycle-pipe");
+        let mut a =
+            PhaseEntry::new("A", "phase A").unwrap();
+        a.depends_on.push("C".into());
+        a.depended_by.push("B".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.depends_on.push("A".into());
+        b.depended_by.push("C".into());
+        skel.add_phase(b).unwrap();
+
+        let mut c =
+            PhaseEntry::new("C", "phase C").unwrap();
+        c.depends_on.push("B".into());
+        c.depended_by.push("A".into());
+        skel.add_phase(c).unwrap();
+
+        let err = skel.kahn_cycle_check().unwrap_err();
+        match err {
+            PlanSkeletonError::CycleDetected {
+                phases,
+            } => {
+                assert_eq!(
+                    phases,
+                    vec!["A", "B", "C"]
+                );
+            }
+            other => panic!(
+                "expected CycleDetected, got: {other}"
+            ),
+        }
+    }
+
+    #[test]
+    fn kahn_empty_skeleton_ok() {
+        let skel = PlanSkeleton::new("empty-pipe");
+        assert!(skel.kahn_cycle_check().is_ok());
+    }
+
+    #[tokio::test]
+    async fn write_rejects_cyclic_graph() {
+        let tmp = TempDir::new().unwrap();
+        let provider = MockProvider::new(4);
+        let ssb = make_ssb(tmp.path());
+
+        let mut skel = PlanSkeleton::new("cyc-pipe");
+        let mut a =
+            PhaseEntry::new("A", "phase A").unwrap();
+        a.depends_on.push("B".into());
+        a.depended_by.push("B".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.depends_on.push("A".into());
+        b.depended_by.push("A".into());
+        skel.add_phase(b).unwrap();
+
+        let path = tmp.path().join("skeleton.toml");
+        let result = skel
+            .write_to_file(
+                &path, &provider, &ssb, None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cycle detected"));
+    }
+
+    // -- 3G.6 propagate_changes tests --
+
+    #[tokio::test]
+    async fn propagate_chain_flags_all_downstream() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_linear_dag();
+        let ssb = make_ssb(tmp.path());
+
+        let flagged = skel
+            .propagate_changes(
+                &"A".to_owned(),
+                &ssb,
+            )
+            .await
+            .unwrap();
+        assert_eq!(flagged, vec!["B", "C", "D"]);
+    }
+
+    #[tokio::test]
+    async fn propagate_diamond_no_duplicates() {
+        let tmp = TempDir::new().unwrap();
+        let mut skel = PlanSkeleton::new("diamond-pipe");
+
+        let mut a =
+            PhaseEntry::new("A", "phase A").unwrap();
+        a.depended_by.push("B".into());
+        a.depended_by.push("C".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.depends_on.push("A".into());
+        b.depended_by.push("D".into());
+        skel.add_phase(b).unwrap();
+
+        let mut c =
+            PhaseEntry::new("C", "phase C").unwrap();
+        c.depends_on.push("A".into());
+        c.depended_by.push("D".into());
+        skel.add_phase(c).unwrap();
+
+        let mut d =
+            PhaseEntry::new("D", "phase D").unwrap();
+        d.depends_on.push("B".into());
+        d.depends_on.push("C".into());
+        skel.add_phase(d).unwrap();
+
+        let ssb = make_ssb(tmp.path());
+        let flagged = skel
+            .propagate_changes(
+                &"A".to_owned(),
+                &ssb,
+            )
+            .await
+            .unwrap();
+
+        // D must appear exactly once
+        let d_count = flagged
+            .iter()
+            .filter(|p| p.as_str() == "D")
+            .count();
+        assert_eq!(
+            d_count, 1,
+            "D must be flagged exactly once, got {d_count}"
+        );
+        assert_eq!(flagged.len(), 3); // B, C, D
+    }
+
+    #[tokio::test]
+    async fn propagate_isolated_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let mut skel = PlanSkeleton::new("iso-pipe");
+        let e =
+            PhaseEntry::new("E", "isolated").unwrap();
+        skel.add_phase(e).unwrap();
+
+        let ssb = make_ssb(tmp.path());
+        let flagged = skel
+            .propagate_changes(
+                &"E".to_owned(),
+                &ssb,
+            )
+            .await
+            .unwrap();
+        assert!(
+            flagged.is_empty(),
+            "isolated phase should flag nobody"
+        );
+    }
+
+    #[tokio::test]
+    async fn propagate_unknown_phase_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let skel = PlanSkeleton::new("empty-pipe");
+        let ssb = make_ssb(tmp.path());
+
+        let result = skel
+            .propagate_changes(
+                &"GHOST".to_owned(),
+                &ssb,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("phase not found"));
+    }
+
+    #[tokio::test]
+    async fn propagate_records_ssb_entries() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_linear_dag();
+        let ssb = make_ssb(tmp.path());
+
+        let flagged = skel
+            .propagate_changes(
+                &"A".to_owned(),
+                &ssb,
+            )
+            .await
+            .unwrap();
+
+        let entries = ssb
+            .query_by_type(SsbActionType::PlanUpdate)
+            .unwrap();
+        assert_eq!(
+            entries.len(),
+            flagged.len(),
+            "one SSB entry per flagged phase"
+        );
+    }
+
+    // -- 3G.6 split_phase tests --
+
+    #[test]
+    fn split_phase_basic_two_way() {
+        let mut skel = make_linear_dag();
+        skel.split_phase(
+            &"B".to_owned(),
+            &["sub-goal 1".to_owned()],
+            false,
+        )
+        .unwrap();
+
+        assert!(
+            !skel.phases.contains_key("B"),
+            "original B must be removed"
+        );
+        assert!(skel.phases.contains_key("B_1"));
+        assert!(skel.phases.contains_key("B_2"));
+
+        // B_1 depends on A, B_2 depends on B_1
+        assert_eq!(
+            skel.phases["B_1"].depends_on,
+            vec!["A"]
+        );
+        assert_eq!(
+            skel.phases["B_2"].depends_on,
+            vec!["B_1"]
+        );
+
+        // B_2 is depended_by C (inherited from B)
+        assert!(
+            skel.phases["B_2"]
+                .depended_by
+                .contains(&"C".to_owned()),
+        );
+
+        // Split depth = 1
+        assert_eq!(skel.phases["B_1"].split_depth, 1);
+        assert_eq!(skel.phases["B_2"].split_depth, 1);
+    }
+
+    #[test]
+    fn split_phase_preserves_contracts() {
+        let mut skel = PlanSkeleton::new("split-pipe");
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.inputs.push(ContractRef {
+            name: "x_in".into(),
+            type_signature: "fn() -> X".into(),
+            invariants: vec![],
+        });
+        b.outputs.push(ContractRef {
+            name: "y_out".into(),
+            type_signature: "fn() -> Y".into(),
+            invariants: vec![],
+        });
+        skel.add_phase(b).unwrap();
+
+        skel.split_phase(
+            &"B".to_owned(),
+            &["split-goal".to_owned()],
+            true,
+        )
+        .unwrap();
+
+        // B_1 inherits B's inputs
+        assert_eq!(
+            skel.phases["B_1"].inputs[0].name,
+            "x_in"
+        );
+        // B_2 inherits B's outputs
+        assert_eq!(
+            skel.phases["B_2"].outputs[0].name,
+            "y_out"
+        );
+        // B_1 has internal output contract
+        assert!(skel.phases["B_1"]
+            .outputs
+            .iter()
+            .any(|c| c.name == "B_1::split_output"));
+        // B_2 has internal input contract
+        assert!(skel.phases["B_2"]
+            .inputs
+            .iter()
+            .any(|c| c.name == "B_1::split_output"));
+    }
+
+    #[test]
+    fn split_phase_depth_exceeded() {
+        let mut skel = PlanSkeleton::new("depth-pipe");
+        let mut b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        b.split_depth = 2; // already at max
+        skel.add_phase(b).unwrap();
+
+        let result = skel.split_phase(
+            &"B".to_owned(),
+            &["g1".to_owned()],
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("split depth exceeded"));
+    }
+
+    #[test]
+    fn split_phase_not_found() {
+        let mut skel = PlanSkeleton::new("empty-pipe");
+        let result = skel.split_phase(
+            &"GHOST".to_owned(),
+            &["g".to_owned()],
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("phase not found"));
+    }
+
+    #[test]
+    fn split_phase_three_way() {
+        let mut skel = PlanSkeleton::new("tri-pipe");
+        let b =
+            PhaseEntry::new("B", "phase B").unwrap();
+        skel.add_phase(b).unwrap();
+
+        skel.split_phase(
+            &"B".to_owned(),
+            &[
+                "g1".to_owned(),
+                "g2".to_owned(),
+            ],
+            false,
+        )
+        .unwrap();
+
+        assert!(skel.phases.contains_key("B_1"));
+        assert!(skel.phases.contains_key("B_2"));
+        assert!(skel.phases.contains_key("B_3"));
+        assert!(!skel.phases.contains_key("B"));
+    }
+
+    #[test]
+    fn split_updates_upstream_depended_by() {
+        let mut skel = make_linear_dag();
+        skel.split_phase(
+            &"B".to_owned(),
+            &["g1".to_owned()],
+            false,
+        )
+        .unwrap();
+
+        // A's depended_by should now reference B_1, not B
+        assert!(
+            skel.phases["A"]
+                .depended_by
+                .contains(&"B_1".to_owned()),
+            "A should depend_by B_1"
+        );
+        assert!(
+            !skel.phases["A"]
+                .depended_by
+                .contains(&"B".to_owned()),
+            "A should no longer depend_by B"
+        );
+    }
+
+    #[test]
+    fn split_updates_downstream_depends_on() {
+        let mut skel = make_linear_dag();
+        skel.split_phase(
+            &"B".to_owned(),
+            &["g1".to_owned()],
+            false,
+        )
+        .unwrap();
+
+        // C's depends_on should now reference B_2, not B
+        assert!(
+            skel.phases["C"]
+                .depends_on
+                .contains(&"B_2".to_owned()),
+            "C should depend_on B_2"
+        );
+        assert!(
+            !skel.phases["C"]
+                .depends_on
+                .contains(&"B".to_owned()),
+            "C should no longer depend_on B"
+        );
     }
 }
