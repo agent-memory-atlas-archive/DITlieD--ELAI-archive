@@ -562,6 +562,7 @@ pub trait SsbReader {
         superstep: i64,
     ) -> Result<Vec<String>, SsbError>;
     fn last_seq(&self) -> Result<Option<i64>, SsbError>;
+    fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -978,6 +979,19 @@ impl SsbReader for Ssb {
         let mut stmt = conn.prepare("SELECT MAX(seq) FROM ssb WHERE project_id = ?1")?;
         let result: Option<i64> = stmt.query_row(params![self.project_id], |row| row.get(0))?;
         Ok(result)
+    }
+
+    fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+             FROM ssb WHERE seq = ?1 AND project_id = ?2 LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![seq, self.project_id], row_to_entry)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row.map_err(SsbError::Sqlite)?)),
+            None => Ok(None),
+        }
     }
 }
 

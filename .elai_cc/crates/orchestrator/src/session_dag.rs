@@ -9,6 +9,8 @@ use uuid::Uuid;
 use elai_core::clock::ClockProvider;
 use elai_core::entropy::EntropySource;
 
+use crate::ssb::SsbReader;
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_ACTIVE_BRANCHES: usize = 3;
 pub const MAX_PARENT_DEPTH: usize = 1000;
@@ -44,6 +46,8 @@ pub enum SessionDagError {
     TrimBudgetExceeded { actual: usize, target: usize },
     #[error("invalid trim config: {reason}")]
     InvalidTrimConfig { reason: &'static str },
+    #[error("stub seq {seq} recovery failed: {reason}")]
+    StubRecoveryFailed { seq: u32, reason: String },
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -339,6 +343,7 @@ impl SessionDag {
         Ok(branches)
     }
 
+    #[cfg(test)]
     pub(crate) fn db(&self) -> &Connection {
         &self.db
     }
@@ -1117,6 +1122,131 @@ impl SessionDag {
             _ => {}
         }
         Ok(paths)
+    }
+
+    // ------------------------------------------------------------------
+    // Stub recovery (3H.5)
+    // ------------------------------------------------------------------
+
+    /// Recover all stubbed messages in a snapshot by fetching original payloads
+    /// from SSB and verifying blake3 integrity hashes.
+    ///
+    /// # Contract
+    /// The SSB entry at `stub.ssb_seq` must contain the **raw content bytes**
+    /// (i.e. written via `Ssb::write()`, not `write_payload()` which adds msgpack
+    /// encoding). `trim_context` hashes `msg.content` directly; recovery verifies
+    /// `blake3(entry.payload) == stub.summary_hash`. Callers populating `stub_ssb_seq`
+    /// on `TrimmedMessage` are responsible for this invariant.
+    pub fn recover_stubs(
+        &self,
+        snap_id: &str,
+        ssb: &dyn SsbReader,
+    ) -> Result<Vec<TrimmedMessage>, SessionDagError> {
+        let (_snapshot, messages) = self.load_snapshot(snap_id)?;
+        let mut result = messages;
+
+        for msg in &mut result {
+            if !msg.is_stubbed {
+                continue;
+            }
+            let stub: Stub = rmp_serde::from_slice(&msg.content).map_err(|_| {
+                SessionDagError::StubRecoveryFailed {
+                    seq: msg.seq,
+                    reason: "stub deserialization failed".to_owned(),
+                }
+            })?;
+
+            let ssb_seq = safe_i64(stub.ssb_seq).map_err(|_| {
+                SessionDagError::StubRecoveryFailed {
+                    seq: msg.seq,
+                    reason: "ssb_seq overflow".to_owned(),
+                }
+            })?;
+            let entry = ssb.query_by_seq(ssb_seq).map_err(|_| {
+                SessionDagError::StubRecoveryFailed {
+                    seq: msg.seq,
+                    reason: "SSB query failed".to_owned(),
+                }
+            })?;
+            let entry = entry.ok_or_else(|| SessionDagError::StubRecoveryFailed {
+                seq: msg.seq,
+                reason: "SSB entry missing".to_owned(),
+            })?;
+
+            let hash: [u8; 32] = blake3::hash(&entry.payload).into();
+            if hash != stub.summary_hash {
+                return Err(SessionDagError::StubRecoveryFailed {
+                    seq: msg.seq,
+                    reason: "integrity check failed".to_owned(),
+                });
+            }
+
+            msg.content = entry.payload.to_vec();
+            msg.is_stubbed = false;
+            msg.stub_ssb_seq = None;
+        }
+
+        Ok(result)
+    }
+
+    /// Recover a single stubbed message by seq within a snapshot.
+    /// Returns the message unchanged if it is not stubbed.
+    pub fn recover_single_stub(
+        &self,
+        snap_id: &str,
+        seq: u32,
+        ssb: &dyn SsbReader,
+    ) -> Result<TrimmedMessage, SessionDagError> {
+        let (_snapshot, messages) = self.load_snapshot(snap_id)?;
+        let mut msg = messages
+            .into_iter()
+            .find(|m| m.seq == seq)
+            .ok_or_else(|| SessionDagError::StubRecoveryFailed {
+                seq,
+                reason: "message seq not found in snapshot".to_owned(),
+            })?;
+
+        if !msg.is_stubbed {
+            return Ok(msg);
+        }
+
+        let stub: Stub = rmp_serde::from_slice(&msg.content).map_err(|_| {
+            SessionDagError::StubRecoveryFailed {
+                seq: msg.seq,
+                reason: "stub deserialization failed".to_owned(),
+            }
+        })?;
+
+        let ssb_seq = safe_i64(stub.ssb_seq).map_err(|_| {
+            SessionDagError::StubRecoveryFailed {
+                seq: msg.seq,
+                reason: "ssb_seq overflow".to_owned(),
+            }
+        })?;
+        let entry = ssb.query_by_seq(ssb_seq).map_err(|_| {
+            SessionDagError::StubRecoveryFailed {
+                seq: msg.seq,
+                reason: "SSB query failed".to_owned(),
+            }
+        })?;
+        let entry = entry.ok_or_else(|| SessionDagError::StubRecoveryFailed {
+            seq: msg.seq,
+            reason: "SSB entry missing".to_owned(),
+        })?;
+
+        let hash: [u8; 32] = blake3::hash(&entry.payload).into();
+        if hash != stub.summary_hash {
+            return Err(SessionDagError::StubRecoveryFailed {
+                seq: msg.seq,
+                reason: "integrity check failed".to_owned(),
+            });
+        }
+
+        msg.content = entry.payload.to_vec();
+        msg.is_stubbed = false;
+        msg.stub_ssb_seq = None;
+
+        Ok(msg)
     }
 }
 
@@ -1942,7 +2072,7 @@ mod tests {
         let path = db_path(&dir);
         let mut entropy = SeededRng::new(100);
         let clock = OsClock;
-        let mut dag = SessionDag::new("s-branch", &path, &mut entropy, &clock).unwrap();
+        let dag = SessionDag::new("s-branch", &path, &mut entropy, &clock).unwrap();
 
         let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
         let root = make_snapshot(&root_id, None, "s-branch", 1000, None);

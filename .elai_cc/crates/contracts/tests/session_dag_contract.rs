@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use elai_core::clock::OsClock;
 use elai_core::SeededRng;
@@ -7,6 +8,7 @@ use elai_orchestrator::session_dag::{
     TrimConfig, TrimmedMessage, MAX_ACTIVE_BRANCHES, MAX_PARENT_DEPTH,
     PROMPT_CACHE_PREFIX_BOUNDARY, SCHEMA_VERSION, STUB_THRESHOLD_MAX, STUB_THRESHOLD_MIN,
 };
+use elai_orchestrator::ssb::{SsbActionType, SsbEntry, SsbError, SsbReader};
 use tempfile::TempDir;
 
 // Compile-time constant assertions
@@ -115,6 +117,12 @@ fn error_variants_exist() {
         reason: "test reason",
     };
     assert!(e2.to_string().contains("test reason"));
+
+    let e3 = SessionDagError::StubRecoveryFailed {
+        seq: 0,
+        reason: String::new(),
+    };
+    assert!(e3.to_string().contains("stub seq 0"));
 }
 
 #[test]
@@ -269,4 +277,260 @@ fn close_branch_signature_callable() {
     let result: Result<(), SessionDagError> = dag.close_branch("c1");
     assert!(result.is_ok());
     assert!(dag.active_branches().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 3H.5 — Stub recovery contracts
+// ---------------------------------------------------------------------------
+
+/// Mock SsbReader for contract tests — returns pre-configured entries by seq.
+struct MockSsbReader {
+    entries: HashMap<i64, SsbEntry>,
+}
+
+impl MockSsbReader {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, seq: i64, payload: Vec<u8>) {
+        self.entries.insert(
+            seq,
+            SsbEntry {
+                seq,
+                project_id: "p-mock".to_owned(),
+                session_id: "s-mock".to_owned(),
+                agent_id: "a-mock".to_owned(),
+                superstep: 0,
+                action_type: SsbActionType::ToolResult,
+                payload: Arc::from(payload.as_slice()),
+                created_at: 1000,
+            },
+        );
+    }
+}
+
+impl SsbReader for MockSsbReader {
+    fn query_by_session(&self, _session_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_by_file(&self, _file_paths: &[&str]) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_by_type(&self, _action_type: SsbActionType) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_by_superstep(&self, _superstep: i64) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_conflict(
+        &self,
+        _file_paths: &[&str],
+        _session_id: &str,
+        _superstep: i64,
+    ) -> Result<Vec<String>, SsbError> {
+        Ok(vec![])
+    }
+    fn last_seq(&self) -> Result<Option<i64>, SsbError> {
+        Ok(None)
+    }
+    fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError> {
+        Ok(self.entries.get(&seq).cloned())
+    }
+}
+
+#[test]
+fn recover_stubs_signature_callable() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-contract-rec", &path, &mut entropy, &clock).unwrap();
+
+    let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(100));
+    let root = make_root_snapshot("s-contract-rec", &root_id);
+    dag.save_snapshot(&root, &[]).unwrap();
+
+    let ssb = MockSsbReader::new();
+    let result: Result<Vec<TrimmedMessage>, SessionDagError> = dag.recover_stubs(&root_id, &ssb);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn recover_single_stub_signature_callable() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-contract-rss", &path, &mut entropy, &clock).unwrap();
+
+    let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(100));
+    let root = make_root_snapshot("s-contract-rss", &root_id);
+    dag.save_snapshot(&root, &[]).unwrap();
+
+    let ssb = MockSsbReader::new();
+    let result: Result<TrimmedMessage, SessionDagError> =
+        dag.recover_single_stub(&root_id, 1, &ssb);
+    // seq=1 does not exist in the empty snapshot — must be StubRecoveryFailed, not SnapshotNotFound
+    assert!(matches!(
+        result,
+        Err(SessionDagError::StubRecoveryFailed { seq: 1, .. })
+    ));
+}
+
+#[test]
+fn stub_recovery_failed_error_variants() {
+    let e = SessionDagError::StubRecoveryFailed {
+        seq: 42,
+        reason: "SSB entry missing".to_owned(),
+    };
+    let msg = e.to_string();
+    assert!(msg.contains("42"), "should contain seq");
+    assert!(msg.contains("SSB entry missing"), "should contain reason");
+}
+
+#[test]
+fn recover_stubs_no_stubs_unchanged() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-contract-ns", &path, &mut entropy, &clock).unwrap();
+
+    let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(100));
+    let root = make_root_snapshot("s-contract-ns", &root_id);
+    let messages = vec![
+        TrimmedMessage {
+            seq: 1,
+            role: DagMessageRole::User,
+            content: b"hello".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 2,
+            role: DagMessageRole::Assistant,
+            content: b"world".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+    ];
+    dag.save_snapshot(&root, &messages).unwrap();
+
+    let ssb = MockSsbReader::new();
+    let recovered = dag.recover_stubs(&root_id, &ssb).unwrap();
+    assert_eq!(recovered.len(), 2);
+    assert!(!recovered[0].is_stubbed);
+    assert!(!recovered[1].is_stubbed);
+    assert_eq!(recovered[0].content, b"hello");
+    assert_eq!(recovered[1].content, b"world");
+}
+
+#[test]
+fn recover_single_stub_non_stubbed_unchanged() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-contract-nsu", &path, &mut entropy, &clock).unwrap();
+
+    let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(100));
+    let root = make_root_snapshot("s-contract-nsu", &root_id);
+    let messages = vec![TrimmedMessage {
+        seq: 1,
+        role: DagMessageRole::User,
+        content: b"not a stub".to_vec(),
+        is_stubbed: false,
+        stub_ssb_seq: None,
+    }];
+    dag.save_snapshot(&root, &messages).unwrap();
+
+    let ssb = MockSsbReader::new();
+    let msg = dag.recover_single_stub(&root_id, 1, &ssb).unwrap();
+    assert!(!msg.is_stubbed);
+    assert_eq!(msg.content, b"not a stub");
+}
+
+#[test]
+fn round_trip_trim_save_load_recover() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-contract-rt", &path, &mut entropy, &clock).unwrap();
+
+    // Original large payload (>500 bytes to exceed stub_threshold)
+    let original_payload: Vec<u8> = (0..2048u16).flat_map(|i| i.to_le_bytes()).collect();
+    let ssb_seq: u64 = 7;
+
+    // Build messages with one Tool message that will be stubbed
+    let messages = vec![
+        TrimmedMessage {
+            seq: 1,
+            role: DagMessageRole::System,
+            content: b"system".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 2,
+            role: DagMessageRole::User,
+            content: b"user".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 3,
+            role: DagMessageRole::Assistant,
+            content: b"assistant".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 4,
+            role: DagMessageRole::Tool,
+            content: original_payload.clone(),
+            is_stubbed: false,
+            stub_ssb_seq: Some(ssb_seq),
+        },
+    ];
+
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let valid_seqs: HashSet<u64> = [ssb_seq].into_iter().collect();
+    let trimmed = dag.trim_context(&messages, config, &valid_seqs).unwrap();
+
+    // The Tool message should be stubbed
+    assert!(trimmed[3].is_stubbed, "Tool message should be stubbed");
+    assert_eq!(trimmed[3].stub_ssb_seq, Some(ssb_seq));
+
+    // Save the trimmed snapshot
+    let snap_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+    let snap = make_root_snapshot("s-contract-rt", &snap_id);
+    dag.save_snapshot(&snap, &trimmed).unwrap();
+
+    // Set up mock SSB with the original payload at the expected seq
+    let mut ssb = MockSsbReader::new();
+    ssb.insert(ssb_seq as i64, original_payload.clone());
+
+    // Recover stubs
+    let recovered = dag.recover_stubs(&snap_id, &ssb).unwrap();
+    assert_eq!(recovered.len(), 4);
+    assert!(!recovered[3].is_stubbed, "should be un-stubbed after recovery");
+    assert_eq!(recovered[3].stub_ssb_seq, None, "stub_ssb_seq should be cleared");
+    assert_eq!(
+        recovered[3].content, original_payload,
+        "recovered content must be byte-equal to original"
+    );
+
+    // Verify non-stubbed messages unchanged
+    assert_eq!(recovered[0].content, b"system");
+    assert_eq!(recovered[1].content, b"user");
+    assert_eq!(recovered[2].content, b"assistant");
 }
