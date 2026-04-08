@@ -63,7 +63,7 @@ fn contract_all_8_roles_constructible() {
 }
 
 #[test]
-fn contract_spawn_parallel_sequential_returns_all() {
+fn contract_spawn_parallel_returns_all() {
     let mut p = pool(u64::MAX);
     let tasks = vec![
         (AgentRole::Executor, "a".into()),
@@ -86,5 +86,23 @@ fn contract_designer_grc_config_differs_from_executor() {
     assert_ne!(
         designer.grc_config.required_steps, executor.grc_config.required_steps,
         "CONTRACT: Designer and Executor must have different required_steps"
+    );
+}
+
+#[test]
+fn contract_max_concurrent_returns_at_least_one() {
+    // VRAM-aware concurrency: max_concurrent must always return >= 1
+    let p = pool(u64::MAX);
+    assert!(
+        p.max_concurrent() >= 1,
+        "CONTRACT: max_concurrent must return at least 1"
+    );
+
+    // Zero VRAM: fallback to 1 (sequential), never 0
+    let p_zero = pool(0);
+    assert_eq!(
+        p_zero.max_concurrent(),
+        1,
+        "CONTRACT: max_concurrent must return 1 when VRAM is zero"
     );
 }

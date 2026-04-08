@@ -137,6 +137,10 @@ pub trait AgentPool {
         tasks: Vec<(AgentRole, String)>,
     ) -> Result<Vec<AgentHandle>, AgentPoolError>;
 
+    /// Maximum number of agents that can execute concurrently based on VRAM budget.
+    /// Engine uses this to limit JoinSet fan-out width.
+    fn max_concurrent(&self) -> usize;
+
     fn communicate(
         &mut self,
         from: Uuid,
@@ -220,11 +224,26 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         Ok(handle)
     }
 
+    fn max_concurrent(&self) -> usize {
+        let available = self.model_pool.available_vram();
+        let per_agent = self.config.vram_required_bytes;
+        // Guard: either zero → fallback to sequential (1 at a time)
+        if available == 0 || per_agent == 0 {
+            return 1;
+        }
+        // floor division, clamped to at least 1; safe on 32-bit targets
+        let ratio = available / per_agent;
+        let computed = usize::try_from(ratio).unwrap_or(usize::MAX);
+        computed.max(1)
+    }
+
     fn spawn_parallel(
         &mut self,
         tasks: Vec<(AgentRole, String)>,
     ) -> Result<Vec<AgentHandle>, AgentPoolError> {
-        // Stub: sequential execution. True parallelism in Phase 3D.
+        // Creates handles synchronously in input order. Actual concurrent
+        // dispatch happens in BspEngine::execute_tasks_with_timeout via JoinSet.
+        // VRAM concurrency limit exposed via max_concurrent().
         let mut handles = Vec::with_capacity(tasks.len());
         for (role, task) in tasks {
             handles.push(self.spawn(role, task)?);
@@ -354,18 +373,18 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
             require_scope_enumeration: false,
             ..AgentGrcConfig::default()
         },
-        AgentRole::ContextCompiler | AgentRole::Researcher | AgentRole::MediaValidator => {
-            let role_name = match role {
-                AgentRole::ContextCompiler => "context_compiler",
-                AgentRole::Researcher => "researcher",
-                AgentRole::MediaValidator => "media_validator",
-                _ => unreachable!(),
-            };
-            AgentGrcConfig {
-                role: role_name.into(),
-                ..AgentGrcConfig::default()
-            }
-        }
+        AgentRole::ContextCompiler => AgentGrcConfig {
+            role: "context_compiler".into(),
+            ..AgentGrcConfig::default()
+        },
+        AgentRole::Researcher => AgentGrcConfig {
+            role: "researcher".into(),
+            ..AgentGrcConfig::default()
+        },
+        AgentRole::MediaValidator => AgentGrcConfig {
+            role: "media_validator".into(),
+            ..AgentGrcConfig::default()
+        },
     }
 }
 
@@ -608,6 +627,49 @@ mod tests {
     fn model_pool_below_threshold_rejects() {
         let mut pool = test_pool(VRAM_MIN_BYTES - 1);
         assert!(pool.spawn(AgentRole::Executor, "t".into()).is_err());
+    }
+
+    // -- 3D.5: VRAM-aware max_concurrent tests --
+
+    #[test]
+    fn max_concurrent_floor_division() {
+        // 2 GiB available, 1 GiB per agent → max_concurrent = 2
+        let available = 2 * 1024 * 1024 * 1024_u64;
+        let per_agent = 1024 * 1024 * 1024_u64;
+        let pool = InProcessAgentPool::new(
+            AgentPoolConfig {
+                vram_required_bytes: per_agent,
+                ..AgentPoolConfig::default()
+            },
+            SeededRng::new(42),
+            Arc::new(MockModelPool { vram: available }),
+        );
+        assert_eq!(pool.max_concurrent(), 2);
+    }
+
+    #[test]
+    fn max_concurrent_vram_zero_fallback() {
+        // available_vram = 0 → fallback to 1
+        let pool = InProcessAgentPool::new(
+            AgentPoolConfig::default(),
+            SeededRng::new(42),
+            Arc::new(MockModelPool { vram: 0 }),
+        );
+        assert_eq!(pool.max_concurrent(), 1);
+    }
+
+    #[test]
+    fn max_concurrent_per_agent_zero_guard() {
+        // per_agent_vram = 0 → no division by zero, fallback to 1
+        let pool = InProcessAgentPool::new(
+            AgentPoolConfig {
+                vram_required_bytes: 0,
+                ..AgentPoolConfig::default()
+            },
+            SeededRng::new(42),
+            Arc::new(MockModelPool { vram: u64::MAX }),
+        );
+        assert_eq!(pool.max_concurrent(), 1);
     }
 
     #[test]

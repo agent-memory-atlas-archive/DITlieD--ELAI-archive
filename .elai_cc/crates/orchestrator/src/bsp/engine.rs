@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -78,6 +79,10 @@ pub struct BspConfig {
     pub checkpoint_dir: PathBuf,
     pub session_id: String,
     pub project_id: String,
+    /// Simulated agent work duration per task. Defaults to ZERO (instant).
+    /// Phase 3C.2 replaces this with real agent execution futures.
+    /// Tests use non-zero values to prove concurrency and timeout reachability.
+    pub simulated_agent_work: Duration,
 }
 
 impl Default for BspConfig {
@@ -89,6 +94,7 @@ impl Default for BspConfig {
             checkpoint_dir: PathBuf::from("checkpoints"),
             session_id: String::new(),
             project_id: String::new(),
+            simulated_agent_work: Duration::ZERO,
         }
     }
 }
@@ -366,48 +372,109 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
         })
     }
 
-    /// Execute tasks with straggler timeout. Returns (completed, timed_out) pairs.
+    /// Execute tasks with straggler timeout via JoinSet concurrent dispatch.
+    /// Returns (completed, timed_out) pairs sorted in input (SSB seq) order.
     async fn execute_tasks_with_timeout(
         &mut self,
         tasks: &[(String, AgentRole, String)],
         ssb: &Ssb,
         superstep: u64,
     ) -> Result<(Vec<(String, AgentHandle)>, Vec<(String, AgentHandle)>), BspError> {
+        if tasks.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
         let pool_tasks: Vec<(AgentRole, String)> = tasks
             .iter()
             .map(|(_id, role, task)| (*role, task.clone()))
             .collect();
 
+        // Compute concurrency limit before spawning — available_vram() reflects
+        // pre-spawn state (correct for Phase 4F live hardware queries).
+        let max_concurrent = self.pool.max_concurrent();
         let handles = self.pool.spawn_parallel(pool_tasks)?;
+        let timeout_dur = self.config.straggler_timeout;
+
+        // Semaphore limits JoinSet fan-out to VRAM-computed concurrency
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let work_duration = self.config.simulated_agent_work;
+
+        // Build task metadata: (original_index, node_id, role, task_desc)
+        // needed for timeout-path placeholder handles
+        let task_meta: Vec<(usize, String, AgentRole, String)> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, (id, role, task))| (i, id.clone(), *role, task.clone()))
+            .collect();
+
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for (i, handle) in handles.into_iter().enumerate() {
+            let sem = semaphore.clone(); // ref-counted, no deep copy
+            let timeout = timeout_dur;
+            join_set.spawn(async move {
+                // Straggler timeout covers both permit acquisition and work.
+                // A hung agent holding a permit cannot stall queued tasks
+                // beyond the timeout boundary.
+                let result = tokio::time::timeout(timeout, async {
+                    let _permit = sem.acquire().await.map_err(|_| "semaphore closed")?;
+                    tokio::time::sleep(work_duration).await;
+                    Ok::<AgentHandle, &'static str>(handle)
+                })
+                .await;
+                // Flatten: Elapsed wraps Result<AgentHandle, &str>
+                match result {
+                    Ok(Ok(h)) => Ok((i, Ok(h))),
+                    Ok(Err(msg)) => Err(msg),
+                    Err(elapsed) => Ok((i, Err(elapsed))),
+                }
+            });
+        }
+
+        // Collect all results from JoinSet (arbitrary completion order)
+        let mut results: Vec<(usize, Result<AgentHandle, tokio::time::error::Elapsed>)> =
+            Vec::with_capacity(tasks.len());
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok(Ok((idx, timeout_result))) => {
+                    results.push((idx, timeout_result));
+                }
+                Ok(Err(msg)) => {
+                    return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
+                        format!("JoinSet task error: {msg}"),
+                    )));
+                }
+                Err(join_err) => {
+                    return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
+                        format!("JoinSet panic: {join_err}"),
+                    )));
+                }
+            }
+        }
+
+        // Sort by original task index to preserve SSB seq ordering
+        results.sort_by_key(|(idx, _)| *idx);
+
+        let _ = (ssb, superstep); // used in future phases for SSB recording
 
         let mut completed = Vec::new();
         let mut timed_out = Vec::new();
 
-        for (i, handle) in handles.into_iter().enumerate() {
-            let node_id = &tasks[i].0;
-            // Structural timeout wrapper: spawn_parallel is synchronous in 3D.2,
-            // so timeout only triggers if future phases make it async.
-            let timeout_result = tokio::time::timeout(
-                self.config.straggler_timeout,
-                std::future::ready(handle),
-            )
-            .await;
-
-            match timeout_result {
+        for (idx, result) in results {
+            let node_id = &task_meta[idx].1;
+            match result {
                 Ok(h) => completed.push((node_id.clone(), h)),
                 Err(_elapsed) => {
-                    // Straggler: timeout expired. This path only activates
-                    // when spawn_parallel becomes truly async in 3D.5.
-                    // For now, create a placeholder handle for the death event.
-                    // In practice this branch is unreachable with sync spawn_parallel.
-                    let _ = (ssb, superstep); // used in 3D.5
+                    // Straggler: timeout expired. Build placeholder handle
+                    // for the death event recorded by the caller.
+                    let role = task_meta[idx].2;
                     timed_out.push((node_id.clone(), AgentHandle {
                         agent_id: uuid::Uuid::nil(),
-                        role: tasks[i].1,
+                        role,
                         status: crate::agent_pool::AgentStatus::Failed,
-                        task: tasks[i].2.clone(),
+                        task: task_meta[idx].3.clone(),
                         active_files: Vec::new(),
-                        grc_config: crate::agent_pool::default_grc_config(&tasks[i].1),
+                        grc_config: crate::agent_pool::default_grc_config(&role),
                         scratch_dir: PathBuf::new(),
                     }));
                 }
@@ -874,10 +941,10 @@ mod tests {
         assert_eq!(ckpt.superstep, 0);
     }
 
-    // 7. straggler_timeout_classification
-    // Since spawn_parallel is synchronous, timeout never triggers.
-    // This test verifies the timeout infrastructure is wired by checking
-    // that a very short timeout doesn't cause issues with sync execution.
+    // 7. straggler_timeout_infrastructure
+    // Verifies that a very short timeout (1ms) with zero simulated work
+    // completes normally (simulated_agent_work defaults to Duration::ZERO).
+    // See test_straggler_timeout_reachable for the path with actual timeout.
     #[tokio::test]
     async fn straggler_timeout_infrastructure() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1361,5 +1428,139 @@ mod tests {
         assert_eq!(channels.deep_size_untracked(&erased_big), 0);
         let erased_small = ChannelId::<()>::new("small");
         assert!(channels.deep_size_untracked(&erased_small) >= 5_000_000);
+    }
+
+    // -- 3D.5: true parallelism, timeout reachability, result ordering --
+
+    struct ConfigurableModelPool {
+        vram: u64,
+    }
+    impl ModelPool for ConfigurableModelPool {
+        fn available_vram(&self) -> u64 {
+            self.vram
+        }
+    }
+
+    fn test_pool_with_vram(vram: u64) -> InProcessAgentPool<SeededRng> {
+        InProcessAgentPool::new(
+            AgentPoolConfig::default(),
+            SeededRng::new(42),
+            Arc::new(ConfigurableModelPool { vram }),
+        )
+    }
+
+    // 17. test_spawn_parallel_true_concurrency
+    // Two tasks each sleeping 100ms must complete in <250ms total,
+    // proving JoinSet concurrent dispatch (sequential would take >=200ms,
+    // but we want a margin; <250ms proves overlap).
+    #[tokio::test]
+    async fn test_spawn_parallel_true_concurrency() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = test_config(tmp.path().join("checkpoints"));
+        config.straggler_timeout = Duration::from_secs(5);
+        config.simulated_agent_work = Duration::from_millis(100);
+
+        let pool = test_pool_with_vram(u64::MAX);
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut channels = InMemoryChannelRegistry::new();
+
+        // Two independent nodes (no deps) — should run concurrently in one superstep
+        let nodes = vec![
+            NodeSpec {
+                id: "fast_a".into(),
+                role: AgentRole::Executor,
+                task: "task_a".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+            NodeSpec {
+                id: "fast_b".into(),
+                role: AgentRole::Executor,
+                task: "task_b".into(),
+                depends_on: vec![],
+                is_deferred: false,
+            },
+        ];
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        let start = tokio::time::Instant::now();
+        let result = engine.run(nodes, &mut channels, &ssb).await.expect("run");
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.supersteps_completed, 1);
+        // With true parallelism: 2x100ms tasks complete in ~100ms, well under 250ms.
+        // Without: sequential takes ~200ms. The 250ms bound proves concurrency.
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "two concurrent tasks must finish in <250ms, took {elapsed:?}"
+        );
+    }
+
+    // 18. test_straggler_timeout_reachable
+    // Configure very short timeout (1ms), simulated work 200ms.
+    // Task must land in timed_out vec, proving the timeout path is reachable.
+    #[tokio::test]
+    async fn test_straggler_timeout_reachable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = test_config(tmp.path().join("checkpoints"));
+        config.straggler_timeout = Duration::from_millis(1);
+        config.simulated_agent_work = Duration::from_millis(200);
+
+        let pool = test_pool_with_vram(u64::MAX);
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+
+        // Directly test execute_tasks_with_timeout
+        let mut engine = BspEngine::new(config, pool, clock);
+        let tasks = vec![
+            ("slow_node".into(), AgentRole::Executor, "slow_task".into()),
+        ];
+        let (completed, timed_out) = engine
+            .execute_tasks_with_timeout(&tasks, &ssb, 0)
+            .await
+            .expect("execute");
+
+        // With 1ms timeout and 200ms simulated work, the task must time out
+        assert!(
+            !timed_out.is_empty(),
+            "straggler timeout path must be reachable: expected timed_out non-empty"
+        );
+        assert_eq!(
+            completed.len() + timed_out.len(),
+            1,
+            "total must equal input count"
+        );
+    }
+
+    // 19. test_result_seq_order
+    // Three tasks must be returned in input order regardless of JoinSet completion order.
+    #[tokio::test]
+    async fn test_result_seq_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints"));
+
+        let pool = test_pool_with_vram(u64::MAX);
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+
+        let mut engine = BspEngine::new(config, pool, clock);
+        let tasks = vec![
+            ("node_0".into(), AgentRole::Executor, "task_0".into()),
+            ("node_1".into(), AgentRole::Auditor, "task_1".into()),
+            ("node_2".into(), AgentRole::Researcher, "task_2".into()),
+        ];
+        let (completed, timed_out) = engine
+            .execute_tasks_with_timeout(&tasks, &ssb, 0)
+            .await
+            .expect("execute");
+
+        assert!(timed_out.is_empty(), "no tasks should time out");
+        assert_eq!(completed.len(), 3);
+
+        // Results must be in input order: node_0, node_1, node_2
+        assert_eq!(completed[0].0, "node_0");
+        assert_eq!(completed[1].0, "node_1");
+        assert_eq!(completed[2].0, "node_2");
     }
 }
