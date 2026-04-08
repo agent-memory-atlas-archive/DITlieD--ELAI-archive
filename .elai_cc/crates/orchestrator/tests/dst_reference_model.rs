@@ -5,6 +5,8 @@
 //! exercise the inherent methods (preconditions, apply, check_invariants)
 //! which are available to external consumers.
 
+use std::collections::HashSet;
+
 use elai_orchestrator::agent_pool::AgentRole;
 use elai_orchestrator::dst::{FsmEvent, FsmReferenceModel, ReferenceState, SimulatorRuntime};
 use elai_orchestrator::fsm::FsmState;
@@ -103,7 +105,7 @@ fn synthetic_regression_invariant_violation() {
     };
 
     // SUT stays Idle, ref says Executing — must panic.
-    FsmReferenceModel::check_invariants(FsmState::Idle, &mutated_ref);
+    FsmReferenceModel::check_invariants(FsmState::Idle, 0, &HashSet::new(), &mutated_ref);
 }
 
 // ---------------------------------------------------------------------------

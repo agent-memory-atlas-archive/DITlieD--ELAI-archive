@@ -3,7 +3,7 @@
 //! Phase 3I.4 deliverable: types and trait stubs for proptest-state-machine
 //! reference model. Implementations are stubs — 3I.8 fills in real logic.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use crate::agent_pool::AgentRole;
@@ -17,7 +17,11 @@ use crate::ssb::SsbActionType;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SimFault {
     AgentCrash { role: AgentRole },
-    NetworkPartition { duration: Duration },
+    NetworkPartition {
+        duration: Duration,
+        from_node: Option<u64>,
+        to_node: Option<u64>,
+    },
     SlowTool { tool_name: String, delay: Duration },
     SsbWriteFailure,
 }
@@ -41,6 +45,11 @@ pub struct StateSnapshot {
 pub struct SimulatorRuntime {
     pub clock: elai_core::SeededClock,
     pub rng: elai_core::SeededRng,
+    pub fault_queue: VecDeque<(SimFault, Duration)>,
+    pub sim_time: Duration,
+    pub fsm_state: FsmState,
+    pub ssb_row_count: u64,
+    pub active_agents: HashSet<AgentRole>,
 }
 
 impl SimulatorRuntime {
@@ -48,25 +57,80 @@ impl SimulatorRuntime {
         Self {
             clock: elai_core::SeededClock::new(),
             rng: elai_core::SeededRng::new(seed),
-        }
-    }
-
-    pub fn advance_time(&self, _duration: Duration) {
-        // Stub: 3I.8 implements tick advancement by `duration / tick_size`.
-    }
-
-    pub fn inject_fault(&mut self, _fault: SimFault) {
-        // Stub: 3I.8 queues fault for next superstep.
-    }
-
-    pub fn snapshot_state(&self) -> StateSnapshot {
-        // Stub: returns default snapshot. 3I.8 reads actual FSM + SSB state.
-        StateSnapshot {
+            fault_queue: VecDeque::new(),
+            sim_time: Duration::ZERO,
             fsm_state: FsmState::Idle,
             ssb_row_count: 0,
             active_agents: HashSet::new(),
-            tick: 0,
         }
+    }
+
+    /// Advance simulated time by `duration`, expiring faults whose deadline has passed.
+    pub fn advance_time(&mut self, duration: Duration) {
+        self.sim_time = self.sim_time.saturating_add(duration);
+        self.fault_queue.retain(|(_fault, expiry)| *expiry > self.sim_time);
+    }
+
+    /// Queue a fault with an expiry time computed from the fault's duration.
+    pub fn inject_fault(&mut self, fault: SimFault) {
+        let fault_duration = match &fault {
+            SimFault::NetworkPartition { duration, .. } => *duration,
+            SimFault::SlowTool { delay, .. } => *delay,
+            SimFault::AgentCrash { .. } | SimFault::SsbWriteFailure => Duration::MAX,
+        };
+        let expiry = self.sim_time.saturating_add(fault_duration);
+        self.fault_queue.push_back((fault, expiry));
+    }
+
+    /// Return a snapshot of current simulated system state.
+    pub fn snapshot_state(&self) -> StateSnapshot {
+        let tick = self.sim_time.as_millis() as u64;
+        StateSnapshot {
+            fsm_state: self.fsm_state,
+            ssb_row_count: self.ssb_row_count,
+            active_agents: self.active_agents.clone(),
+            tick,
+        }
+    }
+
+    /// Check whether any active `NetworkPartition` fault blocks traffic from
+    /// `sender_node_id` to `receiver_node_id`. Broadcast faults (from_node=None)
+    /// block all senders. Directional faults match both from_node and to_node.
+    pub fn has_active_partition(
+        &self,
+        sender_node_id: u64,
+        receiver_node_id: Option<u64>,
+    ) -> Option<&SimFault> {
+        self.fault_queue.iter().find_map(|(fault, _expiry)| {
+            if let SimFault::NetworkPartition {
+                from_node, to_node, ..
+            } = fault
+            {
+                let from_matches = match from_node {
+                    None => true,
+                    Some(from) => *from == sender_node_id,
+                };
+                let to_matches = match (to_node, receiver_node_id) {
+                    (None, _) => true,
+                    (Some(to), Some(recv)) => *to == recv,
+                    (Some(_), None) => true,
+                };
+                if from_matches && to_matches {
+                    Some(fault)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Check whether any active `AgentCrash` fault is present.
+    pub fn has_active_agent_crash(&self) -> bool {
+        self.fault_queue
+            .iter()
+            .any(|(fault, _)| matches!(fault, SimFault::AgentCrash { .. }))
     }
 }
 
@@ -132,14 +196,17 @@ pub struct FsmReferenceModel;
 
 pub struct ActualSystem {
     pub fsm_state: FsmState,
+    pub ssb_row_count: u64,
+    pub active_agents: HashSet<AgentRole>,
     pub runtime: SimulatorRuntime,
-    // Stub: 3I.8 adds real Ssb handle and agent pool.
 }
 
 impl ActualSystem {
     pub fn new(runtime: SimulatorRuntime) -> Self {
         Self {
             fsm_state: FsmState::Idle,
+            ssb_row_count: 0,
+            active_agents: HashSet::new(),
             runtime,
         }
     }
@@ -214,11 +281,26 @@ impl FsmReferenceModel {
     }
 
     /// Check invariants between SUT and reference state.
-    pub fn check_invariants(sut_fsm: FsmState, ref_state: &ReferenceState) {
+    pub fn check_invariants(
+        sut_fsm: FsmState,
+        sut_ssb_row_count: u64,
+        sut_active_agents: &HashSet<AgentRole>,
+        ref_state: &ReferenceState,
+    ) {
         assert_eq!(
             sut_fsm, ref_state.fsm_state,
             "FSM state mismatch: actual={:?} reference={:?}",
             sut_fsm, ref_state.fsm_state
+        );
+        assert_eq!(
+            sut_ssb_row_count, ref_state.ssb_row_count,
+            "SSB row count mismatch: actual={} reference={}",
+            sut_ssb_row_count, ref_state.ssb_row_count
+        );
+        assert_eq!(
+            sut_active_agents, &ref_state.active_agents,
+            "Active agents mismatch: actual={:?} reference={:?}",
+            sut_active_agents, ref_state.active_agents
         );
     }
 }
@@ -367,8 +449,21 @@ mod tests {
             _ref_state: &<Self::Reference as ReferenceStateMachine>::State,
             transition: <Self::Reference as ReferenceStateMachine>::Transition,
         ) -> Self::SystemUnderTest {
-            if let FsmEvent::PhaseTransition { to, .. } = &transition {
-                state.fsm_state = *to;
+            match &transition {
+                FsmEvent::PhaseTransition { to, .. } => {
+                    state.fsm_state = *to;
+                }
+                FsmEvent::AgentSpawn { role } => {
+                    state.active_agents.insert(*role);
+                }
+                FsmEvent::AgentCrash { role } => {
+                    state.active_agents.remove(role);
+                }
+                FsmEvent::AgentCleanup { .. } => {}
+                FsmEvent::SsbWrite { .. } => {
+                    state.ssb_row_count += 1;
+                }
+                _ => {}
             }
             state
         }
@@ -377,7 +472,12 @@ mod tests {
             state: &Self::SystemUnderTest,
             ref_state: &<Self::Reference as ReferenceStateMachine>::State,
         ) {
-            FsmReferenceModel::check_invariants(state.fsm_state, ref_state);
+            FsmReferenceModel::check_invariants(
+                state.fsm_state,
+                state.ssb_row_count,
+                &state.active_agents,
+                ref_state,
+            );
         }
     }
 
