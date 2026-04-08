@@ -200,8 +200,18 @@ fn prepare_command(
         return prepared;
     }
 
-    let mut prepared = Command::new("sh");
-    prepared.arg("-lc").arg(command).current_dir(cwd);
+    #[cfg(windows)]
+    let mut prepared = {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(command).current_dir(cwd);
+        cmd
+    };
+    #[cfg(not(windows))]
+    let mut prepared = {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-lc").arg(command).current_dir(cwd);
+        cmd
+    };
     if sandbox_status.filesystem_active {
         prepared.env("HOME", cwd.join(".sandbox-home"));
         prepared.env("TMPDIR", cwd.join(".sandbox-tmp"));
@@ -227,8 +237,18 @@ fn prepare_tokio_command(
         return prepared;
     }
 
-    let mut prepared = TokioCommand::new("sh");
-    prepared.arg("-lc").arg(command).current_dir(cwd);
+    #[cfg(windows)]
+    let mut prepared = {
+        let mut cmd = TokioCommand::new("cmd");
+        cmd.arg("/C").arg(command).current_dir(cwd);
+        cmd
+    };
+    #[cfg(not(windows))]
+    let mut prepared = {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-lc").arg(command).current_dir(cwd);
+        cmd
+    };
     if sandbox_status.filesystem_active {
         prepared.env("HOME", cwd.join(".sandbox-home"));
         prepared.env("TMPDIR", cwd.join(".sandbox-tmp"));
@@ -246,10 +266,26 @@ mod tests {
     use super::{execute_bash, BashCommandInput};
     use crate::sandbox::FilesystemIsolationMode;
 
+    fn echo_cmd() -> String {
+        if cfg!(target_os = "windows") {
+            String::from("echo hello")
+        } else {
+            String::from("printf 'hello'")
+        }
+    }
+
+    fn expected_echo_output() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "hello\r\n"
+        } else {
+            "hello"
+        }
+    }
+
     #[test]
     fn executes_simple_command() {
         let output = execute_bash(BashCommandInput {
-            command: String::from("printf 'hello'"),
+            command: echo_cmd(),
             timeout: Some(1_000),
             description: None,
             run_in_background: Some(false),
@@ -261,7 +297,7 @@ mod tests {
         })
         .expect("bash command should execute");
 
-        assert_eq!(output.stdout, "hello");
+        assert_eq!(output.stdout, expected_echo_output());
         assert!(!output.interrupted);
         assert!(output.sandbox_status.is_some());
     }
@@ -269,7 +305,7 @@ mod tests {
     #[test]
     fn disables_sandbox_when_requested() {
         let output = execute_bash(BashCommandInput {
-            command: String::from("printf 'hello'"),
+            command: echo_cmd(),
             timeout: Some(1_000),
             description: None,
             run_in_background: Some(false),

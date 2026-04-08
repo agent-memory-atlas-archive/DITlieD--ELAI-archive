@@ -8238,22 +8238,23 @@ UU conflicted.rs",
         fs::create_dir_all(&workspace).expect("workspace");
         let script_path = workspace.join("fixture-mcp.py");
         write_mcp_server_fixture(&script_path);
+        let python_cmd = if cfg!(target_os = "windows") { "python" } else { "python3" };
         fs::write(
             config_home.join("settings.json"),
             format!(
                 r#"{{
                   "mcpServers": {{
                     "alpha": {{
-                      "command": "python3",
+                      "command": "{python_cmd}",
                       "args": ["{}"]
                     }},
                     "broken": {{
-                      "command": "python3",
+                      "command": "{python_cmd}",
                       "args": ["-c", "import sys; sys.exit(0)"]
                     }}
                   }}
                 }}"#,
-                script_path.to_string_lossy()
+                script_path.to_string_lossy().replace('\\', "\\\\")
             ),
         )
         .expect("write mcp settings");

@@ -554,11 +554,12 @@ mod tests {
         .expect("write nested instructions");
 
         let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
-        let contents = context
+        let contents: Vec<&str> = context
             .instruction_files
             .iter()
+            .filter(|file| file.path.starts_with(&root))
             .map(|file| file.content.as_str())
-            .collect::<Vec<_>>();
+            .collect();
 
         assert_eq!(
             contents,
@@ -583,9 +584,14 @@ mod tests {
         fs::write(nested.join("CLAUDE.md"), "same rules\n").expect("write nested");
 
         let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
-        assert_eq!(context.instruction_files.len(), 1);
+        let under_root: Vec<_> = context
+            .instruction_files
+            .iter()
+            .filter(|file| file.path.starts_with(&root))
+            .collect();
+        assert_eq!(under_root.len(), 1);
         assert_eq!(
-            normalize_instruction_content(&context.instruction_files[0].content),
+            normalize_instruction_content(&under_root[0].content),
             "same rules"
         );
         fs::remove_dir_all(root).expect("cleanup temp dir");

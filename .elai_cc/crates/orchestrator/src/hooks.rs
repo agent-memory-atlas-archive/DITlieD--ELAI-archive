@@ -632,21 +632,9 @@ fn format_hook_failure(command: &str, code: i32, stdout: Option<&str>, stderr: &
 }
 
 fn shell_command(command: &str) -> CommandWithStdin {
-    #[cfg(windows)]
-    let command_builder = {
-        let mut command_builder = Command::new("cmd");
-        command_builder.arg("/C").arg(command);
-        CommandWithStdin::new(command_builder)
-    };
-
-    #[cfg(not(windows))]
-    let command_builder = {
-        let mut command_builder = Command::new("sh");
-        command_builder.arg("-lc").arg(command);
-        CommandWithStdin::new(command_builder)
-    };
-
-    command_builder
+    let mut command_builder = Command::new("sh");
+    command_builder.arg("-c").arg(command);
+    CommandWithStdin::new(command_builder)
 }
 
 struct CommandWithStdin {
@@ -975,12 +963,6 @@ mod tests {
         )));
     }
 
-    #[cfg(windows)]
-    fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
-    }
-
-    #[cfg(not(windows))]
     fn shell_snippet(script: &str) -> String {
         script.to_string()
     }

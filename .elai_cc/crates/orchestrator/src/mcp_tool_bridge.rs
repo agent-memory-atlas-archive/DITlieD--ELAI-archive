@@ -448,7 +448,7 @@ mod tests {
         ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: McpServerConfig::Stdio(McpStdioServerConfig {
-                command: "python3".to_string(),
+                command: if cfg!(target_os = "windows") { "python" } else { "python3" }.to_string(),
                 args: vec![script_path.to_string_lossy().into_owned()],
                 env: BTreeMap::from([
                     ("MCP_SERVER_LABEL".to_string(), server_name.to_string()),

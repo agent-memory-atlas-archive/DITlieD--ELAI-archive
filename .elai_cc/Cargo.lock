@@ -823,6 +823,7 @@ name = "elai-providers"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "getrandom 0.2.17",
  "reqwest",
  "serde",
  "serde_json",

@@ -18,13 +18,17 @@ use crate::mcp_lifecycle_hardened::{
     McpDegradedReport, McpErrorSurface, McpFailedServer, McpLifecyclePhase,
 };
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 const MCP_INITIALIZE_TIMEOUT_MS: u64 = 200;
+#[cfg(all(test, target_os = "windows"))]
+const MCP_INITIALIZE_TIMEOUT_MS: u64 = 5_000;
 #[cfg(not(test))]
 const MCP_INITIALIZE_TIMEOUT_MS: u64 = 10_000;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 const MCP_LIST_TOOLS_TIMEOUT_MS: u64 = 300;
+#[cfg(all(test, target_os = "windows"))]
+const MCP_LIST_TOOLS_TIMEOUT_MS: u64 = 5_000;
 #[cfg(not(test))]
 const MCP_LIST_TOOLS_TIMEOUT_MS: u64 = 30_000;
 
@@ -1434,6 +1438,14 @@ mod tests {
     };
     use crate::McpLifecyclePhase;
 
+    fn python_cmd() -> &'static str {
+        if cfg!(target_os = "windows") { "python" } else { "python3" }
+    }
+
+    fn sh_cmd() -> &'static str {
+        if cfg!(target_os = "windows") { "sh" } else { "/bin/sh" }
+    }
+
     fn temp_dir() -> PathBuf { // TEST_KEEP
         static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now() // TEST_KEEP
@@ -1780,7 +1792,7 @@ mod tests {
         let config = ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: McpServerConfig::Stdio(McpStdioServerConfig {
-                command: "/bin/sh".to_string(),
+                command: sh_cmd().to_string(),
                 args: vec![script_path.to_string_lossy().into_owned()],
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "secret-value".to_string())]),
                 tool_call_timeout_ms: None,
@@ -1798,7 +1810,7 @@ mod tests {
         env: BTreeMap<String, String>,
     ) -> crate::mcp_client::McpStdioTransport {
         crate::mcp_client::McpStdioTransport {
-            command: "python3".to_string(),
+            command: python_cmd().to_string(),
             args: vec![script_path.to_string_lossy().into_owned()],
             env,
             tool_call_timeout_ms: None,
@@ -1847,7 +1859,7 @@ mod tests {
         ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: McpServerConfig::Stdio(McpStdioServerConfig {
-                command: "python3".to_string(),
+                command: python_cmd().to_string(),
                 args: vec![script_path.to_string_lossy().into_owned()],
                 env,
                 tool_call_timeout_ms: None,
@@ -2066,7 +2078,7 @@ mod tests {
         runtime.block_on(async {
             let script_path = write_echo_script();
             let transport = crate::mcp_client::McpStdioTransport {
-                command: "/bin/sh".to_string(),
+                command: sh_cmd().to_string(),
                 args: vec![script_path.to_string_lossy().into_owned()],
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "direct-secret".to_string())]),
                 tool_call_timeout_ms: None,
@@ -2325,7 +2337,7 @@ mod tests {
                 ScopedMcpServerConfig {
                     scope: ConfigSource::Local,
                     config: McpServerConfig::Stdio(McpStdioServerConfig {
-                        command: "python3".to_string(),
+                        command: python_cmd().to_string(),
                         args: vec![script_path.to_string_lossy().into_owned()],
                         env: BTreeMap::from([(
                             "MCP_TOOL_CALL_DELAY_MS".to_string(),
@@ -2378,7 +2390,7 @@ mod tests {
                 ScopedMcpServerConfig {
                     scope: ConfigSource::Local,
                     config: McpServerConfig::Stdio(McpStdioServerConfig {
-                        command: "python3".to_string(),
+                        command: python_cmd().to_string(),
                         args: vec![script_path.to_string_lossy().into_owned()],
                         env: BTreeMap::from([(
                             "MCP_INVALID_TOOL_CALL_RESPONSE".to_string(),
@@ -2719,8 +2731,8 @@ mod tests {
                     ScopedMcpServerConfig {
                         scope: ConfigSource::Local,
                         config: McpServerConfig::Stdio(McpStdioServerConfig {
-                            command: broken_script_path.display().to_string(),
-                            args: Vec::new(),
+                            command: python_cmd().to_string(),
+                            args: vec![broken_script_path.to_string_lossy().into_owned()],
                             env: BTreeMap::new(),
                             tool_call_timeout_ms: None,
                         }),

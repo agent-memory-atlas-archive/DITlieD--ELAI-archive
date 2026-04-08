@@ -964,7 +964,6 @@ mod tests {
         ToolResultContentBlock,
     };
     use serde_json::json;
-    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn request_translation_uses_openai_compatible_shape() {
@@ -1094,10 +1093,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock")
+        crate::test_env_lock()
     }
 
     #[test]
