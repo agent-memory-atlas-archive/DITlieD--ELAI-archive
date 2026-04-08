@@ -8,10 +8,12 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 use crate::predicate::{
-    from_json, AstError, AstEvaluator, CompositeOperator, DkgError, DkgQuerier, MetricOperator,
-    MetricSource, Predicate, PredicateError, QueryFormat, ReachabilityParams, Verdict,
-    VerdictResult,
+    from_json, AstError, AstEvaluator, CompositeOperator, DkgError, DkgQuerier, EscalationTarget,
+    MetricOperator, MetricSource, Predicate, PredicateError, QueryFormat, ReachabilityParams,
+    Verdict, VerdictResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,8 @@ pub struct EvaluationContext<'a> {
     pub file_path: &'a str,
     /// Current FSM phase (for phase-aware filtering).
     pub fsm_phase: FsmPhaseBit,
+    /// Metric values for MetricGate evaluation (metric_name -> value).
+    pub metric_values: HashMap<String, f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +132,9 @@ pub struct Rule {
     /// Raw predicate JSON (stored in DB). Compiled on load.
     pub predicate_json: String,
     pub phase_mask: u32,
+    /// Escalation target when severity is "ESCALATE". Defaults to Auditor if None.
+    #[serde(default)]
+    pub escalate_target: Option<EscalationTarget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,18 +339,73 @@ impl RuleEngine for DefaultRuleEngine {
 }
 
 impl DefaultRuleEngine {
+    /// Relative tolerance for MetricGate Eq comparison.
+    /// Handles floating-point rounding from computed metrics (division, aggregation).
+    const METRIC_EQ_TOLERANCE: f64 = 1e-9;
+
     /// Evaluate a single compiled predicate against the context.
+    ///
+    /// Each match arm returns `(fires: bool, evidence: String)`.
+    /// Post-match: severity_verdict maps fires→VerdictResult, then ESCALATE
+    /// routing overrides when severity=="ESCALATE" and predicate fired.
     fn evaluate_single(
         &self,
         compiled: &CompiledPredicate,
         context: &EvaluationContext<'_>,
         rule: &Rule,
     ) -> Result<Verdict, RuleEngineError> {
-        let result = match compiled {
-            CompiledPredicate::MetricGate { .. } => {
-                // MetricGate evaluation requires a metric provider (future phase).
-                // For now, return Allow (gate not triggered).
-                VerdictResult::Allow
+        let (fires, evidence) = match compiled {
+            CompiledPredicate::MetricGate {
+                metric_name,
+                operator,
+                threshold,
+                source: _,
+            } => {
+                let value = match context.metric_values.get(metric_name) {
+                    Some(v) => *v,
+                    None => {
+                        return Ok(Verdict {
+                            rule_id: rule.rule_id.clone(),
+                            result: VerdictResult::Allow,
+                            evidence: format!(
+                                "metric '{}' not in context; gate skipped",
+                                metric_name
+                            ),
+                        });
+                    }
+                };
+                let gate_fires = match operator {
+                    MetricOperator::Lt => {
+                        let t = threshold.ok_or_else(|| {
+                            RuleEngineError::Predicate(PredicateError::ValidationFailed(
+                                "Lt requires threshold".into(),
+                            ))
+                        })?;
+                        value < t
+                    }
+                    MetricOperator::Gt => {
+                        let t = threshold.ok_or_else(|| {
+                            RuleEngineError::Predicate(PredicateError::ValidationFailed(
+                                "Gt requires threshold".into(),
+                            ))
+                        })?;
+                        value > t
+                    }
+                    MetricOperator::Eq => {
+                        let t = threshold.ok_or_else(|| {
+                            RuleEngineError::Predicate(PredicateError::ValidationFailed(
+                                "Eq requires threshold".into(),
+                            ))
+                        })?;
+                        (value - t).abs() < t.abs().max(1.0) * Self::METRIC_EQ_TOLERANCE
+                    }
+                    MetricOperator::Between { low, high } => value >= *low && value <= *high,
+                };
+                let ev = format!(
+                    "metric '{}' = {}; operator {:?} threshold {:?}",
+                    metric_name, value, operator, threshold
+                );
+                (gate_fires, ev)
             }
             CompiledPredicate::GrepPattern {
                 compiled_regex,
@@ -353,14 +415,19 @@ impl DefaultRuleEngine {
                 let in_scope = scope
                     .as_ref()
                     .is_none_or(|s| context.file_path.starts_with(s.as_str()));
-                if in_scope && compiled_regex.is_match(context.source) {
-                    match rule.severity.as_str() {
-                        "BLOCK" => VerdictResult::Block,
-                        "WARN" => VerdictResult::Warn,
-                        _ => VerdictResult::Allow,
+                if in_scope {
+                    if let Some(m) = compiled_regex.find(context.source) {
+                        let ev = format!(
+                            "grep match at offset {} in {}",
+                            m.start(),
+                            context.file_path
+                        );
+                        (true, ev)
+                    } else {
+                        (false, String::new())
                     }
                 } else {
-                    VerdictResult::Allow
+                    (false, "out of scope".into())
                 }
             }
             CompiledPredicate::AstPattern {
@@ -383,18 +450,26 @@ impl DefaultRuleEngine {
                     .ast_evaluator
                     .evaluate_query(language, context.source, query)?;
                 if matches.is_empty() {
-                    VerdictResult::Allow
+                    let ev = format!(
+                        "no AST match for query in {}",
+                        context.file_path
+                    );
+                    (false, ev)
                 } else {
-                    match rule.severity.as_str() {
-                        "BLOCK" => VerdictResult::Block,
-                        "WARN" => VerdictResult::Warn,
-                        _ => VerdictResult::Allow,
-                    }
+                    let q_display: String = query.chars().take(60).collect();
+                    let ev = format!(
+                        "AST match count={} for query '{}' in {} at {}",
+                        matches.len(),
+                        q_display,
+                        language,
+                        context.file_path
+                    );
+                    (true, ev)
                 }
             }
             CompiledPredicate::SchemaRequired {
                 validator,
-                output_type: _,
+                output_type,
             } => {
                 // If source is not valid JSON, the rule is not applicable (Allow).
                 // Do NOT propagate the parse error — it would abort the entire
@@ -402,57 +477,83 @@ impl DefaultRuleEngine {
                 // from running.
                 let value: serde_json::Value = match serde_json::from_str(context.source) {
                     Ok(v) => v,
-                    Err(_) => return Ok(Verdict {
-                        rule_id: rule.rule_id.clone(),
-                        result: VerdictResult::Allow,
-                        evidence: "source is not JSON; schema rule not applicable".into(),
-                    }),
+                    Err(_) => {
+                        return Ok(Verdict {
+                            rule_id: rule.rule_id.clone(),
+                            result: VerdictResult::Allow,
+                            evidence: "source is not JSON; schema rule not applicable".into(),
+                        });
+                    }
                 };
                 if validator.is_valid(&value) {
-                    VerdictResult::Allow
+                    (false, String::new())
                 } else {
-                    match rule.severity.as_str() {
-                        "BLOCK" => VerdictResult::Block,
-                        "WARN" => VerdictResult::Warn,
-                        _ => VerdictResult::Allow,
-                    }
+                    let ev = format!(
+                        "schema validation failed for output_type={} in {}",
+                        output_type, context.file_path
+                    );
+                    (true, ev)
                 }
             }
             CompiledPredicate::Composite { operator, children } => {
-                self.evaluate_composite(operator, children, context, rule)?
+                let composite_fires =
+                    self.evaluate_composite(operator, children, context, rule)?;
+                let ev = if composite_fires {
+                    format!(
+                        "composite {:?}: fired ({} children)",
+                        operator,
+                        children.len()
+                    )
+                } else {
+                    String::new()
+                };
+                (composite_fires, ev)
             }
             CompiledPredicate::GraphReachability { params } => {
                 let matches = self.dkg_querier.query_reachability(params)?;
-                if params.must_not_exist {
-                    // Fail if paths exist when they shouldn't.
-                    if matches.is_empty() {
-                        VerdictResult::Allow
+                let graph_fires = if params.must_not_exist {
+                    !matches.is_empty()
+                } else {
+                    matches.is_empty()
+                };
+                let ev = if graph_fires {
+                    if params.must_not_exist {
+                        format!(
+                            "graph path found: {} paths from '{}' to '{}'",
+                            matches.len(),
+                            params.source_pattern,
+                            params.sink_pattern
+                        )
                     } else {
-                        match rule.severity.as_str() {
-                            "BLOCK" => VerdictResult::Block,
-                            "WARN" => VerdictResult::Warn,
-                            _ => VerdictResult::Allow,
-                        }
+                        format!(
+                            "no graph path from '{}' to '{}' (required)",
+                            params.source_pattern, params.sink_pattern
+                        )
                     }
                 } else {
-                    // Fail if required paths don't exist.
-                    if matches.is_empty() {
-                        match rule.severity.as_str() {
-                            "BLOCK" => VerdictResult::Block,
-                            "WARN" => VerdictResult::Warn,
-                            _ => VerdictResult::Allow,
-                        }
-                    } else {
-                        VerdictResult::Allow
-                    }
-                }
+                    String::new()
+                };
+                (graph_fires, ev)
             }
+        };
+
+        // Map fires → VerdictResult, then apply ESCALATE routing.
+        let result = if !fires {
+            VerdictResult::Allow
+        } else if rule.severity == "ESCALATE" {
+            let target = rule
+                .escalate_target
+                .clone()
+                .unwrap_or(EscalationTarget::Auditor);
+            VerdictResult::Escalate(target)
+        } else {
+            Self::severity_verdict(&rule.severity)
         };
 
         Ok(Verdict {
             rule_id: rule.rule_id.clone(),
             result,
-            evidence: String::new(),
+            evidence,
         })
     }
 
@@ -477,54 +578,41 @@ impl DefaultRuleEngine {
         }
     }
 
-    /// Evaluate a composite predicate (And/Or/Not).
+    /// Evaluate a composite predicate (And/Or/Not). Returns whether the
+    /// composite fired (true) or not (false). Severity/ESCALATE mapping
+    /// is applied by the caller in evaluate_single.
     fn evaluate_composite(
         &self,
         operator: &CompositeOperator,
         children: &[CompiledPredicate],
         context: &EvaluationContext<'_>,
         rule: &Rule,
-    ) -> Result<VerdictResult, RuleEngineError> {
+    ) -> Result<bool, RuleEngineError> {
         match operator {
             CompositeOperator::And => {
-                // And requires ALL children to fire (non-Allow).
-                // If any child is Allow, short-circuit to Allow (no match).
-                // If all fire, return the outer rule's severity verdict.
                 for child in children {
                     if !self.child_fires(child, context, rule)? {
-                        return Ok(VerdictResult::Allow);
+                        return Ok(false);
                     }
                 }
-                if children.is_empty() {
-                    Ok(VerdictResult::Allow)
-                } else {
-                    Ok(Self::severity_verdict(&rule.severity))
-                }
+                Ok(!children.is_empty())
             }
             CompositeOperator::Or => {
-                // Or: if any child fires, return the outer rule's severity verdict.
                 for child in children {
                     if self.child_fires(child, context, rule)? {
-                        return Ok(Self::severity_verdict(&rule.severity));
+                        return Ok(true);
                     }
                 }
-                Ok(VerdictResult::Allow)
+                Ok(false)
             }
             CompositeOperator::Not => {
-                // Not has exactly 1 child (validated by compile_predicate).
-                // Reject at runtime if invariant is violated.
                 let child = children.first().ok_or_else(|| {
                     RuleEngineError::Predicate(PredicateError::ValidationFailed(
                         "Not operator requires exactly 1 child".into(),
                     ))
                 })?;
-                if self.child_fires(child, context, rule)? {
-                    // Child fired → Not inverts to Allow.
-                    Ok(VerdictResult::Allow)
-                } else {
-                    // Child did not fire → Not inverts to rule severity.
-                    Ok(Self::severity_verdict(&rule.severity))
-                }
+                // Not inverts: child fires → composite does not fire.
+                Ok(!self.child_fires(child, context, rule)?)
             }
         }
     }
@@ -720,6 +808,7 @@ mod tests {
             title: format!("Rule {id}"),
             predicate_json: predicate_json.into(),
             phase_mask,
+            escalate_target: None,
         }
     }
 
@@ -729,6 +818,7 @@ mod tests {
             source,
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
+            metric_values: HashMap::new(),
         }
     }
 
@@ -1105,9 +1195,11 @@ mod tests {
             source: "fn main() {}",
             file_path: "src/main.rs",
             fsm_phase: FsmPhaseBit::EXECUTING,
+            metric_values: HashMap::new(),
         };
         assert_eq!(ctx.action, "write");
         assert_eq!(ctx.fsm_phase, FsmPhaseBit::EXECUTING);
+        assert!(ctx.metric_values.is_empty());
     }
 
     // -- Rule struct --
@@ -1274,6 +1366,303 @@ mod tests {
         assert!(
             result.iter().all(|v| v.result == VerdictResult::Allow),
             "And must Allow when one child does not match"
+        );
+    }
+
+    // -- MetricGate real evaluation --
+
+    #[test]
+    fn evaluate_metric_gate_gt_fires_when_above_threshold() {
+        let engine = default_engine();
+        let json = r#"{"type":"metric_gate","metric_name":"cc","operator":"gt","threshold":10.0,"source":"file"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-metric", "engineering", 1, "BLOCK", json, 0xFF);
+        let mut ctx = make_context("", "src/main.rs");
+        ctx.metric_values.insert("cc".into(), 15.0);
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        let has_block = result.iter().any(|v| v.result == VerdictResult::Block);
+        assert!(has_block, "MetricGate Gt must fire when value > threshold");
+    }
+
+    #[test]
+    fn evaluate_metric_gate_lt_does_not_fire_when_above() {
+        let engine = default_engine();
+        let json = r#"{"type":"metric_gate","metric_name":"loc","operator":"lt","threshold":100.0,"source":"file"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-metric", "engineering", 1, "BLOCK", json, 0xFF);
+        let mut ctx = make_context("", "src/main.rs");
+        ctx.metric_values.insert("loc".into(), 200.0);
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert!(
+            result.iter().all(|v| v.result == VerdictResult::Allow),
+            "MetricGate Lt must not fire when value > threshold"
+        );
+    }
+
+    #[test]
+    fn evaluate_metric_gate_eq_fires_on_exact_match() {
+        let engine = default_engine();
+        let json = r#"{"type":"metric_gate","metric_name":"ratio","operator":"eq","threshold":1.0,"source":"config"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-metric", "engineering", 1, "WARN", json, 0xFF);
+        let mut ctx = make_context("", "src/main.rs");
+        ctx.metric_values.insert("ratio".into(), 1.0);
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        let has_warn = result.iter().any(|v| v.result == VerdictResult::Warn);
+        assert!(has_warn, "MetricGate Eq must fire on exact match");
+    }
+
+    #[test]
+    fn evaluate_metric_gate_between_fires_in_range() {
+        let engine = default_engine();
+        let json = r#"{"type":"metric_gate","metric_name":"cc","operator":{"between":{"low":1.0,"high":10.0}},"threshold":null,"source":"file"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-metric", "engineering", 1, "WARN", json, 0xFF);
+        let mut ctx = make_context("", "src/main.rs");
+        ctx.metric_values.insert("cc".into(), 5.0);
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        let has_warn = result.iter().any(|v| v.result == VerdictResult::Warn);
+        assert!(has_warn, "MetricGate Between must fire when value in range");
+    }
+
+    #[test]
+    fn evaluate_metric_gate_missing_key_returns_allow() {
+        let engine = default_engine();
+        let json = r#"{"type":"metric_gate","metric_name":"missing","operator":"gt","threshold":1.0,"source":"file"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-metric", "engineering", 1, "BLOCK", json, 0xFF);
+        let ctx = make_context("", "src/main.rs");
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert!(
+            result.iter().all(|v| v.result == VerdictResult::Allow),
+            "missing metric key must return Allow"
+        );
+        let evidence = &result[0].evidence;
+        assert!(
+            evidence.contains("not in context"),
+            "evidence must explain missing key"
+        );
+    }
+
+    // -- ESCALATE routing --
+
+    #[test]
+    fn evaluate_escalate_routes_to_auditor_by_default() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let mut rule = make_rule("r-esc", "security", 1, "ESCALATE", json, 0xFF);
+        rule.escalate_target = None;
+
+        let ctx = make_context("DANGER code", "src/main.rs");
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert_eq!(
+            result[0].result,
+            VerdictResult::Escalate(EscalationTarget::Auditor),
+            "ESCALATE with no target must route to Auditor"
+        );
+    }
+
+    #[test]
+    fn evaluate_escalate_routes_to_human() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let mut rule = make_rule("r-esc", "security", 1, "ESCALATE", json, 0xFF);
+        rule.escalate_target = Some(EscalationTarget::Human);
+
+        let ctx = make_context("DANGER code", "src/main.rs");
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert_eq!(
+            result[0].result,
+            VerdictResult::Escalate(EscalationTarget::Human),
+            "ESCALATE must route to Human when specified"
+        );
+    }
+
+    #[test]
+    fn evaluate_escalate_does_not_fire_on_allow() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"NONEXISTENT","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let mut rule = make_rule("r-esc", "security", 1, "ESCALATE", json, 0xFF);
+        rule.escalate_target = Some(EscalationTarget::Human);
+
+        let ctx = make_context("safe code", "src/main.rs");
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert_eq!(
+            result[0].result,
+            VerdictResult::Allow,
+            "ESCALATE must not fire when predicate does not match"
+        );
+    }
+
+    // -- Evidence strings --
+
+    #[test]
+    fn evaluate_grep_evidence_contains_offset() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r1", "engineering", 1, "BLOCK", json, 0xFF);
+        let ctx = make_context("safe DANGER here", "src/main.rs");
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        let verdict = &result[0];
+        assert!(!verdict.evidence.is_empty(), "evidence must not be empty");
+        assert!(
+            verdict.evidence.contains("grep match at offset"),
+            "evidence must contain offset info"
+        );
+    }
+
+    #[test]
+    fn evaluate_schema_evidence_on_violation() {
+        let engine = default_engine();
+        let json = r#"{"type":"schema_required","schema":{"type":"object","required":["name"]},"output_type":"json"}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r1", "engineering", 1, "BLOCK", json, 0xFF);
+        let ctx = make_context(r#"{"other":"test"}"#, "config.json");
+
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        let verdict = &result[0];
+        assert!(
+            verdict.evidence.contains("schema validation failed"),
+            "schema violation evidence must describe failure"
+        );
+    }
+
+    // -- 100x determinism --
+
+    #[test]
+    fn test_evaluate_single_deterministic_100x() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-det", "security", 1, "BLOCK", json, 0xFF);
+        let ctx = make_context("DANGER code here", "src/main.rs");
+
+        let rules_with_compiled = [(rule.clone(), compiled)];
+        let first = engine.evaluate(&rules_with_compiled, &ctx).unwrap();
+
+        for i in 1..100 {
+            let rule_clone = rule.clone();
+            let compiled_clone = engine.compile_predicate(json).unwrap();
+            let result = engine.evaluate(&[(rule_clone, compiled_clone)], &ctx).unwrap();
+            assert_eq!(
+                first[0].result, result[0].result,
+                "determinism failed at iteration {i}: result mismatch"
+            );
+            assert_eq!(
+                first[0].evidence, result[0].evidence,
+                "determinism failed at iteration {i}: evidence mismatch"
+            );
+        }
+    }
+
+    // -- ReDoS safety (regex crate guarantees linear time) --
+
+    #[test]
+    fn test_grep_redos_pattern_completes() {
+        let engine = default_engine();
+        // Classic ReDoS pattern — regex crate handles this in linear time.
+        let json = r#"{"type":"grep_pattern","pattern":"(a+)+$","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let rule = make_rule("r-redos", "security", 1, "BLOCK", json, 0xFF);
+        let source = "a".repeat(100);
+        let ctx = make_context(&source, "src/main.rs");
+
+        let start = std::time::Instant::now();
+        let result = engine.evaluate(&[(rule, compiled)], &ctx);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "ReDoS pattern must complete without error");
+        assert!(
+            elapsed.as_secs() < 2,
+            "regex crate must handle ReDoS pattern in linear time (took {:?})",
+            elapsed
+        );
+    }
+
+    // -- Composite depth 100 rejection --
+
+    #[test]
+    fn test_composite_depth_100_returns_err() {
+        let engine = default_engine();
+        let mut json =
+            r#"{"type":"grep_pattern","pattern":"x","scope":null,"context_lines":0}"#.to_string();
+        for _ in 0..100 {
+            json = format!(
+                r#"{{"type":"composite","operator":"and","children":[{json}]}}"#
+            );
+        }
+        let result = engine.compile_predicate(&json);
+        assert!(result.is_err(), "depth=100 composite must be rejected");
+    }
+
+    // -- ESCALATE + Composite --
+
+    #[test]
+    fn evaluate_escalate_composite_routes_correctly() {
+        let engine = default_engine();
+
+        let child1_json = r#"{"type":"grep_pattern","pattern":"TODO","scope":null,"context_lines":0}"#;
+        let child2_json = r#"{"type":"grep_pattern","pattern":"FIXME","scope":null,"context_lines":0}"#;
+
+        let child1 = engine.compile_predicate(child1_json).unwrap();
+        let child2 = engine.compile_predicate(child2_json).unwrap();
+
+        let composite = CompiledPredicate::Composite {
+            operator: CompositeOperator::And,
+            children: vec![child1, child2],
+        };
+
+        let mut rule = make_rule("r-esc-comp", "engineering", 1, "ESCALATE", "", 0xFF);
+        rule.escalate_target = Some(EscalationTarget::Human);
+
+        let ctx = make_context("TODO FIXME", "src/main.rs");
+        let result = engine.evaluate(&[(rule, composite)], &ctx).unwrap();
+        assert_eq!(
+            result[0].result,
+            VerdictResult::Escalate(EscalationTarget::Human),
+            "ESCALATE + Composite must route to configured target"
+        );
+    }
+
+    // -- ESCALATE with NextTierRule --
+
+    #[test]
+    fn evaluate_escalate_routes_to_next_tier_rule() {
+        let engine = default_engine();
+        let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+        let compiled = engine.compile_predicate(json).unwrap();
+
+        let mut rule = make_rule("r-esc", "security", 1, "ESCALATE", json, 0xFF);
+        rule.escalate_target = Some(EscalationTarget::NextTierRule("r-99".into()));
+
+        let ctx = make_context("DANGER code", "src/main.rs");
+        let result = engine.evaluate(&[(rule, compiled)], &ctx).unwrap();
+        assert_eq!(
+            result[0].result,
+            VerdictResult::Escalate(EscalationTarget::NextTierRule("r-99".into())),
+            "ESCALATE must route to NextTierRule when specified"
         );
     }
 }

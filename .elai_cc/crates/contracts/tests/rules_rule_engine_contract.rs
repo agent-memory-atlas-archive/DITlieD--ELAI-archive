@@ -4,9 +4,11 @@
 //! paths, evaluation ordering contract, get_active_rules filtering, and
 //! Warn accumulation before Block short-circuit.
 
+use std::collections::HashMap;
+
 use elai_rules::predicate::{
-    AstError, AstEvaluator, AstMatch, DkgError, DkgQuerier, QueryFormat, ReachabilityMatch,
-    ReachabilityParams, VerdictResult,
+    AstError, AstEvaluator, AstMatch, DkgError, DkgQuerier, EscalationTarget, QueryFormat,
+    ReachabilityMatch, ReachabilityParams, VerdictResult,
 };
 use elai_rules::rule_engine::{
     CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine,
@@ -85,6 +87,7 @@ fn make_rule(
         title: format!("Contract {id}"),
         predicate_json: String::new(),
         phase_mask,
+        escalate_target: None,
     }
 }
 
@@ -267,6 +270,7 @@ fn contract_evaluate_short_circuits_block_before_ast() {
         title: "Grep block".into(),
         predicate_json: grep_json.into(),
         phase_mask: 0xFF,
+        escalate_target: None,
     };
     let ast_rule = Rule {
         rule_id: "r-ast".into(),
@@ -276,6 +280,7 @@ fn contract_evaluate_short_circuits_block_before_ast() {
         title: "AST block".into(),
         predicate_json: String::new(),
         phase_mask: 0xFF,
+        escalate_target: None,
     };
 
     let rules_with_compiled = vec![(grep_rule, grep_compiled), (ast_rule, ast_compiled)];
@@ -285,6 +290,7 @@ fn contract_evaluate_short_circuits_block_before_ast() {
         source: "DANGER code",
         file_path: "src/main.py",
         fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
     };
 
     // If this panics, short-circuit is broken.
@@ -317,6 +323,7 @@ fn contract_evaluate_accumulates_warns_then_blocks() {
                 title: "Warn rule".into(),
                 predicate_json: warn_json.into(),
                 phase_mask: 0xFF,
+                escalate_target: None,
             },
             warn_compiled,
         ),
@@ -329,6 +336,7 @@ fn contract_evaluate_accumulates_warns_then_blocks() {
                 title: "Block rule".into(),
                 predicate_json: block_json.into(),
                 phase_mask: 0xFF,
+                escalate_target: None,
             },
             block_compiled,
         ),
@@ -339,6 +347,7 @@ fn contract_evaluate_accumulates_warns_then_blocks() {
         source: "TODO: fix\nFIXME: urgent",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -421,6 +430,7 @@ fn contract_schema_on_non_json_does_not_abort() {
         source: "fn main() { DANGER }",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -465,9 +475,374 @@ fn contract_and_composite_fires_on_all_children_match() {
         source: "TODO FIXME",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
     let has_warn = result.iter().any(|v| v.result == VerdictResult::Warn);
     assert!(has_warn, "And composite must fire when all children match");
+}
+
+// ---------------------------------------------------------------------------
+// 16. MetricGate: Lt fires when value below threshold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_metric_gate_lt_fires_when_value_below_threshold() {
+    let e = engine();
+    let json = r#"{"type":"metric_gate","metric_name":"loc","operator":"lt","threshold":100.0,"source":"file"}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-metric", "engineering", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::from([("loc".into(), 50.0)]),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    let has_block = result.iter().any(|v| v.result == VerdictResult::Block);
+    assert!(has_block, "MetricGate Lt must fire when value < threshold");
+}
+
+// ---------------------------------------------------------------------------
+// 17. MetricGate: Gt does not fire when below
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_metric_gate_gt_does_not_fire_when_below() {
+    let e = engine();
+    let json = r#"{"type":"metric_gate","metric_name":"loc","operator":"gt","threshold":100.0,"source":"file"}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-metric", "engineering", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::from([("loc".into(), 50.0)]),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    assert!(
+        result.iter().all(|v| v.result == VerdictResult::Allow),
+        "MetricGate Gt must not fire when value < threshold"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 18. MetricGate: Between fires when value in range
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_metric_gate_between_fires_in_range() {
+    let e = engine();
+    let json = r#"{"type":"metric_gate","metric_name":"cc","operator":{"between":{"low":1.0,"high":10.0}},"threshold":null,"source":"file"}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-metric", "engineering", 1, "WARN", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::from([("cc".into(), 5.0)]),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    let has_warn = result.iter().any(|v| v.result == VerdictResult::Warn);
+    assert!(has_warn, "MetricGate Between must fire when value in range");
+}
+
+// ---------------------------------------------------------------------------
+// 19. MetricGate: missing key returns Allow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_metric_gate_missing_key_returns_allow() {
+    let e = engine();
+    let json = r#"{"type":"metric_gate","metric_name":"missing","operator":"gt","threshold":1.0,"source":"file"}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-metric", "engineering", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    assert!(
+        result.iter().all(|v| v.result == VerdictResult::Allow),
+        "missing metric key must return Allow"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 20. ESCALATE routes to Auditor by default
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_escalate_verdict_routes_to_auditor() {
+    let e = engine();
+    let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rule = Rule {
+        rule_id: "r-esc".into(),
+        domain: "security".into(),
+        tier: 1,
+        severity: "ESCALATE".into(),
+        title: "Escalate rule".into(),
+        predicate_json: json.into(),
+        phase_mask: 0xFF,
+        escalate_target: None,
+    };
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "DANGER code",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
+    assert_eq!(
+        result[0].result,
+        VerdictResult::Escalate(EscalationTarget::Auditor),
+        "ESCALATE with no target must route to Auditor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 21. ESCALATE routes to Human when specified
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_escalate_verdict_routes_to_human() {
+    let e = engine();
+    let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rule = Rule {
+        rule_id: "r-esc".into(),
+        domain: "security".into(),
+        tier: 1,
+        severity: "ESCALATE".into(),
+        title: "Escalate rule".into(),
+        predicate_json: json.into(),
+        phase_mask: 0xFF,
+        escalate_target: Some(EscalationTarget::Human),
+    };
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "DANGER code",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
+    assert_eq!(
+        result[0].result,
+        VerdictResult::Escalate(EscalationTarget::Human),
+        "ESCALATE must route to Human when specified"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 22. Evidence: grep match produces non-empty evidence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_evidence_grep_match_non_empty() {
+    let e = engine();
+    let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-grep", "engineering", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "DANGER code",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    assert!(
+        !result[0].evidence.is_empty(),
+        "grep match must produce non-empty evidence"
+    );
+    assert!(
+        result[0].evidence.contains("grep match"),
+        "evidence must describe the grep match"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 23. Evidence: MetricGate evidence contains metric name
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_evidence_metric_gate_contains_value() {
+    let e = engine();
+    let json = r#"{"type":"metric_gate","metric_name":"cc","operator":"gt","threshold":5.0,"source":"file"}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-metric", "engineering", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::from([("cc".into(), 10.0)]),
+    };
+
+    let result = e.evaluate(&rules_with_compiled, &context).unwrap();
+    assert!(
+        result[0].evidence.contains("cc"),
+        "MetricGate evidence must contain the metric name"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 24. 100x determinism (contract level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_determinism_100x() {
+    let e = engine();
+    let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rules_with_compiled = vec![(make_rule("r-det", "security", 1, "BLOCK", 0xFF), compiled)];
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "DANGER code here",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let first = e.evaluate(&rules_with_compiled, &context).unwrap();
+
+    for i in 1..100 {
+        let compiled_i = e
+            .compile_predicate(json)
+            .unwrap();
+        let rules_i = vec![(make_rule("r-det", "security", 1, "BLOCK", 0xFF), compiled_i)];
+        let result = e.evaluate(&rules_i, &context).unwrap();
+        assert_eq!(
+            first[0].result, result[0].result,
+            "determinism failed at iteration {i}: result mismatch"
+        );
+        assert_eq!(
+            first[0].evidence, result[0].evidence,
+            "determinism failed at iteration {i}: evidence mismatch"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 25. ESCALATE + Composite routes correctly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_escalate_composite_routes_to_target() {
+    use elai_rules::predicate::CompositeOperator;
+
+    let e = engine();
+    let c1 = e
+        .compile_predicate(
+            r#"{"type":"grep_pattern","pattern":"TODO","scope":null,"context_lines":0}"#,
+        )
+        .unwrap();
+    let c2 = e
+        .compile_predicate(
+            r#"{"type":"grep_pattern","pattern":"FIXME","scope":null,"context_lines":0}"#,
+        )
+        .unwrap();
+
+    let composite = CompiledPredicate::Composite {
+        operator: CompositeOperator::And,
+        children: vec![c1, c2],
+    };
+
+    let rule = Rule {
+        rule_id: "r-esc-comp".into(),
+        domain: "engineering".into(),
+        tier: 1,
+        severity: "ESCALATE".into(),
+        title: "Escalate composite".into(),
+        predicate_json: String::new(),
+        phase_mask: 0xFF,
+        escalate_target: Some(EscalationTarget::Human),
+    };
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "TODO FIXME",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&[(rule, composite)], &context).unwrap();
+    assert_eq!(
+        result[0].result,
+        VerdictResult::Escalate(EscalationTarget::Human),
+        "ESCALATE + Composite must route to configured target"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 26. ESCALATE with NextTierRule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_escalate_routes_to_next_tier_rule() {
+    let e = engine();
+    let json = r#"{"type":"grep_pattern","pattern":"DANGER","scope":null,"context_lines":0}"#;
+    let compiled = e.compile_predicate(json).unwrap();
+
+    let rule = Rule {
+        rule_id: "r-esc".into(),
+        domain: "security".into(),
+        tier: 1,
+        severity: "ESCALATE".into(),
+        title: "Escalate rule".into(),
+        predicate_json: json.into(),
+        phase_mask: 0xFF,
+        escalate_target: Some(EscalationTarget::NextTierRule("r-99".into())),
+    };
+
+    let context = EvaluationContext {
+        action: "write",
+        source: "DANGER code",
+        file_path: "src/main.rs",
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+
+    let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
+    assert_eq!(
+        result[0].result,
+        VerdictResult::Escalate(EscalationTarget::NextTierRule("r-99".into())),
+        "ESCALATE must route to NextTierRule when specified"
+    );
 }
