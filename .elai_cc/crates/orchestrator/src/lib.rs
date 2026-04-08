@@ -15,6 +15,7 @@ pub mod evidence;
 pub mod fsm;
 pub mod gate;
 mod hooks;
+pub mod ipc;
 pub mod tool_filter;
 mod lane_events;
 mod mcp;
