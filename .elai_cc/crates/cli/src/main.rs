@@ -163,6 +163,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             allowed_tools,
             permission_mode,
         } => run_repl(model, allowed_tools, permission_mode)?,
+        CliAction::Local { port } => run_local_repl(port)?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
     }
@@ -233,6 +234,9 @@ enum CliAction {
         model: String,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+    },
+    Local {
+        port: u16,
     },
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
@@ -323,6 +327,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             "--dangerously-skip-permissions" => {
                 permission_mode_override = Some(PermissionMode::DangerFullAccess);
                 index += 1;
+            }
+            "--local" => {
+                // Local inference mode: auto-start sidecar, interactive chat
+                let port = args.get(index + 1)
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(8100);
+                return Ok(CliAction::Local { port });
             }
             "-p" => {
                 // Claw Code compat: -p "prompt" = one-shot prompt
@@ -2180,6 +2191,185 @@ fn run_repl(
         }
     }
 
+    Ok(())
+}
+
+fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::BufRead;
+
+    let sidecar_url = format!("http://localhost:{port}");
+
+    println!("╔══════════════════════════════════════════╗");
+    println!("║  ELAI Local Inference                    ║");
+    println!("║  DoLa + TurboQuant on Gemma4 E2B         ║");
+    println!("╚══════════════════════════════════════════╝");
+    println!();
+
+    // Try to connect to an already-running sidecar first
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(5))
+        .build()?;
+
+    let already_running = client
+        .get(format!("{sidecar_url}/health"))
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    let mut sidecar_process: Option<std::process::Child> = None;
+
+    if already_running {
+        println!("Connected to running sidecar on port {port}.");
+    } else {
+        println!("Starting inference sidecar... (loading model, ~30s)");
+
+        // Spawn WSL2 sidecar process
+        let elai_root = env::current_dir()?;
+        let wsl_path = elai_root
+            .to_str()
+            .unwrap_or(".")
+            .replace('\\', "/")
+            .replacen("D:", "/mnt/d", 1)
+            .replacen("C:", "/mnt/c", 1);
+
+        let child = Command::new("wsl")
+            .args([
+                "-d", "Ubuntu", "--", "bash", "-c",
+                &format!(
+                    "source ~/vllm-env/bin/activate && cd {wsl_path} && \
+                     python -m python.elai_inference.server \
+                     --model google/gemma-4-E2B-it \
+                     --port {port} --dola --turboquant-bits 4 \
+                     --log-level WARNING"
+                ),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        match child {
+            Ok(c) => {
+                sidecar_process = Some(c);
+            }
+            Err(e) => {
+                eprintln!("Failed to start WSL2 sidecar: {e}");
+                eprintln!("Make sure WSL2 is installed with Ubuntu distribution.");
+                eprintln!("You can start the sidecar manually:");
+                eprintln!("  wsl -d Ubuntu -- bash -c \"source ~/vllm-env/bin/activate && \\");
+                eprintln!("    python -m python.elai_inference.server --port {port}\"");
+                return Err(e.into());
+            }
+        }
+
+        // Wait for health check
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(120);
+        loop {
+            if start.elapsed() > timeout {
+                eprintln!("Sidecar failed to start within 120s.");
+                if let Some(mut proc) = sidecar_process.take() {
+                    let _ = proc.kill();
+                }
+                return Err("sidecar startup timeout".into());
+            }
+
+            if client
+                .get(format!("{sidecar_url}/health"))
+                .send()
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+            {
+                break;
+            }
+
+            thread::sleep(Duration::from_secs(2));
+            print!(".");
+            io::stdout().flush()?;
+        }
+        println!();
+        println!("Sidecar ready.");
+    }
+
+    println!();
+    println!("Type your message and press Enter. Type /exit to quit.");
+    println!();
+
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut line_buf = String::new();
+
+    loop {
+        print!("> ");
+        io::stdout().flush()?;
+        line_buf.clear();
+        let bytes = reader.read_line(&mut line_buf)?;
+        if bytes == 0 {
+            // EOF
+            break;
+        }
+
+        let input = line_buf.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if matches!(input, "/exit" | "/quit" | "quit" | "exit") {
+            break;
+        }
+
+        // Send to sidecar
+        let body = serde_json::json!({
+            "prompt": input,
+            "max_tokens": 256,
+            "temperature": 0.0,
+        });
+
+        match client.post(format!("{sidecar_url}/v1/completions"))
+            .json(&body)
+            .send()
+        {
+            Ok(response) => {
+                if response.status().is_success() {
+                    if let Ok(data) = response.json::<serde_json::Value>() {
+                        if let Some(text) = data["choices"][0]["text"].as_str() {
+                            println!();
+                            println!("{text}");
+                            println!();
+                        }
+                        if let Some(meta) = data.get("elai_metadata") {
+                            let dola = meta["dola_enabled"].as_bool().unwrap_or(false);
+                            let tq = meta["turboquant_enabled"].as_bool().unwrap_or(false);
+                            let bits = meta["turboquant_bits"].as_u64().unwrap_or(0);
+                            let ms = meta["elapsed_ms"].as_u64().unwrap_or(0);
+                            println!(
+                                "[DoLa:{} TQ:{}{} {:.1}s]",
+                                if dola { "on" } else { "off" },
+                                if tq { "on" } else { "off" },
+                                if tq { format!("/{bits}bit") } else { String::new() },
+                                ms as f64 / 1000.0,
+                            );
+                            println!();
+                        }
+                    }
+                } else {
+                    eprintln!("Error: HTTP {}", response.status());
+                }
+            }
+            Err(e) => {
+                eprintln!("Connection error: {e}");
+                eprintln!("Is the sidecar still running?");
+            }
+        }
+    }
+
+    // Cleanup
+    if let Some(mut proc) = sidecar_process.take() {
+        println!("Shutting down sidecar...");
+        let _ = proc.kill();
+        let _ = proc.wait();
+    }
+
+    println!("Goodbye.");
     Ok(())
 }
 

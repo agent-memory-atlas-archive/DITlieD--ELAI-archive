@@ -690,6 +690,8 @@ mod tests {
                 assert_eq!(c.server_url, DEFAULT_VLLM_BASE_URL);
             }
             InferenceBackend::Ollama(_) => panic!("expected Vllm variant"),
+            #[cfg(feature = "sidecar")]
+            InferenceBackend::Sidecar(_) => panic!("expected Vllm variant"),
         }
     }
 
