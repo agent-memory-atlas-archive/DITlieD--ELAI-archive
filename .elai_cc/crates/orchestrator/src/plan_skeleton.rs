@@ -52,6 +52,15 @@ pub enum PlanSkeletonError {
     #[error("phase not found: {0}")]
     PhaseNotFound(String),
 
+    #[error(
+        "contract conflict: '{name}' has differing signatures in phases {phase_a} and {phase_b}"
+    )]
+    ContractConflict {
+        name: String,
+        phase_a: String,
+        phase_b: String,
+    },
+
     #[error("TOML serialization failed: {0}")]
     TomlSerialize(#[from] toml::ser::Error),
 
@@ -90,6 +99,15 @@ pub struct ContractRef {
     pub name: String,
     pub type_signature: String,
     pub invariants: Vec<String>,
+}
+
+// ---- ExtractedContracts ---------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExtractedContracts {
+    pub input_contracts: Vec<ContractRef>,
+    pub output_contracts: Vec<ContractRef>,
+    pub shared_constraints: Vec<String>,
 }
 
 // ---- PhaseEntry -----------------------------------------------------------
@@ -192,6 +210,129 @@ impl PlanSkeleton {
             .checked_add(1)
             .ok_or(PlanSkeletonError::VersionOverflow)?;
         Ok(())
+    }
+
+    /// Extract contracts for a phase from its dependency graph.
+    ///
+    /// - `input_contracts`: union of `outputs` from all `depends_on` phases.
+    /// - `output_contracts`: union of `inputs` from all `depended_by` phases.
+    /// - `shared_constraints`: `global_constraints` followed by phase-local `constraints`.
+    ///
+    /// Returns `PhaseNotFound` if `phase_id` or any referenced dep is missing.
+    /// Returns `ContractConflict` if two deps export the same contract name
+    /// with differing `type_signature`.
+    pub fn extract_contracts(
+        &self,
+        phase_id: &str,
+    ) -> Result<ExtractedContracts, PlanSkeletonError> {
+        let phase = self
+            .phases
+            .get(phase_id)
+            .ok_or_else(|| {
+                PlanSkeletonError::PhaseNotFound(
+                    phase_id.to_owned(),
+                )
+            })?;
+
+        // Step 1: input_contracts = union of dep.outputs for deps in depends_on.
+        // Track (name -> (type_signature, source_phase)) for conflict detection.
+        let mut seen_inputs: IndexMap<
+            String,
+            (String, String),
+        > = IndexMap::new();
+        let mut input_contracts = Vec::new();
+
+        for dep_id in &phase.depends_on {
+            let dep = self.phases.get(dep_id.as_str()).ok_or_else(
+                || {
+                    PlanSkeletonError::PhaseNotFound(
+                        dep_id.clone(),
+                    )
+                },
+            )?;
+            for c in &dep.outputs {
+                match seen_inputs.get(&c.name) {
+                    Some((existing_sig, existing_phase)) => {
+                        if existing_sig != &c.type_signature {
+                            return Err(
+                                PlanSkeletonError::ContractConflict {
+                                    name: c.name.clone(),
+                                    phase_a: existing_phase
+                                        .clone(),
+                                    phase_b: dep_id.clone(),
+                                },
+                            );
+                        }
+                        // Same name + same signature: deduplicate silently.
+                    }
+                    None => {
+                        seen_inputs.insert(
+                            c.name.clone(),
+                            (
+                                c.type_signature.clone(),
+                                dep_id.clone(),
+                            ),
+                        );
+                        input_contracts.push(c.clone());
+                    }
+                }
+            }
+        }
+
+        // Step 2: output_contracts = union of dep.inputs for deps in depended_by.
+        let mut seen_outputs: IndexMap<
+            String,
+            (String, String),
+        > = IndexMap::new();
+        let mut output_contracts = Vec::new();
+
+        for dep_id in &phase.depended_by {
+            let dep = self.phases.get(dep_id.as_str()).ok_or_else(
+                || {
+                    PlanSkeletonError::PhaseNotFound(
+                        dep_id.clone(),
+                    )
+                },
+            )?;
+            for c in &dep.inputs {
+                match seen_outputs.get(&c.name) {
+                    Some((existing_sig, existing_phase)) => {
+                        if existing_sig != &c.type_signature {
+                            return Err(
+                                PlanSkeletonError::ContractConflict {
+                                    name: c.name.clone(),
+                                    phase_a: existing_phase
+                                        .clone(),
+                                    phase_b: dep_id.clone(),
+                                },
+                            );
+                        }
+                    }
+                    None => {
+                        seen_outputs.insert(
+                            c.name.clone(),
+                            (
+                                c.type_signature.clone(),
+                                dep_id.clone(),
+                            ),
+                        );
+                        output_contracts.push(c.clone());
+                    }
+                }
+            }
+        }
+
+        // Step 3: shared_constraints = global first, then phase-local.
+        let mut shared_constraints =
+            self.global_constraints.clone();
+        shared_constraints
+            .extend(phase.constraints.iter().cloned());
+
+        Ok(ExtractedContracts {
+            input_contracts,
+            output_contracts,
+            shared_constraints,
+        })
     }
 
     /// Serialize skeleton to TOML string.
