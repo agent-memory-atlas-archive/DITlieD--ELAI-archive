@@ -61,10 +61,13 @@ impl Default for VllmConfig {
 /// Backend selection for GPU resource management.
 /// When Vllm is active, host-side NVML/VRAM queries are skipped because
 /// vLLM manages its own GPU memory via CUDA internally.
+/// Sidecar runs HF Transformers with DoLa + TurboQuant composed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InferenceBackend {
     Ollama(OllamaConfig),
     Vllm(VllmConfig),
+    #[cfg(feature = "sidecar")]
+    Sidecar(crate::sidecar_client::SidecarConfig),
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +415,19 @@ impl VllmModelPool {
     pub fn is_vllm(&self) -> bool {
         matches!(self.backend, InferenceBackend::Vllm(_))
     }
+
+    /// Check if using sidecar backend (DoLa + TurboQuant composed).
+    #[must_use]
+    pub fn is_sidecar(&self) -> bool {
+        #[cfg(feature = "sidecar")]
+        {
+            matches!(self.backend, InferenceBackend::Sidecar(_))
+        }
+        #[cfg(not(feature = "sidecar"))]
+        {
+            false
+        }
+    }
 }
 
 // We implement the ModelPool trait from orchestrator.
@@ -422,12 +438,11 @@ impl VllmModelPool {
     /// Available VRAM in bytes.
     /// For Vllm backend: u64::MAX (vLLM manages GPU internally).
     /// For Ollama backend: u64::MAX (no NVML — real impl deferred to GPU crate).
+    /// For Sidecar backend: u64::MAX (HF Transformers manages GPU internally).
     #[must_use]
     pub fn available_vram(&self) -> u64 {
-        match &self.backend {
-            InferenceBackend::Vllm(_) => u64::MAX,
-            InferenceBackend::Ollama(_) => u64::MAX, // Real NVML impl deferred
-        }
+        // All backends currently return u64::MAX — real NVML deferred
+        u64::MAX
     }
 }
 

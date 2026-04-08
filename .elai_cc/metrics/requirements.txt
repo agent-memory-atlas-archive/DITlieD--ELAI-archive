@@ -1,0 +1,15 @@
+# Python dependencies for ELAI evaluation scripts (metrics/).
+# Install in the vLLM virtualenv:
+#   pip install -r requirements.txt
+#
+# Note: vllm and torch are expected to be pre-installed in the serving environment.
+
+transformers>=5.0.0
+accelerate>=1.0.0
+scipy>=1.10.0
+
+# TurboQuant reference implementation (for KV cache compression evaluation).
+# Install from source:
+#   pip install -e docs/.source/turboquant_plus-main/turboquant_plus-main
+# The production path uses the Rust implementation in crates/providers/src/turboquant.rs.
+# This Python package is ONLY for evaluation/benchmarking.

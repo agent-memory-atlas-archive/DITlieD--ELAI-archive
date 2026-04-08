@@ -1,0 +1,82 @@
+{
+  "model": "google/gemma-4-E2B-it",
+  "n_layers": 35,
+  "head_dim": 256,
+  "num_heads": 8,
+  "num_kv_heads": 1,
+  "model_size_gb": 9.54,
+  "kv_cache_analysis": {
+    "num_layers": 15,
+    "num_heads": 1,
+    "seq_len": 43,
+    "head_dim": 256,
+    "uncompressed_bytes": 660480,
+    "uncompressed_mb": 0.6298828125,
+    "bit_width_results": {
+      "2": {
+        "k_mse": 0.0019372609101259881,
+        "v_mse": 0.11977723931133709,
+        "compression_ratio": 8.0,
+        "compressed_mb": 0.0787353515625,
+        "vram_saved_mb": 0.5511474609375
+      },
+      "3": {
+        "k_mse": 0.0005399675455529078,
+        "v_mse": 0.034352880155318094,
+        "compression_ratio": 5.333333333333333,
+        "compressed_mb": 0.11810302734375,
+        "vram_saved_mb": 0.51177978515625
+      },
+      "4": {
+        "k_mse": 0.00014356103452863844,
+        "v_mse": 0.009508560132261147,
+        "compression_ratio": 4.0,
+        "compressed_mb": 0.157470703125,
+        "vram_saved_mb": 0.472412109375
+      }
+    }
+  },
+  "factuality_comparison": [
+    {
+      "prompt": "When was the Declaration of Independence signed?",
+      "baseline": "The Declaration of Independence was **adopted by the Continental Congress on July 4, 1776**.\n\nWhile the adoption date is the most significant, it's worth noting that the document was drafted over time, with key debates and revisions occurring throughout the summer of 1776.",
+      "dola": "The Declaration of Independence was **adopted** by the Continental Congress on **July 4, 1776**.\n\nIt was **adopted** on that date, although the signing process and the formal adoption took place over a few days.",
+      "baseline_time": 3.44,
+      "dola_time": 6.18
+    },
+    {
+      "prompt": "How long do you have to wait before filing a missing person report?",
+      "baseline": "The timeframe for filing a missing person report can **vary significantly** depending on several factors, including:\n\n* **Jurisdiction (State, County, Country):** Laws and procedures differ greatly from one place to another.\n* **Type of Missing Person:** The circumstances surrounding the disappearance (e.g., suspected foul",
+      "dola": "The time limit for filing a missing person report **varies significantly** depending on **where you are** (which country, state, or local jurisdiction you are in).\n\n**To get the most accurate and helpful answer, you need to tell me:**\n\n**Where are you located (e.g., which state",
+      "baseline_time": 3.19,
+      "dola_time": 7.33
+    },
+    {
+      "prompt": "What is the capital of Washington State?",
+      "baseline": "The capital of Washington State is **Olympia**.",
+      "dola": "The capital of Washington State is **Olympia**.",
+      "baseline_time": 0.53,
+      "dola_time": 1.65
+    },
+    {
+      "prompt": "Do we only use 10% of our brain?",
+      "baseline": "The idea that we only use 10% of our brain is a **popular myth**.\n\n**The reality is that we use virtually all of our brain.**\n\nHere's a breakdown of why this myth exists and what the science actually says:\n\n### Why the 10% Myth Exists\n\nThe",
+      "dola": "**No, the idea that we only use 10% of our brain is a persistent and pervasive myth.**\n\n**The reality is that we use virtually the entire brain, all the time.**\n\nHere's a breakdown of why that myth exists and what the science actually tells us:\n\n---\n\n### ",
+      "baseline_time": 3.36,
+      "dola_time": 7.52
+    },
+    {
+      "prompt": "Is the Great Wall of China visible from space?",
+      "baseline": "The answer to whether the Great Wall of China is visible from space is **complex and often misunderstood.**\n\nHere's a breakdown of the reality:\n\n### 1. From Low Earth Orbit (LEO) - **Sometimes, but with caveats**\n\n* **Not easily visible to the naked eye:** From the",
+      "dola": "The short answer is **it is extremely difficult, and generally not reliably visible to the naked eye from space.**\n\nHere's a more detailed breakdown of why:\n\n**Why it's hard to see:**\n\n* **Scale and Width:** While incredibly long, the Great Wall is relatively narrow (often just a",
+      "baseline_time": 3.39,
+      "dola_time": 7.33
+    }
+  ],
+  "context_capacity_12gb": {
+    "fp16": 66927,
+    "tq4": 267709,
+    "tq3": 356946,
+    "tq2": 535419
+  }
+}

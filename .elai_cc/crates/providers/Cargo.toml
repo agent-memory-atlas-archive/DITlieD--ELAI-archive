@@ -19,6 +19,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 [features]
 default = []
 vllm = []
+sidecar = []
 turboquant = []
 
 [lints.clippy]

@@ -4,6 +4,8 @@ pub mod layer_config;
 pub mod oauth;
 mod prompt_cache;
 mod providers;
+#[cfg(feature = "sidecar")]
+pub mod sidecar_client;
 mod sse;
 pub mod telemetry_types;
 mod types;
@@ -30,6 +32,8 @@ pub use providers::ollama::{
 pub use providers::{
     detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind,
 };
+#[cfg(feature = "sidecar")]
+pub use sidecar_client::{SidecarConfig, SidecarProvider};
 #[cfg(feature = "vllm")]
 pub use vllm_client::{
     InferenceBackend, VllmConfig, VllmHealthStatus, VllmModelPool, VllmProvider,
