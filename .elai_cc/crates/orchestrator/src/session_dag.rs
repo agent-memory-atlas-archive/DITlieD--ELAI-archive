@@ -196,7 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_context_stubbed ON snapshot_context(snap_id) WHER
 // SessionDag
 // ---------------------------------------------------------------------------
 
-// FIXME(3H.6): replace with LlmProvider::token_count when implemented.
+// FIXME(3H.7): replace with LlmProvider::token_count when providers crate implements it.
 // Current heuristic: ~4 bytes per token (conservative estimate for English text).
 fn estimate_tokens(bytes: &[u8]) -> usize {
     bytes.len().saturating_add(3) / 4
@@ -313,10 +313,20 @@ impl SessionDag {
         db: &Connection,
         session_id: &str,
     ) -> Result<Vec<BranchRef>, SessionDagError> {
+        // Group by branch name, take the latest snap_id per branch (dedup).
+        // This handles cases where save_snapshot inserts additional snapshots
+        // with the same branch tag — we always pick the newest tip.
         let mut stmt = db.prepare(
-            "SELECT snap_id, tag, created_at FROM snapshots \
-             WHERE session_id = ?1 AND tag LIKE 'branch:%' \
-             ORDER BY created_at ASC",
+            "SELECT s.snap_id, s.tag, s.created_at \
+             FROM snapshots s \
+             INNER JOIN ( \
+                 SELECT tag, MAX(created_at) AS max_ts \
+                 FROM snapshots \
+                 WHERE session_id = ?1 AND tag LIKE 'branch:%' \
+                 GROUP BY tag \
+             ) g ON s.tag = g.tag AND s.created_at = g.max_ts \
+             WHERE s.session_id = ?1 AND s.tag LIKE 'branch:%' \
+             ORDER BY s.created_at ASC",
         )?;
         let rows = stmt
             .query_map(params![session_id], |row| {
@@ -1247,6 +1257,88 @@ impl SessionDag {
         msg.stub_ssb_seq = None;
 
         Ok(msg)
+    }
+
+    // ------------------------------------------------------------------
+    // Handoff operations (3H.6)
+    // ------------------------------------------------------------------
+
+    /// Creates a handoff snapshot: runs 3-pass trim, saves with tag="handoff".
+    ///
+    /// `ssb` is not used directly but reserved for future recovery-path
+    /// integration. `valid_ssb_seqs` are derived from the messages themselves.
+    pub fn create_handoff(
+        &self,
+        messages: &[TrimmedMessage],
+        config: TrimConfig,
+        _ssb: &dyn SsbReader,
+        entropy: &mut impl EntropySource,
+        clock: &impl ClockProvider,
+        fsm_state: &str,
+    ) -> Result<Snapshot, SessionDagError> {
+        // Derive valid_ssb_seqs from messages
+        let valid_ssb_seqs: HashSet<u64> = messages
+            .iter()
+            .filter_map(|m| m.stub_ssb_seq)
+            .collect();
+
+        // Pass 1-3: trim context
+        let trimmed = self.trim_context(messages, config, &valid_ssb_seqs)?;
+
+        // Generate snapshot identity
+        let snap_id = Self::generate_snap_id(entropy);
+        let created_at = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+
+        // Determine parent_id from the most recent snapshot (any tag)
+        let parent_id = self
+            .latest_snapshot(None)?
+            .map(|s| s.snap_id);
+
+        let snapshot = Snapshot {
+            snap_id,
+            parent_id,
+            session_id: self.session_id.clone(),
+            fsm_state: fsm_state.to_owned(),
+            phase: None,
+            step: None,
+            findings: None,
+            code_changes: None,
+            tests_written: None,
+            commit_hashes: Vec::new(),
+            created_at,
+            tag: Some("handoff".to_owned()),
+        };
+
+        self.save_snapshot(&snapshot, &trimmed)?;
+        Ok(snapshot)
+    }
+
+    /// Loads the most relevant handoff snapshot and its context messages.
+    ///
+    /// Priority: if active branches exist, returns the first branch tip.
+    /// Otherwise returns the latest snapshot tagged "handoff".
+    /// Returns `Ok(None)` if no handoff snapshot exists and no branches are active.
+    pub fn load_handoff(
+        &self,
+    ) -> Result<Option<(Snapshot, Vec<TrimmedMessage>)>, SessionDagError> {
+        // Branch-tip-first: if active branches exist, load the first branch tip
+        if let Some(branch) = self.active_branches.first() {
+            let pair = self.load_snapshot(&branch.tip_snap_id)?;
+            return Ok(Some(pair));
+        }
+
+        // Fall back to latest "handoff" tagged snapshot
+        match self.latest_snapshot(Some("handoff"))? {
+            Some(snap) => {
+                let pair = self.load_snapshot(&snap.snap_id)?;
+                Ok(Some(pair))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -2655,6 +2747,323 @@ mod tests {
         assert_eq!(
             parent_after, root_id,
             "parent_id must not be mutated after merge"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 3H.6 — Handoff tests
+    // ------------------------------------------------------------------
+
+    use crate::ssb::{SsbActionType, SsbEntry, SsbError, SsbReader};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    struct MockSsbReader {
+        entries: HashMap<i64, SsbEntry>,
+    }
+
+    impl MockSsbReader {
+        fn new() -> Self {
+            Self {
+                entries: HashMap::new(),
+            }
+        }
+    }
+
+    impl SsbReader for MockSsbReader {
+        fn query_by_session(&self, _session_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_file(&self, _file_paths: &[&str]) -> Result<Vec<SsbEntry>, SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_type(&self, _action_type: SsbActionType) -> Result<Vec<SsbEntry>, SsbError> {
+            Ok(vec![])
+        }
+        fn query_by_superstep(&self, _superstep: i64) -> Result<Vec<SsbEntry>, SsbError> {
+            Ok(vec![])
+        }
+        fn query_conflict(
+            &self,
+            _file_paths: &[&str],
+            _session_id: &str,
+            _superstep: i64,
+        ) -> Result<Vec<String>, SsbError> {
+            Ok(vec![])
+        }
+        fn last_seq(&self) -> Result<Option<i64>, SsbError> {
+            Ok(None)
+        }
+        fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError> {
+            Ok(self.entries.get(&seq).cloned())
+        }
+    }
+
+    #[test]
+    fn test_create_handoff_tag() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-ho-tag", &path, &mut entropy, &clock).unwrap();
+
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"sys"),
+            make_message(2, DagMessageRole::User, b"usr"),
+        ];
+        let config = default_trim_config();
+        let ssb = MockSsbReader::new();
+
+        let snap = dag
+            .create_handoff(&msgs, config, &ssb, &mut SeededRng::new(100), &clock, "IDLE")
+            .unwrap();
+        assert_eq!(snap.tag, Some("handoff".to_owned()));
+        assert_eq!(snap.session_id, "s-ho-tag");
+        assert_eq!(snap.fsm_state, "IDLE");
+    }
+
+    #[test]
+    fn test_load_handoff_empty_returns_none() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-ho-empty", &path, &mut entropy, &clock).unwrap();
+
+        let result = dag.load_handoff().unwrap();
+        assert!(result.is_none(), "empty DAG must return None");
+    }
+
+    #[test]
+    fn test_load_handoff_no_branch_returns_trunk() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let dag = SessionDag::new("s-ho-trunk", &path, &mut entropy, &clock).unwrap();
+
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"sys"),
+            make_message(2, DagMessageRole::User, b"usr"),
+        ];
+        let config = default_trim_config();
+        let ssb = MockSsbReader::new();
+
+        let snap = dag
+            .create_handoff(&msgs, config, &ssb, &mut SeededRng::new(100), &clock, "PLANNING")
+            .unwrap();
+
+        let loaded = dag.load_handoff().unwrap();
+        assert!(loaded.is_some());
+        let (ls, lm) = loaded.unwrap();
+        assert_eq!(ls.snap_id, snap.snap_id);
+        assert_eq!(lm.len(), 2);
+    }
+
+    #[test]
+    fn test_load_handoff_with_active_branch_returns_branch_tip() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-ho-br", &path, &mut entropy, &clock).unwrap();
+
+        let msgs = vec![
+            make_message(1, DagMessageRole::System, b"sys"),
+            make_message(2, DagMessageRole::User, b"usr"),
+        ];
+        let config = default_trim_config();
+        let ssb = MockSsbReader::new();
+
+        let handoff = dag
+            .create_handoff(&msgs, config, &ssb, &mut SeededRng::new(100), &clock, "EXECUTING")
+            .unwrap();
+
+        let branch = dag
+            .create_branch("test-br", &handoff.snap_id, &mut SeededRng::new(200), &clock)
+            .unwrap();
+
+        let loaded = dag.load_handoff().unwrap();
+        assert!(loaded.is_some());
+        let (ls, _) = loaded.unwrap();
+        assert_eq!(
+            ls.snap_id, branch.tip_snap_id,
+            "must return branch tip, not trunk handoff"
+        );
+    }
+
+    #[test]
+    fn test_handoff_integration_lifecycle() {
+        // Step 1: Create SessionDag (new, in-memory-like via tempdir)
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(42);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-lifecycle", &path, &mut entropy, &clock).unwrap();
+
+        // Step 2: Build 50 TrimmedMessages (mix of roles, some with content >100 bytes)
+        let mut messages: Vec<TrimmedMessage> = Vec::with_capacity(50);
+        for i in 0..50u32 {
+            let seq = i + 1;
+            if seq <= 3 {
+                // Prompt cache prefix — never stubbed
+                messages.push(TrimmedMessage {
+                    seq,
+                    role: match seq {
+                        1 => DagMessageRole::System,
+                        2 => DagMessageRole::User,
+                        _ => DagMessageRole::Assistant,
+                    },
+                    content: format!("prefix-{seq}").into_bytes(),
+                    is_stubbed: false,
+                    stub_ssb_seq: None,
+                });
+            } else if seq % 4 == 0 {
+                // Tool messages with large content (>stub_threshold to be stubbed)
+                let payload = vec![0xCC; 600];
+                messages.push(TrimmedMessage {
+                    seq,
+                    role: DagMessageRole::Tool,
+                    content: payload,
+                    is_stubbed: false,
+                    stub_ssb_seq: Some(seq as u64),
+                });
+            } else if seq % 4 == 1 {
+                messages.push(make_message(seq, DagMessageRole::User, b"user-input"));
+            } else if seq % 4 == 2 {
+                messages.push(make_message(seq, DagMessageRole::Assistant, b"assistant-reply"));
+            } else {
+                messages.push(make_message(seq, DagMessageRole::Tool, b"small-tool"));
+            }
+        }
+        assert_eq!(messages.len(), 50);
+
+        // Step 3: Call create_handoff with TrimConfig
+        let config = TrimConfig {
+            stub_threshold: 500,
+            model_context_window: 200_000,
+            allocated_slots_tokens: 10_000,
+            output_reserve: 5_000,
+        };
+        let ssb = MockSsbReader::new();
+
+        let handoff_snap = dag
+            .create_handoff(
+                &messages,
+                config,
+                &ssb,
+                &mut SeededRng::new(100),
+                &clock,
+                "EXECUTING",
+            )
+            .unwrap();
+
+        // Step 4: Assert snapshot has tag="handoff"
+        assert_eq!(
+            handoff_snap.tag,
+            Some("handoff".to_owned()),
+            "step 4: handoff snapshot must have tag='handoff'"
+        );
+
+        // Step 5: load_handoff returns the handoff snapshot
+        let loaded = dag.load_handoff().unwrap();
+        assert!(loaded.is_some(), "step 5: load_handoff should find snapshot");
+        let (loaded_snap, loaded_msgs) = loaded.unwrap();
+        assert_eq!(
+            loaded_snap.snap_id, handoff_snap.snap_id,
+            "step 5: snap_id must match"
+        );
+        assert!(
+            !loaded_msgs.is_empty(),
+            "step 5: should have messages"
+        );
+
+        // Step 6: Create a branch
+        let branch = dag
+            .create_branch(
+                "feat-x",
+                &handoff_snap.snap_id,
+                &mut SeededRng::new(200),
+                &clock,
+            )
+            .unwrap();
+
+        // Step 7: Save a new snapshot on the branch
+        let branch_snap_id = SessionDag::generate_snap_id(&mut SeededRng::new(300));
+        let branch_created_at = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let branch_snap = Snapshot {
+            snap_id: branch_snap_id.clone(),
+            parent_id: Some(branch.tip_snap_id.clone()),
+            session_id: "s-lifecycle".to_owned(),
+            fsm_state: "EXECUTING".to_owned(),
+            phase: Some("3H".to_owned()),
+            step: Some("6".to_owned()),
+            findings: None,
+            code_changes: None,
+            tests_written: None,
+            commit_hashes: vec!["branch-commit-1".to_owned()],
+            created_at: branch_created_at,
+            tag: Some("branch:feat-x".to_owned()),
+        };
+        let branch_msgs = vec![
+            make_message(1, DagMessageRole::System, b"branch-sys"),
+            make_message(2, DagMessageRole::User, b"branch-usr"),
+        ];
+        dag.save_snapshot(&branch_snap, &branch_msgs).unwrap();
+
+        // Step 8: load_handoff returns branch tip, NOT trunk handoff
+        let loaded2 = dag.load_handoff().unwrap();
+        assert!(loaded2.is_some(), "step 8: should find branch tip");
+        let (ls2, _) = loaded2.unwrap();
+        assert_eq!(
+            ls2.snap_id, branch.tip_snap_id,
+            "step 8: load_handoff must return branch tip snapshot, not trunk handoff"
+        );
+
+        // Step 9: Merge the branch
+        let merge_result = dag
+            .merge_branch("feat-x", &mut SeededRng::new(400), &clock)
+            .unwrap();
+        match &merge_result {
+            MergeResult::Winner { branch: br, .. } => {
+                assert_eq!(br.name, "feat-x", "step 9: merged branch name");
+            }
+            MergeResult::Conflict { reason } => {
+                panic!("step 9: unexpected conflict: {reason}");
+            }
+        }
+
+        // Step 10: Parent chain acyclicity
+        let merge_snap_id = match &merge_result {
+            MergeResult::Winner { branch: br, .. } => br.tip_snap_id.clone(),
+            _ => unreachable!(),
+        };
+        let chain = dag.parent_chain(&merge_snap_id).unwrap();
+        let mut seen = HashSet::new();
+        for snap in &chain {
+            assert!(
+                seen.insert(&snap.snap_id),
+                "step 10: cycle detected — snap_id {} appears twice in parent chain",
+                snap.snap_id
+            );
+        }
+        assert!(
+            chain.len() >= 2,
+            "step 10: parent chain should have at least 2 snapshots"
+        );
+
+        // Step 11: commit_hashes preserved across round-trip
+        // The handoff_snap was saved with default empty commit_hashes.
+        // Let's verify branch_snap's commit_hashes survived the round-trip.
+        let (reloaded_branch, _) = dag.load_snapshot(&branch_snap_id).unwrap();
+        assert_eq!(
+            reloaded_branch.commit_hashes,
+            vec!["branch-commit-1".to_owned()],
+            "step 11: commit_hashes must be preserved across save/load round-trip"
         );
     }
 }

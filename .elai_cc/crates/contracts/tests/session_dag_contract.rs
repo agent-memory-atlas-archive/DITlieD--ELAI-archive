@@ -534,3 +534,256 @@ fn round_trip_trim_save_load_recover() {
     assert_eq!(recovered[1].content, b"user");
     assert_eq!(recovered[2].content, b"assistant");
 }
+
+// ---------------------------------------------------------------------------
+// 3H.6 — Handoff contracts
+// ---------------------------------------------------------------------------
+
+fn make_tool_messages_for_handoff(count: usize, stub_threshold: usize) -> Vec<TrimmedMessage> {
+    let mut msgs = Vec::with_capacity(count);
+    for i in 0..count {
+        let seq = (i + 1) as u32;
+        if seq <= 3 {
+            // Cache-prefix boundary messages (never stubbed)
+            msgs.push(TrimmedMessage {
+                seq,
+                role: if seq == 1 { DagMessageRole::System } else { DagMessageRole::User },
+                content: format!("prefix-msg-{seq}").into_bytes(),
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            });
+        } else if i % 3 == 0 {
+            // Tool messages with large content (will be stub candidates)
+            let payload = vec![0xAB; stub_threshold + 100];
+            msgs.push(TrimmedMessage {
+                seq,
+                role: DagMessageRole::Tool,
+                content: payload,
+                is_stubbed: false,
+                stub_ssb_seq: Some(seq as u64),
+            });
+        } else if i % 3 == 1 {
+            msgs.push(TrimmedMessage {
+                seq,
+                role: DagMessageRole::User,
+                content: format!("user-msg-{seq}").into_bytes(),
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            });
+        } else {
+            msgs.push(TrimmedMessage {
+                seq,
+                role: DagMessageRole::Assistant,
+                content: format!("assistant-msg-{seq}").into_bytes(),
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            });
+        }
+    }
+    msgs
+}
+
+#[test]
+fn contract_create_handoff_saves_tag() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-handoff-tag", &path, &mut entropy, &clock).unwrap();
+
+    let msgs = make_tool_messages_for_handoff(10, 500);
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let ssb = MockSsbReader::new();
+
+    let snap = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(100), &clock, "EXECUTING",
+    ).unwrap();
+
+    assert_eq!(snap.tag, Some("handoff".to_owned()), "handoff snapshot must have tag='handoff'");
+}
+
+#[test]
+fn contract_load_handoff_returns_none_when_no_handoff() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-handoff-none", &path, &mut entropy, &clock).unwrap();
+
+    let result = dag.load_handoff().unwrap();
+    assert!(result.is_none(), "empty DAG should return None for load_handoff");
+}
+
+#[test]
+fn contract_load_handoff_returns_trunk_tip_no_branches() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-handoff-trunk", &path, &mut entropy, &clock).unwrap();
+
+    let msgs = make_tool_messages_for_handoff(10, 500);
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let ssb = MockSsbReader::new();
+
+    let snap = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(100), &clock, "EXECUTING",
+    ).unwrap();
+
+    let loaded = dag.load_handoff().unwrap();
+    assert!(loaded.is_some(), "should find the handoff snapshot");
+    let (loaded_snap, _loaded_msgs) = loaded.unwrap();
+    assert_eq!(loaded_snap.snap_id, snap.snap_id, "should load the same handoff snapshot");
+}
+
+#[test]
+fn contract_load_handoff_returns_branch_tip_when_active_branch() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let mut dag = SessionDag::new("s-handoff-br", &path, &mut entropy, &clock).unwrap();
+
+    let msgs = make_tool_messages_for_handoff(10, 500);
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let ssb = MockSsbReader::new();
+
+    let handoff_snap = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(100), &clock, "EXECUTING",
+    ).unwrap();
+
+    let branch = dag.create_branch(
+        "feat-x", &handoff_snap.snap_id,
+        &mut SeededRng::new(200), &clock,
+    ).unwrap();
+
+    let loaded = dag.load_handoff().unwrap();
+    assert!(loaded.is_some(), "should find branch tip");
+    let (loaded_snap, _) = loaded.unwrap();
+    assert_eq!(
+        loaded_snap.snap_id, branch.tip_snap_id,
+        "load_handoff must return branch tip, not trunk handoff"
+    );
+}
+
+#[test]
+fn contract_handoff_round_trip() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-handoff-rt", &path, &mut entropy, &clock).unwrap();
+
+    let msgs = vec![
+        TrimmedMessage {
+            seq: 1,
+            role: DagMessageRole::System,
+            content: b"system prompt".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 2,
+            role: DagMessageRole::User,
+            content: b"user message".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 4,
+            role: DagMessageRole::Assistant,
+            content: b"assistant reply".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+    ];
+
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let ssb = MockSsbReader::new();
+
+    let snap = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(100), &clock, "PLANNING",
+    ).unwrap();
+
+    let loaded = dag.load_handoff().unwrap();
+    assert!(loaded.is_some(), "round-trip should find handoff");
+    let (loaded_snap, loaded_msgs) = loaded.unwrap();
+    assert_eq!(loaded_snap.snap_id, snap.snap_id);
+    assert_eq!(loaded_msgs.len(), msgs.len(), "message count must match");
+    assert_eq!(loaded_msgs[0].content, b"system prompt");
+    assert_eq!(loaded_msgs[1].content, b"user message");
+    assert_eq!(loaded_msgs[2].content, b"assistant reply");
+}
+
+#[test]
+fn contract_sequential_handoffs_parent_chain() {
+    let dir = test_dir();
+    let path = db_path(&dir);
+    let mut entropy = SeededRng::new(42);
+    let clock = OsClock;
+    let dag = SessionDag::new("s-handoff-seq", &path, &mut entropy, &clock).unwrap();
+
+    let msgs = vec![
+        TrimmedMessage {
+            seq: 1,
+            role: DagMessageRole::System,
+            content: b"sys".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+        TrimmedMessage {
+            seq: 2,
+            role: DagMessageRole::User,
+            content: b"usr".to_vec(),
+            is_stubbed: false,
+            stub_ssb_seq: None,
+        },
+    ];
+    let config = TrimConfig {
+        stub_threshold: 500,
+        model_context_window: 100_000,
+        allocated_slots_tokens: 10_000,
+        output_reserve: 5_000,
+    };
+    let ssb = MockSsbReader::new();
+
+    let snap1 = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(100), &clock, "EXECUTING",
+    ).unwrap();
+    assert_eq!(snap1.parent_id, None, "first handoff has no parent");
+
+    let snap2 = dag.create_handoff(
+        &msgs, config, &ssb,
+        &mut SeededRng::new(200), &clock, "PLANNING",
+    ).unwrap();
+    assert_eq!(
+        snap2.parent_id,
+        Some(snap1.snap_id.clone()),
+        "second handoff's parent must be the first handoff"
+    );
+}
