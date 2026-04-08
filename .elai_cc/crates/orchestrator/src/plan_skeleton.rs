@@ -1170,6 +1170,7 @@ mod tests {
     use elai_providers::OllamaConfig;
     use tempfile::TempDir;
 
+    use crate::coherence_check::run_coherence_checks;
     use crate::ssb::{SsbActionType, SsbConfig, SsbReader};
 
     // Mock provider: deterministic token counting based on byte length.
@@ -2598,5 +2599,311 @@ mod tests {
                 .contains(&"B".to_owned()),
             "C should no longer depend_on B"
         );
+    }
+
+    // -- 3G.7 integration test --
+
+    /// Build 5-phase skeleton: A->B->C, A->D, D->E.
+    /// A.outputs and C.inputs carry ContractRefs for extract_contracts testing.
+    fn make_5phase_dag() -> PlanSkeleton {
+        let mut skel = PlanSkeleton::new("integ-5phase");
+
+        let mut a =
+            PhaseEntry::new("A", "phase A goal").unwrap();
+        a.outputs.push(ContractRef {
+            name: "data_stream".into(),
+            type_signature: "Vec<u8>".into(),
+            invariants: vec!["non-empty".into()],
+        });
+        a.depended_by.push("B".into());
+        a.depended_by.push("D".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b =
+            PhaseEntry::new("B", "phase B goal").unwrap();
+        b.depends_on.push("A".into());
+        b.depended_by.push("C".into());
+        skel.add_phase(b).unwrap();
+
+        let mut c =
+            PhaseEntry::new("C", "phase C goal").unwrap();
+        c.depends_on.push("B".into());
+        c.inputs.push(ContractRef {
+            name: "processed_data".into(),
+            type_signature: "String".into(),
+            invariants: vec!["utf8-valid".into()],
+        });
+        skel.add_phase(c).unwrap();
+
+        let mut d =
+            PhaseEntry::new("D", "phase D goal").unwrap();
+        d.depends_on.push("A".into());
+        d.depended_by.push("E".into());
+        skel.add_phase(d).unwrap();
+
+        let e =
+            PhaseEntry::new("E", "phase E goal").unwrap();
+        // E depends on D but PhaseEntry::new doesn't set it
+        let mut e = e;
+        e.depends_on.push("D".into());
+        skel.add_phase(e).unwrap();
+
+        skel
+    }
+
+    #[tokio::test]
+    async fn lifecycle_full_5phase_integration() {
+        let tmp = TempDir::new().unwrap();
+        let provider = MockProvider::new(4);
+        let ssb = make_ssb(tmp.path());
+        let mut skel = make_5phase_dag();
+
+        // Step 1: write_to_file
+        let skel_path =
+            tmp.path().join("skeleton.toml");
+        skel.write_to_file(
+            &skel_path, &provider, &ssb, None,
+        )
+        .await
+        .expect("write_to_file should succeed");
+
+        // Step 2: verify SSB entries
+        let plan_updates = ssb
+            .query_by_type(SsbActionType::PlanUpdate)
+            .expect("query PlanUpdate");
+        assert!(
+            !plan_updates.is_empty(),
+            "SSB must have at least 1 PlanUpdate after write"
+        );
+        let stub_refs = ssb
+            .query_by_type(SsbActionType::StubReference)
+            .expect("query StubReference");
+        assert_eq!(
+            stub_refs.len(),
+            5,
+            "5 phases without detail files = 5 StubReference entries"
+        );
+
+        // Step 3: extract_contracts("B")
+        let extracted = skel
+            .extract_contracts("B")
+            .expect("extract_contracts B");
+        // B depends_on A => input_contracts = A.outputs
+        assert_eq!(extracted.input_contracts.len(), 1);
+        assert_eq!(
+            extracted.input_contracts[0].name,
+            "data_stream"
+        );
+        // B depended_by C => output_contracts = C.inputs
+        assert_eq!(extracted.output_contracts.len(), 1);
+        assert_eq!(
+            extracted.output_contracts[0].name,
+            "processed_data"
+        );
+
+        // Step 4: load_phase_context("B", budget=5000)
+        let phases_dir = tmp.path().join("phases");
+        std::fs::create_dir_all(&phases_dir)
+            .expect("create phases_dir");
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .expect("load_phase_context B");
+        assert!(
+            ctx.total_tokens <= 5000,
+            "total_tokens {} must fit slot3 budget",
+            ctx.total_tokens,
+        );
+        assert!(
+            ctx.phase_detail.is_none(),
+            "no detail file written yet"
+        );
+        assert!(
+            ctx.staleness_warning.is_none(),
+            "no staleness when detail is None"
+        );
+
+        // Step 5: valid coherence check
+        let all_contracts: Vec<ContractRef> = extracted
+            .input_contracts
+            .iter()
+            .chain(extracted.output_contracts.iter())
+            .cloned()
+            .collect();
+        // declared_interfaces: union of all interface names in the skeleton
+        // that B can reference (A.outputs + C.inputs + B.inputs + B.outputs)
+        let declared_interfaces: Vec<ContractRef> =
+            skel.phases["A"]
+                .outputs
+                .iter()
+                .chain(skel.phases["C"].inputs.iter())
+                .chain(skel.phases["B"].inputs.iter())
+                .chain(skel.phases["B"].outputs.iter())
+                .cloned()
+                .collect();
+        let valid_detail = PhaseDetail {
+            phase_id: "B".into(),
+            skeleton_version: skel.version,
+            contracts: extracted.clone(),
+            implemented_contracts: all_contracts.clone(),
+            declared_interfaces,
+            content: "phase B elaboration content".into(),
+            token_count: 42,
+        };
+        let valid_report = run_coherence_checks(
+            &valid_detail,
+            &extracted,
+            &skel,
+            None,
+        );
+        assert_eq!(
+            valid_report.block_count, 0,
+            "valid detail should have 0 BLOCKs, got violations: {:?}",
+            valid_report.violations,
+        );
+
+        // Step 6: invalid coherence check — missing one implemented contract
+        let mut incomplete_contracts = all_contracts.clone();
+        incomplete_contracts.pop(); // remove last
+        let invalid_detail = PhaseDetail {
+            phase_id: "B".into(),
+            skeleton_version: skel.version,
+            contracts: extracted.clone(),
+            implemented_contracts: incomplete_contracts,
+            declared_interfaces: valid_detail
+                .declared_interfaces
+                .clone(),
+            content: "phase B partial".into(),
+            token_count: 30,
+        };
+        let invalid_report = run_coherence_checks(
+            &invalid_detail,
+            &extracted,
+            &skel,
+            None,
+        );
+        assert!(
+            invalid_report.block_count >= 1,
+            "missing contract should produce at least 1 BLOCK"
+        );
+
+        // Step 7: mutate A.outputs, increment versions, propagate
+        let prev_skel = skel.clone();
+        skel.phases
+            .get_mut("A")
+            .expect("phase A exists")
+            .outputs[0]
+            .type_signature = "Vec<u16>".into();
+        skel.phases
+            .get_mut("A")
+            .expect("phase A exists")
+            .increment_version()
+            .expect("increment A version");
+        skel.increment_version()
+            .expect("increment skeleton version");
+
+        let flagged = skel
+            .propagate_changes(
+                &"A".to_owned(),
+                &ssb,
+            )
+            .await
+            .expect("propagate_changes A");
+
+        assert_eq!(
+            flagged.len(),
+            4,
+            "A change must flag B, C, D, E; got {:?}",
+            flagged,
+        );
+        assert!(
+            flagged.contains(&"B".to_owned()),
+            "B must be flagged"
+        );
+        assert!(
+            flagged.contains(&"C".to_owned()),
+            "C must be flagged"
+        );
+        assert!(
+            flagged.contains(&"D".to_owned()),
+            "D must be flagged"
+        );
+        assert!(
+            flagged.contains(&"E".to_owned()),
+            "E must be flagged"
+        );
+
+        // Verify SSB PlanUpdate count: 1 from write + 4 from propagation
+        let all_plan_updates = ssb
+            .query_by_type(SsbActionType::PlanUpdate)
+            .expect("query PlanUpdate after propagation");
+        assert!(
+            all_plan_updates.len() >= 5,
+            "expected >= 5 PlanUpdate entries (1 write + 4 propagation), got {}",
+            all_plan_updates.len(),
+        );
+
+        // Step 8: final version > 0
+        assert!(
+            skel.version > 0,
+            "skeleton version must be > 0 after increment"
+        );
+
+        // Write with previous skeleton to verify version enforcement passes
+        let skel_path2 =
+            tmp.path().join("skeleton_v2.toml");
+        let ssb2 = make_ssb(tmp.path());
+        skel.write_to_file(
+            &skel_path2,
+            &provider,
+            &ssb2,
+            Some(&prev_skel),
+        )
+        .await
+        .expect(
+            "write_to_file with version-bumped skeleton should succeed",
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_determinism_100_runs() {
+        let skel = make_5phase_dag();
+        let iteration_count = 100;
+        let mut all_flagged: Vec<Vec<PhaseId>> =
+            Vec::with_capacity(iteration_count);
+
+        for _ in 0..iteration_count {
+            let tmp = TempDir::new().unwrap();
+            let ssb = make_ssb(tmp.path());
+            let flagged = skel
+                .propagate_changes(
+                    &"A".to_owned(),
+                    &ssb,
+                )
+                .await
+                .expect("propagate_changes must succeed");
+            assert_eq!(
+                flagged.len(),
+                4,
+                "each iteration must flag exactly 4 phases"
+            );
+            all_flagged.push(flagged);
+        }
+
+        // All iterations must produce identical output
+        let reference = &all_flagged[0];
+        for (i, flagged) in
+            all_flagged.iter().enumerate().skip(1)
+        {
+            assert_eq!(
+                flagged, reference,
+                "iteration {} diverged from reference: {:?} vs {:?}",
+                i, flagged, reference,
+            );
+        }
     }
 }
