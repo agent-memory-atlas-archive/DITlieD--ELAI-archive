@@ -1,0 +1,34 @@
+# ELAI phase 3I DST metrics — 2026-04-09
+# Deterministic Simulation Testing: reference model, BSP, IPC fault simulation
+
+# unique (from,to) FSM transition pairs exercised / 16 valid pairs * 100
+# source: prop_state_machine 256 cases * 200 transitions covers all valid_targets()
+# explicit pairs confirmed in dst_reference_model.rs determinism_seed_replay test
+state_coverage_pct = 100.0
+
+# invariant violations caught by reference model during 3I.4-3I.8 development
+# source: audit logs — 3I.4=2 (SSB count, channel state), 3I.7=1 (evidence gate), 3I.8=2 (superstep boundary, ephemeral clear)
+bugs_found = 5
+
+# same seed + same events = identical final state; bsp_determinism 100 reps GREEN
+# source: determinism_seed_replay test + bsp_determinism test (REPETITIONS=100)
+determinism_verified = true
+
+# auto-shrunk test cases in proptest-regressions/dst.txt
+# source: ls .elai_cc/crates/orchestrator/proptest-regressions/dst.txt (1 shrunk case)
+regression_count = 1
+
+# measured: cargo run --example measure_3i -p elai-orchestrator --release
+# 10000 iterations, elapsed 0.20ms; event sequence is a closed loop (Idle->...->Idle)
+# so all 10000 iterations call apply(); metric is valid throughput, not loop overhead
+ops_per_sec = 49333991
+
+# measured: cargo clean && cargo build --workspace (wall clock 42.26s, 2026-04-09)
+# baseline: phase_1D.toml compile_time_seconds=9.45 (knowledge crate only, not workspace)
+# delta is approximate — no phase_3H.toml workspace baseline exists
+compile_time_delta_sec = 32.81
+
+# measured: RUSTFLAGS="--cfg madsim" cargo check --workspace (bash, 2026-04-09)
+# check completed in 83s on Windows (dev profile, incremental off after clean)
+# IPC tests tagged #[ignore] on Windows per systemPatterns cfg(unix) gating
+madsim_compile_time_sec = 83.0
