@@ -843,6 +843,7 @@ dependencies = [
 name = "elai-rules"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "elai-core",
  "jsonschema",
  "regex",

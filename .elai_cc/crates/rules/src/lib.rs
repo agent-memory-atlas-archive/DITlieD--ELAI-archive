@@ -5,4 +5,5 @@ pub mod policy_engine;
 pub mod predicate;
 pub mod rule_engine;
 pub mod schema;
+pub mod self_discovery;
 pub mod trust_resolver;
