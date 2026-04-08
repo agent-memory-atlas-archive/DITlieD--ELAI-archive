@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'replan_request', 'stub_reference', 'reasoning_trace',
         'phase_complete', 'memory_monitoring',
         'death_event', 'recovery_event',
-        'supervision_exhausted', 'spiral_detected'
+        'supervision_exhausted', 'spiral_detected',
+        'context_reduction'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -69,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 21 action types recorded in SSB entries.
+/// All 22 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -94,6 +95,7 @@ pub enum SsbActionType {
     RecoveryEvent,
     SupervisionExhausted,
     SpiralDetected,
+    ContextReduction,
 }
 
 impl SsbActionType {
@@ -121,6 +123,7 @@ impl SsbActionType {
             Self::RecoveryEvent => "recovery_event",
             Self::SupervisionExhausted => "supervision_exhausted",
             Self::SpiralDetected => "spiral_detected",
+            Self::ContextReduction => "context_reduction",
         }
     }
 }
@@ -148,6 +151,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "recovery_event" => Ok(SsbActionType::RecoveryEvent),
         "supervision_exhausted" => Ok(SsbActionType::SupervisionExhausted),
         "spiral_detected" => Ok(SsbActionType::SpiralDetected),
+        "context_reduction" => Ok(SsbActionType::ContextReduction),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -317,11 +321,19 @@ pub struct SpiralDetectedPayload {
     pub spiral_depth: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextReductionPayload {
+    pub level: u8,
+    pub before_tokens: usize,
+    pub after_tokens: usize,
+    pub slots_affected: Vec<u8>,
+}
+
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 21 action-type payloads)
+// SsbPayload enum (typed wrapper over all 22 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (21 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (22 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -346,6 +358,7 @@ pub enum SsbPayload {
     RecoveryEvent(RecoveryEventPayload),
     SupervisionExhausted(SupervisionExhaustedPayload),
     SpiralDetected(SpiralDetectedPayload),
+    ContextReduction(ContextReductionPayload),
 }
 
 impl SsbPayload {
@@ -374,6 +387,7 @@ impl SsbPayload {
             Self::RecoveryEvent(_) => SsbActionType::RecoveryEvent,
             Self::SupervisionExhausted(_) => SsbActionType::SupervisionExhausted,
             Self::SpiralDetected(_) => SsbActionType::SpiralDetected,
+            Self::ContextReduction(_) => SsbActionType::ContextReduction,
         }
     }
 }
@@ -1265,6 +1279,9 @@ mod tests {
             SsbActionType::MemoryMonitoring,
             SsbActionType::DeathEvent,
             SsbActionType::RecoveryEvent,
+            SsbActionType::SupervisionExhausted,
+            SsbActionType::SpiralDetected,
+            SsbActionType::ContextReduction,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1284,7 +1301,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 19);
+        assert_eq!(count, 22);
     }
 
     #[tokio::test]
@@ -1760,6 +1777,12 @@ mod tests {
                 phase_id: "phase-3C".into(),
                 spiral_depth: 5,
             }),
+            SsbPayload::ContextReduction(ContextReductionPayload {
+                level: 1,
+                before_tokens: 10000,
+                after_tokens: 8000,
+                slots_affected: vec![5, 6],
+            }),
         ]
     }
 
@@ -1769,7 +1792,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 21, "must cover all 21 action types");
+        assert_eq!(payloads.len(), 22, "must cover all 22 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -1951,6 +1974,11 @@ mod tests {
                  "[a-z]{1,10}")
                     .prop_map(|(metric_name, value, threshold, action_taken)| SsbPayload::MemoryMonitoring(
                         MemoryMonitoringPayload { metric_name, value, threshold, action_taken }
+                    )),
+                (0u8..5, 0usize..200000, 0usize..200000,
+                 proptest::collection::vec(0u8..8, 0..4))
+                    .prop_map(|(level, before_tokens, after_tokens, slots_affected)| SsbPayload::ContextReduction(
+                        ContextReductionPayload { level, before_tokens, after_tokens, slots_affected }
                     )),
             ]
         }

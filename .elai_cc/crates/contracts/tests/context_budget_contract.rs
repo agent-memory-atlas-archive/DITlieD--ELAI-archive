@@ -1,8 +1,14 @@
+use std::sync::Arc;
+
+use elai_core::clock::SeededClock;
 use elai_orchestrator::context_budget::{
-    AdaptiveLevel, BudgetError, CacheBreakpoint, ContextBudget, ContextSlot, SlotAllocation,
+    AdaptiveError, AdaptiveLevel, BudgetError, CacheBreakpoint, ContextBudget,
+    ContextSlot, ExecutionMode, SlotAllocation,
     CACHE_BREAKPOINT_COUNT, FLOOR_GRC_HISTORY, FLOOR_OUTPUT_RESERVE, FLOOR_SSB_ENTRIES,
     SLOT_COUNT, SUM_DYNAMIC_FLOORS,
 };
+use elai_orchestrator::ssb::{Ssb, SsbConfig};
+use tempfile::TempDir;
 
 const _: () = assert!(SLOT_COUNT == 8);
 const _: () = assert!(CACHE_BREAKPOINT_COUNT == 2);
@@ -151,4 +157,167 @@ fn large_budget_no_stealing_needed() {
     for i in 3..=6 {
         assert!(budget.slots[i].allocated_tokens > 0, "slot {} should be non-zero", i);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive reduction contract tests
+// ---------------------------------------------------------------------------
+
+fn make_ssb(dir: &TempDir) -> Ssb {
+    let config = SsbConfig {
+        db_path: dir.path().join("test_ssb.db"),
+        pool_size: Some(2),
+        project_id: "test-project".into(),
+        session_id: "test-session".into(),
+    };
+    Ssb::new(config, Arc::new(SeededClock::new())).expect("ssb init")
+}
+
+/// Create a budget where total_used exceeds model_max_context by a controllable amount.
+/// Sets actual_tokens on dynamic slots to create overflow.
+fn make_overflowing_budget(overflow: usize) -> ContextBudget {
+    let mut budget = ContextBudget::compute(10000, [500, 500, 500], 2000).expect("compute");
+    // Dynamic budget = 10000 - 1500 - 2000 = 6500.
+    // Set actual_tokens = allocated_tokens for all slots.
+    for i in 0..SLOT_COUNT {
+        budget.slots[i].actual_tokens = budget.slots[i].allocated_tokens;
+    }
+    // Add overflow to CodeContext (slot 4) to simulate content exceeding budget.
+    budget.slots[ContextSlot::CodeContext as usize].actual_tokens += overflow;
+    budget.total_used = budget.slots.iter().map(|s| s.actual_tokens).sum();
+    budget
+}
+
+/// Create a budget with overflow that cannot be resolved by any reduction level.
+/// Overflow is placed on fixed slots (SystemPrompt) which adaptive_reduce never touches.
+fn make_irrecoverable_budget() -> ContextBudget {
+    let mut budget = ContextBudget::compute(10000, [500, 500, 500], 2000).expect("compute");
+    for i in 0..SLOT_COUNT {
+        budget.slots[i].actual_tokens = budget.slots[i].allocated_tokens;
+    }
+    // Fixed slot overflow: actual >> allocated, and reduction can't touch fixed slots.
+    budget.slots[ContextSlot::SystemPrompt as usize].actual_tokens = 8000;
+    budget.total_used = budget.slots.iter().map(|s| s.actual_tokens).sum();
+    budget
+}
+
+#[tokio::test]
+async fn adaptive_reduce_level1_fits_returns_ok() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    // Small overflow that level 1 (reducing GrcHistory + SsbEntries) can handle.
+    let mut budget = make_overflowing_budget(200);
+    let result = budget.adaptive_reduce(0.5, ExecutionMode::Interactive, &ssb).await;
+    assert!(result.is_ok(), "level 1 should bring budget within limits");
+    assert_eq!(budget.adaptive_level, AdaptiveLevel::FilteredByRelevance);
+}
+
+#[tokio::test]
+async fn adaptive_reduce_level2_fits_returns_ok() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    // Larger overflow: level 1 insufficient, level 2 (reducing CodeContext + RepoMap) needed.
+    let mut budget = make_overflowing_budget(2000);
+    let result = budget.adaptive_reduce(0.3, ExecutionMode::Interactive, &ssb).await;
+    assert!(result.is_ok(), "level 2 should bring budget within limits");
+    assert!(
+        budget.adaptive_level == AdaptiveLevel::FilteredByRelevance
+            || budget.adaptive_level == AdaptiveLevel::ReducedGranularity,
+        "level should be 1 or 2"
+    );
+}
+
+#[tokio::test]
+async fn adaptive_reduce_level3_fits_returns_ok() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    // Large overflow: levels 1+2 insufficient, level 3 (floor clamp) needed.
+    let mut budget = make_overflowing_budget(3000);
+    let result = budget.adaptive_reduce(0.3, ExecutionMode::Interactive, &ssb).await;
+    assert!(result.is_ok(), "level 3 should bring budget within limits");
+}
+
+#[tokio::test]
+async fn adaptive_reduce_all_levels_fail_interactive_escalates() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    // Irrecoverable: fixed slot overflow that reduction cannot touch.
+    let mut budget = make_irrecoverable_budget();
+    let result = budget.adaptive_reduce(0.5, ExecutionMode::Interactive, &ssb).await;
+    assert!(result.is_err());
+    match result {
+        Err(AdaptiveError::Escalate { breakdown }) => {
+            assert_eq!(breakdown.model_max_context, 10000);
+            assert!(breakdown.total_used > breakdown.model_max_context);
+        }
+        other => panic!("expected Escalate, got {other:?}"),
+    }
+    assert_eq!(budget.adaptive_level, AdaptiveLevel::Terminal);
+}
+
+#[tokio::test]
+async fn adaptive_reduce_all_levels_fail_autonomous_split_task() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    let mut budget = make_irrecoverable_budget();
+    let result = budget.adaptive_reduce(0.5, ExecutionMode::Autonomous, &ssb).await;
+    assert!(result.is_err());
+    assert!(matches!(result, Err(AdaptiveError::SplitTask)));
+    assert_eq!(budget.adaptive_level, AdaptiveLevel::Terminal);
+}
+
+#[tokio::test]
+async fn adaptive_reduce_escalate_carries_breakdown() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    let mut budget = make_irrecoverable_budget();
+    let result = budget.adaptive_reduce(0.5, ExecutionMode::Interactive, &ssb).await;
+    match result {
+        Err(AdaptiveError::Escalate { breakdown }) => {
+            assert_eq!(breakdown.slots.len(), SLOT_COUNT);
+            assert_eq!(breakdown.model_max_context, 10000);
+            // Breakdown should reflect the final state after all reduction attempts.
+            let sum: usize = breakdown.slots.iter().map(|s| s.allocated_tokens).sum();
+            assert!(sum > 0, "allocated_tokens in breakdown must be non-zero");
+        }
+        other => panic!("expected Escalate, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn adaptive_reduce_preserves_fixed_slot_allocations() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    let mut budget = make_overflowing_budget(3000);
+    let fixed_before = [
+        budget.slots[0].allocated_tokens,
+        budget.slots[1].allocated_tokens,
+        budget.slots[2].allocated_tokens,
+        budget.slots[7].allocated_tokens,
+    ];
+    let _ = budget.adaptive_reduce(0.5, ExecutionMode::Interactive, &ssb).await;
+    // Fixed slots (SystemPrompt, Rules, PhaseSpec, OutputReserve) must not be modified.
+    assert_eq!(budget.slots[0].allocated_tokens, fixed_before[0]);
+    assert_eq!(budget.slots[1].allocated_tokens, fixed_before[1]);
+    assert_eq!(budget.slots[2].allocated_tokens, fixed_before[2]);
+    assert_eq!(budget.slots[7].allocated_tokens, fixed_before[3]);
+}
+
+#[tokio::test]
+async fn adaptive_reduce_floors_respected() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssb = make_ssb(&dir);
+    let mut budget = make_irrecoverable_budget();
+    let _ = budget.adaptive_reduce(0.9, ExecutionMode::Interactive, &ssb).await;
+    // After maximum reduction, all floored slots must be at or above their floor.
+    assert!(
+        budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens
+            >= budget.slots[ContextSlot::SsbEntries as usize].floor_tokens,
+        "SsbEntries must respect floor"
+    );
+    assert!(
+        budget.slots[ContextSlot::GrcHistory as usize].allocated_tokens
+            >= budget.slots[ContextSlot::GrcHistory as usize].floor_tokens,
+        "GrcHistory must respect floor"
+    );
 }

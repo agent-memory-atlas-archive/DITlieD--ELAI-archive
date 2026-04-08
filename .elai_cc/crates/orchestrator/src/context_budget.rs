@@ -2,6 +2,8 @@ use std::fmt;
 
 use blake3;
 
+use crate::ssb::{ContextReductionPayload, Ssb, SsbPayload};
+
 pub const SLOT_COUNT: usize = 8;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
 
@@ -18,6 +20,13 @@ const PCT_SSB_ENTRIES: usize = 25;
 const PCT_GRC_HISTORY: usize = 20;
 const _: () = assert!(PCT_REPO_MAP + PCT_CODE_CONTEXT + PCT_SSB_ENTRIES + PCT_GRC_HISTORY == 100);
 
+// Adaptive reduction factors for Level 2 (ReducedGranularity).
+// CodeContext reduced to 60% of current allocation; RepoMap to 50%.
+const LEVEL2_CODE_CONTEXT_FACTOR_NUM: usize = 60;
+const LEVEL2_CODE_CONTEXT_FACTOR_DEN: usize = 100;
+const LEVEL2_REPO_MAP_FACTOR_NUM: usize = 50;
+const LEVEL2_REPO_MAP_FACTOR_DEN: usize = 100;
+
 #[derive(Debug, thiserror::Error)]
 pub enum BudgetError {
     #[error("budget infeasible: dynamic_budget={dynamic_budget} < sum_floors={sum_floors}")]
@@ -25,6 +34,32 @@ pub enum BudgetError {
         dynamic_budget: usize,
         sum_floors: usize,
     },
+}
+
+/// Execution mode determines terminal error variant when all reduction levels fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Interactive,
+    Autonomous,
+}
+
+/// Snapshot of slot allocations at the time of an escalation or split decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BudgetBreakdown {
+    pub slots: [SlotAllocation; SLOT_COUNT],
+    pub total_used: usize,
+    pub model_max_context: usize,
+}
+
+/// Errors returned by adaptive_reduce() when reduction cannot bring usage within budget.
+#[derive(Debug, thiserror::Error)]
+pub enum AdaptiveError {
+    #[error("escalate: total_used={} exceeds max={}", .breakdown.total_used, .breakdown.model_max_context)]
+    Escalate { breakdown: Box<BudgetBreakdown> },
+    #[error("split_task: all reduction levels exhausted")]
+    SplitTask,
+    #[error("ssb write failed: {0}")]
+    SsbWrite(String),
 }
 
 #[repr(u8)]
@@ -43,12 +78,13 @@ pub enum ContextSlot {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdaptiveLevel {
-    Normal,
-    FilteredByRelevance,
-    ReducedGranularity,
-    ReducedScope,
-    Terminal,
+    Normal = 0,
+    FilteredByRelevance = 1,
+    ReducedGranularity = 2,
+    ReducedScope = 3,
+    Terminal = 4,
 }
+const _: () = assert!(AdaptiveLevel::Terminal as u8 == 4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotAllocation {
@@ -306,6 +342,196 @@ impl ContextBudget {
             }
         }
     }
+}
+
+impl ContextBudget {
+    /// Adaptively reduce slot allocations when total_used exceeds model_max_context.
+    ///
+    /// Applies up to 3 reduction levels in sequence. After each level, checks if
+    /// total_used fits within model_max_context. Logs each effective reduction to SSB.
+    /// If all 3 levels fail, returns a terminal error based on `mode`.
+    ///
+    /// `overlap_threshold` controls Level 1 filtering intensity (0.0 = no reduction,
+    /// 1.0 = maximum reduction). Decoupled from SSB entry filtering (3E.5).
+    pub async fn adaptive_reduce(
+        &mut self,
+        overlap_threshold: f64,
+        mode: ExecutionMode,
+        ssb: &Ssb,
+    ) -> Result<(), AdaptiveError> {
+        let levels = [
+            AdaptiveLevel::FilteredByRelevance,
+            AdaptiveLevel::ReducedGranularity,
+            AdaptiveLevel::ReducedScope,
+        ];
+
+        for &level in &levels {
+            let before_tokens = self.total_used;
+            let slots_affected = self.apply_reduction_level(level, overlap_threshold);
+
+            // Cap actual_tokens to allocated_tokens (models content truncation).
+            self.cap_actual_to_allocated();
+            self.recalculate_total_used();
+            let after_tokens = self.total_used;
+            self.adaptive_level = level;
+
+            // Log to SSB only if the level actually changed effective usage.
+            if before_tokens != after_tokens {
+                let payload = SsbPayload::ContextReduction(ContextReductionPayload {
+                    level: level as u8,
+                    before_tokens,
+                    after_tokens,
+                    slots_affected,
+                });
+                ssb.write_payload("context_budget", 0, payload, vec![])
+                    .await
+                    .map_err(|e| AdaptiveError::SsbWrite(e.to_string()))?;
+            }
+
+            if self.total_used <= self.model_max_context {
+                return Ok(());
+            }
+        }
+
+        // All 3 levels exhausted — terminal.
+        self.adaptive_level = AdaptiveLevel::Terminal;
+        match mode {
+            ExecutionMode::Interactive => Err(AdaptiveError::Escalate {
+                breakdown: Box::new(BudgetBreakdown {
+                    slots: self.slots,
+                    total_used: self.total_used,
+                    model_max_context: self.model_max_context,
+                }),
+            }),
+            ExecutionMode::Autonomous => Err(AdaptiveError::SplitTask),
+        }
+    }
+
+    /// Apply a single reduction level, returning the list of slot indices affected.
+    fn apply_reduction_level(
+        &mut self,
+        level: AdaptiveLevel,
+        overlap_threshold: f64,
+    ) -> Vec<u8> {
+        match level {
+            AdaptiveLevel::FilteredByRelevance => {
+                self.reduce_level1_filtered(overlap_threshold)
+            }
+            AdaptiveLevel::ReducedGranularity => {
+                self.reduce_level2_granularity()
+            }
+            AdaptiveLevel::ReducedScope => {
+                self.reduce_level3_scope()
+            }
+            // Normal and Terminal are not reduction levels.
+            AdaptiveLevel::Normal | AdaptiveLevel::Terminal => vec![],
+        }
+    }
+
+    /// Level 1: reduce GrcHistory and SsbEntries allocations by overlap_threshold factor.
+    /// Higher threshold = more aggressive reduction. Floors enforced.
+    fn reduce_level1_filtered(&mut self, overlap_threshold: f64) -> Vec<u8> {
+        let threshold = overlap_threshold.clamp(0.0, 1.0);
+        let mut affected = Vec::new();
+
+        // GrcHistory (slot 6): reduce by threshold factor.
+        let grc = &mut self.slots[ContextSlot::GrcHistory as usize];
+        let new_grc = scale_down(grc.allocated_tokens, threshold, grc.floor_tokens);
+        if new_grc != grc.allocated_tokens {
+            grc.allocated_tokens = new_grc;
+            affected.push(ContextSlot::GrcHistory as u8);
+        }
+
+        // SsbEntries (slot 5): reduce by threshold factor.
+        let ssb_slot = &mut self.slots[ContextSlot::SsbEntries as usize];
+        let new_ssb = scale_down(ssb_slot.allocated_tokens, threshold, ssb_slot.floor_tokens);
+        if new_ssb != ssb_slot.allocated_tokens {
+            ssb_slot.allocated_tokens = new_ssb;
+            affected.push(ContextSlot::SsbEntries as u8);
+        }
+
+        affected
+    }
+
+    /// Level 2: reduce CodeContext to 60% and RepoMap to 50% of current allocations.
+    fn reduce_level2_granularity(&mut self) -> Vec<u8> {
+        let mut affected = Vec::new();
+
+        let code = &mut self.slots[ContextSlot::CodeContext as usize];
+        let new_code = (code.allocated_tokens * LEVEL2_CODE_CONTEXT_FACTOR_NUM
+            / LEVEL2_CODE_CONTEXT_FACTOR_DEN)
+            .max(code.floor_tokens);
+        if new_code != code.allocated_tokens {
+            code.allocated_tokens = new_code;
+            affected.push(ContextSlot::CodeContext as u8);
+        }
+
+        let repo = &mut self.slots[ContextSlot::RepoMap as usize];
+        let new_repo = (repo.allocated_tokens * LEVEL2_REPO_MAP_FACTOR_NUM
+            / LEVEL2_REPO_MAP_FACTOR_DEN)
+            .max(repo.floor_tokens);
+        if new_repo != repo.allocated_tokens {
+            repo.allocated_tokens = new_repo;
+            affected.push(ContextSlot::RepoMap as u8);
+        }
+
+        affected
+    }
+
+    /// Level 3: clamp CodeContext, RepoMap, and SsbEntries to their floor values.
+    /// Slots with floor_tokens=0 are clamped to 0 (freeing the entire allocation).
+    fn reduce_level3_scope(&mut self) -> Vec<u8> {
+        let mut affected = Vec::new();
+
+        let targets = [
+            ContextSlot::CodeContext,
+            ContextSlot::RepoMap,
+            ContextSlot::SsbEntries,
+        ];
+        for &slot in &targets {
+            let s = &mut self.slots[slot as usize];
+            if s.allocated_tokens > s.floor_tokens {
+                s.allocated_tokens = s.floor_tokens;
+                affected.push(slot as u8);
+            }
+        }
+
+        affected
+    }
+
+    /// Cap actual_tokens to allocated_tokens for dynamic slots only.
+    /// Fixed slots (SystemPrompt, Rules, PhaseSpec) and OutputReserve are not truncatable
+    /// by reduction — their content is provided as-is. Only dynamic slots (RepoMap,
+    /// CodeContext, SsbEntries, GrcHistory) are capped after allocation reduction.
+    fn cap_actual_to_allocated(&mut self) {
+        const DYNAMIC_SLOTS: [ContextSlot; 4] = [
+            ContextSlot::RepoMap,
+            ContextSlot::CodeContext,
+            ContextSlot::SsbEntries,
+            ContextSlot::GrcHistory,
+        ];
+        for &ds in &DYNAMIC_SLOTS {
+            let slot = &mut self.slots[ds as usize];
+            if slot.actual_tokens > slot.allocated_tokens {
+                slot.actual_tokens = slot.allocated_tokens;
+                slot.source_truncated = true;
+            }
+        }
+    }
+
+    /// Recalculate total_used as the sum of actual_tokens across all slots.
+    /// Also recalculate total_allocated from allocated_tokens.
+    fn recalculate_total_used(&mut self) {
+        self.total_used = self.slots.iter().map(|s| s.actual_tokens).sum();
+        self.total_allocated = self.slots.iter().map(|s| s.allocated_tokens).sum();
+    }
+}
+
+/// Scale down a token count by `(1 - factor)`, floored at `floor`.
+/// `factor` in [0.0, 1.0]: 0.0 = no reduction, 1.0 = reduce to floor.
+fn scale_down(current: usize, factor: f64, floor: usize) -> usize {
+    let reduced = (current as f64 * (1.0 - factor)) as usize;
+    reduced.max(floor)
 }
 
 impl fmt::Display for ContextBudget {
