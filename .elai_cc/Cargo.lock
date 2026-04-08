@@ -826,8 +826,11 @@ name = "elai-rules"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
