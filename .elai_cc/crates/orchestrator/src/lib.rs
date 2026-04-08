@@ -30,6 +30,7 @@ mod remote;
 mod session;
 #[cfg(test)]
 mod session_control;
+pub mod plan_skeleton;
 pub mod ssb;
 pub mod supervision;
 pub mod stale_branch;
