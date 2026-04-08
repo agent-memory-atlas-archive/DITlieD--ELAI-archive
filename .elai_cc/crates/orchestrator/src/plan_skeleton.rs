@@ -75,6 +75,22 @@ pub enum PlanSkeletonError {
 
     #[error("SSB write failed: {0}")]
     SsbWrite(String),
+
+    #[error(
+        "skeleton alone ({skeleton_tokens}) exceeds Slot 3 budget ({slot3_budget})"
+    )]
+    SlotBudgetExceeded {
+        skeleton_tokens: usize,
+        slot3_budget: usize,
+    },
+
+    #[error(
+        "phase detail stale: skeleton_version={detail_version} < current={current_version}"
+    )]
+    StalePhaseDetail {
+        detail_version: u32,
+        current_version: u32,
+    },
 }
 
 // ---- OutputType -----------------------------------------------------------
@@ -108,6 +124,78 @@ pub struct ExtractedContracts {
     pub input_contracts: Vec<ContractRef>,
     pub output_contracts: Vec<ContractRef>,
     pub shared_constraints: Vec<String>,
+}
+
+// ---- PhaseDetail ----------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseDetail {
+    pub phase_id: PhaseId,
+    pub skeleton_version: u32,
+    pub contracts: ExtractedContracts,
+    pub implemented_contracts: Vec<ContractRef>,
+    pub declared_interfaces: Vec<ContractRef>,
+    pub content: String,
+    pub token_count: usize,
+}
+
+impl PhaseDetail {
+    /// Read a phase detail from a TOML file.
+    pub fn read_from_file(
+        path: &Path,
+    ) -> Result<Self, PlanSkeletonError> {
+        let content = std::fs::read_to_string(path)?;
+        toml::from_str(&content)
+            .map_err(PlanSkeletonError::TomlDeserialize)
+    }
+
+    /// Write a phase detail to a TOML file.
+    pub fn write_to_file(
+        &self,
+        path: &Path,
+    ) -> Result<(), PlanSkeletonError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(PlanSkeletonError::TomlSerialize)?;
+        std::fs::write(path, toml_str)?;
+        Ok(())
+    }
+
+    /// Serialize to TOML string.
+    pub fn to_toml(&self) -> Result<String, PlanSkeletonError> {
+        toml::to_string_pretty(self)
+            .map_err(PlanSkeletonError::TomlSerialize)
+    }
+}
+
+// ---- PhaseContext ----------------------------------------------------------
+
+/// Result of load_phase_context: everything needed for Slot 3.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseContext {
+    pub skeleton_tokens: usize,
+    pub phase_detail: Option<PhaseDetail>,
+    pub contracts: ExtractedContracts,
+    pub adjacent_contracts: Vec<AdjacentContracts>,
+    pub total_tokens: usize,
+    pub reduced: bool,
+    pub staleness_warning: Option<StalenessWarning>,
+}
+
+/// Adjacent phase contracts (one hop in dependency graph).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdjacentContracts {
+    pub phase_id: PhaseId,
+    pub contracts: Vec<ContractRef>,
+}
+
+/// Warning emitted when phase detail was elaborated against older skeleton.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StalenessWarning {
+    pub detail_version: u32,
+    pub current_version: u32,
 }
 
 // ---- PhaseEntry -----------------------------------------------------------
@@ -332,6 +420,213 @@ impl PlanSkeleton {
             input_contracts,
             output_contracts,
             shared_constraints,
+        })
+    }
+
+    /// Collect adjacent contracts (one hop) for a phase.
+    ///
+    /// For each dep in `depends_on`: include dep's outputs.
+    /// For each dep in `depended_by`: include dep's inputs.
+    fn collect_adjacent_contracts(
+        &self,
+        phase_id: &str,
+    ) -> Result<Vec<AdjacentContracts>, PlanSkeletonError> {
+        let phase = self
+            .phases
+            .get(phase_id)
+            .ok_or_else(|| {
+                PlanSkeletonError::PhaseNotFound(
+                    phase_id.to_owned(),
+                )
+            })?;
+
+        let mut adjacent = Vec::new();
+
+        for dep_id in &phase.depends_on {
+            if let Some(dep) = self.phases.get(dep_id.as_str())
+            {
+                if !dep.outputs.is_empty() {
+                    adjacent.push(AdjacentContracts {
+                        phase_id: dep_id.clone(),
+                        contracts: dep.outputs.clone(),
+                    });
+                }
+            }
+        }
+
+        for dep_id in &phase.depended_by {
+            if let Some(dep) = self.phases.get(dep_id.as_str())
+            {
+                if !dep.inputs.is_empty() {
+                    adjacent.push(AdjacentContracts {
+                        phase_id: dep_id.clone(),
+                        contracts: dep.inputs.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(adjacent)
+    }
+
+    /// Load phase context for Slot 3: skeleton + detail + contracts.
+    ///
+    /// Verifies combined token count fits within the Slot 3 allocation.
+    /// If it exceeds, attempts adaptive reduction: loads skeleton +
+    /// contracts only (defers full phase detail).
+    ///
+    /// `slot3_budget`: the allocated_tokens for ContextSlot::PhaseSpec.
+    /// `phases_dir`: directory containing `{phase_id}.toml` files.
+    pub fn load_phase_context(
+        &self,
+        phase_id: &str,
+        slot3_budget: usize,
+        provider: &dyn LlmProvider,
+        phases_dir: &Path,
+    ) -> Result<PhaseContext, PlanSkeletonError> {
+        // Measure skeleton tokens.
+        let skeleton_toml = self.to_toml()?;
+        let skeleton_tokens = provider
+            .token_count(&skeleton_toml)
+            .map_err(|e| {
+                PlanSkeletonError::TokenCount(
+                    e.to_string(),
+                )
+            })?;
+
+        // If skeleton alone exceeds Slot 3, system cannot operate.
+        if skeleton_tokens > slot3_budget {
+            return Err(
+                PlanSkeletonError::SlotBudgetExceeded {
+                    skeleton_tokens,
+                    slot3_budget,
+                },
+            );
+        }
+
+        // Extract contracts for the phase.
+        let contracts =
+            self.extract_contracts(phase_id)?;
+
+        // Measure contracts token cost.
+        let contracts_toml =
+            toml::to_string_pretty(&contracts)
+                .map_err(PlanSkeletonError::TomlSerialize)?;
+        let contracts_tokens = provider
+            .token_count(&contracts_toml)
+            .map_err(|e| {
+                PlanSkeletonError::TokenCount(
+                    e.to_string(),
+                )
+            })?;
+
+        // Collect adjacent contracts (one hop).
+        let adjacent_contracts =
+            self.collect_adjacent_contracts(phase_id)?;
+        let adjacent_toml: String = adjacent_contracts
+            .iter()
+            .map(|ac| {
+                format!(
+                    "# {}\n{}",
+                    ac.phase_id,
+                    ac.contracts
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{}: {}",
+                                c.name,
+                                c.type_signature
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let adjacent_tokens = if adjacent_toml.is_empty()
+        {
+            0
+        } else {
+            provider
+                .token_count(&adjacent_toml)
+                .map_err(|e| {
+                    PlanSkeletonError::TokenCount(
+                        e.to_string(),
+                    )
+                })?
+        };
+
+        // Try loading phase detail file.
+        let detail_path =
+            phases_dir.join(format!("{phase_id}.toml"));
+        let phase_detail = if detail_path.exists() {
+            Some(PhaseDetail::read_from_file(
+                &detail_path,
+            )?)
+        } else {
+            None
+        };
+
+        // Staleness detection.
+        let staleness_warning =
+            phase_detail.as_ref().and_then(|d| {
+                if d.skeleton_version < self.version {
+                    Some(StalenessWarning {
+                        detail_version: d.skeleton_version,
+                        current_version: self.version,
+                    })
+                } else {
+                    None
+                }
+            });
+
+        // Measure phase detail tokens.
+        let detail_tokens =
+            if let Some(ref detail) = phase_detail {
+                let detail_toml = detail.to_toml()?;
+                provider
+                    .token_count(&detail_toml)
+                    .map_err(|e| {
+                        PlanSkeletonError::TokenCount(
+                            e.to_string(),
+                        )
+                    })?
+            } else {
+                0
+            };
+
+        let total_full = skeleton_tokens
+            + contracts_tokens
+            + adjacent_tokens
+            + detail_tokens;
+
+        // If combined fits within Slot 3, return full context.
+        if total_full <= slot3_budget {
+            return Ok(PhaseContext {
+                skeleton_tokens,
+                phase_detail,
+                contracts,
+                adjacent_contracts,
+                total_tokens: total_full,
+                reduced: false,
+                staleness_warning,
+            });
+        }
+
+        // Adaptive reduction: skeleton + contracts only, drop detail.
+        let total_reduced = skeleton_tokens
+            + contracts_tokens
+            + adjacent_tokens;
+
+        Ok(PhaseContext {
+            skeleton_tokens,
+            phase_detail: None,
+            contracts,
+            adjacent_contracts,
+            total_tokens: total_reduced,
+            reduced: true,
+            staleness_warning,
         })
     }
 
@@ -1076,5 +1371,440 @@ mod tests {
             PlanSkeleton::from_toml(&toml_str).unwrap();
         assert_eq!(skel, parsed);
         assert!(parsed.phases.is_empty());
+    }
+
+    // -- 3G.4 phase elaboration loading tests --
+
+    fn make_chain_skeleton() -> PlanSkeleton {
+        let mut skel = PlanSkeleton::new("chain-pipe");
+        let mut a = PhaseEntry::new("A", "phase A goal").unwrap();
+        a.outputs.push(ContractRef {
+            name: "A::output".into(),
+            type_signature: "fn() -> Vec<u8>".into(),
+            invariants: vec!["deterministic".into()],
+        });
+        a.depended_by.push("B".into());
+        skel.add_phase(a).unwrap();
+
+        let mut b = PhaseEntry::new("B", "phase B goal").unwrap();
+        b.inputs.push(ContractRef {
+            name: "B::input".into(),
+            type_signature: "fn(Vec<u8>) -> ()".into(),
+            invariants: vec![],
+        });
+        b.outputs.push(ContractRef {
+            name: "B::output".into(),
+            type_signature: "fn() -> String".into(),
+            invariants: vec![],
+        });
+        b.depends_on.push("A".into());
+        b.depended_by.push("C".into());
+        skel.add_phase(b).unwrap();
+
+        let mut c = PhaseEntry::new("C", "phase C goal").unwrap();
+        c.inputs.push(ContractRef {
+            name: "C::input".into(),
+            type_signature: "fn(String) -> ()".into(),
+            invariants: vec![],
+        });
+        c.depends_on.push("B".into());
+        skel.add_phase(c).unwrap();
+
+        skel.global_constraints
+            .push("entropy-quarantined".into());
+        skel
+    }
+
+    fn make_phase_detail(
+        phase_id: &str,
+        skeleton_version: u32,
+        content_size: usize,
+    ) -> PhaseDetail {
+        let contracts = ExtractedContracts {
+            input_contracts: vec![],
+            output_contracts: vec![],
+            shared_constraints: vec![],
+        };
+        PhaseDetail {
+            phase_id: phase_id.to_owned(),
+            skeleton_version,
+            contracts,
+            implemented_contracts: vec![],
+            declared_interfaces: vec![],
+            content: "x".repeat(content_size),
+            token_count: 0,
+        }
+    }
+
+    #[test]
+    fn phase_detail_toml_round_trip() {
+        let detail = make_phase_detail("B", 1, 200);
+        let toml_str = detail.to_toml().unwrap();
+        let parsed: PhaseDetail =
+            toml::from_str(&toml_str).unwrap();
+        assert_eq!(detail, parsed);
+    }
+
+    #[test]
+    fn phase_detail_write_read_file() {
+        let tmp = TempDir::new().unwrap();
+        let detail = make_phase_detail("B", 1, 200);
+        let path = tmp.path().join("phases").join("B.toml");
+        detail.write_to_file(&path).unwrap();
+        let loaded =
+            PhaseDetail::read_from_file(&path).unwrap();
+        assert_eq!(detail, loaded);
+    }
+
+    // DETERMINISTIC_CHECK 1: fits within budget
+    #[test]
+    fn load_phase_context_fits_within_budget() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        let provider = MockProvider::new(4);
+
+        // Write a small phase detail
+        let phases_dir = tmp.path().join("phases");
+        let detail = make_phase_detail("B", 0, 100);
+        let detail_path = phases_dir.join("B.toml");
+        detail.write_to_file(&detail_path).unwrap();
+
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                2000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(
+            ctx.total_tokens <= 2000,
+            "total_tokens {} should fit within budget 2000",
+            ctx.total_tokens
+        );
+        assert!(!ctx.reduced, "should not be reduced");
+        assert!(
+            ctx.phase_detail.is_some(),
+            "detail should be loaded"
+        );
+        assert!(
+            ctx.skeleton_tokens > 0,
+            "skeleton tokens must be nonzero"
+        );
+    }
+
+    // DETERMINISTIC_CHECK 2: exceeds budget -> reduction
+    #[test]
+    fn load_phase_context_exceeds_triggers_reduction() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        // Provider with tight token counting (1 token per 2 chars)
+        let provider = MockProvider::new(2);
+
+        // Write a large phase detail
+        let phases_dir = tmp.path().join("phases");
+        let detail = make_phase_detail("B", 0, 3000);
+        let detail_path = phases_dir.join("B.toml");
+        detail.write_to_file(&detail_path).unwrap();
+
+        // Use a very tight budget
+        let skeleton_toml = skel.to_toml().unwrap();
+        let skel_tokens =
+            provider.token_count(&skeleton_toml).unwrap();
+
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                skel_tokens + 200, // just enough for skeleton + contracts, not detail
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(
+            ctx.reduced,
+            "should be reduced when detail pushes over budget"
+        );
+        assert!(
+            ctx.phase_detail.is_none(),
+            "detail should be dropped in reduction"
+        );
+    }
+
+    // DETERMINISTIC_CHECK 3: staleness warning
+    #[test]
+    fn load_phase_context_staleness_warning() {
+        let tmp = TempDir::new().unwrap();
+        let mut skel = make_chain_skeleton();
+        skel.version = 5; // skeleton advanced
+
+        let phases_dir = tmp.path().join("phases");
+        let detail = make_phase_detail("B", 2, 100); // elaborated at v2
+        let detail_path = phases_dir.join("B.toml");
+        detail.write_to_file(&detail_path).unwrap();
+
+        let provider = MockProvider::new(4);
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(
+            ctx.staleness_warning.is_some(),
+            "should warn about stale detail"
+        );
+        let warning = ctx.staleness_warning.unwrap();
+        assert_eq!(warning.detail_version, 2);
+        assert_eq!(warning.current_version, 5);
+    }
+
+    // DETERMINISTIC_CHECK 4: adjacent contracts included
+    #[test]
+    fn load_phase_context_includes_adjacent_contracts() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        let provider = MockProvider::new(4);
+        let phases_dir = tmp.path().join("phases");
+
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        // B depends on A (has outputs) and is depended by C (has inputs)
+        assert!(
+            !ctx.adjacent_contracts.is_empty(),
+            "should include adjacent contracts"
+        );
+        let adj_ids: Vec<&str> = ctx
+            .adjacent_contracts
+            .iter()
+            .map(|a| a.phase_id.as_str())
+            .collect();
+        assert!(
+            adj_ids.contains(&"A"),
+            "A's outputs should be in adjacent: {:?}",
+            adj_ids
+        );
+        assert!(
+            adj_ids.contains(&"C"),
+            "C's inputs should be in adjacent: {:?}",
+            adj_ids
+        );
+    }
+
+    // DETERMINISTIC_CHECK: no detail file -> detail is None, no error
+    #[test]
+    fn load_phase_context_no_detail_file() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        let provider = MockProvider::new(4);
+        let phases_dir = tmp.path().join("phases");
+        std::fs::create_dir_all(&phases_dir).unwrap();
+
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(
+            ctx.phase_detail.is_none(),
+            "no detail file means None"
+        );
+        assert!(
+            !ctx.reduced,
+            "not reduced — simply no detail to load"
+        );
+    }
+
+    // ADVERSARIAL 1: skeleton alone exceeds Slot 3 budget
+    #[test]
+    fn load_phase_context_skeleton_exceeds_slot3() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        // Tight provider: 1 token per char
+        let provider = MockProvider::new(1);
+        let phases_dir = tmp.path().join("phases");
+
+        let result = skel.load_phase_context(
+            "B",
+            10, // impossibly small budget
+            &provider,
+            &phases_dir,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds Slot 3 budget"),
+            "expected SlotBudgetExceeded, got: {err}"
+        );
+    }
+
+    // ADVERSARIAL 2: skeleton_version mismatch forces re-extraction
+    #[test]
+    fn load_phase_context_stale_forces_reextraction() {
+        let tmp = TempDir::new().unwrap();
+        let mut skel = make_chain_skeleton();
+        skel.version = 10;
+
+        let phases_dir = tmp.path().join("phases");
+        // Detail elaborated at skeleton v3 with stale contracts
+        let mut detail = make_phase_detail("B", 3, 100);
+        detail.contracts = ExtractedContracts {
+            input_contracts: vec![ContractRef {
+                name: "stale_contract".into(),
+                type_signature: "fn() -> ()".into(),
+                invariants: vec![],
+            }],
+            output_contracts: vec![],
+            shared_constraints: vec![],
+        };
+        let detail_path = phases_dir.join("B.toml");
+        detail.write_to_file(&detail_path).unwrap();
+
+        let provider = MockProvider::new(4);
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        // Contracts are freshly extracted from skeleton, not from detail
+        assert_eq!(
+            ctx.contracts,
+            skel.extract_contracts("B").unwrap(),
+            "contracts must be freshly extracted, not from stale detail"
+        );
+        assert!(ctx.staleness_warning.is_some());
+    }
+
+    // ADVERSARIAL: phase_id not found
+    #[test]
+    fn load_phase_context_phase_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        let provider = MockProvider::new(4);
+        let phases_dir = tmp.path().join("phases");
+
+        let result = skel.load_phase_context(
+            "NONEXISTENT",
+            5000,
+            &provider,
+            &phases_dir,
+        );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("phase not found"));
+    }
+
+    // No staleness when versions match
+    #[test]
+    fn load_phase_context_no_staleness_when_versions_match()
+    {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton(); // version = 0
+
+        let phases_dir = tmp.path().join("phases");
+        let detail = make_phase_detail("B", 0, 100); // same version
+        detail
+            .write_to_file(&phases_dir.join("B.toml"))
+            .unwrap();
+
+        let provider = MockProvider::new(4);
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(
+            ctx.staleness_warning.is_none(),
+            "no staleness when versions match"
+        );
+    }
+
+    // Reduced context still fits: skeleton + contracts + adjacent < budget
+    #[test]
+    fn load_phase_context_reduced_fits_budget() {
+        let tmp = TempDir::new().unwrap();
+        let skel = make_chain_skeleton();
+        let provider = MockProvider::new(2); // tight counting
+
+        let phases_dir = tmp.path().join("phases");
+        let detail = make_phase_detail("B", 0, 5000); // huge detail
+        detail
+            .write_to_file(&phases_dir.join("B.toml"))
+            .unwrap();
+
+        // Budget big enough for skeleton+contracts but not detail
+        let skeleton_toml = skel.to_toml().unwrap();
+        let skel_tokens =
+            provider.token_count(&skeleton_toml).unwrap();
+
+        let ctx = skel
+            .load_phase_context(
+                "B",
+                skel_tokens + 300,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(ctx.reduced);
+        assert!(
+            ctx.total_tokens <= skel_tokens + 300,
+            "reduced context must fit: {} <= {}",
+            ctx.total_tokens,
+            skel_tokens + 300
+        );
+    }
+
+    // Leaf phase (no deps, no dependents) loads fine
+    #[test]
+    fn load_phase_context_leaf_phase() {
+        let tmp = TempDir::new().unwrap();
+        let mut skel = PlanSkeleton::new("leaf-pipe");
+        let entry =
+            PhaseEntry::new("X", "standalone phase")
+                .unwrap();
+        skel.add_phase(entry).unwrap();
+
+        let provider = MockProvider::new(4);
+        let phases_dir = tmp.path().join("phases");
+
+        let ctx = skel
+            .load_phase_context(
+                "X",
+                5000,
+                &provider,
+                &phases_dir,
+            )
+            .unwrap();
+
+        assert!(ctx.adjacent_contracts.is_empty());
+        assert!(ctx.contracts.input_contracts.is_empty());
+        assert!(ctx.contracts.output_contracts.is_empty());
+        assert!(!ctx.reduced);
     }
 }
