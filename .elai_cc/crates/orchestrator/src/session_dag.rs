@@ -209,7 +209,6 @@ fn safe_i64(val: u64) -> Result<i64, SessionDagError> {
 pub struct SessionDag {
     db: Connection,
     session_id: String,
-    #[allow(dead_code)] // populated by 3H.4 branch/merge
     active_branches: Vec<BranchRef>,
 }
 
@@ -297,11 +296,47 @@ impl SessionDag {
             return Err(SessionDagError::DatabaseCorrupted);
         }
 
+        let active_branches = Self::load_branches_from_db(&db, session_id)?;
+
         Ok(Self {
             db,
             session_id: session_id.to_owned(),
-            active_branches: Vec::new(),
+            active_branches,
         })
+    }
+
+    fn load_branches_from_db(
+        db: &Connection,
+        session_id: &str,
+    ) -> Result<Vec<BranchRef>, SessionDagError> {
+        let mut stmt = db.prepare(
+            "SELECT snap_id, tag, created_at FROM snapshots \
+             WHERE session_id = ?1 AND tag LIKE 'branch:%' \
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                let snap_id: String = row.get(0)?;
+                let tag: String = row.get(1)?;
+                let created_at_i64: i64 = row.get(2)?;
+                Ok((snap_id, tag, created_at_i64))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut branches = Vec::new();
+        for (snap_id, tag, created_at_i64) in rows {
+            let name = tag
+                .strip_prefix("branch:")
+                .ok_or(SessionDagError::DatabaseCorrupted)?
+                .to_owned();
+            let created_at = nonneg_u64(created_at_i64)?;
+            branches.push(BranchRef {
+                name,
+                tip_snap_id: snap_id,
+                created_at,
+            });
+        }
+        Ok(branches)
     }
 
     pub(crate) fn db(&self) -> &Connection {
@@ -768,6 +803,320 @@ impl SessionDag {
         }
 
         Ok(result)
+    }
+
+    // ------------------------------------------------------------------
+    // Branch operations (3H.4)
+    // ------------------------------------------------------------------
+
+    fn is_valid_branch_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    }
+
+    pub fn create_branch(
+        &mut self,
+        name: &str,
+        from_snap_id: &str,
+        entropy: &mut impl EntropySource,
+        clock: &impl ClockProvider,
+    ) -> Result<BranchRef, SessionDagError> {
+        if !Self::is_valid_branch_name(name) {
+            return Err(SessionDagError::InvalidBranchName);
+        }
+
+        if self.active_branches.iter().any(|b| b.name == name) {
+            return Err(SessionDagError::InvalidBranchName);
+        }
+
+        if self.active_branches.len() >= MAX_ACTIVE_BRANCHES {
+            return Err(SessionDagError::BranchLimitExceeded {
+                max: MAX_ACTIVE_BRANCHES,
+            });
+        }
+
+        // Verify from_snap_id exists
+        let parent_exists: bool = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM snapshots WHERE snap_id = ?1 AND session_id = ?2",
+                params![from_snap_id, self.session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .map_err(SessionDagError::Sqlite)?;
+
+        if !parent_exists {
+            return Err(SessionDagError::SnapshotNotFound);
+        }
+
+        let snap_id = Self::generate_snap_id(entropy);
+        let created_at = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let created_at_i64 = safe_i64(created_at)?;
+
+        self.db.execute_batch("BEGIN IMMEDIATE")?;
+
+        let txn_result = (|| -> Result<(), SessionDagError> {
+            // Create branch snapshot with tag
+            self.db.execute(
+                "INSERT INTO snapshots (snap_id, parent_id, session_id, fsm_state, phase, step, \
+                 findings, code_changes, tests_written, commit_hashes, created_at, tag) \
+                 SELECT ?1, ?2, ?3, fsm_state, phase, step, \
+                 findings, code_changes, tests_written, commit_hashes, ?4, ?5 \
+                 FROM snapshots WHERE snap_id = ?6",
+                params![
+                    snap_id,
+                    from_snap_id,
+                    self.session_id,
+                    created_at_i64,
+                    format!("branch:{name}"),
+                    from_snap_id,
+                ],
+            )?;
+
+            // Copy snapshot_context from parent
+            self.db.execute(
+                "INSERT INTO snapshot_context (snap_id, seq, role, content, is_stubbed, stub_ssb_seq) \
+                 SELECT ?1, seq, role, content, is_stubbed, stub_ssb_seq \
+                 FROM snapshot_context WHERE snap_id = ?2",
+                params![snap_id, from_snap_id],
+            )?;
+
+            Ok(())
+        })();
+
+        if let Err(e) = txn_result {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+
+        if let Err(e) = self.db.execute_batch("COMMIT") {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(SessionDagError::Sqlite(e));
+        }
+
+        let branch = BranchRef {
+            name: name.to_owned(),
+            tip_snap_id: snap_id,
+            created_at,
+        };
+        self.active_branches.push(branch.clone());
+        Ok(branch)
+    }
+
+    pub fn list_branches(&self) -> &[BranchRef] {
+        &self.active_branches
+    }
+
+    pub fn merge_branch(
+        &mut self,
+        winner_name: &str,
+        entropy: &mut impl EntropySource,
+        clock: &impl ClockProvider,
+    ) -> Result<MergeResult, SessionDagError> {
+        let winner_idx = self
+            .active_branches
+            .iter()
+            .position(|b| b.name == winner_name)
+            .ok_or(SessionDagError::BranchNotFound)?;
+
+        // Check for conflicts: overlapping file paths in code_changes
+        if self.active_branches.len() > 1 {
+            let mut all_paths: Vec<(usize, Vec<String>)> = Vec::new();
+            for (idx, branch) in self.active_branches.iter().enumerate() {
+                let paths = self.extract_code_change_paths(&branch.tip_snap_id)?;
+                all_paths.push((idx, paths));
+            }
+
+            for i in 0..all_paths.len() {
+                for j in (i + 1)..all_paths.len() {
+                    let set_i: HashSet<&str> =
+                        all_paths[i].1.iter().map(|s| s.as_str()).collect();
+                    let overlap: Vec<&str> = all_paths[j]
+                        .1
+                        .iter()
+                        .filter(|p| set_i.contains(p.as_str()))
+                        .map(|s| s.as_str())
+                        .collect();
+                    if !overlap.is_empty() {
+                        return Ok(MergeResult::Conflict {
+                            reason: format!(
+                                "overlapping code_changes in branches '{}' and '{}': {:?}",
+                                self.active_branches[all_paths[i].0].name,
+                                self.active_branches[all_paths[j].0].name,
+                                overlap,
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        let winner = &self.active_branches[winner_idx];
+        let winner_tip = winner.tip_snap_id.clone();
+
+        let new_snap_id = Self::generate_snap_id(entropy);
+        let created_at = clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let created_at_i64 = safe_i64(created_at)?;
+
+        self.db.execute_batch("BEGIN IMMEDIATE")?;
+
+        let txn_result = (|| -> Result<(), SessionDagError> {
+            // Create trunk snapshot from winner tip
+            self.db.execute(
+                "INSERT INTO snapshots (snap_id, parent_id, session_id, fsm_state, phase, step, \
+                 findings, code_changes, tests_written, commit_hashes, created_at, tag) \
+                 SELECT ?1, ?2, ?3, fsm_state, phase, step, \
+                 findings, code_changes, tests_written, commit_hashes, ?4, NULL \
+                 FROM snapshots WHERE snap_id = ?5",
+                params![
+                    new_snap_id,
+                    winner_tip,
+                    self.session_id,
+                    created_at_i64,
+                    winner_tip,
+                ],
+            )?;
+
+            // Copy snapshot_context from winner tip
+            self.db.execute(
+                "INSERT INTO snapshot_context (snap_id, seq, role, content, is_stubbed, stub_ssb_seq) \
+                 SELECT ?1, seq, role, content, is_stubbed, stub_ssb_seq \
+                 FROM snapshot_context WHERE snap_id = ?2",
+                params![new_snap_id, winner_tip],
+            )?;
+
+            // Tag all branches' snapshots as abandoned (including winner — merged into trunk)
+            for branch in self.active_branches.iter() {
+                let rows = self.db.execute(
+                    "UPDATE snapshots SET tag = ?1 WHERE tag = ?2 AND session_id = ?3",
+                    params![
+                        format!("abandoned:{}", branch.name),
+                        format!("branch:{}", branch.name),
+                        self.session_id,
+                    ],
+                )?;
+                if rows == 0 {
+                    return Err(SessionDagError::SnapshotNotFound);
+                }
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = txn_result {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+
+        if let Err(e) = self.db.execute_batch("COMMIT") {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(SessionDagError::Sqlite(e));
+        }
+
+        // Build result before draining
+        let mut winner_ref = self.active_branches[winner_idx].clone();
+        winner_ref.tip_snap_id = new_snap_id;
+
+        let abandoned: Vec<BranchRef> = self
+            .active_branches
+            .drain(..)
+            .filter(|b| b.name != winner_name)
+            .collect();
+
+        Ok(MergeResult::Winner {
+            branch: winner_ref,
+            abandoned,
+        })
+    }
+
+    pub fn close_branch(&mut self, name: &str) -> Result<(), SessionDagError> {
+        let idx = self
+            .active_branches
+            .iter()
+            .position(|b| b.name == name)
+            .ok_or(SessionDagError::BranchNotFound)?;
+
+        self.db.execute_batch("BEGIN IMMEDIATE")?;
+
+        let txn_result = (|| -> Result<(), SessionDagError> {
+            let rows = self.db.execute(
+                "UPDATE snapshots SET tag = ?1 WHERE tag = ?2 AND session_id = ?3",
+                params![
+                    format!("abandoned:{name}"),
+                    format!("branch:{name}"),
+                    self.session_id,
+                ],
+            )?;
+            if rows == 0 {
+                return Err(SessionDagError::SnapshotNotFound);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = txn_result {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+
+        if let Err(e) = self.db.execute_batch("COMMIT") {
+            let _ = self.db.execute_batch("ROLLBACK");
+            return Err(SessionDagError::Sqlite(e));
+        }
+
+        self.active_branches.remove(idx);
+        Ok(())
+    }
+
+    fn extract_code_change_paths(&self, snap_id: &str) -> Result<Vec<String>, SessionDagError> {
+        let blob: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT code_changes FROM snapshots WHERE snap_id = ?1 AND session_id = ?2",
+                params![snap_id, self.session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => SessionDagError::SnapshotNotFound,
+                other => SessionDagError::Sqlite(other),
+            })?;
+
+        let Some(data) = blob else {
+            return Ok(Vec::new());
+        };
+
+        // code_changes is stored as JSON — extract file paths from it
+        let value: serde_json::Value =
+            serde_json::from_slice(&data).map_err(|_| SessionDagError::DatabaseCorrupted)?;
+
+        let mut paths = Vec::new();
+        match &value {
+            serde_json::Value::Object(map) => {
+                for key in map.keys() {
+                    paths.push(key.clone());
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    if let Some(path) = item.get("path").and_then(|v| v.as_str()) {
+                        paths.push(path.to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(paths)
     }
 }
 
@@ -1582,5 +1931,600 @@ mod tests {
         let decoded: Stub = rmp_serde::from_slice(&result[0].content).unwrap();
         assert_eq!(decoded.ssb_seq, 55);
         assert_eq!(decoded.original_tokens, 2000);
+    }
+
+    // ------------------------------------------------------------------
+    // 3H.4 — Branch operations tests
+    // ------------------------------------------------------------------
+
+    fn setup_dag_with_root() -> (TempDir, SessionDag, String) {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(100);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-branch", &path, &mut entropy, &clock).unwrap();
+
+        let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+        let root = make_snapshot(&root_id, None, "s-branch", 1000, None);
+        dag.save_snapshot(&root, &[]).unwrap();
+
+        (dir, dag, root_id)
+    }
+
+    #[test]
+    fn create_branch_basic() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let branch = dag
+            .create_branch("explore-1", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        assert_eq!(branch.name, "explore-1");
+        assert!(!branch.tip_snap_id.is_empty());
+        assert_ne!(branch.tip_snap_id, root_id);
+        assert_eq!(dag.active_branches().len(), 1);
+        assert_eq!(dag.active_branches()[0].name, "explore-1");
+    }
+
+    #[test]
+    fn create_branch_persists_snapshot_with_tag() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(301);
+        let clock = OsClock;
+
+        let branch = dag
+            .create_branch("tagged-1", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        let tag: String = dag
+            .db()
+            .query_row(
+                "SELECT tag FROM snapshots WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag, "branch:tagged-1");
+    }
+
+    #[test]
+    fn create_branch_copies_parent_context() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(100);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-ctx", &path, &mut entropy, &clock).unwrap();
+
+        let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+        let root = make_snapshot(&root_id, None, "s-ctx", 1000, None);
+        let msgs = vec![
+            make_message(0, DagMessageRole::User, b"hello"),
+            make_message(1, DagMessageRole::Assistant, b"world"),
+        ];
+        dag.save_snapshot(&root, &msgs).unwrap();
+
+        let branch = dag
+            .create_branch("ctx-copy", &root_id, &mut SeededRng::new(301), &clock)
+            .unwrap();
+
+        let ctx_count: i64 = dag
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_context WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ctx_count, 2, "branch snapshot should copy parent's 2 context messages");
+    }
+
+    #[test]
+    fn create_branch_invalid_name_empty() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let err = dag.create_branch("", &root_id, &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::InvalidBranchName)));
+    }
+
+    #[test]
+    fn create_branch_invalid_name_special_chars() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let err = dag.create_branch("bad name!", &root_id, &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::InvalidBranchName)));
+    }
+
+    #[test]
+    fn create_branch_invalid_name_too_long() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let long_name = "a".repeat(65);
+        let err = dag.create_branch(&long_name, &root_id, &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::InvalidBranchName)));
+    }
+
+    #[test]
+    fn create_branch_valid_name_64_chars() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let name_64 = "a".repeat(64);
+        let branch = dag.create_branch(&name_64, &root_id, &mut entropy, &clock);
+        assert!(branch.is_ok(), "64-char name should be valid");
+    }
+
+    #[test]
+    fn create_branch_duplicate_name_rejected() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("dup", &root_id, &mut entropy, &clock).unwrap();
+        let err = dag.create_branch("dup", &root_id, &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::InvalidBranchName)));
+    }
+
+    #[test]
+    fn create_branch_limit_enforced() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("b1", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("b2", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("b3", &root_id, &mut entropy, &clock).unwrap();
+
+        let err = dag.create_branch("b4", &root_id, &mut entropy, &clock);
+        assert!(
+            matches!(err, Err(SessionDagError::BranchLimitExceeded { max: 3 })),
+            "4th branch should be rejected"
+        );
+    }
+
+    #[test]
+    fn create_branch_nonexistent_parent() {
+        let (_dir, mut dag, _root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let err = dag.create_branch("orphan", "nonexistent-snap", &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::SnapshotNotFound)));
+    }
+
+    #[test]
+    fn list_branches_returns_all_active() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        assert!(dag.list_branches().is_empty());
+
+        dag.create_branch("a", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("b", &root_id, &mut entropy, &clock).unwrap();
+
+        let branches = dag.list_branches();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].name, "a");
+        assert_eq!(branches[1].name, "b");
+    }
+
+    #[test]
+    fn merge_branch_winner_promoted() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("winner", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("loser", &root_id, &mut entropy, &clock).unwrap();
+
+        let result = dag.merge_branch("winner", &mut entropy, &clock).unwrap();
+
+        match result {
+            MergeResult::Winner { branch, abandoned } => {
+                assert_eq!(branch.name, "winner");
+                assert_eq!(abandoned.len(), 1);
+                assert_eq!(abandoned[0].name, "loser");
+            }
+            MergeResult::Conflict { reason } => {
+                panic!("unexpected conflict: {reason}");
+            }
+        }
+
+        assert!(
+            dag.active_branches().is_empty(),
+            "active_branches must be empty after merge"
+        );
+    }
+
+    #[test]
+    fn merge_branch_creates_trunk_snapshot() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let winner_branch = dag
+            .create_branch("w", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        let result = dag.merge_branch("w", &mut entropy, &clock).unwrap();
+        let new_snap_id = match &result {
+            MergeResult::Winner { branch, .. } => &branch.tip_snap_id,
+            _ => panic!("expected Winner"),
+        };
+
+        // Verify trunk snapshot exists with NULL tag
+        let tag: Option<String> = dag
+            .db()
+            .query_row(
+                "SELECT tag FROM snapshots WHERE snap_id = ?1",
+                params![new_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(tag.is_none(), "trunk snapshot should have NULL tag");
+
+        // Verify parent_id is the winner's tip
+        let parent: String = dag
+            .db()
+            .query_row(
+                "SELECT parent_id FROM snapshots WHERE snap_id = ?1",
+                params![new_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent, winner_branch.tip_snap_id);
+    }
+
+    #[test]
+    fn merge_branch_tags_abandoned() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("keep", &root_id, &mut entropy, &clock).unwrap();
+        let loser = dag
+            .create_branch("drop", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        dag.merge_branch("keep", &mut entropy, &clock).unwrap();
+
+        // The loser's snapshot should be tagged abandoned
+        let tag: String = dag
+            .db()
+            .query_row(
+                "SELECT tag FROM snapshots WHERE snap_id = ?1",
+                params![loser.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag, "abandoned:drop");
+    }
+
+    #[test]
+    fn merge_branch_abandoned_snapshots_still_in_db() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let loser = dag
+            .create_branch("gone", &root_id, &mut entropy, &clock)
+            .unwrap();
+        dag.create_branch("stay", &root_id, &mut entropy, &clock).unwrap();
+
+        dag.merge_branch("stay", &mut entropy, &clock).unwrap();
+
+        // Abandoned snapshot must still exist
+        let count: i64 = dag
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM snapshots WHERE snap_id = ?1",
+                params![loser.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "abandoned snapshot must remain in DB");
+    }
+
+    #[test]
+    fn merge_branch_not_found() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("only", &root_id, &mut entropy, &clock).unwrap();
+
+        let err = dag.merge_branch("nonexistent", &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::BranchNotFound)));
+    }
+
+    #[test]
+    fn merge_branch_single_branch_no_conflict() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("solo", &root_id, &mut entropy, &clock).unwrap();
+
+        let result = dag.merge_branch("solo", &mut entropy, &clock).unwrap();
+        match result {
+            MergeResult::Winner { branch, abandoned } => {
+                assert_eq!(branch.name, "solo");
+                assert!(abandoned.is_empty());
+            }
+            _ => panic!("single branch merge should be Winner with no abandoned"),
+        }
+    }
+
+    #[test]
+    fn merge_branch_conflict_detection() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(100);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-conflict", &path, &mut entropy, &clock).unwrap();
+
+        // Create root with code_changes
+        let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+        let root = make_snapshot(&root_id, None, "s-conflict", 1000, None);
+        dag.save_snapshot(&root, &[]).unwrap();
+
+        // Create two branches
+        let b1 = dag
+            .create_branch("b1", &root_id, &mut SeededRng::new(301), &clock)
+            .unwrap();
+        let b2 = dag
+            .create_branch("b2", &root_id, &mut SeededRng::new(302), &clock)
+            .unwrap();
+
+        // Set overlapping code_changes on both branch tip snapshots
+        let changes = serde_json::json!({"src/main.rs": "changed"});
+        let changes_bytes = serde_json::to_vec(&changes).unwrap();
+        dag.db()
+            .execute(
+                "UPDATE snapshots SET code_changes = ?1 WHERE snap_id = ?2",
+                params![changes_bytes, b1.tip_snap_id],
+            )
+            .unwrap();
+        dag.db()
+            .execute(
+                "UPDATE snapshots SET code_changes = ?1 WHERE snap_id = ?2",
+                params![changes_bytes, b2.tip_snap_id],
+            )
+            .unwrap();
+
+        let result = dag
+            .merge_branch("b1", &mut SeededRng::new(400), &clock)
+            .unwrap();
+        assert!(
+            matches!(result, MergeResult::Conflict { .. }),
+            "overlapping code_changes should return Conflict"
+        );
+    }
+
+    #[test]
+    fn merge_branch_no_conflict_disjoint_changes() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(100);
+        let clock = OsClock;
+        let mut dag = SessionDag::new("s-disjoint", &path, &mut entropy, &clock).unwrap();
+
+        let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+        let root = make_snapshot(&root_id, None, "s-disjoint", 1000, None);
+        dag.save_snapshot(&root, &[]).unwrap();
+
+        let b1 = dag
+            .create_branch("b1", &root_id, &mut SeededRng::new(301), &clock)
+            .unwrap();
+        let b2 = dag
+            .create_branch("b2", &root_id, &mut SeededRng::new(302), &clock)
+            .unwrap();
+
+        // Disjoint code_changes
+        let changes1 = serde_json::json!({"src/a.rs": "changed"});
+        let changes2 = serde_json::json!({"src/b.rs": "changed"});
+        dag.db()
+            .execute(
+                "UPDATE snapshots SET code_changes = ?1 WHERE snap_id = ?2",
+                params![serde_json::to_vec(&changes1).unwrap(), b1.tip_snap_id],
+            )
+            .unwrap();
+        dag.db()
+            .execute(
+                "UPDATE snapshots SET code_changes = ?1 WHERE snap_id = ?2",
+                params![serde_json::to_vec(&changes2).unwrap(), b2.tip_snap_id],
+            )
+            .unwrap();
+
+        let result = dag
+            .merge_branch("b1", &mut SeededRng::new(400), &clock)
+            .unwrap();
+        assert!(
+            matches!(result, MergeResult::Winner { .. }),
+            "disjoint code_changes should not conflict"
+        );
+    }
+
+    #[test]
+    fn close_branch_removes_from_active() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("temp", &root_id, &mut entropy, &clock).unwrap();
+        assert_eq!(dag.active_branches().len(), 1);
+
+        dag.close_branch("temp").unwrap();
+        assert!(dag.active_branches().is_empty());
+    }
+
+    #[test]
+    fn close_branch_tags_snapshots_abandoned() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let branch = dag
+            .create_branch("closed", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        dag.close_branch("closed").unwrap();
+
+        let tag: String = dag
+            .db()
+            .query_row(
+                "SELECT tag FROM snapshots WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag, "abandoned:closed");
+    }
+
+    #[test]
+    fn close_branch_not_found() {
+        let (_dir, mut dag, _root_id) = setup_dag_with_root();
+
+        let err = dag.close_branch("ghost");
+        assert!(matches!(err, Err(SessionDagError::BranchNotFound)));
+    }
+
+    #[test]
+    fn close_branch_preserves_snapshot_in_db() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let branch = dag
+            .create_branch("preserve", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        dag.close_branch("preserve").unwrap();
+
+        let count: i64 = dag
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM snapshots WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "closed branch snapshot must remain in DB");
+    }
+
+    #[test]
+    fn branch_name_validation_alphanumeric_and_hyphens() {
+        assert!(SessionDag::is_valid_branch_name("explore-1"));
+        assert!(SessionDag::is_valid_branch_name("abc"));
+        assert!(SessionDag::is_valid_branch_name("a-b-c-123"));
+        assert!(!SessionDag::is_valid_branch_name(""));
+        assert!(!SessionDag::is_valid_branch_name("has space"));
+        assert!(!SessionDag::is_valid_branch_name("under_score"));
+        assert!(!SessionDag::is_valid_branch_name("dot.name"));
+        assert!(!SessionDag::is_valid_branch_name("slash/name"));
+        assert!(!SessionDag::is_valid_branch_name(&"x".repeat(65)));
+        assert!(SessionDag::is_valid_branch_name(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn merge_branch_empty_active_branches() {
+        let (_dir, mut dag, _root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let err = dag.merge_branch("nobody", &mut entropy, &clock);
+        assert!(matches!(err, Err(SessionDagError::BranchNotFound)));
+    }
+
+    #[test]
+    fn create_branch_after_close_reuses_slot() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        dag.create_branch("b1", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("b2", &root_id, &mut entropy, &clock).unwrap();
+        dag.create_branch("b3", &root_id, &mut entropy, &clock).unwrap();
+
+        // At limit — close one and create again
+        dag.close_branch("b2").unwrap();
+        let result = dag.create_branch("b4", &root_id, &mut entropy, &clock);
+        assert!(result.is_ok(), "should succeed after closing a branch");
+        assert_eq!(dag.active_branches().len(), 3);
+    }
+
+    #[test]
+    fn open_restores_active_branches() {
+        let dir = test_dir();
+        let path = db_path(&dir);
+        let mut entropy = SeededRng::new(100);
+        let clock = OsClock;
+
+        // Create DAG and add branches
+        {
+            let mut dag = SessionDag::new("s-persist", &path, &mut entropy, &clock).unwrap();
+            let root_id = SessionDag::generate_snap_id(&mut SeededRng::new(200));
+            let root = make_snapshot(&root_id, None, "s-persist", 1000, None);
+            dag.save_snapshot(&root, &[]).unwrap();
+
+            dag.create_branch("alpha", &root_id, &mut SeededRng::new(300), &clock)
+                .unwrap();
+            dag.create_branch("beta", &root_id, &mut SeededRng::new(301), &clock)
+                .unwrap();
+            assert_eq!(dag.active_branches().len(), 2);
+        }
+
+        // Re-open and verify branches are restored
+        let reopened = SessionDag::open("s-persist", &path).unwrap();
+        assert_eq!(reopened.active_branches().len(), 2);
+        assert_eq!(reopened.active_branches()[0].name, "alpha");
+        assert_eq!(reopened.active_branches()[1].name, "beta");
+    }
+
+    #[test]
+    fn snapshot_immutability_no_parent_update() {
+        let (_dir, mut dag, root_id) = setup_dag_with_root();
+        let mut entropy = SeededRng::new(300);
+        let clock = OsClock;
+
+        let branch = dag
+            .create_branch("immut", &root_id, &mut entropy, &clock)
+            .unwrap();
+
+        // Verify parent_id of branch snapshot is the root
+        let parent: String = dag
+            .db()
+            .query_row(
+                "SELECT parent_id FROM snapshots WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent, root_id, "parent_id should point to from_snap_id");
+
+        // After merge, the original branch snapshot's parent_id must not change
+        dag.merge_branch("immut", &mut entropy, &clock).unwrap();
+
+        let parent_after: String = dag
+            .db()
+            .query_row(
+                "SELECT parent_id FROM snapshots WHERE snap_id = ?1",
+                params![branch.tip_snap_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            parent_after, root_id,
+            "parent_id must not be mutated after merge"
+        );
     }
 }

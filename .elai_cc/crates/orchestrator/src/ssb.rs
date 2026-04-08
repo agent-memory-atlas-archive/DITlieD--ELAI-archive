@@ -25,7 +25,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         'phase_complete', 'memory_monitoring',
         'death_event', 'recovery_event',
         'supervision_exhausted', 'spiral_detected',
-        'context_reduction'
+        'context_reduction', 'branch_merge'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -70,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 22 action types recorded in SSB entries.
+/// All 23 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -96,6 +96,7 @@ pub enum SsbActionType {
     SupervisionExhausted,
     SpiralDetected,
     ContextReduction,
+    BranchMerge,
 }
 
 impl SsbActionType {
@@ -124,6 +125,7 @@ impl SsbActionType {
             Self::SupervisionExhausted => "supervision_exhausted",
             Self::SpiralDetected => "spiral_detected",
             Self::ContextReduction => "context_reduction",
+            Self::BranchMerge => "branch_merge",
         }
     }
 }
@@ -152,6 +154,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "supervision_exhausted" => Ok(SsbActionType::SupervisionExhausted),
         "spiral_detected" => Ok(SsbActionType::SpiralDetected),
         "context_reduction" => Ok(SsbActionType::ContextReduction),
+        "branch_merge" => Ok(SsbActionType::BranchMerge),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -329,11 +332,19 @@ pub struct ContextReductionPayload {
     pub slots_affected: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchMergePayload {
+    pub winner_name: String,
+    pub abandoned_names: Vec<String>,
+    pub trunk_snap_id: String,
+    pub from_snap_ids: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 22 action-type payloads)
+// SsbPayload enum (typed wrapper over all 23 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (22 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (23 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -359,6 +370,7 @@ pub enum SsbPayload {
     SupervisionExhausted(SupervisionExhaustedPayload),
     SpiralDetected(SpiralDetectedPayload),
     ContextReduction(ContextReductionPayload),
+    BranchMerge(BranchMergePayload),
 }
 
 impl SsbPayload {
@@ -388,6 +400,7 @@ impl SsbPayload {
             Self::SupervisionExhausted(_) => SsbActionType::SupervisionExhausted,
             Self::SpiralDetected(_) => SsbActionType::SpiralDetected,
             Self::ContextReduction(_) => SsbActionType::ContextReduction,
+            Self::BranchMerge(_) => SsbActionType::BranchMerge,
         }
     }
 }
@@ -1282,6 +1295,7 @@ mod tests {
             SsbActionType::SupervisionExhausted,
             SsbActionType::SpiralDetected,
             SsbActionType::ContextReduction,
+            SsbActionType::BranchMerge,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1301,7 +1315,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 22);
+        assert_eq!(count, 23);
     }
 
     #[tokio::test]
@@ -1783,6 +1797,12 @@ mod tests {
                 after_tokens: 8000,
                 slots_affected: vec![5, 6],
             }),
+            SsbPayload::BranchMerge(BranchMergePayload {
+                winner_name: "explore-1".into(),
+                abandoned_names: vec!["explore-2".into()],
+                trunk_snap_id: "snap-merge-001".into(),
+                from_snap_ids: vec!["snap-tip-1".into(), "snap-tip-2".into()],
+            }),
         ]
     }
 
@@ -1792,7 +1812,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 22, "must cover all 22 action types");
+        assert_eq!(payloads.len(), 23, "must cover all 23 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -1979,6 +1999,13 @@ mod tests {
                  proptest::collection::vec(0u8..8, 0..4))
                     .prop_map(|(level, before_tokens, after_tokens, slots_affected)| SsbPayload::ContextReduction(
                         ContextReductionPayload { level, before_tokens, after_tokens, slots_affected }
+                    )),
+                ("[a-z-]{1,20}",
+                 proptest::collection::vec("[a-z-]{1,20}", 0..3),
+                 "[a-f0-9]{8}",
+                 proptest::collection::vec("[a-f0-9]{8}", 1..4))
+                    .prop_map(|(winner_name, abandoned_names, trunk_snap_id, from_snap_ids)| SsbPayload::BranchMerge(
+                        BranchMergePayload { winner_name, abandoned_names, trunk_snap_id, from_snap_ids }
                     )),
             ]
         }
