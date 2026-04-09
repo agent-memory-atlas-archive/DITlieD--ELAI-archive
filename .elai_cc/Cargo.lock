@@ -730,6 +730,7 @@ dependencies = [
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "elai-rules",
  "elai-tools",
  "pulldown-cmark",
  "reqwest",
@@ -738,6 +739,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "tokio",
+ "toml",
 ]
 
 [[package]]

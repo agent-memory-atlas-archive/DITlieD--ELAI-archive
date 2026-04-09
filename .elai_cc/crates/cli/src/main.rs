@@ -54,6 +54,9 @@ use elai_orchestrator::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use elai_rules::predicate::from_json;
+use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine};
+use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
@@ -64,6 +67,8 @@ fn max_tokens_for_model(model: &str) -> u32 {
         64_000
     }
 }
+const TOKEN_CHARS_PER_TOKEN: usize = 4;
+const BUDGET_OUTPUT_RESERVE: usize = 4096;
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -2879,7 +2884,7 @@ impl LiveCli {
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let system_prompt = build_system_prompt()?;
+        let system_prompt = build_system_prompt(false)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -2919,7 +2924,7 @@ impl LiveCli {
         backend_config: BackendConfig,
         permission_mode: PermissionMode,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let system_prompt = build_system_prompt()?;
+        let system_prompt = build_system_prompt(true)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
@@ -4918,13 +4923,72 @@ fn resolve_export_path(
     Ok(cwd.join(final_name))
 }
 
-fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(load_system_prompt(
+fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut sections = load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
         env::consts::OS,
         "unknown",
-    )?)
+    )?;
+    if skip_instruction_files {
+        // When rules enforce coding standards programmatically, strip instruction-file
+        // sections to save context budget. Instruction sections start with "# " headers
+        // that reference loaded config/CLAUDE.md content.
+        sections.retain(|s| !s.starts_with("# Claude instructions"));
+    }
+    Ok(sections)
+}
+
+/// Load seed rules from data/rules/*.toml, compile predicates via the engine.
+fn load_seed_rules(
+    engine: &DefaultRuleEngine,
+) -> Vec<(Rule, CompiledPredicate)> {
+    #[derive(Deserialize)]
+    struct SeedFile {
+        rules: Vec<Rule>,
+    }
+
+    let rules_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../data/rules");
+    let entries = match fs::read_dir(&rules_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[rules] seed directory not found ({}): {e}", rules_dir.display());
+            return Vec::new();
+        }
+    };
+
+    let mut compiled = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |ext| ext != "toml") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[rules] failed to read {}: {e}", path.display());
+                continue;
+            }
+        };
+        let seed: SeedFile = match toml::from_str(&content) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[rules] failed to parse {}: {e}", path.display());
+                continue;
+            }
+        };
+        for rule in seed.rules {
+            match engine.compile_predicate(&rule.predicate_json) {
+                Ok(cp) => compiled.push((rule, cp)),
+                Err(e) => {
+                    eprintln!("[rules] failed to compile rule {}: {e}", rule.rule_id);
+                }
+            }
+        }
+    }
+    eprintln!("[rules] loaded {} seed rules from {}", compiled.len(), rules_dir.display());
+    compiled
 }
 
 fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
@@ -5459,6 +5523,12 @@ fn build_runtime_with_plugin_state(
         }
     };
 
+    let rule_engine = DefaultRuleEngine::new(
+        Box::new(PassAstEvaluator),
+        Box::new(EmptyDkgQuerier),
+    );
+    let compiled_rules = load_seed_rules(&rule_engine);
+
     let runtime_client = RuntimeClient {
         runtime: tokio_runtime,
         client: client_builder,
@@ -5472,6 +5542,8 @@ fn build_runtime_with_plugin_state(
         tool_policy,
         budget_policy,
         fsm,
+        rule_engine,
+        compiled_rules,
     };
 
     let mut runtime = ConversationRuntime::new_with_features(
@@ -5659,6 +5731,8 @@ struct RuntimeClient {
     tool_policy: ToolPolicy,
     budget_policy: BudgetPolicy,
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
+    rule_engine: DefaultRuleEngine,
+    compiled_rules: Vec<(Rule, CompiledPredicate)>,
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -5718,6 +5792,73 @@ impl RuntimeClient {
             ToolPolicy::None => None,
         }
     }
+
+    /// Evaluate seed rules against a tool use. Returns None if allowed,
+    /// Some(reason) if blocked.
+    fn evaluate_tool_rules(&self, tool_name: &str, tool_input: &str) -> Option<String> {
+        use elai_rules::predicate::VerdictResult;
+        use std::collections::HashMap as HM;
+
+        if self.compiled_rules.is_empty() {
+            return None;
+        }
+
+        let fsm_phase = match self.current_fsm_state() {
+            elai_orchestrator::FsmState::Planning => FsmPhaseBit::PLANNING,
+            elai_orchestrator::FsmState::FeasibilityProbe => FsmPhaseBit::FEASIBILITY_PROBE,
+            elai_orchestrator::FsmState::TestingFirst => FsmPhaseBit::TESTING_FIRST,
+            elai_orchestrator::FsmState::Executing => FsmPhaseBit::EXECUTING,
+            elai_orchestrator::FsmState::Auditing => FsmPhaseBit::AUDITING,
+            elai_orchestrator::FsmState::Memorizing => FsmPhaseBit::MEMORIZING,
+            elai_orchestrator::FsmState::Configuring => FsmPhaseBit::CONFIGURING,
+            elai_orchestrator::FsmState::Idle
+            | elai_orchestrator::FsmState::Complete => FsmPhaseBit::EXECUTING,
+        };
+
+        let ctx = EvaluationContext {
+            action: tool_name,
+            source: tool_input,
+            file_path: "",
+            fsm_phase,
+            metric_values: HM::new(),
+        };
+
+        let verdicts = match self.rule_engine.evaluate(&self.compiled_rules, &ctx) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[rules] evaluation error for tool {tool_name}: {e}");
+                return None;
+            }
+        };
+        eprintln!("[rules] evaluated {} rules for tool {tool_name}",
+                  self.compiled_rules.len());
+
+        let mut block_reason = None;
+        for verdict in &verdicts {
+            match &verdict.result {
+                VerdictResult::Block => {
+                    eprintln!("[rules] BLOCK: rule {} on tool {tool_name}: {}",
+                              verdict.rule_id, verdict.evidence);
+                    if block_reason.is_none() {
+                        block_reason = Some(format!(
+                            "Rule {} blocked tool {}: {}",
+                            verdict.rule_id, tool_name, verdict.evidence
+                        ));
+                    }
+                }
+                VerdictResult::Warn => {
+                    eprintln!("[rules] WARN: rule {} on tool {tool_name}: {}",
+                              verdict.rule_id, verdict.evidence);
+                }
+                VerdictResult::Escalate(_target) => {
+                    eprintln!("[rules] ESCALATE: rule {} on tool {tool_name}: {}",
+                              verdict.rule_id, verdict.evidence);
+                }
+                VerdictResult::Allow => {}
+            }
+        }
+        block_reason
+    }
 }
 
 impl ApiClient for RuntimeClient {
@@ -5730,18 +5871,40 @@ impl ApiClient for RuntimeClient {
         // Branch 1: tool filtering (policy-based)
         let tool_defs = self.resolve_tool_defs();
 
-        // Branch 2: budget policy
-        if let BudgetPolicy::Local { ceiling, fraction } = &self.budget_policy {
-            let effective = ceiling * fraction / 100;
-            if let Err(e) = elai_orchestrator::context_budget::ContextBudget::compute(
-                effective, [0, 0, 0], 4096,
-            ) {
-                eprintln!("context budget warning: {e}");
+        // Branch 2: budget policy — compute real slot sizes, cap max_tokens
+        let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();
+        let slot_0 = system_chars / TOKEN_CHARS_PER_TOKEN;
+        let slot_1: usize = self.compiled_rules.iter()
+            .map(|(r, _)| r.predicate_json.len() / TOKEN_CHARS_PER_TOKEN)
+            .sum();
+        let model_max_tokens = max_tokens_for_model(&self.model);
+
+        let effective_max_tokens = match &self.budget_policy {
+            BudgetPolicy::Local { ceiling, fraction } => {
+                let effective = ceiling * fraction / 100;
+                match elai_orchestrator::context_budget::ContextBudget::compute(
+                    effective, [slot_0, slot_1, 0], BUDGET_OUTPUT_RESERVE,
+                ) {
+                    Ok(budget) => {
+                        let output_slot = elai_orchestrator::context_budget::ContextSlot::OutputReserve as usize;
+                        let budget_output = budget.slots[output_slot].allocated_tokens as u32;
+                        eprintln!(
+                            "[pipeline] budget: slot_0(system)={}, slot_1(rules)={}, \
+                             total_allocated={}, output_reserve={}, effective_context={}",
+                            slot_0, slot_1, budget.total_allocated, budget_output, effective,
+                        );
+                        model_max_tokens.min(budget_output)
+                    }
+                    Err(e) => {
+                        eprintln!("[pipeline] budget warning (fallback to model max): {e}");
+                        model_max_tokens
+                    }
+                }
             }
-        }
+            BudgetPolicy::ApiDefault => model_max_tokens,
+        };
 
         // Pipeline telemetry
-        let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();
         let msg_count = request.messages.len();
         let tool_count = tool_defs.as_ref().map_or(0, Vec::len);
         let tool_names: Vec<&str> = tool_defs.as_ref().map_or_else(Vec::new, |defs| {
@@ -5756,13 +5919,13 @@ impl ApiClient for RuntimeClient {
             msg_count,
             tool_count,
             tool_names.join(", "),
-            max_tokens_for_model(&self.model),
+            effective_max_tokens,
         );
         let stream_start = std::time::Instant::now();
 
         let message_request = MessageRequest {
             model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
+            max_tokens: effective_max_tokens,
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
             tool_choice: tool_defs.as_ref().map(|_| ToolChoice::Auto),
@@ -5840,13 +6003,17 @@ impl ApiClient for RuntimeClient {
                                 .map_err(|error| RuntimeError::new(error.to_string()))?;
                         }
                         if let Some((id, name, input)) = pending_tool.take() {
-                            if let Some(progress_reporter) = &self.progress_reporter {
-                                progress_reporter.mark_tool_phase(&name, &input);
+                            if let Some(block_reason) = self.evaluate_tool_rules(&name, &input) {
+                                eprintln!("[rules] tool {name} blocked: {block_reason}");
+                            } else {
+                                if let Some(progress_reporter) = &self.progress_reporter {
+                                    progress_reporter.mark_tool_phase(&name, &input);
+                                }
+                                writeln!(out, "\n{}", format_tool_call_start(&name, &input))
+                                    .and_then(|()| out.flush())
+                                    .map_err(|error| RuntimeError::new(error.to_string()))?;
+                                events.push(AssistantEvent::ToolUse { id, name, input });
                             }
-                            writeln!(out, "\n{}", format_tool_call_start(&name, &input))
-                                .and_then(|()| out.flush())
-                                .map_err(|error| RuntimeError::new(error.to_string()))?;
-                            events.push(AssistantEvent::ToolUse { id, name, input });
                         }
                     }
                     ApiStreamEvent::MessageDelta(delta) => {

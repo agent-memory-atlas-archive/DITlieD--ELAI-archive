@@ -6,6 +6,7 @@ pub mod predicate;
 pub mod rule_engine;
 pub mod schema;
 pub mod self_discovery;
+pub mod stubs;
 pub mod trust_resolver;
 
 #[cfg(test)]
