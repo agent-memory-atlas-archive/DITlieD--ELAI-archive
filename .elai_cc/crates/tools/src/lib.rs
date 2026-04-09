@@ -681,7 +681,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "Config",
-            description: "Get or set Claude Code settings.",
+            description: "Get or set ELAI settings.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -2768,7 +2768,7 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("clawd-rust-tools/0.1")
+        .user_agent("elai-tools/0.1")
         .build()
         .map_err(|error| error.to_string())
 }
@@ -2789,7 +2789,7 @@ fn normalize_fetch_url(url: &str) -> Result<String, String> {
 }
 
 fn build_search_url(query: &str) -> Result<reqwest::Url, String> {
-    if let Ok(base) = std::env::var("CLAWD_WEB_SEARCH_BASE_URL") {
+    if let Ok(base) = std::env::var("ELAI_WEB_SEARCH_BASE_URL") {
         let mut url = reqwest::Url::parse(&base).map_err(|error| error.to_string())?;
         url.query_pairs_mut().append_pair("q", query);
         return Ok(url);
@@ -3134,11 +3134,11 @@ fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
 }
 
 fn todo_store_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAWD_TODO_STORE") {
+    if let Ok(path) = std::env::var("ELAI_TODO_STORE") {
         return Ok(std::path::PathBuf::from(path));
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    Ok(cwd.join(".clawd-todos.json"))
+    Ok(cwd.join(".elai-todos.json"))
 }
 
 fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
@@ -3148,21 +3148,21 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
-    if let Ok(claw_config_home) = std::env::var("CLAW_CONFIG_HOME") {
-        candidates.push(std::path::PathBuf::from(claw_config_home).join("skills"));
+    if let Ok(elai_config_home) = std::env::var("ELAI_CONFIG_HOME") {
+        candidates.push(std::path::PathBuf::from(elai_config_home).join("skills"));
     }
     if let Ok(codex_home) = std::env::var("CODEX_HOME") {
         candidates.push(std::path::PathBuf::from(codex_home).join("skills"));
     }
     if let Ok(home) = std::env::var("HOME") {
         let home = std::path::PathBuf::from(home);
-        candidates.push(home.join(".claw").join("skills"));
+        candidates.push(home.join(".elai").join("skills"));
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".config").join("opencode").join("skills"));
         candidates.push(home.join(".codex").join("skills"));
-        candidates.push(home.join(".claude").join("skills"));
+        candidates.push(home.join(".elai").join("skills"));
     }
-    candidates.push(std::path::PathBuf::from("/home/bellman/.claw/skills"));
+    candidates.push(std::path::PathBuf::from("/home/bellman/.elai/skills"));
     candidates.push(std::path::PathBuf::from("/home/bellman/.codex/skills"));
 
     for root in candidates {
@@ -3280,7 +3280,7 @@ where
 }
 
 fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
-    let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let thread_name = format!("elai-agent-{}", job.manifest.agent_id);
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
@@ -3397,7 +3397,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "SendUserMessage",
             "PowerShell",
         ],
-        "claw-guide" => vec![
+        "elai-guide" => vec![
             "read_file",
             "glob_search",
             "grep_search",
@@ -4131,14 +4131,14 @@ fn canonical_tool_token(value: &str) -> String {
 }
 
 fn agent_store_dir() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAWD_AGENT_STORE") {
+    if let Ok(path) = std::env::var("ELAI_AGENT_STORE") {
         return Ok(std::path::PathBuf::from(path));
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     if let Some(workspace_root) = cwd.ancestors().nth(2) {
-        return Ok(workspace_root.join(".clawd-agents"));
+        return Ok(workspace_root.join(".elai-agents"));
     }
-    Ok(cwd.join(".clawd-agents"))
+    Ok(cwd.join(".elai-agents"))
 }
 
 fn make_agent_id() -> String {
@@ -4180,7 +4180,7 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
         "verification" | "verificationagent" | "verify" | "verifier" => {
             String::from("Verification")
         }
-        "clawguide" | "clawguideagent" | "guide" => String::from("claw-guide"),
+        "elaiguide" | "elaiguideagent" | "guide" => String::from("elai-guide"),
         "statusline" | "statuslinesetup" => String::from("statusline-setup"),
         _ => trimmed.to_string(),
     }
@@ -4879,16 +4879,16 @@ fn config_file_for_scope(scope: ConfigScope) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     Ok(match scope {
         ConfigScope::Global => config_home_dir()?.join("settings.json"),
-        ConfigScope::Settings => cwd.join(".claw").join("settings.local.json"),
+        ConfigScope::Settings => cwd.join(".elai").join("settings.local.json"),
     })
 }
 
 fn config_home_dir() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CLAW_CONFIG_HOME") {
+    if let Ok(path) = std::env::var("ELAI_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var("HOME").map_err(|_| String::from("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claw"))
+    Ok(PathBuf::from(home).join(".elai"))
 }
 
 fn read_json_object(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
@@ -5304,7 +5304,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("clawd-tools-{unique}-{name}"))
+        std::env::temp_dir().join(format!("elai-tools-{unique}-{name}"))
     }
 
     fn run_git(cwd: &Path, args: &[&str]) {
@@ -5744,7 +5744,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "ELAI_WEB_SEARCH_BASE_URL",
             format!("http://{}/search", server.addr()),
         );
         let result = execute_tool(
@@ -5756,7 +5756,7 @@ mod tests {
             }),
         )
         .expect("WebSearch should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("ELAI_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         assert_eq!(output["query"], "rust web search");
@@ -5792,7 +5792,7 @@ mod tests {
         }));
 
         std::env::set_var(
-            "CLAWD_WEB_SEARCH_BASE_URL",
+            "ELAI_WEB_SEARCH_BASE_URL",
             format!("http://{}/fallback", server.addr()),
         );
         let result = execute_tool(
@@ -5802,7 +5802,7 @@ mod tests {
             }),
         )
         .expect("WebSearch fallback parsing should succeed");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("ELAI_WEB_SEARCH_BASE_URL");
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         let results = output["results"].as_array().expect("results array");
@@ -5815,10 +5815,10 @@ mod tests {
         assert_eq!(content[0]["url"], "https://example.com/one");
         assert_eq!(content[1]["url"], "https://docs.rs/tokio");
 
-        std::env::set_var("CLAWD_WEB_SEARCH_BASE_URL", "://bad-base-url");
+        std::env::set_var("ELAI_WEB_SEARCH_BASE_URL", "://bad-base-url");
         let error = execute_tool("WebSearch", &json!({ "query": "generic links" }))
             .expect_err("invalid base URL should fail");
-        std::env::remove_var("CLAWD_WEB_SEARCH_BASE_URL");
+        std::env::remove_var("ELAI_WEB_SEARCH_BASE_URL");
         assert!(error.contains("relative URL without a base") || error.contains("empty host"));
     }
 
@@ -5885,7 +5885,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = temp_path("todos.json");
-        std::env::set_var("CLAWD_TODO_STORE", &path);
+        std::env::set_var("ELAI_TODO_STORE", &path);
 
         let first = execute_tool(
             "TodoWrite",
@@ -5911,7 +5911,7 @@ mod tests {
             }),
         )
         .expect("TodoWrite should succeed");
-        std::env::remove_var("CLAWD_TODO_STORE");
+        std::env::remove_var("ELAI_TODO_STORE");
         let _ = std::fs::remove_file(path);
 
         let second_output: serde_json::Value = serde_json::from_str(&second).expect("valid json");
@@ -5932,7 +5932,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = temp_path("todos-errors.json");
-        std::env::set_var("CLAWD_TODO_STORE", &path);
+        std::env::set_var("ELAI_TODO_STORE", &path);
 
         let empty = execute_tool("TodoWrite", &json!({ "todos": [] }))
             .expect_err("empty todos should fail");
@@ -5972,7 +5972,7 @@ mod tests {
             }),
         )
         .expect("completed todos should succeed");
-        std::env::remove_var("CLAWD_TODO_STORE");
+        std::env::remove_var("ELAI_TODO_STORE");
         let _ = fs::remove_file(path);
 
         let output: serde_json::Value = serde_json::from_str(&nudge).expect("valid json");
@@ -6077,7 +6077,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-store");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        std::env::set_var("ELAI_AGENT_STORE", &dir);
         let captured = Arc::new(Mutex::new(None::<AgentJob>));
         let captured_for_spawn = Arc::clone(&captured);
 
@@ -6097,7 +6097,7 @@ mod tests {
             },
         )
         .expect("Agent should succeed");
-        std::env::remove_var("CLAWD_AGENT_STORE");
+        std::env::remove_var("ELAI_AGENT_STORE");
 
         assert_eq!(manifest.name, "ship-audit");
         assert_eq!(manifest.subagent_type.as_deref(), Some("Explore"));
@@ -6160,7 +6160,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_path("agent-runner");
-        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+        std::env::set_var("ELAI_AGENT_STORE", &dir);
 
         let completed = execute_agent_with_spawn(
             AgentInput {
@@ -6292,7 +6292,7 @@ mod tests {
         );
         assert_eq!(spawn_error_manifest_json["derivedState"], "truly_idle");
 
-        std::env::remove_var("CLAWD_AGENT_STORE");
+        std::env::remove_var("ELAI_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -7005,7 +7005,7 @@ mod tests {
     #[test]
     fn brief_returns_sent_message_and_attachment_metadata() { // TEST_KEEP
         let attachment = std::env::temp_dir().join(format!(
-            "clawd-brief-{}.png",
+            "elai-brief-{}.png",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7036,7 +7036,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-config-{}",
+            "elai-config-{}",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7044,19 +7044,19 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".elai")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".elai")).expect("cwd dir");
         std::fs::write(
-            home.join(".claw").join("settings.json"),
+            home.join(".elai").join("settings.json"),
             r#"{"verbose":false}"#,
         )
         .expect("write global settings");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ELAI_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ELAI_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let get = execute_tool("Config", &json!({"setting": "verbose"})).expect("get config");
@@ -7090,8 +7090,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ELAI_CONFIG_HOME", value),
+            None => std::env::remove_var("ELAI_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7102,7 +7102,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-plan-mode-{}",
+            "elai-plan-mode-{}",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7110,19 +7110,19 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".elai")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".elai")).expect("cwd dir");
         std::fs::write(
-            cwd.join(".claw").join("settings.local.json"),
+            cwd.join(".elai").join("settings.local.json"),
             r#"{"permissions":{"defaultMode":"acceptEdits"}}"#,
         )
         .expect("write local settings");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ELAI_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ELAI_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let enter = execute_tool("EnterPlanMode", &json!({})).expect("enter plan mode");
@@ -7132,11 +7132,11 @@ mod tests {
         assert_eq!(enter_output["previousLocalMode"], "acceptEdits");
         assert_eq!(enter_output["currentLocalMode"], "plan");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".elai").join("settings.local.json"))
             .expect("local settings after enter");
         assert!(local_settings.contains(r#""defaultMode": "plan""#));
         let state =
-            std::fs::read_to_string(cwd.join(".claw").join("tool-state").join("plan-mode.json"))
+            std::fs::read_to_string(cwd.join(".elai").join("tool-state").join("plan-mode.json"))
                 .expect("plan mode state");
         assert!(state.contains(r#""hadLocalOverride": true"#));
         assert!(state.contains(r#""previousLocalMode": "acceptEdits""#));
@@ -7148,11 +7148,11 @@ mod tests {
         assert_eq!(exit_output["previousLocalMode"], "acceptEdits");
         assert_eq!(exit_output["currentLocalMode"], "acceptEdits");
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".elai").join("settings.local.json"))
             .expect("local settings after exit");
         assert!(local_settings.contains(r#""defaultMode": "acceptEdits""#));
         assert!(!cwd
-            .join(".claw")
+            .join(".elai")
             .join("tool-state")
             .join("plan-mode.json")
             .exists());
@@ -7163,8 +7163,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ELAI_CONFIG_HOME", value),
+            None => std::env::remove_var("ELAI_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7175,7 +7175,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-plan-mode-empty-{}",
+            "elai-plan-mode-empty-{}",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7183,14 +7183,14 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claw")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".elai")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".elai")).expect("cwd dir");
 
         let original_home = std::env::var("HOME").ok();
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_config_home = std::env::var("ELAI_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
-        std::env::remove_var("CLAW_CONFIG_HOME");
+        std::env::remove_var("ELAI_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
         let enter = execute_tool("EnterPlanMode", &json!({})).expect("enter plan mode");
@@ -7203,7 +7203,7 @@ mod tests {
         assert_eq!(exit_output["changed"], true);
         assert_eq!(exit_output["currentLocalMode"], serde_json::Value::Null);
 
-        let local_settings = std::fs::read_to_string(cwd.join(".claw").join("settings.local.json"))
+        let local_settings = std::fs::read_to_string(cwd.join(".elai").join("settings.local.json"))
             .expect("local settings after exit");
         let local_settings_json: serde_json::Value =
             serde_json::from_str(&local_settings).expect("valid settings json");
@@ -7213,7 +7213,7 @@ mod tests {
             "permissions override should be removed on exit"
         );
         assert!(!cwd
-            .join(".claw")
+            .join(".elai")
             .join("tool-state")
             .join("plan-mode.json")
             .exists());
@@ -7224,8 +7224,8 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ELAI_CONFIG_HOME", value),
+            None => std::env::remove_var("ELAI_CONFIG_HOME"),
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7298,7 +7298,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
-            "clawd-pwsh-bin-{}",
+            "elai-pwsh-bin-{}",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7355,7 +7355,7 @@ printf 'pwsh:%s' "$1"
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let original_path = std::env::var("PATH").unwrap_or_default();
         let empty_dir = std::env::temp_dir().join(format!(
-            "clawd-empty-bin-{}",
+            "elai-empty-bin-{}",
             std::time::SystemTime::now() // TEST_KEEP
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -7473,7 +7473,7 @@ printf 'pwsh:%s' "$1"
         let result = run_task_packet(TaskPacket {
             objective: "Ship packetized runtime task".to_string(),
             scope: "runtime/task system".to_string(),
-            repo: "claw-code-parity".to_string(),
+            repo: "elai-code-parity".to_string(),
             branch_policy: "origin/main only".to_string(),
             acceptance_tests: vec![
                 "cargo build --workspace".to_string(),
@@ -7489,7 +7489,7 @@ printf 'pwsh:%s' "$1"
         assert_eq!(output["status"], "created");
         assert_eq!(output["prompt"], "Ship packetized runtime task");
         assert_eq!(output["description"], "runtime/task system");
-        assert_eq!(output["task_packet"]["repo"], "claw-code-parity");
+        assert_eq!(output["task_packet"]["repo"], "elai-code-parity");
         assert_eq!(
             output["task_packet"]["acceptance_tests"][1],
             "cargo test --workspace"

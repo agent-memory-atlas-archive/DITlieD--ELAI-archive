@@ -7,7 +7,7 @@
 use elai_core::ConfigLoader;
 
 /// ConfigLoader.discover() must include an elai_cc.toml entry.
-/// Currently it only discovers .claw.json and settings.json paths.
+/// Currently it only discovers .elai.json and settings.json paths.
 /// The assertion on source type will fail at runtime.
 #[test]
 fn config_discovers_elai_cc_toml() {

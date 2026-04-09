@@ -61,6 +61,10 @@ use serde_json::json;
 use elai_rules::predicate::from_json;
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine};
 use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter};
+use elai_knowledge::pipeline::{QueryPipeline, PipelineStage};
+use elai_knowledge::bm25::Bm25Index;
+use elai_knowledge::catrag::{CatRag, CatRagConfig};
+use elai_knowledge::arag::{AragOrchestrator, AragConfig};
 use elai_rules::stubs::EmptyDkgQuerier;
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
@@ -83,6 +87,10 @@ const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 const TRIM_TRIGGER_RATIO: f64 = 0.85;
 const PLANS_DIR: &str = "plans";
 const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
+const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
+const DEGRADED_PROMPT_PREFIX: &str = "[degraded] using ollama fallback";
+const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const KNOWLEDGE_TOP_K: usize = 5;
 
 /// Char-based token estimator implementing LlmProvider for plan_skeleton usage.
 /// Only token_count and token_count_estimate are meaningful; complete/embed are stubs.
@@ -2345,7 +2353,35 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     println!("╚══════════════════════════════════════════╝");
     println!();
 
-    let mut sidecar_process = start_sidecar(port)?;
+    let (mut sidecar_process, backend_config, degraded) = match start_sidecar(port) {
+        Ok(proc) => (proc, backend_config, false),
+        Err(sidecar_err) => {
+            eprintln!("warn: sidecar failed to start: {sidecar_err}");
+            eprintln!("Probing ollama at {OLLAMA_DEFAULT_URL}...");
+            let probe_url = format!("{OLLAMA_DEFAULT_URL}/api/tags");
+            let probe_result = reqwest::blocking::Client::builder()
+                .timeout(OLLAMA_PROBE_TIMEOUT)
+                .build()
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                .and_then(|client| {
+                    client.get(&probe_url).send()
+                        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                });
+            match probe_result {
+                Ok(resp) if resp.status().is_success() => {
+                    eprintln!("Ollama detected. Entering degraded mode.");
+                    let mut cfg = backend_config;
+                    cfg.fallback_url = Some(OLLAMA_DEFAULT_URL.to_string());
+                    (None, cfg, true)
+                }
+                _ => {
+                    return Err(format!(
+                        "sidecar failed ({sidecar_err}) and ollama not reachable at {OLLAMA_DEFAULT_URL}"
+                    ).into());
+                }
+            }
+        }
+    };
 
     // Build a LiveCli with local backend routed through ConversationRuntime.
     let model = backend_config.model.clone();
@@ -2354,8 +2390,10 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         backend_config,
         default_permission_mode(),
     )?;
+    let prompt_prefix = if degraded { DEGRADED_PROMPT_PREFIX } else { "local" };
+    let prompt_label = format!("{prompt_prefix}> ");
     let mut editor =
-        input::LineEditor::new("local> ", cli.repl_completion_candidates().unwrap_or_default());
+        input::LineEditor::new(&prompt_label, cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
 
     loop {
@@ -2444,6 +2482,7 @@ struct LiveCli {
     plan: Option<elai_orchestrator::PlanSkeleton>,
     last_snap_id: Option<String>,
     last_fsm_state: String,
+    knowledge_pipeline: Option<QueryPipeline>,
 }
 
 struct RuntimePluginState {
@@ -2974,6 +3013,7 @@ impl LiveCli {
             plan,
             last_snap_id: None,
             last_fsm_state: String::new(),
+            knowledge_pipeline: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3019,6 +3059,20 @@ impl LiveCli {
             }
         };
         let plan = load_plan_if_exists();
+        let knowledge_pipeline = {
+            let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            match Bm25Index::new(&project_root, &session.id) {
+                Ok(bm25) => {
+                    let catrag = CatRag::new(CatRagConfig::default());
+                    let arag = AragOrchestrator::new(AragConfig::default());
+                    Some(QueryPipeline::new(bm25, catrag, arag))
+                }
+                Err(e) => {
+                    eprintln!("warn: BM25 index init failed: {e}");
+                    None
+                }
+            }
+        };
         let cli = Self {
             model,
             allowed_tools: None,
@@ -3034,6 +3088,7 @@ impl LiveCli {
             plan,
             last_snap_id: None,
             last_fsm_state: String::new(),
+            knowledge_pipeline,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3057,6 +3112,19 @@ impl LiveCli {
             |_| self.session.path.display().to_string(),
             |path| path.display().to_string(),
         );
+        let backend_label = match &self.backend_config {
+            Some(cfg) if cfg.fallback_url.is_some() => "Degraded (ollama fallback)",
+            Some(cfg) => match cfg.mode {
+                BackendMode::Api => "Api",
+                BackendMode::Local => "Local (sidecar)",
+            },
+            None => "Api",
+        };
+        let index_status = if self.has_knowledge_pipeline() {
+            "BM25 active"
+        } else {
+            "no index"
+        };
         format!(
             "\x1b[38;2;27;122;110m\
  ███████╗██╗      █████╗ ██╗\n\
@@ -3067,6 +3135,8 @@ impl LiveCli {
  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝\x1b[0m\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
+  \x1b[2mBackend\x1b[0m          {}\n\
+  \x1b[2mIndex\x1b[0m            {}\n\
   \x1b[2mBranch\x1b[0m           {}\n\
   \x1b[2mWorkspace\x1b[0m        {}\n\
   \x1b[2mDirectory\x1b[0m        {}\n\
@@ -3075,6 +3145,8 @@ impl LiveCli {
   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
+            backend_label,
+            index_status,
             git_branch,
             workspace,
             cwd,
@@ -3262,6 +3334,10 @@ impl LiveCli {
     }
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Inject knowledge pipeline retrieval context if available.
+        let augmented_input = self.augment_with_knowledge(input);
+        let effective_input = augmented_input.as_deref().unwrap_or(input);
+
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
@@ -3271,7 +3347,7 @@ impl LiveCli {
             &mut stdout,
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
-        let result = runtime.run_turn(input, Some(&mut permission_prompter));
+        let result = runtime.run_turn(effective_input, Some(&mut permission_prompter));
         hook_abort_monitor.stop();
         match result {
             Ok(summary) => {
@@ -3312,6 +3388,46 @@ impl LiveCli {
         match output_format {
             CliOutputFormat::Text => self.run_turn(input),
             CliOutputFormat::Json => self.run_prompt_json(input),
+        }
+    }
+
+    /// Query the knowledge pipeline and return an augmented input string with
+    /// retrieval context prepended. Returns None if pipeline is absent or query fails.
+    fn augment_with_knowledge(&self, input: &str) -> Option<String> {
+        let pipeline = self.knowledge_pipeline.as_ref()?;
+        match pipeline.query(input) {
+            Ok(stages) => {
+                let snippets: Vec<&str> = stages.iter()
+                    .flat_map(|stage| stage.results.iter())
+                    .take(KNOWLEDGE_TOP_K)
+                    .map(|r| r.snippet.as_str())
+                    .collect();
+                if snippets.is_empty() {
+                    return None;
+                }
+                let context_block = snippets.join("\n---\n");
+                Some(format!(
+                    "<code-context>\n{context_block}\n</code-context>\n\n{input}"
+                ))
+            }
+            Err(e) => {
+                eprintln!("warn: knowledge pipeline query failed: {e}");
+                None
+            }
+        }
+    }
+
+    /// Whether the knowledge pipeline is active.
+    fn has_knowledge_pipeline(&self) -> bool {
+        self.knowledge_pipeline.is_some()
+    }
+
+    /// Notify the knowledge pipeline that a file was modified (e.g., after tool use).
+    fn notify_file_changed(&mut self, path: &Path) {
+        if let Some(ref mut pipeline) = self.knowledge_pipeline {
+            if let Err(e) = pipeline.bm25.update_file(path, None) {
+                eprintln!("warn: BM25 update_file failed for {}: {e}", path.display());
+            }
         }
     }
 

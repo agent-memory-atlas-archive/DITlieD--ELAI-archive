@@ -117,7 +117,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "config",
         aliases: &[],
-        summary: "Inspect Claude config files or merged sections",
+        summary: "Inspect ELAI config files or merged sections",
         argument_hint: Some("[env|hooks|model|plugins]"),
         resume_supported: true,
     },
@@ -131,14 +131,14 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "memory",
         aliases: &[],
-        summary: "Inspect loaded Claude instruction memory files",
+        summary: "Inspect loaded ELAI instruction memory files",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "init",
         aliases: &[],
-        summary: "Create a starter CLAUDE.md for this repo",
+        summary: "Create a starter ELAI.md for this repo",
         argument_hint: None,
         resume_supported: true,
     },
@@ -222,7 +222,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "plugin",
         aliases: &["plugins", "marketplace"],
-        summary: "Manage Claw Code plugins",
+        summary: "Manage ELAI plugins",
         argument_hint: Some(
             "[list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
         ),
@@ -1955,14 +1955,14 @@ pub struct PluginsCommandResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DefinitionSource {
-    ProjectClaw,
-    ProjectCodex,
-    ProjectClaude,
-    UserClawConfigHome,
-    UserCodexHome,
-    UserClaw,
-    UserCodex,
-    UserClaude,
+    ProjectElai,
+    ProjectElaiLegacy,
+    ProjectElaiCompat,
+    UserElaiConfigHome,
+    UserElaiLegacyHome,
+    UserElai,
+    UserElaiLegacy,
+    UserElaiCompat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1975,9 +1975,9 @@ enum DefinitionScope {
 impl DefinitionScope {
     fn label(self) -> &'static str {
         match self {
-            Self::Project => "Project (.claw)",
-            Self::UserConfigHome => "User ($CLAW_CONFIG_HOME)",
-            Self::UserHome => "User (~/.claw)",
+            Self::Project => "Project (.elai)",
+            Self::UserConfigHome => "User ($ELAI_CONFIG_HOME)",
+            Self::UserHome => "User (~/.elai)",
         }
     }
 }
@@ -1985,11 +1985,11 @@ impl DefinitionScope {
 impl DefinitionSource {
     fn report_scope(self) -> DefinitionScope {
         match self {
-            Self::ProjectClaw | Self::ProjectCodex | Self::ProjectClaude => {
+            Self::ProjectElai | Self::ProjectElaiLegacy | Self::ProjectElaiCompat => {
                 DefinitionScope::Project
             }
-            Self::UserClawConfigHome | Self::UserCodexHome => DefinitionScope::UserConfigHome,
-            Self::UserClaw | Self::UserCodex | Self::UserClaude => DefinitionScope::UserHome,
+            Self::UserElaiConfigHome | Self::UserElaiLegacyHome => DefinitionScope::UserConfigHome,
+            Self::UserElai | Self::UserElaiLegacy | Self::UserElaiCompat => DefinitionScope::UserHome,
         }
     }
 
@@ -2413,33 +2413,33 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
     for ancestor in cwd.ancestors() {
         push_unique_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join(leaf),
+            DefinitionSource::ProjectElai,
+            ancestor.join(".elai").join(leaf),
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::ProjectCodex,
+            DefinitionSource::ProjectElaiLegacy,
             ancestor.join(".codex").join(leaf),
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::ProjectClaude,
-            ancestor.join(".claude").join(leaf),
+            DefinitionSource::ProjectElaiCompat,
+            ancestor.join(".elai").join(leaf),
         );
     }
 
-    if let Ok(claw_config_home) = env::var("CLAW_CONFIG_HOME") {
+    if let Ok(elai_config_home) = env::var("ELAI_CONFIG_HOME") {
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserClawConfigHome,
-            PathBuf::from(claw_config_home).join(leaf),
+            DefinitionSource::UserElaiConfigHome,
+            PathBuf::from(elai_config_home).join(leaf),
         );
     }
 
     if let Ok(codex_home) = env::var("CODEX_HOME") {
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserCodexHome,
+            DefinitionSource::UserElaiLegacyHome,
             PathBuf::from(codex_home).join(leaf),
         );
     }
@@ -2448,18 +2448,18 @@ fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, P
         let home = PathBuf::from(home);
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join(leaf),
+            DefinitionSource::UserElai,
+            home.join(".elai").join(leaf),
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserCodex,
+            DefinitionSource::UserElaiLegacy,
             home.join(".codex").join(leaf),
         );
         push_unique_root(
             &mut roots,
-            DefinitionSource::UserClaude,
-            home.join(".claude").join(leaf),
+            DefinitionSource::UserElaiCompat,
+            home.join(".elai").join(leaf),
         );
     }
 
@@ -2473,54 +2473,54 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
     for ancestor in cwd.ancestors() {
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join("skills"),
+            DefinitionSource::ProjectElai,
+            ancestor.join(".elai").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectCodex,
+            DefinitionSource::ProjectElaiLegacy,
             ancestor.join(".codex").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaude,
-            ancestor.join(".claude").join("skills"),
+            DefinitionSource::ProjectElaiCompat,
+            ancestor.join(".elai").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaw,
-            ancestor.join(".claw").join("commands"),
+            DefinitionSource::ProjectElai,
+            ancestor.join(".elai").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectCodex,
+            DefinitionSource::ProjectElaiLegacy,
             ancestor.join(".codex").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::ProjectClaude,
-            ancestor.join(".claude").join("commands"),
+            DefinitionSource::ProjectElaiCompat,
+            ancestor.join(".elai").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
     }
 
-    if let Ok(claw_config_home) = env::var("CLAW_CONFIG_HOME") {
-        let claw_config_home = PathBuf::from(claw_config_home);
+    if let Ok(elai_config_home) = env::var("ELAI_CONFIG_HOME") {
+        let elai_config_home = PathBuf::from(elai_config_home);
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClawConfigHome,
-            claw_config_home.join("skills"),
+            DefinitionSource::UserElaiConfigHome,
+            elai_config_home.join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClawConfigHome,
-            claw_config_home.join("commands"),
+            DefinitionSource::UserElaiConfigHome,
+            elai_config_home.join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
     }
@@ -2529,13 +2529,13 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         let codex_home = PathBuf::from(codex_home);
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserCodexHome,
+            DefinitionSource::UserElaiLegacyHome,
             codex_home.join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserCodexHome,
+            DefinitionSource::UserElaiLegacyHome,
             codex_home.join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
@@ -2545,38 +2545,38 @@ fn discover_skill_roots(cwd: &Path) -> Vec<SkillRoot> {
         let home = PathBuf::from(home);
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join("skills"),
+            DefinitionSource::UserElai,
+            home.join(".elai").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaw,
-            home.join(".claw").join("commands"),
+            DefinitionSource::UserElai,
+            home.join(".elai").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserCodex,
+            DefinitionSource::UserElaiLegacy,
             home.join(".codex").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserCodex,
+            DefinitionSource::UserElaiLegacy,
             home.join(".codex").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaude,
-            home.join(".claude").join("skills"),
+            DefinitionSource::UserElaiCompat,
+            home.join(".elai").join("skills"),
             SkillOrigin::SkillsDir,
         );
         push_unique_skill_root(
             &mut roots,
-            DefinitionSource::UserClaude,
-            home.join(".claude").join("commands"),
+            DefinitionSource::UserElaiCompat,
+            home.join(".elai").join("commands"),
             SkillOrigin::LegacyCommandsDir,
         );
     }
@@ -2635,18 +2635,18 @@ fn install_skill_into(
 }
 
 fn default_skill_install_root() -> std::io::Result<PathBuf> {
-    if let Ok(claw_config_home) = env::var("CLAW_CONFIG_HOME") {
-        return Ok(PathBuf::from(claw_config_home).join("skills"));
+    if let Ok(elai_config_home) = env::var("ELAI_CONFIG_HOME") {
+        return Ok(PathBuf::from(elai_config_home).join("skills"));
     }
     if let Ok(codex_home) = env::var("CODEX_HOME") {
         return Ok(PathBuf::from(codex_home).join("skills"));
     }
     if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".claw").join("skills"));
+        return Ok(PathBuf::from(home).join(".elai").join("skills"));
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        "unable to resolve a skills install root; set CLAW_CONFIG_HOME or HOME",
+        "unable to resolve a skills install root; set ELAI_CONFIG_HOME or HOME",
     ))
 }
 
@@ -3318,8 +3318,8 @@ fn render_agents_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Agents".to_string(),
         "  Usage            /agents [list|help]".to_string(),
-        "  Direct CLI       claw agents".to_string(),
-        "  Sources          .claw/agents, ~/.claw/agents, $CLAW_CONFIG_HOME/agents".to_string(),
+        "  Direct CLI       elai agents".to_string(),
+        "  Sources          .elai/agents, ~/.elai/agents, $ELAI_CONFIG_HOME/agents".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -3331,9 +3331,9 @@ fn render_skills_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "Skills".to_string(),
         "  Usage            /skills [list|install <path>|help]".to_string(),
-        "  Direct CLI       claw skills [list|install <path>|help]".to_string(),
-        "  Install root     $CLAW_CONFIG_HOME/skills or ~/.claw/skills".to_string(),
-        "  Sources          .claw/skills, ~/.claw/skills, legacy /commands".to_string(),
+        "  Direct CLI       elai skills [list|install <path>|help]".to_string(),
+        "  Install root     $ELAI_CONFIG_HOME/skills or ~/.elai/skills".to_string(),
+        "  Sources          .elai/skills, ~/.elai/skills, legacy /commands".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -3347,9 +3347,9 @@ fn render_skills_usage_json(unexpected: Option<&str>) -> Value {
         "action": "help",
         "usage": {
             "slash_command": "/skills [list|install <path>|help]",
-            "direct_cli": "claw skills [list|install <path>|help]",
-            "install_root": "$CLAW_CONFIG_HOME/skills or ~/.claw/skills",
-            "sources": [".claw/skills", "legacy /commands", "legacy fallback dirs still load automatically"],
+            "direct_cli": "elai skills [list|install <path>|help]",
+            "install_root": "$ELAI_CONFIG_HOME/skills or ~/.elai/skills",
+            "sources": [".elai/skills", "legacy /commands", "legacy fallback dirs still load automatically"],
         },
         "unexpected": unexpected,
     })
@@ -3359,8 +3359,8 @@ fn render_mcp_usage(unexpected: Option<&str>) -> String {
     let mut lines = vec![
         "MCP".to_string(),
         "  Usage            /mcp [list|show <server>|help]".to_string(),
-        "  Direct CLI       claw mcp [list|show <server>|help]".to_string(),
-        "  Sources          .claw/settings.json, .claw/settings.local.json".to_string(),
+        "  Direct CLI       elai mcp [list|show <server>|help]".to_string(),
+        "  Sources          .elai/settings.json, .elai/settings.local.json".to_string(),
     ];
     if let Some(args) = unexpected {
         lines.push(format!("  Unexpected       {args}"));
@@ -3374,8 +3374,8 @@ fn render_mcp_usage_json(unexpected: Option<&str>) -> Value {
         "action": "help",
         "usage": {
             "slash_command": "/mcp [list|show <server>|help]",
-            "direct_cli": "claw mcp [list|show <server>|help]",
-            "sources": [".claw/settings.json", ".claw/settings.local.json"],
+            "direct_cli": "elai mcp [list|show <server>|help]",
+            "sources": [".elai/settings.json", ".elai/settings.local.json"],
         },
         "unexpected": unexpected,
     })
@@ -3459,14 +3459,14 @@ fn format_mcp_oauth(oauth: Option<&McpOAuthConfig>) -> String {
 
 fn definition_source_id(source: DefinitionSource) -> &'static str {
     match source {
-        DefinitionSource::ProjectClaw
-        | DefinitionSource::ProjectCodex
-        | DefinitionSource::ProjectClaude => "project_claw",
-        DefinitionSource::UserClawConfigHome | DefinitionSource::UserCodexHome => {
-            "user_claw_config_home"
+        DefinitionSource::ProjectElai
+        | DefinitionSource::ProjectElaiLegacy
+        | DefinitionSource::ProjectElaiCompat => "project_elai",
+        DefinitionSource::UserElaiConfigHome | DefinitionSource::UserElaiLegacyHome => {
+            "user_elai_config_home"
         }
-        DefinitionSource::UserClaw | DefinitionSource::UserCodex | DefinitionSource::UserClaude => {
-            "user_claw"
+        DefinitionSource::UserElai | DefinitionSource::UserElaiLegacy | DefinitionSource::UserElaiCompat => {
+            "user_elai"
         }
     }
 }
@@ -3710,9 +3710,9 @@ mod tests {
     }
 
     fn write_external_plugin(root: &Path, name: &str, version: &str) {
-        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join(".elai-plugin")).expect("manifest dir");
         fs::write(
-            root.join(".claude-plugin").join("plugin.json"),
+            root.join(".elai-plugin").join("plugin.json"),
             format!(
                 "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"commands plugin\"\n}}"
             ),
@@ -3721,9 +3721,9 @@ mod tests {
     }
 
     fn write_bundled_plugin(root: &Path, name: &str, version: &str, default_enabled: bool) {
-        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join(".elai-plugin")).expect("manifest dir");
         fs::write(
-            root.join(".claude-plugin").join("plugin.json"),
+            root.join(".elai-plugin").join("plugin.json"),
             format!(
                 "{{\n  \"name\": \"{name}\",\n  \"version\": \"{version}\",\n  \"description\": \"bundled commands plugin\",\n  \"defaultEnabled\": {}\n}}",
                 if default_enabled { "true" } else { "false" }
@@ -4125,7 +4125,7 @@ mod tests {
 
         // then
         assert!(help.contains("/plugin"));
-        assert!(help.contains("Summary          Manage Claw Code plugins"));
+        assert!(help.contains("Summary          Manage ELAI plugins"));
         assert!(help.contains("Aliases          /plugins, /marketplace"));
         assert!(help.contains("Category         Workspace & git"));
     }
@@ -4320,7 +4320,7 @@ mod tests {
         let workspace = temp_dir("agents-workspace");
         let project_agents = workspace.join(".codex").join("agents");
         let user_home = temp_dir("agents-home");
-        let user_agents = user_home.join(".claude").join("agents");
+        let user_agents = user_home.join(".elai").join("agents");
 
         write_agent(
             &project_agents,
@@ -4345,18 +4345,18 @@ mod tests {
         );
 
         let roots = vec![
-            (DefinitionSource::ProjectCodex, project_agents),
-            (DefinitionSource::UserCodex, user_agents),
+            (DefinitionSource::ProjectElaiLegacy, project_agents),
+            (DefinitionSource::UserElaiLegacy, user_agents),
         ];
         let report =
             render_agents_report(&load_agents_from_roots(&roots).expect("agent roots should load"));
 
         assert!(report.contains("Agents"));
         assert!(report.contains("2 active agents"));
-        assert!(report.contains("Project (.claw):"));
+        assert!(report.contains("Project (.elai):"));
         assert!(report.contains("planner · Project planner · gpt-5.4 · medium"));
-        assert!(report.contains("User (~/.claw):"));
-        assert!(report.contains("(shadowed by Project (.claw)) planner · User planner"));
+        assert!(report.contains("User (~/.elai):"));
+        assert!(report.contains("(shadowed by Project (.elai)) planner · User planner"));
         assert!(report.contains("verifier · Verification agent · gpt-5.4-mini · high"));
 
         let _ = fs::remove_dir_all(workspace);
@@ -4367,7 +4367,7 @@ mod tests {
     fn lists_skills_from_project_and_user_roots() {
         let workspace = temp_dir("skills-workspace");
         let project_skills = workspace.join(".codex").join("skills");
-        let project_commands = workspace.join(".claude").join("commands");
+        let project_commands = workspace.join(".elai").join("commands");
         let user_home = temp_dir("skills-home");
         let user_skills = user_home.join(".codex").join("skills");
 
@@ -4378,17 +4378,17 @@ mod tests {
 
         let roots = vec![
             SkillRoot {
-                source: DefinitionSource::ProjectCodex,
+                source: DefinitionSource::ProjectElaiLegacy,
                 path: project_skills,
                 origin: SkillOrigin::SkillsDir,
             },
             SkillRoot {
-                source: DefinitionSource::ProjectClaude,
+                source: DefinitionSource::ProjectElaiCompat,
                 path: project_commands,
                 origin: SkillOrigin::LegacyCommandsDir,
             },
             SkillRoot {
-                source: DefinitionSource::UserCodex,
+                source: DefinitionSource::UserElaiLegacy,
                 path: user_skills,
                 origin: SkillOrigin::SkillsDir,
             },
@@ -4398,11 +4398,11 @@ mod tests {
 
         assert!(report.contains("Skills"));
         assert!(report.contains("3 available skills"));
-        assert!(report.contains("Project (.claw):"));
+        assert!(report.contains("Project (.elai):"));
         assert!(report.contains("plan · Project planning guidance"));
         assert!(report.contains("deploy · Legacy deployment guidance · legacy /commands"));
-        assert!(report.contains("User (~/.claw):"));
-        assert!(report.contains("(shadowed by Project (.claw)) plan · User planning guidance"));
+        assert!(report.contains("User (~/.elai):"));
+        assert!(report.contains("(shadowed by Project (.elai)) plan · User planning guidance"));
         assert!(report.contains("help · Help guidance"));
 
         let _ = fs::remove_dir_all(workspace);
@@ -4413,7 +4413,7 @@ mod tests {
     fn renders_skills_reports_as_json() {
         let workspace = temp_dir("skills-json-workspace");
         let project_skills = workspace.join(".codex").join("skills");
-        let project_commands = workspace.join(".claude").join("commands");
+        let project_commands = workspace.join(".elai").join("commands");
         let user_home = temp_dir("skills-json-home");
         let user_skills = user_home.join(".codex").join("skills");
 
@@ -4424,17 +4424,17 @@ mod tests {
 
         let roots = vec![
             SkillRoot {
-                source: DefinitionSource::ProjectCodex,
+                source: DefinitionSource::ProjectElaiLegacy,
                 path: project_skills,
                 origin: SkillOrigin::SkillsDir,
             },
             SkillRoot {
-                source: DefinitionSource::ProjectClaude,
+                source: DefinitionSource::ProjectElaiCompat,
                 path: project_commands,
                 origin: SkillOrigin::LegacyCommandsDir,
             },
             SkillRoot {
-                source: DefinitionSource::UserCodex,
+                source: DefinitionSource::UserElaiLegacy,
                 path: user_skills,
                 origin: SkillOrigin::SkillsDir,
             },
@@ -4447,17 +4447,17 @@ mod tests {
         assert_eq!(report["summary"]["active"], 3);
         assert_eq!(report["summary"]["shadowed"], 1);
         assert_eq!(report["skills"][0]["name"], "plan");
-        assert_eq!(report["skills"][0]["source"]["id"], "project_claw");
+        assert_eq!(report["skills"][0]["source"]["id"], "project_elai");
         assert_eq!(report["skills"][1]["name"], "deploy");
         assert_eq!(report["skills"][1]["origin"]["id"], "legacy_commands_dir");
-        assert_eq!(report["skills"][3]["shadowed_by"]["id"], "project_claw");
+        assert_eq!(report["skills"][3]["shadowed_by"]["id"], "project_elai");
 
         let help = handle_skills_slash_command_json(Some("help"), &workspace).expect("skills help");
         assert_eq!(help["kind"], "skills");
         assert_eq!(help["action"], "help");
         assert_eq!(
             help["usage"]["direct_cli"],
-            "claw skills [list|install <path>|help]"
+            "elai skills [list|install <path>|help]"
         );
 
         let _ = fs::remove_dir_all(workspace);
@@ -4471,9 +4471,9 @@ mod tests {
         let agents_help =
             super::handle_agents_slash_command(Some("help"), &cwd).expect("agents help");
         assert!(agents_help.contains("Usage            /agents [list|help]"));
-        assert!(agents_help.contains("Direct CLI       claw agents"));
+        assert!(agents_help.contains("Direct CLI       elai agents"));
         assert!(agents_help
-            .contains("Sources          .claw/agents, ~/.claw/agents, $CLAW_CONFIG_HOME/agents"));
+            .contains("Sources          .elai/agents, ~/.elai/agents, $ELAI_CONFIG_HOME/agents"));
 
         let agents_unexpected =
             super::handle_agents_slash_command(Some("show planner"), &cwd).expect("agents usage");
@@ -4482,7 +4482,7 @@ mod tests {
         let skills_help =
             super::handle_skills_slash_command(Some("--help"), &cwd).expect("skills help");
         assert!(skills_help.contains("Usage            /skills [list|install <path>|help]"));
-        assert!(skills_help.contains("Install root     $CLAW_CONFIG_HOME/skills or ~/.claw/skills"));
+        assert!(skills_help.contains("Install root     $ELAI_CONFIG_HOME/skills or ~/.elai/skills"));
         assert!(skills_help.contains("legacy /commands"));
 
         let skills_unexpected =
@@ -4508,7 +4508,7 @@ mod tests {
 
         let help = super::handle_mcp_slash_command(Some("help"), &cwd).expect("mcp help");
         assert!(help.contains("Usage            /mcp [list|show <server>|help]"));
-        assert!(help.contains("Direct CLI       claw mcp [list|show <server>|help]"));
+        assert!(help.contains("Direct CLI       elai mcp [list|show <server>|help]"));
 
         let unexpected =
             super::handle_mcp_slash_command(Some("show alpha beta"), &cwd).expect("mcp usage");
@@ -4531,10 +4531,10 @@ mod tests {
     fn renders_mcp_reports_from_loaded_config() {
         let workspace = temp_dir("mcp-config-workspace");
         let config_home = temp_dir("mcp-config-home");
-        fs::create_dir_all(workspace.join(".claw")).expect("workspace config dir");
+        fs::create_dir_all(workspace.join(".elai")).expect("workspace config dir");
         fs::create_dir_all(&config_home).expect("config home");
         fs::write(
-            workspace.join(".claw").join("settings.json"),
+            workspace.join(".elai").join("settings.json"),
             r#"{
               "mcpServers": {
                 "alpha": {
@@ -4558,7 +4558,7 @@ mod tests {
         )
         .expect("write settings");
         fs::write(
-            workspace.join(".claw").join("settings.local.json"),
+            workspace.join(".elai").join("settings.local.json"),
             r#"{
               "mcpServers": {
                 "remote": {
@@ -4608,10 +4608,10 @@ mod tests {
     fn renders_mcp_reports_as_json() {
         let workspace = temp_dir("mcp-json-workspace");
         let config_home = temp_dir("mcp-json-home");
-        fs::create_dir_all(workspace.join(".claw")).expect("workspace config dir");
+        fs::create_dir_all(workspace.join(".elai")).expect("workspace config dir");
         fs::create_dir_all(&config_home).expect("config home");
         fs::write(
-            workspace.join(".claw").join("settings.json"),
+            workspace.join(".elai").join("settings.json"),
             r#"{
               "mcpServers": {
                 "alpha": {
@@ -4635,7 +4635,7 @@ mod tests {
         )
         .expect("write settings");
         fs::write(
-            workspace.join(".claw").join("settings.local.json"),
+            workspace.join(".elai").join("settings.local.json"),
             r#"{
               "mcpServers": {
                 "remote": {
@@ -4680,7 +4680,7 @@ mod tests {
         let help =
             render_mcp_report_json_for(&loader, &workspace, Some("help")).expect("mcp help json");
         assert_eq!(help["action"], "help");
-        assert_eq!(help["usage"]["sources"][0], ".claw/settings.json");
+        assert_eq!(help["usage"]["sources"][0], ".elai/settings.json");
 
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(config_home);
@@ -4731,14 +4731,14 @@ mod tests {
         assert!(report.contains(&install_root.display().to_string()));
 
         let roots = vec![SkillRoot {
-            source: DefinitionSource::UserCodexHome,
+            source: DefinitionSource::UserElaiLegacyHome,
             path: install_root.clone(),
             origin: SkillOrigin::SkillsDir,
         }];
         let listed = render_skills_report(
             &load_skills_from_roots(&roots).expect("installed skills should load"),
         );
-        assert!(listed.contains("User ($CLAW_CONFIG_HOME):"));
+        assert!(listed.contains("User ($ELAI_CONFIG_HOME):"));
         assert!(listed.contains("help · Helpful skill"));
 
         let _ = fs::remove_dir_all(workspace);

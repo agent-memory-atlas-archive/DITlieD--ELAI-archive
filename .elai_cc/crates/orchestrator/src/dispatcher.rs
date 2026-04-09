@@ -64,6 +64,9 @@ pub struct BackendConfig {
     pub model: String,
     #[serde(default = "default_max_tools")]
     pub max_tools_local: usize,
+    /// Ollama fallback URL when sidecar is unavailable (degraded mode).
+    #[serde(default)]
+    pub fallback_url: Option<String>,
 }
 
 fn default_sidecar_url() -> String {
@@ -85,6 +88,7 @@ impl Default for BackendConfig {
             sidecar_url: default_sidecar_url(),
             model: default_local_model(),
             max_tools_local: default_max_tools(),
+            fallback_url: None,
         }
     }
 }
@@ -290,6 +294,7 @@ mod tests {
             sidecar_url: "http://localhost:9000".to_string(),
             model: "gemma3:4b".to_string(),
             max_tools_local: 10,
+            fallback_url: None,
         };
         let json = serde_json::to_string(&config).expect("serialize");
         let parsed: BackendConfig = serde_json::from_str(&json).expect("deserialize");

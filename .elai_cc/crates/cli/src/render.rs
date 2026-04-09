@@ -29,17 +29,17 @@ pub struct ColorTheme {
 impl Default for ColorTheme {
     fn default() -> Self {
         Self {
-            heading: Color::Cyan,
-            emphasis: Color::Magenta,
-            strong: Color::Yellow,
-            inline_code: Color::Green,
-            link: Color::Blue,
+            heading: Color::Rgb { r: 27, g: 122, b: 110 },
+            emphasis: Color::Rgb { r: 90, g: 170, b: 160 },
+            strong: Color::Rgb { r: 200, g: 220, b: 215 },
+            inline_code: Color::Rgb { r: 50, g: 160, b: 140 },
+            link: Color::Rgb { r: 27, g: 122, b: 110 },
             quote: Color::DarkGrey,
-            table_border: Color::DarkCyan,
+            table_border: Color::Rgb { r: 27, g: 122, b: 110 },
             code_block_border: Color::DarkGrey,
-            spinner_active: Color::Blue,
-            spinner_done: Color::Green,
-            spinner_failed: Color::Red,
+            spinner_active: Color::Rgb { r: 27, g: 122, b: 110 },
+            spinner_done: Color::Rgb { r: 50, g: 160, b: 140 },
+            spinner_failed: Color::Rgb { r: 180, g: 60, b: 60 },
         }
     }
 }
@@ -710,10 +710,10 @@ mod tests {
     fn renders_links_as_colored_markdown_labels() {
         let terminal_renderer = TerminalRenderer::new();
         let markdown_output =
-            terminal_renderer.render_markdown("See [Claw](https://example.com/docs) now.");
+            terminal_renderer.render_markdown("See [ELAI](https://example.com/docs) now.");
         let plain_text = strip_ansi(&markdown_output);
 
-        assert!(plain_text.contains("[Claw](https://example.com/docs)"));
+        assert!(plain_text.contains("[ELAI](https://example.com/docs)"));
         assert!(markdown_output.contains('\u{1b}'));
     }
 

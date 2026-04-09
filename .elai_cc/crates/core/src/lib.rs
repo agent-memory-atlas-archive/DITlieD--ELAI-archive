@@ -13,7 +13,7 @@ pub use config::{
     McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
     ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig, RuntimeHookConfig,
     RuntimePermissionRuleConfig, RuntimePluginConfig, ScopedMcpServerConfig,
-    CLAW_SETTINGS_SCHEMA_NAME,
+    ELAI_SETTINGS_SCHEMA_NAME,
 };
 pub use json::JsonValue;
 pub use sandbox::{

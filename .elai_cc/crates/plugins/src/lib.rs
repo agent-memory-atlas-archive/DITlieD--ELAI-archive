@@ -18,7 +18,7 @@ const BUNDLED_MARKETPLACE: &str = "bundled";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const REGISTRY_FILE_NAME: &str = "installed.json";
 const MANIFEST_FILE_NAME: &str = "plugin.json";
-const MANIFEST_RELATIVE_PATH: &str = ".claude-plugin/plugin.json";
+const MANIFEST_RELATIVE_PATH: &str = ".elai-plugin/plugin.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -309,14 +309,14 @@ impl PluginTool {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("CLAWD_PLUGIN_ID", &self.plugin_id)
-            .env("CLAWD_PLUGIN_NAME", &self.plugin_name)
-            .env("CLAWD_TOOL_NAME", &self.definition.name)
-            .env("CLAWD_TOOL_INPUT", &input_json);
+            .env("ELAI_PLUGIN_ID", &self.plugin_id)
+            .env("ELAI_PLUGIN_NAME", &self.plugin_name)
+            .env("ELAI_TOOL_NAME", &self.definition.name)
+            .env("ELAI_TOOL_INPUT", &input_json);
         if let Some(root) = &self.root {
             process
                 .current_dir(root)
-                .env("CLAWD_PLUGIN_ROOT", root.display().to_string());
+                .env("ELAI_PLUGIN_ROOT", root.display().to_string());
         }
 
         let mut child = process.spawn()?;
@@ -2353,7 +2353,7 @@ mod tests {
             let script_path = root.join("tools").join("echo-json.sh");
             write_file(
                 &script_path,
-                "#!/bin/sh\nINPUT=$(cat)\nprintf '{\"plugin\":\"%s\",\"tool\":\"%s\",\"input\":%s}\\n' \"$CLAWD_PLUGIN_ID\" \"$CLAWD_TOOL_NAME\" \"$INPUT\"\n",
+                "#!/bin/sh\nINPUT=$(cat)\nprintf '{\"plugin\":\"%s\",\"tool\":\"%s\",\"input\":%s}\\n' \"$ELAI_PLUGIN_ID\" \"$ELAI_TOOL_NAME\" \"$INPUT\"\n",
             );
             use std::os::unix::fs::PermissionsExt;
             let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
@@ -2372,7 +2372,7 @@ mod tests {
             let script_path = root.join("tools").join("echo-json.cmd");
             write_file(
                 &script_path,
-                "@echo off\r\nset /p INPUT=\r\necho {\"plugin\":\"%CLAWD_PLUGIN_ID%\",\"tool\":\"%CLAWD_TOOL_NAME%\",\"input\":%INPUT%}\r\n",
+                "@echo off\r\nset /p INPUT=\r\necho {\"plugin\":\"%ELAI_PLUGIN_ID%\",\"tool\":\"%ELAI_TOOL_NAME%\",\"input\":%INPUT%}\r\n",
             );
             write_file(
                 root.join(MANIFEST_RELATIVE_PATH).as_path(),
