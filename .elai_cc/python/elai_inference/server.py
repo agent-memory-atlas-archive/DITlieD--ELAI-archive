@@ -310,6 +310,7 @@ class InferenceEngine:
 # ---------------------------------------------------------------------------
 
 class InferenceHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     engine: InferenceEngine = None  # Set by server setup
 
     def do_GET(self):
@@ -323,9 +324,165 @@ class InferenceHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path != "/v1/completions":
+        if self.path == "/v1/messages":
+            return self._handle_messages()
+        elif self.path == "/v1/completions":
+            return self._handle_completions()
+        else:
             self._json_response(404, {"error": "not found"})
+
+    def _handle_messages(self):
+        """Anthropic Messages API compatible endpoint with streaming SSE."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            request = json.loads(body)
+        except json.JSONDecodeError:
+            self._json_response(400, {"error": "invalid JSON"})
             return
+
+        # Extract messages and convert to prompt
+        messages = request.get("messages", [])
+        system = request.get("system", "")
+        max_tokens = request.get("max_tokens", 256)
+        stream = request.get("stream", False)
+
+        # Flatten messages into a single prompt for the local model
+        prompt = self._messages_to_prompt(messages, system)
+
+        if stream:
+            self._stream_messages_response(prompt, max_tokens, request.get("model", "elai-local"))
+        else:
+            self._non_stream_messages_response(prompt, max_tokens, request.get("model", "elai-local"))
+
+    def _messages_to_prompt(self, messages, system=""):
+        """Convert Anthropic messages format to a single prompt string."""
+        parts = []
+        if system:
+            parts.append(system)
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Content blocks: [{type: "text", text: "..."}, ...]
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
+            if content:
+                parts.append(content)
+        return "\n".join(parts) if parts else ""
+
+    def _stream_messages_response(self, prompt, max_tokens, model_name):
+        """Stream response in Anthropic SSE format."""
+        msg_id = f"msg_elai_{int(time.time())}"
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        # 1. message_start
+        message_start = {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": model_name,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": len(prompt) // 4,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+            },
+        }
+        self._send_sse("message_start", message_start)
+
+        # 2. content_block_start
+        block_start = {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        }
+        self._send_sse("content_block_start", block_start)
+
+        # 3. Generate tokens and stream as content_block_delta
+        text, tokens = self.engine.generate(prompt, max_tokens)
+
+        # Stream the full text as chunks (word-level for visual streaming effect)
+        words = text.split(' ')
+        for i, word in enumerate(words):
+            chunk = word if i == 0 else ' ' + word
+            delta = {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": chunk},
+            }
+            self._send_sse("content_block_delta", delta)
+
+        # 4. content_block_stop
+        block_stop = {"type": "content_block_stop", "index": 0}
+        self._send_sse("content_block_stop", block_stop)
+
+        # 5. message_delta
+        msg_delta = {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {
+                "input_tokens": len(prompt) // 4,
+                "output_tokens": len(tokens),
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        }
+        self._send_sse("message_delta", msg_delta)
+
+        # 6. message_stop
+        self._send_sse("message_stop", {"type": "message_stop"})
+
+        # Terminate chunked transfer
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _non_stream_messages_response(self, prompt, max_tokens, model_name):
+        """Non-streaming Anthropic Messages response."""
+        text, tokens = self.engine.generate(prompt, max_tokens)
+
+        response = {
+            "id": f"msg_elai_{int(time.time())}",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "model": model_name,
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": len(prompt) // 4,
+                "output_tokens": len(tokens),
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        }
+        self._json_response(200, response)
+
+    def _send_sse(self, event_type, data):
+        """Send a single SSE event using chunked transfer encoding."""
+        payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        chunk = f"{len(payload.encode()):x}\r\n{payload}\r\n"
+        self.wfile.write(chunk.encode())
+        self.wfile.flush()
+
+    def _handle_completions(self):
 
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
@@ -373,10 +530,13 @@ class InferenceHandler(BaseHTTPRequestHandler):
         self._json_response(200, response)
 
     def _json_response(self, status, data):
+        body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         logger.debug(format, *args)
