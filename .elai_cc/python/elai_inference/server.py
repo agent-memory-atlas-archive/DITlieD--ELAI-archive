@@ -287,7 +287,7 @@ class InferenceEngine:
         # Remove <bos>, <eos>, turn markers, but keep tool_call markers
         for token in ['<bos>', '<eos>', '<pad>']:
             text = text.replace(token, '')
-        return text.strip(), generated_tokens
+        return text.strip(), generated_tokens, input_ids.shape[1]
 
     def _dola_select(self, outputs):
         """Apply DoLa contrastive decoding to select next token."""
@@ -596,6 +596,9 @@ class InferenceHandler(BaseHTTPRequestHandler):
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
+        # Generate full response (get real token counts from tokenizer)
+        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens)
+
         # 1. message_start
         message_start = {
             "type": "message_start",
@@ -608,7 +611,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 "stop_reason": None,
                 "stop_sequence": None,
                 "usage": {
-                    "input_tokens": len(prompt) // 4,
+                    "input_tokens": input_token_count,
                     "output_tokens": 0,
                     "cache_creation_input_tokens": 0,
                     "cache_read_input_tokens": 0,
@@ -616,9 +619,6 @@ class InferenceHandler(BaseHTTPRequestHandler):
             },
         }
         self._send_sse("message_start", message_start)
-
-        # Generate full response
-        text, tokens = self.engine.generate(prompt, max_tokens)
 
         # Check for tool calls in the output
         tool_calls, remaining_text = self._parse_tool_calls(text) if tools else ([], text)
@@ -689,7 +689,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason, "stop_sequence": None},
             "usage": {
-                "input_tokens": len(prompt) // 4,
+                "input_tokens": input_token_count,
                 "output_tokens": len(tokens),
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0,
@@ -705,7 +705,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
 
     def _non_stream_messages_response(self, prompt, max_tokens, model_name, tools=None):
         """Non-streaming Anthropic Messages response with tool calling support."""
-        text, tokens = self.engine.generate(prompt, max_tokens)
+        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens)
 
         # Check for tool calls
         tool_calls, remaining_text = self._parse_tool_calls(text) if tools else ([], text)
@@ -736,7 +736,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
             "stop_reason": stop_reason,
             "stop_sequence": None,
             "usage": {
-                "input_tokens": len(prompt) // 4,
+                "input_tokens": input_token_count,
                 "output_tokens": len(tokens),
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0,
@@ -766,7 +766,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
         temperature = request.get("temperature", 0.0)
 
         t0 = time.time()
-        text, tokens = self.engine.generate(prompt, max_tokens, temperature)
+        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens, temperature)
         elapsed = time.time() - t0
 
         # OpenAI-compatible response (non-streaming)
@@ -785,9 +785,9 @@ class InferenceHandler(BaseHTTPRequestHandler):
                     else "length",
             }],
             "usage": {
-                "prompt_tokens": 0,  # Not tracked
+                "prompt_tokens": input_token_count,
                 "completion_tokens": len(tokens),
-                "total_tokens": len(tokens),
+                "total_tokens": input_token_count + len(tokens),
             },
             "elai_metadata": {
                 "dola_enabled": self.engine.dola_enabled,
