@@ -60,7 +60,8 @@ use serde::Deserialize;
 use serde_json::json;
 use elai_rules::predicate::from_json;
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine};
-use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter};
+use elai_rules::stubs::EmptyDkgQuerier;
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
@@ -5867,9 +5868,26 @@ fn build_runtime_with_plugin_state(
         }
     };
 
+    let dkg_querier: Box<dyn elai_rules::predicate::DkgQuerier + Send + Sync> = {
+        let dkg_db_path = session
+            .persistence_path()
+            .map(|p| p.parent().unwrap_or(p).join("dkg.db"))
+            .unwrap_or_else(|| {
+                let mut tmp = std::env::temp_dir();
+                tmp.push(format!("elai-dkg-{}.db", session_id));
+                tmp
+            });
+        match DkgQuerierAdapter::new(&dkg_db_path) {
+            Ok(adapter) => Box::new(adapter),
+            Err(e) => {
+                eprintln!("[warn] DKG adapter init failed, using empty querier: {e}");
+                Box::new(EmptyDkgQuerier)
+            }
+        }
+    };
     let rule_engine = DefaultRuleEngine::new(
-        Box::new(PassAstEvaluator),
-        Box::new(EmptyDkgQuerier),
+        Box::new(TreeSitterAstEvaluator::new()),
+        dkg_querier,
     );
     let compiled_rules = load_seed_rules(&rule_engine);
 

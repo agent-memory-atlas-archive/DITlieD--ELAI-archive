@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
 pub mod arag;
+pub mod ast_adapter;
 pub mod bm25;
 pub mod catrag;
 pub mod degradation;
 pub mod dkg;
+pub mod dkg_adapter;
 pub mod index_version;
 pub mod pagerank;
 pub mod pipeline;
@@ -110,3 +112,5 @@ pub trait KnowledgeEngine {
 
 // Re-export DkgEngine at crate root for convenience.
 pub use dkg::DkgEngine;
+pub use ast_adapter::TreeSitterAstEvaluator;
+pub use dkg_adapter::DkgQuerierAdapter;
