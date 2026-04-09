@@ -6,6 +6,7 @@ pub mod checkpoint;
 pub mod coherence_check;
 pub mod dst;
 pub mod context_budget;
+pub mod dispatcher;
 pub mod bash_validation;
 pub mod branch_lock;
 mod compact;
@@ -102,6 +103,10 @@ pub use gate::{
 #[cfg(test)]
 pub use gate::MockInteractiveGate;
 pub use tool_filter::{RuleCategory, ToolCategory};
+pub use dispatcher::{
+    BackendConfig, BackendMode, DispatchContext, DispatchError, build_dispatch_context,
+    LOCAL_MODEL_MAX_CONTEXT, LOCAL_BUDGET_FRACTION,
+};
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{

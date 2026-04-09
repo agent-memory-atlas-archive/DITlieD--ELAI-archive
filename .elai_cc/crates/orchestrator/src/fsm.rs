@@ -354,6 +354,16 @@ impl Fsm {
         })
     }
 
+    /// Read persisted FSM state from disk synchronously. Returns Idle if missing or corrupt.
+    pub fn read_persisted_state(path: &Path) -> FsmState {
+        match std::fs::read(path) {
+            Ok(bytes) => rmp_serde::from_slice::<PersistedFsmState>(&bytes)
+                .map(|p| p.state)
+                .unwrap_or(FsmState::Idle),
+            Err(_) => FsmState::Idle,
+        }
+    }
+
     /// Current FSM state.
     pub async fn get_state(&self) -> FsmState {
         self.inner.lock().await.state

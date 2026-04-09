@@ -46,11 +46,11 @@ use elai_orchestrator::{
     clear_oauth_credentials, format_usd, generate_pkce_pair, generate_state,
     load_oauth_credentials, load_system_prompt, parse_oauth_callback_request_target,
     pricing_for_model, resolve_sandbox_status, save_oauth_credentials, ApiClient, ApiRequest,
-    AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
-    ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole, ModelPricing,
-    OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest, PermissionMode,
-    PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    AssistantEvent, BackendConfig, BackendMode, CompactionConfig, ConfigLoader, ConfigSource,
+    ContentBlock, ConversationMessage, ConversationRuntime, McpServerManager, McpTool, MessageRole,
+    ModelPricing, OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest,
+    PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode,
+    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -2194,18 +2194,23 @@ fn run_repl(
     Ok(())
 }
 
-fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::BufRead;
+/// Convert a Windows path like `D:\foo\bar` to WSL `/mnt/d/foo/bar`.
+/// Handles any single-letter drive prefix (A-Z).
+fn windows_to_wsl_path(win_path: &str) -> String {
+    let normalized = win_path.replace('\\', "/");
+    if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+        let drive = (normalized.as_bytes()[0] as char).to_ascii_lowercase();
+        format!("/mnt/{drive}{}", &normalized[2..])
+    } else {
+        normalized
+    }
+}
 
+/// Start or connect to the inference sidecar. Returns the child process handle
+/// if we spawned it (None if already running). Blocks until /health responds.
+fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::error::Error>> {
     let sidecar_url = format!("http://localhost:{port}");
 
-    println!("╔══════════════════════════════════════════╗");
-    println!("║  ELAI Local Inference                    ║");
-    println!("║  DoLa + TurboQuant on Gemma4 E2B         ║");
-    println!("╚══════════════════════════════════════════╝");
-    println!();
-
-    // Try to connect to an already-running sidecar first
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(5))
@@ -2217,152 +2222,139 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .map(|r| r.status().is_success())
         .unwrap_or(false);
 
-    let mut sidecar_process: Option<std::process::Child> = None;
-
     if already_running {
         println!("Connected to running sidecar on port {port}.");
-    } else {
-        println!("Starting inference sidecar... (loading model, ~30s)");
-
-        // Spawn WSL2 sidecar process
-        let elai_root = env::current_dir()?;
-        let wsl_path = elai_root
-            .to_str()
-            .unwrap_or(".")
-            .replace('\\', "/")
-            .replacen("D:", "/mnt/d", 1)
-            .replacen("C:", "/mnt/c", 1);
-
-        let child = Command::new("wsl")
-            .args([
-                "-d", "Ubuntu", "--", "bash", "-c",
-                &format!(
-                    "source ~/vllm-env/bin/activate && cd {wsl_path} && \
-                     python -m python.elai_inference.server \
-                     --model google/gemma-4-E2B-it \
-                     --port {port} --dola --turboquant-bits 4 \
-                     --log-level WARNING"
-                ),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-
-        match child {
-            Ok(c) => {
-                sidecar_process = Some(c);
-            }
-            Err(e) => {
-                eprintln!("Failed to start WSL2 sidecar: {e}");
-                eprintln!("Make sure WSL2 is installed with Ubuntu distribution.");
-                eprintln!("You can start the sidecar manually:");
-                eprintln!("  wsl -d Ubuntu -- bash -c \"source ~/vllm-env/bin/activate && \\");
-                eprintln!("    python -m python.elai_inference.server --port {port}\"");
-                return Err(e.into());
-            }
-        }
-
-        // Wait for health check
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(120);
-        loop {
-            if start.elapsed() > timeout {
-                eprintln!("Sidecar failed to start within 120s.");
-                if let Some(mut proc) = sidecar_process.take() {
-                    let _ = proc.kill();
-                }
-                return Err("sidecar startup timeout".into());
-            }
-
-            if client
-                .get(format!("{sidecar_url}/health"))
-                .send()
-                .map(|r| r.status().is_success())
-                .unwrap_or(false)
-            {
-                break;
-            }
-
-            thread::sleep(Duration::from_secs(2));
-            print!(".");
-            io::stdout().flush()?;
-        }
-        println!();
-        println!("Sidecar ready.");
+        return Ok(None);
     }
 
+    println!("Starting inference sidecar... (loading model, ~30s)");
+
+    let elai_root = env::current_dir()?;
+    let wsl_path = windows_to_wsl_path(elai_root.to_str().unwrap_or("."));
+
+    let child = Command::new("wsl")
+        .args([
+            "-d", "Ubuntu", "--", "bash", "-c",
+            &format!(
+                "source ~/vllm-env/bin/activate && cd '{wsl_path}' && \
+                 python -m python.elai_inference.server \
+                 --model google/gemma-4-E2B-it \
+                 --port {port} --dola --turboquant-bits 4 \
+                 --log-level WARNING"
+            ),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut proc = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to start WSL2 sidecar: {e}");
+            eprintln!("Make sure WSL2 is installed with Ubuntu distribution.");
+            eprintln!("You can start the sidecar manually:");
+            eprintln!("  wsl -d Ubuntu -- bash -c \"source ~/vllm-env/bin/activate && \\");
+            eprintln!("    python -m python.elai_inference.server --port {port}\"");
+            return Err(e.into());
+        }
+    };
+
+    // Health-poll with exponential backoff (capped at 5s).
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(120);
+    let mut wait_ms = 2000u64;
+    loop {
+        if start.elapsed() > timeout {
+            eprintln!("Sidecar failed to start within 120s.");
+            let _ = proc.kill();
+            return Err("sidecar startup timeout".into());
+        }
+
+        if client
+            .get(format!("{sidecar_url}/health"))
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(wait_ms));
+        wait_ms = (wait_ms * 3 / 2).min(5000);
+        print!(".");
+        io::stdout().flush()?;
+    }
     println!();
-    println!("Type your message and press Enter. Type /exit to quit.");
+    println!("Sidecar ready.");
+    Ok(Some(proc))
+}
+
+fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let sidecar_url = format!("http://localhost:{port}");
+    let backend_config = BackendConfig {
+        mode: BackendMode::Local,
+        sidecar_url: sidecar_url.clone(),
+        ..Default::default()
+    };
+
+    println!("╔══════════════════════════════════════════╗");
+    println!("║  ELAI Local Inference                    ║");
+    println!("║  DoLa + TurboQuant on Gemma4 E2B         ║");
+    println!("║  ConversationRuntime pipeline active      ║");
+    println!("╚══════════════════════════════════════════╝");
     println!();
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut line_buf = String::new();
+    let mut sidecar_process = start_sidecar(port)?;
+
+    // Build a LiveCli with local backend routed through ConversationRuntime.
+    let model = backend_config.model.clone();
+    let mut cli = LiveCli::new_local(
+        model,
+        &sidecar_url,
+        backend_config.max_tools_local,
+        default_permission_mode(),
+    )?;
+    let mut editor =
+        input::LineEditor::new("local> ", cli.repl_completion_candidates().unwrap_or_default());
+    println!("{}", cli.startup_banner());
 
     loop {
-        print!("> ");
-        io::stdout().flush()?;
-        line_buf.clear();
-        let bytes = reader.read_line(&mut line_buf)?;
-        if bytes == 0 {
-            // EOF
-            break;
-        }
-
-        let input = line_buf.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if matches!(input, "/exit" | "/quit" | "quit" | "exit") {
-            break;
-        }
-
-        // Send to sidecar
-        let body = serde_json::json!({
-            "prompt": input,
-            "max_tokens": 256,
-            "temperature": 0.0,
-        });
-
-        match client.post(format!("{sidecar_url}/v1/completions"))
-            .json(&body)
-            .send()
-        {
-            Ok(response) => {
-                if response.status().is_success() {
-                    if let Ok(data) = response.json::<serde_json::Value>() {
-                        if let Some(text) = data["choices"][0]["text"].as_str() {
-                            println!();
-                            println!("{text}");
-                            println!();
-                        }
-                        if let Some(meta) = data.get("elai_metadata") {
-                            let dola = meta["dola_enabled"].as_bool().unwrap_or(false);
-                            let tq = meta["turboquant_enabled"].as_bool().unwrap_or(false);
-                            let bits = meta["turboquant_bits"].as_u64().unwrap_or(0);
-                            let ms = meta["elapsed_ms"].as_u64().unwrap_or(0);
-                            println!(
-                                "[DoLa:{} TQ:{}{} {:.1}s]",
-                                if dola { "on" } else { "off" },
-                                if tq { "on" } else { "off" },
-                                if tq { format!("/{bits}bit") } else { String::new() },
-                                ms as f64 / 1000.0,
-                            );
-                            println!();
-                        }
-                    }
-                } else {
-                    eprintln!("Error: HTTP {}", response.status());
+        editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
+        match editor.read_line()? {
+            input::ReadOutcome::Submit(input) => {
+                let trimmed = input.trim().to_string();
+                if trimmed.is_empty() {
+                    continue;
                 }
+                if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                    cli.persist_session()?;
+                    break;
+                }
+                match SlashCommand::parse(&trimmed) {
+                    Ok(Some(command)) => {
+                        if cli.handle_repl_command(command)? {
+                            cli.persist_session()?;
+                        }
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("{error}");
+                        continue;
+                    }
+                }
+                editor.push_history(input);
+                cli.run_turn(&trimmed)?;
             }
-            Err(e) => {
-                eprintln!("Connection error: {e}");
-                eprintln!("Is the sidecar still running?");
+            input::ReadOutcome::Cancel => {}
+            input::ReadOutcome::Exit => {
+                cli.persist_session()?;
+                break;
             }
         }
     }
 
-    // Cleanup
+    // Cleanup sidecar if we spawned it.
     if let Some(mut proc) = sidecar_process.take() {
         println!("Shutting down sidecar...");
         let _ = proc.kill();
@@ -2413,7 +2405,7 @@ struct RuntimeMcpState {
 }
 
 struct BuiltRuntime {
-    runtime: Option<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>>,
+    runtime: Option<ConversationRuntime<CliApiClient, CliToolExecutor>>,
     plugin_registry: PluginRegistry,
     plugins_active: bool,
     mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
@@ -2422,7 +2414,7 @@ struct BuiltRuntime {
 
 impl BuiltRuntime {
     fn new(
-        runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+        runtime: ConversationRuntime<CliApiClient, CliToolExecutor>,
         plugin_registry: PluginRegistry,
         mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
     ) -> Self {
@@ -2467,7 +2459,7 @@ impl BuiltRuntime {
 }
 
 impl Deref for BuiltRuntime {
-    type Target = ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>;
+    type Target = ConversationRuntime<CliApiClient, CliToolExecutor>;
 
     fn deref(&self) -> &Self::Target {
         self.runtime
@@ -2893,6 +2885,39 @@ impl LiveCli {
         let cli = Self {
             model,
             allowed_tools,
+            permission_mode,
+            system_prompt,
+            runtime,
+            session,
+        };
+        cli.persist_session()?;
+        Ok(cli)
+    }
+
+    fn new_local(
+        model: String,
+        sidecar_url: &str,
+        max_tools: usize,
+        permission_mode: PermissionMode,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let system_prompt = build_system_prompt()?;
+        let session_state = Session::new();
+        let session = create_managed_session_handle(&session_state.session_id)?;
+        let runtime = build_local_runtime(
+            session_state.with_persistence_path(session.path.clone()),
+            &session.id,
+            sidecar_url,
+            model.clone(),
+            system_prompt.clone(),
+            true,
+            None,
+            permission_mode,
+            None,
+            max_tools,
+        )?;
+        let cli = Self {
+            model,
+            allowed_tools: None,
             permission_mode,
             system_prompt,
             runtime,
@@ -5280,6 +5305,69 @@ fn build_runtime(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_local_runtime(
+    session: Session,
+    session_id: &str,
+    sidecar_url: &str,
+    model: String,
+    system_prompt: Vec<String>,
+    emit_output: bool,
+    allowed_tools: Option<AllowedToolSet>,
+    permission_mode: PermissionMode,
+    progress_reporter: Option<InternalPromptProgressReporter>,
+    max_tools: usize,
+) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    let runtime_plugin_state = build_runtime_plugin_state()?;
+    let RuntimePluginState {
+        feature_config,
+        tool_registry,
+        plugin_registry,
+        mcp_state,
+    } = runtime_plugin_state;
+    plugin_registry.initialize()?;
+    let policy = permission_policy(permission_mode, &feature_config, &tool_registry)
+        .map_err(std::io::Error::other)?;
+
+    // Derive FSM state path from session persistence directory.
+    let fsm_state_path = session
+        .persistence_path()
+        .map(|p| p.parent().unwrap_or(p).join(".fsm-state.msgpack"));
+
+    let mut local_runtime_client = LocalRuntimeClient::new(
+        sidecar_url,
+        model.clone(),
+        true,
+        emit_output,
+        allowed_tools.clone(),
+        tool_registry.clone(),
+        progress_reporter,
+        max_tools,
+    )?;
+    if let Some(path) = fsm_state_path {
+        local_runtime_client = local_runtime_client.with_fsm_state_path(path);
+    }
+    let local_client = CliApiClient::Local(local_runtime_client);
+
+    let mut runtime = ConversationRuntime::new_with_features(
+        session,
+        local_client,
+        CliToolExecutor::new(
+            allowed_tools.clone(),
+            emit_output,
+            tool_registry.clone(),
+            mcp_state.clone(),
+        ),
+        policy,
+        system_prompt,
+        &feature_config,
+    );
+    if emit_output {
+        runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
+    }
+    Ok(BuiltRuntime::new(runtime, plugin_registry, mcp_state))
+}
+
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_arguments)]
 fn build_runtime_with_plugin_state(
@@ -5303,17 +5391,18 @@ fn build_runtime_with_plugin_state(
     plugin_registry.initialize()?;
     let policy = permission_policy(permission_mode, &feature_config, &tool_registry)
         .map_err(std::io::Error::other)?;
+    let api_client = CliApiClient::Api(AnthropicRuntimeClient::new(
+        session_id,
+        model,
+        enable_tools,
+        emit_output,
+        allowed_tools.clone(),
+        tool_registry.clone(),
+        progress_reporter,
+    )?);
     let mut runtime = ConversationRuntime::new_with_features(
         session,
-        AnthropicRuntimeClient::new(
-            session_id,
-            model,
-            enable_tools,
-            emit_output,
-            allowed_tools.clone(),
-            tool_registry.clone(),
-            progress_reporter,
-        )?,
+        api_client,
         CliToolExecutor::new(
             allowed_tools.clone(),
             emit_output,
@@ -5599,6 +5688,252 @@ impl ApiClient for AnthropicRuntimeClient {
             push_prompt_cache_record(&self.client, &mut events);
             Ok(events)
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LocalRuntimeClient — routes through sidecar /v1/messages via Anthropic wire
+// format. FSM-aware tool pre-filtering, ContextBudget per-turn.
+// ---------------------------------------------------------------------------
+
+struct LocalRuntimeClient {
+    runtime: tokio::runtime::Runtime,
+    client: AnthropicClient,
+    model: String,
+    enable_tools: bool,
+    emit_output: bool,
+    allowed_tools: Option<AllowedToolSet>,
+    tool_registry: GlobalToolRegistry,
+    progress_reporter: Option<InternalPromptProgressReporter>,
+    max_tools: usize,
+    fsm_state_path: Option<PathBuf>,
+}
+
+impl LocalRuntimeClient {
+    fn new(
+        sidecar_url: &str,
+        model: String,
+        enable_tools: bool,
+        emit_output: bool,
+        allowed_tools: Option<AllowedToolSet>,
+        tool_registry: GlobalToolRegistry,
+        progress_reporter: Option<InternalPromptProgressReporter>,
+        max_tools: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            runtime: tokio::runtime::Runtime::new()?,
+            client: AnthropicClient::from_auth(AuthSource::None)
+                .with_base_url(sidecar_url),
+            model,
+            enable_tools,
+            emit_output,
+            allowed_tools,
+            tool_registry,
+            progress_reporter,
+            max_tools,
+            fsm_state_path: None,
+        })
+    }
+
+    fn with_fsm_state_path(mut self, path: PathBuf) -> Self {
+        self.fsm_state_path = Some(path);
+        self
+    }
+
+    /// Read persisted FSM state from disk. Returns Idle if file missing or corrupt.
+    fn current_fsm_state(&self) -> elai_orchestrator::FsmState {
+        match &self.fsm_state_path {
+            Some(path) => elai_orchestrator::Fsm::read_persisted_state(path),
+            None => elai_orchestrator::FsmState::Idle,
+        }
+    }
+}
+
+impl ApiClient for LocalRuntimeClient {
+    #[allow(clippy::too_many_lines)]
+    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        if let Some(progress_reporter) = &self.progress_reporter {
+            progress_reporter.mark_model_phase();
+        }
+
+        // FSM-aware tool pre-filtering: filter by allowed set, then by FSM state, then cap.
+        let fsm_state = self.current_fsm_state();
+        let tool_defs = if self.enable_tools {
+            let all_defs = filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref());
+            let fsm_filtered: Vec<_> = all_defs
+                .into_iter()
+                .filter(|def| fsm_state.check_tool_allowed(&def.name).is_ok())
+                .collect();
+            let capped = if fsm_filtered.len() > self.max_tools {
+                fsm_filtered.into_iter().take(self.max_tools).collect::<Vec<_>>()
+            } else {
+                fsm_filtered
+            };
+            Some(capped)
+        } else {
+            None
+        };
+
+        // Context budget for local model (best-effort, log on failure).
+        if let Err(e) = elai_orchestrator::context_budget::ContextBudget::compute(
+            elai_orchestrator::LOCAL_MODEL_MAX_CONTEXT
+                * elai_orchestrator::LOCAL_BUDGET_FRACTION
+                / 100,
+            [0, 0, 0],
+            4096,
+        ) {
+            eprintln!("context budget warning: {e}");
+        }
+
+        let message_request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: max_tokens_for_model(&self.model),
+            messages: convert_messages(&request.messages),
+            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            tools: tool_defs,
+            tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
+            stream: true,
+        };
+
+        self.runtime.block_on(async {
+            let mut stream = self
+                .client
+                .stream_message(&message_request)
+                .await
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+            let mut stdout = io::stdout();
+            let mut sink = io::sink();
+            let out: &mut dyn Write = if self.emit_output {
+                &mut stdout
+            } else {
+                &mut sink
+            };
+            let renderer = TerminalRenderer::new();
+            let mut markdown_stream = MarkdownStreamState::default();
+            let mut events = Vec::new();
+            let mut pending_tool: Option<(String, String, String)> = None;
+            let mut saw_stop = false;
+
+            while let Some(event) = stream
+                .next_event()
+                .await
+                .map_err(|error| RuntimeError::new(error.to_string()))?
+            {
+                match event {
+                    ApiStreamEvent::MessageStart(start) => {
+                        for block in start.message.content {
+                            push_output_block(block, out, &mut events, &mut pending_tool, true)?;
+                        }
+                    }
+                    ApiStreamEvent::ContentBlockStart(start) => {
+                        push_output_block(
+                            start.content_block,
+                            out,
+                            &mut events,
+                            &mut pending_tool,
+                            true,
+                        )?;
+                    }
+                    ApiStreamEvent::ContentBlockDelta(delta) => match delta.delta {
+                        ContentBlockDelta::TextDelta { text } => {
+                            if !text.is_empty() {
+                                if let Some(progress_reporter) = &self.progress_reporter {
+                                    progress_reporter.mark_text_phase(&text);
+                                }
+                                if let Some(rendered) = markdown_stream.push(&renderer, &text) {
+                                    write!(out, "{rendered}")
+                                        .and_then(|()| out.flush())
+                                        .map_err(|error| RuntimeError::new(error.to_string()))?;
+                                }
+                                events.push(AssistantEvent::TextDelta(text));
+                            }
+                        }
+                        ContentBlockDelta::InputJsonDelta { partial_json } => {
+                            if let Some((_, _, input)) = &mut pending_tool {
+                                input.push_str(&partial_json);
+                            }
+                        }
+                        ContentBlockDelta::ThinkingDelta { .. }
+                        | ContentBlockDelta::SignatureDelta { .. } => {}
+                    },
+                    ApiStreamEvent::ContentBlockStop(_) => {
+                        if let Some(rendered) = markdown_stream.flush(&renderer) {
+                            write!(out, "{rendered}")
+                                .and_then(|()| out.flush())
+                                .map_err(|error| RuntimeError::new(error.to_string()))?;
+                        }
+                        if let Some((id, name, input)) = pending_tool.take() {
+                            if let Some(progress_reporter) = &self.progress_reporter {
+                                progress_reporter.mark_tool_phase(&name, &input);
+                            }
+                            writeln!(out, "\n{}", format_tool_call_start(&name, &input))
+                                .and_then(|()| out.flush())
+                                .map_err(|error| RuntimeError::new(error.to_string()))?;
+                            events.push(AssistantEvent::ToolUse { id, name, input });
+                        }
+                    }
+                    ApiStreamEvent::MessageDelta(delta) => {
+                        events.push(AssistantEvent::Usage(delta.usage.token_usage()));
+                    }
+                    ApiStreamEvent::MessageStop(_) => {
+                        saw_stop = true;
+                        if let Some(rendered) = markdown_stream.flush(&renderer) {
+                            write!(out, "{rendered}")
+                                .and_then(|()| out.flush())
+                                .map_err(|error| RuntimeError::new(error.to_string()))?;
+                        }
+                        events.push(AssistantEvent::MessageStop);
+                    }
+                }
+            }
+
+            // No prompt cache for local model — skip push_prompt_cache_record.
+
+            if !saw_stop
+                && events.iter().any(|event| {
+                    matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
+                        || matches!(event, AssistantEvent::ToolUse { .. })
+                })
+            {
+                events.push(AssistantEvent::MessageStop);
+            }
+
+            if events
+                .iter()
+                .any(|event| matches!(event, AssistantEvent::MessageStop))
+            {
+                return Ok(events);
+            }
+
+            let response = self
+                .client
+                .send_message(&MessageRequest {
+                    stream: false,
+                    ..message_request.clone()
+                })
+                .await
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+            let events = response_to_events(response, out)?;
+            Ok(events)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CliApiClient — enum dispatch for runtime client selection.
+// ---------------------------------------------------------------------------
+
+enum CliApiClient {
+    Api(AnthropicRuntimeClient),
+    Local(LocalRuntimeClient),
+}
+
+impl ApiClient for CliApiClient {
+    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        match self {
+            Self::Api(client) => client.stream(request),
+            Self::Local(client) => client.stream(request),
+        }
     }
 }
 
