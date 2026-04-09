@@ -165,14 +165,26 @@ class InferenceEngine:
     """Composed inference: HF Transformers + DoLa + TurboQuant."""
 
     def __init__(self, model_name, dola_enabled=True, dola_alpha=ALPHA_DEFAULT,
-                 turboquant_bits=4, max_new_tokens=256, device_map="auto"):
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+                 turboquant_bits=4, max_new_tokens=256, device_map="auto",
+                 load_in_4bit=True):
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-        logger.info(f"Loading model: {model_name}")
+        logger.info(f"Loading model: {model_name} (4bit={load_in_4bit})")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, dtype=torch.float16, device_map=device_map,
-        )
+
+        if load_in_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+            )
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, quantization_config=bnb_config, device_map=device_map,
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, dtype=torch.float16, device_map=device_map,
+            )
         self.model.eval()
         self.lm_head = self.model.lm_head
         self.lock = Lock()
@@ -863,6 +875,10 @@ def main():
                         choices=[0, 2, 3, 4],
                         help="TurboQuant bit-width (0=disabled)")
     parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--load-in-4bit", action="store_true", default=True,
+                        help="Load model with bitsandbytes 4-bit quantization (default: on)")
+    parser.add_argument("--no-4bit", dest="load_in_4bit", action="store_false",
+                        help="Load model in FP16 (no quantization)")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -877,6 +893,7 @@ def main():
         dola_alpha=args.dola_alpha,
         turboquant_bits=args.turboquant_bits if args.turboquant_bits > 0 else 4,
         max_new_tokens=args.max_tokens,
+        load_in_4bit=args.load_in_4bit,
     )
     if args.turboquant_bits == 0:
         engine.kv_compressor.enabled = False
