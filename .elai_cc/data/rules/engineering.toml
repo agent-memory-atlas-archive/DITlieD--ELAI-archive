@@ -3,6 +3,8 @@
 # Predicate enum serialized as JSON (parsed via from_json at load time).
 # phase_mask bits: 0=PLANNING 1=FEASIBILITY 2=TESTING_FIRST 3=EXECUTING
 #                  4=AUDITING 5=MEMORIZING 6=CONFIGURING (0xFFFFFFFF = all)
+# Predicate serde: #[serde(tag = "type", rename_all = "snake_case")]
+# GrepPattern -> "grep_pattern", AstPattern -> "ast_pattern", etc.
 
 [[rules]]
 rule_id = "ENG-001"
@@ -10,7 +12,7 @@ domain = "safety"
 tier = 1
 severity = "BLOCK"
 title = "Block unwrap in production code"
-predicate_json = '{"GrepPattern":{"pattern":"\\.unwrap\\(\\)","scope":null,"context_lines":2}}'
+predicate_json = '{"type":"grep_pattern","pattern":"\\.unwrap\\(\\)","scope":null,"context_lines":2}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -19,7 +21,7 @@ domain = "safety"
 tier = 1
 severity = "BLOCK"
 title = "Block expect in production code"
-predicate_json = '{"GrepPattern":{"pattern":"\\.expect\\(","scope":null,"context_lines":2}}'
+predicate_json = '{"type":"grep_pattern","pattern":"\\.expect\\(","scope":null,"context_lines":2}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -28,7 +30,7 @@ domain = "safety"
 tier = 1
 severity = "BLOCK"
 title = "Block panic macro in library code"
-predicate_json = '{"GrepPattern":{"pattern":"panic!\\(","scope":null,"context_lines":2}}'
+predicate_json = '{"type":"grep_pattern","pattern":"panic!\\(","scope":null,"context_lines":2}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -37,7 +39,7 @@ domain = "safety"
 tier = 1
 severity = "WARN"
 title = "Detect todo macro usage"
-predicate_json = '{"GrepPattern":{"pattern":"todo!\\(","scope":null,"context_lines":1}}'
+predicate_json = '{"type":"grep_pattern","pattern":"todo!\\(","scope":null,"context_lines":1}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -46,7 +48,7 @@ domain = "safety"
 tier = 1
 severity = "WARN"
 title = "Detect unimplemented macro usage"
-predicate_json = '{"GrepPattern":{"pattern":"unimplemented!\\(","scope":null,"context_lines":1}}'
+predicate_json = '{"type":"grep_pattern","pattern":"unimplemented!\\(","scope":null,"context_lines":1}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -55,7 +57,7 @@ domain = "security"
 tier = 1
 severity = "BLOCK"
 title = "Block hardcoded secrets patterns"
-predicate_json = '{"GrepPattern":{"pattern":"(password|secret|api_key)\\s*=\\s*\"[^\"]+\"","scope":null,"context_lines":1}}'
+predicate_json = '{"type":"grep_pattern","pattern":"(password|secret|api_key)\\s*=\\s*\"[^\"]+\"","scope":null,"context_lines":1}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -64,7 +66,7 @@ domain = "quality"
 tier = 2
 severity = "WARN"
 title = "Detect silent error discard"
-predicate_json = '{"GrepPattern":{"pattern":"let\\s+_\\s*=.*\\?|let\\s+_\\s*=.*\\.unwrap","scope":null,"context_lines":2}}'
+predicate_json = '{"type":"grep_pattern","pattern":"let\\s+_\\s*=.*\\?|let\\s+_\\s*=.*\\.unwrap","scope":null,"context_lines":2}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -73,7 +75,7 @@ domain = "quality"
 tier = 2
 severity = "WARN"
 title = "Detect empty catch blocks"
-predicate_json = '{"GrepPattern":{"pattern":"Err\\(_\\)\\s*=>\\s*\\{\\s*\\}","scope":null,"context_lines":2}}'
+predicate_json = '{"type":"grep_pattern","pattern":"Err\\(_\\)\\s*=>\\s*\\{\\s*\\}","scope":null,"context_lines":2}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -82,7 +84,7 @@ domain = "performance"
 tier = 2
 severity = "WARN"
 title = "Detect clone in hot loop"
-predicate_json = '{"GrepPattern":{"pattern":"\\.clone\\(\\)","scope":null,"context_lines":3}}'
+predicate_json = '{"type":"grep_pattern","pattern":"\\.clone\\(\\)","scope":null,"context_lines":3}'
 phase_mask = 8
 
 [[rules]]
@@ -91,7 +93,7 @@ domain = "safety"
 tier = 1
 severity = "BLOCK"
 title = "Block raw std::time usage"
-predicate_json = '{"GrepPattern":{"pattern":"std::time::(Instant|SystemTime)","scope":null,"context_lines":1}}'
+predicate_json = '{"type":"grep_pattern","pattern":"std::time::(Instant|SystemTime)","scope":null,"context_lines":1}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -100,7 +102,7 @@ domain = "quality"
 tier = 2
 severity = "WARN"
 title = "Detect magic numbers in function bodies"
-predicate_json = '{"GrepPattern":{"pattern":"[^0-9a-zA-Z_](4096|8192|16384|32768|65536)[^0-9]","scope":null,"context_lines":1}}'
+predicate_json = '{"type":"grep_pattern","pattern":"[^0-9a-zA-Z_](4096|8192|16384|32768|65536)[^0-9]","scope":null,"context_lines":1}'
 phase_mask = 4294967295
 
 [[rules]]
@@ -109,5 +111,5 @@ domain = "safety"
 tier = 1
 severity = "WARN"
 title = "Detect unsafe blocks"
-predicate_json = '{"GrepPattern":{"pattern":"unsafe\\s*\\{","scope":null,"context_lines":3}}'
+predicate_json = '{"type":"grep_pattern","pattern":"unsafe\\s*\\{","scope":null,"context_lines":3}'
 phase_mask = 4294967295

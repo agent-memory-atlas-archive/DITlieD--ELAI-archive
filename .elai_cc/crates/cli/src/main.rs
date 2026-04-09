@@ -2286,7 +2286,7 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::
             "-d", "Ubuntu", "--", "bash", "-c",
             &format!(
                 "source ~/vllm-env/bin/activate && cd '{wsl_path}' && \
-                 python -m python.elai_inference.server \
+                 PYTHONPATH=python python -m elai_inference.server \
                  --model google/gemma-4-E2B-it \
                  --port {port} --dola --turboquant-bits 4 \
                  --log-level INFO"
@@ -5993,12 +5993,17 @@ fn build_runtime_with_plugin_state(
                 tmp.push(format!("elai-dkg-{}.db", session_id));
                 tmp
             });
-        match DkgQuerierAdapter::new(&dkg_db_path) {
-            Ok(adapter) => Box::new(adapter),
-            Err(e) => {
-                eprintln!("[warn] DKG adapter init failed, using empty querier: {e}");
-                Box::new(EmptyDkgQuerier)
+        if dkg_db_path.exists() {
+            match DkgQuerierAdapter::new(&dkg_db_path) {
+                Ok(adapter) => Box::new(adapter),
+                Err(e) => {
+                    eprintln!("[warn] DKG adapter init failed, using empty querier: {e}");
+                    Box::new(EmptyDkgQuerier)
+                }
             }
+        } else {
+            // DKG db not yet built (first run or no graph phase complete). Silent fallback.
+            Box::new(EmptyDkgQuerier)
         }
     };
     let rule_engine = DefaultRuleEngine::new(
