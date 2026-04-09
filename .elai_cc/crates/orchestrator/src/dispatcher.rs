@@ -74,7 +74,7 @@ fn default_local_model() -> String {
 }
 
 fn default_max_tools() -> usize {
-    15
+    8
 }
 
 impl Default for BackendConfig {
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(config.mode, BackendMode::Api);
         assert_eq!(config.sidecar_url, "http://localhost:8100");
         assert_eq!(config.model, "gemma4:e2b");
-        assert_eq!(config.max_tools_local, 15);
+        assert_eq!(config.max_tools_local, 8);
     }
 
     #[test]

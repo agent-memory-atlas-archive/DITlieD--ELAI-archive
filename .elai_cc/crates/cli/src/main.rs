@@ -2354,9 +2354,17 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Cleanup sidecar if we spawned it.
+    // Always shut down sidecar to free VRAM, regardless of who spawned it.
+    println!("Shutting down sidecar...");
+    let shutdown_client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok();
+    if let Some(client) = shutdown_client {
+        let _ = client.post(format!("{sidecar_url}/shutdown")).send();
+    }
+    // Also kill the child process if we spawned it (belt + suspenders).
     if let Some(mut proc) = sidecar_process.take() {
-        println!("Shutting down sidecar...");
         let _ = proc.kill();
         let _ = proc.wait();
     }
@@ -2381,6 +2389,11 @@ struct ManagedSessionSummary {
     branch_name: Option<String>,
 }
 
+struct LocalCliConfig {
+    sidecar_url: String,
+    max_tools: usize,
+}
+
 struct LiveCli {
     model: String,
     allowed_tools: Option<AllowedToolSet>,
@@ -2388,6 +2401,7 @@ struct LiveCli {
     system_prompt: Vec<String>,
     runtime: BuiltRuntime,
     session: SessionHandle,
+    local_config: Option<LocalCliConfig>,
 }
 
 struct RuntimePluginState {
@@ -2889,6 +2903,7 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
+            local_config: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2922,6 +2937,10 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
+            local_config: Some(LocalCliConfig {
+                sidecar_url: sidecar_url.to_string(),
+                max_tools,
+            }),
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2987,17 +3006,32 @@ impl LiveCli {
         emit_output: bool,
     ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = elai_orchestrator::HookAbortSignal::new();
-        let runtime = build_runtime(
-            self.runtime.session().clone(),
-            &self.session.id,
-            self.model.clone(),
-            self.system_prompt.clone(),
-            true,
-            emit_output,
-            self.allowed_tools.clone(),
-            self.permission_mode,
-            None,
-        )?
+        let runtime = if let Some(local) = &self.local_config {
+            build_local_runtime(
+                self.runtime.session().clone(),
+                &self.session.id,
+                &local.sidecar_url,
+                self.model.clone(),
+                self.system_prompt.clone(),
+                emit_output,
+                self.allowed_tools.clone(),
+                self.permission_mode,
+                None,
+                local.max_tools,
+            )?
+        } else {
+            build_runtime(
+                self.runtime.session().clone(),
+                &self.session.id,
+                self.model.clone(),
+                self.system_prompt.clone(),
+                true,
+                emit_output,
+                self.allowed_tools.clone(),
+                self.permission_mode,
+                None,
+            )?
+        }
         .with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
@@ -5740,7 +5774,8 @@ impl LocalRuntimeClient {
         self
     }
 
-    /// Read persisted FSM state from disk. Returns Idle if file missing or corrupt.
+    /// Read persisted FSM state from disk. Defaults to Idle (no tools —
+    /// model listens first, tools enabled when FSM transitions to a working state).
     fn current_fsm_state(&self) -> elai_orchestrator::FsmState {
         match &self.fsm_state_path {
             Some(path) => elai_orchestrator::Fsm::read_persisted_state(path),
@@ -5756,9 +5791,12 @@ impl ApiClient for LocalRuntimeClient {
             progress_reporter.mark_model_phase();
         }
 
-        // FSM-aware tool pre-filtering: filter by allowed set, then by FSM state, then cap.
+        // FSM-aware tool pre-filtering: Idle = no tools (model listens first),
+        // other states filter by allowed categories, then cap at max_tools.
         let fsm_state = self.current_fsm_state();
-        let tool_defs = if self.enable_tools {
+        let tool_defs = if self.enable_tools
+            && fsm_state != elai_orchestrator::FsmState::Idle
+        {
             let all_defs = filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref());
             let fsm_filtered: Vec<_> = all_defs
                 .into_iter()

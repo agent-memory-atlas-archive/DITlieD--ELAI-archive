@@ -341,6 +341,10 @@ class InferenceHandler(BaseHTTPRequestHandler):
             return self._handle_messages()
         elif self.path == "/v1/completions":
             return self._handle_completions()
+        elif self.path == "/shutdown":
+            self._json_response(200, {"status": "shutting down"})
+            import threading
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
         else:
             self._json_response(404, {"error": "not found"})
 
