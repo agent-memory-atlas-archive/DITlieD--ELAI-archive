@@ -36,6 +36,14 @@ mod session;
 mod session_control;
 pub mod plan_skeleton;
 pub mod session_dag;
+pub use plan_skeleton::{
+    PlanSkeleton, PlanSkeletonError, PhaseEntry, PhaseContext, PhaseDetail,
+    ExtractedContracts, AdjacentContracts, ContractRef, StalenessWarning,
+};
+pub use session_dag::{
+    SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
+    BranchRef, DagMessageRole, MergeResult, Stub,
+};
 pub mod ssb;
 pub mod supervision;
 pub mod stale_branch;
@@ -119,7 +127,7 @@ pub use elai_core::config::{
     McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
     ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig, RuntimeHookConfig,
     RuntimePermissionRuleConfig, RuntimePluginConfig, ScopedMcpServerConfig,
-    CLAW_SETTINGS_SCHEMA_NAME,
+    ELAI_SETTINGS_SCHEMA_NAME,
 };
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,

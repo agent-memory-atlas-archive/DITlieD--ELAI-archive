@@ -24,7 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
-use elai_core::ClockProvider;
+use std::collections::HashSet;
+use std::pin::Pin;
+use std::future::Future;
+
+use elai_core::{ClockProvider, EntropySource, OsEntropy};
 
 use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
@@ -75,7 +79,38 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
 const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
 const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
+const TRIM_TRIGGER_RATIO: f64 = 0.85;
+const PLANS_DIR: &str = "plans";
 const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
+
+/// Char-based token estimator implementing LlmProvider for plan_skeleton usage.
+/// Only token_count and token_count_estimate are meaningful; complete/embed are stubs.
+struct CharEstimatorProvider;
+
+impl elai_providers::LlmProvider for CharEstimatorProvider {
+    fn complete<'a>(
+        &'a self,
+        _prompt: &'a str,
+        _config: &'a elai_providers::OllamaConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, elai_providers::ApiError>> + Send + 'a>> {
+        Box::pin(async { Err(elai_providers::ApiError::Auth("CharEstimatorProvider does not support completion".into())) })
+    }
+
+    fn embed<'a>(
+        &'a self,
+        _text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, elai_providers::ApiError>> + Send + 'a>> {
+        Box::pin(async { Err(elai_providers::ApiError::Auth("CharEstimatorProvider does not support embedding".into())) })
+    }
+
+    fn token_count(&self, text: &str) -> Result<usize, elai_providers::ApiError> {
+        Ok(text.len() / TOKEN_CHARS_PER_TOKEN)
+    }
+
+    fn token_count_estimate(&self, text: &str) -> usize {
+        text.len() / TOKEN_CHARS_PER_TOKEN
+    }
+}
 const LEGACY_SESSION_EXTENSION: &str = "json";
 const LATEST_SESSION_REFERENCE: &str = "latest";
 const SESSION_REFERENCE_ALIASES: &[&str] = &[LATEST_SESSION_REFERENCE, "last", "recent"];
@@ -2404,6 +2439,10 @@ struct LiveCli {
     ssb: Option<elai_orchestrator::Ssb>,
     fsm: Arc<elai_orchestrator::Fsm>,
     clock: Arc<dyn ClockProvider>,
+    session_dag: Option<elai_orchestrator::SessionDag>,
+    plan: Option<elai_orchestrator::PlanSkeleton>,
+    last_snap_id: Option<String>,
+    last_fsm_state: String,
 }
 
 struct RuntimePluginState {
@@ -2903,6 +2942,22 @@ impl LiveCli {
             None,
             Some(fsm.clone()),
         )?;
+        let dag_path = session.path.parent()
+            .map(|p| p.join("dag.db"))
+            .unwrap_or_else(|| PathBuf::from("dag.db"));
+        let session_dag = match elai_orchestrator::SessionDag::new(
+            &session.id,
+            &dag_path,
+            &mut OsEntropy,
+            &elai_core::OsClock,
+        ) {
+            Ok(dag) => Some(dag),
+            Err(e) => {
+                eprintln!("warn: SessionDag init failed: {e}");
+                None
+            }
+        };
+        let plan = load_plan_if_exists();
         let cli = Self {
             model,
             allowed_tools,
@@ -2914,6 +2969,10 @@ impl LiveCli {
             ssb,
             fsm,
             clock,
+            session_dag,
+            plan,
+            last_snap_id: None,
+            last_fsm_state: String::new(),
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2943,6 +3002,22 @@ impl LiveCli {
             Some(&backend_config),
             Some(fsm.clone()),
         )?;
+        let dag_path = session.path.parent()
+            .map(|p| p.join("dag.db"))
+            .unwrap_or_else(|| PathBuf::from("dag.db"));
+        let session_dag = match elai_orchestrator::SessionDag::new(
+            &session.id,
+            &dag_path,
+            &mut OsEntropy,
+            &elai_core::OsClock,
+        ) {
+            Ok(dag) => Some(dag),
+            Err(e) => {
+                eprintln!("warn: SessionDag init failed: {e}");
+                None
+            }
+        };
+        let plan = load_plan_if_exists();
         let cli = Self {
             model,
             allowed_tools: None,
@@ -2954,6 +3029,10 @@ impl LiveCli {
             ssb,
             fsm,
             clock,
+            session_dag,
+            plan,
+            last_snap_id: None,
+            last_fsm_state: String::new(),
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3019,8 +3098,74 @@ impl LiveCli {
         emit_output: bool,
     ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = elai_orchestrator::HookAbortSignal::new();
+        let mut session = self.runtime.session().clone();
+
+        // Context trimming: if DAG is available and context exceeds threshold, trim
+        if let Some(dag) = &self.session_dag {
+            let estimated_tokens: usize = session.messages.iter().map(|m| {
+                m.blocks.iter().map(|b| match b {
+                    ContentBlock::Text { text } => text.len() / TOKEN_CHARS_PER_TOKEN,
+                    _ => 50, // rough estimate for tool blocks
+                }).sum::<usize>()
+            }).sum();
+            let model_window = max_tokens_for_model(&self.model) as usize;
+            let threshold = (model_window as f64 * TRIM_TRIGGER_RATIO) as usize;
+            if estimated_tokens > threshold && !session.messages.is_empty() {
+                let trimmed_msgs: Vec<elai_orchestrator::TrimmedMessage> = session
+                    .messages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, msg)| elai_orchestrator::TrimmedMessage {
+                        seq: i as u32,
+                        role: match msg.role {
+                            MessageRole::User => elai_orchestrator::DagMessageRole::User,
+                            MessageRole::Assistant => elai_orchestrator::DagMessageRole::Assistant,
+                            MessageRole::System => elai_orchestrator::DagMessageRole::System,
+                            MessageRole::Tool => elai_orchestrator::DagMessageRole::Tool,
+                        },
+                        content: msg.blocks.iter().filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        }).collect::<Vec<_>>().join("\n").into_bytes(),
+                        is_stubbed: false,
+                        stub_ssb_seq: None,
+                    })
+                    .collect();
+                let valid_ssb_seqs: HashSet<u64> = self.ssb.as_ref()
+                    .and_then(|ssb| {
+                        use elai_orchestrator::SsbReader;
+                        ssb.query_by_session(&self.session.id).ok()
+                    })
+                    .map(|entries| entries.iter().filter_map(|e| u64::try_from(e.seq).ok()).collect())
+                    .unwrap_or_default();
+                let config = elai_orchestrator::TrimConfig {
+                    stub_threshold: 200,
+                    model_context_window: model_window,
+                    allocated_slots_tokens: BUDGET_OUTPUT_RESERVE,
+                    output_reserve: 1024,
+                };
+                match dag.trim_context(&trimmed_msgs, config, &valid_ssb_seqs) {
+                    Ok(trimmed) => {
+                        // Apply trimmed messages: replace stubbed entries with compact text
+                        for (i, tm) in trimmed.iter().enumerate() {
+                            if tm.is_stubbed && i < session.messages.len() {
+                                session.messages[i] = ConversationMessage {
+                                    role: session.messages[i].role,
+                                    blocks: vec![ContentBlock::Text {
+                                        text: "[stubbed — content archived in SSB]".to_owned(),
+                                    }],
+                                    usage: None,
+                                };
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("warn: context trim failed: {e}"),
+                }
+            }
+        }
+
         let (runtime, _ssb) = build_runtime(
-            self.runtime.session().clone(),
+            session,
             &self.session.id,
             self.model.clone(),
             self.system_prompt.clone(),
@@ -3036,6 +3181,77 @@ impl LiveCli {
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
         Ok((runtime, hook_abort_monitor))
+    }
+
+    /// Save a DAG snapshot after a turn. Errors are logged, never propagated.
+    fn try_save_snapshot(&mut self) {
+        let Some(dag) = &self.session_dag else { return };
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        let fsm_state = rt.block_on(self.fsm.get_state());
+        let phase_label = rt.block_on(self.fsm.phase_label());
+        let now = self.clock.system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let snap_id = elai_orchestrator::SessionDag::generate_snap_id(&mut OsEntropy);
+        let messages: Vec<elai_orchestrator::TrimmedMessage> = self
+            .runtime
+            .session()
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| elai_orchestrator::TrimmedMessage {
+                seq: i as u32,
+                role: match msg.role {
+                    MessageRole::User => elai_orchestrator::DagMessageRole::User,
+                    MessageRole::Assistant => elai_orchestrator::DagMessageRole::Assistant,
+                    MessageRole::System => elai_orchestrator::DagMessageRole::System,
+                    MessageRole::Tool => elai_orchestrator::DagMessageRole::Tool,
+                },
+                content: msg.blocks.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n").into_bytes(),
+                is_stubbed: false,
+                stub_ssb_seq: None,
+            })
+            .collect();
+        let fsm_label = format!("{fsm_state}");
+        let propagation_phase = if phase_label.is_empty() { None } else { Some(phase_label.clone()) };
+        let snapshot = elai_orchestrator::Snapshot {
+            snap_id: snap_id.clone(),
+            parent_id: self.last_snap_id.clone(),
+            session_id: self.session.id.clone(),
+            fsm_state: fsm_label.clone(),
+            phase: if phase_label.is_empty() { None } else { Some(phase_label) },
+            step: None,
+            findings: None,
+            code_changes: None,
+            tests_written: None,
+            commit_hashes: vec![],
+            created_at: now,
+            tag: None,
+        };
+        match dag.save_snapshot(&snapshot, &messages) {
+            Ok(()) => {
+                // Detect FSM state change and propagate plan changes
+                if !self.last_fsm_state.is_empty()
+                    && self.last_fsm_state != fsm_label
+                {
+                    if let (Some(plan), Some(ssb)) = (&self.plan, &self.ssb) {
+                        if let Some(phase_id) = &propagation_phase {
+                            let _ = rt.block_on(plan.propagate_changes(phase_id, ssb));
+                        }
+                    }
+                }
+                self.last_fsm_state = fsm_label;
+                self.last_snap_id = Some(snap_id);
+            }
+            Err(e) => eprintln!("warn: snapshot save failed: {e}"),
+        }
     }
 
     fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), Box<dyn std::error::Error>> {
@@ -3072,6 +3288,7 @@ impl LiveCli {
                     );
                 }
                 self.persist_session()?;
+                self.try_save_snapshot();
                 Ok(())
             }
             Err(error) => {
@@ -3245,6 +3462,54 @@ impl LiveCli {
                 println!("{}", render_doctor_report()?.render());
                 false
             }
+            SlashCommand::Plan { mode } => {
+                match &self.plan {
+                    None => {
+                        println!("No plan loaded. Place a plan file at {PLANS_DIR}/<pipeline>.toml and restart.");
+                    }
+                    Some(plan) => {
+                        match mode.as_deref() {
+                            None | Some("list") | Some("") => {
+                                println!("Plan: {}", plan.pipeline_id);
+                                println!("Version: {}", plan.version);
+                                println!("Phases ({}):", plan.phases.len());
+                                for (id, entry) in &plan.phases {
+                                    let deps = if entry.depends_on.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" [deps: {}]", entry.depends_on.join(", "))
+                                    };
+                                    println!("  {id}: {}{deps}", entry.goal);
+                                }
+                                if !plan.global_constraints.is_empty() {
+                                    println!("Constraints:");
+                                    for c in &plan.global_constraints {
+                                        println!("  - {c}");
+                                    }
+                                }
+                            }
+                            Some(phase_arg) => {
+                                // /plan <phase_id> — show contracts
+                                match plan.extract_contracts(phase_arg) {
+                                    Ok(contracts) => {
+                                        println!("Contracts for phase '{phase_arg}':");
+                                        println!("  Inputs:");
+                                        for c in &contracts.input_contracts {
+                                            println!("    {}: {}", c.name, c.type_signature);
+                                        }
+                                        println!("  Outputs:");
+                                        for c in &contracts.output_contracts {
+                                            println!("    {}: {}", c.name, c.type_signature);
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Plan error: {e}"),
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            }
             SlashCommand::Login
             | SlashCommand::Logout
             | SlashCommand::Vim
@@ -3266,7 +3531,6 @@ impl LiveCli {
             | SlashCommand::SecurityReview
             | SlashCommand::Keybindings
             | SlashCommand::PrivacySettings
-            | SlashCommand::Plan { .. }
             | SlashCommand::Review { .. }
             | SlashCommand::Tasks { .. }
             | SlashCommand::Theme { .. }
@@ -3482,6 +3746,13 @@ impl LiveCli {
         };
 
         let handle = resolve_session_reference(&session_ref)?;
+
+        // Try DAG-based resume first
+        let dag_path = handle.path.parent()
+            .map(|p| p.join("dag.db"))
+            .unwrap_or_else(|| PathBuf::from("dag.db"));
+        let dag_resume = elai_orchestrator::SessionDag::open(&handle.id, &dag_path).ok();
+
         let session = Session::load_from_path(&handle.path)?;
         let message_count = session.messages.len();
         let session_id = session.session_id.clone();
@@ -3503,6 +3774,17 @@ impl LiveCli {
             id: session_id,
             path: handle.path,
         };
+
+        // Wire DAG if opened successfully, recover last snap_id
+        if let Some(dag) = dag_resume {
+            let last_snap = dag.latest_snapshot(None).ok().flatten();
+            self.last_snap_id = last_snap.map(|s| s.snap_id);
+            self.session_dag = Some(dag);
+        } else {
+            self.session_dag = None;
+            self.last_snap_id = None;
+        }
+
         println!(
             "{}",
             format_resume_report(
@@ -3643,6 +3925,38 @@ impl LiveCli {
                 Ok(true)
             }
             Some("fork") => {
+                let branch_name_str = target.unwrap_or("fork");
+
+                // Try DAG-based branching first
+                if let Some(dag) = &mut self.session_dag {
+                    if let Some(snap_id) = &self.last_snap_id {
+                        match dag.create_branch(
+                            branch_name_str,
+                            snap_id,
+                            &mut OsEntropy,
+                            &elai_core::OsClock,
+                        ) {
+                            Ok(branch_ref) => {
+                                println!(
+                                    "Session branched (DAG)\n  Branch           {}\n  Tip snapshot     {}\n  Parent session   {}",
+                                    branch_ref.name,
+                                    branch_ref.tip_snap_id,
+                                    self.session.id,
+                                );
+                                return Ok(false);
+                            }
+                            Err(elai_orchestrator::SessionDagError::BranchLimitExceeded { .. }) => {
+                                eprintln!("Max 3 active branches — merge or delete one first.");
+                                return Ok(false);
+                            }
+                            Err(e) => {
+                                eprintln!("warn: DAG branch failed, falling back to session fork: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: session-based fork
                 let forked = self.runtime.fork_session(target.map(ToOwned::to_owned));
                 let parent_session_id = self.session.id.clone();
                 let handle = create_managed_session_handle(&forked.session_id)?;
@@ -3842,6 +4156,36 @@ fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path = cwd.join(".elai").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+/// Attempt to load a PlanSkeleton from the plans/ directory.
+/// Returns None if no plan file exists or parsing fails.
+fn load_plan_if_exists() -> Option<elai_orchestrator::PlanSkeleton> {
+    let cwd = env::current_dir().ok()?;
+    let plans_dir = cwd.join(PLANS_DIR);
+    if !plans_dir.is_dir() {
+        return None;
+    }
+    // Find the first .toml file in plans/ (sorted for determinism)
+    let mut toml_files: Vec<PathBuf> = fs::read_dir(&plans_dir).ok()?
+        .filter_map(|e| {
+            let path = e.ok()?.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    toml_files.sort();
+    let entry = toml_files.into_iter().next()?;
+    match elai_orchestrator::PlanSkeleton::read_from_file(&entry) {
+        Ok(plan) => Some(plan),
+        Err(e) => {
+            eprintln!("warn: plan load failed from {}: {e}", entry.display());
+            None
+        }
+    }
 }
 
 impl Drop for LiveCli {
@@ -5544,6 +5888,7 @@ fn build_runtime_with_plugin_state(
         fsm,
         rule_engine,
         compiled_rules,
+        phase_slot_tokens: 0,
     };
 
     let mut runtime = ConversationRuntime::new_with_features(
@@ -5733,6 +6078,7 @@ struct RuntimeClient {
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
     rule_engine: DefaultRuleEngine,
     compiled_rules: Vec<(Rule, CompiledPredicate)>,
+    phase_slot_tokens: usize,
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -5883,7 +6229,7 @@ impl ApiClient for RuntimeClient {
             BudgetPolicy::Local { ceiling, fraction } => {
                 let effective = ceiling * fraction / 100;
                 match elai_orchestrator::context_budget::ContextBudget::compute(
-                    effective, [slot_0, slot_1, 0], BUDGET_OUTPUT_RESERVE,
+                    effective, [slot_0, slot_1, self.phase_slot_tokens], BUDGET_OUTPUT_RESERVE,
                 ) {
                     Ok(budget) => {
                         let output_slot = elai_orchestrator::context_budget::ContextSlot::OutputReserve as usize;
