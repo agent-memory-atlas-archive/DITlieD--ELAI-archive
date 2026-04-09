@@ -149,6 +149,18 @@ class KVCompressor:
 # Inference Engine
 # ---------------------------------------------------------------------------
 
+def _log_vram(label=""):
+    """Log GPU VRAM usage."""
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        logger.info(
+            f"VRAM [{label}]: allocated={alloc:.2f}GB, reserved={reserved:.2f}GB, "
+            f"total={total:.2f}GB, free={total - reserved:.2f}GB"
+        )
+
+
 class InferenceEngine:
     """Composed inference: HF Transformers + DoLa + TurboQuant."""
 
@@ -164,6 +176,7 @@ class InferenceEngine:
         self.model.eval()
         self.lm_head = self.model.lm_head
         self.lock = Lock()
+        _log_vram("after model load")
 
         # Model config
         if hasattr(self.model.config, 'text_config'):
@@ -197,6 +210,7 @@ class InferenceEngine:
             return self._generate_impl(prompt, max_tokens, temperature)
 
     def _generate_impl(self, prompt, max_tokens, temperature):
+        gen_start = time.time()
         # Format with chat template if available
         if hasattr(self.tokenizer, 'apply_chat_template'):
             try:
@@ -211,6 +225,11 @@ class InferenceEngine:
 
         inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
         input_ids = inputs.input_ids.clone()
+        input_token_count = input_ids.shape[1]
+        logger.info(
+            f"[request] prompt_chars={len(prompt)}, formatted_chars={len(formatted)}, "
+            f"input_tokens={input_token_count}, max_tokens={max_tokens}"
+        )
         generated_tokens = []
         past = None
 
@@ -287,7 +306,16 @@ class InferenceEngine:
         # Remove <bos>, <eos>, turn markers, but keep tool_call markers
         for token in ['<bos>', '<eos>', '<pad>']:
             text = text.replace(token, '')
-        return text.strip(), generated_tokens, input_ids.shape[1]
+
+        gen_elapsed_ms = (time.time() - gen_start) * 1000
+        out_tokens = len(generated_tokens)
+        tps = out_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0
+        logger.info(
+            f"[response] input_tokens={input_token_count}, output_tokens={out_tokens}, "
+            f"elapsed={gen_elapsed_ms:.0f}ms, tok/s={tps:.1f}"
+        )
+        _log_vram("after generate")
+        return text.strip(), generated_tokens, input_token_count
 
     def _dola_select(self, outputs):
         """Apply DoLa contrastive decoding to select next token."""
@@ -368,9 +396,16 @@ class InferenceHandler(BaseHTTPRequestHandler):
         # Convert Anthropic messages+tools to Gemma4 chat format
         prompt = self._anthropic_to_gemma_prompt(messages, system, tools)
 
-        logger.info(f"Prompt ({len(prompt)} chars): {prompt[:500]}...")
-        if tools:
-            logger.info(f"Tools: {[t.get('name') for t in tools]}")
+        system_chars = len(system) if system else 0
+        msg_count = len(messages)
+        tool_count = len(tools) if tools else 0
+        tool_names = [t.get("name", "?") for t in tools] if tools else []
+        logger.info(
+            f"[turn] system_chars={system_chars}, messages={msg_count}, "
+            f"tools={tool_count} ({', '.join(tool_names[:10])}{'...' if tool_count > 10 else ''}), "
+            f"prompt_chars={len(prompt)}"
+        )
+        logger.info(f"[prompt_preview] {prompt[:300]}...")
 
         if stream:
             self._stream_messages_response(prompt, max_tokens, request.get("model", "elai-local"), tools)

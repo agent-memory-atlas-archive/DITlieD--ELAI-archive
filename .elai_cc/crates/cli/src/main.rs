@@ -2240,7 +2240,7 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::
                  python -m python.elai_inference.server \
                  --model google/gemma-4-E2B-it \
                  --port {port} --dola --turboquant-bits 4 \
-                 --log-level WARNING"
+                 --log-level INFO"
             ),
         ])
         .stdout(std::process::Stdio::null())
@@ -5617,6 +5617,26 @@ impl ApiClient for RuntimeClient {
             }
         }
 
+        // Pipeline telemetry
+        let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();
+        let msg_count = request.messages.len();
+        let tool_count = tool_defs.as_ref().map_or(0, Vec::len);
+        let tool_names: Vec<&str> = tool_defs.as_ref().map_or_else(Vec::new, |defs| {
+            defs.iter().map(|d| d.name.as_str()).collect()
+        });
+        eprintln!(
+            "[pipeline] backend={:?}, model={}, system_chars={}, messages={}, \
+             tools={} [{}], max_tokens={}",
+            self.backend,
+            self.model,
+            system_chars,
+            msg_count,
+            tool_count,
+            tool_names.join(", "),
+            max_tokens_for_model(&self.model),
+        );
+        let stream_start = std::time::Instant::now();
+
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: max_tokens_for_model(&self.model),
@@ -5629,7 +5649,7 @@ impl ApiClient for RuntimeClient {
 
         let use_prompt_cache = matches!(self.backend, BackendMode::Api);
 
-        self.runtime.block_on(async {
+        let result = self.runtime.block_on(async {
             let mut stream = self
                 .client
                 .stream_message(&message_request)
@@ -5755,7 +5775,38 @@ impl ApiClient for RuntimeClient {
                 push_prompt_cache_record(&self.client, &mut events);
             }
             Ok(events)
-        })
+        });
+
+        let elapsed_ms = stream_start.elapsed().as_millis();
+        match &result {
+            Ok(events) => {
+                let text_chars: usize = events.iter().map(|e| match e {
+                    AssistantEvent::TextDelta(t) => t.len(),
+                    _ => 0,
+                }).sum();
+                let tool_uses = events.iter().filter(|e| matches!(e, AssistantEvent::ToolUse { .. })).count();
+                let usage = events.iter().find_map(|e| match e {
+                    AssistantEvent::Usage(u) => Some(u),
+                    _ => None,
+                });
+                if let Some(u) = usage {
+                    eprintln!(
+                        "[pipeline] done: elapsed={elapsed_ms}ms, input_tokens={}, output_tokens={}, \
+                         text_chars={text_chars}, tool_uses={tool_uses}",
+                        u.input_tokens, u.output_tokens,
+                    );
+                } else {
+                    eprintln!(
+                        "[pipeline] done: elapsed={elapsed_ms}ms, text_chars={text_chars}, \
+                         tool_uses={tool_uses} (no usage reported)",
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("[pipeline] error after {elapsed_ms}ms: {e}");
+            }
+        }
+        result
     }
 }
 
