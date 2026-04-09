@@ -91,12 +91,19 @@ impl ToolRegistry {
     }
 }
 
+/// Priority value for tools not found in the priority map (sorts last).
+pub const UNKNOWN_TOOL_PRIORITY: u8 = u8::MAX;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
     pub required_permission: PermissionMode,
+    /// Selection priority: 0 = core (always included), 1 = secondary, 2 = tertiary.
+    pub priority: u8,
+    /// Compressed schema for token-efficient serialization. `None` = use `input_schema`.
+    pub compact_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +403,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "read_file",
@@ -411,6 +420,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "write_file",
@@ -425,6 +436,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "edit_file",
@@ -441,6 +454,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "glob_search",
@@ -455,6 +470,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "grep_search",
@@ -481,6 +498,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WebFetch",
@@ -496,6 +515,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WebSearch",
@@ -517,6 +538,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TodoWrite",
@@ -545,6 +568,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "Skill",
@@ -559,6 +584,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "Agent",
@@ -576,6 +603,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "ToolSearch",
@@ -590,6 +619,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "NotebookEdit",
@@ -607,6 +638,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "Sleep",
@@ -620,6 +653,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "SendUserMessage",
@@ -641,6 +676,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "Config",
@@ -657,6 +694,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "EnterPlanMode",
@@ -667,6 +706,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "ExitPlanMode",
@@ -677,6 +718,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "StructuredOutput",
@@ -686,6 +729,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": true
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "REPL",
@@ -701,6 +746,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "PowerShell",
@@ -717,6 +764,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "AskUserQuestion",
@@ -734,6 +783,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 1,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskCreate",
@@ -748,6 +799,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "RunTaskPacket",
@@ -780,6 +833,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskGet",
@@ -793,6 +848,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskList",
@@ -803,6 +860,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskStop",
@@ -816,6 +875,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskUpdate",
@@ -830,6 +891,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TaskOutput",
@@ -843,6 +906,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerCreate",
@@ -861,6 +926,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerGet",
@@ -874,6 +941,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerObserve",
@@ -888,6 +957,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerResolveTrust",
@@ -901,6 +972,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerAwaitReady",
@@ -914,6 +987,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerSendPrompt",
@@ -928,6 +1003,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerRestart",
@@ -941,6 +1018,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "WorkerTerminate",
@@ -954,6 +1033,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TeamCreate",
@@ -978,6 +1059,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TeamDelete",
@@ -991,6 +1074,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "CronCreate",
@@ -1006,6 +1091,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "CronDelete",
@@ -1019,6 +1106,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "CronList",
@@ -1029,6 +1118,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "LSP",
@@ -1046,6 +1137,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "ListMcpResources",
@@ -1058,6 +1151,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "ReadMcpResource",
@@ -1072,6 +1167,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "McpAuth",
@@ -1085,6 +1182,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "RemoteTrigger",
@@ -1101,6 +1200,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "MCP",
@@ -1116,6 +1217,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
         ToolSpec {
             name: "TestingPermission",
@@ -1129,6 +1232,8 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
+            priority: 2,
+            compact_schema: None,
         },
     ]
 }
@@ -3884,6 +3989,8 @@ fn internal_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "fsm_transition",
@@ -3898,6 +4005,8 @@ fn internal_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::WorkspaceWrite,
+            priority: 0,
+            compact_schema: None,
         },
         ToolSpec {
             name: "list_hidden_paths",
@@ -3908,6 +4017,8 @@ fn internal_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::ReadOnly,
+            priority: 0,
+            compact_schema: None,
         },
     ]
 }

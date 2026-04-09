@@ -11,7 +11,7 @@ mod init;
 mod input;
 mod render;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -54,7 +54,7 @@ use elai_orchestrator::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput};
+use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 fn max_tokens_for_model(model: &str) -> u32 {
@@ -2310,8 +2310,7 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let model = backend_config.model.clone();
     let mut cli = LiveCli::new_local(
         model,
-        &sidecar_url,
-        backend_config.max_tools_local,
+        backend_config,
         default_permission_mode(),
     )?;
     let mut editor =
@@ -2389,11 +2388,6 @@ struct ManagedSessionSummary {
     branch_name: Option<String>,
 }
 
-struct LocalCliConfig {
-    sidecar_url: String,
-    max_tools: usize,
-}
-
 struct LiveCli {
     model: String,
     allowed_tools: Option<AllowedToolSet>,
@@ -2401,7 +2395,7 @@ struct LiveCli {
     system_prompt: Vec<String>,
     runtime: BuiltRuntime,
     session: SessionHandle,
-    local_config: Option<LocalCliConfig>,
+    backend_config: Option<BackendConfig>,
 }
 
 struct RuntimePluginState {
@@ -2419,7 +2413,7 @@ struct RuntimeMcpState {
 }
 
 struct BuiltRuntime {
-    runtime: Option<ConversationRuntime<CliApiClient, CliToolExecutor>>,
+    runtime: Option<ConversationRuntime<RuntimeClient, CliToolExecutor>>,
     plugin_registry: PluginRegistry,
     plugins_active: bool,
     mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
@@ -2428,7 +2422,7 @@ struct BuiltRuntime {
 
 impl BuiltRuntime {
     fn new(
-        runtime: ConversationRuntime<CliApiClient, CliToolExecutor>,
+        runtime: ConversationRuntime<RuntimeClient, CliToolExecutor>,
         plugin_registry: PluginRegistry,
         mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
     ) -> Self {
@@ -2473,7 +2467,7 @@ impl BuiltRuntime {
 }
 
 impl Deref for BuiltRuntime {
-    type Target = ConversationRuntime<CliApiClient, CliToolExecutor>;
+    type Target = ConversationRuntime<RuntimeClient, CliToolExecutor>;
 
     fn deref(&self) -> &Self::Target {
         self.runtime
@@ -2895,6 +2889,7 @@ impl LiveCli {
             allowed_tools.clone(),
             permission_mode,
             None,
+            None,
         )?;
         let cli = Self {
             model,
@@ -2903,7 +2898,7 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
-            local_config: None,
+            backend_config: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2911,24 +2906,23 @@ impl LiveCli {
 
     fn new_local(
         model: String,
-        sidecar_url: &str,
-        max_tools: usize,
+        backend_config: BackendConfig,
         permission_mode: PermissionMode,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let system_prompt = build_system_prompt()?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
-        let runtime = build_local_runtime(
+        let runtime = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
-            sidecar_url,
             model.clone(),
             system_prompt.clone(),
+            true,
             true,
             None,
             permission_mode,
             None,
-            max_tools,
+            Some(&backend_config),
         )?;
         let cli = Self {
             model,
@@ -2937,10 +2931,7 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
-            local_config: Some(LocalCliConfig {
-                sidecar_url: sidecar_url.to_string(),
-                max_tools,
-            }),
+            backend_config: Some(backend_config),
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3006,32 +2997,18 @@ impl LiveCli {
         emit_output: bool,
     ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = elai_orchestrator::HookAbortSignal::new();
-        let runtime = if let Some(local) = &self.local_config {
-            build_local_runtime(
-                self.runtime.session().clone(),
-                &self.session.id,
-                &local.sidecar_url,
-                self.model.clone(),
-                self.system_prompt.clone(),
-                emit_output,
-                self.allowed_tools.clone(),
-                self.permission_mode,
-                None,
-                local.max_tools,
-            )?
-        } else {
-            build_runtime(
-                self.runtime.session().clone(),
-                &self.session.id,
-                self.model.clone(),
-                self.system_prompt.clone(),
-                true,
-                emit_output,
-                self.allowed_tools.clone(),
-                self.permission_mode,
-                None,
-            )?
-        }
+        let runtime = build_runtime(
+            self.runtime.session().clone(),
+            &self.session.id,
+            self.model.clone(),
+            self.system_prompt.clone(),
+            true,
+            emit_output,
+            self.allowed_tools.clone(),
+            self.permission_mode,
+            None,
+            self.backend_config.as_ref(),
+        )?
         .with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
@@ -3371,6 +3348,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
@@ -3417,6 +3395,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -3447,6 +3426,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -3489,6 +3469,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         self.session = SessionHandle {
@@ -3618,6 +3599,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    self.backend_config.as_ref(),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = SessionHandle {
@@ -3653,6 +3635,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    self.backend_config.as_ref(),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = handle;
@@ -3703,6 +3686,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()
@@ -3723,6 +3707,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.backend_config.as_ref(),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()?;
@@ -3747,6 +3732,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             progress,
+            self.backend_config.as_ref(),
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
@@ -5313,6 +5299,7 @@ fn describe_tool_progress(name: &str, input: &str) -> String {
 
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn build_runtime(
     session: Session,
     session_id: &str,
@@ -5323,6 +5310,7 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
+    backend_config: Option<&BackendConfig>,
 ) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
     let runtime_plugin_state = build_runtime_plugin_state()?;
     build_runtime_with_plugin_state(
@@ -5336,70 +5324,8 @@ fn build_runtime(
         permission_mode,
         progress_reporter,
         runtime_plugin_state,
+        backend_config,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_local_runtime(
-    session: Session,
-    session_id: &str,
-    sidecar_url: &str,
-    model: String,
-    system_prompt: Vec<String>,
-    emit_output: bool,
-    allowed_tools: Option<AllowedToolSet>,
-    permission_mode: PermissionMode,
-    progress_reporter: Option<InternalPromptProgressReporter>,
-    max_tools: usize,
-) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
-    let runtime_plugin_state = build_runtime_plugin_state()?;
-    let RuntimePluginState {
-        feature_config,
-        tool_registry,
-        plugin_registry,
-        mcp_state,
-    } = runtime_plugin_state;
-    plugin_registry.initialize()?;
-    let policy = permission_policy(permission_mode, &feature_config, &tool_registry)
-        .map_err(std::io::Error::other)?;
-
-    // Derive FSM state path from session persistence directory.
-    let fsm_state_path = session
-        .persistence_path()
-        .map(|p| p.parent().unwrap_or(p).join(".fsm-state.msgpack"));
-
-    let mut local_runtime_client = LocalRuntimeClient::new(
-        sidecar_url,
-        model.clone(),
-        true,
-        emit_output,
-        allowed_tools.clone(),
-        tool_registry.clone(),
-        progress_reporter,
-        max_tools,
-    )?;
-    if let Some(path) = fsm_state_path {
-        local_runtime_client = local_runtime_client.with_fsm_state_path(path);
-    }
-    let local_client = CliApiClient::Local(local_runtime_client);
-
-    let mut runtime = ConversationRuntime::new_with_features(
-        session,
-        local_client,
-        CliToolExecutor::new(
-            allowed_tools.clone(),
-            emit_output,
-            tool_registry.clone(),
-            mcp_state.clone(),
-        ),
-        policy,
-        system_prompt,
-        &feature_config,
-    );
-    if emit_output {
-        runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
-    }
-    Ok(BuiltRuntime::new(runtime, plugin_registry, mcp_state))
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -5415,6 +5341,7 @@ fn build_runtime_with_plugin_state(
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
     runtime_plugin_state: RuntimePluginState,
+    backend_config: Option<&BackendConfig>,
 ) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
     let RuntimePluginState {
         feature_config,
@@ -5425,18 +5352,57 @@ fn build_runtime_with_plugin_state(
     plugin_registry.initialize()?;
     let policy = permission_policy(permission_mode, &feature_config, &tool_registry)
         .map_err(std::io::Error::other)?;
-    let api_client = CliApiClient::Api(AnthropicRuntimeClient::new(
-        session_id,
-        model,
+
+    let (backend, auth, base_url, tool_policy, budget_policy) = match backend_config {
+        Some(config) => {
+            let fsm_state_path = session
+                .persistence_path()
+                .map(|p| p.parent().unwrap_or(p).join(".fsm-state.msgpack"));
+            (
+                BackendMode::Local,
+                AuthSource::None,
+                config.sidecar_url.clone(),
+                ToolPolicy::FsmFiltered {
+                    max_tools: config.max_tools_local,
+                    fsm_state_path,
+                },
+                BudgetPolicy::Local {
+                    ceiling: elai_orchestrator::LOCAL_MODEL_MAX_CONTEXT,
+                    fraction: elai_orchestrator::LOCAL_BUDGET_FRACTION,
+                },
+            )
+        }
+        None => (
+            BackendMode::Api,
+            resolve_cli_auth_source()?,
+            elai_providers::read_base_url(),
+            if enable_tools { ToolPolicy::Full } else { ToolPolicy::None },
+            BudgetPolicy::ApiDefault,
+        ),
+    };
+
+    let mut client_builder = AnthropicClient::from_auth(auth).with_base_url(base_url);
+    if matches!(backend, BackendMode::Api) {
+        client_builder = client_builder.with_prompt_cache(PromptCache::new(session_id));
+    }
+
+    let runtime_client = RuntimeClient {
+        runtime: tokio::runtime::Runtime::new()?,
+        client: client_builder,
+        backend,
+        model: model.clone(),
         enable_tools,
         emit_output,
-        allowed_tools.clone(),
-        tool_registry.clone(),
+        allowed_tools: allowed_tools.clone(),
+        tool_registry: tool_registry.clone(),
         progress_reporter,
-    )?);
+        tool_policy,
+        budget_policy,
+    };
+
     let mut runtime = ConversationRuntime::new_with_features(
         session,
-        api_client,
+        runtime_client,
         CliToolExecutor::new(
             allowed_tools.clone(),
             emit_output,
@@ -5535,40 +5501,41 @@ impl elai_orchestrator::PermissionPrompter for CliPermissionPrompter {
     }
 }
 
-struct AnthropicRuntimeClient {
+// ---------------------------------------------------------------------------
+// RuntimeClient — unified API client with policy-based backend selection.
+// Replaces AnthropicRuntimeClient, LocalRuntimeClient, and CliApiClient.
+// Branch points in stream(): auth (constructor), tool filtering, prompt cache.
+// ---------------------------------------------------------------------------
+
+enum ToolPolicy {
+    Full,
+    FsmFiltered {
+        max_tools: usize,
+        fsm_state_path: Option<PathBuf>,
+    },
+    None,
+}
+
+enum BudgetPolicy {
+    ApiDefault,
+    Local {
+        ceiling: usize,
+        fraction: usize,
+    },
+}
+
+struct RuntimeClient {
     runtime: tokio::runtime::Runtime,
     client: AnthropicClient,
+    backend: BackendMode,
     model: String,
     enable_tools: bool,
     emit_output: bool,
     allowed_tools: Option<AllowedToolSet>,
     tool_registry: GlobalToolRegistry,
     progress_reporter: Option<InternalPromptProgressReporter>,
-}
-
-impl AnthropicRuntimeClient {
-    fn new(
-        session_id: &str,
-        model: String,
-        enable_tools: bool,
-        emit_output: bool,
-        allowed_tools: Option<AllowedToolSet>,
-        tool_registry: GlobalToolRegistry,
-        progress_reporter: Option<InternalPromptProgressReporter>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(elai_providers::read_base_url())
-                .with_prompt_cache(PromptCache::new(session_id)),
-            model,
-            enable_tools,
-            emit_output,
-            allowed_tools,
-            tool_registry,
-            progress_reporter,
-        })
-    }
+    tool_policy: ToolPolicy,
+    budget_policy: BudgetPolicy,
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -5581,23 +5548,86 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
     })?)
 }
 
-impl ApiClient for AnthropicRuntimeClient {
+impl RuntimeClient {
+    fn current_fsm_state(&self) -> elai_orchestrator::FsmState {
+        match &self.tool_policy {
+            ToolPolicy::FsmFiltered { fsm_state_path, .. } => match fsm_state_path {
+                Some(path) => elai_orchestrator::Fsm::read_persisted_state(path),
+                None => elai_orchestrator::FsmState::Idle,
+            },
+            _ => elai_orchestrator::FsmState::Idle,
+        }
+    }
+
+    fn resolve_tool_defs(&self) -> Option<Vec<ToolDefinition>> {
+        if !self.enable_tools {
+            return None;
+        }
+        match &self.tool_policy {
+            ToolPolicy::Full => {
+                Some(filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref()))
+            }
+            ToolPolicy::FsmFiltered { max_tools, .. } => {
+                let fsm_state = self.current_fsm_state();
+                if fsm_state == elai_orchestrator::FsmState::Idle {
+                    return None;
+                }
+                let all_defs = filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref());
+                let fsm_filtered: Vec<_> = all_defs
+                    .into_iter()
+                    .filter(|def| fsm_state.check_tool_allowed(&def.name).is_ok())
+                    .collect();
+                let capped = if fsm_filtered.len() > *max_tools {
+                    let priority_map: HashMap<String, u8> = mvp_tool_specs()
+                        .into_iter()
+                        .map(|s| (s.name.to_string(), s.priority))
+                        .collect();
+                    let mut sorted = fsm_filtered;
+                    sorted.sort_by_key(|def| {
+                        priority_map.get(def.name.as_str()).copied().unwrap_or(u8::MAX)
+                    });
+                    sorted.into_iter().take(*max_tools).collect::<Vec<_>>()
+                } else {
+                    fsm_filtered
+                };
+                Some(capped)
+            }
+            ToolPolicy::None => None,
+        }
+    }
+}
+
+impl ApiClient for RuntimeClient {
     #[allow(clippy::too_many_lines)]
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
             progress_reporter.mark_model_phase();
         }
+
+        // Branch 1: tool filtering (policy-based)
+        let tool_defs = self.resolve_tool_defs();
+
+        // Branch 2: budget policy
+        if let BudgetPolicy::Local { ceiling, fraction } = &self.budget_policy {
+            let effective = ceiling * fraction / 100;
+            if let Err(e) = elai_orchestrator::context_budget::ContextBudget::compute(
+                effective, [0, 0, 0], 4096,
+            ) {
+                eprintln!("context budget warning: {e}");
+            }
+        }
+
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: max_tokens_for_model(&self.model),
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
-            tools: self
-                .enable_tools
-                .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref())),
+            tools: tool_defs,
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
         };
+
+        let use_prompt_cache = matches!(self.backend, BackendMode::Api);
 
         self.runtime.block_on(async {
             let mut stream = self
@@ -5670,7 +5700,6 @@ impl ApiClient for AnthropicRuntimeClient {
                             if let Some(progress_reporter) = &self.progress_reporter {
                                 progress_reporter.mark_tool_phase(&name, &input);
                             }
-                            // Display tool call now that input is fully accumulated
                             writeln!(out, "\n{}", format_tool_call_start(&name, &input))
                                 .and_then(|()| out.flush())
                                 .map_err(|error| RuntimeError::new(error.to_string()))?;
@@ -5692,7 +5721,10 @@ impl ApiClient for AnthropicRuntimeClient {
                 }
             }
 
-            push_prompt_cache_record(&self.client, &mut events);
+            // Branch 3: prompt cache — Api only
+            if use_prompt_cache {
+                push_prompt_cache_record(&self.client, &mut events);
+            }
 
             if !saw_stop
                 && events.iter().any(|event| {
@@ -5719,259 +5751,11 @@ impl ApiClient for AnthropicRuntimeClient {
                 .await
                 .map_err(|error| RuntimeError::new(error.to_string()))?;
             let mut events = response_to_events(response, out)?;
-            push_prompt_cache_record(&self.client, &mut events);
+            if use_prompt_cache {
+                push_prompt_cache_record(&self.client, &mut events);
+            }
             Ok(events)
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// LocalRuntimeClient — routes through sidecar /v1/messages via Anthropic wire
-// format. FSM-aware tool pre-filtering, ContextBudget per-turn.
-// ---------------------------------------------------------------------------
-
-struct LocalRuntimeClient {
-    runtime: tokio::runtime::Runtime,
-    client: AnthropicClient,
-    model: String,
-    enable_tools: bool,
-    emit_output: bool,
-    allowed_tools: Option<AllowedToolSet>,
-    tool_registry: GlobalToolRegistry,
-    progress_reporter: Option<InternalPromptProgressReporter>,
-    max_tools: usize,
-    fsm_state_path: Option<PathBuf>,
-}
-
-impl LocalRuntimeClient {
-    fn new(
-        sidecar_url: &str,
-        model: String,
-        enable_tools: bool,
-        emit_output: bool,
-        allowed_tools: Option<AllowedToolSet>,
-        tool_registry: GlobalToolRegistry,
-        progress_reporter: Option<InternalPromptProgressReporter>,
-        max_tools: usize,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(AuthSource::None)
-                .with_base_url(sidecar_url),
-            model,
-            enable_tools,
-            emit_output,
-            allowed_tools,
-            tool_registry,
-            progress_reporter,
-            max_tools,
-            fsm_state_path: None,
-        })
-    }
-
-    fn with_fsm_state_path(mut self, path: PathBuf) -> Self {
-        self.fsm_state_path = Some(path);
-        self
-    }
-
-    /// Read persisted FSM state from disk. Defaults to Idle (no tools —
-    /// model listens first, tools enabled when FSM transitions to a working state).
-    fn current_fsm_state(&self) -> elai_orchestrator::FsmState {
-        match &self.fsm_state_path {
-            Some(path) => elai_orchestrator::Fsm::read_persisted_state(path),
-            None => elai_orchestrator::FsmState::Idle,
-        }
-    }
-}
-
-impl ApiClient for LocalRuntimeClient {
-    #[allow(clippy::too_many_lines)]
-    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
-        if let Some(progress_reporter) = &self.progress_reporter {
-            progress_reporter.mark_model_phase();
-        }
-
-        // FSM-aware tool pre-filtering: Idle = no tools (model listens first),
-        // other states filter by allowed categories, then cap at max_tools.
-        let fsm_state = self.current_fsm_state();
-        let tool_defs = if self.enable_tools
-            && fsm_state != elai_orchestrator::FsmState::Idle
-        {
-            let all_defs = filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref());
-            let fsm_filtered: Vec<_> = all_defs
-                .into_iter()
-                .filter(|def| fsm_state.check_tool_allowed(&def.name).is_ok())
-                .collect();
-            let capped = if fsm_filtered.len() > self.max_tools {
-                fsm_filtered.into_iter().take(self.max_tools).collect::<Vec<_>>()
-            } else {
-                fsm_filtered
-            };
-            Some(capped)
-        } else {
-            None
-        };
-
-        // Context budget for local model (best-effort, log on failure).
-        if let Err(e) = elai_orchestrator::context_budget::ContextBudget::compute(
-            elai_orchestrator::LOCAL_MODEL_MAX_CONTEXT
-                * elai_orchestrator::LOCAL_BUDGET_FRACTION
-                / 100,
-            [0, 0, 0],
-            4096,
-        ) {
-            eprintln!("context budget warning: {e}");
-        }
-
-        let message_request = MessageRequest {
-            model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
-            messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
-            tools: tool_defs,
-            tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
-            stream: true,
-        };
-
-        self.runtime.block_on(async {
-            let mut stream = self
-                .client
-                .stream_message(&message_request)
-                .await
-                .map_err(|error| RuntimeError::new(error.to_string()))?;
-            let mut stdout = io::stdout();
-            let mut sink = io::sink();
-            let out: &mut dyn Write = if self.emit_output {
-                &mut stdout
-            } else {
-                &mut sink
-            };
-            let renderer = TerminalRenderer::new();
-            let mut markdown_stream = MarkdownStreamState::default();
-            let mut events = Vec::new();
-            let mut pending_tool: Option<(String, String, String)> = None;
-            let mut saw_stop = false;
-
-            while let Some(event) = stream
-                .next_event()
-                .await
-                .map_err(|error| RuntimeError::new(error.to_string()))?
-            {
-                match event {
-                    ApiStreamEvent::MessageStart(start) => {
-                        for block in start.message.content {
-                            push_output_block(block, out, &mut events, &mut pending_tool, true)?;
-                        }
-                    }
-                    ApiStreamEvent::ContentBlockStart(start) => {
-                        push_output_block(
-                            start.content_block,
-                            out,
-                            &mut events,
-                            &mut pending_tool,
-                            true,
-                        )?;
-                    }
-                    ApiStreamEvent::ContentBlockDelta(delta) => match delta.delta {
-                        ContentBlockDelta::TextDelta { text } => {
-                            if !text.is_empty() {
-                                if let Some(progress_reporter) = &self.progress_reporter {
-                                    progress_reporter.mark_text_phase(&text);
-                                }
-                                if let Some(rendered) = markdown_stream.push(&renderer, &text) {
-                                    write!(out, "{rendered}")
-                                        .and_then(|()| out.flush())
-                                        .map_err(|error| RuntimeError::new(error.to_string()))?;
-                                }
-                                events.push(AssistantEvent::TextDelta(text));
-                            }
-                        }
-                        ContentBlockDelta::InputJsonDelta { partial_json } => {
-                            if let Some((_, _, input)) = &mut pending_tool {
-                                input.push_str(&partial_json);
-                            }
-                        }
-                        ContentBlockDelta::ThinkingDelta { .. }
-                        | ContentBlockDelta::SignatureDelta { .. } => {}
-                    },
-                    ApiStreamEvent::ContentBlockStop(_) => {
-                        if let Some(rendered) = markdown_stream.flush(&renderer) {
-                            write!(out, "{rendered}")
-                                .and_then(|()| out.flush())
-                                .map_err(|error| RuntimeError::new(error.to_string()))?;
-                        }
-                        if let Some((id, name, input)) = pending_tool.take() {
-                            if let Some(progress_reporter) = &self.progress_reporter {
-                                progress_reporter.mark_tool_phase(&name, &input);
-                            }
-                            writeln!(out, "\n{}", format_tool_call_start(&name, &input))
-                                .and_then(|()| out.flush())
-                                .map_err(|error| RuntimeError::new(error.to_string()))?;
-                            events.push(AssistantEvent::ToolUse { id, name, input });
-                        }
-                    }
-                    ApiStreamEvent::MessageDelta(delta) => {
-                        events.push(AssistantEvent::Usage(delta.usage.token_usage()));
-                    }
-                    ApiStreamEvent::MessageStop(_) => {
-                        saw_stop = true;
-                        if let Some(rendered) = markdown_stream.flush(&renderer) {
-                            write!(out, "{rendered}")
-                                .and_then(|()| out.flush())
-                                .map_err(|error| RuntimeError::new(error.to_string()))?;
-                        }
-                        events.push(AssistantEvent::MessageStop);
-                    }
-                }
-            }
-
-            // No prompt cache for local model — skip push_prompt_cache_record.
-
-            if !saw_stop
-                && events.iter().any(|event| {
-                    matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
-                        || matches!(event, AssistantEvent::ToolUse { .. })
-                })
-            {
-                events.push(AssistantEvent::MessageStop);
-            }
-
-            if events
-                .iter()
-                .any(|event| matches!(event, AssistantEvent::MessageStop))
-            {
-                return Ok(events);
-            }
-
-            let response = self
-                .client
-                .send_message(&MessageRequest {
-                    stream: false,
-                    ..message_request.clone()
-                })
-                .await
-                .map_err(|error| RuntimeError::new(error.to_string()))?;
-            let events = response_to_events(response, out)?;
-            Ok(events)
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CliApiClient — enum dispatch for runtime client selection.
-// ---------------------------------------------------------------------------
-
-enum CliApiClient {
-    Api(AnthropicRuntimeClient),
-    Local(LocalRuntimeClient),
-}
-
-impl ApiClient for CliApiClient {
-    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
-        match self {
-            Self::Api(client) => client.stream(request),
-            Self::Local(client) => client.stream(request),
-        }
     }
 }
 
@@ -8997,6 +8781,7 @@ UU conflicted.rs",
             PermissionMode::DangerFullAccess,
             None,
             runtime_plugin_state,
+            None,
         )
         .expect("runtime should build");
 

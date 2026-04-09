@@ -7,6 +7,7 @@
 use crate::context_budget::{BudgetError, ContextBudget};
 use crate::fsm::FsmState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,7 @@ pub fn build_dispatch_context(
     fsm_state: FsmState,
     config: &BackendConfig,
     all_tool_names: &[String],
+    priority_map: &HashMap<String, u8>,
 ) -> Result<DispatchContext, DispatchError> {
     // Pre-filter tools by FSM state.
     let filtered: Vec<String> = all_tool_names
@@ -139,10 +141,12 @@ pub fn build_dispatch_context(
         .cloned()
         .collect();
 
-    // Cap at max_tools_local for local backend.
+    // Sort by priority (lower = more important), then cap at max_tools_local.
     let max_tools = config.max_tools_local;
     let capped: Vec<String> = if filtered.len() > max_tools {
-        filtered.into_iter().take(max_tools).collect()
+        let mut sorted = filtered;
+        sorted.sort_by_key(|name| priority_map.get(name).copied().unwrap_or(u8::MAX));
+        sorted.into_iter().take(max_tools).collect()
     } else {
         filtered
     };
@@ -208,8 +212,9 @@ mod tests {
             "WebSearch".into(),
         ];
 
+        let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Executing, &config, &tools).expect("should succeed");
+            build_dispatch_context(FsmState::Executing, &config, &tools, &prio).expect("should succeed");
 
         assert_eq!(ctx.fsm_state, FsmState::Executing);
         assert_eq!(ctx.backend_mode, BackendMode::Api);
@@ -232,8 +237,9 @@ mod tests {
             "EnterPlanMode".into(),
         ];
 
+        let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Planning, &config, &tools).expect("should succeed");
+            build_dispatch_context(FsmState::Planning, &config, &tools, &prio).expect("should succeed");
 
         // Planning blocks: bash, edit_file, write_file
         assert!(!ctx.filtered_tool_names.contains(&"bash".to_string()));
@@ -255,14 +261,17 @@ mod tests {
         };
         // All these are allowed in Idle state.
         let tools: Vec<String> = (0..10).map(|i| format!("read_file_{i}")).collect();
+        // Assign descending priorities so read_file_0 = highest priority (0).
+        let prio: HashMap<String, u8> = (0..10u8).map(|i| (format!("read_file_{i}"), i)).collect();
 
         let ctx =
-            build_dispatch_context(FsmState::Idle, &config, &tools).expect("should succeed");
+            build_dispatch_context(FsmState::Idle, &config, &tools, &prio).expect("should succeed");
 
-        // Idle allows everything, but capped at 3.
-        // Note: read_file_0..9 are unknown tools — ToolCategory::classify falls through
-        // to a default. We're testing the cap logic, not classification.
+        // Idle allows everything, but capped at 3. Priority sort keeps 0, 1, 2.
         assert!(ctx.filtered_tool_names.len() <= 3);
+        assert!(ctx.filtered_tool_names.contains(&"read_file_0".to_string()));
+        assert!(ctx.filtered_tool_names.contains(&"read_file_1".to_string()));
+        assert!(ctx.filtered_tool_names.contains(&"read_file_2".to_string()));
     }
 
     #[test]
