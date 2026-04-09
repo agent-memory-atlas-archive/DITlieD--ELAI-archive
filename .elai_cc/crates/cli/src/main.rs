@@ -5590,7 +5590,7 @@ impl RuntimeClient {
                 } else {
                     fsm_filtered
                 };
-                Some(capped)
+                if capped.is_empty() { None } else { Some(capped) }
             }
             ToolPolicy::None => None,
         }
@@ -5622,8 +5622,8 @@ impl ApiClient for RuntimeClient {
             max_tokens: max_tokens_for_model(&self.model),
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            tool_choice: tool_defs.as_ref().map(|_| ToolChoice::Auto),
             tools: tool_defs,
-            tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
         };
 
