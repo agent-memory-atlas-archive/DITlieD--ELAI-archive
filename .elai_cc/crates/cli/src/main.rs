@@ -99,13 +99,13 @@ type RuntimePluginStateBuildOutput = (
 fn main() {
     if let Err(error) = run() {
         let message = error.to_string();
-        if message.contains("`claw --help`") {
+        if message.contains("`elai--help`") {
             eprintln!("error: {message}");
         } else {
             eprintln!(
                 "error: {message}
 
-Run `claw --help` for usage."
+Run `elai--help` for usage."
             );
         }
         std::process::exit(1);
@@ -336,7 +336,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 return Ok(CliAction::Local { port });
             }
             "-p" => {
-                // Claw Code compat: -p "prompt" = one-shot prompt
+                // Compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
                 if prompt.trim().is_empty() {
                     return Err("-p requires a prompt string".to_string());
@@ -351,7 +351,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 });
             }
             "--print" => {
-                // Claw Code compat: --print makes output non-interactive
+                // Compat: --print makes output non-interactive
                 output_format = CliOutputFormat::Text;
                 index += 1;
             }
@@ -527,11 +527,11 @@ fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
         .find(|spec| spec.name == command_name)?;
     let guidance = if slash_command.resume_supported {
         format!(
-            "`claw {command_name}` is a slash command. Use `claw --resume SESSION.jsonl /{command_name}` or start `claw` and run `/{command_name}`."
+            "`elai{command_name}` is a slash command. Use `elai--resume SESSION.jsonl /{command_name}` or start `elai` and run `/{command_name}`."
         )
     } else {
         format!(
-            "`claw {command_name}` is a slash command. Start `claw` and run `/{command_name}` inside the REPL."
+            "`elai{command_name}` is a slash command. Start `elai` and run `/{command_name}` inside the REPL."
         )
     };
     Some(guidance)
@@ -571,7 +571,7 @@ fn parse_direct_slash_cli_action(
         Ok(Some(command)) => Err({
             let _ = command;
             format!(
-                "slash command {command_name} is interactive-only. Start `claw` and run it there, or use `claw --resume SESSION.jsonl {command_name}` / `claw --resume {latest} {command_name}` when the command is marked [resume] in /help.",
+                "slash command {command_name} is interactive-only. Start `elai` and run it there, or use `elai--resume SESSION.jsonl {command_name}` / `elai--resume {latest} {command_name}` when the command is marked [resume] in /help.",
                 command_name = rest[0],
                 latest = LATEST_SESSION_REFERENCE,
             )
@@ -588,7 +588,7 @@ fn format_unknown_option(option: &str) -> String {
         message.push_str(suggestion);
         message.push('?');
     }
-    message.push_str("\nRun `claw --help` for usage.");
+    message.push_str("\nRun `elai--help` for usage.");
     message
 }
 
@@ -599,7 +599,7 @@ fn format_unknown_direct_slash_command(name: &str) -> String {
         message.push('\n');
         message.push_str(&suggestions);
     }
-    message.push_str("\nRun `claw --help` for CLI usage, or start `claw` and use /help.");
+    message.push_str("\nRun `elai--help` for CLI usage, or start `elai` and use /help.");
     message
 }
 
@@ -751,7 +751,7 @@ fn permission_mode_from_resolved(mode: ResolvedPermissionMode) -> PermissionMode
 }
 
 fn default_permission_mode() -> PermissionMode {
-    env::var("RUSTY_CLAUDE_PERMISSION_MODE")
+    env::var("ELAI_PERMISSION_MODE")
         .ok()
         .as_deref()
         .and_then(normalize_permission_mode)
@@ -1054,7 +1054,7 @@ fn check_auth_health() -> DiagnosticCheck {
             ];
             if expired {
                 details.push(
-                    "Suggested action  claw login to refresh local OAuth credentials".to_string(),
+                    "Suggested action  elai login to refresh local OAuth credentials".to_string(),
                 );
             }
             DiagnosticCheck::new(
@@ -1287,7 +1287,7 @@ fn dump_manifests(_output_format: CliOutputFormat) -> Result<(), Box<dyn std::er
 }
 
 fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let phases = elai_orchestrator::BootstrapPlan::claude_code_default()
+    let phases = elai_orchestrator::BootstrapPlan::elai_default()
         .phases()
         .iter()
         .map(|phase| format!("{phase:?}"))
@@ -1319,7 +1319,7 @@ fn default_oauth_config() -> OAuthConfig {
         scopes: vec![
             String::from("user:profile"),
             String::from("user:inference"),
-            String::from("user:sessions:claude_code"),
+            String::from("user:sessions:elai"),
         ],
     }
 }
@@ -1338,7 +1338,7 @@ fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::E
             .build_url();
 
     if output_format == CliOutputFormat::Text {
-        println!("Starting Claude OAuth login...");
+        println!("Starting OAuth login...");
         println!("Listening for callback on {redirect_uri}");
     }
     if let Err(error) = open_browser(&authorize_url) {
@@ -1380,14 +1380,14 @@ fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::E
         scopes: token_set.scopes,
     })?;
     match output_format {
-        CliOutputFormat::Text => println!("Claude OAuth login complete."),
+        CliOutputFormat::Text => println!("OAuth login complete."),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "kind": "login",
                 "callback_port": callback_port,
                 "redirect_uri": redirect_uri,
-                "message": "Claude OAuth login complete.",
+                "message": "OAuth login complete.",
             }))?
         ),
     }
@@ -1397,12 +1397,12 @@ fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::E
 fn run_logout(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
     clear_oauth_credentials()?;
     match output_format {
-        CliOutputFormat::Text => println!("Claude OAuth credentials cleared."),
+        CliOutputFormat::Text => println!("OAuth credentials cleared."),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "kind": "logout",
-                "message": "Claude OAuth credentials cleared.",
+                "message": "OAuth credentials cleared.",
             }))?
         ),
     }
@@ -1450,9 +1450,9 @@ fn wait_for_oauth_callback(
     let callback = parse_oauth_callback_request_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let body = if callback.error.is_some() {
-        "Claude OAuth login failed. You can close this window."
+        "OAuth login failed. You can close this window."
     } else {
-        "Claude OAuth login succeeded. You can close this window."
+        "OAuth login succeeded. You can close this window."
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1786,7 +1786,7 @@ fn render_resume_usage() -> String {
     format!(
         "Resume
   Usage            /resume <session-path|session-id|{LATEST_SESSION_REFERENCE}>
-  Auto-save        .claw/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}
+  Auto-save        .elai/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}
   Tip              use /session list to inspect saved sessions"
     )
 }
@@ -1972,7 +1972,7 @@ fn run_resume_command(
             Ok(ResumeCommandOutcome {
                 session: cleared,
                 message: Some(format!(
-                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  claw --resume {}\n  New session      {new_session_id}\n  Session file     {}",
+                    "Session cleared\n  Mode             resumed session reset\n  Previous session {previous_session_id}\n  Backup           {}\n  Resume previous  elai --resume {}\n  New session      {new_session_id}\n  Session file     {}",
                     backup_path.display(),
                     backup_path.display(),
                     session_path.display()
@@ -2048,7 +2048,7 @@ fn run_resume_command(
         }),
         SlashCommand::Init => Ok(ResumeCommandOutcome {
             session: session.clone(),
-            message: Some(init_claude_md()?),
+            message: Some(init_elai_md()?),
         }),
         SlashCommand::Diff => Ok(ResumeCommandOutcome {
             session: session.clone(),
@@ -2396,6 +2396,9 @@ struct LiveCli {
     runtime: BuiltRuntime,
     session: SessionHandle,
     backend_config: Option<BackendConfig>,
+    ssb: Option<elai_orchestrator::Ssb>,
+    fsm: Arc<elai_orchestrator::Fsm>,
+    clock: Arc<dyn ClockProvider>,
 }
 
 struct RuntimePluginState {
@@ -2879,7 +2882,10 @@ impl LiveCli {
         let system_prompt = build_system_prompt()?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
-        let runtime = build_runtime(
+        let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
+        let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
+        let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+        let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
             model.clone(),
@@ -2890,6 +2896,7 @@ impl LiveCli {
             permission_mode,
             None,
             None,
+            Some(fsm.clone()),
         )?;
         let cli = Self {
             model,
@@ -2899,6 +2906,9 @@ impl LiveCli {
             runtime,
             session,
             backend_config: None,
+            ssb,
+            fsm,
+            clock,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2912,7 +2922,10 @@ impl LiveCli {
         let system_prompt = build_system_prompt()?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
-        let runtime = build_runtime(
+        let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
+        let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
+        let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+        let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
             model.clone(),
@@ -2923,6 +2936,7 @@ impl LiveCli {
             permission_mode,
             None,
             Some(&backend_config),
+            Some(fsm.clone()),
         )?;
         let cli = Self {
             model,
@@ -2932,6 +2946,9 @@ impl LiveCli {
             runtime,
             session,
             backend_config: Some(backend_config),
+            ssb,
+            fsm,
+            clock,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2956,13 +2973,13 @@ impl LiveCli {
             |path| path.display().to_string(),
         );
         format!(
-            "\x1b[38;5;196m\
- ██████╗██╗      █████╗ ██╗    ██╗\n\
-██╔════╝██║     ██╔══██╗██║    ██║\n\
-██║     ██║     ███████║██║ █╗ ██║\n\
-██║     ██║     ██╔══██║██║███╗██║\n\
-╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
- ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
+            "\x1b[38;2;27;122;110m\
+ ███████╗██╗      █████╗ ██╗\n\
+ ██╔════╝██║     ██╔══██╗██║\n\
+ █████╗  ██║     ███████║██║\n\
+ ██╔══╝  ██║     ██╔══██║██║\n\
+ ███████╗███████╗██║  ██║██║\n\
+ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝\x1b[0m\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
   \x1b[2mBranch\x1b[0m           {}\n\
@@ -2997,7 +3014,7 @@ impl LiveCli {
         emit_output: bool,
     ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
         let hook_abort_signal = elai_orchestrator::HookAbortSignal::new();
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             self.runtime.session().clone(),
             &self.session.id,
             self.model.clone(),
@@ -3008,8 +3025,9 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
-        )?
-        .with_hook_abort_signal(hook_abort_signal.clone());
+            Some(self.fsm.clone()),
+        )?;
+        let runtime = runtime.with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
 
         Ok((runtime, hook_abort_monitor))
@@ -3026,7 +3044,7 @@ impl LiveCli {
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
         spinner.tick(
-            "🦀 Thinking...",
+            "Thinking...",
             TerminalRenderer::new().color_theme(),
             &mut stdout,
         )?;
@@ -3037,7 +3055,7 @@ impl LiveCli {
             Ok(summary) => {
                 self.replace_runtime(runtime)?;
                 spinner.finish(
-                    "✨ Done",
+                    "Done",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -3054,7 +3072,7 @@ impl LiveCli {
             Err(error) => {
                 runtime.shutdown_plugins()?;
                 spinner.fail(
-                    "❌ Request failed",
+                    "Request failed",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -3338,7 +3356,7 @@ impl LiveCli {
         let previous = self.model.clone();
         let session = self.runtime.session().clone();
         let message_count = session.messages.len();
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             session,
             &self.session.id,
             model.clone(),
@@ -3349,6 +3367,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
@@ -3385,7 +3404,7 @@ impl LiveCli {
         let previous = self.permission_mode.as_str().to_string();
         let session = self.runtime.session().clone();
         self.permission_mode = permission_mode_from_label(normalized);
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             session,
             &self.session.id,
             self.model.clone(),
@@ -3396,6 +3415,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -3416,7 +3436,7 @@ impl LiveCli {
         let previous_session = self.session.clone();
         let session_state = Session::new();
         self.session = create_managed_session_handle(&session_state.session_id)?;
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             session_state.with_persistence_path(self.session.path.clone()),
             &self.session.id,
             self.model.clone(),
@@ -3427,6 +3447,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -3459,7 +3480,7 @@ impl LiveCli {
         let session = Session::load_from_path(&handle.path)?;
         let message_count = session.messages.len();
         let session_id = session.session_id.clone();
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             session,
             &handle.id,
             self.model.clone(),
@@ -3470,6 +3491,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         self.session = SessionHandle {
@@ -3589,7 +3611,7 @@ impl LiveCli {
                 let session = Session::load_from_path(&handle.path)?;
                 let message_count = session.messages.len();
                 let session_id = session.session_id.clone();
-                let runtime = build_runtime(
+                let (runtime, _ssb) = build_runtime(
                     session,
                     &handle.id,
                     self.model.clone(),
@@ -3600,6 +3622,7 @@ impl LiveCli {
                     self.permission_mode,
                     None,
                     self.backend_config.as_ref(),
+                    Some(self.fsm.clone()),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = SessionHandle {
@@ -3625,7 +3648,7 @@ impl LiveCli {
                 let forked = forked.with_persistence_path(handle.path.clone());
                 let message_count = forked.messages.len();
                 forked.save_to_path(&handle.path)?;
-                let runtime = build_runtime(
+                let (runtime, _ssb) = build_runtime(
                     forked,
                     &handle.id,
                     self.model.clone(),
@@ -3636,6 +3659,7 @@ impl LiveCli {
                     self.permission_mode,
                     None,
                     self.backend_config.as_ref(),
+                    Some(self.fsm.clone()),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = handle;
@@ -3676,7 +3700,7 @@ impl LiveCli {
     }
 
     fn reload_runtime_features(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             self.runtime.session().clone(),
             &self.session.id,
             self.model.clone(),
@@ -3687,6 +3711,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()
@@ -3697,7 +3722,7 @@ impl LiveCli {
         let removed = result.removed_message_count;
         let kept = result.compacted_session.messages.len();
         let skipped = removed == 0;
-        let runtime = build_runtime(
+        let (runtime, _ssb) = build_runtime(
             result.compacted_session,
             &self.session.id,
             self.model.clone(),
@@ -3708,6 +3733,7 @@ impl LiveCli {
             self.permission_mode,
             None,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()?;
@@ -3722,7 +3748,7 @@ impl LiveCli {
         progress: Option<InternalPromptProgressReporter>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let session = self.runtime.session().clone();
-        let mut runtime = build_runtime(
+        let (mut runtime, _ssb) = build_runtime(
             session,
             &self.session.id,
             self.model.clone(),
@@ -3733,6 +3759,7 @@ impl LiveCli {
             self.permission_mode,
             progress,
             self.backend_config.as_ref(),
+            Some(self.fsm.clone()),
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
@@ -3807,9 +3834,17 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claw").join("sessions");
+    let path = cwd.join(".elai").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+impl Drop for LiveCli {
+    fn drop(&mut self) {
+        if let Some(ssb) = &mut self.ssb {
+            ssb.shutdown();
+        }
+    }
 }
 
 fn create_managed_session_handle(
@@ -3942,13 +3977,13 @@ fn latest_managed_session() -> Result<ManagedSessionSummary, Box<dyn std::error:
 
 fn format_missing_session_reference(reference: &str) -> String {
     format!(
-        "session not found: {reference}\nHint: managed sessions live in .claw/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
+        "session not found: {reference}\nHint: managed sessions live in .elai/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
     )
 }
 
 fn format_no_managed_sessions() -> String {
     format!(
-        "no managed sessions found in .claw/sessions/\nStart `claw` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
+        "no managed sessions found in .elai/sessions/\nStart `elai` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
     )
 }
 
@@ -4041,7 +4076,7 @@ fn render_repl_help() -> String {
         "  Tab                  Complete commands, modes, and recent sessions".to_string(),
         "  Ctrl-C               Clear input (or exit on empty prompt)".to_string(),
         "  Shift+Enter/Ctrl+J   Insert a newline".to_string(),
-        "  Auto-save            .claw/sessions/<session-id>.jsonl".to_string(),
+        "  Auto-save            .elai/sessions/<session-id>.jsonl".to_string(),
         "  Resume latest        /resume latest".to_string(),
         "  Browse sessions      /session list".to_string(),
         String::new(),
@@ -4318,22 +4353,22 @@ fn print_sandbox_status_snapshot(
 fn render_help_topic(topic: LocalHelpTopic) -> String {
     match topic {
         LocalHelpTopic::Status => "Status
-  Usage            claw status
+  Usage            elai status
   Purpose          show the local workspace snapshot without entering the REPL
   Output           model, permissions, git state, config files, and sandbox status
-  Related          /status · claw --resume latest /status"
+  Related          /status · elai --resume latest /status"
             .to_string(),
         LocalHelpTopic::Sandbox => "Sandbox
-  Usage            claw sandbox
+  Usage            elai sandbox
   Purpose          inspect the resolved sandbox and isolation state for the current directory
   Output           namespace, network, filesystem, and fallback details
-  Related          /sandbox · claw status"
+  Related          /sandbox · elai status"
             .to_string(),
         LocalHelpTopic::Doctor => "Doctor
-  Usage            claw doctor
+  Usage            elai doctor
   Purpose          diagnose local auth, config, workspace, sandbox, and build metadata
   Output           local-only health report; no provider request or session resume required
-  Related          /doctor · claw --resume latest /doctor"
+  Related          /doctor · elai --resume latest /doctor"
             .to_string(),
     }
 }
@@ -4434,7 +4469,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     if project_context.instruction_files.is_empty() {
         lines.push("Discovered files".to_string());
         lines.push(
-            "  No CLAUDE instruction files discovered in the current directory ancestry."
+            "  No ELAI instruction files discovered in the current directory ancestry."
                 .to_string(),
         );
     } else {
@@ -4460,13 +4495,13 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     ))
 }
 
-fn init_claude_md() -> Result<String, Box<dyn std::error::Error>> {
+fn init_elai_md() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     Ok(initialize_repo(&cwd)?.render())
 }
 
 fn run_init(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let message = init_claude_md()?;
+    let message = init_elai_md()?;
     match output_format {
         CliOutputFormat::Text => println!("{message}"),
         CliOutputFormat::Json => println!(
@@ -4792,7 +4827,7 @@ fn render_version_report() -> String {
     let git_sha = GIT_SHA.unwrap_or("unknown");
     let target = BUILD_TARGET.unwrap_or("unknown");
     format!(
-        "Claw Code\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
+        "ELAI\n  Version          {VERSION}\n  Git SHA          {git_sha}\n  Target           {target}\n  Build date       {DEFAULT_DATE}"
     )
 }
 
@@ -5299,7 +5334,6 @@ fn describe_tool_progress(name: &str, input: &str) -> String {
 
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn build_runtime(
     session: Session,
     session_id: &str,
@@ -5311,7 +5345,8 @@ fn build_runtime(
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
     backend_config: Option<&BackendConfig>,
-) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    fsm: Option<Arc<elai_orchestrator::Fsm>>,
+) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
     let runtime_plugin_state = build_runtime_plugin_state()?;
     build_runtime_with_plugin_state(
         session,
@@ -5325,6 +5360,7 @@ fn build_runtime(
         progress_reporter,
         runtime_plugin_state,
         backend_config,
+        fsm,
     )
 }
 
@@ -5342,7 +5378,8 @@ fn build_runtime_with_plugin_state(
     progress_reporter: Option<InternalPromptProgressReporter>,
     runtime_plugin_state: RuntimePluginState,
     backend_config: Option<&BackendConfig>,
-) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+    fsm: Option<Arc<elai_orchestrator::Fsm>>,
+) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
     let RuntimePluginState {
         feature_config,
         tool_registry,
@@ -5386,8 +5423,44 @@ fn build_runtime_with_plugin_state(
         client_builder = client_builder.with_prompt_cache(PromptCache::new(session_id));
     }
 
+    let tokio_runtime = tokio::runtime::Runtime::new()?;
+
+    // Create Ssb inside tokio runtime context (Ssb::new calls tokio::spawn).
+    let ssb = {
+        let _guard = tokio_runtime.enter();
+        let ssb_db_path = session
+            .persistence_path()
+            .map(|p| p.parent().unwrap_or(p).join("ssb.db"))
+            .unwrap_or_else(|| {
+                let mut tmp = std::env::temp_dir();
+                tmp.push(format!("elai-ssb-{}.db", session_id));
+                tmp
+            });
+        let cwd_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            std::env::current_dir().unwrap_or_default().hash(&mut h);
+            format!("proj-{:016x}", h.finish())
+        };
+        let ssb_config = elai_orchestrator::SsbConfig {
+            db_path: ssb_db_path,
+            pool_size: None,
+            project_id: cwd_hash,
+            session_id: session_id.to_string(),
+        };
+        let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+        match elai_orchestrator::Ssb::new(ssb_config, clock) {
+            Ok(ssb) => Some(ssb),
+            Err(e) => {
+                eprintln!("[warn] SSB init failed, telemetry disabled: {e}");
+                None
+            }
+        }
+    };
+
     let runtime_client = RuntimeClient {
-        runtime: tokio::runtime::Runtime::new()?,
+        runtime: tokio_runtime,
         client: client_builder,
         backend,
         model: model.clone(),
@@ -5398,6 +5471,7 @@ fn build_runtime_with_plugin_state(
         progress_reporter,
         tool_policy,
         budget_policy,
+        fsm,
     };
 
     let mut runtime = ConversationRuntime::new_with_features(
@@ -5416,7 +5490,24 @@ fn build_runtime_with_plugin_state(
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }
-    Ok(BuiltRuntime::new(runtime, plugin_registry, mcp_state))
+    // Wire SessionTracer with file-based telemetry sink (interim; full SSB sink in later step).
+    if let Some(persist_path) = runtime.session().persistence_path() {
+        let telemetry_path = persist_path
+            .parent()
+            .unwrap_or(persist_path)
+            .join("telemetry.jsonl");
+        match elai_orchestrator::JsonlTelemetrySink::new(&telemetry_path) {
+            Ok(sink) => {
+                let tracer = elai_orchestrator::SessionTracer::new(
+                    session_id,
+                    Arc::new(sink),
+                );
+                runtime = runtime.with_session_tracer(tracer);
+            }
+            Err(e) => eprintln!("[warn] session telemetry disabled: {e}"),
+        }
+    }
+    Ok((BuiltRuntime::new(runtime, plugin_registry, mcp_state), ssb))
 }
 
 struct CliHookProgressReporter;
@@ -5448,6 +5539,37 @@ impl elai_orchestrator::HookProgressReporter for CliHookProgressReporter {
                 "[hook cancelled {event_name}] {tool_name}: {command}",
                 event_name = event.as_str()
             ),
+        }
+    }
+}
+
+struct CliInteractiveGate;
+
+impl elai_orchestrator::InteractiveGate for CliInteractiveGate {
+    fn present_gate(
+        &self,
+        summary: &elai_orchestrator::EvidenceSummary,
+        risk_level: elai_orchestrator::RiskLevel,
+    ) -> elai_orchestrator::GateDecision {
+        if risk_level == elai_orchestrator::RiskLevel::Low {
+            return elai_orchestrator::GateDecision::Approve;
+        }
+        eprintln!(
+            "[gate] risk={risk_level} phase={} gates={}",
+            summary.phase_label, summary.gate_results.len()
+        );
+        for result in &summary.gate_results {
+            let mark = if result.passed { "PASS" } else { "FAIL" };
+            eprintln!("  [{mark}] {}: {}", result.gate_name, result.detail);
+        }
+        eprint!("[gate] approve / reject? > ");
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            return elai_orchestrator::GateDecision::Reject;
+        }
+        match input.trim().to_lowercase().as_str() {
+            "approve" | "a" | "yes" | "y" => elai_orchestrator::GateDecision::Approve,
+            _ => elai_orchestrator::GateDecision::Reject,
         }
     }
 }
@@ -5536,6 +5658,7 @@ struct RuntimeClient {
     progress_reporter: Option<InternalPromptProgressReporter>,
     tool_policy: ToolPolicy,
     budget_policy: BudgetPolicy,
+    fsm: Option<Arc<elai_orchestrator::Fsm>>,
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
@@ -5551,8 +5674,8 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 impl RuntimeClient {
     fn current_fsm_state(&self) -> elai_orchestrator::FsmState {
         match &self.tool_policy {
-            ToolPolicy::FsmFiltered { fsm_state_path, .. } => match fsm_state_path {
-                Some(path) => elai_orchestrator::Fsm::read_persisted_state(path),
+            ToolPolicy::FsmFiltered { .. } => match &self.fsm {
+                Some(fsm) => self.runtime.block_on(fsm.get_state()),
                 None => elai_orchestrator::FsmState::Idle,
             },
             _ => elai_orchestrator::FsmState::Idle,
@@ -6655,57 +6778,57 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 
 #[allow(clippy::too_many_lines)]
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "claw v{VERSION}")?;
+    writeln!(out, "elai v{VERSION}")?;
     writeln!(out)?;
     writeln!(out, "Usage:")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
+        "  elai [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
     )?;
     writeln!(out, "      Start the interactive REPL")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] prompt TEXT"
+        "  elai [--model MODEL] [--output-format text|json] prompt TEXT"
     )?;
     writeln!(out, "      Send one prompt and exit")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] TEXT"
+        "  elai [--model MODEL] [--output-format text|json] TEXT"
     )?;
     writeln!(out, "      Shorthand non-interactive prompt mode")?;
     writeln!(
         out,
-        "  claw --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
+        "  elai --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
     )?;
     writeln!(
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
-    writeln!(out, "  claw help")?;
+    writeln!(out, "  elai help")?;
     writeln!(out, "      Alias for --help")?;
-    writeln!(out, "  claw version")?;
+    writeln!(out, "  elai version")?;
     writeln!(out, "      Alias for --version")?;
-    writeln!(out, "  claw status")?;
+    writeln!(out, "  elai status")?;
     writeln!(
         out,
         "      Show the current local workspace status snapshot"
     )?;
-    writeln!(out, "  claw sandbox")?;
+    writeln!(out, "  elai sandbox")?;
     writeln!(out, "      Show the current sandbox isolation snapshot")?;
-    writeln!(out, "  claw doctor")?;
+    writeln!(out, "  elai doctor")?;
     writeln!(
         out,
         "      Diagnose local auth, config, workspace, and sandbox health"
     )?;
-    writeln!(out, "  claw dump-manifests")?;
-    writeln!(out, "  claw bootstrap-plan")?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp")?;
-    writeln!(out, "  claw skills")?;
-    writeln!(out, "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
-    writeln!(out, "  claw login")?;
-    writeln!(out, "  claw logout")?;
-    writeln!(out, "  claw init")?;
+    writeln!(out, "  elai dump-manifests")?;
+    writeln!(out, "  elai bootstrap-plan")?;
+    writeln!(out, "  elai agents")?;
+    writeln!(out, "  elai mcp")?;
+    writeln!(out, "  elai skills")?;
+    writeln!(out, "  elai system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
+    writeln!(out, "  elai login")?;
+    writeln!(out, "  elai logout")?;
+    writeln!(out, "  elai init")?;
     writeln!(out)?;
     writeln!(out, "Flags:")?;
     writeln!(
@@ -6746,7 +6869,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Session shortcuts:")?;
     writeln!(
         out,
-        "  REPL turns auto-save to .claw/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}"
+        "  REPL turns auto-save to .elai/sessions/<session-id>.{PRIMARY_SESSION_EXTENSION}"
     )?;
     writeln!(
         out,
@@ -6757,26 +6880,26 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  claw --model claude-opus \"summarize this repo\"")?;
+    writeln!(out, "  elai --model claude-opus \"summarize this repo\"")?;
     writeln!(
         out,
-        "  claw --output-format json prompt \"explain src/main.rs\""
+        "  elai --output-format json prompt \"explain src/main.rs\""
     )?;
     writeln!(
         out,
-        "  claw --allowedTools read,glob \"summarize Cargo.toml\""
+        "  elai --allowedTools read,glob \"summarize Cargo.toml\""
     )?;
-    writeln!(out, "  claw --resume {LATEST_SESSION_REFERENCE}")?;
+    writeln!(out, "  elai --resume {LATEST_SESSION_REFERENCE}")?;
     writeln!(
         out,
-        "  claw --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
+        "  elai --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
     )?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp show my-server")?;
-    writeln!(out, "  claw /skills")?;
-    writeln!(out, "  claw doctor")?;
-    writeln!(out, "  claw login")?;
-    writeln!(out, "  claw init")?;
+    writeln!(out, "  elai agents")?;
+    writeln!(out, "  elai mcp show my-server")?;
+    writeln!(out, "  elai /skills")?;
+    writeln!(out, "  elai doctor")?;
+    writeln!(out, "  elai login")?;
+    writeln!(out, "  elai init")?;
     Ok(())
 }
 
@@ -6864,7 +6987,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("rusty-claude-cli-{nanos}"))
+        std::env::temp_dir().join(format!("elai-cli-{nanos}"))
     }
 
     fn git(args: &[&str], cwd: &Path) {
@@ -6902,7 +7025,7 @@ mod tests {
     }
 
     fn write_plugin_fixture(root: &Path, name: &str, include_hooks: bool, include_lifecycle: bool) {
-        fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        fs::create_dir_all(root.join(".elai-plugin")).expect("manifest dir");
         if include_hooks {
             fs::create_dir_all(root.join("hooks")).expect("hooks dir");
             fs::write(
@@ -6936,7 +7059,7 @@ mod tests {
             ""
         };
         fs::write(
-            root.join(".claude-plugin").join("plugin.json"),
+            root.join(".elai-plugin").join("plugin.json"),
             format!(
                 "{{\n  \"name\": \"{name}\",\n  \"version\": \"1.0.0\",\n  \"description\": \"runtime plugin fixture\"{hooks}{lifecycle}\n}}"
             ),
@@ -6946,7 +7069,7 @@ mod tests {
     #[test]
     fn defaults_to_repl_when_no_args() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         assert_eq!(
             parse_args(&[]).expect("args should parse"),
             CliAction::Repl {
@@ -6963,28 +7086,28 @@ mod tests {
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(cwd.join(".elai")).expect("project config dir should exist");
         std::fs::create_dir_all(&config_home).expect("config home should exist");
         std::fs::write(
-            cwd.join(".claw").join("settings.json"),
+            cwd.join(".elai").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("project config should write");
 
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
-        let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        let original_config_home = std::env::var("ELAI_CONFIG_HOME").ok();
+        let original_permission_mode = std::env::var("ELAI_PERMISSION_MODE").ok();
+        std::env::set_var("ELAI_CONFIG_HOME", &config_home);
+        std::env::remove_var("ELAI_PERMISSION_MODE");
 
         let resolved = with_current_dir(&cwd, super::default_permission_mode);
 
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ELAI_CONFIG_HOME", value),
+            None => std::env::remove_var("ELAI_CONFIG_HOME"),
         }
         match original_permission_mode {
-            Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
-            None => std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE"),
+            Some(value) => std::env::set_var("ELAI_PERMISSION_MODE", value),
+            None => std::env::remove_var("ELAI_PERMISSION_MODE"),
         }
         std::fs::remove_dir_all(root).expect("temp config root should clean up");
 
@@ -6997,28 +7120,28 @@ mod tests {
         let root = temp_dir();
         let cwd = root.join("project");
         let config_home = root.join("config-home");
-        std::fs::create_dir_all(cwd.join(".claw")).expect("project config dir should exist");
+        std::fs::create_dir_all(cwd.join(".elai")).expect("project config dir should exist");
         std::fs::create_dir_all(&config_home).expect("config home should exist");
         std::fs::write(
-            cwd.join(".claw").join("settings.json"),
+            cwd.join(".elai").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("project config should write");
 
-        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
-        let original_permission_mode = std::env::var("RUSTY_CLAUDE_PERMISSION_MODE").ok();
-        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
-        std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
+        let original_config_home = std::env::var("ELAI_CONFIG_HOME").ok();
+        let original_permission_mode = std::env::var("ELAI_PERMISSION_MODE").ok();
+        std::env::set_var("ELAI_CONFIG_HOME", &config_home);
+        std::env::set_var("ELAI_PERMISSION_MODE", "read-only");
 
         let resolved = with_current_dir(&cwd, super::default_permission_mode);
 
         match original_config_home {
-            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
-            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+            Some(value) => std::env::set_var("ELAI_CONFIG_HOME", value),
+            None => std::env::remove_var("ELAI_CONFIG_HOME"),
         }
         match original_permission_mode {
-            Some(value) => std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", value),
-            None => std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE"),
+            Some(value) => std::env::set_var("ELAI_PERMISSION_MODE", value),
+            None => std::env::remove_var("ELAI_PERMISSION_MODE"),
         }
         std::fs::remove_dir_all(root).expect("temp config root should clean up");
 
@@ -7028,7 +7151,7 @@ mod tests {
     #[test]
     fn parses_prompt_subcommand() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         let args = vec![
             "prompt".to_string(),
             "hello".to_string(),
@@ -7049,7 +7172,7 @@ mod tests {
     #[test]
     fn parses_bare_prompt_and_json_output_flag() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         let args = vec![
             "--output-format=json".to_string(),
             "--model".to_string(),
@@ -7072,7 +7195,7 @@ mod tests {
     #[test]
     fn resolves_model_aliases_in_args() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         let args = vec![
             "--model".to_string(),
             "opus".to_string(),
@@ -7131,7 +7254,7 @@ mod tests {
     #[test]
     fn parses_allowed_tools_flags_with_aliases_and_lists() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         let args = vec![
             "--allowedTools".to_string(),
             "read,glob".to_string(),
@@ -7257,7 +7380,7 @@ mod tests {
     #[test]
     fn parses_single_word_command_aliases_without_falling_back_to_prompt_mode() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         assert_eq!(
             parse_args(&["help".to_string()]).expect("help should parse"),
             CliAction::Help {
@@ -7320,7 +7443,7 @@ mod tests {
     #[test]
     fn multi_word_prompt_still_uses_shorthand_prompt_mode() {
         let _guard = env_lock();
-        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        std::env::remove_var("ELAI_PERMISSION_MODE");
         assert_eq!(
             parse_args(&["help".to_string(), "me".to_string(), "debug".to_string()])
                 .expect("prompt shorthand should still work"),
@@ -7381,7 +7504,7 @@ mod tests {
         let error = parse_args(&["/status".to_string()])
             .expect_err("/status should remain REPL-only when invoked directly");
         assert!(error.contains("interactive-only"));
-        assert!(error.contains("claw --resume SESSION.jsonl /status"));
+        assert!(error.contains("elai --resume SESSION.jsonl /status"));
     }
 
     #[test]
@@ -7475,7 +7598,7 @@ mod tests {
         let error = parse_args(&["--resum".to_string()]).expect_err("unknown option should fail");
         assert!(error.contains("unknown option: --resum"));
         assert!(error.contains("Did you mean --resume?"));
-        assert!(error.contains("claw --help"));
+        assert!(error.contains("elai--help"));
     }
 
     #[test]
@@ -7593,7 +7716,7 @@ mod tests {
         assert!(help.contains("/agents"));
         assert!(help.contains("/skills"));
         assert!(help.contains("/exit"));
-        assert!(help.contains("Auto-save            .claw/sessions/<session-id>.jsonl"));
+        assert!(help.contains("Auto-save            .elai/sessions/<session-id>.jsonl"));
         assert!(help.contains("Resume latest        /resume latest"));
     }
 
@@ -7719,15 +7842,15 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("claw help"));
-        assert!(help.contains("claw version"));
-        assert!(help.contains("claw status"));
-        assert!(help.contains("claw sandbox"));
-        assert!(help.contains("claw init"));
-        assert!(help.contains("claw agents"));
-        assert!(help.contains("claw mcp"));
-        assert!(help.contains("claw skills"));
-        assert!(help.contains("claw /skills"));
+        assert!(help.contains("elaihelp"));
+        assert!(help.contains("elaiversion"));
+        assert!(help.contains("elaistatus"));
+        assert!(help.contains("elaisandbox"));
+        assert!(help.contains("elaiinit"));
+        assert!(help.contains("elaiagents"));
+        assert!(help.contains("elaimcp"));
+        assert!(help.contains("elaiskills"));
+        assert!(help.contains("elai/skills"));
     }
 
     #[test]
@@ -7956,7 +8079,7 @@ UU conflicted.rs",
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
         git(&["config", "user.email", "tests@example.com"], &root);
-        git(&["config", "user.name", "Rusty Claude Tests"], &root);
+        git(&["config", "user.name", "ELAI Tests"], &root);
         fs::write(root.join("tracked.txt"), "hello\n").expect("write file");
         git(&["add", "tracked.txt"], &root);
         git(&["commit", "-m", "init", "--quiet"], &root);
@@ -7974,7 +8097,7 @@ UU conflicted.rs",
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
         git(&["config", "user.email", "tests@example.com"], &root);
-        git(&["config", "user.name", "Rusty Claude Tests"], &root);
+        git(&["config", "user.name", "ELAI Tests"], &root);
         fs::write(root.join("tracked.txt"), "hello\n").expect("write file");
         git(&["add", "tracked.txt"], &root);
         git(&["commit", "-m", "init", "--quiet"], &root);
@@ -7999,7 +8122,7 @@ UU conflicted.rs",
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
         git(&["config", "user.email", "tests@example.com"], &root);
-        git(&["config", "user.name", "Rusty Claude Tests"], &root);
+        git(&["config", "user.name", "ELAI Tests"], &root);
         fs::write(root.join(".gitignore"), ".omx/\nignored.txt\n").expect("write gitignore");
         fs::write(root.join("tracked.txt"), "hello\n").expect("write tracked");
         git(&["add", ".gitignore", "tracked.txt"], &root);
@@ -8024,7 +8147,7 @@ UU conflicted.rs",
         fs::create_dir_all(&root).expect("root dir");
         git(&["init", "--quiet"], &root);
         git(&["config", "user.email", "tests@example.com"], &root);
-        git(&["config", "user.name", "Rusty Claude Tests"], &root);
+        git(&["config", "user.name", "ELAI Tests"], &root);
         fs::write(root.join("tracked.txt"), "hello\n").expect("write tracked");
         git(&["add", "tracked.txt"], &root);
         git(&["commit", "-m", "init", "--quiet"], &root);
@@ -8121,10 +8244,10 @@ UU conflicted.rs",
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("claw --resume [SESSION.jsonl|session-id|latest]"));
+        assert!(help.contains("elai --resume [SESSION.jsonl|session-id|latest]"));
         assert!(help.contains("Use `latest` with --resume, /resume, or /session switch"));
-        assert!(help.contains("claw --resume latest"));
-        assert!(help.contains("claw --resume latest /status /diff /export notes.txt"));
+        assert!(help.contains("elai --resume latest"));
+        assert!(help.contains("elai --resume latest /status /diff /export notes.txt"));
     }
 
     #[test]
@@ -8138,7 +8261,7 @@ UU conflicted.rs",
         let handle = create_managed_session_handle("session-alpha").expect("jsonl handle");
         assert!(handle.path.ends_with("session-alpha.jsonl"));
 
-        let legacy_path = workspace.join(".claw/sessions/legacy.json");
+        let legacy_path = workspace.join(".elai/sessions/legacy.json");
         std::fs::create_dir_all(
             legacy_path
                 .parent()
@@ -8210,7 +8333,7 @@ UU conflicted.rs",
     fn resume_usage_mentions_latest_shortcut() {
         let usage = render_resume_usage();
         assert!(usage.contains("/resume <session-path|session-id|latest>"));
-        assert!(usage.contains(".claw/sessions/<session-id>.jsonl"));
+        assert!(usage.contains(".elai/sessions/<session-id>.jsonl"));
         assert!(usage.contains("/session list"));
     }
 
@@ -8224,7 +8347,7 @@ UU conflicted.rs",
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("claw-cli-{label}-{nanos}"))
+        std::env::temp_dir().join(format!("elai-cli-{label}-{nanos}"))
     }
 
     #[test]
@@ -8233,8 +8356,8 @@ UU conflicted.rs",
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let rendered = crate::init::render_init_claude_md(&workspace_root);
-        assert!(rendered.contains("# CLAUDE.md"));
+        let rendered = crate::init::render_init_elai_md(&workspace_root);
+        assert!(rendered.contains("# ELAI.md"));
         assert!(rendered.contains("cargo clippy --workspace --all-targets -- -D warnings"));
     }
 
@@ -8381,7 +8504,7 @@ UU conflicted.rs",
             task_label: "ship plugin progress".to_string(),
             step: 3,
             phase: "running read_file".to_string(),
-            detail: Some("reading rust/crates/rusty-claude-cli/src/main.rs".to_string()),
+            detail: Some("reading rust/crates/elai-cli/src/main.rs".to_string()),
             saw_final_text: false,
         };
 
@@ -8428,8 +8551,8 @@ UU conflicted.rs",
             "reading src/main.rs"
         );
         assert!(
-            describe_tool_progress("bash", r#"{"command":"cargo test -p rusty-claude-cli"}"#)
-                .contains("cargo test -p rusty-claude-cli")
+            describe_tool_progress("bash", r#"{"command":"cargo test -p elai-cli"}"#)
+                .contains("cargo test -p elai-cli")
         );
         assert_eq!(
             describe_tool_progress("grep_search", r#"{"pattern":"ultraplan","path":"rust"}"#),
@@ -8821,7 +8944,7 @@ UU conflicted.rs",
         let runtime_plugin_state =
             build_runtime_plugin_state_with_loader(&workspace, &loader, &runtime_config)
                 .expect("plugin state should load");
-        let mut runtime = build_runtime_with_plugin_state(
+        let (mut runtime, _ssb) = build_runtime_with_plugin_state(
             Session::new(),
             "runtime-plugin-lifecycle",
             DEFAULT_MODEL.to_string(),
@@ -8832,6 +8955,7 @@ UU conflicted.rs",
             PermissionMode::DangerFullAccess,
             None,
             runtime_plugin_state,
+            None,
             None,
         )
         .expect("runtime should build");
