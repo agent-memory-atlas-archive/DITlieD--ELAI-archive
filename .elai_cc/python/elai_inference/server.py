@@ -154,7 +154,7 @@ def _log_vram(label=""):
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
-        total = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
         logger.info(
             f"VRAM [{label}]: allocated={alloc:.2f}GB, reserved={reserved:.2f}GB, "
             f"total={total:.2f}GB, free={total - reserved:.2f}GB"
