@@ -527,11 +527,11 @@ fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
         .find(|spec| spec.name == command_name)?;
     let guidance = if slash_command.resume_supported {
         format!(
-            "`elai{command_name}` is a slash command. Use `elai--resume SESSION.jsonl /{command_name}` or start `elai` and run `/{command_name}`."
+            "`elai {command_name}` is a slash command. Use `elai --resume SESSION.jsonl /{command_name}` or start `elai` and run `/{command_name}`."
         )
     } else {
         format!(
-            "`elai{command_name}` is a slash command. Start `elai` and run `/{command_name}` inside the REPL."
+            "`elai {command_name}` is a slash command. Start `elai` and run `/{command_name}` inside the REPL."
         )
     };
     Some(guidance)
@@ -571,7 +571,7 @@ fn parse_direct_slash_cli_action(
         Ok(Some(command)) => Err({
             let _ = command;
             format!(
-                "slash command {command_name} is interactive-only. Start `elai` and run it there, or use `elai--resume SESSION.jsonl {command_name}` / `elai--resume {latest} {command_name}` when the command is marked [resume] in /help.",
+                "slash command {command_name} is interactive-only. Start `elai` and run it there, or use `elai --resume SESSION.jsonl {command_name}` / `elai --resume {latest} {command_name}` when the command is marked [resume] in /help.",
                 command_name = rest[0],
                 latest = LATEST_SESSION_REFERENCE,
             )
@@ -7842,15 +7842,14 @@ mod tests {
         let mut help = Vec::new();
         print_help_to(&mut help).expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
-        assert!(help.contains("elaihelp"));
-        assert!(help.contains("elaiversion"));
-        assert!(help.contains("elaistatus"));
-        assert!(help.contains("elaisandbox"));
-        assert!(help.contains("elaiinit"));
-        assert!(help.contains("elaiagents"));
-        assert!(help.contains("elaimcp"));
-        assert!(help.contains("elaiskills"));
-        assert!(help.contains("elai/skills"));
+        assert!(help.contains("elai help"));
+        assert!(help.contains("elai version"));
+        assert!(help.contains("elai status"));
+        assert!(help.contains("elai sandbox"));
+        assert!(help.contains("elai init"));
+        assert!(help.contains("elai agents"));
+        assert!(help.contains("elai mcp"));
+        assert!(help.contains("elai skills"));
     }
 
     #[test]
