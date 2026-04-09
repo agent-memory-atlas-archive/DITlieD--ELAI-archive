@@ -1,0 +1,97 @@
+# Phase 3J Verification Metrics
+# Date: 2026-04-10
+# Steps completed: 3J.1-3J.4 (partial), 3J.COMPOSE, 3J.LOCAL, 3J.PIPELINE,
+#   3J.WIRE.FOUNDATION, 3J.WIRE.BUDGET, 3J.WIRE.RULES, 3J.WIRE.SESSION,
+#   3J.WIRE.PLAN, 3J.WIRE.STUBS
+# Steps deferred: 3J.5-3J.12 (see workflow/reasoning/phase-3J.13-deferrals.md)
+
+[model]
+test_model = "gemma4-e2b"
+
+[compilation]
+workspace_check_passes = true
+workspace_check_all_features_passes = false
+all_features_failure_reason = "usearch C++ build fails (MSVC env vars missing, not code issue)"
+default_features_check_passes = true
+clean_build_time_sec = 44.5
+feature_gates_verified = true
+non_vllm_build_compiles = true
+
+[tests]
+core_passed = 28
+core_failed = 0
+plugins_passed = 31
+plugins_failed = 2
+plugins_failure_reason = "pre-existing bundled plugin discovery tests (unrelated to WIRE.*)"
+orchestrator_passed = 8
+orchestrator_failed = 0
+knowledge_passed = 6
+knowledge_failed = 0
+providers_passed = 106
+providers_failed = 0
+providers_ignored = 1
+reasoning_passed = 16
+reasoning_failed = 0
+cli_passed = 134
+cli_failed = 0
+tools_passed = 60
+tools_failed = 0
+contracts_passed = 4
+contracts_failed = 0
+total_passed = 393
+total_failed = 2
+total_failure_preexisting = true
+
+[wire_integration]
+foundation_ssb = true
+foundation_fsm = true
+foundation_session_tracer = true
+foundation_interactive_gate = false
+foundation_interactive_gate_reason = "defined but not wired into ConversationRuntime"
+budget_slot_system = true
+budget_slot_rules = true
+budget_slot_phase = true
+budget_phase_slot_tokens_default = 0
+budget_output_reserve = 4096
+rules_engine_wired = true
+rules_tree_sitter_ast = true
+rules_dkg_querier = true
+rules_seed_rules_loaded = true
+session_dag_wired = true
+session_dag_replaces_jsonl = true
+plan_skeleton_loaded = true
+plan_command_wired = true
+stubs_tree_sitter_evaluator = true
+stubs_dkg_querier_adapter = true
+stubs_empty_dkg_fallback = true
+
+[vllm]
+vllm_latency_p50_ms = "deferred"
+vllm_latency_p95_ms = "deferred"
+vllm_latency_p99_ms = "deferred"
+
+[dola]
+dola_overhead_pct = "deferred"
+dola_factuality_delta = "deferred"
+
+[turboquant]
+turboquant_decision = "DEFER"
+turboquant_roundtrip_mse = "deferred"
+
+[milp]
+milp_decision = "EVALUATE"
+
+[steering]
+steering_vector_count = 0
+steering_vectors_effective = 0
+
+[multiplexing]
+multiplexing_enabled = false
+
+[ssb]
+ssb_action_type_count = 17
+
+[hooks]
+t1_hook_latency_median_ms = "deferred"
+t2_hook_latency_median_ms = "deferred"
+t3_hook_latency_median_ms = "deferred"
