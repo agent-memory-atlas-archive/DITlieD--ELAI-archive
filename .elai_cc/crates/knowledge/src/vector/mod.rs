@@ -3,6 +3,7 @@ use crate::ReadinessStatus;
 pub mod cache;
 pub mod circuit_breaker;
 pub mod hnsw_index;
+pub mod indexer;
 pub mod ort_session;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,54 @@ pub trait VectorModule {
     fn embed_code(&self, text: &str) -> Result<Vec<f32>, VectorError>;
     fn embed_text(&self, text: &str) -> Result<Vec<f32>, VectorError>;
     fn readiness(&self) -> ReadinessStatus;
+}
+
+// ---------------------------------------------------------------------------
+// OrtVectorModule — production VectorModule backed by OrtSession
+// ---------------------------------------------------------------------------
+
+/// Production embedding module using two ONNX sessions: one for code
+/// (GraphCodeBERT, 768-dim) and one for text (Granite, 384-dim).
+///
+/// Gracefully degrades: if either session's embed() returns Err (including the
+/// current stub), callers get VectorError::OrtError and the pipeline falls back
+/// to BM25-only via the degradation cascade.
+pub struct OrtVectorModule {
+    code_session: ort_session::OrtSession,
+    text_session: ort_session::OrtSession,
+}
+
+impl OrtVectorModule {
+    pub fn new(
+        code_session: ort_session::OrtSession,
+        text_session: ort_session::OrtSession,
+    ) -> Self {
+        Self { code_session, text_session }
+    }
+}
+
+impl VectorModule for OrtVectorModule {
+    fn embed_code(&self, text: &str) -> Result<Vec<f32>, VectorError> {
+        self.code_session
+            .embed(text)
+            .map_err(|e| VectorError::OrtError(e.to_string()))
+    }
+
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, VectorError> {
+        self.text_session
+            .embed(text)
+            .map_err(|e| VectorError::OrtError(e.to_string()))
+    }
+
+    fn readiness(&self) -> ReadinessStatus {
+        let code_ok = self.code_session.embed("test").is_ok();
+        let text_ok = self.text_session.embed("test").is_ok();
+        match (code_ok, text_ok) {
+            (true, true) => ReadinessStatus::Ready,
+            (false, false) => ReadinessStatus::Unavailable,
+            _ => ReadinessStatus::Degraded,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +381,8 @@ mod tests {
         assert!(canonical.extension().unwrap() == "onnx");
 
         // OrtSession::new with nonexistent canonical path returns ModelNotFound
-        let result = super::ort_session::OrtSession::new(&canonical, 512, 768);
+        let tok = PathBuf::from("/nonexistent/tokenizer.json");
+        let result = super::ort_session::OrtSession::new(&canonical, &tok, 512, 768);
         assert!(result.is_err());
         match result.unwrap_err() {
             OrtError::ModelNotFound(msg) => {
@@ -345,7 +395,8 @@ mod tests {
     #[test]
     fn test_missing_model_degraded() {
         let bad_path = PathBuf::from("/nonexistent/model.onnx");
-        let result = super::ort_session::OrtSession::new(&bad_path, 512, 768);
+        let bad_tok = PathBuf::from("/nonexistent/tokenizer.json");
+        let result = super::ort_session::OrtSession::new(&bad_path, &bad_tok, 512, 768);
         assert!(result.is_err());
         match result.unwrap_err() {
             OrtError::ModelNotFound(_) => {}

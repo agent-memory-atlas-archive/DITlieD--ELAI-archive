@@ -4,8 +4,11 @@ use std::error::Error;
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
 use crate::catrag::CatRag;
-use crate::pagerank::DkgSnapshot;
+use crate::dkg::DkgEngine;
+use crate::pagerank::{compute_repo_map, DkgSnapshot, PageRankConfig};
 use crate::reranker::CrossEncoderReranker;
+use crate::vector::VectorModule;
+use crate::vector::indexer::VectorIndexer;
 use crate::ReadinessStatus;
 
 // ---------------------------------------------------------------------------
@@ -38,15 +41,39 @@ pub struct QueryPipeline {
     pub catrag: CatRag,
     pub arag: AragOrchestrator,
     pub cross_encoder: Option<CrossEncoderReranker>,
+    pub vector_module: Option<Box<dyn VectorModule + Send + Sync>>,
+    pub vector_indexer: Option<VectorIndexer>,
+    pub dkg_engine: Option<DkgEngine>,
 }
 
 impl QueryPipeline {
     pub fn new(bm25: Bm25Index, catrag: CatRag, arag: AragOrchestrator) -> Self {
-        Self { bm25, catrag, arag, cross_encoder: None }
+        Self {
+            bm25, catrag, arag,
+            cross_encoder: None,
+            vector_module: None,
+            vector_indexer: None,
+            dkg_engine: None,
+        }
     }
 
     pub fn with_cross_encoder(mut self, reranker: CrossEncoderReranker) -> Self {
         self.cross_encoder = Some(reranker);
+        self
+    }
+
+    pub fn with_vector_module(mut self, vm: Box<dyn VectorModule + Send + Sync>) -> Self {
+        self.vector_module = Some(vm);
+        self
+    }
+
+    pub fn with_vector_indexer(mut self, indexer: VectorIndexer) -> Self {
+        self.vector_indexer = Some(indexer);
+        self
+    }
+
+    pub fn with_dkg_engine(mut self, engine: DkgEngine) -> Self {
+        self.dkg_engine = Some(engine);
         self
     }
 
@@ -79,30 +106,98 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 1: vector (stub — no vector index, graceful degrade)
+        // Stage 1: vector (embed query, search BruteForceIndex if populated)
+        let (vector_results, vector_error) = match (&self.vector_module, &self.vector_indexer) {
+            (Some(vm), Some(indexer)) if !indexer.is_empty() => {
+                match vm.embed_text(query) {
+                    Ok(query_vec) => {
+                        match indexer.search(&query_vec, 10) {
+                            Ok(hits) => {
+                                let results: Vec<RetrievalResult> = hits
+                                    .into_iter()
+                                    .map(|(meta, score)| RetrievalResult {
+                                        chunk_id: format!(
+                                            "{}:{}-{}",
+                                            meta.path.display(),
+                                            meta.line_start,
+                                            meta.line_end
+                                        ),
+                                        snippet: meta.snippet,
+                                        score: score as f64,
+                                        tool_used: "vector".to_string(),
+                                    })
+                                    .collect();
+                                (results, None)
+                            }
+                            Err(e) => {
+                                log::debug!("vector search failed: {e}");
+                                (Vec::new(), Some(e.to_string()))
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("vector embed failed: {e}");
+                        (Vec::new(), Some(e.to_string()))
+                    }
+                }
+            }
+            (Some(vm), _) => {
+                // Module present but no index — probe embed readiness only.
+                match vm.embed_text(query) {
+                    Ok(_) => (Vec::new(), None),
+                    Err(e) => (Vec::new(), Some(e.to_string())),
+                }
+            }
+            _ => (Vec::new(), None),
+        };
         stages.push(PipelineStage {
             stage: "vector".to_string(),
-            results: Vec::new(),
+            results: vector_results,
             latency_ms: 0,
             circuit_breaker_state: None,
-            error: None,
+            error: vector_error,
         });
 
-        // Stage 2: pagerank (empty DkgSnapshot — no DkgEngine field)
-        let empty_snapshot = DkgSnapshot {
-            nodes: Vec::new(),
-            edges: Vec::new(),
+        // Stage 2: pagerank — build snapshot from DkgEngine if available
+        let (snapshot, pagerank_results, pagerank_error) = match self.dkg_engine {
+            Some(ref engine) => match DkgSnapshot::from_engine(engine) {
+                Ok(snap) => {
+                    let config = PageRankConfig::default();
+                    let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
+                    let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
+                    let results: Vec<RetrievalResult> = repo_map
+                        .ranked_symbols
+                        .iter()
+                        .map(|rs| RetrievalResult {
+                            chunk_id: format!("{}:{}", rs.file_path.display(), rs.symbol_name),
+                            snippet: rs.signature.clone(),
+                            score: rs.rank,
+                            tool_used: "pagerank".to_string(),
+                        })
+                        .collect();
+                    (snap, results, None)
+                }
+                Err(e) => {
+                    log::debug!("DkgSnapshot::from_engine failed: {e}");
+                    let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
+                    (empty, Vec::new(), Some(e.to_string()))
+                }
+            },
+            None => {
+                let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
+                (empty, Vec::new(), None)
+            }
         };
         stages.push(PipelineStage {
             stage: "pagerank".to_string(),
-            results: Vec::new(),
+            results: pagerank_results,
             latency_ms: 0,
             circuit_breaker_state: None,
-            error: None,
+            error: pagerank_error,
         });
 
-        // Stage 3: catrag (empty snapshot triggers density guard -> empty overlay)
-        let _overlay = self.catrag.compute_overlay(query, &empty_snapshot, &[])?;
+        // Stage 3: catrag (uses real snapshot when DkgEngine is available)
+        let _overlay = self.catrag.compute_overlay(query, &snapshot, &[])?;
         stages.push(PipelineStage {
             stage: "catrag".to_string(),
             results: Vec::new(),
@@ -112,7 +207,7 @@ impl QueryPipeline {
         });
 
         // Stage 4: arag
-        let arag_results = self.arag.query_pipeline(query, &empty_snapshot)?;
+        let arag_results = self.arag.query_pipeline(query, &snapshot)?;
         stages.push(PipelineStage {
             stage: "arag".to_string(),
             results: arag_results,
@@ -238,6 +333,27 @@ impl QueryPipeline {
             return (ReadinessStatus::Unavailable, result);
         }
 
+        // Stage 1.5: vector canary — probe embedding model readiness.
+        // Vector failure is non-fatal: degrades to BM25-only, does not block startup.
+        if let Some(ref vm) = self.vector_module {
+            match vm.readiness() {
+                ReadinessStatus::Ready => {
+                    result.vector_ok = true;
+                }
+                ReadinessStatus::Degraded => {
+                    log::warn!("canary: vector module partially degraded");
+                    result.vector_error = Some("partial: one embedding model failed".to_string());
+                }
+                ReadinessStatus::Unavailable => {
+                    log::warn!("canary: vector module unavailable (embed stub or model missing)");
+                    result.vector_error = Some("unavailable: embedding models not operational".to_string());
+                }
+            }
+        } else {
+            // No vector module configured — not an error, just BM25-only mode.
+            result.vector_error = Some("not configured".to_string());
+        }
+
         // Stage 2: rerank canary — verify cross-encoder is loaded and operational.
         // The reranker's rerank() method never returns Err to callers (spec L149:
         // final fallback always returns candidates unchanged). So we check is_loaded()
@@ -293,6 +409,8 @@ pub struct CanaryResult {
     pub bm25_error: Option<String>,
     pub rerank_ok: bool,
     pub rerank_error: Option<String>,
+    pub vector_ok: bool,
+    pub vector_error: Option<String>,
     /// Synthetic candidates produced by BM25 canary, passed to reranker.
     pub canary_candidates: Vec<RetrievalResult>,
 }

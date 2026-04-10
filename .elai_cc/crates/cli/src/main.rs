@@ -45,6 +45,7 @@ use crate::commands::{
 };
 use init::initialize_repo;
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
+use crossterm::{cursor::MoveToColumn, execute, terminal::{Clear, ClearType}};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use elai_orchestrator::{
     clear_oauth_credentials, format_usd, generate_pkce_pair, generate_state,
@@ -60,11 +61,17 @@ use serde::Deserialize;
 use serde_json::json;
 use elai_rules::predicate::from_json;
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine};
-use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter};
+use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter, DkgEngine};
 use elai_knowledge::pipeline::{QueryPipeline, PipelineStage};
 use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::catrag::{CatRag, CatRagConfig};
 use elai_knowledge::arag::{AragOrchestrator, AragConfig};
+use elai_knowledge::vector::OrtVectorModule;
+use elai_knowledge::vector::ort_session::OrtSession;
+use elai_knowledge::vector::indexer::VectorIndexer;
+use elai_knowledge::vector::TEXT_VEC_DIM;
+use elai_knowledge::startup::{startup_readiness_check, StartupConfig};
+use elai_knowledge::degradation::DegradationCascade;
 use elai_rules::stubs::EmptyDkgQuerier;
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
@@ -3065,7 +3072,92 @@ impl LiveCli {
                 Ok(bm25) => {
                     let catrag = CatRag::new(CatRagConfig::default());
                     let arag = AragOrchestrator::new(AragConfig::default());
-                    Some(QueryPipeline::new(bm25, catrag, arag))
+                    let mut pipeline = QueryPipeline::new(bm25, catrag, arag);
+
+                    // Attempt to load vector embedding models (graceful degradation).
+                    // Models expected at .elai/models/ under project root.
+                    let models_dir = project_root.join(".elai").join("models");
+                    let code_model_path = models_dir.join("graphcodebert.onnx");
+                    let code_tok_path = models_dir.join("graphcodebert-tokenizer.json");
+                    let text_model_path = models_dir.join("granite-embed.onnx");
+                    let text_tok_path = models_dir.join("granite-embed-tokenizer.json");
+                    match (
+                        OrtSession::new(&code_model_path, &code_tok_path, 512, 768),
+                        OrtSession::new(&text_model_path, &text_tok_path, 512, 384),
+                    ) {
+                        (Ok(code_sess), Ok(text_sess)) => {
+                            let vm = OrtVectorModule::new(code_sess, text_sess);
+                            pipeline.vector_module = Some(Box::new(vm));
+                        }
+                        (code_r, text_r) => {
+                            if let Err(ref e) = code_r {
+                                eprintln!("warn: vector code model not loaded: {e}");
+                            }
+                            if let Err(ref e) = text_r {
+                                eprintln!("warn: vector text model not loaded: {e}");
+                            }
+                            // Degrade to BM25-only — vector_module stays None.
+                        }
+                    }
+
+                    // Initialize vector indexer if embedding models are available.
+                    // Try loading persisted index first; if missing, build from scratch.
+                    if pipeline.vector_module.is_some() {
+                        let data_dir = project_root.join(".elai").join("data");
+                        let index_path = data_dir.join("vector_index.json");
+                        let indexer = if index_path.exists() {
+                            match VectorIndexer::load(&index_path, TEXT_VEC_DIM) {
+                                Ok(idx) => {
+                                    eprintln!("info: loaded vector index ({} chunks)", idx.len());
+                                    idx
+                                }
+                                Err(e) => {
+                                    eprintln!("warn: vector index load failed, rebuilding: {e}");
+                                    VectorIndexer::new(TEXT_VEC_DIM)
+                                }
+                            }
+                        } else {
+                            VectorIndexer::new(TEXT_VEC_DIM)
+                        };
+                        pipeline.vector_indexer = Some(indexer);
+                    }
+
+                    // Attach DkgEngine for PageRank repo maps (graceful degradation).
+                    let dkg_db_path = project_root.join(".elai").join("dkg.db");
+                    if dkg_db_path.exists() {
+                        match DkgEngine::new(&dkg_db_path, None, 0) {
+                            Ok(engine) => {
+                                pipeline.dkg_engine = Some(engine);
+                            }
+                            Err(e) => {
+                                eprintln!("warn: DkgEngine init failed: {e}");
+                            }
+                        }
+                    }
+
+                    // Run startup readiness check.
+                    let mut cascade = DegradationCascade::new(false);
+                    let startup_config = StartupConfig::default();
+                    let startup_result = startup_readiness_check(
+                        &pipeline,
+                        &mut cascade,
+                        &startup_config,
+                        clock.as_ref(),
+                        None,
+                    );
+                    match startup_result.status {
+                        elai_knowledge::ReadinessStatus::Ready => {
+                            // Pipeline ready — no message needed.
+                        }
+                        elai_knowledge::ReadinessStatus::Degraded => {
+                            eprintln!("warn: knowledge pipeline degraded (BM25_ONLY)");
+                        }
+                        elai_knowledge::ReadinessStatus::Unavailable => {
+                            eprintln!("warn: knowledge pipeline unavailable");
+                        }
+                    }
+
+                    Some(pipeline)
                 }
                 Err(e) => {
                     eprintln!("warn: BM25 index init failed: {e}");
@@ -3120,28 +3212,36 @@ impl LiveCli {
             },
             None => "Api",
         };
-        let index_status = if self.has_knowledge_pipeline() {
-            "BM25 active"
+        let index_status_owned;
+        let index_status = if let Some(ref pipeline) = self.knowledge_pipeline {
+            if let (Some(_), Some(ref indexer)) = (&pipeline.vector_module, &pipeline.vector_indexer) {
+                index_status_owned = format!("BM25 + vector ({} chunks)", indexer.len());
+                &index_status_owned
+            } else if pipeline.vector_module.is_some() {
+                "BM25 + vector (no index)"
+            } else {
+                "BM25 active (vector degraded)"
+            }
         } else {
             "no index"
         };
         format!(
             "\x1b[38;2;27;122;110m\
- ███████╗██╗      █████╗ ██╗\n\
- ██╔════╝██║     ██╔══██╗██║\n\
- █████╗  ██║     ███████║██║\n\
- ██╔══╝  ██║     ██╔══██║██║\n\
- ███████╗███████╗██║  ██║██║\n\
- ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝\x1b[0m\n\n\
-  \x1b[2mModel\x1b[0m            {}\n\
-  \x1b[2mPermissions\x1b[0m      {}\n\
-  \x1b[2mBackend\x1b[0m          {}\n\
-  \x1b[2mIndex\x1b[0m            {}\n\
-  \x1b[2mBranch\x1b[0m           {}\n\
-  \x1b[2mWorkspace\x1b[0m        {}\n\
-  \x1b[2mDirectory\x1b[0m        {}\n\
-  \x1b[2mSession\x1b[0m          {}\n\
-  \x1b[2mAuto-save\x1b[0m        {}\n\n\
+ ███████╗██╗      █████╗ ██╗\r\n\
+ ██╔════╝██║     ██╔══██╗██║\r\n\
+ █████╗  ██║     ███████║██║\r\n\
+ ██╔══╝  ██║     ██╔══██║██║\r\n\
+ ███████╗███████╗██║  ██║██║\r\n\
+ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝\x1b[0m\r\n\r\n\
+  \x1b[2mModel\x1b[0m            {}\r\n\
+  \x1b[2mPermissions\x1b[0m      {}\r\n\
+  \x1b[2mBackend\x1b[0m          {}\r\n\
+  \x1b[2mIndex\x1b[0m            {}\r\n\
+  \x1b[2mBranch\x1b[0m           {}\r\n\
+  \x1b[2mWorkspace\x1b[0m        {}\r\n\
+  \x1b[2mDirectory\x1b[0m        {}\r\n\
+  \x1b[2mSession\x1b[0m          {}\r\n\
+  \x1b[2mAuto-save\x1b[0m        {}\r\n\r\n\
   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
             self.permission_mode.as_str(),
@@ -3352,12 +3452,10 @@ impl LiveCli {
         match result {
             Ok(summary) => {
                 self.replace_runtime(runtime)?;
-                spinner.finish(
-                    "Done",
-                    TerminalRenderer::new().color_theme(),
-                    &mut stdout,
-                )?;
-                println!();
+                // Clear the spinner line without overwriting the streamed response.
+                let _ = execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine));
+                write!(stdout, "\r\n")?;
+                stdout.flush()?;
                 if let Some(event) = summary.auto_compaction {
                     println!(
                         "{}",
@@ -3427,6 +3525,14 @@ impl LiveCli {
         if let Some(ref mut pipeline) = self.knowledge_pipeline {
             if let Err(e) = pipeline.bm25.update_file(path, None) {
                 eprintln!("warn: BM25 update_file failed for {}: {e}", path.display());
+            }
+            // Also re-index in vector index if available.
+            if let (Some(ref vm), Some(ref mut indexer)) =
+                (&pipeline.vector_module, &mut pipeline.vector_indexer)
+            {
+                if let Err(e) = indexer.index_file(path, vm.as_ref(), None) {
+                    eprintln!("warn: vector index_file failed for {}: {e}", path.display());
+                }
             }
         }
     }

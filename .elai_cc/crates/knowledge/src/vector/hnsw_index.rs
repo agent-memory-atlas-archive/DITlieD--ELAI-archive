@@ -139,12 +139,245 @@ impl VectorIndex for UsearchIndex {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (trait-level tests that don't require usearch)
+// BruteForceIndex — pure-Rust cosine-similarity search, no native deps.
+// Suitable for project-scale corpora (hundreds to low thousands of vectors).
+// ---------------------------------------------------------------------------
+
+pub struct BruteForceIndex {
+    dim: usize,
+    keys: Vec<u64>,
+    vecs: Vec<Vec<f32>>,
+}
+
+impl BruteForceIndex {
+    pub fn new(dim: usize) -> Self {
+        Self { dim, keys: Vec::new(), vecs: Vec::new() }
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// Remove a key and its vector. Returns true if found.
+    pub fn remove(&mut self, key: u64) -> bool {
+        if let Some(pos) = self.keys.iter().position(|&k| k == key) {
+            self.keys.swap_remove(pos);
+            self.vecs.swap_remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
+        let mut dot = 0.0f64;
+        let mut norm_a = 0.0f64;
+        let mut norm_b = 0.0f64;
+        for (x, y) in a.iter().zip(b.iter()) {
+            let xd = *x as f64;
+            let yd = *y as f64;
+            dot += xd * yd;
+            norm_a += xd * xd;
+            norm_b += yd * yd;
+        }
+        let denom = norm_a.sqrt() * norm_b.sqrt();
+        if denom == 0.0 { 0.0 } else { (dot / denom) as f32 }
+    }
+
+    fn search_with_filter(
+        &self,
+        query: &[f32],
+        k: usize,
+        predicate: Option<&dyn Fn(u64) -> bool>,
+    ) -> Result<Vec<(u64, f32)>, IndexError> {
+        if query.len() != self.dim {
+            return Err(IndexError::SearchFailed(format!(
+                "query dim {} != index dim {}",
+                query.len(),
+                self.dim
+            )));
+        }
+        let mut scored: Vec<(u64, f32)> = self
+            .keys
+            .iter()
+            .zip(self.vecs.iter())
+            .filter(|(&key, _)| predicate.map_or(true, |p| p(key)))
+            .map(|(&key, vec)| (key, Self::cosine_sim(query, vec)))
+            .collect();
+        // Sort descending by similarity.
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        Ok(scored)
+    }
+}
+
+impl VectorIndex for BruteForceIndex {
+    fn add(&mut self, key: u64, vec: &[f32]) -> Result<(), IndexError> {
+        if vec.len() != self.dim {
+            return Err(IndexError::AddFailed(format!(
+                "vec dim {} != index dim {}",
+                vec.len(),
+                self.dim
+            )));
+        }
+        // Upsert: if key exists, replace its vector.
+        if let Some(pos) = self.keys.iter().position(|&k| k == key) {
+            self.vecs[pos] = vec.to_vec();
+        } else {
+            self.keys.push(key);
+            self.vecs.push(vec.to_vec());
+        }
+        Ok(())
+    }
+
+    fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>, IndexError> {
+        self.search_with_filter(query, k, None)
+    }
+
+    fn filtered_search(
+        &self,
+        query: &[f32],
+        k: usize,
+        predicate: &dyn Fn(u64) -> bool,
+    ) -> Result<Vec<(u64, f32)>, IndexError> {
+        self.search_with_filter(query, k, Some(predicate))
+    }
+
+    fn save(&self, path: &Path) -> Result<(), IndexError> {
+        let data = BruteForceData {
+            dim: self.dim,
+            keys: self.keys.clone(),
+            vecs: self.vecs.clone(),
+        };
+        let bytes = serde_json::to_vec(&data)
+            .map_err(|e| IndexError::SaveFailed(format!("serialize: {e}")))?;
+        std::fs::write(path, bytes)
+            .map_err(|e| IndexError::SaveFailed(format!("write: {e}")))?;
+        Ok(())
+    }
+
+    fn load(path: &Path, dim: usize) -> Result<Self, IndexError> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| IndexError::LoadFailed(format!("read: {e}")))?;
+        let data: BruteForceData = serde_json::from_slice(&bytes)
+            .map_err(|e| IndexError::LoadFailed(format!("deserialize: {e}")))?;
+        if data.dim != dim {
+            return Err(IndexError::LoadFailed(format!(
+                "dim mismatch: file has {}, expected {dim}",
+                data.dim
+            )));
+        }
+        Ok(Self {
+            dim: data.dim,
+            keys: data.keys,
+            vecs: data.vecs,
+        })
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BruteForceData {
+    dim: usize,
+    keys: Vec<u64>,
+    vecs: Vec<Vec<f32>>,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brute_force_add_and_search() {
+        let dim = 4;
+        let mut idx = BruteForceIndex::new(dim);
+        idx.add(1, &[1.0, 0.0, 0.0, 0.0]).unwrap();
+        idx.add(2, &[0.0, 1.0, 0.0, 0.0]).unwrap();
+        idx.add(3, &[0.9, 0.1, 0.0, 0.0]).unwrap();
+
+        let results = idx.search(&[1.0, 0.0, 0.0, 0.0], 2).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, 1); // exact match is most similar
+        assert_eq!(results[1].0, 3); // nearly aligned
+    }
+
+    #[test]
+    fn brute_force_filtered_search() {
+        let dim = 4;
+        let mut idx = BruteForceIndex::new(dim);
+        for key in 0u64..10 {
+            let v: Vec<f32> = (0..dim).map(|d| (key as f32) * 0.1 + (d as f32) * 0.01).collect();
+            idx.add(key, &v).unwrap();
+        }
+        let query: Vec<f32> = (0..dim).map(|d| 0.5 + (d as f32) * 0.01).collect();
+        let results = idx.filtered_search(&query, 5, &|key| key < 5).unwrap();
+        for (key, _) in &results {
+            assert!(*key < 5);
+        }
+    }
+
+    #[test]
+    fn brute_force_upsert() {
+        let mut idx = BruteForceIndex::new(2);
+        idx.add(1, &[1.0, 0.0]).unwrap();
+        idx.add(1, &[0.0, 1.0]).unwrap(); // upsert
+        assert_eq!(idx.len(), 1);
+        let results = idx.search(&[0.0, 1.0], 1).unwrap();
+        assert_eq!(results[0].0, 1);
+        assert!((results[0].1 - 1.0).abs() < 0.01); // exact match after upsert
+    }
+
+    #[test]
+    fn brute_force_remove() {
+        let mut idx = BruteForceIndex::new(2);
+        idx.add(1, &[1.0, 0.0]).unwrap();
+        idx.add(2, &[0.0, 1.0]).unwrap();
+        assert!(idx.remove(1));
+        assert_eq!(idx.len(), 1);
+        assert!(!idx.remove(99));
+    }
+
+    #[test]
+    fn brute_force_persistence_roundtrip() {
+        let dim = 4;
+        let mut idx = BruteForceIndex::new(dim);
+        for key in 0u64..5 {
+            let v: Vec<f32> = (0..dim).map(|d| (key as f32) * 0.1 + (d as f32) * 0.01).collect();
+            idx.add(key, &v).unwrap();
+        }
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        idx.save(&path).unwrap();
+
+        let loaded = BruteForceIndex::load(&path, dim).unwrap();
+        assert_eq!(loaded.len(), 5);
+
+        let query: Vec<f32> = (0..dim).map(|d| 0.3 + (d as f32) * 0.01).collect();
+        let before = idx.search(&query, 3).unwrap();
+        let after = loaded.search(&query, 3).unwrap();
+        let keys_before: std::collections::HashSet<u64> = before.iter().map(|(k, _)| *k).collect();
+        let keys_after: std::collections::HashSet<u64> = after.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys_before, keys_after);
+    }
+
+    #[test]
+    fn brute_force_dim_mismatch_errors() {
+        let mut idx = BruteForceIndex::new(4);
+        assert!(idx.add(1, &[1.0, 0.0]).is_err()); // wrong dim
+        assert!(idx.search(&[1.0, 0.0], 1).is_err()); // wrong dim
+    }
 
     #[cfg(feature = "usearch-hnsw")]
     #[test]

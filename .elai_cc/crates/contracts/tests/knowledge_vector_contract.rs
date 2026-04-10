@@ -57,7 +57,8 @@ fn _assert_ort_session_api() {
     let _: usize = TEXT_VEC_DIM;
     // OrtSession::new returns Result, not panic
     let p = std::path::PathBuf::from("/nonexistent");
-    let _: Result<OrtSession, OrtError> = OrtSession::new(&p, 512, 768);
+    let t = std::path::PathBuf::from("/nonexistent/tok.json");
+    let _: Result<OrtSession, OrtError> = OrtSession::new(&p, &t, 512, 768);
 }
 
 // CircuitBreaker API
