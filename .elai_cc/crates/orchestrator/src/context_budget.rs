@@ -503,7 +503,7 @@ impl ContextBudget {
     /// Fixed slots (SystemPrompt, Rules, PhaseSpec) and OutputReserve are not truncatable
     /// by reduction — their content is provided as-is. Only dynamic slots (RepoMap,
     /// CodeContext, SsbEntries, GrcHistory) are capped after allocation reduction.
-    fn cap_actual_to_allocated(&mut self) {
+    pub fn cap_actual_to_allocated(&mut self) {
         const DYNAMIC_SLOTS: [ContextSlot; 4] = [
             ContextSlot::RepoMap,
             ContextSlot::CodeContext,
@@ -521,7 +521,7 @@ impl ContextBudget {
 
     /// Recalculate total_used as the sum of actual_tokens across all slots.
     /// Also recalculate total_allocated from allocated_tokens.
-    fn recalculate_total_used(&mut self) {
+    pub fn recalculate_total_used(&mut self) {
         self.total_used = self.slots.iter().map(|s| s.actual_tokens).sum();
         self.total_allocated = self.slots.iter().map(|s| s.allocated_tokens).sum();
     }

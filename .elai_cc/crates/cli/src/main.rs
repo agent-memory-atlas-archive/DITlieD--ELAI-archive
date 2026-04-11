@@ -2405,6 +2405,8 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let mut editor =
         input::LineEditor::new(&prompt_label, cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
+    // Advance FSM from IDLE into EXECUTING for interactive single-agent mode.
+    cli.fsm_enter_executing();
 
     loop {
         editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
@@ -2415,6 +2417,7 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                    cli.fsm_shutdown();
                     cli.persist_session()?;
                     break;
                 }
@@ -2436,6 +2439,7 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             }
             input::ReadOutcome::Cancel => {}
             input::ReadOutcome::Exit => {
+                cli.fsm_shutdown();
                 cli.persist_session()?;
                 break;
             }
@@ -2979,6 +2983,8 @@ impl LiveCli {
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
         let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
         let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+        let plan = load_plan_if_exists();
+        let plan_slot_tokens = plan_phase_slot_tokens(plan.as_ref());
         let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
@@ -2991,6 +2997,7 @@ impl LiveCli {
             None,
             None,
             Some(fsm.clone()),
+            plan_slot_tokens,
         )?;
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -3007,7 +3014,6 @@ impl LiveCli {
                 None
             }
         };
-        let plan = load_plan_if_exists();
         let cli = Self {
             model,
             allowed_tools,
@@ -3040,6 +3046,8 @@ impl LiveCli {
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
         let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
         let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+        let plan = load_plan_if_exists();
+        let plan_slot_tokens = plan_phase_slot_tokens(plan.as_ref());
         let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
@@ -3052,6 +3060,7 @@ impl LiveCli {
             None,
             Some(&backend_config),
             Some(fsm.clone()),
+            plan_slot_tokens,
         )?;
         let dag_path = session.path.parent()
             .map(|p| p.join("dag.db"))
@@ -3068,7 +3077,6 @@ impl LiveCli {
                 None
             }
         };
-        let plan = load_plan_if_exists();
         let knowledge_pipeline = {
             let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -3399,6 +3407,7 @@ impl LiveCli {
             }
         }
 
+        let plan_slot_tokens = plan_phase_slot_tokens(self.plan.as_ref());
         let (runtime, _ssb) = build_runtime(
             session,
             &self.session.id,
@@ -3411,6 +3420,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            plan_slot_tokens,
         )?;
         let runtime = runtime.with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
@@ -3486,6 +3496,54 @@ impl LiveCli {
                 self.last_snap_id = Some(snap_id);
             }
             Err(e) => eprintln!("warn: snapshot save failed: {e}"),
+        }
+    }
+
+    /// Drive the FSM through a single transition. Builds a one-shot tokio runtime
+    /// to call the async `Fsm::transition`. Mirrors the pattern used by
+    /// `try_save_snapshot`. Errors are logged as warnings; the REPL must not crash
+    /// on FSM failures.
+    fn fsm_transition_sync(&self, target: elai_orchestrator::FsmState) {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("[fsm] failed to build runtime for transition to {target}: {e}");
+                return;
+            }
+        };
+        if let Err(e) = rt.block_on(self.fsm.transition(target, "interactive", vec![])) {
+            eprintln!("[fsm] transition to {target} failed: {e}");
+        }
+    }
+
+    /// Walk the FSM from IDLE into EXECUTING for interactive single-agent mode.
+    /// Chain: IDLE -> PLANNING -> TESTING_FIRST -> EXECUTING.
+    /// Any step failure is logged; subsequent steps are still attempted so that
+    /// if the FSM was already past IDLE (e.g. resumed session) the chain
+    /// converges gracefully rather than hard-failing.
+    fn fsm_enter_executing(&self) {
+        use elai_orchestrator::FsmState;
+        for target in [FsmState::Planning, FsmState::TestingFirst, FsmState::Executing] {
+            self.fsm_transition_sync(target);
+        }
+    }
+
+    /// Walk the FSM from EXECUTING back to IDLE for a clean interactive shutdown.
+    /// Chain: EXECUTING -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE.
+    /// Individual step failures are logged and the chain continues — the session
+    /// is ending regardless.
+    fn fsm_shutdown(&self) {
+        use elai_orchestrator::FsmState;
+        for target in [
+            FsmState::Auditing,
+            FsmState::Memorizing,
+            FsmState::Complete,
+            FsmState::Idle,
+        ] {
+            self.fsm_transition_sync(target);
         }
     }
 
@@ -3922,6 +3980,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            0,
         )?;
         self.replace_runtime(runtime)?;
         self.model.clone_from(&model);
@@ -3970,6 +4029,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            0,
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -4002,6 +4062,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            0,
         )?;
         self.replace_runtime(runtime)?;
         println!(
@@ -4053,6 +4114,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            plan_phase_slot_tokens(self.plan.as_ref()),
         )?;
         self.replace_runtime(runtime)?;
         self.session = SessionHandle {
@@ -4195,6 +4257,7 @@ impl LiveCli {
                     None,
                     self.backend_config.as_ref(),
                     Some(self.fsm.clone()),
+                    plan_phase_slot_tokens(self.plan.as_ref()),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = SessionHandle {
@@ -4264,6 +4327,7 @@ impl LiveCli {
                     None,
                     self.backend_config.as_ref(),
                     Some(self.fsm.clone()),
+                    plan_phase_slot_tokens(self.plan.as_ref()),
                 )?;
                 self.replace_runtime(runtime)?;
                 self.session = handle;
@@ -4316,6 +4380,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            plan_phase_slot_tokens(self.plan.as_ref()),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()
@@ -4338,6 +4403,7 @@ impl LiveCli {
             None,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            plan_phase_slot_tokens(self.plan.as_ref()),
         )?;
         self.replace_runtime(runtime)?;
         self.persist_session()?;
@@ -4364,6 +4430,7 @@ impl LiveCli {
             progress,
             self.backend_config.as_ref(),
             Some(self.fsm.clone()),
+            plan_phase_slot_tokens(self.plan.as_ref()),
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
@@ -4471,6 +4538,12 @@ fn load_plan_if_exists() -> Option<elai_orchestrator::PlanSkeleton> {
             None
         }
     }
+}
+
+fn plan_phase_slot_tokens(plan: Option<&elai_orchestrator::PlanSkeleton>) -> usize {
+    plan.and_then(|p| p.to_toml().ok())
+        .map(|s| s.len() / TOKEN_CHARS_PER_TOKEN)
+        .unwrap_or(0)
 }
 
 impl Drop for LiveCli {
@@ -6039,6 +6112,7 @@ fn build_runtime(
     progress_reporter: Option<InternalPromptProgressReporter>,
     backend_config: Option<&BackendConfig>,
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
+    phase_slot_tokens: usize,
 ) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
     let runtime_plugin_state = build_runtime_plugin_state()?;
     build_runtime_with_plugin_state(
@@ -6054,6 +6128,7 @@ fn build_runtime(
         runtime_plugin_state,
         backend_config,
         fsm,
+        phase_slot_tokens,
     )
 }
 
@@ -6072,6 +6147,7 @@ fn build_runtime_with_plugin_state(
     runtime_plugin_state: RuntimePluginState,
     backend_config: Option<&BackendConfig>,
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
+    phase_slot_tokens: usize,
 ) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
     let RuntimePluginState {
         feature_config,
@@ -6195,7 +6271,7 @@ fn build_runtime_with_plugin_state(
         fsm,
         rule_engine,
         compiled_rules,
-        phase_slot_tokens: 0,
+        phase_slot_tokens,
     };
 
     let mut runtime = ConversationRuntime::new_with_features(
@@ -6538,13 +6614,65 @@ impl ApiClient for RuntimeClient {
                 match elai_orchestrator::context_budget::ContextBudget::compute(
                     effective, [slot_0, slot_1, self.phase_slot_tokens], BUDGET_OUTPUT_RESERVE,
                 ) {
-                    Ok(budget) => {
-                        let output_slot = elai_orchestrator::context_budget::ContextSlot::OutputReserve as usize;
+                    Ok(mut budget) => {
+                        use elai_orchestrator::context_budget::ContextSlot;
+
+                        // Set actual_tokens for fixed slots from measured char counts
+                        budget.slots[ContextSlot::SystemPrompt as usize].actual_tokens = slot_0;
+                        budget.slots[ContextSlot::Rules as usize].actual_tokens = slot_1;
+                        budget.slots[ContextSlot::PhaseSpec as usize].actual_tokens = self.phase_slot_tokens;
+
+                        // Estimate message tokens and attribute to CodeContext slot
+                        let msg_chars: usize = request.messages.iter()
+                            .flat_map(|m| m.blocks.iter())
+                            .map(|block| match block {
+                                ContentBlock::Text { text } => text.len(),
+                                ContentBlock::ToolUse { input, .. } => input.len(),
+                                ContentBlock::ToolResult { output, .. } => output.len(),
+                            })
+                            .sum();
+                        let msg_tokens = msg_chars / TOKEN_CHARS_PER_TOKEN;
+                        let code_ctx_alloc = budget.slots[ContextSlot::CodeContext as usize].allocated_tokens;
+                        budget.slots[ContextSlot::CodeContext as usize].actual_tokens =
+                            msg_tokens.min(code_ctx_alloc);
+
+                        budget.recalculate_total_used();
+
+                        // Build byte slices for cache breakpoint hashing
+                        let system_bytes: Vec<u8> = request.system_prompt.join("\n\n").into_bytes();
+                        let rules_bytes: Vec<u8> = self.compiled_rules.iter()
+                            .flat_map(|(r, _)| r.predicate_json.bytes())
+                            .collect();
+                        let empty: Vec<u8> = Vec::new();
+                        budget.update_breakpoints(&[
+                            &system_bytes,         // SystemPrompt
+                            &rules_bytes,          // Rules
+                            &empty,                // PhaseSpec
+                            &empty,                // RepoMap
+                            &empty,                // CodeContext
+                            &empty,                // SsbEntries
+                            &empty,                // GrcHistory
+                            &empty,                // OutputReserve
+                        ]);
+
+                        let output_slot = ContextSlot::OutputReserve as usize;
                         let budget_output = budget.slots[output_slot].allocated_tokens as u32;
                         eprintln!(
-                            "[pipeline] budget: slot_0(system)={}, slot_1(rules)={}, \
-                             total_allocated={}, output_reserve={}, effective_context={}",
-                            slot_0, slot_1, budget.total_allocated, budget_output, effective,
+                            "[pipeline] budget: slots=[sys={},rules={},phase={},repo={},code={},ssb={},grc={},out={}] \
+                             total_alloc={} total_used={} bp0={} bp1={} effective={}",
+                            budget.slots[ContextSlot::SystemPrompt as usize].allocated_tokens,
+                            budget.slots[ContextSlot::Rules as usize].allocated_tokens,
+                            budget.slots[ContextSlot::PhaseSpec as usize].allocated_tokens,
+                            budget.slots[ContextSlot::RepoMap as usize].allocated_tokens,
+                            budget.slots[ContextSlot::CodeContext as usize].allocated_tokens,
+                            budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens,
+                            budget.slots[ContextSlot::GrcHistory as usize].allocated_tokens,
+                            budget.slots[output_slot].allocated_tokens,
+                            budget.total_allocated,
+                            budget.total_used,
+                            budget.cache_breakpoints[0].valid,
+                            budget.cache_breakpoints[1].valid,
+                            effective,
                         );
                         model_max_tokens.min(budget_output)
                     }
