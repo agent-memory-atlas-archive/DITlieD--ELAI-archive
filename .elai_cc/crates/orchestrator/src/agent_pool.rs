@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use elai_core::EntropySource;
-use elai_reasoning::{AgentGrcConfig, GrcBudget, GrcState, GroundingLevel};
+use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState, GroundingLevel};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,7 +61,6 @@ pub trait ModelPool: Send + Sync {
 // AgentHandle: per-agent metadata exposed to orchestrator + downstream phases
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
 pub struct AgentHandle {
     pub agent_id: Uuid,
     pub role: AgentRole,
@@ -70,6 +69,47 @@ pub struct AgentHandle {
     pub active_files: Vec<PathBuf>,
     pub grc_config: AgentGrcConfig,
     pub scratch_dir: PathBuf,
+    /// Reasoning engine instance configured for this agent's role.
+    /// Instantiated at spawn time with the role-specific GRC config applied via
+    /// `GrcEngine::with_agent_config`. Each handle owns its own engine so that
+    /// topic budgets are isolated per-agent.
+    pub grc_engine: BasicGrcEngine,
+}
+
+impl Clone for AgentHandle {
+    /// Produces a structurally identical handle with a fresh `BasicGrcEngine`
+    /// seeded from the same `grc_config`. Topic state (budget counters, step
+    /// history) is intentionally NOT cloned — each cloned handle starts with a
+    /// clean engine. This mirrors the intent of `with_agent_config`, which
+    /// resets topic state.
+    fn clone(&self) -> Self {
+        let mut engine = BasicGrcEngine::new();
+        engine.with_agent_config(self.grc_config.clone());
+        Self {
+            agent_id: self.agent_id,
+            role: self.role,
+            status: self.status,
+            task: self.task.clone(),
+            active_files: self.active_files.clone(),
+            grc_config: self.grc_config.clone(),
+            scratch_dir: self.scratch_dir.clone(),
+            grc_engine: engine,
+        }
+    }
+}
+
+impl std::fmt::Debug for AgentHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentHandle")
+            .field("agent_id", &self.agent_id)
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .field("task", &self.task)
+            .field("active_files", &self.active_files)
+            .field("grc_config", &self.grc_config)
+            .field("scratch_dir", &self.scratch_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +249,11 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         let grc_config = default_grc_config(&role);
         let scratch_dir = self.config.scratch_base.join(agent_id.to_string());
 
+        // Instantiate a fresh reasoning engine and apply the role-specific GRC config.
+        // with_agent_config resets all topic state, so each spawned agent starts clean.
+        let mut grc_engine = BasicGrcEngine::new();
+        grc_engine.with_agent_config(grc_config.clone());
+
         // task stored in handle for lifecycle use (3C.2 wires actual execution)
         let handle = AgentHandle {
             agent_id,
@@ -218,6 +263,7 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
             active_files: Vec::new(),
             grc_config,
             scratch_dir,
+            grc_engine,
         };
 
         self.agents.insert(agent_id, handle.clone());

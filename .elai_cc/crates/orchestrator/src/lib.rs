@@ -1,4 +1,5 @@
 pub mod agent_pool;
+pub mod grc;
 pub mod anti_spiral;
 pub mod bsp;
 mod bash;
@@ -226,6 +227,7 @@ pub use agent_pool::{
     default_grc_config, AgentHandle, AgentMessage, AgentPool, AgentPoolConfig, AgentPoolError,
     AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
+pub use grc::{PipelineGrc, PipelineGrcError};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,

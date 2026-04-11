@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use elai_core::ClockProvider;
 
+use elai_reasoning::BasicGrcEngine;
 use crate::agent_pool::{AgentHandle, AgentPool, AgentPoolError, AgentRole};
 use crate::bsp::channels::{
     ChannelId, ChannelRegistry, ChannelSnapshot, ChannelState, InMemoryChannelRegistry,
@@ -468,13 +469,15 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     // Straggler: timeout expired. Build placeholder handle
                     // for the death event recorded by the caller.
                     let role = task_meta[idx].2;
+                    let grc_config = crate::agent_pool::default_grc_config(&role);
                     timed_out.push((node_id.clone(), AgentHandle {
                         agent_id: uuid::Uuid::nil(),
                         role,
                         status: crate::agent_pool::AgentStatus::Failed,
                         task: task_meta[idx].3.clone(),
                         active_files: Vec::new(),
-                        grc_config: crate::agent_pool::default_grc_config(&role),
+                        grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+                        grc_config,
                         scratch_dir: PathBuf::new(),
                     }));
                 }

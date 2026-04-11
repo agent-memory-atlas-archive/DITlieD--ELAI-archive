@@ -326,7 +326,7 @@ mod tests {
     use crate::agent_pool::{AgentRole, AgentStatus};
     use crate::ssb::{Ssb, SsbActionType, SsbConfig};
     use elai_core::{ClockProvider, SeededClock};
-    use elai_reasoning::{AgentGrcConfig, GrcBudget, GrcState, GroundingLevel};
+    use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -350,13 +350,15 @@ mod tests {
     }
 
     fn test_handle(tmp_dir: &Path) -> AgentHandle {
+        let grc_config = test_grc_config();
         AgentHandle {
             agent_id: Uuid::nil(),
             role: AgentRole::Executor,
             status: AgentStatus::Running,
             task: "test-task".into(),
             active_files: vec![],
-            grc_config: test_grc_config(),
+            grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+            grc_config,
             scratch_dir: tmp_dir.to_path_buf(),
         }
     }
@@ -597,13 +599,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_latest_returns_none_on_nonexistent_dir() {
+        let grc_config = test_grc_config();
         let handle = AgentHandle {
             agent_id: Uuid::nil(),
             role: AgentRole::Executor,
             status: AgentStatus::Running,
             task: "test".into(),
             active_files: vec![],
-            grc_config: test_grc_config(),
+            grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+            grc_config,
             scratch_dir: PathBuf::from("/nonexistent/path/that/does/not/exist"),
         };
 
@@ -717,13 +721,15 @@ mod tests {
         let dir_with_spaces = tmp.path().join("path with spaces");
         std::fs::create_dir_all(&dir_with_spaces).expect("mkdir");
 
+        let grc_config = test_grc_config();
         let handle = AgentHandle {
             agent_id: Uuid::nil(),
             role: AgentRole::Executor,
             status: AgentStatus::Running,
             task: "test".into(),
             active_files: vec![],
-            grc_config: test_grc_config(),
+            grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+            grc_config,
             scratch_dir: dir_with_spaces,
         };
 

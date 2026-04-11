@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use elai_core::ClockProvider;
 
+use elai_reasoning::BasicGrcEngine;
 use crate::agent_pool::{AgentHandle, AgentStatus};
 use crate::checkpoint::{CheckpointManager, GrcHistoryEntry};
 use crate::ssb::{
@@ -169,13 +170,17 @@ impl<C: ClockProvider> RecoveryManager<C> {
         )
         .await?;
 
-        // Build recovered handle: same agent_id, status = Spawning
+        // Build recovered handle: same agent_id, status = Spawning.
+        // A fresh reasoning engine is created from the cloned grc_config so that
+        // the recovered agent starts with a clean topic budget (no leftover state
+        // from the failed execution leaks into the recovery run).
         let recovered_handle = AgentHandle {
             agent_id: dead_handle.agent_id,
             role: dead_handle.role,
             status: AgentStatus::Spawning,
             task: dead_handle.task.clone(),
             active_files: restored_active_files.clone(),
+            grc_engine: BasicGrcEngine::with_config(dead_handle.grc_config.clone()),
             grc_config: dead_handle.grc_config.clone(),
             scratch_dir: dead_handle.scratch_dir.clone(),
         };
@@ -205,7 +210,7 @@ mod tests {
     use crate::checkpoint::{AgentCheckpointData, CheckpointManager};
     use crate::ssb::{Ssb, SsbActionType, SsbConfig};
     use elai_core::SeededClock;
-    use elai_reasoning::{AgentGrcConfig, GrcBudget, GrcState, GroundingLevel};
+    use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -229,6 +234,7 @@ mod tests {
     }
 
     fn test_handle(scratch_dir: &std::path::Path) -> AgentHandle {
+        let grc_config = test_grc_config();
         AgentHandle {
             agent_id: Uuid::from_bytes([
                 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x47, 0x08, 0x89, 0x0a, 0x0b, 0x0c, 0x0d,
@@ -238,7 +244,8 @@ mod tests {
             status: AgentStatus::Running,
             task: "test-recovery-task".into(),
             active_files: vec![PathBuf::from("src/main.rs")],
-            grc_config: test_grc_config(),
+            grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+            grc_config,
             scratch_dir: scratch_dir.to_path_buf(),
         }
     }
