@@ -72,6 +72,9 @@ use elai_knowledge::vector::indexer::VectorIndexer;
 use elai_knowledge::vector::TEXT_VEC_DIM;
 use elai_knowledge::startup::{startup_readiness_check, StartupConfig};
 use elai_knowledge::degradation::DegradationCascade;
+use elai_knowledge::reranker::{CrossEncoderReranker, RerankerConfig};
+use elai_knowledge::splade::{SpladeExpander, SpladeConfig};
+use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
 use elai_rules::stubs::EmptyDkgQuerier;
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
@@ -3068,6 +3071,26 @@ impl LiveCli {
         let plan = load_plan_if_exists();
         let knowledge_pipeline = {
             let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+            // Check and upgrade index version (Phase 1I.7).
+            let elai_data_dir = project_root.join(".elai");
+            if elai_data_dir.exists() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                match check_and_upgrade(&elai_data_dir, now, &LogNotifier) {
+                    Ok(action) => {
+                        if action != elai_knowledge::index_version::UpgradeAction::Reuse {
+                            eprintln!("info: index upgrade action: {action:?}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("warn: index version check failed: {e}");
+                    }
+                }
+            }
+
             match Bm25Index::new(&project_root, &session.id) {
                 Ok(bm25) => {
                     let catrag = CatRag::new(CatRagConfig::default());
@@ -3122,6 +3145,45 @@ impl LiveCli {
                         pipeline.vector_indexer = Some(indexer);
                     }
 
+                    // Attach cross-encoder reranker (graceful degradation).
+                    let ce_model_path = models_dir.join("cross-encoder.onnx");
+                    let ce_tok_path = models_dir.join("cross-encoder-tokenizer.json");
+                    if ce_model_path.exists() && ce_tok_path.exists() {
+                        let ce_config = RerankerConfig {
+                            model_path: ce_model_path,
+                            tokenizer_path: ce_tok_path,
+                            ..RerankerConfig::default()
+                        };
+                        let mut reranker = CrossEncoderReranker::new(ce_config, clock.clone());
+                        match reranker.load() {
+                            Ok(()) => {
+                                pipeline = pipeline.with_cross_encoder(reranker);
+                            }
+                            Err(e) => {
+                                eprintln!("warn: cross-encoder reranker not loaded: {e}");
+                            }
+                        }
+                    }
+
+                    // Attach SPLADE expander (graceful degradation, feature-gated in knowledge crate).
+                    let splade_model_path = models_dir.join("splade").join("model.onnx");
+                    let splade_tok_path = models_dir.join("splade").join("tokenizer.json");
+                    if splade_model_path.exists() && splade_tok_path.exists() {
+                        let splade_config = SpladeConfig {
+                            model_path: splade_model_path,
+                            tokenizer_path: splade_tok_path,
+                            ..SpladeConfig::default()
+                        };
+                        match SpladeExpander::new(splade_config, clock.clone()) {
+                            Ok(expander) => {
+                                pipeline = pipeline.with_splade(expander);
+                            }
+                            Err(e) => {
+                                eprintln!("warn: SPLADE expander not loaded: {e}");
+                            }
+                        }
+                    }
+
                     // Attach DkgEngine for PageRank repo maps (graceful degradation).
                     let dkg_db_path = project_root.join(".elai").join("dkg.db");
                     if dkg_db_path.exists() {
@@ -3136,7 +3198,7 @@ impl LiveCli {
                     }
 
                     // Run startup readiness check.
-                    let mut cascade = DegradationCascade::new(false);
+                    let mut cascade = DegradationCascade::new(pipeline.splade.is_some());
                     let startup_config = StartupConfig::default();
                     let startup_result = startup_readiness_check(
                         &pipeline,

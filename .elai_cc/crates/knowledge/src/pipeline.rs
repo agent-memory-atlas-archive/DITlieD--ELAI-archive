@@ -4,12 +4,18 @@ use std::error::Error;
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
 use crate::catrag::CatRag;
+use crate::degradation::SearchMode;
 use crate::dkg::DkgEngine;
 use crate::pagerank::{compute_repo_map, DkgSnapshot, PageRankConfig};
+use crate::query_trace::{QueryTrace, StageTrace};
+use crate::query_validator::QueryValidator;
 use crate::reranker::CrossEncoderReranker;
 use crate::vector::VectorModule;
 use crate::vector::indexer::VectorIndexer;
 use crate::ReadinessStatus;
+
+#[cfg(feature = "splade")]
+use crate::splade::SpladeExpander;
 
 // ---------------------------------------------------------------------------
 // PipelineStage
@@ -35,7 +41,7 @@ pub struct PipelineStage {
 // QueryPipeline
 // ---------------------------------------------------------------------------
 
-/// End-to-end retrieval pipeline: bm25 -> vector -> pagerank -> catrag -> arag -> rerank -> cross_encoder -> token_fit.
+/// End-to-end retrieval pipeline: bm25 -> vector -> splade -> pagerank -> catrag -> arag -> rerank -> cross_encoder -> token_fit.
 pub struct QueryPipeline {
     pub bm25: Bm25Index,
     pub catrag: CatRag,
@@ -44,6 +50,8 @@ pub struct QueryPipeline {
     pub vector_module: Option<Box<dyn VectorModule + Send + Sync>>,
     pub vector_indexer: Option<VectorIndexer>,
     pub dkg_engine: Option<DkgEngine>,
+    #[cfg(feature = "splade")]
+    pub splade: Option<SpladeExpander>,
 }
 
 impl QueryPipeline {
@@ -54,6 +62,8 @@ impl QueryPipeline {
             vector_module: None,
             vector_indexer: None,
             dkg_engine: None,
+            #[cfg(feature = "splade")]
+            splade: None,
         }
     }
 
@@ -77,6 +87,12 @@ impl QueryPipeline {
         self
     }
 
+    #[cfg(feature = "splade")]
+    pub fn with_splade(mut self, expander: SpladeExpander) -> Self {
+        self.splade = Some(expander);
+        self
+    }
+
     /// Execute the full retrieval pipeline for a query.
     ///
     /// Returns 8 stages in order. `latency_ms` is 0 for all stages;
@@ -85,6 +101,9 @@ impl QueryPipeline {
         &self,
         query: &str,
     ) -> Result<Vec<PipelineStage>, Box<dyn Error>> {
+        // Pre-query validation (Phase 1I.3).
+        QueryValidator::validate(query)?;
+
         let mut stages = Vec::with_capacity(7);
 
         // Stage 0: bm25
@@ -157,6 +176,42 @@ impl QueryPipeline {
             circuit_breaker_state: None,
             error: vector_error,
         });
+
+        // Stage 1.5: splade keyword expansion
+        #[cfg(feature = "splade")]
+        {
+            let splade_results = if let Some(ref expander) = self.splade {
+                let expanded = expander.expand_query(query);
+                if expanded.is_empty() {
+                    Vec::new()
+                } else {
+                    let expanded_query: String = expanded
+                        .iter()
+                        .map(|t| t.term.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    self.bm25.query(&expanded_query, 10)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|h| RetrievalResult {
+                            chunk_id: format!("{}:{}-{}", h.path, h.line_start, h.line_end),
+                            snippet: h.snippet,
+                            score: h.score as f64,
+                            tool_used: "splade".to_string(),
+                        })
+                        .collect()
+                }
+            } else {
+                Vec::new()
+            };
+            stages.push(PipelineStage {
+                stage: "splade".to_string(),
+                results: splade_results,
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+        }
 
         // Stage 2: pagerank — build snapshot from DkgEngine if available
         let (snapshot, pagerank_results, pagerank_error) = match self.dkg_engine {
@@ -265,6 +320,19 @@ impl QueryPipeline {
             circuit_breaker_state: None,
             error: None,
         });
+
+        // Build QueryTrace from pipeline stages (Phase 1I.6).
+        let stage_traces: Vec<StageTrace> = stages.iter().map(|s| StageTrace {
+            stage: s.stage.clone(),
+            latency_ms: s.latency_ms,
+            input_count: 0,
+            output_count: s.results.len(),
+            error: s.error.clone(),
+            circuit_breaker_state: s.circuit_breaker_state.clone(),
+        }).collect();
+        let result_count = stages.last().map(|s| s.results.len()).unwrap_or(0);
+        let trace = QueryTrace::new(stage_traces, 0, SearchMode::Hybrid, result_count);
+        log::debug!("query_trace: query_id={} stages={} results={}", trace.query_id, trace.stages.len(), trace.result_count);
 
         Ok(stages)
     }

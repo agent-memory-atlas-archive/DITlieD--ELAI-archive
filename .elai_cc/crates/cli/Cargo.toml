@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 crossterm = "0.28"
 elai-core = { path = "../core" }
-elai-knowledge = { path = "../knowledge" }
+elai-knowledge = { path = "../knowledge", features = ["splade"] }
 elai-orchestrator = { path = "../orchestrator" }
 elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers", features = ["sidecar"] }
