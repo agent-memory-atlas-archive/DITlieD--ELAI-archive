@@ -34,6 +34,14 @@ JSD_MAX_NATS = 0.6931471805599453
 EPSILON = 1e-12
 
 # ---------------------------------------------------------------------------
+# Steering vector constants (ActAdd)
+# ---------------------------------------------------------------------------
+
+COEFFICIENT_DEFAULT = 5.0
+COEFFICIENT_MIN = 1.0
+COEFFICIENT_MAX = 30.0
+
+# ---------------------------------------------------------------------------
 # DoLa implementation
 # ---------------------------------------------------------------------------
 
@@ -84,6 +92,71 @@ def dola_decode_token(final_logits, final_probs, candidate_raw, candidate_probs,
         final_logits[v_head_mask] - candidate_raw[best_layer][v_head_mask]
     )
     return contrastive.argmax().item(), best_layer
+
+
+# ---------------------------------------------------------------------------
+# Steering vector implementation (ActAdd)
+# ---------------------------------------------------------------------------
+
+class SteeringEngine:
+    """Steering vector engine for ActAdd (activation addition)."""
+
+    def __init__(self, n_layers, hidden_dim, coefficient=COEFFICIENT_DEFAULT,
+                 target_layer="auto"):
+        self.n_layers = n_layers
+        self.hidden_dim = hidden_dim
+        self.coefficient = coefficient
+        self.target_layer = target_layer
+        self.vectors = {}  # layer_idx -> torch.Tensor
+
+        # Resolve target layer
+        if target_layer == "auto":
+            self.target_layer_idx = n_layers // 3
+        else:
+            self.target_layer_idx = int(target_layer)
+
+        # Validate
+        if self.target_layer_idx < 0 or self.target_layer_idx >= n_layers:
+            logger.warning(
+                f"Target layer {target_layer} out of range [0, {n_layers}), "
+                f"clamping to {n_layers // 3}"
+            )
+            self.target_layer_idx = n_layers // 3
+
+        if coefficient < COEFFICIENT_MIN or coefficient > COEFFICIENT_MAX:
+            logger.warning(
+                f"Coefficient {coefficient} outside range [{COEFFICIENT_MIN}, {COEFFICIENT_MAX}], "
+                f"clamping to {COEFFICIENT_DEFAULT}"
+            )
+            self.coefficient = COEFFICIENT_DEFAULT
+
+    def add_vector(self, layer_idx, vector):
+        """Add a steering vector for a specific layer."""
+        if isinstance(vector, np.ndarray):
+            vector = torch.from_numpy(vector).float()
+        if vector.shape != (self.hidden_dim,):
+            logger.error(
+                f"Vector shape {vector.shape} doesn't match hidden_dim {self.hidden_dim}"
+            )
+            return
+        self.vectors[layer_idx] = vector.to("cpu")  # Store on CPU, move to GPU during inference
+
+    def apply_steering(self, hidden_state, layer_idx):
+        """Apply steering vector to hidden state at target layer."""
+        if layer_idx != self.target_layer_idx:
+            return hidden_state
+
+        if layer_idx not in self.vectors:
+            return hidden_state
+
+        vector = self.vectors[layer_idx].to(hidden_state.device)
+        # h_modified = h + c * steering_vector
+        modified = hidden_state + self.coefficient * vector.unsqueeze(0)
+        return modified
+
+    def is_active(self):
+        """Check if steering is active."""
+        return self.target_layer_idx in self.vectors
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +235,11 @@ def _log_vram(label=""):
 
 
 class InferenceEngine:
-    """Composed inference: HF Transformers + DoLa + TurboQuant."""
+    """Composed inference: HF Transformers + DoLa + TurboQuant + Steering."""
 
     def __init__(self, model_name, dola_enabled=True, dola_alpha=ALPHA_DEFAULT,
-                 turboquant_bits=4, max_new_tokens=256, device_map="auto",
+                 turboquant_bits=4, steering_enabled=False, steering_coefficient=COEFFICIENT_DEFAULT,
+                 steering_layer="auto", max_new_tokens=256, device_map="auto",
                  load_in_4bit=True):
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -194,9 +268,11 @@ class InferenceEngine:
         if hasattr(self.model.config, 'text_config'):
             tc = self.model.config.text_config
             self.n_layers = tc.num_hidden_layers
+            self.hidden_dim = tc.hidden_size
             self.head_dim = getattr(tc, 'head_dim', 256)
         else:
             self.n_layers = self.model.config.num_hidden_layers
+            self.hidden_dim = self.model.config.hidden_size
             self.head_dim = getattr(self.model.config, 'head_dim', 256)
 
         self.candidate_layers = get_candidate_layers(self.n_layers)
@@ -207,11 +283,17 @@ class InferenceEngine:
         # TurboQuant
         self.kv_compressor = KVCompressor(self.head_dim, turboquant_bits)
 
+        # Steering vectors
+        self.steering_enabled = steering_enabled
+        self.steering_engine = SteeringEngine(
+            self.n_layers, self.hidden_dim, steering_coefficient, steering_layer
+        ) if steering_enabled else None
+
         logger.info(
-            f"Engine ready: layers={self.n_layers}, head_dim={self.head_dim}, "
+            f"Engine ready: layers={self.n_layers}, hidden_dim={self.hidden_dim}, head_dim={self.head_dim}, "
             f"dola={'ON' if dola_enabled else 'OFF'} (alpha={dola_alpha}), "
-            f"turboquant={'ON' if self.kv_compressor.enabled else 'OFF'} "
-            f"({turboquant_bits}-bit)"
+            f"turboquant={'ON' if self.kv_compressor.enabled else 'OFF'} ({turboquant_bits}-bit), "
+            f"steering={'ON' if steering_enabled and self.steering_engine else 'OFF'}"
         )
 
     def generate(self, prompt, max_tokens=None, temperature=0.0, stream=False):
@@ -330,8 +412,22 @@ class InferenceEngine:
         return text.strip(), generated_tokens, input_token_count
 
     def _dola_select(self, outputs):
-        """Apply DoLa contrastive decoding to select next token."""
+        """Apply steering + DoLa contrastive decoding to select next token."""
         hidden_states = outputs.hidden_states
+
+        # Apply steering to hidden states at target layer
+        if self.steering_enabled and self.steering_engine and self.steering_engine.is_active():
+            n_hidden = len(hidden_states)
+            modified_states = []
+            for layer_idx, hs in enumerate(hidden_states):
+                # Apply steering at target layer (hs[layer_idx] corresponds to layer_idx)
+                modified = self.steering_engine.apply_steering(hs[:, -1, :], layer_idx)
+                # Reconstruct full hidden state tensor
+                modified_full = hs.clone()
+                modified_full[:, -1, :] = modified
+                modified_states.append(modified_full)
+            hidden_states = tuple(modified_states)
+
         final_hidden = hidden_states[-1][:, -1, :].to(self.lm_head.weight.device)
         final_logits = self.lm_head(final_hidden).squeeze(0).float()
         final_probs = F.softmax(final_logits, dim=-1)
@@ -844,6 +940,9 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 "dola_enabled": self.engine.dola_enabled,
                 "turboquant_enabled": self.engine.kv_compressor.enabled,
                 "turboquant_bits": self.engine.kv_compressor.bit_width,
+                "steering_enabled": self.engine.steering_enabled,
+                "steering_coefficient": self.engine.steering_engine.coefficient if self.engine.steering_engine else None,
+                "steering_layer": self.engine.steering_engine.target_layer if self.engine.steering_engine else None,
                 "elapsed_ms": int(elapsed * 1000),
             },
         }
@@ -874,6 +973,13 @@ def main():
     parser.add_argument("--turboquant-bits", type=int, default=4,
                         choices=[0, 2, 3, 4],
                         help="TurboQuant bit-width (0=disabled)")
+    parser.add_argument("--steering", action="store_true", default=False,
+                        help="Enable steering vectors (ActAdd)")
+    parser.add_argument("--no-steering", dest="steering", action="store_false")
+    parser.add_argument("--steering-coefficient", type=float, default=COEFFICIENT_DEFAULT,
+                        help="Steering coefficient (typical range [3, 20])")
+    parser.add_argument("--steering-layer", default="auto",
+                        help="Steering target layer (or 'auto' for model_layers / 3)")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--load-in-4bit", action="store_true", default=True,
                         help="Load model with bitsandbytes 4-bit quantization (default: on)")
@@ -892,6 +998,9 @@ def main():
         dola_enabled=args.dola,
         dola_alpha=args.dola_alpha,
         turboquant_bits=args.turboquant_bits if args.turboquant_bits > 0 else 4,
+        steering_enabled=args.steering,
+        steering_coefficient=args.steering_coefficient,
+        steering_layer=args.steering_layer,
         max_new_tokens=args.max_tokens,
         load_in_4bit=args.load_in_4bit,
     )

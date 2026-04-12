@@ -53,6 +53,9 @@ impl Default for SidecarConfig {
             dola_enabled: true,
             dola_alpha: 0.1,
             turboquant_bits: 4,
+            steering_enabled: false,
+            steering_coefficient: 5.0,
+            steering_layer: "auto".to_string(),
             temperature: 0.0,
             max_tokens: 256,
         }
