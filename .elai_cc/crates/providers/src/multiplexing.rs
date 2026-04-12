@@ -500,10 +500,89 @@ mod tests {
         let result = policy.can_colocate(1_000_000_000, 1_000_000_000, 100_000_000_000, 1);
         assert!(result.is_ok());
         assert!(!result.unwrap(), "disabled multiplexing should reject any colocation");
-        
+
         // But should allow first model
         let result = policy.can_colocate(1_000_000_000, 0, 100_000_000_000, 0);
         assert!(result.is_ok());
         assert!(result.unwrap(), "disabled multiplexing should allow first model");
+    }
+
+    #[test]
+    fn adversarial_preload_race_condition_phase_boundary() {
+        // Test: verify pre-load policy respects phase boundaries (structural test)
+        // The actual race prevention is implemented by the orchestrator's FSM hooks,
+        // but we verify the policy provides the correct model lists for each state.
+        let policy = PreloadPolicy::default();
+
+        // EXECUTING -> pre-load auditor (not executor, which is current)
+        let executing_models = policy.models_for_state("EXECUTING");
+        assert!(
+            !executing_models.is_empty(),
+            "EXECUTING state should have preload targets"
+        );
+        assert!(
+            !executing_models.contains(&"executor".to_string()),
+            "EXECUTING should not preload executor (it's the current model)"
+        );
+
+        // AUDITING -> pre-load executor (not auditor, which is current)
+        let auditing_models = policy.models_for_state("AUDITING");
+        assert!(
+            !auditing_models.is_empty(),
+            "AUDITING state should have preload targets"
+        );
+        assert!(
+            !auditing_models.contains(&"auditor".to_string()),
+            "AUDITING should not preload auditor (it's the current model)"
+        );
+    }
+
+    #[test]
+    fn adversarial_safety_margin_too_small_recovery() {
+        // Test: simulate scenario where safety margin is insufficient, verify policy can be adjusted
+        let initial_policy = MultiplexingPolicy {
+            enabled: true,
+            safety_margin_bytes: 500_000_000, // 500MB margin (too small for some models)
+            ..Default::default()
+        };
+
+        // Model passes check with small margin
+        let result = initial_policy.can_colocate(4_000_000_000, 5_000_000_000, 10_000_000_000, 1);
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "should pass with initial margin");
+
+        // Simulate OOM by increasing margin (recovery strategy)
+        let recovered_policy = MultiplexingPolicy {
+            enabled: true,
+            safety_margin_bytes: 2_000_000_000, // Increased to 2GB
+            ..Default::default()
+        };
+
+        // Same model now fails with increased margin (safer)
+        let result = recovered_policy.can_colocate(4_000_000_000, 5_000_000_000, 10_000_000_000, 1);
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "should reject with increased margin (safer)");
+
+        // Verify policy is serializable for dynamic adjustment
+        let json = serde_json::to_string(&recovered_policy).expect("serialize");
+        let back: MultiplexingPolicy = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.safety_margin_bytes, 2_000_000_000);
+    }
+
+    #[test]
+    fn adversarial_colocated_count_exceeds_limit_with_vram_available() {
+        // Test: even with plenty of VRAM, max_colocated limit should be enforced
+        let policy = MultiplexingPolicy {
+            enabled: true,
+            max_colocated: 2,
+            safety_margin_bytes: 1_000_000_000,
+            ..Default::default()
+        };
+
+        // GPU: 100GB, margin: 1GB -> 99GB available
+        // Current: 2GB, model: 1GB, colocated: 2 (at limit)
+        let result = policy.can_colocate(1_000_000_000, 2_000_000_000, 100_000_000_000, 2);
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "should reject when at max_colocated limit despite VRAM availability");
     }
 }

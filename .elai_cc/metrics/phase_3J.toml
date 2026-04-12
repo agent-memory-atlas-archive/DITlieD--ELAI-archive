@@ -2,9 +2,9 @@
 # Date: 2026-04-12
 # Steps completed: 3J.1-3J.4 (partial), 3J.COMPOSE, 3J.LOCAL, 3J.PIPELINE,
 #   3J.WIRE.FOUNDATION, 3J.WIRE.BUDGET, 3J.WIRE.RULES, 3J.WIRE.SESSION,
-#   3J.WIRE.PLAN, 3J.WIRE.STUBS, 3J.6 (core implementation)
+#   3J.WIRE.PLAN, 3J.WIRE.STUBS, 3J.6 (core implementation + FSM structural integration)
 # Steps deferred: 3J.5, 3J.7-3J.12 (see workflow/reasoning/phase-3J.13-deferrals.md)
-# Note: 3J.6 FSM integration and main pipeline wiring deferred to orchestrator integration phase
+# Note: 3J.6 background pre-loading with tokio::spawn and VRAM checks deferred (requires ModelPool integration)
 
 [model]
 test_model = "gemma4-e2b"
@@ -93,8 +93,11 @@ slo_tier_enum = true
 preload_policy_struct = true
 can_colocate_method = true
 adversarial_tests_pass = true
-fsm_integration = false
+fsm_integration = true
+fsm_integration_note = "structural hook in place (PreloadManager.trigger_preload called on state entry), actual background pre-loading with tokio::spawn deferred (requires ModelPool integration)"
 main_pipeline_wiring = false
+config_toml_support = false
+config_toml_note = "config system uses JSON, TOML support deferred (requires config system updates)"
 
 [ssb]
 ssb_action_type_count = 17

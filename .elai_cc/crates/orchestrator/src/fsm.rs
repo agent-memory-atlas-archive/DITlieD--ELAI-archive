@@ -298,6 +298,7 @@ struct FsmInner {
     replan_log: Vec<ReplanLogEntry>,
     transition_history: Vec<TransitionRecord>,
     persist_path: Option<PathBuf>,
+    preload_manager: crate::preload::PreloadManager,
 }
 
 fn now_ms() -> u64 {
@@ -318,6 +319,7 @@ impl Fsm {
                 replan_log: Vec::new(),
                 transition_history: Vec::new(),
                 persist_path,
+                preload_manager: crate::preload::PreloadManager::new(),
             }),
         }
     }
@@ -350,6 +352,7 @@ impl Fsm {
                 replan_log: persisted.replan_log,
                 transition_history: persisted.transition_history,
                 persist_path: Some(path.to_path_buf()),
+                preload_manager: crate::preload::PreloadManager::new(),
             }),
         })
     }
@@ -421,6 +424,14 @@ impl Fsm {
         guard.state = target;
         guard.phase_label = phase_label.to_string();
         guard.transition_history.push(record.clone());
+
+        // Trigger predictive pre-loading on state entry
+        // Phase 3J.6: pre-load models based on FSM state using PreloadPolicy
+        let _models_to_preload = guard.preload_manager.trigger_preload(target);
+        // TODO: Log/telemetry for pre-loaded models
+        // TODO: Implement actual background pre-loading with tokio::spawn and VRAM checks
+        // This requires access to ModelPool and provider to trigger model loading
+        // For now, this is a structural hook that returns the model list
 
         // Clear replan log on phase boundary (new phase = fresh limit)
         if source == FsmState::Memorizing || source == FsmState::Complete {
