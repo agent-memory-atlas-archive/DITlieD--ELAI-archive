@@ -5,6 +5,7 @@
 !.elai_cc/
 !.elai_cc/**
 
+.elai_cc/models/
 .elai_cc/target/
 .elai_cc/workflow/
 .elai_cc/rust_archived/target/
