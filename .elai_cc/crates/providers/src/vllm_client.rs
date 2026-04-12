@@ -503,6 +503,43 @@ impl VllmModelPool {
     pub fn requires_dedicated_gpu(&self, model_vram_bytes: u64) -> bool {
         self.multiplexing_policy.requires_dedicated_gpu(model_vram_bytes)
     }
+
+    /// Place models on GPUs using greedy placement strategy.
+    /// Phase 3J.8 deliverable. Uses GreedyModelPlacer for model assignment.
+    ///
+    /// # Arguments
+    /// * `models` - Models to place (list of (id, vram_bytes, tier) tuples)
+    /// * `gpus` - Available GPUs (list of (id, total_vram_bytes) tuples)
+    ///
+    /// # Returns
+    /// Placement result with assignments and estimated swap latency.
+    ///
+    /// # TODO
+    /// This is a structural integration. Actual wiring requires:
+    /// - Real GPU discovery (NVML or vLLM GPU query)
+    /// - Real model VRAM requirements from model metadata
+    /// - Integration with agent pool to trigger placement at phase boundaries
+    pub fn place_models(
+        &self,
+        models: Vec<(String, u64, crate::SloTier)>,
+        gpus: Vec<(u8, u64)>,
+    ) -> Result<crate::PlacementResult, crate::MultiplexingError> {
+        use crate::model_placer::{GreedyModelPlacer, ModelSpec, GpuSpec};
+
+        let placer = GreedyModelPlacer::with_policy(self.multiplexing_policy.clone());
+
+        let model_specs: Vec<ModelSpec> = models
+            .into_iter()
+            .map(|(id, vram, tier)| ModelSpec::new(id, vram, tier))
+            .collect();
+
+        let gpu_specs: Vec<GpuSpec> = gpus
+            .into_iter()
+            .map(|(id, total_vram)| GpuSpec::new(id, total_vram))
+            .collect();
+
+        placer.place(&model_specs, &gpu_specs)
+    }
 }
 
 // ---------------------------------------------------------------------------
