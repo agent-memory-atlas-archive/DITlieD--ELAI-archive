@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS ssb (
         'claim', 'checkpoint', 'model_swap', 'phase_transition',
         'knowledge_degradation', 'isolation_metric', 'plan_update',
         'replan_request', 'stub_reference', 'reasoning_trace',
-        'phase_complete', 'memory_monitoring',
+        'phase_complete', 'memory_monitoring', 'workload_profile',
         'death_event', 'recovery_event',
         'supervision_exhausted', 'spiral_detected',
         'context_reduction', 'branch_merge'
@@ -70,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 23 action types recorded in SSB entries.
+/// All 24 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -91,6 +91,7 @@ pub enum SsbActionType {
     ReasoningTrace,
     PhaseComplete,
     MemoryMonitoring,
+    WorkloadProfile,
     DeathEvent,
     RecoveryEvent,
     SupervisionExhausted,
@@ -120,6 +121,7 @@ impl SsbActionType {
             Self::ReasoningTrace => "reasoning_trace",
             Self::PhaseComplete => "phase_complete",
             Self::MemoryMonitoring => "memory_monitoring",
+            Self::WorkloadProfile => "workload_profile",
             Self::DeathEvent => "death_event",
             Self::RecoveryEvent => "recovery_event",
             Self::SupervisionExhausted => "supervision_exhausted",
@@ -149,6 +151,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "reasoning_trace" => Ok(SsbActionType::ReasoningTrace),
         "phase_complete" => Ok(SsbActionType::PhaseComplete),
         "memory_monitoring" => Ok(SsbActionType::MemoryMonitoring),
+        "workload_profile" => Ok(SsbActionType::WorkloadProfile),
         "death_event" => Ok(SsbActionType::DeathEvent),
         "recovery_event" => Ok(SsbActionType::RecoveryEvent),
         "supervision_exhausted" => Ok(SsbActionType::SupervisionExhausted),
@@ -340,11 +343,24 @@ pub struct BranchMergePayload {
     pub from_snap_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkloadProfilePayload {
+    pub agent_role: String,
+    pub phase_id: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub latency_ms: u64,
+    pub vram_peak_mb: u32,
+    pub model_id: String,
+    pub gpu_id: u8,
+    pub timestamp: i64,
+}
+
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 23 action-type payloads)
+// SsbPayload enum (typed wrapper over all 24 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (23 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (24 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -365,6 +381,7 @@ pub enum SsbPayload {
     ReasoningTrace(ReasoningTracePayload),
     PhaseComplete(PhaseCompletePayload),
     MemoryMonitoring(MemoryMonitoringPayload),
+    WorkloadProfile(WorkloadProfilePayload),
     DeathEvent(DeathEventPayload),
     RecoveryEvent(RecoveryEventPayload),
     SupervisionExhausted(SupervisionExhaustedPayload),
@@ -395,6 +412,7 @@ impl SsbPayload {
             Self::ReasoningTrace(_) => SsbActionType::ReasoningTrace,
             Self::PhaseComplete(_) => SsbActionType::PhaseComplete,
             Self::MemoryMonitoring(_) => SsbActionType::MemoryMonitoring,
+            Self::WorkloadProfile(_) => SsbActionType::WorkloadProfile,
             Self::DeathEvent(_) => SsbActionType::DeathEvent,
             Self::RecoveryEvent(_) => SsbActionType::RecoveryEvent,
             Self::SupervisionExhausted(_) => SsbActionType::SupervisionExhausted,

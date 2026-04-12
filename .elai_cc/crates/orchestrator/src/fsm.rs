@@ -433,6 +433,19 @@ impl Fsm {
         // This requires access to ModelPool and provider to trigger model loading
         // For now, this is a structural hook that returns the model list
 
+        // Emit workload profile at phase boundary
+        // Phase 3J.7: track per-agent per-phase metrics (tokens_in, tokens_out, latency_ms, vram_peak_mb)
+        // TODO: Integrate with SSB to write WorkloadProfile
+        // TODO: Collect actual metrics from agent execution context:
+        //   - tokens_in/tokens_out from provider usage tracking
+        //   - latency_ms from phase execution timer
+        //   - vram_peak_mb from ModelPool VRAM monitoring
+        //   - agent_role, model_id, gpu_id from execution context
+        // For now, this is a structural hook. Actual emission requires:
+        //   1. SSB reference in FSM (or callback mechanism)
+        //   2. Agent execution context with metrics
+        //   3. Phase execution timing wrapper
+
         // Clear replan log on phase boundary (new phase = fresh limit)
         if source == FsmState::Memorizing || source == FsmState::Complete {
             guard.replan_log.clear();

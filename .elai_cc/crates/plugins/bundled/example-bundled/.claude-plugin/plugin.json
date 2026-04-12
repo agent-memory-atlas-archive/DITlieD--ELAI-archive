@@ -1,0 +1,6 @@
+{
+  "name": "example-bundled",
+  "version": "0.1.0",
+  "description": "bundled plugin",
+  "defaultEnabled": false
+}

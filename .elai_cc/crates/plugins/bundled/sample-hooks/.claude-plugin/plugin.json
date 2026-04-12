@@ -1,0 +1,6 @@
+{
+  "name": "sample-hooks",
+  "version": "0.1.0",
+  "description": "bundled plugin",
+  "defaultEnabled": false
+}

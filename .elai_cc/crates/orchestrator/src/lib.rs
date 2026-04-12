@@ -38,6 +38,7 @@ mod session;
 mod session_control;
 pub mod plan_skeleton;
 pub mod session_dag;
+pub mod workload_profiling;
 pub use plan_skeleton::{
     PlanSkeleton, PlanSkeletonError, PhaseEntry, PhaseContext, PhaseDetail,
     ExtractedContracts, AdjacentContracts, ContractRef, StalenessWarning,
