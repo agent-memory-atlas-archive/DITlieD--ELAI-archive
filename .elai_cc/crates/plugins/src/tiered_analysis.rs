@@ -9,7 +9,7 @@
 
 use blake2::{digest::consts::U32, Blake2s};
 use digest::Digest;
-use elai_rules::predicate::{Verdict, VerdictResult};
+use elai_rules::predicate::VerdictResult;
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -48,7 +48,7 @@ impl HookVerdict {
 }
 
 /// Combined result from all three tiers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TieredAnalysisResult {
     pub t1_verdict: HookVerdict,
     pub t2_verdict: Option<HookVerdict>,
@@ -106,21 +106,22 @@ impl T1Hook {
         };
 
         // Get active rules for current phase and evaluate
-        let verdicts = self.rule_engine.evaluate(&ctx)?;
+        // TODO: Load rules from rules.db - for now use empty slice
+        let rules: &[(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)] = &[];
+        let verdicts = self.rule_engine.evaluate(rules, &ctx)?;
 
         // Find the most severe verdict (BLOCK > WARN > ALLOW)
         let final_verdict = verdicts
             .into_iter()
             .fold(HookVerdict::Allow, |acc, verdict| {
-                match (acc, verdict.result) {
+                match (acc.clone(), verdict.result) {
                     (HookVerdict::Block { .. }, _) => acc,
                     (_, VerdictResult::Block) => HookVerdict::Block {
                         message: "Rule violation detected".to_string(),
                         pattern_hash: Self::hash_pattern(&verdict.rule_id, &verdict.evidence),
                     },
-                    (HookVerdict::Warn { .. }, VerdictResult::Warn) => acc,
                     (_, VerdictResult::Warn) => HookVerdict::Warn {
-                        message: verdict.evidence,
+                        message: verdict.evidence.clone(),
                         pattern_hash: Self::hash_pattern(&verdict.rule_id, &verdict.evidence),
                     },
                     _ => acc,
@@ -144,10 +145,25 @@ impl T1Hook {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum T1Error {
-    #[error("rule engine error: {0}")]
     RuleEngineError(String),
+}
+
+impl std::fmt::Display for T1Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RuleEngineError(msg) => write!(f, "rule engine error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for T1Error {}
+
+impl From<elai_rules::rule_engine::RuleEngineError> for T1Error {
+    fn from(err: elai_rules::rule_engine::RuleEngineError) -> Self {
+        T1Error::RuleEngineError(err.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,14 +220,22 @@ impl T2Hook {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum T2Error {
-    #[error("parse error: {0}")]
     ParseError(String),
-
-    #[error("unsupported language: {0}")]
     UnsupportedLanguage(String),
 }
+
+impl std::fmt::Display for T2Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ParseError(msg) => write!(f, "parse error: {}", msg),
+            Self::UnsupportedLanguage(lang) => write!(f, "unsupported language: {}", lang),
+        }
+    }
+}
+
+impl std::error::Error for T2Error {}
 
 // ---------------------------------------------------------------------------
 // T3: PATTERN MATCH hook (<5ms target)
@@ -340,14 +364,16 @@ impl TieredAnalysis {
 
         // T2: Only fires on file_write
         let t2_verdict = if action_type == "file_write" && source.is_some() {
-            Some(self.t2.evaluate(source.unwrap(), file_path.unwrap_or(""))?)
+            self.t2.evaluate(source.unwrap(), file_path.unwrap_or(""))?
         } else {
             None
         };
 
         // T3: Only fires when WARN exists AND no BLOCK from T1/T2
-        let has_warn = t1_verdict.is_warn() || t2_verdict.as_ref().map_or(false, |v| v.is_warn());
-        let has_block = t1_verdict.is_block() || t2_verdict.as_ref().map_or(false, |v| v.is_block());
+        let t2_has_warn = matches!(t2_verdict, Some(HookVerdict::Warn { .. }));
+        let t2_has_block = matches!(t2_verdict, Some(HookVerdict::Block { .. }));
+        let has_warn = t1_verdict.is_warn() || t2_has_warn;
+        let has_block = t1_verdict.is_block() || t2_has_block;
         let t3_verdict = if has_warn && !has_block && source.is_some() {
             self.t3.evaluate(source.unwrap(), file_path.unwrap_or(""))
         } else {
@@ -356,17 +382,17 @@ impl TieredAnalysis {
 
         // Final verdict: BLOCK takes precedence
         let final_verdict = if t1_verdict.is_block() {
-            t1_verdict
-        } else if t2_verdict.as_ref().and_then(|v| if v.is_block() { Some(v) } else { None }).is_some() {
-            t2_verdict.unwrap()
-        } else if t3_verdict.as_ref().and_then(|v| if v.is_block() { Some(v) } else { None }).is_some() {
-            t3_verdict.unwrap()
+            t1_verdict.clone()
+        } else if t2_has_block {
+            t2_verdict.clone().unwrap()
+        } else if matches!(t3_verdict, Some(HookVerdict::Block { .. })) {
+            t3_verdict.clone().unwrap()
         } else if t1_verdict.is_warn() {
-            t1_verdict
-        } else if t2_verdict.as_ref().and_then(|v| if v.is_warn() { Some(v) } else { None }).is_some() {
-            t2_verdict.unwrap()
-        } else if t3_verdict.as_ref().and_then(|v| if v.is_warn() { Some(v) } else { None }).is_some() {
-            t3_verdict.unwrap()
+            t1_verdict.clone()
+        } else if t2_has_warn {
+            t2_verdict.clone().unwrap()
+        } else if matches!(t3_verdict, Some(HookVerdict::Warn { .. })) {
+            t3_verdict.clone().unwrap()
         } else {
             HookVerdict::Allow
         };
@@ -375,7 +401,7 @@ impl TieredAnalysis {
 
         Ok(TieredAnalysisResult {
             t1_verdict,
-            t2_verdict: t2_verdict.flatten(),
+            t2_verdict,
             t3_verdict,
             final_verdict,
             duration_ms,
@@ -383,13 +409,33 @@ impl TieredAnalysis {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum TieredAnalysisError {
-    #[error("T1 error: {0}")]
-    T1Error(#[from] T1Error),
+    T1Error(T1Error),
+    T2Error(T2Error),
+}
 
-    #[error("T2 error: {0}")]
-    T2Error(#[from] T2Error),
+impl std::fmt::Display for TieredAnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::T1Error(err) => write!(f, "T1 error: {}", err),
+            Self::T2Error(err) => write!(f, "T2 error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for TieredAnalysisError {}
+
+impl From<T1Error> for TieredAnalysisError {
+    fn from(err: T1Error) -> Self {
+        TieredAnalysisError::T1Error(err)
+    }
+}
+
+impl From<T2Error> for TieredAnalysisError {
+    fn from(err: T2Error) -> Self {
+        TieredAnalysisError::T2Error(err)
+    }
 }
 
 // ---------------------------------------------------------------------------

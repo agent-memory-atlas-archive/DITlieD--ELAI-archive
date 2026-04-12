@@ -1,7 +1,5 @@
 mod hooks;
-
-// TODO: Step 3J.10 - Tiered Static Analysis Hooks (not yet implemented)
-// mod tiered_analysis;
+mod tiered_analysis;
 
 #[cfg(feature = "mcp")]
 mod mcp_bridge;
@@ -19,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
-// pub use tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisResult, TieredAnalysisError};
+pub use tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisResult, TieredAnalysisError};
 
 #[cfg(feature = "mcp")]
 pub use mcp_bridge::{McpBridge, McpConnection, McpError, McpTransport, McpToolSpec, DefaultMcpBridge};

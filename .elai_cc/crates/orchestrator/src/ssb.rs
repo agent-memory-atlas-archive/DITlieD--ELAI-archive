@@ -1536,6 +1536,7 @@ mod tests {
             SsbActionType::SpiralDetected,
             SsbActionType::ContextReduction,
             SsbActionType::BranchMerge,
+            SsbActionType::WorkloadProfile,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1555,7 +1556,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 23);
+        assert_eq!(count, 24, "must have inserted all 24 types");
     }
 
     #[tokio::test]
@@ -1952,6 +1953,8 @@ mod tests {
             SsbPayload::ModelSwap(ModelSwapPayload {
                 from_model: "sonnet".into(),
                 to_model: "opus".into(),
+                gpu_id: 0,
+                swap_duration_ms: 150,
                 reason: "complex task".into(),
             }),
             SsbPayload::PhaseTransition(PhaseTransitionPayload {
@@ -1960,33 +1963,42 @@ mod tests {
                 evidence_summary: "all tests pass".into(),
             }),
             SsbPayload::KnowledgeDegradation(KnowledgeDegradationPayload {
-                stage: "compaction".into(),
-                from_mode: "full".into(),
-                to_mode: "summary".into(),
+                component: "compaction".into(),
+                old_mode: "full".into(),
+                new_mode: "summary".into(),
+                reason: "memory pressure".into(),
             }),
             SsbPayload::IsolationMetric(IsolationMetricPayload {
-                metric_name: "memory_mb".into(),
-                value: 256.5,
+                agent_id: "agent-001".into(),
+                phase_id: "3B".into(),
+                context_savings_ratio: 2.5,
             }),
             SsbPayload::PlanUpdate(PlanUpdatePayload {
-                plan_hash: "plan123".into(),
-                phase: "3B".into(),
-                step: "4".into(),
+                phase_id: "3B".into(),
+                version: "v1.2".into(),
+                change_summary: "added step 4".into(),
             }),
             SsbPayload::ReplanRequest(ReplanRequestPayload {
-                reason: "scope change".into(),
-                requesting_agent: "agent-0".into(),
+                agent_id: "agent-0".into(),
+                severity: "MAJOR".into(),
+                evidence: "scope change detected".into(),
             }),
             SsbPayload::StubReference(StubReferencePayload {
-                original_seq: 42,
-                stub_reason: "compacted".into(),
+                phase_id: "3B.4".into(),
+                step_id: "step_1".into(),
+                stub_hash: "abc123".into(),
             }),
             SsbPayload::ReasoningTrace(ReasoningTracePayload {
+                agent_id: "agent-001".into(),
+                step_index: 0,
                 step_type: "observe".into(),
-                content: "read file".into(),
+                content_summary: "read file".into(),
+                grounding_source: "file:src/main.rs".into(),
+                grounding_level: "HIGH".into(),
+                confidence: 0.9,
+                elapsed_ms: 100,
                 topic: "debug".into(),
-                grounding: "file:src/main.rs".into(),
-                conclusion: "ACTION: proceed".into(),
+                budget_remaining: 10,
             }),
             SsbPayload::PhaseComplete(PhaseCompletePayload {
                 phase_id: "3B.4".into(),
@@ -1997,10 +2009,9 @@ mod tests {
                 test_outcomes: vec!["20 passed, 0 failed".into()],
             }),
             SsbPayload::MemoryMonitoring(MemoryMonitoringPayload {
-                metric_name: "heap_mb".into(),
-                value: 512.0,
-                threshold: 1024.0,
-                action_taken: "none".into(),
+                channel_id: "heap_mb".into(),
+                deep_size_bytes: 512000000,
+                threshold_exceeded: false,
             }),
             SsbPayload::DeathEvent(DeathEventPayload {
                 agent_id: "agent-dead".into(),
@@ -2043,6 +2054,14 @@ mod tests {
                 trunk_snap_id: "snap-merge-001".into(),
                 from_snap_ids: vec!["snap-tip-1".into(), "snap-tip-2".into()],
             }),
+            SsbPayload::WorkloadProfile(WorkloadProfilePayload {
+                agent_id: "agent-001".into(),
+                phase_id: "3B".into(),
+                total_requests: 100,
+                avg_latency_ms: 150,
+                peak_memory_mb: 512,
+                cpu_utilization_pct: 75.0,
+            }),
         ]
     }
 
@@ -2052,7 +2071,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 23, "must cover all 23 action types");
+        assert_eq!(payloads.len(), 24, "must cover all 24 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2187,37 +2206,41 @@ mod tests {
                     .prop_map(|(agent_state_hash, grc_history_hash, agent_id, step_index)| SsbPayload::Checkpoint(
                         CheckpointPayload { agent_state_hash, grc_history_hash, agent_id, step_index, file_sizes: vec![] }
                     )),
-                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,20}")
-                    .prop_map(|(from_model, to_model, reason)| SsbPayload::ModelSwap(
-                        ModelSwapPayload { from_model, to_model, reason }
+                ("[a-z]{1,10}", "[a-z]{1,10}", any::<u8>(), any::<u64>(), "[a-z ]{1,20}")
+                    .prop_map(|(from_model, to_model, gpu_id, swap_duration_ms, reason)| SsbPayload::ModelSwap(
+                        ModelSwapPayload { from_model, to_model, gpu_id, swap_duration_ms, reason }
                     )),
                 ("[A-Z]{1,10}", "[A-Z]{1,10}", "[a-z ]{1,30}")
                     .prop_map(|(from_state, to_state, evidence_summary)| SsbPayload::PhaseTransition(
                         PhaseTransitionPayload { from_state, to_state, evidence_summary }
                     )),
-                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z]{1,10}")
-                    .prop_map(|(stage, from_mode, to_mode)| SsbPayload::KnowledgeDegradation(
-                        KnowledgeDegradationPayload { stage, from_mode, to_mode }
+                ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,20}")
+                    .prop_map(|(component, old_mode, new_mode, reason)| SsbPayload::KnowledgeDegradation(
+                        KnowledgeDegradationPayload { component, old_mode, new_mode, reason }
                     )),
-                ("[a-z_]{1,15}", any::<f64>().prop_filter("finite", |v| v.is_finite()))
-                    .prop_map(|(metric_name, value)| SsbPayload::IsolationMetric(
-                        IsolationMetricPayload { metric_name, value }
+                ("[a-z0-9-]{1,20}", "[0-9A-Z.]{1,10}", any::<f64>().prop_filter("finite", |v| v.is_finite()))
+                    .prop_map(|(agent_id, phase_id, context_savings_ratio)| SsbPayload::IsolationMetric(
+                        IsolationMetricPayload { agent_id, phase_id, context_savings_ratio }
                     )),
-                ("[a-f0-9]{8}", "[0-9A-Z]{1,5}", "[0-9]{1,3}")
-                    .prop_map(|(plan_hash, phase, step)| SsbPayload::PlanUpdate(
-                        PlanUpdatePayload { plan_hash, phase, step }
+                ("[0-9A-Z.]{1,10}", "[0-9.]{1,5}", "[a-z ]{1,30}")
+                    .prop_map(|(phase_id, version, change_summary)| SsbPayload::PlanUpdate(
+                        PlanUpdatePayload { phase_id, version, change_summary }
                     )),
-                ("[a-z ]{1,30}", "[a-z-]{1,15}")
-                    .prop_map(|(reason, requesting_agent)| SsbPayload::ReplanRequest(
-                        ReplanRequestPayload { reason, requesting_agent }
+                ("[a-z0-9-]{1,20}", "(MINOR|MAJOR)", "[a-z ]{1,30}")
+                    .prop_map(|(agent_id, severity, evidence)| SsbPayload::ReplanRequest(
+                        ReplanRequestPayload { agent_id, severity, evidence }
                     )),
-                (any::<i64>(), "[a-z ]{1,20}")
-                    .prop_map(|(original_seq, stub_reason)| SsbPayload::StubReference(
-                        StubReferencePayload { original_seq, stub_reason }
+                ("[0-9A-Z.]{1,10}", "[a-z_]{1,10}", "[a-f0-9]{8}")
+                    .prop_map(|(phase_id, step_id, stub_hash)| SsbPayload::StubReference(
+                        StubReferencePayload { phase_id, step_id, stub_hash }
                     )),
-                ("[a-z]{1,10}", "[a-z ]{1,30}", "[a-z]{1,10}", "[a-z:]{1,20}", "[a-z ]{0,20}")
-                    .prop_map(|(step_type, content, topic, grounding, conclusion)| SsbPayload::ReasoningTrace(
-                        ReasoningTracePayload { step_type, content, topic, grounding, conclusion }
+                ("[a-z0-9-]{1,20}", any::<u32>(), "[a-z]{1,10}", "[a-z ]{1,30}", "[a-z:]{1,20}",
+                 "(HIGH|MEDIUM|LOW)", any::<f64>().prop_filter("finite", |v| v.is_finite()),
+                 any::<u64>(), "[a-z]{1,20}", any::<u32>())
+                    .prop_map(|(agent_id, step_index, step_type, content_summary, grounding_source,
+                                 grounding_level, confidence, elapsed_ms, topic, budget_remaining)| SsbPayload::ReasoningTrace(
+                        ReasoningTracePayload { agent_id, step_index, step_type, content_summary, grounding_source,
+                                                 grounding_level, confidence, elapsed_ms, topic, budget_remaining }
                     )),
                 ("[0-9A-Z.]{1,10}", "[a-z-]{1,10}", "[A-Z]{1,10}",
                  proptest::collection::vec("[a-z.]{1,10}", 0..3),
@@ -2228,12 +2251,9 @@ mod tests {
                             phase_id, agent_id, fsm_state, evidence_artifacts, commit_hashes, test_outcomes,
                         })
                     ),
-                ("[a-z_]{1,15}",
-                 any::<f64>().prop_filter("finite", |v| v.is_finite()),
-                 any::<f64>().prop_filter("finite", |v| v.is_finite()),
-                 "[a-z]{1,10}")
-                    .prop_map(|(metric_name, value, threshold, action_taken)| SsbPayload::MemoryMonitoring(
-                        MemoryMonitoringPayload { metric_name, value, threshold, action_taken }
+                ("[a-z_]{1,15}", any::<u64>(), any::<bool>())
+                    .prop_map(|(channel_id, deep_size_bytes, threshold_exceeded)| SsbPayload::MemoryMonitoring(
+                        MemoryMonitoringPayload { channel_id, deep_size_bytes, threshold_exceeded }
                     )),
                 (0u8..5, 0usize..200000, 0usize..200000,
                  proptest::collection::vec(0u8..8, 0..4))
