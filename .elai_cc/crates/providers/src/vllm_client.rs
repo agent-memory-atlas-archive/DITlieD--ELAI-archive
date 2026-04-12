@@ -39,6 +39,7 @@ pub struct VllmConfig {
     pub served_model_names: Vec<String>,
     pub temperature: f32,
     pub max_tokens: u32,
+    pub steering: crate::layer_config::steering::SteeringConfig,
 }
 
 impl Default for VllmConfig {
@@ -50,6 +51,7 @@ impl Default for VllmConfig {
             served_model_names: Vec::new(),
             temperature: 0.7,
             max_tokens: 2048,
+            steering: crate::layer_config::steering::SteeringConfig::default(),
         }
     }
 }

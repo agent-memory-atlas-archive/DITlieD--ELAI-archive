@@ -6,6 +6,7 @@
 //! like DoLa consume layer logits through this trait.
 
 pub mod dola;
+pub mod steering;
 
 use std::fmt;
 
