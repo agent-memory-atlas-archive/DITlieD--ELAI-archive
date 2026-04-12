@@ -1,6 +1,7 @@
 mod client;
 mod error;
 pub mod layer_config;
+mod multiplexing;
 pub mod oauth;
 mod prompt_cache;
 mod providers;
@@ -50,6 +51,10 @@ pub use telemetry_types::{
     AnalyticsEvent, AnthropicRequestProfile, ClientIdentity, JsonlTelemetrySink,
     MemoryTelemetrySink, SessionTraceRecord, SessionTracer, TelemetryEvent, TelemetrySink,
     DEFAULT_ANTHROPIC_VERSION,
+};
+
+pub use multiplexing::{
+    MultiplexingError, MultiplexingPolicy, PreloadPolicy, SloTier,
 };
 
 #[cfg(test)]

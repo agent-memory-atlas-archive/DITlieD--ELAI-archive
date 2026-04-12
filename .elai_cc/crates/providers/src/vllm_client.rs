@@ -398,18 +398,39 @@ impl LlmProvider for VllmProvider {
 /// internally — no host-side NVML queries needed.
 pub struct VllmModelPool {
     backend: InferenceBackend,
+    multiplexing_policy: crate::MultiplexingPolicy,
 }
 
 impl VllmModelPool {
     #[must_use]
     pub fn new(backend: InferenceBackend) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            multiplexing_policy: crate::MultiplexingPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_multiplexing_policy(
+        backend: InferenceBackend,
+        policy: crate::MultiplexingPolicy,
+    ) -> Self {
+        Self {
+            backend,
+            multiplexing_policy: policy,
+        }
     }
 
     /// Returns the inference backend reference.
     #[must_use]
     pub fn backend(&self) -> &InferenceBackend {
         &self.backend
+    }
+
+    /// Returns the multiplexing policy reference.
+    #[must_use]
+    pub fn multiplexing_policy(&self) -> &crate::MultiplexingPolicy {
+        &self.multiplexing_policy
     }
 
     /// Check if using vLLM backend. When true, NVML/VRAM queries are skipped.
@@ -445,6 +466,42 @@ impl VllmModelPool {
     pub fn available_vram(&self) -> u64 {
         // All backends currently return u64::MAX — real NVML deferred
         u64::MAX
+    }
+
+    /// Check if a model can colocate on a target GPU given current VRAM usage.
+    /// Phase 3J.6 deliverable. Delegates to MultiplexingPolicy::can_colocate.
+    ///
+    /// # Arguments
+    /// * `model_vram_bytes` - VRAM required by the model in bytes
+    /// * `current_vram_used_bytes` - Current VRAM usage on target GPU in bytes
+    /// * `gpu_total_vram_bytes` - Total VRAM capacity of target GPU in bytes
+    /// * `current_colocated_count` - Number of models already colocated on target GPU
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Colocation is safe
+    /// * `Ok(false)` - Colocation would exceed VRAM or policy limits
+    /// * `Err` - Invalid parameters
+    #[must_use]
+    pub fn can_colocate(
+        &self,
+        model_vram_bytes: u64,
+        current_vram_used_bytes: u64,
+        gpu_total_vram_bytes: u64,
+        current_colocated_count: usize,
+    ) -> Result<bool, crate::MultiplexingError> {
+        self.multiplexing_policy.can_colocate(
+            model_vram_bytes,
+            current_vram_used_bytes,
+            gpu_total_vram_bytes,
+            current_colocated_count,
+        )
+    }
+
+    /// Check if a model is large enough to require a dedicated GPU.
+    /// Phase 3J.6 deliverable. Delegates to MultiplexingPolicy::requires_dedicated_gpu.
+    #[must_use]
+    pub fn requires_dedicated_gpu(&self, model_vram_bytes: u64) -> bool {
+        self.multiplexing_policy.requires_dedicated_gpu(model_vram_bytes)
     }
 }
 
@@ -738,5 +795,66 @@ mod tests {
         let back: VllmConfig = serde_json::from_str(&json).expect("deserialize");
         assert!(back.tensor_parallelism);
         assert_eq!(back.model, "gemma4:e2b");
+    }
+
+    // -----------------------------------------------------------------------
+    // P3J.6 Tests (GPU Multiplexing)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn modelpool_can_colocate_delegates_to_policy() {
+        let policy = crate::MultiplexingPolicy {
+            enabled: true,
+            safety_margin_bytes: 1_000_000_000,
+            ..Default::default()
+        };
+        let pool = VllmModelPool::with_multiplexing_policy(
+            InferenceBackend::Vllm(VllmConfig::default()),
+            policy,
+        );
+
+        // Should allow colocation within margin
+        let result = pool.can_colocate(4_000_000_000, 5_000_000_000, 10_000_000_000, 1);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Should reject when exceeding margin
+        let result = pool.can_colocate(5_000_000_000, 5_000_000_000, 10_000_000_000, 1);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn modelpool_requires_dedicated_gpu_delegates_to_policy() {
+        let policy = crate::MultiplexingPolicy {
+            min_model_size_for_dedicated_gpu: 4_000_000_000,
+            ..Default::default()
+        };
+        let pool = VllmModelPool::with_multiplexing_policy(
+            InferenceBackend::Vllm(VllmConfig::default()),
+            policy,
+        );
+
+        assert!(pool.requires_dedicated_gpu(5_000_000_000));
+        assert!(!pool.requires_dedicated_gpu(3_000_000_000));
+    }
+
+    #[test]
+    fn modelpool_with_multiplexing_policy_custom_policy() {
+        let custom_policy = crate::MultiplexingPolicy {
+            enabled: true,
+            max_colocated: 5,
+            safety_margin_bytes: 2_000_000_000,
+            min_model_size_for_dedicated_gpu: 8_000_000_000,
+        };
+        let pool = VllmModelPool::with_multiplexing_policy(
+            InferenceBackend::Vllm(VllmConfig::default()),
+            custom_policy,
+        );
+
+        assert_eq!(pool.multiplexing_policy().max_colocated, 5);
+        assert_eq!(pool.multiplexing_policy().safety_margin_bytes, 2_000_000_000);
+        assert!(pool.requires_dedicated_gpu(10_000_000_000));
+        assert!(!pool.requires_dedicated_gpu(5_000_000_000));
     }
 }
