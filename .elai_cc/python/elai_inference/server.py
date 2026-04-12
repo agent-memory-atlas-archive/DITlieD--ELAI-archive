@@ -141,6 +141,67 @@ class SteeringEngine:
             return
         self.vectors[layer_idx] = vector.to("cpu")  # Store on CPU, move to GPU during inference
 
+    def load_vector_from_file(self, layer_idx, filepath):
+        """Load a steering vector from .safetensors or .npz file."""
+        try:
+            if filepath.endswith('.npz'):
+                data = np.load(filepath)
+                vector = data['vector'] if 'vector' in data else data[list(data.keys())[0]]
+            elif filepath.endswith('.safetensors'):
+                from safetensors.torch import load_file
+                data = load_file(filepath)
+                vector = data['vector'] if 'vector' in data else data[list(data.keys())[0]]
+                vector = vector.cpu().numpy()
+            else:
+                logger.error(f"Unsupported file format: {filepath}")
+                return
+
+            self.add_vector(layer_idx, vector)
+            logger.info(f"Loaded steering vector for layer {layer_idx} from {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to load steering vector from {filepath}: {e}")
+
+    def compute_vector(self, model, tokenizer, positive_prompt, negative_prompt, layer_idx):
+        """Compute steering vector from contrast prompt pair (ActAdd: h+ - h-)."""
+        try:
+            # Tokenize prompts
+            pos_inputs = tokenizer(positive_prompt, return_tensors="pt").to(model.device)
+            neg_inputs = tokenizer(negative_prompt, return_tensors="pt").to(model.device)
+
+            # Get hidden states for positive prompt
+            with torch.no_grad():
+                pos_outputs = model(
+                    input_ids=pos_inputs.input_ids,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                pos_hidden = pos_outputs.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
+
+            # Get hidden states for negative prompt
+            with torch.no_grad():
+                neg_outputs = model(
+                    input_ids=neg_inputs.input_ids,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                neg_hidden = neg_outputs.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
+
+            # Compute steering vector: h+ - h-
+            steering_vector = pos_hidden - neg_hidden
+
+            # Validate magnitude
+            magnitude = torch.norm(steering_vector).item()
+            if magnitude < 1e-6:
+                logger.warning(f"Steering vector magnitude too small: {magnitude}")
+                return None
+
+            logger.info(f"Computed steering vector for layer {layer_idx}, magnitude={magnitude:.4f}")
+            return steering_vector.numpy()
+
+        except Exception as e:
+            logger.error(f"Failed to compute steering vector: {e}")
+            return None
+
     def apply_steering(self, hidden_state, layer_idx):
         """Apply steering vector to hidden state at target layer."""
         if layer_idx != self.target_layer_idx:
@@ -980,6 +1041,8 @@ def main():
                         help="Steering coefficient (typical range [3, 20])")
     parser.add_argument("--steering-layer", default="auto",
                         help="Steering target layer (or 'auto' for model_layers / 3)")
+    parser.add_argument("--steering-vector-path", default=None,
+                        help="Path to pre-computed steering vector (.npz or .safetensors)")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--load-in-4bit", action="store_true", default=True,
                         help="Load model with bitsandbytes 4-bit quantization (default: on)")
@@ -1006,6 +1069,12 @@ def main():
     )
     if args.turboquant_bits == 0:
         engine.kv_compressor.enabled = False
+
+    # Load pre-computed steering vector if provided
+    if args.steering and engine.steering_engine and args.steering_vector_path:
+        engine.steering_engine.load_vector_from_file(
+            engine.steering_engine.target_layer_idx, args.steering_vector_path
+        )
 
     InferenceHandler.engine = engine
 
