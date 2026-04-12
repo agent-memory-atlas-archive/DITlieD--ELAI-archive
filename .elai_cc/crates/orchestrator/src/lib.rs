@@ -1,6 +1,7 @@
 pub mod agent_pool;
 pub mod grc;
 pub mod anti_spiral;
+pub mod sandbox;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
@@ -58,7 +59,6 @@ pub mod worker_boot;
 // Re-export modules from external crates under their old names so that
 // internal `crate::config::*`, `crate::sandbox::*`, etc. paths still resolve.
 pub use elai_core::config;
-pub use elai_core::sandbox;
 pub mod json {
     pub use elai_core::json::{JsonError, JsonValue};
 }
@@ -207,6 +207,11 @@ pub use elai_core::sandbox::{
     resolve_sandbox_status, resolve_sandbox_status_for_request, ContainerEnvironment,
     FilesystemIsolationMode, LinuxSandboxCommand, SandboxConfig, SandboxDetectionInputs,
     SandboxRequest, SandboxStatus,
+};
+pub use sandbox::{
+    AgentEnvironment, AgentProcess, AgentSandbox, AppContainerConfig, JobObjectLimits,
+    PlatformSandboxHandle, SandboxError, SandboxHandle, SelfModificationLocks, create_sandbox,
+    WindowsAppContainerSandbox, WindowsSandboxHandle,
 };
 pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,

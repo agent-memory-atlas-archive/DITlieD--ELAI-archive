@@ -31,3 +31,5 @@ uuid = { version = "1", features = ["v4"] }
 regex = "1"
 jsonschema = { version = "0.45", default-features = false }
 blake2 = "0.10"
+digest = "0.10"
+log = "0.4"

@@ -427,12 +427,9 @@ impl PlanSkeleton {
                 let payload =
                     SsbPayload::PlanUpdate(
                         PlanUpdatePayload {
-                            plan_hash: self
-                                .pipeline_id
-                                .clone(),
-                            phase: current.clone(),
-                            step: changed_phase_id
-                                .clone(),
+                            phase_id: current.clone(),
+                            version: self.version.to_string(),
+                            change_summary: format!("phase changed to {}", changed_phase_id),
                         },
                     );
                 ssb.write_payload(
@@ -1058,9 +1055,9 @@ impl PlanSkeleton {
         // record is detectable (safer than invisible orphan file).
         let payload = SsbPayload::PlanUpdate(
             PlanUpdatePayload {
-                plan_hash: self.pipeline_id.clone(),
-                phase: self.version.to_string(),
-                step: self.phases.len().to_string(),
+                phase_id: self.pipeline_id.clone(),
+                version: self.version.to_string(),
+                change_summary: format!("plan saved with {} phases", self.phases.len()),
             },
         );
         ssb.write_payload(
@@ -1086,10 +1083,9 @@ impl PlanSkeleton {
                 let stub_payload =
                     SsbPayload::StubReference(
                         StubReferencePayload {
-                            original_seq: i64::from(
-                                self.version,
-                            ),
-                            stub_reason: phase_id.clone(),
+                            phase_id: phase_id.clone(),
+                            step_id: format!("step_{}", self.version),
+                            stub_hash: self.pipeline_id.clone(),
                         },
                     );
                 ssb.write_payload(

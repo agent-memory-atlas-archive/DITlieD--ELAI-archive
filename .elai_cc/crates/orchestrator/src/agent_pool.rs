@@ -8,6 +8,8 @@ use uuid::Uuid;
 use elai_core::EntropySource;
 use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState, GroundingLevel};
 
+use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxError, SandboxHandle};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -74,6 +76,9 @@ pub struct AgentHandle {
     /// `GrcEngine::with_agent_config`. Each handle owns its own engine so that
     /// topic budgets are isolated per-agent.
     pub grc_engine: BasicGrcEngine,
+    /// Sandbox handle for process isolation (Phase 3J.11 AppContainer)
+    /// None for in-process agents (Phase 3 Tier A), Some for out-of-process (Phase 4A)
+    pub sandbox_handle: Option<SandboxHandle>,
 }
 
 impl Clone for AgentHandle {
@@ -94,6 +99,7 @@ impl Clone for AgentHandle {
             grc_config: self.grc_config.clone(),
             scratch_dir: self.scratch_dir.clone(),
             grc_engine: engine,
+            sandbox_handle: self.sandbox_handle.clone(),
         }
     }
 }
@@ -131,6 +137,12 @@ pub struct AgentMessage {
 pub struct AgentPoolConfig {
     pub scratch_base: PathBuf,
     pub vram_required_bytes: u64,
+    /// Project path for sandbox filesystem grants
+    pub project_path: PathBuf,
+    /// Enable sandbox isolation (Phase 3J.11)
+    /// For Phase 3 (in-process), this is false but infrastructure is in place
+    /// For Phase 4A (out-of-process), this will be true
+    pub enable_sandbox: bool,
 }
 
 impl Default for AgentPoolConfig {
@@ -138,6 +150,8 @@ impl Default for AgentPoolConfig {
         Self {
             scratch_base: PathBuf::from(".elai_cc/sessions/default/agents"),
             vram_required_bytes: VRAM_MIN_BYTES,
+            project_path: PathBuf::from("."), // Default to current directory
+            enable_sandbox: false, // Disabled for Phase 3 (in-process)
         }
     }
 }
@@ -198,15 +212,31 @@ pub struct InProcessAgentPool<E: EntropySource> {
     config: AgentPoolConfig,
     entropy: E,
     model_pool: Arc<dyn ModelPool>,
+    /// Sandbox instance for process isolation (Phase 3J.11)
+    /// None when sandbox is disabled (Phase 3 in-process)
+    sandbox: Option<Box<dyn AgentSandbox>>,
 }
 
 impl<E: EntropySource> InProcessAgentPool<E> {
     pub fn new(config: AgentPoolConfig, entropy: E, model_pool: Arc<dyn ModelPool>) -> Self {
+        let sandbox = if config.enable_sandbox {
+            match crate::sandbox::create_sandbox() {
+                Ok(sb) => Some(sb),
+                Err(e) => {
+                    eprintln!("Failed to create sandbox: {}, proceeding without isolation", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             agents: HashMap::new(),
             config,
             entropy,
             model_pool,
+            sandbox,
         }
     }
 
@@ -254,6 +284,28 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         let mut grc_engine = BasicGrcEngine::new();
         grc_engine.with_agent_config(grc_config.clone());
 
+        // Create sandbox handle if sandbox is enabled (Phase 3J.11)
+        let sandbox_handle = if let Some(ref sandbox) = self.sandbox {
+            let app_config = AppContainerConfig::new(
+                agent_id,
+                role,
+                self.config.project_path.clone(),
+                scratch_dir.clone(),
+            );
+            match sandbox.create(&app_config) {
+                Ok(mut handle) => {
+                    handle.agent_id = agent_id;
+                    Some(handle)
+                }
+                Err(e) => {
+                    eprintln!("Failed to create sandbox for agent {}: {}, proceeding without isolation", agent_id, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // task stored in handle for lifecycle use (3C.2 wires actual execution)
         let handle = AgentHandle {
             agent_id,
@@ -264,6 +316,7 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
             grc_config,
             scratch_dir,
             grc_engine,
+            sandbox_handle,
         };
 
         self.agents.insert(agent_id, handle.clone());

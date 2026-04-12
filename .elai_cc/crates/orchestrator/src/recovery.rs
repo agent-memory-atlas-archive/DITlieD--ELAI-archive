@@ -183,6 +183,7 @@ impl<C: ClockProvider> RecoveryManager<C> {
             grc_engine: BasicGrcEngine::with_config(dead_handle.grc_config.clone()),
             grc_config: dead_handle.grc_config.clone(),
             scratch_dir: dead_handle.scratch_dir.clone(),
+            sandbox_handle: dead_handle.sandbox_handle.clone(),
         };
 
         let context = AgentRecoveryContext {

@@ -312,10 +312,9 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     };
 
                     let payload = SsbPayload::MemoryMonitoring(MemoryMonitoringPayload {
-                        metric_name: name.clone(),
-                        value: size as f64,
-                        threshold: threshold as f64,
-                        action_taken: action.to_owned(),
+                        channel_id: name.clone(),
+                        deep_size_bytes: size as u64,
+                        threshold_exceeded: size > threshold,
                     });
 
                     ssb.write_payload(&agent_id, superstep as i64, payload, vec![])
@@ -479,6 +478,7 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
                         grc_config,
                         scratch_dir: PathBuf::new(),
+                        sandbox_handle: None,
                     }));
                 }
             }
