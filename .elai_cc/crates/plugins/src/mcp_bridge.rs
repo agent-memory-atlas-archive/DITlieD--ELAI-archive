@@ -78,12 +78,14 @@ pub enum McpError {
     SanitizationFailed(String),
 }
 
-/// Default MCP bridge implementation
+/// Default MCP bridge implementation with actual stdio transport
 pub struct DefaultMcpBridge {
     /// Timeout for tool calls (default 30s)
     pub tool_timeout: Duration,
     /// Heartbeat timeout for server crash detection (default 30s)
     pub heartbeat_timeout: Duration,
+    /// Tool name whitelist for validation
+    tool_whitelist: Vec<String>,
 }
 
 impl Default for DefaultMcpBridge {
@@ -91,6 +93,7 @@ impl Default for DefaultMcpBridge {
         Self {
             tool_timeout: Duration::from_secs(30),
             heartbeat_timeout: Duration::from_secs(30),
+            tool_whitelist: vec![],
         }
     }
 }
@@ -100,7 +103,30 @@ impl DefaultMcpBridge {
         Self {
             tool_timeout,
             heartbeat_timeout,
+            tool_whitelist: vec![],
         }
+    }
+
+    pub fn with_tool_whitelist(mut self, whitelist: Vec<String>) -> Self {
+        self.tool_whitelist = whitelist;
+        self
+    }
+
+    /// Validate tool name against whitelist
+    fn validate_tool_name(&self, tool_name: &str) -> Result<(), McpError> {
+        if self.tool_whitelist.is_empty() {
+            // No whitelist configured, allow all
+            return Ok(());
+        }
+
+        if !self.tool_whitelist.contains(&tool_name.to_string()) {
+            return Err(McpError::ProtocolError(format!(
+                "Tool '{}' not in whitelist",
+                tool_name
+            )));
+        }
+
+        Ok(())
     }
 
     /// Sanitize tool result to prevent prompt injection

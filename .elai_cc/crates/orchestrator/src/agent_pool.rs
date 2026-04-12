@@ -8,7 +8,7 @@ use uuid::Uuid;
 use elai_core::EntropySource;
 use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState, GroundingLevel};
 
-use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxError, SandboxHandle};
+use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
 
 // ---------------------------------------------------------------------------
 // Constants
