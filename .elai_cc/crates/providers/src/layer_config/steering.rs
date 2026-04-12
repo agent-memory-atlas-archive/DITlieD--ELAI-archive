@@ -13,6 +13,7 @@
 //! - Requires intermediate activation access (local models only, no API models)
 
 use std::fmt;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -301,11 +302,12 @@ pub struct SteeringVectorEngine {
 impl SteeringVectorEngine {
     /// Create a new steering engine from configuration.
     ///
-    /// This loads pre-computed vectors from storage (.safetensors or .npz files)
-    /// and validates them against the model's layer count.
+    /// Loads pre-computed vectors from storage (.safetensors files) if
+    /// `storage_dir` is provided. Validates each vector against the model's
+    /// layer count before activation.
     pub fn new(
         config: &SteeringConfig,
-        _total_layers: usize,
+        total_layers: usize,
     ) -> Result<Self, SteeringError> {
         if !config.enabled {
             return Ok(Self {
@@ -317,22 +319,145 @@ impl SteeringVectorEngine {
         if config.vectors.is_empty() {
             return Ok(Self {
                 vectors: Vec::new(),
-                enabled: true, // Enabled but no vectors configured
+                enabled: true,
             });
         }
 
-        // Load vectors from storage
-        // TODO: Implement vector loading from .safetensors/.npz files
-        // For now, we'll return an empty engine with a note that vectors need to be computed
-        tracing::warn!(
-            "Steering vectors configured but not yet loaded from storage. \
-             Vector computation (E2B testing) is deferred to step 3J.5 implementation completion."
+        // Resolve layers for each spec but don't load data yet —
+        // data loading requires a storage path (see load_from_directory).
+        for spec in &config.vectors {
+            let layer = spec.resolve_layer(total_layers)?;
+            if layer >= total_layers {
+                return Err(SteeringError::LayerOutOfRange {
+                    index: layer,
+                    total: total_layers,
+                });
+            }
+            if !(COEFFICIENT_MIN..=COEFFICIENT_MAX).contains(&spec.coefficient) {
+                return Err(SteeringError::InvalidCoefficient {
+                    coefficient: spec.coefficient,
+                    min: COEFFICIENT_MIN,
+                    max: COEFFICIENT_MAX,
+                });
+            }
+        }
+
+        tracing::info!(
+            count = config.vectors.len(),
+            "Steering specs validated; call load_from_directory() to load vector data"
         );
 
         Ok(Self {
             vectors: Vec::new(),
             enabled: true,
         })
+    }
+
+    /// Load pre-computed steering vectors from a directory of .safetensors files.
+    ///
+    /// File naming convention: `{vector_name}.safetensors`
+    /// Each file must contain a tensor named "steering_vector" with shape [hidden_dim].
+    pub fn load_from_directory(
+        &mut self,
+        dir: &Path,
+        specs: &[SteeringVectorSpec],
+        total_layers: usize,
+    ) -> Result<usize, SteeringError> {
+        let mut loaded = 0;
+        for spec in specs {
+            let file_path = dir.join(format!("{}.safetensors", spec.name));
+            if !file_path.exists() {
+                tracing::debug!(name = %spec.name, "No .safetensors file found, skipping");
+                continue;
+            }
+            match Self::load_single_vector(&file_path, spec, total_layers) {
+                Ok(vector) => {
+                    tracing::info!(
+                        name = %vector.name,
+                        layer = vector.layer,
+                        coefficient = vector.coefficient,
+                        dim = vector.vector.len(),
+                        magnitude = vector.magnitude(),
+                        "Loaded steering vector"
+                    );
+                    self.vectors.push(vector);
+                    loaded += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        name = %spec.name,
+                        error = %e,
+                        "Failed to load steering vector, skipping"
+                    );
+                }
+            }
+        }
+        Ok(loaded)
+    }
+
+    /// Load a single steering vector from a .safetensors file.
+    fn load_single_vector(
+        path: &Path,
+        spec: &SteeringVectorSpec,
+        total_layers: usize,
+    ) -> Result<SteeringVector, SteeringError> {
+        let data = std::fs::read(path).map_err(|e| SteeringError::StorageError {
+            reason: format!("failed to read {}: {e}", path.display()),
+        })?;
+
+        let tensors = safetensors::SafeTensors::deserialize(&data)
+            .map_err(|e| SteeringError::StorageError {
+                reason: format!("failed to parse safetensors {}: {e}", path.display()),
+            })?;
+
+        let tensor = tensors
+            .tensor("steering_vector")
+            .map_err(|e| SteeringError::StorageError {
+                reason: format!(
+                    "tensor 'steering_vector' not found in {}: {e}",
+                    path.display()
+                ),
+            })?;
+
+        // Validate dtype is F32 before byte reinterpretation
+        if tensor.dtype() != safetensors::Dtype::F32 {
+            return Err(SteeringError::StorageError {
+                reason: format!(
+                    "tensor 'steering_vector' in {} has dtype {:?}, expected F32",
+                    path.display(),
+                    tensor.dtype()
+                ),
+            });
+        }
+
+        // Convert raw bytes to Vec<f32> (little-endian f32)
+        let raw = tensor.data();
+        if raw.len() % 4 != 0 {
+            return Err(SteeringError::StorageError {
+                reason: format!(
+                    "tensor data length {} not aligned to f32 (4 bytes)",
+                    raw.len()
+                ),
+            });
+        }
+        let vector: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        let layer = spec.resolve_layer(total_layers)?;
+
+        let sv = SteeringVector {
+            name: spec.name.clone(),
+            layer,
+            coefficient: spec.coefficient,
+            vector,
+            positive_prompt: spec.positive_prompt.clone(),
+            negative_prompt: spec.negative_prompt.clone(),
+        };
+
+        sv.validate(total_layers)?;
+        Ok(sv)
     }
 
     /// Check if steering is active (enabled + has valid vectors).
@@ -345,17 +470,12 @@ impl SteeringVectorEngine {
         &self.vectors
     }
 
-    /// Apply steering to the residual stream at the target layer.
+    /// Verify steering is active and vectors are loaded.
     ///
-    /// This is a placeholder for the actual injection logic, which requires
-    /// integration with the vLLM backend's layer-access hook (same as DoLa).
-    ///
-    /// The backend will:
-    /// 1. Receive the steering vector data from this engine
-    /// 2. At the target layer during forward pass: residual = residual + c * vector
-    /// 3. Continue forward pass with modified residual
-    ///
-    /// Returns an error if steering is not active or if layer access fails.
+    /// The actual activation injection happens in the Python sidecar during
+    /// forward pass. This method validates Rust-side readiness. The sidecar
+    /// receives steering config via SidecarConfig (steering_enabled,
+    /// steering_coefficient, steering_layer).
     pub fn apply_steering(
         &self,
         _layer_provider: &dyn LayerAccessProvider,
@@ -364,49 +484,83 @@ impl SteeringVectorEngine {
             return Err(SteeringError::NoActiveVectors);
         }
 
-        // TODO: Integrate with vLLM backend's layer-access hook
-        // The actual injection happens in the backend, not here.
-        // This method validates that steering can proceed and prepares the vector data.
-        tracing::warn!(
-            "Steering vector application requires vLLM backend integration. \
-             Coupled with DoLa (step 3J.3) - if DoLa hook works, steering reuses the same mechanism."
+        tracing::debug!(
+            count = self.vectors.len(),
+            "Steering vectors ready; injection delegated to sidecar"
         );
-
         Ok(())
     }
 
-    /// Compute a steering vector from a contrast prompt pair.
+    /// Request the Python sidecar to compute a steering vector from contrast prompts.
     ///
-    /// This is the one-time computation step (amortized over reuse):
-    /// 1. Forward model on positive prompt p+, record activations at layer l -> h+
-    /// 2. Forward model on negative prompt p-, record activations at layer l -> h-
-    /// 3. Steering vector = h+ - h-
-    /// 4. Store as .safetensors or .npz for reuse
+    /// Sends an HTTP POST to `{sidecar_url}/v1/compute_steering` with the
+    /// contrast pair. The sidecar runs the ActAdd algorithm:
+    ///   steering_vector = h+(layer) - h-(layer)
     ///
-    /// NOTE: This requires access to the model's forward pass and intermediate activations.
-    /// It should be run during E2B testing (step 3J.5) on Gemma4 E2B via vLLM.
-    ///
-    /// Returns the computed steering vector for validation and storage.
+    /// Requires a running sidecar with the /v1/compute_steering endpoint.
+    pub async fn compute_vector_via_sidecar(
+        spec: &SteeringVectorSpec,
+        sidecar_url: &str,
+        total_layers: usize,
+    ) -> Result<SteeringVector, SteeringError> {
+        let layer = spec.resolve_layer(total_layers)?;
+        let url = format!("{}/v1/compute_steering", sidecar_url.trim_end_matches('/'));
+
+        let body = serde_json::json!({
+            "positive_prompt": spec.positive_prompt,
+            "negative_prompt": spec.negative_prompt,
+            "layer_idx": layer,
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SteeringError::StorageError {
+                reason: format!("sidecar request failed: {e}"),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SteeringError::StorageError {
+                reason: format!("sidecar returned {status}: {text}"),
+            });
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ComputeResponse {
+            vector: Vec<f32>,
+        }
+
+        let parsed: ComputeResponse =
+            resp.json().await.map_err(|e| SteeringError::StorageError {
+                reason: format!("failed to parse sidecar response: {e}"),
+            })?;
+
+        let sv = SteeringVector {
+            name: spec.name.clone(),
+            layer,
+            coefficient: spec.coefficient,
+            vector: parsed.vector,
+            positive_prompt: spec.positive_prompt.clone(),
+            negative_prompt: spec.negative_prompt.clone(),
+        };
+
+        sv.validate(total_layers)?;
+        Ok(sv)
+    }
+
+    /// Legacy sync interface — delegates to sidecar but kept for trait compat.
     pub fn compute_vector(
         &self,
         _spec: &SteeringVectorSpec,
         _layer_provider: &dyn LayerAccessProvider,
     ) -> Result<SteeringVector, SteeringError> {
-        // TODO: Implement vector computation using vLLM backend
-        // This requires:
-        // 1. Run forward pass on positive prompt, capture layer activations
-        // 2. Run forward pass on negative prompt, capture layer activations
-        // 3. Compute difference h+ - h-
-        // 4. Validate magnitude (non-zero)
-        // 5. Store to .safetensors/.npz
-
-        tracing::warn!(
-            "Steering vector computation requires vLLM backend integration. \
-             Deferred to E2B testing phase (Gemma4 E2B on RTX 3060)."
-        );
-
         Err(SteeringError::StorageError {
-            reason: "Vector computation not yet implemented".to_string(),
+            reason: "Use compute_vector_via_sidecar() for async HTTP computation".to_string(),
         })
     }
 }

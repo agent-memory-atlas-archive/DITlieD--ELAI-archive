@@ -1,5 +1,5 @@
 mod hooks;
-mod tiered_analysis;
+pub mod tiered_analysis;
 
 #[cfg(feature = "mcp")]
 mod mcp_bridge;

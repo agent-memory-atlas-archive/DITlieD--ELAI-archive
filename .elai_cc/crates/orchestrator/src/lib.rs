@@ -50,6 +50,7 @@ pub use session_dag::{
 };
 pub mod ssb;
 pub mod supervision;
+pub mod validated_ssb;
 pub mod stale_branch;
 pub mod task_packet;
 pub mod task_registry;

@@ -276,6 +276,27 @@ pub struct ReplanLogEntry {
 }
 
 // ---------------------------------------------------------------------------
+// PhaseMetrics — collected by orchestrator, emitted at phase boundary
+// ---------------------------------------------------------------------------
+
+/// Metrics collected during phase execution, emitted as WorkloadProfilePayload
+/// at each FSM transition. Caller (orchestrator) populates from provider usage tracking.
+#[derive(Debug, Clone, Default)]
+pub struct PhaseMetrics {
+    pub agent_role: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub latency_ms: u64,
+    pub vram_peak_mb: u32,
+    pub model_id: String,
+    pub gpu_id: u8,
+}
+
+/// Callback type for emitting workload profiles to SSB at phase boundaries.
+pub type WorkloadEmitter =
+    Box<dyn Fn(crate::ssb::WorkloadProfilePayload) + Send + Sync>;
+
+// ---------------------------------------------------------------------------
 // Fsm (the live engine)
 // ---------------------------------------------------------------------------
 
@@ -283,6 +304,7 @@ pub struct ReplanLogEntry {
 /// Implements the Fsm trait from architecture-overview.txt §4.
 pub struct Fsm {
     inner: Mutex<FsmInner>,
+    workload_emitter: Option<WorkloadEmitter>,
 }
 
 impl std::fmt::Debug for Fsm {
@@ -321,7 +343,13 @@ impl Fsm {
                 persist_path,
                 preload_manager: crate::preload::PreloadManager::new(),
             }),
+            workload_emitter: None,
         }
+    }
+
+    /// Set a callback to emit WorkloadProfilePayload to SSB on phase transitions.
+    pub fn set_workload_emitter(&mut self, emitter: WorkloadEmitter) {
+        self.workload_emitter = Some(emitter);
     }
 
     /// Load FSM state from a msgpack file on disk.
@@ -354,6 +382,7 @@ impl Fsm {
                 persist_path: Some(path.to_path_buf()),
                 preload_manager: crate::preload::PreloadManager::new(),
             }),
+            workload_emitter: None,
         })
     }
 
@@ -395,6 +424,8 @@ impl Fsm {
 
     /// Attempt a state transition. Validates against the transition matrix.
     /// On success, persists to disk (if persist_path set) and records the transition.
+    /// If `metrics` is provided and a workload emitter is set, emits a
+    /// `WorkloadProfilePayload` to SSB at the phase boundary.
     ///
     /// Uses try_lock to detect concurrent transitions (TransitionConflict).
     pub async fn transition(
@@ -402,6 +433,18 @@ impl Fsm {
         target: FsmState,
         phase_label: &str,
         evidence: Vec<EvidenceArtifact>,
+    ) -> Result<TransitionRecord, FsmError> {
+        self.transition_with_metrics(target, phase_label, evidence, None)
+            .await
+    }
+
+    /// Transition with optional phase metrics for workload profiling.
+    pub async fn transition_with_metrics(
+        &self,
+        target: FsmState,
+        phase_label: &str,
+        evidence: Vec<EvidenceArtifact>,
+        metrics: Option<PhaseMetrics>,
     ) -> Result<TransitionRecord, FsmError> {
         let mut guard = self
             .inner
@@ -433,18 +476,29 @@ impl Fsm {
         // This requires access to ModelPool and provider to trigger model loading
         // For now, this is a structural hook that returns the model list
 
-        // Emit workload profile at phase boundary
-        // Phase 3J.7: track per-agent per-phase metrics (tokens_in, tokens_out, latency_ms, vram_peak_mb)
-        // TODO: Integrate with SSB to write WorkloadProfile
-        // TODO: Collect actual metrics from agent execution context:
-        //   - tokens_in/tokens_out from provider usage tracking
-        //   - latency_ms from phase execution timer
-        //   - vram_peak_mb from ModelPool VRAM monitoring
-        //   - agent_role, model_id, gpu_id from execution context
-        // For now, this is a structural hook. Actual emission requires:
-        //   1. SSB reference in FSM (or callback mechanism)
-        //   2. Agent execution context with metrics
-        //   3. Phase execution timing wrapper
+        // Emit workload profile at phase boundary via callback
+        if let (Some(ref emitter), Some(ref m)) = (&self.workload_emitter, &metrics) {
+            let payload = crate::ssb::WorkloadProfilePayload {
+                agent_role: m.agent_role.clone(),
+                phase_id: phase_label.to_string(),
+                tokens_in: m.tokens_in,
+                tokens_out: m.tokens_out,
+                latency_ms: m.latency_ms,
+                vram_peak_mb: m.vram_peak_mb,
+                model_id: m.model_id.clone(),
+                gpu_id: m.gpu_id,
+                timestamp: now_ms() as i64,
+            };
+            tracing::info!(
+                phase = phase_label,
+                agent = %m.agent_role,
+                tokens_in = m.tokens_in,
+                tokens_out = m.tokens_out,
+                latency_ms = m.latency_ms,
+                "Emitting workload profile at phase boundary"
+            );
+            emitter(payload);
+        }
 
         // Clear replan log on phase boundary (new phase = fresh limit)
         if source == FsmState::Memorizing || source == FsmState::Complete {

@@ -1,0 +1,24 @@
+# Build artifacts
+target/
+*.rlib
+*.exe
+*.pdb
+*.dll
+*.so
+*.dylib
+
+# Runtime artifacts
+*.log
+.elai/sessions/
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+
+# Models (tracked via LFS or external storage)
+models/
+
+# OS
+Thumbs.db
+.DS_Store

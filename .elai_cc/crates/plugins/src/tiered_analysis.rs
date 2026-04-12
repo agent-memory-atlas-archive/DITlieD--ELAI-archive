@@ -57,35 +57,59 @@ pub struct TieredAnalysisResult {
     pub duration_ms: f64,
 }
 
-impl TieredAnalysisResult {
-    /// Returns the final verdict (BLOCK takes precedence over WARN, which takes precedence over ALLOW).
-    pub fn final_verdict() -> HookVerdict {
-        // Computed after all tiers run
-        HookVerdict::Allow
-    }
-}
-
 // ---------------------------------------------------------------------------
 // T1: RULES hook (<1ms target)
 // ---------------------------------------------------------------------------
 
-/// T1 hook evaluates predicates from rules.db for active rules.
+/// T1 hook evaluates predicates from pre-loaded rules.
 ///
 /// Fires on EVERY SSB write. Performance target: <1ms.
+/// Rules are loaded from rules.db at construction time and cached in memory.
 pub struct T1Hook {
     rule_engine: Box<dyn RuleEngine>,
     fsm_phase: FsmPhaseBit,
+    /// Pre-loaded and compiled rules from rules.db, cached for fast evaluation.
+    loaded_rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
 }
 
 impl T1Hook {
+    /// Create a T1 hook with no pre-loaded rules (empty evaluation).
     pub fn new(rule_engine: Box<dyn RuleEngine>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             rule_engine,
             fsm_phase,
+            loaded_rules: Vec::new(),
         }
     }
 
-    /// Evaluate predicates from rules.db for active rules matching current phase + domain.
+    /// Create a T1 hook with pre-loaded rules from rules.db.
+    ///
+    /// The caller (typically orchestrator) loads rules from SQLite, compiles
+    /// predicates, and passes the compiled pairs here. This avoids adding
+    /// a SQLite dependency to the plugins crate.
+    pub fn with_rules(
+        rule_engine: Box<dyn RuleEngine>,
+        fsm_phase: FsmPhaseBit,
+        rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+    ) -> Self {
+        tracing::info!(count = rules.len(), "T1 hook loaded with pre-compiled rules");
+        Self {
+            rule_engine,
+            fsm_phase,
+            loaded_rules: rules,
+        }
+    }
+
+    /// Replace the loaded rules (e.g., after FSM phase change).
+    pub fn set_rules(
+        &mut self,
+        rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+    ) {
+        tracing::debug!(count = rules.len(), "T1 hook rules updated");
+        self.loaded_rules = rules;
+    }
+
+    /// Evaluate predicates for active rules matching current phase + domain.
     ///
     /// Performance target: <1ms for typical rule sets (100 rules).
     pub fn evaluate(
@@ -105,10 +129,7 @@ impl T1Hook {
             metric_values,
         };
 
-        // Get active rules for current phase and evaluate
-        // TODO: Load rules from rules.db - for now use empty slice
-        let rules: &[(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)] = &[];
-        let verdicts = self.rule_engine.evaluate(rules, &ctx)?;
+        let verdicts = self.rule_engine.evaluate(&self.loaded_rules, &ctx)?;
 
         // Find the most severe verdict (BLOCK > WARN > ALLOW)
         let final_verdict = verdicts
@@ -169,12 +190,28 @@ impl From<elai_rules::rule_engine::RuleEngineError> for T1Error {
 // T2: AST hook (<10ms target for files <5000 lines)
 // ---------------------------------------------------------------------------
 
+/// Maximum nesting depth before flagging as overly complex.
+const MAX_NESTING_DEPTH: usize = 8;
+
 /// T2 hook performs tree-sitter parse + pattern matching for file_write actions.
 ///
 /// Fires only on action_type='file_write'. Circuit breaker: files >5000 lines degrade to T1-only.
 /// Performance target: <10ms for files <5000 lines.
+///
+/// Detects:
+/// - `unsafe` blocks in Rust
+/// - `eval()` calls in Python
+/// - Shell injection patterns (`os.system`, `subprocess.call` with `shell=True`)
+/// - Overly deep nesting (configurable threshold)
 pub struct T2Hook {
     circuit_breaker_lines: usize,
+}
+
+/// Detected language for tree-sitter parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedLanguage {
+    Rust,
+    Python,
 }
 
 impl T2Hook {
@@ -184,14 +221,25 @@ impl T2Hook {
         }
     }
 
+    /// Detect language from file extension.
+    fn detect_language(file_path: &str) -> Option<DetectedLanguage> {
+        if file_path.ends_with(".rs") {
+            Some(DetectedLanguage::Rust)
+        } else if file_path.ends_with(".py") {
+            Some(DetectedLanguage::Python)
+        } else {
+            None
+        }
+    }
+
     /// Parse source with tree-sitter and apply pattern matching.
     ///
-    /// Returns None if circuit breaker triggers (file too large).
+    /// Returns None if circuit breaker triggers (file too large) or language unsupported.
     /// Performance target: <10ms for files <5000 lines.
     pub fn evaluate(
         &self,
         source: &str,
-        _file_path: &str,
+        file_path: &str,
     ) -> Result<Option<HookVerdict>, T2Error> {
         let start = Instant::now();
 
@@ -199,23 +247,200 @@ impl T2Hook {
         let line_count = source.lines().count();
         if line_count > self.circuit_breaker_lines {
             tracing::debug!(
-                "T2 circuit breaker triggered: {} lines > {}",
-                line_count,
-                self.circuit_breaker_lines
+                lines = line_count,
+                limit = self.circuit_breaker_lines,
+                "T2 circuit breaker triggered"
             );
             return Ok(None);
         }
 
-        // TODO: Implement tree-sitter parsing and pattern matching
-        // For now, return ALLOW (no AST checks implemented yet)
-        // This is a stub that will be filled in with actual tree-sitter integration
+        let lang = match Self::detect_language(file_path) {
+            Some(l) => l,
+            None => return Ok(None), // Unsupported language, skip
+        };
+
+        let mut parser = tree_sitter::Parser::new();
+        match lang {
+            DetectedLanguage::Rust => {
+                parser
+                    .set_language(&tree_sitter_rust::LANGUAGE.into())
+                    .map_err(|e| T2Error::ParseError(format!("Rust parser init: {e}")))?;
+            }
+            DetectedLanguage::Python => {
+                // Python grammar not compiled in (avoids C compilation overhead).
+                // Fall back to regex-based detection for Python patterns.
+                return self.evaluate_python_regex(source, start);
+            }
+        }
+
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| T2Error::ParseError("tree-sitter parse returned None".to_string()))?;
+
+        let root = tree.root_node();
+        if root.has_error() {
+            tracing::debug!(file = file_path, "tree-sitter parse had errors, continuing");
+        }
+
+        // Walk AST for patterns
+        let mut findings: Vec<(String, String)> = Vec::new();
+
+        match lang {
+            DetectedLanguage::Rust => {
+                self.check_rust_patterns(&root, source, &mut findings);
+            }
+            DetectedLanguage::Python => {
+                // Already handled above via regex fallback
+            }
+        }
+
+        // Check nesting depth
+        let max_depth = self.max_nesting_depth(&root, 0);
+        if max_depth > MAX_NESTING_DEPTH {
+            findings.push((
+                format!("deep_nesting_{max_depth}"),
+                format!("Nesting depth {max_depth} exceeds limit {MAX_NESTING_DEPTH}"),
+            ));
+        }
 
         let duration = start.elapsed();
         if duration.as_millis() > 10 {
-            tracing::warn!("T2 hook exceeded 10ms target: {:?}", duration);
+            tracing::warn!(duration_ms = ?duration.as_millis(), "T2 hook exceeded 10ms target");
         }
 
-        Ok(Some(HookVerdict::Allow))
+        if let Some((pattern_id, message)) = findings.first() {
+            let severity = if findings.iter().any(|(id, _)| id.starts_with("unsafe_block")) {
+                // unsafe blocks are WARN (they may be legitimate)
+                HookVerdict::Warn {
+                    message: message.clone(),
+                    pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+                }
+            } else {
+                HookVerdict::Block {
+                    message: message.clone(),
+                    pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+                }
+            };
+            Ok(Some(severity))
+        } else {
+            Ok(Some(HookVerdict::Allow))
+        }
+    }
+
+    /// Check Rust-specific AST patterns.
+    fn check_rust_patterns(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        // Check for unsafe blocks
+        if node.kind() == "unsafe_block" {
+            let start_line = node.start_position().row + 1;
+            findings.push((
+                format!("unsafe_block_L{start_line}"),
+                format!("Unsafe block at line {start_line}"),
+            ));
+        }
+
+        // Check for .unwrap()/.expect() calls (production code concern)
+        // tree-sitter-rust: call_expression.function is a field_expression
+        // whose text is e.g. "x.unwrap" (no parens — those are in arguments)
+        if node.kind() == "call_expression" {
+            if let Some(func) = node.child_by_field_name("function") {
+                let text = &source[func.byte_range()];
+                if text.ends_with(".unwrap") || text.ends_with(".expect") {
+                    let start_line = node.start_position().row + 1;
+                    findings.push((
+                        format!("unwrap_call_L{start_line}"),
+                        format!("unwrap()/expect() at line {start_line}"),
+                    ));
+                }
+            }
+        }
+
+        // Recurse into children
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.check_rust_patterns(&child, source, findings);
+        }
+    }
+
+    /// Regex-based Python pattern detection (fallback when tree-sitter-python
+    /// is not compiled in to avoid C build overhead).
+    fn evaluate_python_regex(
+        &self,
+        source: &str,
+        start: Instant,
+    ) -> Result<Option<HookVerdict>, T2Error> {
+        static EVAL_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"\beval\s*\(").unwrap());
+        static OS_SYSTEM_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"\bos\.system\s*\(").unwrap());
+        static SUBPROCESS_SHELL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True").unwrap()
+        });
+
+        let mut findings: Vec<(String, String)> = Vec::new();
+
+        if let Some(m) = EVAL_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            findings.push((
+                format!("eval_call_L{line}"),
+                format!("eval() call at line {line}"),
+            ));
+        }
+
+        if let Some(m) = OS_SYSTEM_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            findings.push((
+                format!("os_system_L{line}"),
+                format!("os.system() shell injection risk at line {line}"),
+            ));
+        }
+
+        if let Some(m) = SUBPROCESS_SHELL_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            findings.push((
+                format!("subprocess_shell_L{line}"),
+                format!("subprocess with shell=True at line {line}"),
+            ));
+        }
+
+        let duration = start.elapsed();
+        if duration.as_millis() > 10 {
+            tracing::warn!(duration_ms = ?duration.as_millis(), "T2 Python regex exceeded 10ms");
+        }
+
+        if let Some((pattern_id, message)) = findings.first() {
+            Ok(Some(HookVerdict::Block {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }))
+        } else {
+            Ok(Some(HookVerdict::Allow))
+        }
+    }
+
+    /// Compute maximum nesting depth of the AST.
+    fn max_nesting_depth(&self, node: &tree_sitter::Node<'_>, current_depth: usize) -> usize {
+        let is_nesting = matches!(
+            node.kind(),
+            "block" | "if_expression" | "match_expression" | "loop_expression"
+                | "while_expression" | "for_expression" | "closure_expression"
+                | "if_statement" | "for_statement" | "while_statement"
+                | "try_statement" | "with_statement"
+        );
+        let depth = if is_nesting { current_depth + 1 } else { current_depth };
+        let mut max = depth;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let child_max = self.max_nesting_depth(&child, depth);
+            if child_max > max {
+                max = child_max;
+            }
+        }
+        max
     }
 }
 
@@ -339,10 +564,24 @@ pub struct TieredAnalysis {
 }
 
 impl TieredAnalysis {
+    /// Create with no pre-loaded rules (T1 evaluates against empty set).
     pub fn new(rule_engine: Box<dyn RuleEngine>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             t1: T1Hook::new(rule_engine, fsm_phase),
-            t2: T2Hook::new(5000), // 5000 line circuit breaker
+            t2: T2Hook::new(5000),
+            t3: T3Hook::new(),
+        }
+    }
+
+    /// Create with pre-loaded rules for T1 evaluation.
+    pub fn with_rules(
+        rule_engine: Box<dyn RuleEngine>,
+        fsm_phase: FsmPhaseBit,
+        rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+    ) -> Self {
+        Self {
+            t1: T1Hook::with_rules(rule_engine, fsm_phase, rules),
+            t2: T2Hook::new(5000),
             t3: T3Hook::new(),
         }
     }

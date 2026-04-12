@@ -180,7 +180,7 @@ fn steering_vector_engine_is_active_false_when_no_vectors() {
 }
 
 #[test]
-fn steering_vector_engine_coefficient_validation_clamps_to_min() {
+fn steering_vector_engine_coefficient_validation_rejects_below_min() {
     let config = SteeringConfig {
         enabled: true,
         vectors: vec![SteeringVectorSpec {
@@ -191,14 +191,16 @@ fn steering_vector_engine_coefficient_validation_clamps_to_min() {
             negative_prompt: "negative".to_string(),
         }],
     };
-    
-    let _engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
-    // Coefficient should be clamped to COEFFICIENT_DEFAULT (5.0)
-    // This is validated in the Rust implementation
+
+    let result = SteeringVectorEngine::new(&config, 32);
+    assert!(
+        matches!(result, Err(SteeringError::InvalidCoefficient { .. })),
+        "should reject coefficient below minimum"
+    );
 }
 
 #[test]
-fn steering_vector_engine_coefficient_validation_clamps_to_max() {
+fn steering_vector_engine_coefficient_validation_rejects_above_max() {
     let config = SteeringConfig {
         enabled: true,
         vectors: vec![SteeringVectorSpec {
@@ -209,9 +211,12 @@ fn steering_vector_engine_coefficient_validation_clamps_to_max() {
             negative_prompt: "negative".to_string(),
         }],
     };
-    
-    let _engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
-    // Coefficient should be clamped to COEFFICIENT_DEFAULT (5.0)
+
+    let result = SteeringVectorEngine::new(&config, 32);
+    assert!(
+        matches!(result, Err(SteeringError::InvalidCoefficient { .. })),
+        "should reject coefficient above maximum"
+    );
 }
 
 // ---------------------------------------------------------------------------

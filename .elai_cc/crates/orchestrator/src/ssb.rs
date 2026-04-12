@@ -102,7 +102,7 @@ pub enum SsbActionType {
 
 impl SsbActionType {
     /// SQL-compatible string for the CHECK constraint.
-    fn as_sql_str(&self) -> &'static str {
+    pub fn as_sql_str(&self) -> &'static str {
         match self {
             Self::FileWrite => "file_write",
             Self::FileRead => "file_read",

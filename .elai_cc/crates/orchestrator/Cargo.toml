@@ -29,6 +29,14 @@ tracing.workspace = true
 uuid = { workspace = true }
 walkdir = "2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
+
 [dev-dependencies]
 proptest = "1.11"
 proptest-state-machine = "0.8"

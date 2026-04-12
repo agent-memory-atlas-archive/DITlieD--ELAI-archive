@@ -2,53 +2,105 @@
 //!
 //! Phase 3J.6 deliverable. Triggers model pre-loading on FSM state transitions.
 //! Uses PreloadPolicy from providers crate to determine which models to pre-load.
+//! Optionally uses GreedyModelPlacer for GPU placement decisions.
 
 use elai_providers::multiplexing::PreloadPolicy;
+use elai_providers::model_placer::{GreedyModelPlacer, GpuSpec, ModelSpec, PlacementResult};
+use elai_providers::multiplexing::SloTier;
 use crate::fsm::FsmState;
 
+/// Estimated VRAM per model role in bytes (conservative defaults).
+const DEFAULT_MODEL_VRAM_BYTES: u64 = 4_000_000_000; // 4GB
+
 /// Pre-loading manager that triggers model pre-loading on FSM state transitions.
+/// Integrates with GreedyModelPlacer for GPU placement decisions.
 pub struct PreloadManager {
     policy: PreloadPolicy,
+    placer: GreedyModelPlacer,
+    gpus: Vec<GpuSpec>,
 }
 
 impl PreloadManager {
-    /// Create a new preload manager with the default policy.
+    /// Create a new preload manager with the default policy and a single GPU spec.
     pub fn new() -> Self {
         Self {
             policy: PreloadPolicy::default(),
+            placer: GreedyModelPlacer::default(),
+            gpus: vec![GpuSpec::new(0, 12_000_000_000)], // Default: single 12GB GPU
         }
     }
 
     /// Create a new preload manager with a custom policy.
     pub fn with_policy(policy: PreloadPolicy) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            placer: GreedyModelPlacer::default(),
+            gpus: vec![GpuSpec::new(0, 12_000_000_000)],
+        }
+    }
+
+    /// Configure available GPUs for placement decisions.
+    pub fn with_gpus(mut self, gpus: Vec<GpuSpec>) -> Self {
+        self.gpus = gpus;
+        self
+    }
+
+    /// Configure the model placer.
+    pub fn with_placer(mut self, placer: GreedyModelPlacer) -> Self {
+        self.placer = placer;
+        self
     }
 
     /// Trigger pre-loading for models associated with the given FSM state.
     ///
-    /// This should be called on FSM state entry (not exit).
-    /// Pre-loading happens in the background via tokio::spawn.
-    ///
-    /// # Arguments
-    /// * `state` - The FSM state being entered
-    ///
-    /// # Returns
-    /// A list of model IDs that will be pre-loaded (for logging/telemetry).
+    /// Determines which models to pre-load via PreloadPolicy, then uses
+    /// GreedyModelPlacer to decide GPU placement. Returns the model IDs
+    /// that will be pre-loaded.
     pub fn trigger_preload(&self, state: FsmState) -> Vec<String> {
         let state_str = state.to_string();
-        let models = self.policy.models_for_state(&state_str);
+        let model_ids = self.policy.models_for_state(&state_str);
 
-        // TODO: Implement actual background pre-loading with tokio::spawn
-        // This requires:
-        // 1. Access to ModelPool to check VRAM availability
-        // 2. Access to provider to trigger model loading
-        // 3. VRAM checks using MultiplexingPolicy.can_colocate()
-        // 4. Model placement using GreedyModelPlacer (phase 3J.8)
-        //
-        // For now, this is a structural placeholder that returns the model list.
-        // The actual pre-loading will be wired in a follow-up task.
+        if model_ids.is_empty() {
+            return model_ids;
+        }
 
-        models
+        // Build ModelSpec list for placement
+        let specs: Vec<ModelSpec> = model_ids
+            .iter()
+            .map(|id| ModelSpec::new(id.clone(), DEFAULT_MODEL_VRAM_BYTES, SloTier::Basic))
+            .collect();
+
+        // Compute placement (which GPU each model goes on)
+        match self.placer.place(&specs, &self.gpus) {
+            Ok(result) => {
+                self.log_placement(&result, &model_ids);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    state = %state,
+                    error = %e,
+                    "Model placement failed during pre-load"
+                );
+            }
+        }
+
+        model_ids
+    }
+
+    fn log_placement(&self, result: &PlacementResult, model_ids: &[String]) {
+        if result.success {
+            tracing::info!(
+                assignments = ?result.assignments,
+                swap_latency_ms = result.total_swap_latency_ms,
+                "Model placement computed for pre-load"
+            );
+        } else {
+            tracing::warn!(
+                models = ?model_ids,
+                error = ?result.error,
+                "Model placement failed: insufficient GPU resources for pre-load"
+            );
+        }
     }
 }
 
