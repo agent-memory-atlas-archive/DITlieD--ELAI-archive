@@ -476,18 +476,18 @@ class InferenceEngine:
         """Apply steering + DoLa contrastive decoding to select next token."""
         hidden_states = outputs.hidden_states
 
-        # Apply steering to hidden states at target layer
-        if self.steering_enabled and self.steering_engine and self.steering_engine.is_active():
-            n_hidden = len(hidden_states)
-            modified_states = []
+        # Early return if steering disabled or no vectors loaded
+        if not (self.steering_enabled and self.steering_engine and self.steering_engine.is_active()):
+            # Skip steering, proceed directly to DoLa
+            pass
+        else:
+            # Apply steering to hidden states at target layer (in-place, no cloning)
             for layer_idx, hs in enumerate(hidden_states):
                 # Apply steering at target layer (hs[layer_idx] corresponds to layer_idx)
                 modified = self.steering_engine.apply_steering(hs[:, -1, :], layer_idx)
-                # Reconstruct full hidden state tensor
-                modified_full = hs.clone()
-                modified_full[:, -1, :] = modified
-                modified_states.append(modified_full)
-            hidden_states = tuple(modified_states)
+                # Modify in-place: only change if steering was applied
+                if not torch.equal(modified, hs[:, -1, :]):
+                    hs[:, -1, :] = modified
 
         final_hidden = hidden_states[-1][:, -1, :].to(self.lm_head.weight.device)
         final_logits = self.lm_head(final_hidden).squeeze(0).float()
@@ -1042,7 +1042,7 @@ def main():
     parser.add_argument("--steering-layer", default="auto",
                         help="Steering target layer (or 'auto' for model_layers / 3)")
     parser.add_argument("--steering-vector-path", default=None,
-                        help="Path to pre-computed steering vector (.npz or .safetensors)")
+                        help="Path to pre-computed steering vector (.npz or .safetensors), or comma-separated list for multiple vectors")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--load-in-4bit", action="store_true", default=True,
                         help="Load model with bitsandbytes 4-bit quantization (default: on)")
@@ -1070,11 +1070,17 @@ def main():
     if args.turboquant_bits == 0:
         engine.kv_compressor.enabled = False
 
-    # Load pre-computed steering vector if provided
+    # Load pre-computed steering vectors if provided
     if args.steering and engine.steering_engine and args.steering_vector_path:
-        engine.steering_engine.load_vector_from_file(
-            engine.steering_engine.target_layer_idx, args.steering_vector_path
-        )
+        # Support comma-separated list of vector paths
+        vector_paths = [p.strip() for p in args.steering_vector_path.split(',')]
+        for i, path in enumerate(vector_paths):
+            # For multiple vectors, assign to different layers (spread across model)
+            layer_idx = engine.steering_engine.target_layer_idx + i
+            if layer_idx < engine.n_layers:
+                engine.steering_engine.load_vector_from_file(layer_idx, path)
+            else:
+                logger.warning(f"Skipping vector {path}: layer {layer_idx} exceeds model layers {engine.n_layers}")
 
     InferenceHandler.engine = engine
 

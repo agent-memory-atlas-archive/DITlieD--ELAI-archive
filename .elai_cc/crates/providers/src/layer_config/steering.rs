@@ -230,6 +230,50 @@ impl Default for SteeringConfig {
     }
 }
 
+impl SteeringConfig {
+    /// Get default configuration for a specific agent role.
+    ///
+    /// - executor: No steering by default (needs full autonomy)
+    /// - auditor: Skepticism steering (question assumptions)
+    /// - prompt-engineer: Completeness steering (ensure thorough prompts)
+    /// - context-compiler: Fidelity steering (preserve context integrity)
+    pub fn default_for_role(role: &str) -> Self {
+        match role {
+            "auditor" => Self {
+                enabled: true,
+                vectors: vec![SteeringVectorSpec {
+                    name: "skepticism".to_string(),
+                    layer: "auto".to_string(),
+                    coefficient: 5.0,
+                    positive_prompt: "I should question assumptions and verify claims.".to_string(),
+                    negative_prompt: "I should accept information without questioning.".to_string(),
+                }],
+            },
+            "prompt-engineer" => Self {
+                enabled: true,
+                vectors: vec![SteeringVectorSpec {
+                    name: "completeness".to_string(),
+                    layer: "auto".to_string(),
+                    coefficient: 5.0,
+                    positive_prompt: "I should provide complete and thorough information.".to_string(),
+                    negative_prompt: "I should provide minimal information.".to_string(),
+                }],
+            },
+            "context-compiler" => Self {
+                enabled: true,
+                vectors: vec![SteeringVectorSpec {
+                    name: "fidelity".to_string(),
+                    layer: "auto".to_string(),
+                    coefficient: 5.0,
+                    positive_prompt: "I should preserve context faithfully.".to_string(),
+                    negative_prompt: "I should modify or simplify context.".to_string(),
+                }],
+            },
+            _ => Self::default(), // executor and others: no steering
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SteeringVectorEngine
 // ---------------------------------------------------------------------------

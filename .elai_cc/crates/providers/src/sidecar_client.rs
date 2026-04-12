@@ -39,6 +39,12 @@ pub struct SidecarConfig {
     pub dola_alpha: f64,
     /// TurboQuant bit-width (0 = disabled).
     pub turboquant_bits: u8,
+    /// Whether steering vectors are enabled.
+    pub steering_enabled: bool,
+    /// Steering coefficient (typical range [3, 20]).
+    pub steering_coefficient: f64,
+    /// Steering target layer (or "auto" for model_layers / 3).
+    pub steering_layer: String,
     /// Temperature for generation.
     pub temperature: f32,
     /// Max tokens per completion.
