@@ -13,7 +13,7 @@ use elai_orchestrator::checkpoint::{
 };
 use elai_orchestrator::ssb::{Ssb, SsbConfig, SsbPayload};
 use elai_orchestrator::{AgentHandle, AgentRole, AgentStatus};
-use elai_reasoning::{AgentGrcConfig, GrcBudget, GrcState, GroundingLevel};
+use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
 use uuid::Uuid;
 
 fn test_grc_config() -> AgentGrcConfig {
@@ -43,6 +43,7 @@ fn test_handle(tmp_dir: &std::path::Path) -> AgentHandle {
         active_files: vec![],
         grc_config: test_grc_config(),
         scratch_dir: tmp_dir.to_path_buf(),
+        grc_engine: BasicGrcEngine::default(),
     }
 }
 

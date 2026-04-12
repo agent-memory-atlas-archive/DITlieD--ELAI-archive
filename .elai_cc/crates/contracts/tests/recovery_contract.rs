@@ -11,7 +11,7 @@ use elai_orchestrator::recovery::{
     AgentDeathClassification, RecoveryError, RecoveryManager,
 };
 use elai_orchestrator::ssb::{Ssb, SsbConfig};
-use elai_reasoning::{AgentGrcConfig, GrcBudget, GrcState, GroundingLevel};
+use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
 use uuid::Uuid;
 
 fn test_grc_config() -> AgentGrcConfig {
@@ -44,6 +44,7 @@ fn test_handle(scratch_dir: &std::path::Path) -> AgentHandle {
         active_files: vec![],
         grc_config: test_grc_config(),
         scratch_dir: scratch_dir.to_path_buf(),
+        grc_engine: BasicGrcEngine::default(),
     }
 }
 
