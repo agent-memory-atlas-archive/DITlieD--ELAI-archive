@@ -50,33 +50,6 @@ impl PreloadManager {
 
         models
     }
-
-    /// Trigger model placement for a set of models across available GPUs.
-    /// Phase 3J.8 deliverable. Uses GreedyModelPlacer for optimal assignment.
-    ///
-    /// # TODO
-    /// This is a structural hook. Actual wiring requires:
-    /// - Access to VllmModelPool or ModelPool trait implementation
-    /// - Real GPU discovery (NVML or vLLM GPU query)
-    /// - Real model VRAM requirements from model metadata
-    /// - Integration with agent pool to trigger placement at phase boundaries
-    ///
-    /// # Arguments
-    /// * `models` - Models to place (list of (id, vram_bytes, tier) tuples)
-    /// * `gpus` - Available GPUs (list of (id, total_vram_bytes) tuples)
-    ///
-    /// # Returns
-    /// Placement result with assignments and estimated swap latency.
-    #[allow(dead_code)]
-    pub fn place_models(
-        &self,
-        models: Vec<(String, u64, elai_providers::SloTier)>,
-        gpus: Vec<(u8, u64)>,
-    ) -> Result<elai_providers::PlacementResult, elai_providers::MultiplexingError> {
-        // TODO: Wire to actual ModelPool implementation
-        // For now, this is a structural placeholder
-        Err(elai_providers::MultiplexingError::InvalidModelSize)
-    }
 }
 
 impl Default for PreloadManager {

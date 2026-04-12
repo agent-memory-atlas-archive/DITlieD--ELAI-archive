@@ -1,5 +1,10 @@
 mod hooks;
 
+#[cfg(feature = "mcp")]
+mod mcp_bridge;
+#[cfg(feature = "mcp")]
+mod mcp_lifecycle;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -11,6 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
+
+#[cfg(feature = "mcp")]
+pub use mcp_bridge::{McpBridge, McpConnection, McpError, McpTransport, McpToolSpec, DefaultMcpBridge};
+#[cfg(feature = "mcp")]
+pub use mcp_lifecycle::{HeartbeatMonitor, McpConnectionManager, RetryPolicy};
 
 const EXTERNAL_MARKETPLACE: &str = "external";
 const BUILTIN_MARKETPLACE: &str = "builtin";

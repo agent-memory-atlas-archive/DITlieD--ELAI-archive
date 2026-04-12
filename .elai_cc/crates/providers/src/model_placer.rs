@@ -335,7 +335,11 @@ mod tests {
 
     #[test]
     fn greedy_placer_place_multiple_models() {
-        let placer = GreedyModelPlacer::default();
+        let policy = MultiplexingPolicy {
+            enabled: true, // Enable multiplexing for this test
+            ..Default::default()
+        };
+        let placer = GreedyModelPlacer::with_policy(policy);
         let models = vec![
             ModelSpec::new("large", 6_000_000_000, SloTier::Best),
             ModelSpec::new("small", 2_000_000_000, SloTier::Basic),
@@ -365,17 +369,21 @@ mod tests {
 
     #[test]
     fn greedy_placer_sorts_by_vram_descending() {
-        let placer = GreedyModelPlacer::default();
+        let policy = MultiplexingPolicy {
+            enabled: true, // Enable multiplexing for this test
+            ..Default::default()
+        };
+        let placer = GreedyModelPlacer::with_policy(policy);
         let models = vec![
             ModelSpec::new("small", 2_000_000_000, SloTier::Basic),
-            ModelSpec::new("large", 6_000_000_000, SloTier::Best),
-            ModelSpec::new("medium", 4_000_000_000, SloTier::Good),
+            ModelSpec::new("large", 5_000_000_000, SloTier::Best),
+            ModelSpec::new("medium", 3_000_000_000, SloTier::Good),
         ];
         let gpus = vec![GpuSpec::new(0, 12_000_000_000)];
 
         let result = placer.place(&models, &gpus).unwrap();
         assert!(result.success);
-        // All models should be placed
+        // All models should be placed (5GB + 3GB + 2GB = 10GB, fits within 11GB with 1GB margin)
         assert_eq!(result.assignments.len(), 3);
     }
 
@@ -409,7 +417,11 @@ mod tests {
     #[test]
     fn adversarial_greedy_placer_vram_overflow_detection() {
         // Test: verify placer detects when model exceeds GPU capacity
-        let placer = GreedyModelPlacer::default();
+        let policy = MultiplexingPolicy {
+            enabled: true, // Enable multiplexing for this test
+            ..Default::default()
+        };
+        let placer = GreedyModelPlacer::with_policy(policy);
         let models = vec![ModelSpec::new("huge", 100_000_000_000, SloTier::Best)];
         let gpus = vec![GpuSpec::new(0, 12_000_000_000)];
 
