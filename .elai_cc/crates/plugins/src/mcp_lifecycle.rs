@@ -44,7 +44,7 @@ impl RetryPolicy {
 }
 
 /// Heartbeat monitor for server crash detection
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HeartbeatMonitor {
     /// Timeout after which server is considered crashed
     pub timeout: Duration,
