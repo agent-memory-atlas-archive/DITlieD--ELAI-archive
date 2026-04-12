@@ -22,7 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
-mcp = ["async-trait"]
+mcp = ["async-trait", "thiserror"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

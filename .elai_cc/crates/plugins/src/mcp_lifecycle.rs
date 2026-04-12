@@ -97,12 +97,40 @@ pub struct McpConnectionManager<B: McpBridge> {
 
 impl<B: McpBridge> McpConnectionManager<B> {
     pub fn new(bridge: B, retry_policy: RetryPolicy, heartbeat_timeout: Duration) -> Self {
-        Self {
+        let manager = Self {
             bridge,
             retry_policy,
             heartbeat: HeartbeatMonitor::new(heartbeat_timeout),
             connection: Arc::new(RwLock::new(None)),
-        }
+        };
+
+        // Start heartbeat watchdog
+        manager.start_watchdog();
+
+        manager
+    }
+
+    /// Start heartbeat watchdog thread to detect hung connections
+    fn start_watchdog(&self) {
+        let heartbeat = self.heartbeat.clone();
+        let connection = self.connection.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+
+                // Check if heartbeat has timed out
+                if !heartbeat.is_alive().await {
+                    // Heartbeat timeout - disconnect
+                    let mut conn = connection.write().await;
+                    if conn.is_some() {
+                        log::warn!("MCP heartbeat timeout, disconnecting");
+                        *conn = None;
+                    }
+                }
+            }
+        });
     }
 
     /// Connect to MCP server with retry logic
