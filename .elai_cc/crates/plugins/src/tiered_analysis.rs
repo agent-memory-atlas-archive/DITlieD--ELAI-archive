@@ -7,8 +7,7 @@
 //!
 //! No LLM in the validation hot path. All findings written to SSB as 'finding' entries.
 
-use blake2::{digest::consts::U32, Blake2s};
-use digest::Digest;
+use blake3;
 use elai_rules::predicate::VerdictResult;
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
 use std::collections::HashMap;
@@ -137,11 +136,10 @@ impl T1Hook {
     }
 
     fn hash_pattern(rule_id: &str, evidence: &str) -> String {
-        type Hasher = Blake2s<U32>;
-        let mut hasher = Hasher::new();
+        let mut hasher = blake3::Hasher::new();
         hasher.update(rule_id.as_bytes());
         hasher.update(evidence.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher.finalize().to_hex().to_string()
     }
 }
 
@@ -299,10 +297,7 @@ impl T3Hook {
     }
 
     fn hash_pattern(pattern_id: &str) -> String {
-        type Hasher = Blake2s<U32>;
-        let mut hasher = Hasher::new();
-        hasher.update(pattern_id.as_bytes());
-        format!("{:x}", hasher.finalize())
+        blake3::hash(pattern_id.as_bytes()).to_hex().to_string()
     }
 }
 

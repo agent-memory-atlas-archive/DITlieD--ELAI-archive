@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use blake2::{Blake2s256, Digest};
+use blake3;
 use rusqlite::Connection;
 
 use crate::{
@@ -138,11 +138,9 @@ impl DkgEngine {
             let source_bytes = std::fs::read(file_path)?;
             let file_path_str = file_path.to_string_lossy().to_string();
 
-            // Compute blake2s hash
-            let mut hasher = Blake2s256::new();
-            hasher.update(&source_bytes);
-            let hash = hasher.finalize();
-            let hash_bytes = hash.as_slice();
+            // Compute blake3 hash
+            let hash = blake3::hash(&source_bytes);
+            let hash_bytes = hash.as_bytes().as_slice();
 
             // Check for incremental skip
             let existing_hash: Option<Vec<u8>> = self.conn.query_row(

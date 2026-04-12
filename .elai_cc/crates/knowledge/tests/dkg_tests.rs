@@ -133,7 +133,7 @@ fn concept_column_null_by_default() {
 }
 
 #[test]
-fn file_hash_round_trip_matches_blake2s() {
+fn file_hash_round_trip_matches_blake3() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("test.db");
     let mut engine = DkgEngine::new(&db, None, 0i64).unwrap();
@@ -146,10 +146,7 @@ fn file_hash_round_trip_matches_blake2s() {
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok());
 
-    use blake2::{Blake2s256, Digest};
-    let mut hasher = Blake2s256::new();
-    hasher.update(content);
-    let expected_hash = hasher.finalize();
+    let expected_hash = blake3::hash(content);
 
     let conn = Connection::open(dir.path().join("test.db")).unwrap();
     let stored_hash: Vec<u8> = conn
@@ -159,7 +156,7 @@ fn file_hash_round_trip_matches_blake2s() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored_hash, expected_hash.as_slice());
+    assert_eq!(stored_hash, expected_hash.as_bytes().as_slice());
 }
 
 // ---------------------------------------------------------------------------

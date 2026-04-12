@@ -7,7 +7,7 @@
 
 use std::time::UNIX_EPOCH;
 
-use blake2::{Blake2s256, Digest};
+use blake3;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use elai_core::clock::ClockProvider;
@@ -167,11 +167,9 @@ pub fn normalize_pattern(text: &str) -> String {
     collapsed
 }
 
-/// Compute the Blake2s256 hash of a normalized pattern string.
+/// Compute the blake3 hash of a normalized pattern string.
 pub fn hash_pattern(normalized: &str) -> [u8; 32] {
-    let mut hasher = Blake2s256::new();
-    hasher.update(normalized.as_bytes());
-    hasher.finalize().into()
+    *blake3::hash(normalized.as_bytes()).as_bytes()
 }
 
 /// Score a violation pattern across three axes: clarity, frequency, precision.
@@ -250,7 +248,7 @@ fn make_test_id(rule_id: &str, idx: u32) -> String {
     format!("{}-ct{}", rule_id, idx)
 }
 
-/// Record a violation pattern. Deduplicates by blake2s hash.
+/// Record a violation pattern. Deduplicates by blake3 hash.
 ///
 /// Returns the outcome: New, Incremented, or Proposed (if threshold met).
 ///

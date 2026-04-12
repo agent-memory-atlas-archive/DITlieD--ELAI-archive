@@ -1,4 +1,4 @@
-use blake2::{Blake2s256, Digest};
+use blake3;
 use rusqlite::Connection;
 
 use super::DualVector;
@@ -10,8 +10,9 @@ use super::{CODE_VEC_DIM, TEXT_VEC_DIM};
 // ---------------------------------------------------------------------------
 
 const SCHEMA_SQL: &str = "
+DROP TABLE IF EXISTS vector_cache;
 CREATE TABLE IF NOT EXISTS vector_cache (
-    content_blake2s BLOB PRIMARY KEY,
+    content_hash BLOB PRIMARY KEY,
     code_vec BLOB NOT NULL,
     text_vec BLOB NOT NULL,
     cached_at INTEGER NOT NULL
@@ -58,14 +59,12 @@ impl VectorCache {
     }
 
     pub fn content_hash(content: &[u8]) -> Vec<u8> {
-        let mut hasher = Blake2s256::new();
-        hasher.update(content);
-        hasher.finalize().to_vec()
+        blake3::hash(content).as_bytes().to_vec()
     }
 
     pub fn insert(
         &self,
-        blake2s: &[u8],
+        hash: &[u8],
         dual: &DualVector,
         cached_at: i64,
     ) -> Result<(), CacheError> {
@@ -73,22 +72,22 @@ impl VectorCache {
         let text_bytes = f32_slice_to_le_bytes(&dual.text_vec);
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO vector_cache (content_blake2s, code_vec, text_vec, cached_at) \
+                "INSERT OR REPLACE INTO vector_cache (content_hash, code_vec, text_vec, cached_at) \
                  VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![blake2s, code_bytes, text_bytes, cached_at],
+                rusqlite::params![hash, code_bytes, text_bytes, cached_at],
             )
             .map_err(CacheError::Query)?;
         Ok(())
     }
 
-    pub fn lookup(&self, blake2s: &[u8]) -> Result<Option<DualVector>, CacheError> {
+    pub fn lookup(&self, hash: &[u8]) -> Result<Option<DualVector>, CacheError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT code_vec, text_vec FROM vector_cache WHERE content_blake2s = ?1")
+            .prepare("SELECT code_vec, text_vec FROM vector_cache WHERE content_hash = ?1")
             .map_err(CacheError::Query)?;
 
         let mut rows = stmt
-            .query(rusqlite::params![blake2s])
+            .query(rusqlite::params![hash])
             .map_err(CacheError::Query)?;
 
         match rows.next().map_err(CacheError::Query)? {
@@ -114,23 +113,23 @@ impl VectorCache {
 
     /// Invalidate cache entries for a given file path.
     /// NOTE: vector_cache schema has no file_path column. This requires either
-    /// a schema extension or caller pre-computing which content_blake2s keys
+    /// a schema extension or caller pre-computing which content_hash keys
     /// map to the file. Returning NotSupported until schema clarification.
     pub fn invalidate_file(&self, _file_path: &str) -> Result<usize, CacheError> {
         Err(CacheError::NotSupported(
             "vector_cache has no file_path column; invalidation requires schema extension or \
-             caller-provided blake2s keys"
+             caller-provided content_hash keys"
                 .into(),
         ))
     }
 
-    pub fn invalidate_keys(&self, blake2s_keys: &[&[u8]]) -> Result<usize, CacheError> {
+    pub fn invalidate_keys(&self, hash_keys: &[&[u8]]) -> Result<usize, CacheError> {
         let mut deleted = 0usize;
-        for key in blake2s_keys {
+        for key in hash_keys {
             let n = self
                 .conn
                 .execute(
-                    "DELETE FROM vector_cache WHERE content_blake2s = ?1",
+                    "DELETE FROM vector_cache WHERE content_hash = ?1",
                     rusqlite::params![key],
                 )
                 .map_err(CacheError::Query)?;
