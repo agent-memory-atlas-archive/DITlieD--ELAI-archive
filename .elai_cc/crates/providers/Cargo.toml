@@ -15,12 +15,14 @@ getrandom = "0.2"
 sha2 = "0.10"
 thiserror.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+good_lp = { version = "1.15", optional = true }
 
 [features]
 default = []
 vllm = []
 sidecar = []
 turboquant = []
+milp = ["good_lp"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

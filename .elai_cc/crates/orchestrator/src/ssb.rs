@@ -25,7 +25,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -345,7 +345,7 @@ pub struct BranchMergePayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkloadProfilePayload {
-    pub agent_role: String,
+    pub agent_role: String, // Serialized as snake_case string from AgentRole enum
     pub phase_id: String,
     pub tokens_in: u64,
     pub tokens_out: u64,

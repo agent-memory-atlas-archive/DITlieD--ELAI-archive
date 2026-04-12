@@ -4,14 +4,16 @@
 //! Written to SSB as action_type='workload_profile' at phase boundary.
 
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
+use crate::agent_pool::AgentRole;
 use crate::ssb::{Ssb, SsbPayload, WorkloadProfilePayload};
+use elai_core::clock::ClockProvider;
 
 /// Workload profile metrics collected during agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkloadProfile {
-    pub agent_role: String,
+    pub agent_role: AgentRole,
     pub phase_id: String,
     pub tokens_in: u64,
     pub tokens_out: u64,
@@ -23,9 +25,9 @@ pub struct WorkloadProfile {
 }
 
 impl WorkloadProfile {
-    /// Create a new workload profile with current timestamp.
+    /// Create a new workload profile with current timestamp from ClockProvider.
     pub fn new(
-        agent_role: String,
+        agent_role: AgentRole,
         phase_id: String,
         tokens_in: u64,
         tokens_out: u64,
@@ -33,8 +35,10 @@ impl WorkloadProfile {
         vram_peak_mb: u32,
         model_id: String,
         gpu_id: u8,
+        clock: &dyn ClockProvider,
     ) -> Self {
-        let timestamp = SystemTime::now()
+        let timestamp = clock
+            .system_now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
@@ -54,8 +58,14 @@ impl WorkloadProfile {
 
     /// Convert to SSB payload for writing.
     pub fn to_ssb_payload(&self) -> SsbPayload {
+        // Convert AgentRole enum to snake_case string for serialization
+        let agent_role_str = serde_json::to_string(&self.agent_role)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        
         SsbPayload::WorkloadProfile(WorkloadProfilePayload {
-            agent_role: self.agent_role.clone(),
+            agent_role: agent_role_str,
             phase_id: self.phase_id.clone(),
             tokens_in: self.tokens_in,
             tokens_out: self.tokens_out,
@@ -82,7 +92,7 @@ impl WorkloadProfile {
 /// Builder for constructing workload profiles incrementally.
 #[derive(Debug, Clone, Default)]
 pub struct WorkloadProfileBuilder {
-    agent_role: Option<String>,
+    agent_role: Option<AgentRole>,
     phase_id: Option<String>,
     tokens_in: u64,
     tokens_out: u64,
@@ -97,8 +107,8 @@ impl WorkloadProfileBuilder {
         Self::default()
     }
 
-    pub fn agent_role(mut self, role: impl Into<String>) -> Self {
-        self.agent_role = Some(role.into());
+    pub fn agent_role(mut self, role: AgentRole) -> Self {
+        self.agent_role = Some(role);
         self
     }
 
@@ -117,8 +127,8 @@ impl WorkloadProfileBuilder {
         self
     }
 
-    pub fn start_timing(&mut self) {
-        self.start_time_ms = Some(now_ms());
+    pub fn start_timing(&mut self, clock: &dyn ClockProvider) {
+        self.start_time_ms = Some(now_ms(clock));
     }
 
     pub fn vram_peak_mb(mut self, vram_mb: u32) -> Self {
@@ -137,13 +147,13 @@ impl WorkloadProfileBuilder {
     }
 
     /// Build the workload profile, calculating latency from start time if set.
-    pub fn build(self) -> Option<WorkloadProfile> {
+    pub fn build(self, clock: &dyn ClockProvider) -> Option<WorkloadProfile> {
         let agent_role = self.agent_role?;
         let phase_id = self.phase_id?;
         let model_id = self.model_id?;
 
         let latency_ms = if let Some(start) = self.start_time_ms {
-            now_ms().saturating_sub(start)
+            now_ms(clock).saturating_sub(start)
         } else {
             0
         };
@@ -157,12 +167,14 @@ impl WorkloadProfileBuilder {
             self.vram_peak_mb,
             model_id,
             self.gpu_id,
+            clock,
         ))
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
+fn now_ms(clock: &dyn ClockProvider) -> u64 {
+    clock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
@@ -171,11 +183,14 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_pool::AgentRole;
+    use elai_core::clock::OsClock;
 
     #[test]
     fn test_workload_profile_creation() {
+        let clock = OsClock;
         let profile = WorkloadProfile::new(
-            "executor".to_string(),
+            AgentRole::Executor,
             "phase-1".to_string(),
             1000,
             500,
@@ -183,9 +198,10 @@ mod tests {
             2048,
             "gemma4:e2b".to_string(),
             0,
+            &clock,
         );
 
-        assert_eq!(profile.agent_role, "executor");
+        assert_eq!(profile.agent_role, AgentRole::Executor);
         assert_eq!(profile.phase_id, "phase-1");
         assert_eq!(profile.tokens_in, 1000);
         assert_eq!(profile.tokens_out, 500);
@@ -193,12 +209,14 @@ mod tests {
         assert_eq!(profile.vram_peak_mb, 2048);
         assert_eq!(profile.model_id, "gemma4:e2b");
         assert_eq!(profile.gpu_id, 0);
+        assert!(profile.timestamp > 0);
     }
 
     #[test]
     fn test_workload_profile_to_ssb_payload() {
+        let clock = OsClock;
         let profile = WorkloadProfile::new(
-            "auditor".to_string(),
+            AgentRole::Auditor,
             "phase-2".to_string(),
             2000,
             1000,
@@ -206,6 +224,7 @@ mod tests {
             4096,
             "gemma4:31b".to_string(),
             1,
+            &clock,
         );
 
         let payload = profile.to_ssb_payload();
@@ -223,34 +242,36 @@ mod tests {
 
     #[test]
     fn test_workload_profile_builder() {
+        let clock = OsClock;
         let mut builder = WorkloadProfileBuilder::new();
-        builder.start_timing();
+        builder.start_timing(&clock);
         // Simulate some work
         std::thread::sleep(std::time::Duration::from_millis(10));
         
         let profile = builder
-            .agent_role("executor")
+            .agent_role(AgentRole::Executor)
             .phase_id("phase-1")
             .tokens_in(1000)
             .tokens_out(500)
             .vram_peak_mb(2048)
             .model_id("gemma4:e2b")
             .gpu_id(0)
-            .build();
+            .build(&clock);
 
         assert!(profile.is_some());
         let profile = profile.unwrap();
-        assert_eq!(profile.agent_role, "executor");
+        assert_eq!(profile.agent_role, AgentRole::Executor);
         assert!(profile.latency_ms >= 10); // At least 10ms elapsed
     }
 
     #[test]
     fn test_workload_profile_builder_missing_required() {
+        let clock = OsClock;
         let builder = WorkloadProfileBuilder::new()
             .tokens_in(1000)
             .tokens_out(500);
         
-        let profile = builder.build();
+        let profile = builder.build(&clock);
         assert!(profile.is_none()); // Missing required fields
     }
 }

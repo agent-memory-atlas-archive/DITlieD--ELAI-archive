@@ -57,6 +57,11 @@ pub use multiplexing::{
     MultiplexingError, MultiplexingPolicy, PreloadPolicy, SloTier,
 };
 
+pub mod model_placer;
+pub use model_placer::{
+    GpuSpec, GreedyModelPlacer, ModelSpec, PlacementResult,
+};
+
 #[cfg(test)]
 fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};

@@ -334,6 +334,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "coin_cbc"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d602045cd2e7ad02608a71492af94357f493a6f3c934ce854c03bf10fddc5780"
+dependencies = [
+ "coin_cbc_sys",
+ "lazy_static",
+]
+
+[[package]]
+name = "coin_cbc_sys"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "085619f8bdc38e24e25c6336ecc3f2e6c0543d67566dff6daef0e32f7ac20f76"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -830,6 +849,7 @@ version = "0.1.0"
 dependencies = [
  "elai-core",
  "getrandom 0.2.17",
+ "good_lp",
  "reqwest",
  "serde",
  "serde_json",
@@ -1221,6 +1241,16 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "good_lp"
+version = "1.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf53d2a05420f562c917615b80018647ca03766aa58376de077034627da0fb10"
+dependencies = [
+ "coin_cbc",
+ "fnv",
+]
 
 [[package]]
 name = "hashbrown"
