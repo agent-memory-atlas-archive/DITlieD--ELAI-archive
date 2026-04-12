@@ -31,4 +31,4 @@ uuid = { version = "1", features = ["v4"] }
 regex = "1"
 jsonschema = { version = "0.45", default-features = false }
 blake3 = "1.8"
-log = "0.4"
+tracing-log = "0.2"

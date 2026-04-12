@@ -143,7 +143,7 @@ pub fn startup_readiness_check(
 
         let elapsed = clock.elapsed_since(start);
         if elapsed > config.canary_timeout {
-            log::warn!(
+            tracing::warn!(
                 "canary attempt {}/{}: timed out ({:?} > {:?})",
                 attempts,
                 config.max_retries,
@@ -180,7 +180,7 @@ pub fn startup_readiness_check(
 
     // Drift failure downgrades Ready -> Degraded
     if let DriftCheckResult::Failed { .. } = &drift_check {
-        log::warn!("canary drift check failed: model may be corrupted");
+        tracing::warn!("canary drift check failed: model may be corrupted");
         best_status = ReadinessStatus::Degraded;
     }
 
@@ -188,10 +188,10 @@ pub fn startup_readiness_check(
     match best_status {
         ReadinessStatus::Degraded => {
             cascade.set_mode(SearchMode::Bm25Only);
-            log::warn!("startup: entering DEGRADED mode (BM25_ONLY)");
+            tracing::warn!("startup: entering DEGRADED mode (BM25_ONLY)");
         }
         ReadinessStatus::Unavailable => {
-            log::error!("startup: UNAVAILABLE — BM25 also failed, all FSM transitions blocked");
+            tracing::error!("startup: UNAVAILABLE — BM25 also failed, all FSM transitions blocked");
         }
         ReadinessStatus::Ready => {
             // Keep whatever mode cascade already has (Hybrid)
@@ -231,7 +231,7 @@ fn check_canary_drift(
             if sim >= config.drift_threshold {
                 DriftCheckResult::Passed { similarity: sim }
             } else {
-                log::warn!(
+                tracing::warn!(
                     "canary drift: similarity {:.4} < threshold {:.4}",
                     sim,
                     config.drift_threshold,
@@ -243,7 +243,7 @@ fn check_canary_drift(
             // First startup — no reference vector stored yet.
             // Persist the current canary embedding as the reference.
             if let Err(e) = save_reference_vec(project_dir, canary_vec) {
-                log::warn!("failed to persist canary reference vector: {e}");
+                tracing::warn!("failed to persist canary reference vector: {e}");
             }
             DriftCheckResult::ReferenceGenerated
         }

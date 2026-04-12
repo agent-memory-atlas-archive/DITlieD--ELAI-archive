@@ -174,7 +174,7 @@ impl DkgEngine {
 
             // Binary file detection
             if std::str::from_utf8(&source_bytes).is_err() {
-                log::warn!("binary file detected, skipping parse: {}", file_path_str);
+                tracing::warn!("binary file detected, skipping parse: {}", file_path_str);
                 self.conn.execute(
                     "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
                      VALUES (?1, ?2, 'failed', 'binary file', ?3)",
@@ -188,7 +188,7 @@ impl DkgEngine {
             let tree = match parser.parse(&source_bytes, None) {
                 Some(t) => t,
                 None => {
-                    log::warn!("tree-sitter returned None for: {}", file_path_str);
+                    tracing::warn!("tree-sitter returned None for: {}", file_path_str);
                     self.conn.execute(
                         "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
                          VALUES (?1, ?2, 'failed', 'parse returned None', ?3)",
@@ -201,7 +201,7 @@ impl DkgEngine {
 
             // Check for syntax errors
             if tree.root_node().has_error() {
-                log::warn!("syntax errors in source: {}", file_path_str);
+                tracing::warn!("syntax errors in source: {}", file_path_str);
                 self.conn.execute(
                     "INSERT OR REPLACE INTO dkg_files (file_path, file_hash, parse_status, parse_error, last_indexed) \
                      VALUES (?1, ?2, 'failed', 'syntax errors in source', ?3)",
@@ -308,7 +308,7 @@ impl DkgEngine {
                         rusqlite::params![use_id, target_id, EDGE_IMPORTS],
                     )?;
                 } else {
-                    log::warn!("unresolved import: {}", path_str);
+                    tracing::warn!("unresolved import: {}", path_str);
                 }
             }
         }

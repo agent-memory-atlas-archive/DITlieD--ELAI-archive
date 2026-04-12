@@ -264,7 +264,7 @@ fn prepare_sandbox_dirs(cwd: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::{execute_bash, BashCommandInput};
-    use crate::sandbox::FilesystemIsolationMode;
+    use elai_core::sandbox::FilesystemIsolationMode;
 
     fn echo_cmd() -> String {
         if cfg!(target_os = "windows") {

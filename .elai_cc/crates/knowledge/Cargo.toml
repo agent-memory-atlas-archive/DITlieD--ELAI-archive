@@ -12,17 +12,16 @@ tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 rusqlite = { version = "0.39", features = ["bundled"] }
 blake3 = "1.8"
-log = "0.4"
+tracing.workspace = true
 tantivy = "0.26"
 elai-core = { path = "../core" }
 elai-rules = { path = "../rules" }
-ort = "2.0.0-rc.12"
+ort = "=2.0.0-rc.12"
 tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 tokio = { version = "1", features = ["sync"] }
 toml.workspace = true
-tracing.workspace = true
 uuid.workspace = true
-usearch = { version = "2.24.0", default-features = false, optional = true }
+usearch = { version = "2", default-features = false, optional = true }
 
 [features]
 default = []

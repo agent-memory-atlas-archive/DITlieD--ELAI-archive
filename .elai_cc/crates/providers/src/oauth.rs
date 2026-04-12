@@ -326,7 +326,7 @@ pub fn parse_oauth_callback_query(query: &str) -> Result<OAuthCallbackParams, St
 
 fn generate_random_token(bytes: usize) -> io::Result<String> {
     let mut buffer = vec![0_u8; bytes];
-    getrandom::getrandom(&mut buffer)
+    getrandom::fill(&mut buffer)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     Ok(base64url_encode(&buffer))
 }

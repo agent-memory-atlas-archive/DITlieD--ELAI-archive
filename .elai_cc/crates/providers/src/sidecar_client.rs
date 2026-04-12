@@ -263,6 +263,9 @@ mod tests {
             dola_enabled: true,
             dola_alpha: 0.05,
             turboquant_bits: 3,
+            steering_enabled: true,
+            steering_coefficient: 5.0,
+            steering_layer: "auto".to_string(),
             temperature: 0.7,
             max_tokens: 512,
         };

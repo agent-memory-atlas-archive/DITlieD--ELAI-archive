@@ -232,7 +232,7 @@ impl SpladeExpander {
         let mut cb = match self.circuit_breaker.lock() {
             Ok(cb) => cb,
             Err(_) => {
-                log::warn!("splade circuit breaker lock poisoned, returning empty expansion");
+                tracing::warn!("splade circuit breaker lock poisoned, returning empty expansion");
                 return Vec::new();
             }
         };
@@ -245,7 +245,7 @@ impl SpladeExpander {
         let encoding = match self.tokenize(query) {
             Ok(enc) => enc,
             Err(e) => {
-                log::warn!("splade tokenization failed: {e}");
+                tracing::warn!("splade tokenization failed: {e}");
                 return Vec::new();
             }
         };
@@ -257,11 +257,11 @@ impl SpladeExpander {
         match result {
             Ok(sparse_vec) => self.decode_sparse_vector(&sparse_vec),
             Err(BreakerError::Open) => {
-                log::warn!("splade circuit breaker open, skipping expansion");
+                tracing::warn!("splade circuit breaker open, skipping expansion");
                 Vec::new()
             }
             Err(BreakerError::CallFailed(e)) => {
-                log::warn!("splade inference failed: {e}");
+                tracing::warn!("splade inference failed: {e}");
                 Vec::new()
             }
         }

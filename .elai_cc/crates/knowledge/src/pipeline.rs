@@ -149,13 +149,13 @@ impl QueryPipeline {
                                 (results, None)
                             }
                             Err(e) => {
-                                log::debug!("vector search failed: {e}");
+                                tracing::debug!("vector search failed: {e}");
                                 (Vec::new(), Some(e.to_string()))
                             }
                         }
                     }
                     Err(e) => {
-                        log::debug!("vector embed failed: {e}");
+                        tracing::debug!("vector embed failed: {e}");
                         (Vec::new(), Some(e.to_string()))
                     }
                 }
@@ -233,7 +233,7 @@ impl QueryPipeline {
                     (snap, results, None)
                 }
                 Err(e) => {
-                    log::debug!("DkgSnapshot::from_engine failed: {e}");
+                    tracing::debug!("DkgSnapshot::from_engine failed: {e}");
                     let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
                     (empty, Vec::new(), Some(e.to_string()))
                 }
@@ -292,7 +292,7 @@ impl QueryPipeline {
             match ce.rerank(query, ce_input.clone()) {
                 Ok(ranked) => (ranked, breaker_state, None),
                 Err(e) => {
-                    log::debug!("cross_encoder stage error: {e}");
+                    tracing::debug!("cross_encoder stage error: {e}");
                     (ce_input, breaker_state, Some(e.to_string()))
                 }
             }
@@ -332,7 +332,7 @@ impl QueryPipeline {
         }).collect();
         let result_count = stages.last().map(|s| s.results.len()).unwrap_or(0);
         let trace = QueryTrace::new(stage_traces, 0, SearchMode::Hybrid, result_count);
-        log::debug!("query_trace: query_id={} stages={} results={}", trace.query_id, trace.stages.len(), trace.result_count);
+        tracing::debug!("query_trace: query_id={} stages={} results={}", trace.query_id, trace.stages.len(), trace.result_count);
 
         Ok(stages)
     }
@@ -391,7 +391,7 @@ impl QueryPipeline {
                 true
             }
             Err(e) => {
-                log::error!("canary: BM25 failed: {e}");
+                tracing::error!("canary: BM25 failed: {e}");
                 result.bm25_error = Some(e.to_string());
                 false
             }
@@ -409,11 +409,11 @@ impl QueryPipeline {
                     result.vector_ok = true;
                 }
                 ReadinessStatus::Degraded => {
-                    log::warn!("canary: vector module partially degraded");
+                    tracing::warn!("canary: vector module partially degraded");
                     result.vector_error = Some("partial: one embedding model failed".to_string());
                 }
                 ReadinessStatus::Unavailable => {
-                    log::warn!("canary: vector module unavailable (embed stub or model missing)");
+                    tracing::warn!("canary: vector module unavailable (embed stub or model missing)");
                     result.vector_error = Some("unavailable: embedding models not operational".to_string());
                 }
             }
@@ -428,7 +428,7 @@ impl QueryPipeline {
         // first, then run a probe rerank and check breaker state for open circuits.
         let rerank_ok = if let Some(ref ce) = self.cross_encoder {
             if !ce.is_loaded() {
-                log::warn!("canary: reranker model not loaded, entering degraded mode");
+                tracing::warn!("canary: reranker model not loaded, entering degraded mode");
                 result.rerank_error = Some("model not loaded".to_string());
                 false
             } else {
@@ -441,7 +441,7 @@ impl QueryPipeline {
                     .breaker_state()
                     .map_or(false, |s| s != crate::vector::circuit_breaker::BreakerState::Closed);
                 if breaker_open {
-                    log::warn!("canary: reranker circuit breaker open, entering degraded mode");
+                    tracing::warn!("canary: reranker circuit breaker open, entering degraded mode");
                     result.rerank_error = Some("circuit breaker open".to_string());
                     false
                 } else {

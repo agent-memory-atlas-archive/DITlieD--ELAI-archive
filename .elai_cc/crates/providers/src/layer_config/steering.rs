@@ -23,13 +23,13 @@ use super::{LayerAccessError, LayerAccessProvider};
 // ---------------------------------------------------------------------------
 
 /// Default injection coefficient (conservative starting point).
-const COEFFICIENT_DEFAULT: f64 = 5.0;
+pub const COEFFICIENT_DEFAULT: f64 = 5.0;
 
 /// Minimum coefficient (below this, steering effect negligible).
-const COEFFICIENT_MIN: f64 = 1.0;
+pub const COEFFICIENT_MIN: f64 = 1.0;
 
 /// Maximum coefficient (above this, output degrades to incoherent text).
-const COEFFICIENT_MAX: f64 = 30.0;
+pub const COEFFICIENT_MAX: f64 = 30.0;
 
 /// Default target layer: model_layers / 3 (early-mid range where steering is effective).
 const LAYER_DEFAULT_FRACTION: f64 = 1.0 / 3.0;

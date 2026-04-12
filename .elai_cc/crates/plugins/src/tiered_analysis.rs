@@ -11,6 +11,7 @@ use blake3;
 use elai_rules::predicate::VerdictResult;
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -129,7 +130,7 @@ impl T1Hook {
 
         let duration = start.elapsed();
         if duration.as_millis() > 1 {
-            log::warn!("T1 hook exceeded 1ms target: {:?}", duration);
+            tracing::warn!("T1 hook exceeded 1ms target: {:?}", duration);
         }
 
         Ok(final_verdict)
@@ -197,7 +198,7 @@ impl T2Hook {
         // Circuit breaker: count lines first
         let line_count = source.lines().count();
         if line_count > self.circuit_breaker_lines {
-            log::debug!(
+            tracing::debug!(
                 "T2 circuit breaker triggered: {} lines > {}",
                 line_count,
                 self.circuit_breaker_lines
@@ -211,7 +212,7 @@ impl T2Hook {
 
         let duration = start.elapsed();
         if duration.as_millis() > 10 {
-            log::warn!("T2 hook exceeded 10ms target: {:?}", duration);
+            tracing::warn!("T2 hook exceeded 10ms target: {:?}", duration);
         }
 
         Ok(Some(HookVerdict::Allow))
@@ -266,7 +267,7 @@ impl T3Hook {
             if pattern.matches(source, file_path) {
                 let duration = start.elapsed();
                 if duration.as_millis() > 5 {
-                    log::warn!("T3 hook exceeded 5ms target: {:?}", duration);
+                    tracing::warn!("T3 hook exceeded 5ms target: {:?}", duration);
                 }
 
                 return Some(HookVerdict::Block {
@@ -280,17 +281,23 @@ impl T3Hook {
     }
 
     fn default_patterns() -> Vec<AmbiguousPattern> {
+        // Static regex compilation — provably valid literals, compiled once.
+        static SWALLOW_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"except\s+\w+\s*:\s*\n\s*pass").unwrap()
+        });
+        static LONG_FN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(?m)^\s*def\s+\w+.*:(?:\n\s+.*){200,}").unwrap()
+        });
+
         vec![
-            // Example: catch Exception: pass -> BLOCK
             AmbiguousPattern {
                 id: "swallow_exception".to_string(),
-                regex: regex::Regex::new(r"catch\s+\w+\s*:\s*pass").unwrap(),
+                regex: SWALLOW_RE.clone(),
                 message: "Exception swallowing detected".to_string(),
             },
-            // Example: function >200 lines -> WARN
             AmbiguousPattern {
                 id: "long_function".to_string(),
-                regex: regex::Regex::new(r"^\s*def\s+\w+.*:(?:\n\s+.*){200,}").unwrap(),
+                regex: LONG_FN_RE.clone(),
                 message: "Function exceeds 200 lines".to_string(),
             },
         ]
@@ -358,8 +365,8 @@ impl TieredAnalysis {
         let t1_verdict = self.t1.evaluate(action_type, t1_source, t1_file_path, metric_values)?;
 
         // T2: Only fires on file_write
-        let t2_verdict = if action_type == "file_write" && source.is_some() {
-            self.t2.evaluate(source.unwrap(), file_path.unwrap_or(""))?
+        let t2_verdict = if let (true, Some(src)) = (action_type == "file_write", source) {
+            self.t2.evaluate(src, file_path.unwrap_or(""))?
         } else {
             None
         };
@@ -369,8 +376,8 @@ impl TieredAnalysis {
         let t2_has_block = matches!(t2_verdict, Some(HookVerdict::Block { .. }));
         let has_warn = t1_verdict.is_warn() || t2_has_warn;
         let has_block = t1_verdict.is_block() || t2_has_block;
-        let t3_verdict = if has_warn && !has_block && source.is_some() {
-            self.t3.evaluate(source.unwrap(), file_path.unwrap_or(""))
+        let t3_verdict = if let (true, false, Some(src)) = (has_warn, has_block, source) {
+            self.t3.evaluate(src, file_path.unwrap_or(""))
         } else {
             None
         };
@@ -378,16 +385,16 @@ impl TieredAnalysis {
         // Final verdict: BLOCK takes precedence
         let final_verdict = if t1_verdict.is_block() {
             t1_verdict.clone()
-        } else if t2_has_block {
-            t2_verdict.clone().unwrap()
-        } else if matches!(t3_verdict, Some(HookVerdict::Block { .. })) {
-            t3_verdict.clone().unwrap()
+        } else if let Some(ref v @ HookVerdict::Block { .. }) = t2_verdict {
+            v.clone()
+        } else if let Some(ref v @ HookVerdict::Block { .. }) = t3_verdict {
+            v.clone()
         } else if t1_verdict.is_warn() {
             t1_verdict.clone()
-        } else if t2_has_warn {
-            t2_verdict.clone().unwrap()
-        } else if matches!(t3_verdict, Some(HookVerdict::Warn { .. })) {
-            t3_verdict.clone().unwrap()
+        } else if let Some(ref v @ HookVerdict::Warn { .. }) = t2_verdict {
+            v.clone()
+        } else if let Some(ref v @ HookVerdict::Warn { .. }) = t3_verdict {
+            v.clone()
         } else {
             HookVerdict::Allow
         };

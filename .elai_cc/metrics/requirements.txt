@@ -4,7 +4,7 @@
 #
 # Note: vllm and torch are expected to be pre-installed in the serving environment.
 
-transformers>=5.0.0
+transformers>=4.45,<5
 accelerate>=1.0.0
 scipy>=1.10.0
 

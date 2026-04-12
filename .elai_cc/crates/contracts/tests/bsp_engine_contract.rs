@@ -251,20 +251,15 @@ async fn memory_monitoring_force_clear_contract() {
             let payload: SsbPayload =
                 rmp_serde::from_slice(&entry.payload).expect("deser");
             if let SsbPayload::MemoryMonitoring(mm) = payload {
-                if mm.metric_name == "contract_big" {
-                    assert_eq!(
-                        mm.action_taken, "force_clear",
-                        "25 MB channel must trigger force_clear"
+                if mm.channel_id == "contract_big" {
+                    assert!(
+                        mm.threshold_exceeded,
+                        "25 MB channel must trigger threshold_exceeded"
                     );
                     assert!(
-                        mm.value >= 25_000_000.0,
+                        mm.deep_size_bytes >= 25_000_000,
                         "reported size must be >= 25 MB, got {}",
-                        mm.value
-                    );
-                    assert_eq!(
-                        mm.threshold,
-                        UNTRACKED_DEFAULT_LIMIT_BYTES as f64,
-                        "threshold must match UNTRACKED_DEFAULT_LIMIT_BYTES"
+                        mm.deep_size_bytes
                     );
                     found = true;
                 }

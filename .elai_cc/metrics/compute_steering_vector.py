@@ -13,8 +13,10 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import sys
 
-MODEL_PATH = r"D:\.ELAI_workflow\.elai_cc\models\gemma-4-E2B-it"
-OUTPUT_PATH = r"D:\.ELAI_workflow\.elai_cc\models\steering_vectors\skepticism.npz"
+import os
+_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+MODEL_PATH = os.environ.get("ELAI_MODEL_PATH", os.path.join(_PROJECT_ROOT, "models", "gemma-4-E2B-it"))
+OUTPUT_PATH = os.environ.get("ELAI_STEERING_OUTPUT", os.path.join(_PROJECT_ROOT, "models", "steering_vectors", "skepticism.npz"))
 
 # Contrast prompts for skepticism steering
 POSITIVE_PROMPT = "I should question assumptions and verify claims before accepting them as true."

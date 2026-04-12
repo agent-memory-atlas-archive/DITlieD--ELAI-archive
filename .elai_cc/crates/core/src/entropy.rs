@@ -19,11 +19,11 @@ pub struct OsEntropy;
 
 impl EntropySource for OsEntropy {
     fn next_u64(&mut self) -> u64 {
-        rand::rngs::OsRng.next_u64()
+        rand::rng().next_u64()
     }
 
     fn fill_bytes(&mut self, buf: &mut [u8]) {
-        rand::rngs::OsRng.fill_bytes(buf);
+        rand::rng().fill_bytes(buf);
     }
 }
 

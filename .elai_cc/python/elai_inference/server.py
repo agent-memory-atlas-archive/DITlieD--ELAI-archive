@@ -107,7 +107,8 @@ class SteeringEngine:
         self.hidden_dim = hidden_dim
         self.coefficient = coefficient
         self.target_layer = target_layer
-        self.vectors = {}  # layer_idx -> torch.Tensor
+        self.vectors = {}  # layer_idx -> torch.Tensor (kept on inference device)
+        self._device = None  # set when model device is known
 
         # Resolve target layer
         if target_layer == "auto":
@@ -139,7 +140,10 @@ class SteeringEngine:
                 f"Vector shape {vector.shape} doesn't match hidden_dim {self.hidden_dim}"
             )
             return
-        self.vectors[layer_idx] = vector.to("cpu")  # Store on CPU, move to GPU during inference
+        if self._device is not None:
+            self.vectors[layer_idx] = vector.to(self._device)
+        else:
+            self.vectors[layer_idx] = vector  # will be moved on first apply_steering call
 
     def load_vector_from_file(self, layer_idx, filepath):
         """Load a steering vector from .safetensors or .npz file."""
@@ -169,7 +173,7 @@ class SteeringEngine:
             neg_inputs = tokenizer(negative_prompt, return_tensors="pt").to(model.device)
 
             # Get hidden states for positive prompt
-            with torch.no_grad():
+            with torch.inference_mode():
                 pos_outputs = model(
                     input_ids=pos_inputs.input_ids,
                     output_hidden_states=True,
@@ -178,7 +182,7 @@ class SteeringEngine:
                 pos_hidden = pos_outputs.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
 
             # Get hidden states for negative prompt
-            with torch.no_grad():
+            with torch.inference_mode():
                 neg_outputs = model(
                     input_ids=neg_inputs.input_ids,
                     output_hidden_states=True,
@@ -210,7 +214,11 @@ class SteeringEngine:
         if layer_idx not in self.vectors:
             return hidden_state
 
-        vector = self.vectors[layer_idx].to(hidden_state.device)
+        vector = self.vectors[layer_idx]
+        if vector.device != hidden_state.device:
+            vector = vector.to(hidden_state.device)
+            self.vectors[layer_idx] = vector
+            self._device = hidden_state.device
         # h_modified = h + c * steering_vector
         modified = hidden_state + self.coefficient * vector.unsqueeze(0)
         return modified
@@ -263,20 +271,22 @@ class KVCompressor:
             device = keys.device
             dtype = keys.dtype
 
-            k_np = keys.float().cpu().numpy()
-            v_np = values.float().cpu().numpy()
+            # Vectorized: reshape to (N, head_dim), quantize batch, reshape back
+            k_flat = keys.float().cpu().numpy().reshape(-1, head_dim)
+            v_flat = values.float().cpu().numpy().reshape(-1, head_dim)
 
-            for b in range(batch):
-                for h in range(n_heads):
-                    for s in range(seq_len):
-                        ki, kn = self.tq.quantize(k_np[b, h, s, :])
-                        k_np[b, h, s, :] = self.tq.dequantize(ki, kn)
+            for i in range(k_flat.shape[0]):
+                ki, kn = self.tq.quantize(k_flat[i])
+                k_flat[i] = self.tq.dequantize(ki, kn)
+                vi, vn = self.tq.quantize(v_flat[i])
+                v_flat[i] = self.tq.dequantize(vi, vn)
 
-                        vi, vn = self.tq.quantize(v_np[b, h, s, :])
-                        v_np[b, h, s, :] = self.tq.dequantize(vi, vn)
-
-            layer.keys = torch.from_numpy(k_np).to(dtype=dtype, device=device)
-            layer.values = torch.from_numpy(v_np).to(dtype=dtype, device=device)
+            layer.keys = torch.from_numpy(
+                k_flat.reshape(batch, n_heads, seq_len, head_dim)
+            ).to(dtype=dtype, device=device)
+            layer.values = torch.from_numpy(
+                v_flat.reshape(batch, n_heads, seq_len, head_dim)
+            ).to(dtype=dtype, device=device)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +298,7 @@ def _log_vram(label=""):
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
-        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1024**3
         logger.info(
             f"VRAM [{label}]: allocated={alloc:.2f}GB, reserved={reserved:.2f}GB, "
             f"total={total:.2f}GB, free={total - reserved:.2f}GB"
@@ -310,15 +320,16 @@ class InferenceEngine:
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
             )
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name, quantization_config=bnb_config, device_map=device_map,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, dtype=torch.float16, device_map=device_map,
+                model_name, torch_dtype=torch.bfloat16, device_map=device_map,
             )
         self.model.eval()
         self.lm_head = self.model.lm_head
@@ -389,7 +400,7 @@ class InferenceEngine:
         past = None
 
         for step in range(max_tokens):
-            with torch.no_grad():
+            with torch.inference_mode():
                 if self.dola_enabled and past is None:
                     # First token: need hidden states for DoLa
                     outputs = self.model(

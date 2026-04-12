@@ -125,7 +125,7 @@ impl<B: McpBridge> McpConnectionManager<B> {
                     // Heartbeat timeout - disconnect
                     let mut conn = connection.write().await;
                     if conn.is_some() {
-                        log::warn!("MCP heartbeat timeout, disconnecting");
+                        tracing::warn!("MCP heartbeat timeout, disconnecting");
                         *conn = None;
                     }
                 }

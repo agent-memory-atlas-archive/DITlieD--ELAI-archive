@@ -223,7 +223,7 @@ impl<E: EntropySource> InProcessAgentPool<E> {
             match crate::sandbox::create_sandbox() {
                 Ok(sb) => Some(sb),
                 Err(e) => {
-                    eprintln!("Failed to create sandbox: {}, proceeding without isolation", e);
+                    tracing::warn!("Failed to create sandbox: {}, proceeding without isolation", e);
                     None
                 }
             }
@@ -298,7 +298,7 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
                     Some(handle)
                 }
                 Err(e) => {
-                    eprintln!("Failed to create sandbox for agent {}: {}, proceeding without isolation", agent_id, e);
+                    tracing::warn!("Failed to create sandbox for agent {}: {}, proceeding without isolation", agent_id, e);
                     None
                 }
             }

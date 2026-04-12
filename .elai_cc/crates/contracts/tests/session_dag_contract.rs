@@ -339,6 +339,15 @@ impl SsbReader for MockSsbReader {
     fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError> {
         Ok(self.entries.get(&seq).cloned())
     }
+    fn query_reasoning_trace(&self, _agent_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_phase_complete(&self, _phase_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
+    fn query_isolation_metrics(&self) -> Result<Vec<SsbEntry>, SsbError> {
+        Ok(vec![])
+    }
 }
 
 #[test]

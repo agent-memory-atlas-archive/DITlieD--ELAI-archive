@@ -138,7 +138,7 @@ impl VectorIndexer {
                             vec
                         }
                         Err(e) => {
-                            log::debug!("embed failed for {}:{}-{}: {e}",
+                            tracing::debug!("embed failed for {}:{}-{}: {e}",
                                 chunk.path.display(), chunk.line_start, chunk.line_end);
                             stats.chunks_failed += 1;
                             continue;
@@ -159,7 +159,7 @@ impl VectorIndexer {
             };
 
             if let Err(e) = self.index.add(key, &vec) {
-                log::debug!("index add failed for key {key}: {e}");
+                tracing::debug!("index add failed for key {key}: {e}");
                 stats.chunks_failed += 1;
                 continue;
             }

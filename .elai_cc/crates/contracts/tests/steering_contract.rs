@@ -112,40 +112,50 @@ fn steering_config_serde_roundtrip() {
 
 #[test]
 fn steering_vector_magnitude_returns_norm() {
-    let vector = vec![3.0, 4.0]; // norm = 5
+    let vector = vec![3.0_f32, 4.0]; // norm = 5
     let sv = SteeringVector {
         name: "test".to_string(),
         layer: 10,
         coefficient: 5.0,
         vector: vector.clone(),
+        positive_prompt: "positive".to_string(),
+        negative_prompt: "negative".to_string(),
     };
-    
+
     let magnitude = sv.magnitude();
-    assert_eq!(magnitude, 5.0);
+    assert!((magnitude - 5.0_f32).abs() < f32::EPSILON);
 }
 
 #[test]
-fn steering_vector_is_zero_magnitude_detects_zero() {
+fn steering_vector_zero_magnitude_fails_validation() {
     let sv = SteeringVector {
         name: "test".to_string(),
         layer: 10,
         coefficient: 5.0,
         vector: vec![0.0, 0.0, 0.0],
+        positive_prompt: "positive".to_string(),
+        negative_prompt: "negative".to_string(),
     };
-    
-    assert!(sv.is_zero_magnitude());
+
+    // Zero magnitude vector should fail validation
+    let result = sv.validate(32);
+    assert!(matches!(result, Err(SteeringError::ZeroMagnitude { .. })));
 }
 
 #[test]
-fn steering_vector_is_zero_magnitude_false_for_nonzero() {
+fn steering_vector_nonzero_magnitude_passes_validation() {
     let sv = SteeringVector {
         name: "test".to_string(),
         layer: 10,
         coefficient: 5.0,
         vector: vec![1.0, 2.0, 3.0],
+        positive_prompt: "positive".to_string(),
+        negative_prompt: "negative".to_string(),
     };
-    
-    assert!(!sv.is_zero_magnitude());
+
+    // Non-zero magnitude vector should pass validation
+    let result = sv.validate(32);
+    assert!(result.is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +165,8 @@ fn steering_vector_is_zero_magnitude_false_for_nonzero() {
 #[test]
 fn steering_vector_engine_new_returns_engine() {
     let config = SteeringConfig::default();
-    let engine = SteeringVectorEngine::new(&config, 32);
-    
+    let engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
+
     assert!(!engine.is_active(), "should not be active with empty config");
     assert!(engine.vectors().is_empty());
 }
@@ -164,8 +174,8 @@ fn steering_vector_engine_new_returns_engine() {
 #[test]
 fn steering_vector_engine_is_active_false_when_no_vectors() {
     let config = SteeringConfig::default();
-    let engine = SteeringVectorEngine::new(&config, 32);
-    
+    let engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
+
     assert!(!engine.is_active());
 }
 
@@ -182,7 +192,7 @@ fn steering_vector_engine_coefficient_validation_clamps_to_min() {
         }],
     };
     
-    let engine = SteeringVectorEngine::new(&config, 32);
+    let _engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
     // Coefficient should be clamped to COEFFICIENT_DEFAULT (5.0)
     // This is validated in the Rust implementation
 }
@@ -200,7 +210,7 @@ fn steering_vector_engine_coefficient_validation_clamps_to_max() {
         }],
     };
     
-    let engine = SteeringVectorEngine::new(&config, 32);
+    let _engine = SteeringVectorEngine::new(&config, 32).expect("engine creation");
     // Coefficient should be clamped to COEFFICIENT_DEFAULT (5.0)
 }
 

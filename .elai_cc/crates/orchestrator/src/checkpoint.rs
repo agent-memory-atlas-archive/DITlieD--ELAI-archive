@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use blake3;
 
 use elai_core::ClockProvider;
 
@@ -170,11 +170,9 @@ impl<C: ClockProvider> CheckpointManager<C> {
         Ok(())
     }
 
-    /// Compute SHA-256 hex digest of a byte slice.
-    fn sha256_hex(data: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        format!("{:x}", hasher.finalize())
+    /// Compute BLAKE3 hex digest of a byte slice.
+    fn content_hash(data: &[u8]) -> String {
+        blake3::hash(data).to_hex().to_string()
     }
 
     /// Write a full checkpoint to disk and record metadata in the SSB.
@@ -227,8 +225,8 @@ impl<C: ClockProvider> CheckpointManager<C> {
         Self::atomic_write(&dir.join(CHECKPOINT_TS_FILE), &ts_bytes).await?;
 
         // Compute hashes for SSB metadata
-        let agent_state_hash = Self::sha256_hex(&state_bytes);
-        let grc_history_hash = Self::sha256_hex(&grc_bytes);
+        let agent_state_hash = Self::content_hash(&state_bytes);
+        let grc_history_hash = Self::content_hash(&grc_bytes);
 
         // Collect file sizes for SSB payload
         let file_sizes = vec![
@@ -360,6 +358,7 @@ mod tests {
             grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
             grc_config,
             scratch_dir: tmp_dir.to_path_buf(),
+            sandbox_handle: None,
         }
     }
 
@@ -609,6 +608,7 @@ mod tests {
             grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
             grc_config,
             scratch_dir: PathBuf::from("/nonexistent/path/that/does/not/exist"),
+            sandbox_handle: None,
         };
 
         let result = CheckpointManager::<SeededClock>::read_latest(&handle)
@@ -731,6 +731,7 @@ mod tests {
             grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
             grc_config,
             scratch_dir: dir_with_spaces,
+            sandbox_handle: None,
         };
 
         let clock = SeededClock::new();

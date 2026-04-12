@@ -2055,12 +2055,15 @@ mod tests {
                 from_snap_ids: vec!["snap-tip-1".into(), "snap-tip-2".into()],
             }),
             SsbPayload::WorkloadProfile(WorkloadProfilePayload {
-                agent_id: "agent-001".into(),
+                agent_role: "executor".into(),
                 phase_id: "3B".into(),
-                total_requests: 100,
-                avg_latency_ms: 150,
-                peak_memory_mb: 512,
-                cpu_utilization_pct: 75.0,
+                tokens_in: 1000,
+                tokens_out: 500,
+                latency_ms: 150,
+                vram_peak_mb: 512,
+                model_id: "gemma4:e2b".into(),
+                gpu_id: 0,
+                timestamp: 1700000000,
             }),
         ]
     }
@@ -2113,11 +2116,16 @@ mod tests {
         // Build a payload that serializes to > 1 MiB
         let big_content = "x".repeat(2 * 1024 * 1024);
         let big_payload = SsbPayload::ReasoningTrace(ReasoningTracePayload {
+            agent_id: "agent-big".into(),
+            step_index: 0,
             step_type: "observe".into(),
-            content: big_content,
+            content_summary: big_content,
+            grounding_source: "g".into(),
+            grounding_level: "verified".into(),
+            confidence: 0.9,
+            elapsed_ms: 100,
             topic: "t".into(),
-            grounding: "g".into(),
-            conclusion: "c".into(),
+            budget_remaining: 5,
         });
 
         let result = ssb.write_payload("agent-big", 0, big_payload, vec![]).await;
@@ -2131,18 +2139,23 @@ mod tests {
     #[tokio::test]
     async fn test_trace_integration() {
         let trace = ReasoningTracePayload {
+            agent_id: "agent-trace".into(),
+            step_index: 1,
             step_type: "hypothesize".into(),
-            content: "maybe X".into(),
+            content_summary: "maybe X".into(),
+            grounding_source: "test:unit".into(),
+            grounding_level: "verified".into(),
+            confidence: 0.8,
+            elapsed_ms: 50,
             topic: "debug".into(),
-            grounding: "test:unit".into(),
-            conclusion: "".into(),
+            budget_remaining: 4,
         };
 
         let payload = trace.to_ssb_payload();
         match &payload {
             SsbPayload::ReasoningTrace(inner) => {
                 assert_eq!(inner.step_type, "hypothesize");
-                assert_eq!(inner.content, "maybe X");
+                assert_eq!(inner.content_summary, "maybe X");
             }
             other => panic!("expected ReasoningTrace variant, got: {other:?}"),
         }

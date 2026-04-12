@@ -1246,10 +1246,9 @@ mod tests {
                 let payload: SsbPayload =
                     rmp_serde::from_slice(&entry.payload).expect("deser");
                 if let SsbPayload::MemoryMonitoring(mm) = payload {
-                    if mm.metric_name == "small_cache" {
-                        assert_eq!(mm.action_taken, "measure");
-                        assert!(mm.value >= 5_000_000.0, "value={}", mm.value);
-                        assert_eq!(mm.threshold, UNTRACKED_DEFAULT_LIMIT_BYTES as f64);
+                    if mm.channel_id == "small_cache" {
+                        assert!(!mm.threshold_exceeded, "small cache should not exceed threshold");
+                        assert!(mm.deep_size_bytes >= 5_000_000, "deep_size_bytes={}", mm.deep_size_bytes);
                         found_measure = true;
                     }
                 }
@@ -1302,12 +1301,9 @@ mod tests {
                 let payload: SsbPayload =
                     rmp_serde::from_slice(&entry.payload).expect("deser");
                 if let SsbPayload::MemoryMonitoring(mm) = payload {
-                    if mm.metric_name == "big_cache" {
-                        assert_eq!(mm.action_taken, "force_clear");
-                        assert!(mm.value >= 25_000_000.0, "value={}", mm.value);
-                        let expected_threshold =
-                            UNTRACKED_DEFAULT_LIMIT_BYTES as f64;
-                        assert_eq!(mm.threshold, expected_threshold);
+                    if mm.channel_id == "big_cache" {
+                        assert!(mm.threshold_exceeded, "big cache should exceed threshold");
+                        assert!(mm.deep_size_bytes >= 25_000_000, "deep_size_bytes={}", mm.deep_size_bytes);
                         found_force_clear = true;
                     }
                 }
@@ -1406,9 +1402,9 @@ mod tests {
                 let payload: SsbPayload =
                     rmp_serde::from_slice(&entry.payload).expect("deser");
                 if let SsbPayload::MemoryMonitoring(mm) = payload {
-                    match mm.metric_name.as_str() {
-                        "small" => small_action = Some(mm.action_taken),
-                        "big" => big_action = Some(mm.action_taken),
+                    match mm.channel_id.as_str() {
+                        "small" => small_action = Some(if mm.threshold_exceeded { "force_clear" } else { "measure" }.to_string()),
+                        "big" => big_action = Some(if mm.threshold_exceeded { "force_clear" } else { "measure" }.to_string()),
                         _ => {}
                     }
                 }

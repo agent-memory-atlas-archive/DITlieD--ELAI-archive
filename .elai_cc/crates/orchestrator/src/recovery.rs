@@ -248,6 +248,7 @@ mod tests {
             grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
             grc_config,
             scratch_dir: scratch_dir.to_path_buf(),
+            sandbox_handle: None,
         }
     }
 

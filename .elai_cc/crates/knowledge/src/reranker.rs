@@ -300,7 +300,7 @@ impl CrossEncoderReranker {
         let _permit = match self.semaphore.try_acquire() {
             Ok(p) => p,
             Err(_) => {
-                log::debug!("reranker semaphore busy, returning {} candidates unranked", candidates.len());
+                tracing::debug!("reranker semaphore busy, returning {} candidates unranked", candidates.len());
                 return Ok(candidates);
             }
         };
@@ -343,7 +343,7 @@ impl CrossEncoderReranker {
         }
 
         // Final fallback: skip reranking, return candidates in A-RAG order (spec L149).
-        log::warn!("reranker: all models failed, skipping reranking");
+        tracing::warn!("reranker: all models failed, skipping reranking");
         Ok(candidates)
     }
 
@@ -433,7 +433,7 @@ impl CrossEncoderReranker {
 
         // try_send: if channel full, return candidates unranked (preserving input order).
         if self.request_tx.try_send(request).is_err() {
-            log::debug!("reranker channel full, returning {} candidates unranked", candidates.len());
+            tracing::debug!("reranker channel full, returning {} candidates unranked", candidates.len());
             return Ok(candidates);
         }
 

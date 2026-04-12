@@ -11,7 +11,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tracing = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-getrandom = "0.2"
+getrandom = "0.3"
 sha2 = "0.10"
 thiserror.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
