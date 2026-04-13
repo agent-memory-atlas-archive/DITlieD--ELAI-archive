@@ -2057,7 +2057,7 @@ fn branch_divergence_output(
         dangerously_disable_sandbox: None,
         return_code_interpretation: Some("preflight_blocked:branch_divergence".to_string()),
         no_output_expected: Some(false),
-        structured_content: Some(vec![serde_json::to_value(
+        structured_content: serde_json::to_value(
             LaneEvent::new(
                 LaneEventName::BranchStaleAgainstMain,
                 LaneEventStatus::Blocked,
@@ -2075,7 +2075,8 @@ fn branch_divergence_output(
                 "recommendedAction": format!("merge or rebase {main_ref} before workspace tests")
             })),
         )
-        .expect("lane event should serialize")]),
+        .ok()
+        .map(|v| vec![v]),
         persisted_output_path: None,
         persisted_output_size: None,
         sandbox_status: None,
@@ -3908,7 +3909,7 @@ fn response_to_events(response: MessageResponse) -> Vec<AssistantEvent> {
     let mut pending_tools = BTreeMap::new();
 
     for (index, block) in response.content.into_iter().enumerate() {
-        let index = u32::try_from(index).expect("response block index overflow");
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
         push_output_block(block, index, &mut events, &mut pending_tools, false);
         if let Some((id, name, input)) = pending_tools.remove(&index) {
             events.push(AssistantEvent::ToolUse { id, name, input });
@@ -4932,7 +4933,9 @@ fn get_nested_value<'a>(
 }
 
 fn set_nested_value(root: &mut serde_json::Map<String, Value>, path: &[&str], new_value: Value) {
-    let (first, rest) = path.split_first().expect("config path must not be empty");
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
     if rest.is_empty() {
         root.insert((*first).to_string(), new_value);
         return;
@@ -4944,8 +4947,9 @@ fn set_nested_value(root: &mut serde_json::Map<String, Value>, path: &[&str], ne
     if !entry.is_object() {
         *entry = Value::Object(serde_json::Map::new());
     }
-    let map = entry.as_object_mut().expect("object inserted");
-    set_nested_value(map, rest, new_value);
+    if let Some(map) = entry.as_object_mut() {
+        set_nested_value(map, rest, new_value);
+    }
 }
 
 fn remove_nested_value(root: &mut serde_json::Map<String, Value>, path: &[&str]) -> bool {

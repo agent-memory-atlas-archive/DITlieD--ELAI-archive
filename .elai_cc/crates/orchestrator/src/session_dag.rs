@@ -196,9 +196,12 @@ CREATE INDEX IF NOT EXISTS idx_context_stubbed ON snapshot_context(snap_id) WHER
 // SessionDag
 // ---------------------------------------------------------------------------
 
-// FIXME(3H.7): replace with LlmProvider::token_count when providers crate implements it.
-// Current heuristic: ~4 bytes per token (conservative estimate for English text).
-fn estimate_tokens(bytes: &[u8]) -> usize {
+/// Token counting function type. Accepts raw bytes, returns estimated token count.
+pub type TokenCountFn = Box<dyn Fn(&[u8]) -> usize + Send + Sync>;
+
+/// Heuristic token estimator: ~4 bytes per token (conservative for English text).
+/// Used as fallback when no real tokenizer is available.
+fn heuristic_token_count(bytes: &[u8]) -> usize {
     bytes.len().saturating_add(3) / 4
 }
 
@@ -214,6 +217,7 @@ pub struct SessionDag {
     db: Connection,
     session_id: String,
     active_branches: Vec<BranchRef>,
+    token_counter: TokenCountFn,
 }
 
 impl SessionDag {
@@ -262,7 +266,14 @@ impl SessionDag {
             db,
             session_id: session_id.to_owned(),
             active_branches: Vec::new(),
+            token_counter: Box::new(heuristic_token_count),
         })
+    }
+
+    /// Replace the token counter with a real tokenizer implementation.
+    /// Call after construction when a tokenizer is available.
+    pub fn set_token_counter(&mut self, counter: TokenCountFn) {
+        self.token_counter = counter;
     }
 
     pub fn open(session_id: &str, path: &Path) -> Result<Self, SessionDagError> {
@@ -306,6 +317,7 @@ impl SessionDag {
             db,
             session_id: session_id.to_owned(),
             active_branches,
+            token_counter: Box::new(heuristic_token_count),
         })
     }
 
@@ -730,7 +742,7 @@ impl SessionDag {
         let mut candidate_indices: Vec<(usize, usize)> = Vec::new();
         let token_counts: Vec<usize> = messages
             .iter()
-            .map(|m| estimate_tokens(&m.content))
+            .map(|m| (self.token_counter)(&m.content))
             .collect();
 
         for (i, msg) in messages.iter().enumerate() {
@@ -804,7 +816,7 @@ impl SessionDag {
         // Budget check: compute total tokens after stubbing decisions
         let total_tokens: usize = result.iter().enumerate().map(|(i, msg)| {
             if msg.is_stubbed {
-                estimate_tokens(&msg.content)
+                (self.token_counter)(&msg.content)
             } else {
                 token_counts[i]
             }

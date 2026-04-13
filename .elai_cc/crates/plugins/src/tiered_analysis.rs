@@ -565,12 +565,28 @@ pub struct TieredAnalysis {
 
 impl TieredAnalysis {
     /// Create with no pre-loaded rules (T1 evaluates against empty set).
+    ///
+    /// Prefer [`with_rules`] or call [`set_t1_rules`] after construction
+    /// to populate T1 with active rules from rules.db.
     pub fn new(rule_engine: Box<dyn RuleEngine>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             t1: T1Hook::new(rule_engine, fsm_phase),
             t2: T2Hook::new(5000),
             t3: T3Hook::new(),
         }
+    }
+
+    /// Update T1 rules at runtime (e.g., after loading from rules.db).
+    pub fn set_t1_rules(
+        &mut self,
+        rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+    ) {
+        self.t1.set_rules(rules);
+    }
+
+    /// Access the T1 rule engine for filtering/compilation.
+    pub fn rule_engine(&self) -> &dyn RuleEngine {
+        &*self.t1.rule_engine
     }
 
     /// Create with pre-loaded rules for T1 evaluation.

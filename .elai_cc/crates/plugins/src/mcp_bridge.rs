@@ -33,7 +33,6 @@ pub struct McpToolSpec {
 }
 
 /// MCP bridge trait for connecting to external MCP servers
-#[cfg_attr(feature = "mcp", async_trait::async_trait)]
 pub trait McpBridge: Send + Sync {
     /// Connect to an MCP server
     async fn connect(&self, server_url: &str) -> Result<McpConnection, McpError>;
@@ -160,7 +159,6 @@ impl DefaultMcpBridge {
 }
 
 #[cfg(feature = "mcp")]
-#[async_trait::async_trait]
 impl McpBridge for DefaultMcpBridge {
     async fn connect(&self, server_url: &str) -> Result<McpConnection, McpError> {
         // Placeholder implementation - actual connection logic would go here

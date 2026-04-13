@@ -312,6 +312,34 @@ pub fn fetch_rule_record(conn: &Connection, rule_id: &str) -> Result<RuleRecord,
     })
 }
 
+/// Fetch all ACTIVE rules from the database as [`Rule`] structs ready for
+/// [`RuleEngine::get_active_rules`] filtering and predicate compilation.
+pub fn fetch_all_active_rules(
+    conn: &Connection,
+) -> Result<Vec<crate::rule_engine::Rule>, LifecycleError> {
+    let mut stmt = conn.prepare(
+        "SELECT rule_id, domain, tier, severity, title, predicate, phase_mask \
+         FROM rules WHERE status = 'ACTIVE' ORDER BY tier ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(crate::rule_engine::Rule {
+            rule_id: row.get(0)?,
+            domain: row.get(1)?,
+            tier: row.get(2)?,
+            severity: row.get(3)?,
+            title: row.get(4)?,
+            predicate_json: row.get(5)?,
+            phase_mask: row.get(6)?,
+            escalate_target: None,
+        })
+    })?;
+    let mut rules = Vec::new();
+    for row in rows {
+        rules.push(row?);
+    }
+    Ok(rules)
+}
+
 /// Compute aggregated metrics for a rule across all metric windows.
 pub fn compute_metrics_snapshot(
     conn: &Connection,

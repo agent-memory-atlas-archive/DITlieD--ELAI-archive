@@ -1,5 +1,4 @@
 #![allow(
-    clippy::await_holding_lock,
     clippy::doc_markdown,
     clippy::match_same_arms,
     clippy::must_use_candidate,
@@ -73,7 +72,7 @@ pub struct McpServerState {
 #[derive(Debug, Clone, Default)]
 pub struct McpToolRegistry {
     inner: Arc<Mutex<HashMap<String, McpServerState>>>,
-    manager: Arc<OnceLock<Arc<Mutex<McpServerManager>>>>,
+    manager: Arc<OnceLock<Arc<tokio::sync::Mutex<McpServerManager>>>>,
 }
 
 impl McpToolRegistry {
@@ -84,8 +83,8 @@ impl McpToolRegistry {
 
     pub fn set_manager(
         &self,
-        manager: Arc<Mutex<McpServerManager>>,
-    ) -> Result<(), Arc<Mutex<McpServerManager>>> {
+        manager: Arc<tokio::sync::Mutex<McpServerManager>>,
+    ) -> Result<(), Arc<tokio::sync::Mutex<McpServerManager>>> {
         self.manager.set(manager)
     }
 
@@ -175,7 +174,7 @@ impl McpToolRegistry {
     }
 
     fn spawn_tool_call(
-        manager: Arc<Mutex<McpServerManager>>,
+        manager: Arc<tokio::sync::Mutex<McpServerManager>>,
         qualified_tool_name: String,
         arguments: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
@@ -189,9 +188,7 @@ impl McpToolRegistry {
 
                 runtime.block_on(async move {
                     let response = {
-                        let mut manager = manager
-                            .lock()
-                            .map_err(|_| "mcp server manager lock poisoned".to_string())?;
+                        let mut manager = manager.lock().await;
                         manager
                             .discover_tools()
                             .await
@@ -581,7 +578,7 @@ mod tests {
             "alpha".to_string(),
             manager_server_config(&script_path, "alpha", &log_path),
         )]);
-        let manager = Arc::new(Mutex::new(McpServerManager::from_servers(&servers)));
+        let manager = Arc::new(tokio::sync::Mutex::new(McpServerManager::from_servers(&servers)));
 
         let registry = McpToolRegistry::new();
         registry.register_server(
@@ -842,7 +839,7 @@ mod tests {
             None,
         );
         registry
-            .set_manager(Arc::new(Mutex::new(McpServerManager::from_servers(
+            .set_manager(Arc::new(tokio::sync::Mutex::new(McpServerManager::from_servers(
                 &servers,
             ))))
             .expect("manager should only be set once");

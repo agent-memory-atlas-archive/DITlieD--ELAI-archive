@@ -470,11 +470,17 @@ impl Fsm {
 
         // Trigger predictive pre-loading on state entry
         // Phase 3J.6: pre-load models based on FSM state using PreloadPolicy
-        let _models_to_preload = guard.preload_manager.trigger_preload(target);
-        // TODO: Log/telemetry for pre-loaded models
+        let models_to_preload = guard.preload_manager.trigger_preload(target);
+        if !models_to_preload.is_empty() {
+            tracing::info!(
+                state = %target,
+                count = models_to_preload.len(),
+                models = ?models_to_preload,
+                "Predictive pre-load triggered at phase boundary"
+            );
+        }
         // TODO: Implement actual background pre-loading with tokio::spawn and VRAM checks
         // This requires access to ModelPool and provider to trigger model loading
-        // For now, this is a structural hook that returns the model list
 
         // Emit workload profile at phase boundary via callback
         if let (Some(ref emitter), Some(ref m)) = (&self.workload_emitter, &metrics) {

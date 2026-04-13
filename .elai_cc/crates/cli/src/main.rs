@@ -11,6 +11,7 @@ mod init;
 mod input;
 mod render;
 
+use anyhow::Context as _;
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
@@ -171,9 +172,9 @@ Run `elai--help` for usage."
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), anyhow::Error> {
     let args: Vec<String> = env::args().skip(1).collect();
-    match parse_args(&args)? {
+    match parse_args(&args).map_err(|e| anyhow::anyhow!(e))? {
         CliAction::DumpManifests { output_format } => dump_manifests(output_format)?,
         CliAction::BootstrapPlan { output_format } => print_bootstrap_plan(output_format)?,
         CliAction::Agents {
@@ -1011,7 +1012,7 @@ fn render_diagnostic_check(check: &DiagnosticCheck) -> String {
     lines.join("\n")
 }
 
-fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
+fn render_doctor_report() -> Result<DoctorReport, anyhow::Error> {
     let cwd = env::current_dir()?;
     let config_loader = ConfigLoader::default_for(&cwd);
     let config = config_loader.load();
@@ -1047,7 +1048,7 @@ fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
     })
 }
 
-fn run_doctor(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn run_doctor(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let report = render_doctor_report()?;
     let message = report.render();
     match output_format {
@@ -1063,7 +1064,7 @@ fn run_doctor(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::
         ),
     }
     if report.has_failures() {
-        return Err("doctor found failing checks".into());
+        return Err(anyhow::anyhow!("doctor found failing checks"));
     }
     Ok(())
 }
@@ -1341,11 +1342,11 @@ fn looks_like_slash_command_token(token: &str) -> bool {
         .any(|spec| spec.name == name || spec.aliases.contains(&name))
 }
 
-fn dump_manifests(_output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    Err("dump-manifests removed: compat-harness stripped in Phase 0".into())
+fn dump_manifests(_output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
+    Err(anyhow::anyhow!("dump-manifests removed: compat-harness stripped in Phase 0"))
 }
 
-fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let phases = elai_orchestrator::BootstrapPlan::elai_default()
         .phases()
         .iter()
@@ -1383,7 +1384,7 @@ fn default_oauth_config() -> OAuthConfig {
     }
 }
 
-fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn run_login(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let cwd = env::current_dir()?;
     let config = ConfigLoader::default_for(&cwd).load()?;
     let default_oauth = default_oauth_config();
@@ -1430,7 +1431,9 @@ fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::E
         pkce.verifier,
         redirect_uri.clone(),
     );
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let token_set = runtime.block_on(client.exchange_oauth_code(oauth, &exchange_request))?;
     save_oauth_credentials(&elai_orchestrator::OAuthTokenSet {
         access_token: token_set.access_token,
@@ -1453,7 +1456,7 @@ fn run_login(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn run_logout(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn run_logout(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     clear_oauth_credentials()?;
     match output_format {
         CliOutputFormat::Text => println!("OAuth credentials cleared."),
@@ -1491,7 +1494,7 @@ fn open_browser(url: &str) -> io::Result<()> {
 
 fn wait_for_oauth_callback(
     port: u16,
-) -> Result<elai_orchestrator::OAuthCallbackParams, Box<dyn std::error::Error>> {
+) -> Result<elai_orchestrator::OAuthCallbackParams, anyhow::Error> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     let (mut stream, _) = listener.accept()?;
     let mut buffer = [0_u8; 4096];
@@ -1526,7 +1529,7 @@ fn print_system_prompt(
     cwd: PathBuf,
     date: String,
     output_format: CliOutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), anyhow::Error> {
     let sections = load_system_prompt(cwd, date, env::consts::OS, "unknown")?;
     let message = sections.join(
         "
@@ -1547,7 +1550,7 @@ fn print_system_prompt(
     Ok(())
 }
 
-fn print_version(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn print_version(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let report = render_version_report();
     match output_format {
         CliOutputFormat::Text => println!("{report}"),
@@ -1962,17 +1965,17 @@ fn run_git_capture_in(cwd: &Path, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
-fn find_git_root_in(cwd: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn find_git_root_in(cwd: &Path) -> Result<PathBuf, anyhow::Error> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .output()?;
     if !output.status.success() {
-        return Err("not a git repository".into());
+        return Err(anyhow::anyhow!("not a git repository"));
     }
     let path = String::from_utf8(output.stdout)?.trim().to_string();
     if path.is_empty() {
-        return Err("empty git root".into());
+        return Err(anyhow::anyhow!("empty git root"));
     }
     Ok(PathBuf::from(path))
 }
@@ -1991,7 +1994,7 @@ fn run_resume_command(
     session_path: &Path,
     session: &Session,
     command: &SlashCommand,
-) -> Result<ResumeCommandOutcome, Box<dyn std::error::Error>> {
+) -> Result<ResumeCommandOutcome, anyhow::Error> {
     match command {
         SlashCommand::Help => Ok(ResumeCommandOutcome {
             session: session.clone(),
@@ -2149,7 +2152,7 @@ fn run_resume_command(
             session: session.clone(),
             message: Some(render_doctor_report()?.render()),
         }),
-        SlashCommand::Unknown(name) => Err(format_unknown_slash_command(name).into()),
+        SlashCommand::Unknown(name) => Err(anyhow::anyhow!(format_unknown_slash_command(name))),
         SlashCommand::Bughunter { .. }
         | SlashCommand::Commit { .. }
         | SlashCommand::Pr { .. }
@@ -2200,7 +2203,7 @@ fn run_resume_command(
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
-        | SlashCommand::AddDir { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::AddDir { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }
 
@@ -2208,7 +2211,7 @@ fn run_repl(
     model: String,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), anyhow::Error> {
     let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
@@ -2267,7 +2270,7 @@ fn windows_to_wsl_path(win_path: &str) -> String {
 
 /// Start or connect to the inference sidecar. Returns the child process handle
 /// if we spawned it (None if already running). Blocks until /health responds.
-fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::error::Error>> {
+fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, anyhow::Error> {
     let sidecar_url = format!("http://localhost:{port}");
 
     let client = reqwest::blocking::Client::builder()
@@ -2326,7 +2329,7 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::
         if start.elapsed() > timeout {
             eprintln!("Sidecar failed to start within 120s.");
             let _ = proc.kill();
-            return Err("sidecar startup timeout".into());
+            return Err(anyhow::anyhow!("sidecar startup timeout"));
         }
 
         if client
@@ -2348,7 +2351,7 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, Box<dyn std::
     Ok(Some(proc))
 }
 
-fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+fn run_local_repl(port: u16) -> Result<(), anyhow::Error> {
     let sidecar_url = format!("http://localhost:{port}");
     let backend_config = BackendConfig {
         mode: BackendMode::Local,
@@ -2372,10 +2375,10 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             let probe_result = reqwest::blocking::Client::builder()
                 .timeout(OLLAMA_PROBE_TIMEOUT)
                 .build()
-                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                .map_err(anyhow::Error::from)
                 .and_then(|client| {
                     client.get(&probe_url).send()
-                        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                        .map_err(anyhow::Error::from)
                 });
             match probe_result {
                 Ok(resp) if resp.status().is_success() => {
@@ -2385,9 +2388,9 @@ fn run_local_repl(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                     (None, cfg, true)
                 }
                 _ => {
-                    return Err(format!(
+                    return Err(anyhow::anyhow!(
                         "sidecar failed ({sidecar_err}) and ollama not reachable at {OLLAMA_DEFAULT_URL}"
-                    ).into());
+                    ));
                 }
             }
         }
@@ -2545,7 +2548,7 @@ impl BuiltRuntime {
         self
     }
 
-    fn shutdown_plugins(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn shutdown_plugins(&mut self) -> Result<(), anyhow::Error> {
         if self.plugins_active {
             self.plugin_registry.shutdown()?;
             self.plugins_active = false;
@@ -2553,7 +2556,7 @@ impl BuiltRuntime {
         Ok(())
     }
 
-    fn shutdown_mcp(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn shutdown_mcp(&mut self) -> Result<(), anyhow::Error> {
         if self.mcp_active {
             if let Some(mcp_state) = &self.mcp_state {
                 mcp_state
@@ -2620,13 +2623,15 @@ struct ReadMcpResourceRequest {
 impl RuntimeMcpState {
     fn new(
         runtime_config: &elai_orchestrator::RuntimeConfig,
-    ) -> Result<Option<(Self, elai_orchestrator::McpToolDiscoveryReport)>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<(Self, elai_orchestrator::McpToolDiscoveryReport)>, anyhow::Error> {
         let mut manager = McpServerManager::from_runtime_config(runtime_config);
         if manager.server_names().is_empty() && manager.unsupported_servers().is_empty() {
             return Ok(None);
         }
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         let discovery = runtime.block_on(manager.discover_tools_best_effort());
         let pending_servers = discovery
             .failed_servers
@@ -2704,7 +2709,7 @@ impl RuntimeMcpState {
         )))
     }
 
-    fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn shutdown(&mut self) -> Result<(), anyhow::Error> {
         self.runtime.block_on(self.manager.shutdown())?;
         Ok(())
     }
@@ -2808,7 +2813,7 @@ impl RuntimeMcpState {
 
 fn build_runtime_mcp_state(
     runtime_config: &elai_orchestrator::RuntimeConfig,
-) -> Result<RuntimePluginStateBuildOutput, Box<dyn std::error::Error>> {
+) -> Result<RuntimePluginStateBuildOutput, anyhow::Error> {
     let Some((mcp_state, discovery)) = RuntimeMcpState::new(runtime_config)? else {
         return Ok((None, Vec::new()));
     };
@@ -2976,7 +2981,7 @@ impl LiveCli {
         enable_tools: bool,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, anyhow::Error> {
         let system_prompt = build_system_prompt(false)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
@@ -3039,7 +3044,7 @@ impl LiveCli {
         model: String,
         backend_config: BackendConfig,
         permission_mode: PermissionMode,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, anyhow::Error> {
         let system_prompt = build_system_prompt(true)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
@@ -3325,7 +3330,7 @@ impl LiveCli {
         )
     }
 
-    fn repl_completion_candidates(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    fn repl_completion_candidates(&self) -> Result<Vec<String>, anyhow::Error> {
         Ok(slash_command_completion_candidates_with_sessions(
             &self.model,
             Some(&self.session.id),
@@ -3339,7 +3344,7 @@ impl LiveCli {
     fn prepare_turn_runtime(
         &self,
         emit_output: bool,
-    ) -> Result<(BuiltRuntime, HookAbortMonitor), Box<dyn std::error::Error>> {
+    ) -> Result<(BuiltRuntime, HookAbortMonitor), anyhow::Error> {
         let hook_abort_signal = elai_orchestrator::HookAbortSignal::new();
         let mut session = self.runtime.session().clone();
 
@@ -3547,13 +3552,13 @@ impl LiveCli {
         }
     }
 
-    fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), anyhow::Error> {
         self.runtime.shutdown_plugins()?;
         self.runtime = runtime;
         Ok(())
     }
 
-    fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_turn(&mut self, input: &str) -> Result<(), anyhow::Error> {
         // Inject knowledge pipeline retrieval context if available.
         let augmented_input = self.augment_with_knowledge(input);
         let effective_input = augmented_input.as_deref().unwrap_or(input);
@@ -3593,7 +3598,7 @@ impl LiveCli {
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
-                Err(Box::new(error))
+                Err(error.into())
             }
         }
     }
@@ -3602,7 +3607,7 @@ impl LiveCli {
         &mut self,
         input: &str,
         output_format: CliOutputFormat,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), anyhow::Error> {
         match output_format {
             CliOutputFormat::Text => self.run_turn(input),
             CliOutputFormat::Json => self.run_prompt_json(input),
@@ -3657,7 +3662,7 @@ impl LiveCli {
         }
     }
 
-    fn run_prompt_json(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_prompt_json(&mut self, input: &str) -> Result<(), anyhow::Error> {
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(false)?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let result = runtime.run_turn(input, Some(&mut permission_prompter));
@@ -3699,7 +3704,7 @@ impl LiveCli {
     fn handle_repl_command(
         &mut self,
         command: SlashCommand,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, anyhow::Error> {
         Ok(match command {
             SlashCommand::Help => {
                 println!("{}", render_repl_help());
@@ -3901,7 +3906,7 @@ impl LiveCli {
         })
     }
 
-    fn persist_session(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn persist_session(&self) -> Result<(), anyhow::Error> {
         self.runtime.session().save_to_path(&self.session.path)?;
         Ok(())
     }
@@ -3938,7 +3943,7 @@ impl LiveCli {
         );
     }
 
-    fn set_model(&mut self, model: Option<String>) -> Result<bool, Box<dyn std::error::Error>> {
+    fn set_model(&mut self, model: Option<String>) -> Result<bool, anyhow::Error> {
         let Some(model) = model else {
             println!(
                 "{}",
@@ -3994,7 +3999,7 @@ impl LiveCli {
     fn set_permissions(
         &mut self,
         mode: Option<String>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, anyhow::Error> {
         let Some(mode) = mode else {
             println!(
                 "{}",
@@ -4004,7 +4009,7 @@ impl LiveCli {
         };
 
         let normalized = normalize_permission_mode(&mode).ok_or_else(|| {
-            format!(
+            anyhow::anyhow!(
                 "unsupported permission mode '{mode}'. Use read-only, workspace-write, or danger-full-access."
             )
         })?;
@@ -4039,7 +4044,7 @@ impl LiveCli {
         Ok(true)
     }
 
-    fn clear_session(&mut self, confirm: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    fn clear_session(&mut self, confirm: bool) -> Result<bool, anyhow::Error> {
         if !confirm {
             println!(
                 "clear: confirmation required; run /clear --confirm to start a fresh session."
@@ -4085,7 +4090,7 @@ impl LiveCli {
     fn resume_session(
         &mut self,
         session_path: Option<String>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, anyhow::Error> {
         let Some(session_ref) = session_path else {
             println!("{}", render_resume_usage());
             return Ok(false);
@@ -4143,12 +4148,12 @@ impl LiveCli {
         Ok(true)
     }
 
-    fn print_config(section: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn print_config(section: Option<&str>) -> Result<(), anyhow::Error> {
         println!("{}", render_config_report(section)?);
         Ok(())
     }
 
-    fn print_memory() -> Result<(), Box<dyn std::error::Error>> {
+    fn print_memory() -> Result<(), anyhow::Error> {
         println!("{}", render_memory_report()?);
         Ok(())
     }
@@ -4156,7 +4161,7 @@ impl LiveCli {
     fn print_agents(
         args: Option<&str>,
         output_format: CliOutputFormat,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), anyhow::Error> {
         let cwd = env::current_dir()?;
         let message = handle_agents_slash_command(args, &cwd)?;
         match output_format {
@@ -4176,7 +4181,7 @@ impl LiveCli {
     fn print_mcp(
         args: Option<&str>,
         output_format: CliOutputFormat,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), anyhow::Error> {
         let cwd = env::current_dir()?;
         match output_format {
             CliOutputFormat::Text => println!("{}", handle_mcp_slash_command(args, &cwd)?),
@@ -4191,7 +4196,7 @@ impl LiveCli {
     fn print_skills(
         args: Option<&str>,
         output_format: CliOutputFormat,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), anyhow::Error> {
         let cwd = env::current_dir()?;
         match output_format {
             CliOutputFormat::Text => println!("{}", handle_skills_slash_command(args, &cwd)?),
@@ -4203,7 +4208,7 @@ impl LiveCli {
         Ok(())
     }
 
-    fn print_diff() -> Result<(), Box<dyn std::error::Error>> {
+    fn print_diff() -> Result<(), anyhow::Error> {
         println!("{}", render_diff_report()?);
         Ok(())
     }
@@ -4215,7 +4220,7 @@ impl LiveCli {
     fn export_session(
         &self,
         requested_path: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), anyhow::Error> {
         let export_path = resolve_export_path(requested_path, self.runtime.session())?;
         fs::write(&export_path, render_export_text(self.runtime.session()))?;
         println!(
@@ -4230,7 +4235,7 @@ impl LiveCli {
         &mut self,
         action: Option<&str>,
         target: Option<&str>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, anyhow::Error> {
         match action {
             None | Some("list") => {
                 println!("{}", render_session_list(&self.session.id)?);
@@ -4354,7 +4359,7 @@ impl LiveCli {
         &mut self,
         action: Option<&str>,
         target: Option<&str>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, anyhow::Error> {
         let cwd = env::current_dir()?;
         let loader = ConfigLoader::default_for(&cwd);
         let runtime_config = loader.load()?;
@@ -4367,7 +4372,7 @@ impl LiveCli {
         Ok(false)
     }
 
-    fn reload_runtime_features(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn reload_runtime_features(&mut self) -> Result<(), anyhow::Error> {
         let (runtime, _ssb) = build_runtime(
             self.runtime.session().clone(),
             &self.session.id,
@@ -4386,7 +4391,7 @@ impl LiveCli {
         self.persist_session()
     }
 
-    fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn compact(&mut self) -> Result<(), anyhow::Error> {
         let result = self.runtime.compact(CompactionConfig::default());
         let removed = result.removed_message_count;
         let kept = result.compacted_session.messages.len();
@@ -4416,7 +4421,7 @@ impl LiveCli {
         prompt: &str,
         enable_tools: bool,
         progress: Option<InternalPromptProgressReporter>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, anyhow::Error> {
         let session = self.runtime.session().clone();
         let (mut runtime, _ssb) = build_runtime(
             session,
@@ -4443,21 +4448,21 @@ impl LiveCli {
         &self,
         prompt: &str,
         enable_tools: bool,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, anyhow::Error> {
         self.run_internal_prompt_text_with_progress(prompt, enable_tools, None)
     }
 
-    fn run_bughunter(&self, scope: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_bughunter(&self, scope: Option<&str>) -> Result<(), anyhow::Error> {
         println!("{}", format_bughunter_report(scope));
         Ok(())
     }
 
-    fn run_ultraplan(&self, task: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_ultraplan(&self, task: Option<&str>) -> Result<(), anyhow::Error> {
         println!("{}", format_ultraplan_report(task));
         Ok(())
     }
 
-    fn run_teleport(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_teleport(target: Option<&str>) -> Result<(), anyhow::Error> {
         let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
             println!("Usage: /teleport <symbol-or-path>");
             return Ok(());
@@ -4467,13 +4472,13 @@ impl LiveCli {
         Ok(())
     }
 
-    fn run_debug_tool_call(&self, args: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_debug_tool_call(&self, args: Option<&str>) -> Result<(), anyhow::Error> {
         validate_no_args("/debug-tool-call", args)?;
         println!("{}", render_last_tool_debug_report(self.runtime.session())?);
         Ok(())
     }
 
-    fn run_commit(&mut self, args: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_commit(&mut self, args: Option<&str>) -> Result<(), anyhow::Error> {
         validate_no_args("/commit", args)?;
         let status = git_output(&["status", "--short", "--branch"])?;
         let summary = parse_git_workspace_summary(Some(&status));
@@ -4490,20 +4495,20 @@ impl LiveCli {
         Ok(())
     }
 
-    fn run_pr(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_pr(&self, context: Option<&str>) -> Result<(), anyhow::Error> {
         let branch =
             resolve_git_branch_for(&env::current_dir()?).unwrap_or_else(|| "unknown".to_string());
         println!("{}", format_pr_report(&branch, context));
         Ok(())
     }
 
-    fn run_issue(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_issue(&self, context: Option<&str>) -> Result<(), anyhow::Error> {
         println!("{}", format_issue_report(context));
         Ok(())
     }
 }
 
-fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn sessions_dir() -> Result<PathBuf, anyhow::Error> {
     let cwd = env::current_dir()?;
     let path = cwd.join(".elai").join("sessions");
     fs::create_dir_all(&path)?;
@@ -4556,13 +4561,13 @@ impl Drop for LiveCli {
 
 fn create_managed_session_handle(
     session_id: &str,
-) -> Result<SessionHandle, Box<dyn std::error::Error>> {
+) -> Result<SessionHandle, anyhow::Error> {
     let id = session_id.to_string();
     let path = sessions_dir()?.join(format!("{id}.{PRIMARY_SESSION_EXTENSION}"));
     Ok(SessionHandle { id, path })
 }
 
-fn resolve_session_reference(reference: &str) -> Result<SessionHandle, Box<dyn std::error::Error>> {
+fn resolve_session_reference(reference: &str) -> Result<SessionHandle, anyhow::Error> {
     if SESSION_REFERENCE_ALIASES
         .iter()
         .any(|alias| reference.eq_ignore_ascii_case(alias))
@@ -4579,7 +4584,7 @@ fn resolve_session_reference(reference: &str) -> Result<SessionHandle, Box<dyn s
     let path = if direct.exists() {
         direct
     } else if looks_like_path {
-        return Err(format_missing_session_reference(reference).into());
+        return Err(anyhow::anyhow!(format_missing_session_reference(reference)));
     } else {
         resolve_managed_session_path(reference)?
     };
@@ -4595,7 +4600,7 @@ fn resolve_session_reference(reference: &str) -> Result<SessionHandle, Box<dyn s
     Ok(SessionHandle { id, path })
 }
 
-fn resolve_managed_session_path(session_id: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn resolve_managed_session_path(session_id: &str) -> Result<PathBuf, anyhow::Error> {
     let directory = sessions_dir()?;
     for extension in [PRIMARY_SESSION_EXTENSION, LEGACY_SESSION_EXTENSION] {
         let path = directory.join(format!("{session_id}.{extension}"));
@@ -4603,7 +4608,7 @@ fn resolve_managed_session_path(session_id: &str) -> Result<PathBuf, Box<dyn std
             return Ok(path);
         }
     }
-    Err(format_missing_session_reference(session_id).into())
+    Err(anyhow::anyhow!(format_missing_session_reference(session_id)))
 }
 
 fn is_managed_session_file(path: &Path) -> bool {
@@ -4614,7 +4619,7 @@ fn is_managed_session_file(path: &Path) -> bool {
         })
 }
 
-fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, Box<dyn std::error::Error>> {
+fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, anyhow::Error> {
     let mut sessions = Vec::new();
     for entry in fs::read_dir(sessions_dir()?)? {
         let entry = entry?;
@@ -4675,11 +4680,11 @@ fn list_managed_sessions() -> Result<Vec<ManagedSessionSummary>, Box<dyn std::er
     Ok(sessions)
 }
 
-fn latest_managed_session() -> Result<ManagedSessionSummary, Box<dyn std::error::Error>> {
+fn latest_managed_session() -> Result<ManagedSessionSummary, anyhow::Error> {
     list_managed_sessions()?
         .into_iter()
         .next()
-        .ok_or_else(|| format_no_managed_sessions().into())
+        .ok_or_else(|| anyhow::anyhow!(format_no_managed_sessions()))
 }
 
 fn format_missing_session_reference(reference: &str) -> String {
@@ -4694,7 +4699,7 @@ fn format_no_managed_sessions() -> String {
     )
 }
 
-fn render_session_list(active_session_id: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn render_session_list(active_session_id: &str) -> Result<String, anyhow::Error> {
     let sessions = list_managed_sessions()?;
     let mut lines = vec![
         "Sessions".to_string(),
@@ -4755,7 +4760,7 @@ fn format_session_modified_age(modified_epoch_millis: u128) -> String {
 fn write_session_clear_backup(
     session: &Session,
     session_path: &Path,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<PathBuf, anyhow::Error> {
     let backup_path = session_clear_backup_path(session_path);
     session.save_to_path(&backup_path)?;
     Ok(backup_path)
@@ -4799,7 +4804,7 @@ fn print_status_snapshot(
     model: &str,
     permission_mode: PermissionMode,
     output_format: CliOutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), anyhow::Error> {
     let usage = StatusUsage {
         message_count: 0,
         turns: 0,
@@ -4865,7 +4870,7 @@ fn print_status_snapshot(
 
 fn status_context(
     session_path: Option<&Path>,
-) -> Result<StatusContext, Box<dyn std::error::Error>> {
+) -> Result<StatusContext, anyhow::Error> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let discovered_config_files = loader.discover().len();
@@ -5025,7 +5030,7 @@ fn format_commit_skipped_report() -> String {
 
 fn print_sandbox_status_snapshot(
     output_format: CliOutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), anyhow::Error> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader
@@ -5084,7 +5089,7 @@ fn print_help_topic(topic: LocalHelpTopic) {
     println!("{}", render_help_topic(topic));
 }
 
-fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+fn render_config_report(section: Option<&str>) -> Result<String, anyhow::Error> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let discovered = loader.discover();
@@ -5163,7 +5168,7 @@ fn render_config_report(section: Option<&str>) -> Result<String, Box<dyn std::er
     ))
 }
 
-fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
+fn render_memory_report() -> Result<String, anyhow::Error> {
     let cwd = env::current_dir()?;
     let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
     let mut lines = vec![format!(
@@ -5202,12 +5207,12 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     ))
 }
 
-fn init_elai_md() -> Result<String, Box<dyn std::error::Error>> {
+fn init_elai_md() -> Result<String, anyhow::Error> {
     let cwd = env::current_dir()?;
     Ok(initialize_repo(&cwd)?.render())
 }
 
-fn run_init(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn run_init(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let message = init_elai_md()?;
     match output_format {
         CliOutputFormat::Text => println!("{message}"),
@@ -5231,11 +5236,11 @@ fn normalize_permission_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
-fn render_diff_report() -> Result<String, Box<dyn std::error::Error>> {
+fn render_diff_report() -> Result<String, anyhow::Error> {
     render_diff_report_for(&env::current_dir()?)
 }
 
-fn render_diff_report_for(cwd: &Path) -> Result<String, Box<dyn std::error::Error>> {
+fn render_diff_report_for(cwd: &Path) -> Result<String, anyhow::Error> {
     let staged = run_git_diff_command_in(cwd, &["diff", "--cached"])?;
     let unstaged = run_git_diff_command_in(cwd, &["diff"])?;
     if staged.trim().is_empty() && unstaged.trim().is_empty() {
@@ -5259,19 +5264,19 @@ fn render_diff_report_for(cwd: &Path) -> Result<String, Box<dyn std::error::Erro
 fn run_git_diff_command_in(
     cwd: &Path,
     args: &[&str],
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, anyhow::Error> {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("git {} failed: {stderr}", args.join(" ")).into());
+        return Err(anyhow::anyhow!("git {} failed: {stderr}", args.join(" ")));
     }
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn render_teleport_report(target: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn render_teleport_report(target: &str) -> Result<String, anyhow::Error> {
     let cwd = env::current_dir()?;
 
     let file_list = Command::new("rg")
@@ -5321,7 +5326,7 @@ fn render_teleport_report(target: &str) -> Result<String, Box<dyn std::error::Er
     Ok(lines.join("\n"))
 }
 
-fn render_last_tool_debug_report(session: &Session) -> Result<String, Box<dyn std::error::Error>> {
+fn render_last_tool_debug_report(session: &Session) -> Result<String, anyhow::Error> {
     let last_tool_use = session
         .messages
         .iter()
@@ -5334,7 +5339,7 @@ fn render_last_tool_debug_report(session: &Session) -> Result<String, Box<dyn st
                 _ => None,
             })
         })
-        .ok_or_else(|| "no prior tool call found in session".to_string())?;
+        .ok_or_else(|| anyhow::anyhow!("no prior tool call found in session"))?;
 
     let tool_result = session.messages.iter().rev().find_map(|message| {
         message.blocks.iter().rev().find_map(|block| match block {
@@ -5387,12 +5392,11 @@ fn indent_block(value: &str, spaces: usize) -> String {
 fn validate_no_args(
     command_name: &str,
     args: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), anyhow::Error> {
     if let Some(args) = args.map(str::trim).filter(|value| !value.is_empty()) {
-        return Err(format!(
+        return Err(anyhow::anyhow!(
             "{command_name} does not accept arguments. Received: {args}\nUsage: {command_name}"
-        )
-        .into());
+        ));
     }
     Ok(())
 }
@@ -5438,26 +5442,26 @@ fn format_issue_report(context: Option<&str>) -> String {
     )
 }
 
-fn git_output(args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+fn git_output(args: &[&str]) -> Result<String, anyhow::Error> {
     let output = Command::new("git")
         .args(args)
         .current_dir(env::current_dir()?)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("git {} failed: {stderr}", args.join(" ")).into());
+        return Err(anyhow::anyhow!("git {} failed: {stderr}", args.join(" ")));
     }
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn git_status_ok(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+fn git_status_ok(args: &[&str]) -> Result<(), anyhow::Error> {
     let output = Command::new("git")
         .args(args)
         .current_dir(env::current_dir()?)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("git {} failed: {stderr}", args.join(" ")).into());
+        return Err(anyhow::anyhow!("git {} failed: {stderr}", args.join(" ")));
     }
     Ok(())
 }
@@ -5473,7 +5477,7 @@ fn command_exists(name: &str) -> bool {
 fn write_temp_text_file(
     filename: &str,
     contents: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<PathBuf, anyhow::Error> {
     let path = env::temp_dir().join(filename);
     fs::write(&path, contents)?;
     Ok(path)
@@ -5610,7 +5614,7 @@ fn default_export_filename(session: &Session) -> String {
 fn resolve_export_path(
     requested_path: Option<&str>,
     session: &Session,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<PathBuf, anyhow::Error> {
     let cwd = env::current_dir()?;
     let file_name =
         requested_path.map_or_else(|| default_export_filename(session), ToOwned::to_owned);
@@ -5625,7 +5629,7 @@ fn resolve_export_path(
     Ok(cwd.join(final_name))
 }
 
-fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn build_system_prompt(skip_instruction_files: bool) -> Result<Vec<String>, anyhow::Error> {
     let mut sections = load_system_prompt(
         env::current_dir()?,
         DEFAULT_DATE,
@@ -5693,7 +5697,7 @@ fn load_seed_rules(
     compiled
 }
 
-fn build_runtime_plugin_state() -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
+fn build_runtime_plugin_state() -> Result<RuntimePluginState, anyhow::Error> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
     let runtime_config = loader.load()?;
@@ -5704,7 +5708,7 @@ fn build_runtime_plugin_state_with_loader(
     cwd: &Path,
     loader: &ConfigLoader,
     runtime_config: &elai_orchestrator::RuntimeConfig,
-) -> Result<RuntimePluginState, Box<dyn std::error::Error>> {
+) -> Result<RuntimePluginState, anyhow::Error> {
     let plugin_manager = build_plugin_manager(cwd, loader, runtime_config);
     let plugin_registry = plugin_manager.plugin_registry()?;
     let plugin_hook_config =
@@ -5714,8 +5718,10 @@ fn build_runtime_plugin_state_with_loader(
         .clone()
         .with_hooks(runtime_config.hooks().merged(&plugin_hook_config));
     let (mcp_state, runtime_tools) = build_runtime_mcp_state(runtime_config)?;
-    let tool_registry = GlobalToolRegistry::with_plugin_tools(plugin_registry.aggregated_tools()?)?
-        .with_runtime_tools(runtime_tools)?;
+    let tool_registry = GlobalToolRegistry::with_plugin_tools(plugin_registry.aggregated_tools()?)
+        .map_err(|e| anyhow::anyhow!(e))?
+        .with_runtime_tools(runtime_tools)
+        .map_err(|e| anyhow::anyhow!(e))?;
     Ok(RuntimePluginState {
         feature_config,
         tool_registry,
@@ -6113,7 +6119,7 @@ fn build_runtime(
     backend_config: Option<&BackendConfig>,
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
     phase_slot_tokens: usize,
-) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
+) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), anyhow::Error> {
     let runtime_plugin_state = build_runtime_plugin_state()?;
     build_runtime_with_plugin_state(
         session,
@@ -6148,7 +6154,7 @@ fn build_runtime_with_plugin_state(
     backend_config: Option<&BackendConfig>,
     fsm: Option<Arc<elai_orchestrator::Fsm>>,
     phase_slot_tokens: usize,
-) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), Box<dyn std::error::Error>> {
+) -> Result<(BuiltRuntime, Option<elai_orchestrator::Ssb>), anyhow::Error> {
     let RuntimePluginState {
         feature_config,
         tool_registry,
@@ -6192,7 +6198,11 @@ fn build_runtime_with_plugin_state(
         client_builder = client_builder.with_prompt_cache(PromptCache::new(session_id));
     }
 
-    let tokio_runtime = tokio::runtime::Runtime::new()?;
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("elai-worker")
+        .enable_all()
+        .build()?;
 
     // Create Ssb inside tokio runtime context (Ssb::new calls tokio::spawn).
     let ssb = {
@@ -6464,7 +6474,7 @@ struct RuntimeClient {
     phase_slot_tokens: usize,
 }
 
-fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
+fn resolve_cli_auth_source() -> Result<AuthSource, anyhow::Error> {
     Ok(resolve_startup_auth_source(|| {
         let cwd = env::current_dir().map_err(elai_providers::ApiError::from)?;
         let config = ConfigLoader::default_for(&cwd).load().map_err(|error| {
@@ -7851,7 +7861,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn print_help(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn print_help(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let mut buffer = Vec::new();
     print_help_to(&mut buffer)?;
     let message = String::from_utf8(buffer)?;

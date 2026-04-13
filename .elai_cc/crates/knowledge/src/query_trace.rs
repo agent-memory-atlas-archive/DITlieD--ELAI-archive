@@ -119,7 +119,10 @@ impl SessionTraceStats {
 
     /// Record a completed query trace into the session accumulator.
     pub fn record(&self, trace: &QueryTrace) {
-        let mut inner = self.inner.lock().expect("stats lock poisoned");
+        let Ok(mut inner) = self.inner.lock() else {
+            tracing::warn!("stats lock poisoned, skipping trace record");
+            return;
+        };
         inner.query_count += 1;
         for stage in &trace.stages {
             inner
@@ -132,7 +135,13 @@ impl SessionTraceStats {
 
     /// Compute p50/p99 per stage. Call at session end before SSB flush.
     pub fn summarize(&self) -> SessionSummary {
-        let mut inner = self.inner.lock().expect("stats lock poisoned");
+        let Ok(mut inner) = self.inner.lock() else {
+            tracing::warn!("stats lock poisoned, returning empty summary");
+            return SessionSummary {
+                query_count: 0,
+                stage_percentiles: Vec::new(),
+            };
+        };
         let mut percentiles = Vec::new();
         for (stage, samples) in &mut inner.latencies {
             samples.sort_unstable();
@@ -158,7 +167,10 @@ impl SessionTraceStats {
 
     /// Current query count (for testing).
     pub fn query_count(&self) -> usize {
-        self.inner.lock().expect("stats lock poisoned").query_count
+        self.inner
+            .lock()
+            .map(|inner| inner.query_count)
+            .unwrap_or(0)
     }
 }
 
