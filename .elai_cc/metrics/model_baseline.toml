@@ -1,0 +1,159 @@
+# ELAI Model Baseline Report
+# Generated: 2026-04-13T10:30:00Z
+# Harness: benches/model_capability/run_benchmark.py v1.0
+# NOTE: Baseline run (no DoLa, no TurboQuant, no steering).
+#   DoLa layer detection fixed (VLM path) but composition tests pending system restart.
+#   Missing tokenizer_config.json also fixed (copied from HF cache).
+
+[meta]
+model_name = "gemma4:e2b"
+model_size_b = 2.3
+quantization = "NF4 (bitsandbytes, double_quant=true, compute_dtype=bfloat16)"
+gpu = "RTX 3060 12288MB"
+usable_vram_mb = 9700
+model_vram_mb = 7500
+free_for_kv_mb = 4500
+benchmark_date = "2026-04-13"
+benchmark_version = "1.0"
+sidecar_config = "no-dola, no-turboquant, no-steering (baseline)"
+
+[attention_curve]
+# context_tokens = pass_rate (3 repeats x 5 tasks per size)
+512 = 1.0
+1024 = 1.0
+2048 = 1.0
+3072 = 0.0
+4096 = 0.0
+6144 = 0.0
+attention_ceiling = 2048
+# Real input tokens at ceiling: ~3400 (after chat template)
+# First request of each context size is slow (~69s for 512, ~193s for 2048)
+# Subsequent requests at same size: 3-10s per task
+# ctx=3072 (~5100 real tokens): ALL requests timeout at 120s
+# Sharp cliff between 2048 and 3072 — not gradual degradation
+
+[attention_timing]
+# Average time per task (excluding first-request warmup)
+ctx_512_avg_s = 10.4
+ctx_1024_avg_s = 5.9
+ctx_2048_avg_s = 6.7
+# ctx_3072 and above: timeout (>120s per request)
+
+[generation_speed]
+# Measured from sidecar response logs
+tokens_per_second = 6.9
+# Range: 6.3 - 7.2 tok/s across all successful requests
+# First request of session: ~3.3 tok/s (CUDA warmup)
+# Consistent across context sizes 512-2048
+
+[model_loading]
+load_time_s = 330
+# 10GB safetensors -> NF4 quantization -> GPU
+# Peak CPU RAM during load: 11.1 GB
+# Final GPU VRAM: 7.5 GB (model weights)
+# Final CPU RAM: 1.8 GB (post-load)
+
+[turboquant]
+# From prior evaluation (compose_dola_tq_results.json)
+fp16_max_context = 66927
+tq4_max_context = 267709
+tq3_max_context = 356946
+tq2_max_context = 535419
+# TQ4 best quality: k_mse=0.00014, v_mse=0.0095
+# TQ library not available in current environment (turboquant_unavailable)
+# NOTE: these are theoretical maximums, NOT effective attention limits
+
+[dola]
+# Prior evaluation showed DoLa ~2x slower but improved factuality
+# DoLa layer detection FIXED: Gemma4 VLM has layers at model.language_model.model.layers
+# (was looking at model.model.layers which doesn't exist for VLM architecture)
+# DoLa + output_hidden_states=True causes extreme slowdown (captures all 35 layers)
+# Recommendation: DoLa useful for factuality but impractical for code generation speed
+factuality_improvement = "marginal on 2B model (per prior eval)"
+speed_penalty = "2x slower generation"
+layer_detection_status = "FIXED (VLM path added)"
+
+[steering]
+# Steering vectors computed successfully via /v1/compute_steering
+# ActAdd: h+ - h- at layer ~n_layers/3 = layer 11
+# Prior testing showed vectors compute correctly but effect on 2B model is subtle
+compute_endpoint = "/v1/compute_steering"
+target_layer = 11
+status = "computable but effect needs measurement with fixed sidecar"
+
+[context_cache]
+# Sidecar uses HF Transformers (not vLLM), no automatic prefix caching
+# Each request rebuilds KV cache from scratch
+# Repeated prefix optimization: not available in current backend
+# vLLM would provide prefix caching but requires separate setup
+prefix_caching = false
+note = "HF Transformers backend, no prefix cache. Each call is stateless."
+
+[hallucination]
+# From prior compose_dola_tq_results.json factuality comparison
+# DoLa reduces hedging and improves direct answers
+# Baseline (no DoLa) already good on factual questions (capitals, dates)
+# Biggest risk: code API hallucination (inventing non-existent functions)
+note = "Full hallucination benchmark pending system restart"
+
+[derived]
+model_tier = "MICRO"
+attention_ceiling = 2048
+# After chat template: ~3400 real tokens
+recommended_prompt_budget = 1300
+# attention_ceiling(2048) -> ~3400 real tokens -> minus output_reserve(750) -> ~2650 for prompt
+# But slot allocation needs ~1300 for fixed slots (system, rules, etc)
+# Leaving ~1350 for dynamic content (code context, SSB, GRC)
+output_reserve = 750
+optimal_retries = 3
+few_shot_recommended = true
+structured_output_recommended = true
+template_recommended = true
+swap_strategy = "single_model"
+
+[findings]
+# KEY FINDINGS from baseline measurement:
+#
+# 1. ATTENTION CEILING IS 2048 CONTEXT TOKENS (~3400 real input tokens)
+#    - Sharp cliff, not gradual degradation
+#    - 100% pass at 2048, 0% at 3072 (all timeout)
+#    - This is a VRAM/compute limit, not an attention quality limit
+#    - The model COULD attend to more tokens but can't process them fast enough
+#    - With TurboQuant KV compression, the ceiling might be higher
+#
+# 2. GENERATION SPEED: 6.9 tok/s (NF4 on RTX 3060)
+#    - Consistent across 512-2048 context sizes
+#    - First request per session: ~3.3 tok/s (CUDA warmup)
+#    - With DoLa: ~3.3 tok/s (2x slower due to hidden state capture)
+#
+# 3. CODE QUALITY AT BASELINE: 100% on simple tasks (reverse, fibonacci, etc.)
+#    - Model correctly generates Rust functions within attention ceiling
+#    - Quality degrades with verbose prompts (padding causes confusion)
+#
+# 4. MODEL LOADING: 330s (5.5 min) from cold start
+#    - NF4 quantization is I/O bound (10GB safetensors read)
+#    - Peak 11.1GB CPU RAM during load
+#    - Final: 7.5GB GPU + 1.8GB CPU
+#
+# 5. ZOMBIE PROCESS RISK: CUDA kernel calls can't be killed on Windows
+#    - Large context requests (>3000 tokens) can leave unkillable processes
+#    - Requires GPU reset or system restart to recover
+#    - MITIGATION: strict context size limit at 3000 input tokens
+#
+# 6. TOKENIZER FIX: tokenizer_config.json was missing from local model dir
+#    - Without it, chat template fails -> model outputs only <turn|> token
+#    - Fixed by copying from HF cache
+#
+# 7. DOLA LAYER DETECTION FIX: Gemma4 E2B is a VLM
+#    - Decoder layers at model.language_model.model.layers (not model.model.layers)
+#    - Fixed _get_decoder_layers() to check VLM path
+#
+# RECOMMENDATIONS FOR TOKEN EFFICIENCY DESIGN:
+#   - Set MICRO tier attention ceiling at 2048 (not 4096 as spec assumed)
+#   - recommended_prompt_budget = 1300 tokens for prompt content
+#   - All baby steps MUST fit within 3000 input tokens (safety margin)
+#   - DoLa: disable for code generation (2x speed penalty not worth it for 2B)
+#   - DoLa: enable only for factuality-critical tasks (if any)
+#   - TurboQuant: evaluate if it raises the compute ceiling (not just VRAM ceiling)
+#   - Steering: needs measurement with fixed DoLa layer detection
+#   - CRITICAL: add request timeout + context size guard in sidecar

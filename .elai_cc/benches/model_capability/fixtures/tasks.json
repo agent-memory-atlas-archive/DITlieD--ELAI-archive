@@ -1,0 +1,796 @@
+[
+  {
+    "id": "task_01", "category": "string", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that reverses a string.",
+    "signature": "fn reverse(s: &str) -> String",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"hello\"", "expected": "\"olleh\""},
+      {"input": "\"\"", "expected": "\"\""},
+      {"input": "\"a\"", "expected": "\"a\""}
+    ],
+    "few_shot_example": {
+      "description": "Convert string to uppercase",
+      "signature": "fn to_upper(s: &str) -> String",
+      "solution": "fn to_upper(s: &str) -> String { s.to_uppercase() }"
+    },
+    "template": "fn reverse(s: &str) -> String {\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_02", "category": "numeric", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that computes the nth Fibonacci number (0-indexed).",
+    "signature": "fn fibonacci(n: u32) -> u64",
+    "file_context": "",
+    "test_cases": [
+      {"input": "0", "expected": "0"},
+      {"input": "1", "expected": "1"},
+      {"input": "10", "expected": "55"},
+      {"input": "20", "expected": "6765"}
+    ],
+    "few_shot_example": {
+      "description": "Compute factorial",
+      "signature": "fn factorial(n: u32) -> u64",
+      "solution": "fn factorial(n: u32) -> u64 { (1..=n as u64).product() }"
+    },
+    "template": "fn fibonacci(n: u32) -> u64 {\n    if n <= 1 { return n as u64; }\n    let (mut a, mut b) = (0u64, 1u64);\n    for _ in 2..=n {\n        ___BLANK_1___\n    }\n    b\n}"
+  },
+  {
+    "id": "task_03", "category": "string", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that checks if a string is a palindrome (case-insensitive).",
+    "signature": "fn is_palindrome(s: &str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"racecar\"", "expected": "true"},
+      {"input": "\"hello\"", "expected": "false"},
+      {"input": "\"Madam\"", "expected": "true"},
+      {"input": "\"\"", "expected": "true"}
+    ],
+    "few_shot_example": {
+      "description": "Check if string contains only digits",
+      "signature": "fn is_numeric(s: &str) -> bool",
+      "solution": "fn is_numeric(s: &str) -> bool { !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) }"
+    },
+    "template": "fn is_palindrome(s: &str) -> bool {\n    let lower = s.to_lowercase();\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_04", "category": "data_structure", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that returns the maximum element in a slice, or None if empty.",
+    "signature": "fn max_element(v: &[i32]) -> Option<i32>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[3, 1, 4, 1, 5]", "expected": "Some(5)"},
+      {"input": "&[]", "expected": "None"},
+      {"input": "&[-1, -5, -2]", "expected": "Some(-1)"}
+    ],
+    "few_shot_example": {
+      "description": "Find the minimum element",
+      "signature": "fn min_element(v: &[i32]) -> Option<i32>",
+      "solution": "fn min_element(v: &[i32]) -> Option<i32> { v.iter().copied().min() }"
+    },
+    "template": "fn max_element(v: &[i32]) -> Option<i32> {\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_05", "category": "string", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that counts the number of words in a string (split by whitespace).",
+    "signature": "fn count_words(s: &str) -> usize",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"hello world\"", "expected": "2"},
+      {"input": "\"\"", "expected": "0"},
+      {"input": "\"  spaces  between  words  \"", "expected": "3"},
+      {"input": "\"one\"", "expected": "1"}
+    ],
+    "few_shot_example": {
+      "description": "Count characters in string",
+      "signature": "fn count_chars(s: &str) -> usize",
+      "solution": "fn count_chars(s: &str) -> usize { s.chars().count() }"
+    },
+    "template": "fn count_words(s: &str) -> usize {\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_06", "category": "validation", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that checks if a string is a valid IPv4 address.",
+    "signature": "fn is_valid_ipv4(s: &str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"192.168.1.1\"", "expected": "true"},
+      {"input": "\"256.1.1.1\"", "expected": "false"},
+      {"input": "\"abc.def.ghi.jkl\"", "expected": "false"},
+      {"input": "\"0.0.0.0\"", "expected": "true"},
+      {"input": "\"1.2.3\"", "expected": "false"}
+    ],
+    "few_shot_example": {
+      "description": "Check if string is valid hex color",
+      "signature": "fn is_valid_hex_color(s: &str) -> bool",
+      "solution": "fn is_valid_hex_color(s: &str) -> bool {\n    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())\n}"
+    },
+    "template": "fn is_valid_ipv4(s: &str) -> bool {\n    let parts: Vec<&str> = s.split('.').collect();\n    ___BLANK_1___\n    parts.iter().all(|p| {\n        ___BLANK_2___\n    })\n}"
+  },
+  {
+    "id": "task_07", "category": "numeric", "difficulty": "easy", "language": "rust",
+    "description": "Write a function that checks if a number is prime.",
+    "signature": "fn is_prime(n: u64) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "2", "expected": "true"},
+      {"input": "1", "expected": "false"},
+      {"input": "17", "expected": "true"},
+      {"input": "4", "expected": "false"},
+      {"input": "0", "expected": "false"}
+    ],
+    "few_shot_example": {
+      "description": "Check if number is even",
+      "signature": "fn is_even(n: u64) -> bool",
+      "solution": "fn is_even(n: u64) -> bool { n % 2 == 0 }"
+    },
+    "template": "fn is_prime(n: u64) -> bool {\n    if n < 2 { return false; }\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_08", "category": "string", "difficulty": "easy", "language": "python",
+    "description": "Write a function that counts vowels in a string.",
+    "signature": "def count_vowels(s: str) -> int",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"hello\"", "expected": "2"},
+      {"input": "\"xyz\"", "expected": "0"},
+      {"input": "\"AEIOU\"", "expected": "5"},
+      {"input": "\"\"", "expected": "0"}
+    ],
+    "few_shot_example": {
+      "description": "Count consonants in string",
+      "signature": "def count_consonants(s: str) -> int",
+      "solution": "def count_consonants(s: str) -> int:\n    return sum(1 for c in s.lower() if c.isalpha() and c not in 'aeiou')"
+    },
+    "template": "def count_vowels(s: str) -> int:\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_09", "category": "data_structure", "difficulty": "easy", "language": "python",
+    "description": "Write a function that removes duplicates from a list while preserving order.",
+    "signature": "def unique(lst: list) -> list",
+    "file_context": "",
+    "test_cases": [
+      {"input": "[1, 2, 2, 3, 1]", "expected": "[1, 2, 3]"},
+      {"input": "[]", "expected": "[]"},
+      {"input": "[5, 5, 5]", "expected": "[5]"}
+    ],
+    "few_shot_example": {
+      "description": "Flatten a nested list",
+      "signature": "def flatten(lst: list) -> list",
+      "solution": "def flatten(lst: list) -> list:\n    result = []\n    for item in lst:\n        if isinstance(item, list):\n            result.extend(flatten(item))\n        else:\n            result.append(item)\n    return result"
+    },
+    "template": "def unique(lst: list) -> list:\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_10", "category": "numeric", "difficulty": "easy", "language": "python",
+    "description": "Write a function that computes the GCD of two numbers.",
+    "signature": "def gcd(a: int, b: int) -> int",
+    "file_context": "",
+    "test_cases": [
+      {"input": "12, 8", "expected": "4"},
+      {"input": "7, 13", "expected": "1"},
+      {"input": "0, 5", "expected": "5"},
+      {"input": "100, 75", "expected": "25"}
+    ],
+    "few_shot_example": {
+      "description": "Compute LCM",
+      "signature": "def lcm(a: int, b: int) -> int",
+      "solution": "def lcm(a: int, b: int) -> int:\n    from math import gcd\n    return abs(a * b) // gcd(a, b) if a and b else 0"
+    },
+    "template": "def gcd(a: int, b: int) -> int:\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_11", "category": "string", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that converts a string to title case (first letter of each word uppercase, rest lowercase).",
+    "signature": "fn title_case(s: &str) -> String",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"hello world\"", "expected": "\"Hello World\""},
+      {"input": "\"RUST PROGRAMMING\"", "expected": "\"Rust Programming\""},
+      {"input": "\"\"", "expected": "\"\""},
+      {"input": "\"a\"", "expected": "\"A\""}
+    ],
+    "few_shot_example": {
+      "description": "Convert camelCase to snake_case",
+      "signature": "fn camel_to_snake(s: &str) -> String",
+      "solution": "fn camel_to_snake(s: &str) -> String {\n    let mut result = String::new();\n    for (i, c) in s.chars().enumerate() {\n        if c.is_uppercase() && i > 0 { result.push('_'); }\n        result.push(c.to_lowercase().next().unwrap());\n    }\n    result\n}"
+    },
+    "template": "fn title_case(s: &str) -> String {\n    s.split_whitespace()\n        .map(|word| {\n            ___BLANK_1___\n        })\n        .collect::<Vec<_>>()\n        .join(\" \")\n}"
+  },
+  {
+    "id": "task_12", "category": "data_structure", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that merges two sorted slices into a single sorted Vec.",
+    "signature": "fn merge_sorted(a: &[i32], b: &[i32]) -> Vec<i32>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[1, 3, 5], &[2, 4, 6]", "expected": "vec![1, 2, 3, 4, 5, 6]"},
+      {"input": "&[], &[1, 2]", "expected": "vec![1, 2]"},
+      {"input": "&[1], &[]", "expected": "vec![1]"}
+    ],
+    "few_shot_example": {
+      "description": "Intersection of two sorted slices",
+      "signature": "fn intersect_sorted(a: &[i32], b: &[i32]) -> Vec<i32>",
+      "solution": "fn intersect_sorted(a: &[i32], b: &[i32]) -> Vec<i32> {\n    let (mut i, mut j) = (0, 0);\n    let mut result = Vec::new();\n    while i < a.len() && j < b.len() {\n        match a[i].cmp(&b[j]) {\n            std::cmp::Ordering::Less => i += 1,\n            std::cmp::Ordering::Greater => j += 1,\n            std::cmp::Ordering::Equal => { result.push(a[i]); i += 1; j += 1; }\n        }\n    }\n    result\n}"
+    },
+    "template": "fn merge_sorted(a: &[i32], b: &[i32]) -> Vec<i32> {\n    let mut result = Vec::with_capacity(a.len() + b.len());\n    let (mut i, mut j) = (0, 0);\n    ___BLANK_1___\n    result\n}"
+  },
+  {
+    "id": "task_13", "category": "algorithm", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that performs binary search on a sorted slice, returning the index or None.",
+    "signature": "fn binary_search(arr: &[i32], target: i32) -> Option<usize>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[1, 3, 5, 7, 9], 5", "expected": "Some(2)"},
+      {"input": "&[1, 3, 5, 7, 9], 4", "expected": "None"},
+      {"input": "&[], 1", "expected": "None"},
+      {"input": "&[42], 42", "expected": "Some(0)"}
+    ],
+    "few_shot_example": {
+      "description": "Linear search",
+      "signature": "fn linear_search(arr: &[i32], target: i32) -> Option<usize>",
+      "solution": "fn linear_search(arr: &[i32], target: i32) -> Option<usize> {\n    arr.iter().position(|&x| x == target)\n}"
+    },
+    "template": "fn binary_search(arr: &[i32], target: i32) -> Option<usize> {\n    let (mut lo, mut hi) = (0, arr.len());\n    while lo < hi {\n        ___BLANK_1___\n    }\n    None\n}"
+  },
+  {
+    "id": "task_14", "category": "string", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that compresses a string using run-length encoding (e.g., 'aaabbc' -> 'a3b2c1').",
+    "signature": "fn rle_encode(s: &str) -> String",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"aaabbc\"", "expected": "\"a3b2c1\""},
+      {"input": "\"\"", "expected": "\"\""},
+      {"input": "\"abc\"", "expected": "\"a1b1c1\""},
+      {"input": "\"aaaa\"", "expected": "\"a4\""}
+    ],
+    "few_shot_example": {
+      "description": "Decode RLE",
+      "signature": "fn rle_decode(s: &str) -> String",
+      "solution": "fn rle_decode(s: &str) -> String {\n    let mut result = String::new();\n    let chars: Vec<char> = s.chars().collect();\n    let mut i = 0;\n    while i < chars.len() {\n        let ch = chars[i];\n        i += 1;\n        let mut n = String::new();\n        while i < chars.len() && chars[i].is_ascii_digit() { n.push(chars[i]); i += 1; }\n        let count: usize = n.parse().unwrap_or(1);\n        for _ in 0..count { result.push(ch); }\n    }\n    result\n}"
+    },
+    "template": "fn rle_encode(s: &str) -> String {\n    if s.is_empty() { return String::new(); }\n    let mut result = String::new();\n    let mut chars = s.chars();\n    let mut current = chars.next().unwrap();\n    let mut count = 1;\n    ___BLANK_1___\n    result\n}"
+  },
+  {
+    "id": "task_15", "category": "numeric", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that converts a Roman numeral string to an integer.",
+    "signature": "fn roman_to_int(s: &str) -> i32",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"III\"", "expected": "3"},
+      {"input": "\"IV\"", "expected": "4"},
+      {"input": "\"IX\"", "expected": "9"},
+      {"input": "\"XLII\"", "expected": "42"},
+      {"input": "\"MCMXCIV\"", "expected": "1994"}
+    ],
+    "few_shot_example": {
+      "description": "Convert integer to Roman numeral",
+      "signature": "fn int_to_roman(n: i32) -> String",
+      "solution": "fn int_to_roman(mut n: i32) -> String {\n    let vals = [(1000,\"M\"),(900,\"CM\"),(500,\"D\"),(400,\"CD\"),(100,\"C\"),(90,\"XC\"),(50,\"L\"),(40,\"XL\"),(10,\"X\"),(9,\"IX\"),(5,\"V\"),(4,\"IV\"),(1,\"I\")];\n    let mut s = String::new();\n    for (v, r) in vals { while n >= v { s.push_str(r); n -= v; } }\n    s\n}"
+    },
+    "template": "fn roman_to_int(s: &str) -> i32 {\n    let value = |c| match c {\n        'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50,\n        'C' => 100, 'D' => 500, 'M' => 1000, _ => 0,\n    };\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_16", "category": "data_structure", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that rotates a vector left by k positions.",
+    "signature": "fn rotate_left(v: &[i32], k: usize) -> Vec<i32>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[1, 2, 3, 4, 5], 2", "expected": "vec![3, 4, 5, 1, 2]"},
+      {"input": "&[1, 2, 3], 0", "expected": "vec![1, 2, 3]"},
+      {"input": "&[], 3", "expected": "vec![]"},
+      {"input": "&[1, 2], 5", "expected": "vec![2, 1]"}
+    ],
+    "few_shot_example": {
+      "description": "Rotate right by k",
+      "signature": "fn rotate_right(v: &[i32], k: usize) -> Vec<i32>",
+      "solution": "fn rotate_right(v: &[i32], k: usize) -> Vec<i32> {\n    if v.is_empty() { return vec![]; }\n    let k = k % v.len();\n    let mut r = Vec::with_capacity(v.len());\n    r.extend_from_slice(&v[v.len()-k..]);\n    r.extend_from_slice(&v[..v.len()-k]);\n    r\n}"
+    },
+    "template": "fn rotate_left(v: &[i32], k: usize) -> Vec<i32> {\n    if v.is_empty() { return vec![]; }\n    let k = k % v.len();\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_17", "category": "validation", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that validates balanced parentheses (supports (), [], {}).",
+    "signature": "fn is_balanced(s: &str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"()[]{}\"", "expected": "true"},
+      {"input": "\"([)]\"", "expected": "false"},
+      {"input": "\"{[]}\"", "expected": "true"},
+      {"input": "\"\"", "expected": "true"},
+      {"input": "\"(\"", "expected": "false"}
+    ],
+    "few_shot_example": {
+      "description": "Count depth of nested parens",
+      "signature": "fn max_depth(s: &str) -> usize",
+      "solution": "fn max_depth(s: &str) -> usize {\n    let (mut depth, mut max) = (0usize, 0usize);\n    for c in s.chars() {\n        if c == '(' { depth += 1; max = max.max(depth); }\n        else if c == ')' { depth = depth.saturating_sub(1); }\n    }\n    max\n}"
+    },
+    "template": "fn is_balanced(s: &str) -> bool {\n    let mut stack = Vec::new();\n    for c in s.chars() {\n        match c {\n            '(' | '[' | '{' => stack.push(c),\n            ___BLANK_1___\n            _ => {}\n        }\n    }\n    stack.is_empty()\n}"
+  },
+  {
+    "id": "task_18", "category": "algorithm", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that generates all permutations of a vector of integers.",
+    "signature": "fn permutations(nums: &[i32]) -> Vec<Vec<i32>>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[1, 2]", "expected_len": "2"},
+      {"input": "&[1, 2, 3]", "expected_len": "6"},
+      {"input": "&[]", "expected_len": "1"},
+      {"input": "&[1]", "expected_len": "1"}
+    ],
+    "few_shot_example": {
+      "description": "Generate combinations of k elements",
+      "signature": "fn combinations(n: usize, k: usize) -> Vec<Vec<usize>>",
+      "solution": "fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {\n    if k == 0 { return vec![vec![]]; }\n    if n < k { return vec![]; }\n    let mut with = combinations(n-1, k-1);\n    for c in &mut with { c.push(n); }\n    let without = combinations(n-1, k);\n    with.extend(without);\n    with\n}"
+    },
+    "template": null
+  },
+  {
+    "id": "task_19", "category": "string", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that finds the longest common prefix of a list of strings.",
+    "signature": "fn longest_common_prefix(strs: &[&str]) -> String",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[\"flower\", \"flow\", \"flight\"]", "expected": "\"fl\""},
+      {"input": "&[\"dog\", \"racecar\", \"car\"]", "expected": "\"\""},
+      {"input": "&[\"abc\"]", "expected": "\"abc\""},
+      {"input": "&[]", "expected": "\"\""}
+    ],
+    "few_shot_example": {
+      "description": "Find longest common suffix",
+      "signature": "fn longest_common_suffix(strs: &[&str]) -> String",
+      "solution": "fn longest_common_suffix(strs: &[&str]) -> String {\n    if strs.is_empty() { return String::new(); }\n    let reversed: Vec<String> = strs.iter().map(|s| s.chars().rev().collect()).collect();\n    let refs: Vec<&str> = reversed.iter().map(|s| s.as_str()).collect();\n    longest_common_prefix(&refs).chars().rev().collect()\n}"
+    },
+    "template": "fn longest_common_prefix(strs: &[&str]) -> String {\n    if strs.is_empty() { return String::new(); }\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_20", "category": "algorithm", "difficulty": "medium", "language": "rust",
+    "description": "Write a function that flattens a nested Vec<Vec<i32>> into a Vec<i32>.",
+    "signature": "fn flatten(nested: &[Vec<i32>]) -> Vec<i32>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[vec![1,2], vec![3,4], vec![5]]", "expected": "vec![1,2,3,4,5]"},
+      {"input": "&[]", "expected": "vec![]"},
+      {"input": "&[vec![], vec![1]]", "expected": "vec![1]"}
+    ],
+    "few_shot_example": {
+      "description": "Chunk a vec into groups of n",
+      "signature": "fn chunk(v: &[i32], n: usize) -> Vec<Vec<i32>>",
+      "solution": "fn chunk(v: &[i32], n: usize) -> Vec<Vec<i32>> {\n    v.chunks(n).map(|c| c.to_vec()).collect()\n}"
+    },
+    "template": "fn flatten(nested: &[Vec<i32>]) -> Vec<i32> {\n    ___BLANK_1___\n}"
+  },
+  {
+    "id": "task_21", "category": "string", "difficulty": "medium", "language": "python",
+    "description": "Write a function that groups anagrams together from a list of strings.",
+    "signature": "def group_anagrams(strs: list[str]) -> list[list[str]]",
+    "file_context": "",
+    "test_cases": [
+      {"input": "[\"eat\", \"tea\", \"tan\", \"ate\", \"nat\", \"bat\"]", "expected_groups": 3},
+      {"input": "[\"\"]", "expected_groups": 1},
+      {"input": "[]", "expected_groups": 0}
+    ],
+    "few_shot_example": {
+      "description": "Group strings by length",
+      "signature": "def group_by_length(strs: list[str]) -> dict[int, list[str]]",
+      "solution": "def group_by_length(strs: list[str]) -> dict[int, list[str]]:\n    groups = {}\n    for s in strs:\n        groups.setdefault(len(s), []).append(s)\n    return groups"
+    },
+    "template": null
+  },
+  {
+    "id": "task_22", "category": "numeric", "difficulty": "medium", "language": "python",
+    "description": "Write a function that converts an integer to its binary string representation.",
+    "signature": "def to_binary(n: int) -> str",
+    "file_context": "",
+    "test_cases": [
+      {"input": "10", "expected": "\"1010\""},
+      {"input": "0", "expected": "\"0\""},
+      {"input": "1", "expected": "\"1\""},
+      {"input": "255", "expected": "\"11111111\""}
+    ],
+    "few_shot_example": {
+      "description": "Convert binary string to integer",
+      "signature": "def from_binary(s: str) -> int",
+      "solution": "def from_binary(s: str) -> int:\n    return int(s, 2)"
+    },
+    "template": "def to_binary(n: int) -> str:\n    if n == 0: return \"0\"\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_23", "category": "data_structure", "difficulty": "medium", "language": "python",
+    "description": "Write a function that finds the two numbers in a list that add up to a target.",
+    "signature": "def two_sum(nums: list[int], target: int) -> tuple[int, int] | None",
+    "file_context": "",
+    "test_cases": [
+      {"input": "[2, 7, 11, 15], 9", "expected": "(0, 1)"},
+      {"input": "[3, 2, 4], 6", "expected": "(1, 2)"},
+      {"input": "[1, 2, 3], 10", "expected": "None"}
+    ],
+    "few_shot_example": {
+      "description": "Find three numbers that sum to zero",
+      "signature": "def three_sum(nums: list[int]) -> list[list[int]]",
+      "solution": "def three_sum(nums: list[int]) -> list[list[int]]:\n    nums.sort()\n    result = []\n    for i in range(len(nums)-2):\n        if i > 0 and nums[i] == nums[i-1]: continue\n        lo, hi = i+1, len(nums)-1\n        while lo < hi:\n            s = nums[i]+nums[lo]+nums[hi]\n            if s == 0: result.append([nums[i],nums[lo],nums[hi]]); lo+=1; hi-=1\n            elif s < 0: lo+=1\n            else: hi-=1\n    return result"
+    },
+    "template": "def two_sum(nums: list[int], target: int) -> tuple[int, int] | None:\n    seen = {}\n    ___BLANK_1___\n    return None"
+  },
+  {
+    "id": "task_24", "category": "algorithm", "difficulty": "medium", "language": "python",
+    "description": "Write a function that checks if a number is a power of two.",
+    "signature": "def is_power_of_two(n: int) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "1", "expected": "True"},
+      {"input": "16", "expected": "True"},
+      {"input": "3", "expected": "False"},
+      {"input": "0", "expected": "False"},
+      {"input": "1024", "expected": "True"}
+    ],
+    "few_shot_example": {
+      "description": "Find the next power of two",
+      "signature": "def next_power_of_two(n: int) -> int",
+      "solution": "def next_power_of_two(n: int) -> int:\n    if n <= 0: return 1\n    n -= 1\n    n |= n >> 1; n |= n >> 2; n |= n >> 4; n |= n >> 8; n |= n >> 16\n    return n + 1"
+    },
+    "template": "def is_power_of_two(n: int) -> bool:\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_25", "category": "string", "difficulty": "medium", "language": "python",
+    "description": "Write a function that extracts all integers from a string.",
+    "signature": "def extract_ints(s: str) -> list[int]",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"abc123def456\"", "expected": "[123, 456]"},
+      {"input": "\"no numbers\"", "expected": "[]"},
+      {"input": "\"42\"", "expected": "[42]"},
+      {"input": "\"a1b2c3\"", "expected": "[1, 2, 3]"}
+    ],
+    "few_shot_example": {
+      "description": "Extract all words from string",
+      "signature": "def extract_words(s: str) -> list[str]",
+      "solution": "def extract_words(s: str) -> list[str]:\n    import re\n    return re.findall(r'[a-zA-Z]+', s)"
+    },
+    "template": "def extract_ints(s: str) -> list[int]:\n    import re\n    ___BLANK_1___"
+  },
+  {
+    "id": "task_26", "category": "validation", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that validates an email address (simplified: local@domain.tld format).",
+    "signature": "fn is_valid_email(email: &str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"user@example.com\"", "expected": "true"},
+      {"input": "\"@example.com\"", "expected": "false"},
+      {"input": "\"user@\"", "expected": "false"},
+      {"input": "\"user@exam ple.com\"", "expected": "false"},
+      {"input": "\"user@sub.domain.com\"", "expected": "true"},
+      {"input": "\"\"", "expected": "false"}
+    ],
+    "few_shot_example": {
+      "description": "Validate URL format",
+      "signature": "fn is_valid_url(url: &str) -> bool",
+      "solution": "fn is_valid_url(url: &str) -> bool {\n    let url = url.trim();\n    if !url.starts_with(\"http://\") && !url.starts_with(\"https://\") { return false; }\n    let rest = url.split(\"://\").nth(1).unwrap_or(\"\");\n    !rest.is_empty() && rest.contains('.') && !rest.contains(' ')\n}"
+    },
+    "template": null
+  },
+  {
+    "id": "task_27", "category": "algorithm", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that finds the longest increasing subsequence length.",
+    "signature": "fn lis_length(nums: &[i32]) -> usize",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[10, 9, 2, 5, 3, 7, 101, 18]", "expected": "4"},
+      {"input": "&[0, 1, 0, 3, 2, 3]", "expected": "4"},
+      {"input": "&[7, 7, 7, 7]", "expected": "1"},
+      {"input": "&[]", "expected": "0"}
+    ],
+    "few_shot_example": {
+      "description": "Find longest decreasing subsequence",
+      "signature": "fn lds_length(nums: &[i32]) -> usize",
+      "solution": "fn lds_length(nums: &[i32]) -> usize {\n    let reversed: Vec<i32> = nums.iter().rev().copied().collect();\n    lis_length(&reversed)\n}"
+    },
+    "template": null
+  },
+  {
+    "id": "task_28", "category": "data_structure", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that implements a simple LRU cache get and put. Return a Vec of get results.",
+    "signature": "fn lru_simulation(capacity: usize, ops: &[(char, i32, i32)]) -> Vec<i32>",
+    "file_context": "// ops are ('g', key, 0) for get or ('p', key, value) for put\n// get returns -1 if not found\n// Return all get results in order",
+    "test_cases": [
+      {"input": "2, &[('p',1,1),('p',2,2),('g',1,0),('p',3,3),('g',2,0)]", "expected": "vec![1, -1]"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_29", "category": "string", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that evaluates a simple math expression string with +, -, *, / and integers.",
+    "signature": "fn eval_expr(expr: &str) -> f64",
+    "file_context": "// Only +, -, *, / with integers. No parentheses. Follow standard precedence.",
+    "test_cases": [
+      {"input": "\"3+5\"", "expected_approx": "8.0"},
+      {"input": "\"10+2*6\"", "expected_approx": "22.0"},
+      {"input": "\"100*2+12\"", "expected_approx": "212.0"},
+      {"input": "\"5/2\"", "expected_approx": "2.5"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_30", "category": "algorithm", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that finds the maximum sum subarray (Kadane's algorithm).",
+    "signature": "fn max_subarray_sum(nums: &[i32]) -> i32",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&[-2,1,-3,4,-1,2,1,-5,4]", "expected": "6"},
+      {"input": "&[1]", "expected": "1"},
+      {"input": "&[-1,-2,-3]", "expected": "-1"},
+      {"input": "&[5,4,-1,7,8]", "expected": "23"}
+    ],
+    "few_shot_example": {
+      "description": "Find minimum subarray sum",
+      "signature": "fn min_subarray_sum(nums: &[i32]) -> i32",
+      "solution": "fn min_subarray_sum(nums: &[i32]) -> i32 {\n    let mut min_sum = nums[0];\n    let mut current = nums[0];\n    for &n in &nums[1..] {\n        current = n.min(current + n);\n        min_sum = min_sum.min(current);\n    }\n    min_sum\n}"
+    },
+    "template": "fn max_subarray_sum(nums: &[i32]) -> i32 {\n    let mut max_sum = nums[0];\n    let mut current = nums[0];\n    for &n in &nums[1..] {\n        ___BLANK_1___\n    }\n    max_sum\n}"
+  },
+  {
+    "id": "task_31", "category": "data_structure", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that finds the kth largest element in an unsorted array.",
+    "signature": "fn kth_largest(nums: &mut [i32], k: usize) -> i32",
+    "file_context": "",
+    "test_cases": [
+      {"input": "&mut [3,2,1,5,6,4], 2", "expected": "5"},
+      {"input": "&mut [3,2,3,1,2,4,5,5,6], 4", "expected": "4"},
+      {"input": "&mut [1], 1", "expected": "1"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_32", "category": "string", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that finds the first non-repeating character in a string, returning its index or None.",
+    "signature": "fn first_unique_char(s: &str) -> Option<usize>",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"leetcode\"", "expected": "Some(0)"},
+      {"input": "\"loveleetcode\"", "expected": "Some(2)"},
+      {"input": "\"aabb\"", "expected": "None"},
+      {"input": "\"\"", "expected": "None"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_33", "category": "validation", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that validates a Luhn checksum (credit card validation).",
+    "signature": "fn luhn_check(number: &str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"4539578763621486\"", "expected": "true"},
+      {"input": "\"1234567890123456\"", "expected": "false"},
+      {"input": "\"0\"", "expected": "true"},
+      {"input": "\"\"", "expected": "false"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_34", "category": "algorithm", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that computes the edit distance (Levenshtein) between two strings.",
+    "signature": "fn edit_distance(a: &str, b: &str) -> usize",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"kitten\", \"sitting\"", "expected": "3"},
+      {"input": "\"\", \"abc\"", "expected": "3"},
+      {"input": "\"abc\", \"abc\"", "expected": "0"},
+      {"input": "\"abc\", \"\"", "expected": "3"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_35", "category": "data_structure", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that serializes a binary tree to a string and back. Return the deserialized root's value.",
+    "signature": "fn serialize_deserialize_root(values: &[Option<i32>]) -> Option<i32>",
+    "file_context": "// Input is level-order: [Some(1), Some(2), Some(3), None, None, Some(4)]\n// Serialize to string, deserialize back, return root value.",
+    "test_cases": [
+      {"input": "&[Some(1), Some(2), Some(3)]", "expected": "Some(1)"},
+      {"input": "&[]", "expected": "None"},
+      {"input": "&[Some(42)]", "expected": "Some(42)"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_36", "category": "numeric", "difficulty": "hard", "language": "rust",
+    "description": "Write a function that converts a number to its English word representation (0-999).",
+    "signature": "fn number_to_words(n: u32) -> String",
+    "file_context": "",
+    "test_cases": [
+      {"input": "0", "expected": "\"zero\""},
+      {"input": "15", "expected": "\"fifteen\""},
+      {"input": "100", "expected": "\"one hundred\""},
+      {"input": "999", "expected": "\"nine hundred ninety nine\""}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_37", "category": "algorithm", "difficulty": "hard", "language": "python",
+    "description": "Write a function that finds the median of two sorted arrays in O(log(m+n)).",
+    "signature": "def find_median(nums1: list[int], nums2: list[int]) -> float",
+    "file_context": "",
+    "test_cases": [
+      {"input": "[1, 3], [2]", "expected": "2.0"},
+      {"input": "[1, 2], [3, 4]", "expected": "2.5"},
+      {"input": "[], [1]", "expected": "1.0"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_38", "category": "data_structure", "difficulty": "hard", "language": "python",
+    "description": "Write a function that detects if a linked list (as a list of next-indices) has a cycle.",
+    "signature": "def has_cycle(next_indices: list[int]) -> bool",
+    "file_context": "# next_indices[i] is the index of the next node, -1 means end",
+    "test_cases": [
+      {"input": "[1, 2, 0]", "expected": "True"},
+      {"input": "[1, 2, -1]", "expected": "False"},
+      {"input": "[]", "expected": "False"},
+      {"input": "[0]", "expected": "True"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_39", "category": "string", "difficulty": "hard", "language": "python",
+    "description": "Write a function that implements wildcard pattern matching (* matches any sequence, ? matches one char).",
+    "signature": "def wildcard_match(pattern: str, text: str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"h*o\", \"hello\"", "expected": "True"},
+      {"input": "\"h?llo\", \"hello\"", "expected": "True"},
+      {"input": "\"h*o\", \"help\"", "expected": "False"},
+      {"input": "\"*\", \"anything\"", "expected": "True"},
+      {"input": "\"\", \"\"", "expected": "True"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_40", "category": "algorithm", "difficulty": "hard", "language": "python",
+    "description": "Write a function that computes the longest palindromic substring.",
+    "signature": "def longest_palindrome(s: str) -> str",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"babad\"", "expected_in": ["\"bab\"", "\"aba\""]},
+      {"input": "\"cbbd\"", "expected": "\"bb\""},
+      {"input": "\"a\"", "expected": "\"a\""},
+      {"input": "\"\"", "expected": "\"\""}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_41", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write two functions: one that encodes a string to Base64, and one that decodes it. Only use basic characters (A-Z, a-z, 0-9, +, /, =).",
+    "signature": "fn base64_encode(input: &[u8]) -> String\nfn base64_decode(encoded: &str) -> Vec<u8>",
+    "file_context": "",
+    "test_cases": [
+      {"input_encode": "b\"hello\"", "expected_encode": "\"aGVsbG8=\""},
+      {"input_roundtrip": "b\"test data\"", "expected_roundtrip": "true"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_42", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write a tokenizer and a token counter. The tokenizer splits by whitespace and punctuation. The counter returns a HashMap of word frequencies.",
+    "signature": "fn tokenize(s: &str) -> Vec<String>\nfn word_freq(tokens: &[String]) -> std::collections::HashMap<String, usize>",
+    "file_context": "",
+    "test_cases": [
+      {"input_tokenize": "\"hello, world! hello.\"", "expected_tokens_include": ["hello", "world"]},
+      {"input_freq": "hello hello world", "expected_hello_count": 2}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_43", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write a simple stack with push, pop, and peek, plus a function that uses it to evaluate postfix expressions.",
+    "signature": "fn eval_postfix(expr: &str) -> f64",
+    "file_context": "// Tokens separated by spaces: \"3 4 + 2 *\" = 14.0",
+    "test_cases": [
+      {"input": "\"3 4 +\"", "expected_approx": "7.0"},
+      {"input": "\"3 4 + 2 *\"", "expected_approx": "14.0"},
+      {"input": "\"5 1 2 + 4 * + 3 -\"", "expected_approx": "14.0"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_44", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write a function to parse a simple CSV string (no quotes) and a function to find the max value in a specific column.",
+    "signature": "fn parse_csv(csv: &str) -> Vec<Vec<String>>\nfn max_in_column(rows: &[Vec<String>], col: usize) -> Option<f64>",
+    "file_context": "",
+    "test_cases": [
+      {"input_parse": "\"a,1\\nb,2\\nc,3\"", "expected_rows": 3},
+      {"input_max": "col 1 of above", "expected_max": 3.0}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_45", "category": "multi", "difficulty": "multi", "language": "python",
+    "description": "Write a matrix class with add and multiply operations.",
+    "signature": "class Matrix:\n    def __init__(self, data: list[list[float]])\n    def add(self, other: 'Matrix') -> 'Matrix'\n    def multiply(self, other: 'Matrix') -> 'Matrix'",
+    "file_context": "",
+    "test_cases": [
+      {"input_add": "[[1,2],[3,4]] + [[5,6],[7,8]]", "expected": "[[6,8],[10,12]]"},
+      {"input_mul": "[[1,2],[3,4]] * [[5,6],[7,8]]", "expected": "[[19,22],[43,50]]"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_46", "category": "multi", "difficulty": "multi", "language": "python",
+    "description": "Write an iterator that generates prime numbers, and a function that returns the first n primes.",
+    "signature": "def prime_generator() -> Iterator[int]\ndef first_n_primes(n: int) -> list[int]",
+    "file_context": "",
+    "test_cases": [
+      {"input": "5", "expected": "[2, 3, 5, 7, 11]"},
+      {"input": "1", "expected": "[2]"},
+      {"input": "0", "expected": "[]"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_47", "category": "multi", "difficulty": "multi", "language": "python",
+    "description": "Write a simple calculator that parses and evaluates expressions with +, -, and parentheses.",
+    "signature": "def calc(expr: str) -> int",
+    "file_context": "",
+    "test_cases": [
+      {"input": "\"1 + 1\"", "expected": "2"},
+      {"input": "\" 2-1 + 2 \"", "expected": "3"},
+      {"input": "\"(1+(4+5+2)-3)+(6+8)\"", "expected": "23"}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_48", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write a function to convert between Celsius and Fahrenheit, and a function that formats the result.",
+    "signature": "fn c_to_f(c: f64) -> f64\nfn f_to_c(f: f64) -> f64\nfn format_temp(val: f64, unit: char) -> String",
+    "file_context": "// format_temp(100.0, 'C') -> \"100.0°C\"",
+    "test_cases": [
+      {"input_c_to_f": "0.0", "expected_approx": "32.0"},
+      {"input_c_to_f": "100.0", "expected_approx": "212.0"},
+      {"input_f_to_c": "32.0", "expected_approx": "0.0"},
+      {"input_format": "100.0, 'C'", "expected": "\"100.0°C\""}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_49", "category": "multi", "difficulty": "multi", "language": "rust",
+    "description": "Write a simple state machine that processes a sequence of events and returns the final state.",
+    "signature": "fn process_events(events: &[&str]) -> String",
+    "file_context": "// States: idle, running, paused, stopped\n// Events: start (idle->running), pause (running->paused), resume (paused->running), stop (any->stopped)\n// Invalid transitions are ignored.",
+    "test_cases": [
+      {"input": "&[\"start\", \"pause\", \"resume\", \"stop\"]", "expected": "\"stopped\""},
+      {"input": "&[\"start\"]", "expected": "\"running\""},
+      {"input": "&[]", "expected": "\"idle\""},
+      {"input": "&[\"pause\", \"start\"]", "expected": "\"running\""}
+    ],
+    "few_shot_example": null,
+    "template": null
+  },
+  {
+    "id": "task_50", "category": "multi", "difficulty": "multi", "language": "python",
+    "description": "Write a trie (prefix tree) with insert, search, and starts_with methods.",
+    "signature": "class Trie:\n    def insert(self, word: str) -> None\n    def search(self, word: str) -> bool\n    def starts_with(self, prefix: str) -> bool",
+    "file_context": "",
+    "test_cases": [
+      {"operations": ["insert('apple')", "search('apple')", "search('app')", "starts_with('app')", "insert('app')", "search('app')"],
+       "expected_results": [null, true, false, true, null, true]}
+    ],
+    "few_shot_example": null,
+    "template": null
+  }
+]

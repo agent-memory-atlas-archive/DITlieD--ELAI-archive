@@ -508,6 +508,13 @@ def _get_decoder_layers(model):
     # Gemma4 / LLaMA / Mistral: model.model.layers
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         return model.model.layers
+    # Gemma4 VLM (e.g., E2B): model.language_model.model.layers
+    if hasattr(model, "language_model"):
+        lm = model.language_model
+        if hasattr(lm, "model") and hasattr(lm.model, "layers"):
+            return lm.model.layers
+        if hasattr(lm, "layers"):
+            return lm.layers
     # GPT-2 style: model.transformer.h
     if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         return model.transformer.h

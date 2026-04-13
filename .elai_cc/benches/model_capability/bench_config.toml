@@ -1,0 +1,41 @@
+[model]
+endpoint = "http://127.0.0.1:8102"
+api_format = "openai"
+model_name = "gemma4:e2b"
+tokenizer = "D:/.ELAI_workflow/.elai_cc/models/gemma-4-E2B-it"
+
+[hardware]
+gpu_name = "RTX 3060"
+total_vram_mb = 12288
+usable_vram_mb = 9700
+
+[measurements]
+run_attention = true
+run_retry = true
+run_few_shot = true
+run_structured = true
+run_template = true
+run_turboquant = true
+run_swap = false
+run_dola_comparison = true
+run_steering_test = true
+run_composition = true
+run_hallucination = true
+run_context_cache = true
+
+[attention]
+context_sizes = [512, 1024, 2048, 3072, 4096, 6144]
+task_repeats = 3
+pass_threshold = 0.8
+
+[retry]
+max_retries = 7
+temperatures = [0.0, 0.3, 0.5, 0.1, 0.7, 0.3, 0.1]
+
+[timeout]
+request_timeout_s = 120
+server_start_timeout_s = 300
+
+[output]
+path = "../../metrics/model_baseline.toml"
+raw_results_path = "../../metrics/baseline_raw_results.json"

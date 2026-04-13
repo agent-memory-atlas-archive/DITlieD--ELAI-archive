@@ -1,0 +1,93 @@
+{
+  "benchmark_version": "1.0",
+  "benchmark_date": "2026-04-13",
+  "model": "gemma4:e2b",
+  "quantization": "NF4",
+  "gpu": "RTX 3060 12GB",
+  "sidecar_config": {
+    "dola": false,
+    "turboquant_bits": 0,
+    "steering": false,
+    "max_tokens": 256,
+    "note": "baseline run, no enhancements"
+  },
+  "attention_curve": {
+    "context_sizes": {
+      "512": {"pass_rate": 1.0, "passes": 15, "total": 15, "avg_time_s": 10.4},
+      "1024": {"pass_rate": 1.0, "passes": 15, "total": 15, "avg_time_s": 5.9},
+      "2048": {"pass_rate": 1.0, "passes": 15, "total": 15, "avg_time_s": 6.7},
+      "3072": {"pass_rate": 0.0, "passes": 0, "total": 15, "avg_time_s": 0, "note": "all timed out at 120s"},
+      "4096": {"pass_rate": 0.0, "passes": 0, "total": 0, "skipped": true},
+      "6144": {"pass_rate": 0.0, "passes": 0, "total": 0, "skipped": true}
+    },
+    "attention_ceiling": 2048,
+    "pass_threshold": 0.8,
+    "real_token_counts": {
+      "512_ctx": "~786 input tokens (after chat template + padding)",
+      "1024_ctx": "~1664 input tokens",
+      "2048_ctx": "~3410 input tokens",
+      "3072_ctx": "~5132 input tokens (timeout)"
+    },
+    "first_request_warmup": {
+      "512_first_s": 69.0,
+      "1024_first_s": 95.0,
+      "2048_first_s": 193.4,
+      "note": "First request per context size is 10-50x slower (CUDA graph compilation)"
+    }
+  },
+  "generation_speed": {
+    "mean_tok_per_s": 6.9,
+    "range_tok_per_s": [6.3, 7.2],
+    "first_request_tok_per_s": 3.3,
+    "note": "Measured from sidecar response logs"
+  },
+  "model_loading": {
+    "total_load_time_s": 330,
+    "peak_cpu_ram_gb": 11.1,
+    "final_gpu_vram_gb": 7.5,
+    "final_cpu_ram_gb": 1.8,
+    "model_size_gb": 9.54,
+    "quantized_size_gb": 6.3
+  },
+  "prior_evaluations": {
+    "turboquant": {
+      "source": "compose_dola_tq_results.json",
+      "fp16_max_context": 66927,
+      "tq4_max_context": 267709,
+      "tq4_k_mse": 0.00014,
+      "tq4_v_mse": 0.0095,
+      "verdict": "TQ4 best quality/compression, but these are VRAM limits not attention limits"
+    },
+    "dola": {
+      "source": "compose_dola_tq_results.json",
+      "speed_penalty": "2x (3.3 tok/s vs 6.9 tok/s)",
+      "factuality": "marginal improvement on 2B model",
+      "layer_detection": "FIXED (VLM path model.language_model.model.layers)"
+    }
+  },
+  "bugs_fixed": [
+    {
+      "issue": "Missing tokenizer_config.json in local model directory",
+      "symptom": "Model outputs only <turn|> token (1 output token)",
+      "fix": "Copied tokenizer_config.json and chat_template.jinja from HF cache",
+      "files": ["models/gemma-4-E2B-it/tokenizer_config.json", "models/gemma-4-E2B-it/chat_template.jinja"]
+    },
+    {
+      "issue": "DoLa _get_decoder_layers() fails for Gemma4 VLM architecture",
+      "symptom": "cannot_find_decoder_layers error, output_hidden_states=True causes extreme slowdown",
+      "fix": "Added VLM path: model.language_model.model.layers",
+      "file": "python/elai_inference/server.py"
+    }
+  ],
+  "incomplete_measurements": {
+    "retry_curve": "Pending - requests timeout at 300s with 512 max_tokens",
+    "few_shot": "Pending system restart (zombie CUDA process holds GPU)",
+    "structured_output": "Pending",
+    "template_fill": "Pending",
+    "dola_comparison": "Pending (DoLa layer detection now fixed)",
+    "steering_test": "Pending",
+    "composition": "Pending",
+    "context_cache": "Pending",
+    "hallucination": "Pending"
+  }
+}
