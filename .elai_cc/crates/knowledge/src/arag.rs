@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::error::Error;
+
+use crate::error::KnowledgeError;
 
 // ---------------------------------------------------------------------------
 // RetrievalTool
@@ -99,7 +100,7 @@ impl AragOrchestrator {
         &self,
         tool: RetrievalTool,
         tracker: &mut ContextTracker,
-    ) -> Result<Vec<RetrievalResult>, Box<dyn Error>> {
+    ) -> Result<Vec<RetrievalResult>, KnowledgeError> {
         match tool {
             RetrievalTool::KeywordSearch { .. } => {
                 // No bm25 index on AragOrchestrator — graceful degrade
@@ -141,7 +142,7 @@ impl AragOrchestrator {
         &self,
         query: &str,
         _snapshot: &crate::pagerank::DkgSnapshot,
-    ) -> Result<Vec<RetrievalResult>, Box<dyn Error>> {
+    ) -> Result<Vec<RetrievalResult>, KnowledgeError> {
         let mut tracker = ContextTracker::new();
         let mut all_results: Vec<RetrievalResult> = Vec::new();
 

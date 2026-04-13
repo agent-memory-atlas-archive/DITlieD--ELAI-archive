@@ -77,7 +77,7 @@ struct RepoDetection {
     rust_dir: bool,
 }
 
-pub(crate) fn initialize_repo(cwd: &Path) -> Result<InitReport, Box<dyn std::error::Error>> {
+pub(crate) fn initialize_repo(cwd: &Path) -> Result<InitReport, anyhow::Error> {
     let mut artifacts = Vec::new();
 
     let elai_dir = cwd.join(".elai");

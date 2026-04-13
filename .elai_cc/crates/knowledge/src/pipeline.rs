@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::error::Error;
+
+use crate::error::KnowledgeError;
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
@@ -100,7 +101,7 @@ impl QueryPipeline {
     pub fn query(
         &self,
         query: &str,
-    ) -> Result<Vec<PipelineStage>, Box<dyn Error>> {
+    ) -> Result<Vec<PipelineStage>, KnowledgeError> {
         // Pre-query validation (Phase 1I.3).
         QueryValidator::validate(query)?;
 

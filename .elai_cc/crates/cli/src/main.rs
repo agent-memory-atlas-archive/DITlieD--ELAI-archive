@@ -11,7 +11,6 @@ mod init;
 mod input;
 mod render;
 
-use anyhow::Context as _;
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;

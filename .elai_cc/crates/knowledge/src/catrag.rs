@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::error::Error;
+
+use crate::error::KnowledgeError;
 
 use crate::pagerank::DkgSnapshot;
 
@@ -144,7 +145,7 @@ impl CatRag {
         query: &str,
         snapshot: &DkgSnapshot,
         pagerank_scores: &[(usize, f64)],
-    ) -> Result<CatRagOverlay, Box<dyn Error>> {
+    ) -> Result<CatRagOverlay, KnowledgeError> {
         let n = snapshot.nodes.len();
         if n < 2 {
             return Ok(CatRagOverlay {
@@ -163,7 +164,7 @@ impl CatRag {
 
         // Validate edge indices
         if snapshot.edges.iter().any(|&(s, t, _)| s >= n || t >= n) {
-            return Err("DkgSnapshot contains out-of-bounds edge indices".into());
+            return Err(KnowledgeError::Graph("DkgSnapshot contains out-of-bounds edge indices".to_string()));
         }
 
         // --- Symbolic anchoring ---

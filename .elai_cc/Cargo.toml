@@ -30,5 +30,6 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 jsonschema = { version = "0.45", default-features = false }
+anyhow = "1"
 blake3 = "1.8"
 tracing-log = "0.2"

@@ -7,6 +7,7 @@ pub mod catrag;
 pub mod degradation;
 pub mod dkg;
 pub mod dkg_adapter;
+pub mod error;
 pub mod index_version;
 pub mod pagerank;
 pub mod pipeline;
@@ -103,10 +104,10 @@ pub trait LanguageGrammar {
 /// Top-level knowledge engine trait. Implementations aggregate DKG, vector,
 /// and BM25 sub-engines. Full impl deferred to Phase 1I.
 pub trait KnowledgeEngine {
-    fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, Box<dyn std::error::Error>>;
-    fn query(&self, query: &str, strategy: QueryStrategy) -> Result<Vec<CodeChunk>, Box<dyn std::error::Error>>;
-    fn rerank(&self, query: &str, candidates: Vec<CodeChunk>) -> Result<Vec<CodeChunk>, Box<dyn std::error::Error>>;
-    fn update(&mut self, file_changed: &Path) -> Result<(), Box<dyn std::error::Error>>;
+    fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, KnowledgeError>;
+    fn query(&self, query: &str, strategy: QueryStrategy) -> Result<Vec<CodeChunk>, KnowledgeError>;
+    fn rerank(&self, query: &str, candidates: Vec<CodeChunk>) -> Result<Vec<CodeChunk>, KnowledgeError>;
+    fn update(&mut self, file_changed: &Path) -> Result<(), KnowledgeError>;
     fn readiness_check(&self) -> ReadinessStatus;
 }
 
@@ -114,3 +115,4 @@ pub trait KnowledgeEngine {
 pub use dkg::DkgEngine;
 pub use ast_adapter::TreeSitterAstEvaluator;
 pub use dkg_adapter::DkgQuerierAdapter;
+pub use error::KnowledgeError;
