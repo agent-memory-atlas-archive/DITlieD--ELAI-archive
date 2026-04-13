@@ -1,7 +1,7 @@
 //! Shared State Board (SSB): inter-agent communication via SQLite WAL.
 //!
 //! Single-writer guarantee via `tokio::mpsc` channel. All writes serialized
-//! through one dedicated task. Reads served from an `r2d2` connection pool.
+//! through one dedicated task. Reads served from a `deadpool-sqlite` async connection pool.
 //! Append-only within a session — no UPDATE or DELETE.
 //!
 //! A single [`Ssb`] instance is permanently bound to one `(project_id, session_id)` pair.
@@ -11,8 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::Value;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -567,7 +565,7 @@ pub enum SsbError {
     Sqlite(#[from] rusqlite::Error),
 
     #[error("connection pool error: {0}")]
-    Pool(#[from] r2d2::Error),
+    Pool(String),
 
     #[error("ssb has been shut down")]
     Shutdown,
@@ -592,28 +590,65 @@ pub enum SsbError {
 }
 
 // ---------------------------------------------------------------------------
-// Pragma applier (r2d2 CustomizeConnection)
+// Async connection pool (deadpool managed, rusqlite 0.39)
 // ---------------------------------------------------------------------------
 
-/// Applies per-connection pragmas on every r2d2 pool checkout.
+/// Applies per-connection pragmas on pool connection creation.
 /// `foreign_keys` is per-connection and must be set on every connection.
-#[derive(Debug)]
-pub struct SsbPragmaApplier;
+///
+/// NOTE: This intentionally includes `load_module(conn)` for rarray support,
+/// which the writer-side `apply_pragmas` does NOT include (rarray is only
+/// needed for read-path queries like query_by_file and query_conflict).
+fn apply_pool_pragmas(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // Order matters: journal_mode first, then other pragmas.
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "cache_size", -64000)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    rusqlite::vtab::array::load_module(conn)?;
+    Ok(())
+}
 
-impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SsbPragmaApplier {
-    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
-        // Order matters: journal_mode first, then other pragmas.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-        conn.pragma_update(None, "cache_size", -64000)?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "temp_store", "MEMORY")?;
-        rusqlite::vtab::array::load_module(conn)?;
+/// Deadpool manager for rusqlite connections.
+/// Opens connections in a blocking task and applies pragmas on creation.
+struct SqliteManager {
+    db_path: String,
+}
+
+impl deadpool::managed::Manager for SqliteManager {
+    type Type = Connection;
+    type Error = SsbError;
+
+    async fn create(&self) -> Result<Connection, SsbError> {
+        let path = self.db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&path)?;
+            apply_pool_pragmas(&conn)?;
+            Ok(conn)
+        })
+        .await
+        .map_err(|e| SsbError::Pool(format!("spawn_blocking join error: {e}")))?
+    }
+
+    async fn recycle(
+        &self,
+        conn: &mut Connection,
+        _metrics: &deadpool::managed::Metrics,
+    ) -> deadpool::managed::RecycleResult<SsbError> {
+        // Clear any stale implicit transaction from an interrupted read path.
+        conn.execute_batch("ROLLBACK").ok();
+        // Validate the connection is still usable with a cheap query.
+        conn.execute_batch("SELECT 1")
+            .map_err(|e| deadpool::managed::RecycleError::Backend(SsbError::Sqlite(e)))?;
         Ok(())
     }
 }
+
+/// Type alias for the deadpool-managed rusqlite pool.
+type SsbPool = deadpool::managed::Pool<SqliteManager>;
 
 // ---------------------------------------------------------------------------
 // Reader trait
@@ -665,7 +700,7 @@ struct WriteMessage {
 pub struct Ssb {
     write_tx: Option<mpsc::UnboundedSender<WriteMessage>>,
     broadcast_tx: broadcast::Sender<SsbEntry>,
-    read_pool: Pool<SqliteConnectionManager>,
+    read_pool: SsbPool,
     project_id: String,
     session_id: String,
     shutdown: Arc<AtomicBool>,
@@ -699,15 +734,14 @@ impl Ssb {
             },
         ))?;
 
-        // --- Read pool ---
-        let manager = SqliteConnectionManager::file(&config.db_path);
-        let read_pool = Pool::builder()
-            .max_size(config.effective_pool_size())
-            .min_idle(Some(1))
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .connection_customizer(Box::new(SsbPragmaApplier))
-            .build(manager)?;
+        // --- Read pool (deadpool managed, async-native) ---
+        let db_path_str = config.db_path.to_string_lossy().to_string();
+        let manager = SqliteManager { db_path: db_path_str };
+        let read_pool = SsbPool::builder(manager)
+            .max_size(config.effective_pool_size() as usize)
+            .runtime(deadpool::Runtime::Tokio1)
+            .build()
+            .map_err(|e| SsbError::Pool(format!("pool build error: {e}")))?;
 
         // --- Channels ---
         let (write_tx, write_rx) = mpsc::unbounded_channel::<WriteMessage>();
@@ -983,56 +1017,93 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SsbEntry> {
 }
 
 // ---------------------------------------------------------------------------
+// Sync→async bridge for deadpool reads
+// ---------------------------------------------------------------------------
+
+impl Ssb {
+    /// Run a closure on a read-pool connection, bridging deadpool's async API
+    /// to the sync SsbReader trait. Uses `block_in_place` to avoid blocking the
+    /// tokio runtime when called from an async context.
+    fn with_read_conn<F, T>(&self, f: F) -> Result<T, SsbError>
+    where
+        F: FnOnce(&Connection) -> Result<T, SsbError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let pool = self.read_pool.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let obj = pool
+                    .get()
+                    .await
+                    .map_err(|e| SsbError::Pool(format!("{e}")))?;
+                // Object<SqliteManager> derefs to Connection
+                f(&obj)
+            })
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SsbReader implementation
 // ---------------------------------------------------------------------------
 
 impl SsbReader for Ssb {
     fn query_by_session(&self, session_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE session_id = ?1 AND project_id = ?2",
-        )?;
-        let rows = stmt.query_map(params![session_id, self.project_id], row_to_entry)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let sid = session_id.to_owned();
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE session_id = ?1 AND project_id = ?2",
+            )?;
+            let rows = stmt.query_map(params![sid, pid], row_to_entry)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn query_by_file(&self, file_paths: &[&str]) -> Result<Vec<SsbEntry>, SsbError> {
         if file_paths.is_empty() {
             return Ok(vec![]);
         }
-        let conn = self.read_pool.get()?;
-        let values: Vec<Value> = file_paths.iter().map(|p| Value::Text((*p).to_owned())).collect();
-        let ptr = Rc::new(values);
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT ssb.seq, ssb.project_id, ssb.session_id, ssb.agent_id, \
-             ssb.superstep, ssb.action_type, ssb.payload, ssb.created_at \
-             FROM ssb JOIN ssb_files ON ssb_files.seq = ssb.seq \
-             WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
-               AND ssb.project_id = ?2",
-        )?;
-        let rows = stmt.query_map(params![ptr, self.project_id], row_to_entry)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let paths: Vec<String> = file_paths.iter().map(|p| (*p).to_owned()).collect();
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let values: Vec<Value> = paths.iter().map(|p| Value::Text(p.clone())).collect();
+            let ptr = Rc::new(values);
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT ssb.seq, ssb.project_id, ssb.session_id, ssb.agent_id, \
+                 ssb.superstep, ssb.action_type, ssb.payload, ssb.created_at \
+                 FROM ssb JOIN ssb_files ON ssb_files.seq = ssb.seq \
+                 WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
+                   AND ssb.project_id = ?2",
+            )?;
+            let rows = stmt.query_map(params![ptr, pid], row_to_entry)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn query_by_type(&self, action_type: SsbActionType) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE action_type = ?1 AND project_id = ?2",
-        )?;
-        let rows = stmt.query_map(params![action_type.as_sql_str(), self.project_id], row_to_entry)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE action_type = ?1 AND project_id = ?2",
+            )?;
+            let rows = stmt.query_map(params![action_type.as_sql_str(), pid], row_to_entry)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn query_by_superstep(&self, superstep: i64) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE superstep = ?1 AND project_id = ?2",
-        )?;
-        let rows = stmt.query_map(params![superstep, self.project_id], row_to_entry)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE superstep = ?1 AND project_id = ?2",
+            )?;
+            let rows = stmt.query_map(params![superstep, pid], row_to_entry)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn query_conflict(
@@ -1044,96 +1115,112 @@ impl SsbReader for Ssb {
         if file_paths.is_empty() {
             return Ok(vec![]);
         }
-        let conn = self.read_pool.get()?;
-        let values: Vec<Value> = file_paths.iter().map(|p| Value::Text((*p).to_owned())).collect();
-        let ptr = Rc::new(values);
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT ssb.agent_id \
-             FROM ssb_files \
-             JOIN ssb ON ssb_files.seq = ssb.seq \
-             WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
-               AND ssb.project_id = ?2 \
-               AND ssb.session_id != ?3 \
-               AND ssb.superstep = ?4",
-        )?;
-        let rows = stmt.query_map(
-            params![ptr, self.project_id, session_id, superstep],
-            |row| row.get::<_, String>(0),
-        )?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let paths: Vec<String> = file_paths.iter().map(|p| (*p).to_owned()).collect();
+        let sid = session_id.to_owned();
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let values: Vec<Value> = paths.iter().map(|p| Value::Text(p.clone())).collect();
+            let ptr = Rc::new(values);
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT ssb.agent_id \
+                 FROM ssb_files \
+                 JOIN ssb ON ssb_files.seq = ssb.seq \
+                 WHERE ssb_files.file_path IN (SELECT value FROM rarray(?1)) \
+                   AND ssb.project_id = ?2 \
+                   AND ssb.session_id != ?3 \
+                   AND ssb.superstep = ?4",
+            )?;
+            let rows = stmt.query_map(
+                params![ptr, pid, sid, superstep],
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn last_seq(&self) -> Result<Option<i64>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare("SELECT MAX(seq) FROM ssb WHERE project_id = ?1")?;
-        let result: Option<i64> = stmt.query_row(params![self.project_id], |row| row.get(0))?;
-        Ok(result)
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare("SELECT MAX(seq) FROM ssb WHERE project_id = ?1")?;
+            let result: Option<i64> = stmt.query_row(params![pid], |row| row.get(0))?;
+            Ok(result)
+        })
     }
 
     fn query_by_seq(&self, seq: i64) -> Result<Option<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE seq = ?1 AND project_id = ?2 LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map(params![seq, self.project_id], row_to_entry)?;
-        match rows.next() {
-            Some(row) => Ok(Some(row.map_err(SsbError::Sqlite)?)),
-            None => Ok(None),
-        }
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE seq = ?1 AND project_id = ?2 LIMIT 1",
+            )?;
+            let mut rows = stmt.query_map(params![seq, pid], row_to_entry)?;
+            match rows.next() {
+                Some(row) => Ok(Some(row.map_err(SsbError::Sqlite)?)),
+                None => Ok(None),
+            }
+        })
     }
 
     fn query_reasoning_trace(&self, agent_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE action_type = ?1 AND agent_id = ?2 AND project_id = ?3 \
-             ORDER BY seq ASC",
-        )?;
-        let rows = stmt.query_map(
-            params![SsbActionType::ReasoningTrace.as_sql_str(), agent_id, self.project_id],
-            row_to_entry,
-        )?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let aid = agent_id.to_owned();
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE action_type = ?1 AND agent_id = ?2 AND project_id = ?3 \
+                 ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map(
+                params![SsbActionType::ReasoningTrace.as_sql_str(), aid, pid],
+                row_to_entry,
+            )?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 
     fn query_phase_complete(&self, phase_id: &str) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE action_type = ?1 AND project_id = ?2",
-        )?;
-        let rows = stmt.query_map(
-            params![SsbActionType::PhaseComplete.as_sql_str(), self.project_id],
-            row_to_entry,
-        )?;
-        let all_entries: Vec<SsbEntry> = rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)?;
+        let phase = phase_id.to_owned();
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE action_type = ?1 AND project_id = ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![SsbActionType::PhaseComplete.as_sql_str(), pid],
+                row_to_entry,
+            )?;
+            let all_entries: Vec<SsbEntry> = rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)?;
 
-        // Filter by phase_id from payload (since phase_id is in the payload, not a separate column)
-        let filtered = all_entries
-            .into_iter()
-            .filter(|entry| {
-                if let Ok(payload) = rmp_serde::from_slice::<PhaseCompletePayload>(&entry.payload) {
-                    payload.phase_id == phase_id
-                } else {
-                    false
-                }
-            })
-            .collect();
-        Ok(filtered)
+            // Filter by phase_id from payload (since phase_id is in the payload, not a separate column)
+            let filtered = all_entries
+                .into_iter()
+                .filter(|entry| {
+                    if let Ok(payload) = rmp_serde::from_slice::<PhaseCompletePayload>(&entry.payload) {
+                        payload.phase_id == phase
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            Ok(filtered)
+        })
     }
 
     fn query_isolation_metrics(&self) -> Result<Vec<SsbEntry>, SsbError> {
-        let conn = self.read_pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
-             FROM ssb WHERE action_type = ?1 AND project_id = ?2",
-        )?;
-        let rows = stmt.query_map(
-            params![SsbActionType::IsolationMetric.as_sql_str(), self.project_id],
-            row_to_entry,
-        )?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        let pid = self.project_id.clone();
+        self.with_read_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, project_id, session_id, agent_id, superstep, action_type, payload, created_at \
+                 FROM ssb WHERE action_type = ?1 AND project_id = ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![SsbActionType::IsolationMetric.as_sql_str(), pid],
+                row_to_entry,
+            )?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(SsbError::Sqlite)
+        })
     }
 }
 
@@ -1161,7 +1248,7 @@ mod tests {
         Arc::new(SeededClock::new())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_writer() {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1189,7 +1276,7 @@ mod tests {
         ssb.shutdown();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_write_after_shutdown() {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1225,7 +1312,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_concurrent_writers() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Arc::new(
@@ -1263,7 +1350,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_broadcast_after_commit() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1293,7 +1380,7 @@ mod tests {
         assert_eq!(&*entry.payload, b"test-payload");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_action_type_mismatch_rejected() {
         // Adversarial test (3J.12): verify that action_type string mismatch
         // with payload struct is rejected at write time, not silently corrupted.
@@ -1329,7 +1416,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_reasoning_trace_monotonic_step_index() {
         // Adversarial test (3J.12): verify reasoning_trace entries can be queried
         // and are ordered by seq (monotonic per agent per phase).
@@ -1377,7 +1464,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_created_at_uses_clock_provider() {
         let clock = Arc::new(SeededClock::with_epoch(
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000),
@@ -1411,7 +1498,7 @@ mod tests {
         assert_eq!(entry.created_at, 1_000_000);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_wal_pragma_applied() {
         let dir = TempDir::new().expect("tempdir");
         let config = test_config(&dir);
@@ -1425,19 +1512,19 @@ mod tests {
         assert_eq!(journal_mode.to_lowercase(), "wal");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_pool_connection_has_foreign_keys() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
-        let conn = ssb.read_pool.get().expect("pool get");
-        let fk: i64 = conn
+        let obj = ssb.read_pool.get().await.expect("pool get");
+        let fk: i64 = obj
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
             .expect("pragma");
         assert_eq!(fk, 1, "foreign_keys must be ON for pool connections");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_migration_from_v0() {
         let dir = TempDir::new().expect("tempdir");
         let db_path = dir.path().join("migrate_test.db");
@@ -1469,7 +1556,7 @@ mod tests {
         .expect("write after migration");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_shutdown_idempotent() {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1478,7 +1565,7 @@ mod tests {
         ssb.shutdown(); // Second call must not panic.
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_ssb_files_inserted() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1495,8 +1582,8 @@ mod tests {
             .expect("write");
 
         // Verify via read pool.
-        let conn = ssb.read_pool.get().expect("pool");
-        let mut stmt = conn
+        let obj = ssb.read_pool.get().await.expect("pool");
+        let mut stmt = obj
             .prepare("SELECT file_path FROM ssb_files WHERE seq = ?1 ORDER BY file_path")
             .expect("prepare");
         let paths: Vec<String> = stmt
@@ -1507,7 +1594,7 @@ mod tests {
         assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_all_action_types_insert() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1552,14 +1639,14 @@ mod tests {
         }
 
         // Verify count.
-        let conn = ssb.read_pool.get().expect("pool");
-        let count: i64 = conn
+        let obj = ssb.read_pool.get().await.expect("pool");
+        let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
         assert_eq!(count, 24, "must have inserted all 24 types");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_10k_sequential_writes() {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1590,7 +1677,7 @@ mod tests {
     // 3B.3 — Read-path tests
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_read_pool() {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -1653,7 +1740,7 @@ mod tests {
         ssb.shutdown();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_conflict_detection() {
         let dir = TempDir::new().expect("tempdir");
         let config = SsbConfig {
@@ -1678,15 +1765,15 @@ mod tests {
         // Test-only backdoor: direct SQL insert bypasses write_loop and
         // update_hook (which is on writer_conn, not pool connections).
         {
-            let conn = ssb.read_pool.get().expect("pool conn");
-            conn.execute(
+            let obj = ssb.read_pool.get().await.expect("pool conn");
+            obj.execute(
                 "INSERT INTO ssb (project_id, session_id, agent_id, superstep, action_type, payload, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params!["proj-1", "session-B", "agent-B", 1i64, "file_write", &[2u8][..], 100i64],
             )
             .expect("direct insert ssb");
-            let seq = conn.last_insert_rowid();
-            conn.execute(
+            let seq = obj.last_insert_rowid();
+            obj.execute(
                 "INSERT INTO ssb_files (seq, file_path) VALUES (?1, ?2)",
                 params![seq, "src/f1.rs"],
             )
@@ -1720,7 +1807,7 @@ mod tests {
         ssb.shutdown();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_conflict_cross_project() {
         let dir = TempDir::new().expect("tempdir");
 
@@ -1817,7 +1904,7 @@ mod tests {
         ssb_b.shutdown();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_append_only() {
         use std::sync::atomic::AtomicU32;
 
@@ -2068,7 +2155,7 @@ mod tests {
         ]
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_typed_payloads() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -2108,7 +2195,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_payload_size_limit() {
         let dir = TempDir::new().expect("tempdir");
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
@@ -2136,7 +2223,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_trace_integration() {
         let trace = ReasoningTracePayload {
             agent_id: "agent-trace".into(),
@@ -2167,7 +2254,7 @@ mod tests {
     // no runtime string matching and no way to pass a mismatched pair. This is
     // a compile-time guarantee, not a runtime check.
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_payload_empty_vecs() {
         // PhaseCompletePayload with empty Vec fields must not error
         let dir = TempDir::new().expect("tempdir");

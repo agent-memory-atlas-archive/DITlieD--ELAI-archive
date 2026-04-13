@@ -241,7 +241,7 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPragmaApplier,
+    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
     SsbReader, SsbWriteRequest,
 };
 pub use supervision::{

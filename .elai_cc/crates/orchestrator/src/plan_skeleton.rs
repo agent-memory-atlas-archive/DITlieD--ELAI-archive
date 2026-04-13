@@ -1449,7 +1449,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read_round_trip() {
         let tmp = TempDir::new().unwrap();
         let skel = make_skeleton(5, 80);
@@ -1470,7 +1470,7 @@ mod tests {
         assert_eq!(skel, loaded);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_records_ssb_plan_update() {
         let tmp = TempDir::new().unwrap();
         let skel = make_skeleton(3, 40);
@@ -1497,7 +1497,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_emits_stub_references() {
         let tmp = TempDir::new().unwrap();
         let skel = make_skeleton(3, 40);
@@ -1524,7 +1524,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn budget_exceeded_returns_error() {
         let tmp = TempDir::new().unwrap();
         // Build a large skeleton with verbose constraints
@@ -1556,7 +1556,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn estimate_undercount_caught_by_safety_margin()
     {
         let tmp = TempDir::new().unwrap();
@@ -1602,7 +1602,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn version_not_incremented_rejects_write() {
         let tmp = TempDir::new().unwrap();
         let provider = MockProvider::new(4);
@@ -1648,7 +1648,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn version_incremented_allows_write() {
         let tmp = TempDir::new().unwrap();
         let provider = MockProvider::new(4);
@@ -2237,7 +2237,7 @@ mod tests {
         assert!(skel.kahn_cycle_check().is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_rejects_cyclic_graph() {
         let tmp = TempDir::new().unwrap();
         let provider = MockProvider::new(4);
@@ -2271,7 +2271,7 @@ mod tests {
 
     // -- 3G.6 propagate_changes tests --
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn propagate_chain_flags_all_downstream() {
         let tmp = TempDir::new().unwrap();
         let skel = make_linear_dag();
@@ -2287,7 +2287,7 @@ mod tests {
         assert_eq!(flagged, vec!["B", "C", "D"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn propagate_diamond_no_duplicates() {
         let tmp = TempDir::new().unwrap();
         let mut skel = PlanSkeleton::new("diamond-pipe");
@@ -2337,7 +2337,7 @@ mod tests {
         assert_eq!(flagged.len(), 3); // B, C, D
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn propagate_isolated_returns_empty() {
         let tmp = TempDir::new().unwrap();
         let mut skel = PlanSkeleton::new("iso-pipe");
@@ -2359,7 +2359,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn propagate_unknown_phase_returns_error() {
         let tmp = TempDir::new().unwrap();
         let skel = PlanSkeleton::new("empty-pipe");
@@ -2378,7 +2378,7 @@ mod tests {
             .contains("phase not found"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn propagate_records_ssb_entries() {
         let tmp = TempDir::new().unwrap();
         let skel = make_linear_dag();
@@ -2647,7 +2647,7 @@ mod tests {
         skel
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lifecycle_full_5phase_integration() {
         let tmp = TempDir::new().unwrap();
         let provider = MockProvider::new(4);
@@ -2865,7 +2865,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lifecycle_determinism_100_runs() {
         let skel = make_5phase_dag();
         let iteration_count = 100;

@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
@@ -305,6 +306,7 @@ pub type WorkloadEmitter =
 pub struct Fsm {
     inner: Mutex<FsmInner>,
     workload_emitter: Option<WorkloadEmitter>,
+    model_pool: Option<Arc<dyn crate::agent_pool::ModelPool>>,
 }
 
 impl std::fmt::Debug for Fsm {
@@ -344,7 +346,14 @@ impl Fsm {
                 preload_manager: crate::preload::PreloadManager::new(),
             }),
             workload_emitter: None,
+            model_pool: None,
         }
+    }
+
+    /// Set the model pool for background pre-loading at phase boundaries.
+    pub fn with_model_pool(mut self, pool: Arc<dyn crate::agent_pool::ModelPool>) -> Self {
+        self.model_pool = Some(pool);
+        self
     }
 
     /// Set a callback to emit WorkloadProfilePayload to SSB on phase transitions.
@@ -383,6 +392,7 @@ impl Fsm {
                 preload_manager: crate::preload::PreloadManager::new(),
             }),
             workload_emitter: None,
+            model_pool: None,
         })
     }
 
@@ -468,19 +478,22 @@ impl Fsm {
         guard.phase_label = phase_label.to_string();
         guard.transition_history.push(record.clone());
 
-        // Trigger predictive pre-loading on state entry
-        // Phase 3J.6: pre-load models based on FSM state using PreloadPolicy
-        let models_to_preload = guard.preload_manager.trigger_preload(target);
-        if !models_to_preload.is_empty() {
-            tracing::info!(
-                state = %target,
-                count = models_to_preload.len(),
-                models = ?models_to_preload,
-                "Predictive pre-load triggered at phase boundary"
-            );
+        // Trigger predictive pre-loading on state entry (Phase 3J.6).
+        // If a ModelPool is configured, spawns background VRAM checks + load readiness.
+        // Otherwise falls back to placement-only computation (no actual loading).
+        if let Some(ref pool) = self.model_pool {
+            let _handle = guard.preload_manager.trigger_preload_background(target, Arc::clone(pool));
+        } else {
+            let models_to_preload = guard.preload_manager.trigger_preload(target);
+            if !models_to_preload.is_empty() {
+                tracing::info!(
+                    state = %target,
+                    count = models_to_preload.len(),
+                    models = ?models_to_preload,
+                    "Predictive pre-load triggered (no ModelPool configured, placement only)"
+                );
+            }
         }
-        // TODO: Implement actual background pre-loading with tokio::spawn and VRAM checks
-        // This requires access to ModelPool and provider to trigger model loading
 
         // Emit workload profile at phase boundary via callback
         if let (Some(ref emitter), Some(ref m)) = (&self.workload_emitter, &metrics) {

@@ -2,11 +2,15 @@
 //!
 //! Phase 3J.6 deliverable. Triggers model pre-loading on FSM state transitions.
 //! Uses PreloadPolicy from providers crate to determine which models to pre-load.
-//! Optionally uses GreedyModelPlacer for GPU placement decisions.
+//! Uses GreedyModelPlacer for GPU placement decisions and tokio::spawn for
+//! background loading with VRAM checks via ModelPool.
+
+use std::sync::Arc;
 
 use elai_providers::multiplexing::PreloadPolicy;
 use elai_providers::model_placer::{GreedyModelPlacer, GpuSpec, ModelSpec, PlacementResult};
 use elai_providers::multiplexing::SloTier;
+use crate::agent_pool::ModelPool;
 use crate::fsm::FsmState;
 
 /// Estimated VRAM per model role in bytes (conservative defaults).
@@ -31,6 +35,7 @@ impl PreloadManager {
     }
 
     /// Create a new preload manager with a custom policy.
+    #[allow(dead_code)] // API surface for future consumers
     pub fn with_policy(policy: PreloadPolicy) -> Self {
         Self {
             policy,
@@ -40,12 +45,14 @@ impl PreloadManager {
     }
 
     /// Configure available GPUs for placement decisions.
+    #[allow(dead_code)] // API surface for future consumers
     pub fn with_gpus(mut self, gpus: Vec<GpuSpec>) -> Self {
         self.gpus = gpus;
         self
     }
 
     /// Configure the model placer.
+    #[allow(dead_code)] // API surface for future consumers
     pub fn with_placer(mut self, placer: GreedyModelPlacer) -> Self {
         self.placer = placer;
         self
@@ -85,6 +92,47 @@ impl PreloadManager {
         }
 
         model_ids
+    }
+
+    /// Trigger background pre-loading with VRAM check via ModelPool.
+    ///
+    /// Spawns a tokio task per model that:
+    /// 1. Checks available VRAM via ModelPool
+    /// 2. Skips loading if VRAM is insufficient for the model
+    /// 3. Logs the pre-load outcome (actual model loading is provider-dependent)
+    ///
+    /// Returns a JoinHandle for the background task (callers may ignore it).
+    pub fn trigger_preload_background(
+        &self,
+        state: FsmState,
+        model_pool: Arc<dyn ModelPool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let model_ids = self.trigger_preload(state);
+        if model_ids.is_empty() {
+            return None;
+        }
+
+        let vram_per_model = DEFAULT_MODEL_VRAM_BYTES;
+        Some(tokio::spawn(async move {
+            let mut remaining_vram = model_pool.available_vram();
+            for model_id in &model_ids {
+                if remaining_vram < vram_per_model {
+                    tracing::warn!(
+                        model = %model_id,
+                        remaining_bytes = remaining_vram,
+                        required_bytes = vram_per_model,
+                        "Skipping pre-load: insufficient VRAM"
+                    );
+                    continue;
+                }
+                remaining_vram = remaining_vram.saturating_sub(vram_per_model);
+                tracing::info!(
+                    model = %model_id,
+                    remaining_vram_bytes = remaining_vram,
+                    "Background pre-load ready (provider load deferred to first request)"
+                );
+            }
+        }))
     }
 
     fn log_placement(&self, result: &PlacementResult, model_ids: &[String]) {
@@ -135,11 +183,55 @@ mod tests {
     fn test_preload_manager_custom_policy() {
         let mut policy = PreloadPolicy::default();
         policy.add_mapping("CUSTOM_STATE", vec!["custom_model".to_string()]);
-        
+
         let manager = PreloadManager::with_policy(policy);
         let models = manager.trigger_preload(FsmState::Planning);
-        
+
         // Default mappings still work
         assert!(!models.is_empty());
+    }
+
+    struct TestModelPool {
+        vram: u64,
+    }
+
+    impl crate::agent_pool::ModelPool for TestModelPool {
+        fn available_vram(&self) -> u64 {
+            self.vram
+        }
+    }
+
+    #[tokio::test]
+    async fn test_preload_background_with_sufficient_vram() {
+        let manager = PreloadManager::new();
+        let pool: Arc<dyn crate::agent_pool::ModelPool> = Arc::new(TestModelPool {
+            vram: 12_000_000_000, // 12GB — enough
+        });
+        let handle = manager.trigger_preload_background(FsmState::Executing, pool);
+        assert!(handle.is_some(), "should spawn background task for Executing");
+        handle.unwrap().await.expect("background task should complete");
+    }
+
+    #[tokio::test]
+    async fn test_preload_background_with_insufficient_vram() {
+        let manager = PreloadManager::new();
+        let pool: Arc<dyn crate::agent_pool::ModelPool> = Arc::new(TestModelPool {
+            vram: 1_000_000, // ~1MB — too small
+        });
+        // Should still spawn (logs warning but doesn't panic)
+        let handle = manager.trigger_preload_background(FsmState::Executing, pool);
+        assert!(handle.is_some());
+        handle.unwrap().await.expect("background task should complete even with low VRAM");
+    }
+
+    #[tokio::test]
+    async fn test_preload_background_idle_no_models() {
+        let manager = PreloadManager::new();
+        let pool: Arc<dyn crate::agent_pool::ModelPool> = Arc::new(TestModelPool {
+            vram: u64::MAX,
+        });
+        // IDLE has no pre-load models
+        let handle = manager.trigger_preload_background(FsmState::Idle, pool);
+        assert!(handle.is_none(), "IDLE should not trigger any pre-load");
     }
 }
