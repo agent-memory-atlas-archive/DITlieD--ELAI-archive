@@ -1,31 +1,65 @@
-"""ELAI Inference Sidecar — HF Transformers with DoLa + TurboQuant.
+"""ELAI Inference Sidecar -- HF Transformers with DoLa + TurboQuant + Steering.
 
-Serves an OpenAI-compatible /v1/completions endpoint that internally
-applies DoLa layer-contrast decoding and TurboQuant KV cache compression.
+Serves Anthropic-compatible /v1/messages and OpenAI-compatible /v1/completions
+endpoints via FastAPI + uvicorn (async ASGI).
 
-The Rust orchestrator talks to this server the same way it talks to vLLM.
-All layer-level optimizations happen in-process on the Python side.
+DoLa contrastive decoding, TurboQuant KV compression, and ActAdd steering
+vectors are integrated via model forward hooks + a custom LogitsProcessor,
+allowing model.generate() to drive the decode loop in optimized C++/CUDA.
 
 Usage:
     python -m elai_inference.server --model google/gemma-4-E2B-it --port 8100
 """
 
 import argparse
-import json
-import logging
-import sys
+import asyncio
+import re
+import signal
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from threading import Lock
+from typing import AsyncIterator
 
 import numpy as np
+import orjson
+import structlog
 import torch
 import torch.nn.functional as F
-
-logger = logging.getLogger("elai_inference")
+from fastapi import FastAPI, Request
+from fastapi.responses import Response, StreamingResponse
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    LogitsProcessor,
+    TextIteratorStreamer,
+)
 
 # ---------------------------------------------------------------------------
-# DoLa constants
+# Structured logging via structlog
+# ---------------------------------------------------------------------------
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.dev.set_exc_info,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(0),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger("elai_inference")
+
+# ---------------------------------------------------------------------------
+# Named constants
 # ---------------------------------------------------------------------------
 
 ALPHA_DEFAULT = 0.1
@@ -33,19 +67,29 @@ ALPHA_AMPLIFIED = 0.05
 JSD_MAX_NATS = 0.6931471805599453
 EPSILON = 1e-12
 
-# ---------------------------------------------------------------------------
-# Steering vector constants (ActAdd)
-# ---------------------------------------------------------------------------
-
 COEFFICIENT_DEFAULT = 5.0
 COEFFICIENT_MIN = 1.0
 COEFFICIENT_MAX = 30.0
 
+SIDECAR_PORT_DEFAULT = 8100
+SIDECAR_HOST_DEFAULT = "0.0.0.0"
+MAX_NEW_TOKENS_DEFAULT = 256
+STREAMER_TIMEOUT_S = 30
+THREAD_POOL_SIZE = 2
+
+# Core tools the small model can handle (filter from full tool list)
+CORE_TOOLS = frozenset({
+    "bash", "read_file", "write_file", "edit_file",
+    "glob_search", "grep_search", "WebFetch", "WebSearch",
+    "TodoWrite", "AskUserQuestion",
+})
+
 # ---------------------------------------------------------------------------
-# DoLa implementation
+# DoLa helpers
 # ---------------------------------------------------------------------------
 
-def compute_jsd(p, q):
+
+def compute_jsd(p: torch.Tensor, q: torch.Tensor) -> float:
     m = 0.5 * (p + q)
     m_safe = m.clamp(min=EPSILON)
     p_safe = p.clamp(min=EPSILON)
@@ -55,7 +99,7 @@ def compute_jsd(p, q):
     return (0.5 * kl_pm + 0.5 * kl_qm).clamp(0.0, JSD_MAX_NATS).item()
 
 
-def get_candidate_layers(n_layers):
+def get_candidate_layers(n_layers: int) -> list[int]:
     if n_layers <= 40:
         mid = n_layers // 2
         buckets = [range(0, mid), range(mid, n_layers)]
@@ -65,152 +109,130 @@ def get_candidate_layers(n_layers):
         while start < n_layers:
             buckets.append(range(start, min(start + 20, n_layers)))
             start += 20
-    return [l for bucket in buckets for l in bucket if l % 2 == 0]
-
-
-def dola_decode_token(final_logits, final_probs, candidate_raw, candidate_probs, alpha):
-    """Select next token using DoLa contrastive decoding."""
-    # Select premature layer via JSD maximization
-    best_layer = None
-    best_jsd = -1.0
-    for layer_idx, q_j in candidate_probs.items():
-        jsd = compute_jsd(final_probs, q_j)
-        if jsd > best_jsd:
-            best_jsd = jsd
-            best_layer = layer_idx
-
-    if best_layer is None:
-        return final_logits.argmax().item(), None
-
-    # Contrastive logits with V_head constraint
-    max_prob = final_probs.max().item()
-    threshold = alpha * max_prob
-    v_head_mask = final_probs >= threshold
-
-    contrastive = torch.full_like(final_logits, float('-inf'))
-    contrastive[v_head_mask] = (
-        final_logits[v_head_mask] - candidate_raw[best_layer][v_head_mask]
-    )
-    return contrastive.argmax().item(), best_layer
+    return [layer for bucket in buckets for layer in bucket if layer % 2 == 0]
 
 
 # ---------------------------------------------------------------------------
-# Steering vector implementation (ActAdd)
+# Steering vector engine (ActAdd)
 # ---------------------------------------------------------------------------
+
 
 class SteeringEngine:
-    """Steering vector engine for ActAdd (activation addition)."""
+    """Steering vector engine for activation addition (ActAdd)."""
 
-    def __init__(self, n_layers, hidden_dim, coefficient=COEFFICIENT_DEFAULT,
-                 target_layer="auto"):
+    def __init__(
+        self,
+        n_layers: int,
+        hidden_dim: int,
+        coefficient: float = COEFFICIENT_DEFAULT,
+        target_layer: str = "auto",
+    ):
         self.n_layers = n_layers
         self.hidden_dim = hidden_dim
         self.coefficient = coefficient
         self.target_layer = target_layer
-        self.vectors = {}  # layer_idx -> torch.Tensor (kept on inference device)
-        self._device = None  # set when model device is known
+        self.vectors: dict[int, torch.Tensor] = {}
+        self._device: torch.device | None = None
 
-        # Resolve target layer
         if target_layer == "auto":
             self.target_layer_idx = n_layers // 3
         else:
             self.target_layer_idx = int(target_layer)
 
-        # Validate
         if self.target_layer_idx < 0 or self.target_layer_idx >= n_layers:
             logger.warning(
-                f"Target layer {target_layer} out of range [0, {n_layers}), "
-                f"clamping to {n_layers // 3}"
+                "target_layer_out_of_range",
+                target=target_layer,
+                clamped_to=n_layers // 3,
             )
             self.target_layer_idx = n_layers // 3
 
         if coefficient < COEFFICIENT_MIN or coefficient > COEFFICIENT_MAX:
             logger.warning(
-                f"Coefficient {coefficient} outside range [{COEFFICIENT_MIN}, {COEFFICIENT_MAX}], "
-                f"clamping to {COEFFICIENT_DEFAULT}"
+                "coefficient_out_of_range",
+                coefficient=coefficient,
+                clamped_to=COEFFICIENT_DEFAULT,
             )
             self.coefficient = COEFFICIENT_DEFAULT
 
-    def add_vector(self, layer_idx, vector):
-        """Add a steering vector for a specific layer."""
+    def add_vector(self, layer_idx: int, vector: np.ndarray | torch.Tensor) -> None:
         if isinstance(vector, np.ndarray):
             vector = torch.from_numpy(vector).float()
         if vector.shape != (self.hidden_dim,):
             logger.error(
-                f"Vector shape {vector.shape} doesn't match hidden_dim {self.hidden_dim}"
+                "vector_shape_mismatch",
+                got=vector.shape,
+                expected=(self.hidden_dim,),
             )
             return
         if self._device is not None:
             self.vectors[layer_idx] = vector.to(self._device)
         else:
-            self.vectors[layer_idx] = vector  # will be moved on first apply_steering call
+            self.vectors[layer_idx] = vector
 
-    def load_vector_from_file(self, layer_idx, filepath):
-        """Load a steering vector from .safetensors or .npz file."""
+    def load_vector_from_file(self, layer_idx: int, filepath: str) -> None:
         try:
-            if filepath.endswith('.npz'):
+            if filepath.endswith(".npz"):
                 data = np.load(filepath)
-                vector = data['vector'] if 'vector' in data else data[list(data.keys())[0]]
-            elif filepath.endswith('.safetensors'):
+                vector = data["vector"] if "vector" in data else data[list(data.keys())[0]]
+            elif filepath.endswith(".safetensors"):
                 from safetensors.torch import load_file
+
                 data = load_file(filepath)
-                vector = data['vector'] if 'vector' in data else data[list(data.keys())[0]]
+                vector = data["vector"] if "vector" in data else data[list(data.keys())[0]]
                 vector = vector.cpu().numpy()
             else:
-                logger.error(f"Unsupported file format: {filepath}")
+                logger.error("unsupported_vector_format", filepath=filepath)
                 return
 
             self.add_vector(layer_idx, vector)
-            logger.info(f"Loaded steering vector for layer {layer_idx} from {filepath}")
-        except Exception as e:
-            logger.error(f"Failed to load steering vector from {filepath}: {e}")
+            logger.info("loaded_steering_vector", layer=layer_idx, path=filepath)
+        except Exception:
+            logger.exception("steering_vector_load_failed", filepath=filepath)
 
-    def compute_vector(self, model, tokenizer, positive_prompt, negative_prompt, layer_idx):
-        """Compute steering vector from contrast prompt pair (ActAdd: h+ - h-)."""
+    def compute_vector(
+        self,
+        model: AutoModelForCausalLM,
+        tokenizer: AutoTokenizer,
+        positive_prompt: str,
+        negative_prompt: str,
+        layer_idx: int,
+    ) -> np.ndarray | None:
         try:
-            # Tokenize prompts
             pos_inputs = tokenizer(positive_prompt, return_tensors="pt").to(model.device)
             neg_inputs = tokenizer(negative_prompt, return_tensors="pt").to(model.device)
 
-            # Get hidden states for positive prompt
             with torch.inference_mode():
-                pos_outputs = model(
+                pos_out = model(
                     input_ids=pos_inputs.input_ids,
                     output_hidden_states=True,
                     return_dict=True,
                 )
-                pos_hidden = pos_outputs.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
+                pos_hidden = pos_out.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
 
-            # Get hidden states for negative prompt
             with torch.inference_mode():
-                neg_outputs = model(
+                neg_out = model(
                     input_ids=neg_inputs.input_ids,
                     output_hidden_states=True,
                     return_dict=True,
                 )
-                neg_hidden = neg_outputs.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
+                neg_hidden = neg_out.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
 
-            # Compute steering vector: h+ - h-
             steering_vector = pos_hidden - neg_hidden
-
-            # Validate magnitude
             magnitude = torch.norm(steering_vector).item()
             if magnitude < 1e-6:
-                logger.warning(f"Steering vector magnitude too small: {magnitude}")
+                logger.warning("steering_vector_too_small", magnitude=magnitude)
                 return None
 
-            logger.info(f"Computed steering vector for layer {layer_idx}, magnitude={magnitude:.4f}")
+            logger.info("computed_steering_vector", layer=layer_idx, magnitude=round(magnitude, 4))
             return steering_vector.numpy()
-
-        except Exception as e:
-            logger.error(f"Failed to compute steering vector: {e}")
+        except Exception:
+            logger.exception("steering_vector_compute_failed")
             return None
 
-    def apply_steering(self, hidden_state, layer_idx):
-        """Apply steering vector to hidden state at target layer."""
+    def apply_steering(self, hidden_state: torch.Tensor, layer_idx: int) -> torch.Tensor:
         if layer_idx != self.target_layer_idx:
             return hidden_state
-
         if layer_idx not in self.vectors:
             return hidden_state
 
@@ -219,12 +241,9 @@ class SteeringEngine:
             vector = vector.to(hidden_state.device)
             self.vectors[layer_idx] = vector
             self._device = hidden_state.device
-        # h_modified = h + c * steering_vector
-        modified = hidden_state + self.coefficient * vector.unsqueeze(0)
-        return modified
+        return hidden_state + self.coefficient * vector.unsqueeze(0)
 
-    def is_active(self):
-        """Check if steering is active."""
+    def is_active(self) -> bool:
         return self.target_layer_idx in self.vectors
 
 
@@ -232,46 +251,48 @@ class SteeringEngine:
 # TurboQuant KV compression
 # ---------------------------------------------------------------------------
 
+
 class KVCompressor:
     """Compress KV cache using TurboQuant. Falls back to no-op if unavailable."""
 
-    def __init__(self, head_dim, bit_width=4):
+    def __init__(self, head_dim: int, bit_width: int = 4):
         self.head_dim = head_dim
         self.bit_width = bit_width
         self.tq = None
         self.enabled = False
 
-        try:
-            from turboquant import TurboQuantMSE
-            self.tq = TurboQuantMSE(d=head_dim, bit_width=bit_width)
-            self.enabled = True
-            logger.info(f"TurboQuant enabled: {bit_width}-bit, d={head_dim}")
-        except ImportError:
-            logger.warning("TurboQuant not available, KV cache compression disabled")
-
-    def compress_cache(self, past_key_values):
-        """Compress KV cache in-place (quantize then dequantize)."""
-        if not self.enabled or past_key_values is None:
+        if bit_width == 0:
+            logger.info("turboquant_disabled_by_config")
             return
 
-        if not hasattr(past_key_values, 'layers'):
+        try:
+            from turboquant import TurboQuantMSE
+
+            self.tq = TurboQuantMSE(d=head_dim, bit_width=bit_width)
+            self.enabled = True
+            logger.info("turboquant_enabled", bit_width=bit_width, head_dim=head_dim)
+        except ImportError:
+            logger.warning("turboquant_unavailable")
+
+    def compress_cache(self, past_key_values) -> None:
+        if not self.enabled or past_key_values is None:
+            return
+        if not hasattr(past_key_values, "layers"):
             return
 
         for layer in past_key_values.layers:
-            if not hasattr(layer, 'keys') or not hasattr(layer, 'values'):
+            if not hasattr(layer, "keys") or not hasattr(layer, "values"):
                 continue
 
             keys = layer.keys
             values = layer.values
             batch, n_heads, seq_len, head_dim = keys.shape
-
             if head_dim != self.head_dim:
                 continue
 
             device = keys.device
             dtype = keys.dtype
 
-            # Vectorized: reshape to (N, head_dim), quantize batch, reshape back
             k_flat = keys.float().cpu().numpy().reshape(-1, head_dim)
             v_flat = values.float().cpu().numpy().reshape(-1, head_dim)
 
@@ -290,31 +311,256 @@ class KVCompressor:
 
 
 # ---------------------------------------------------------------------------
-# Inference Engine
+# DoLaSteeringProcessor — LogitsProcessor with forward hooks
 # ---------------------------------------------------------------------------
 
-def _log_vram(label=""):
-    """Log GPU VRAM usage."""
+
+class DoLaSteeringProcessor(LogitsProcessor):
+    """Custom LogitsProcessor that applies DoLa contrastive decoding and
+    steering vector injection via model forward hooks.
+
+    Forward hooks on each decoder layer capture hidden states. Steering is
+    injected at the target layer via a pre-forward hook. In __call__, the
+    captured hidden states are used for DoLa layer-contrast token selection.
+    """
+
+    def __init__(
+        self,
+        model: AutoModelForCausalLM,
+        candidate_layers: list[int],
+        alpha: float,
+        steering_engine: SteeringEngine | None,
+        kv_compressor: KVCompressor | None,
+    ):
+        self.model = model
+        self.lm_head = model.lm_head
+        self.candidate_layers = candidate_layers
+        self.alpha = alpha
+        self.steering_engine = steering_engine
+        self.kv_compressor = kv_compressor
+
+        # Storage for captured hidden states (reset each forward pass)
+        self._captured_hidden: dict[int, torch.Tensor] = {}
+        self._final_hidden: torch.Tensor | None = None
+        self._hooks: list = []
+
+    def register_hooks(self) -> None:
+        """Register forward hooks on decoder layers to capture hidden states."""
+        self.remove_hooks()
+
+        # Find the decoder layers
+        layers = _get_decoder_layers(self.model)
+        if layers is None:
+            logger.error("cannot_find_decoder_layers")
+            return
+
+        n_layers = len(layers)
+        # Hook on candidate layers to capture hidden states for DoLa
+        for layer_idx in self.candidate_layers:
+            if layer_idx < n_layers:
+                hook = layers[layer_idx].register_forward_hook(
+                    self._make_capture_hook(layer_idx)
+                )
+                self._hooks.append(hook)
+
+        # Hook on final layer to capture final hidden state
+        final_idx = n_layers - 1
+        hook = layers[final_idx].register_forward_hook(
+            self._make_capture_hook(final_idx)
+        )
+        self._hooks.append(hook)
+
+        # Steering: register post-forward hook on target layer
+        if (
+            self.steering_engine is not None
+            and self.steering_engine.is_active()
+        ):
+            target = self.steering_engine.target_layer_idx
+            if target < n_layers:
+                steer_hook = layers[target].register_forward_hook(
+                    self._steering_hook
+                )
+                self._hooks.append(steer_hook)
+
+        # TurboQuant: register post-forward hook on model for KV compression
+        if self.kv_compressor is not None and self.kv_compressor.enabled:
+            tq_hook = self.model.register_forward_hook(self._tq_hook)
+            self._hooks.append(tq_hook)
+
+        logger.info(
+            "hooks_registered",
+            candidate_layers=len(self.candidate_layers),
+            steering=self.steering_engine is not None and self.steering_engine.is_active(),
+            turboquant=self.kv_compressor is not None and self.kv_compressor.enabled,
+        )
+
+    def remove_hooks(self) -> None:
+        for hook in self._hooks:
+            hook.remove()
+        self._hooks.clear()
+
+    def _make_capture_hook(self, layer_idx: int):
+        def hook_fn(_module, _input, output):
+            # Decoder layers typically return (hidden_state, ...) or just hidden_state
+            if isinstance(output, tuple):
+                hidden = output[0]
+            else:
+                hidden = output
+            # Capture only the last token position to save memory
+            self._captured_hidden[layer_idx] = hidden[:, -1, :].detach()
+        return hook_fn
+
+    def _steering_hook(self, _module, _input, output):
+        if self.steering_engine is None or not self.steering_engine.is_active():
+            return output
+        target = self.steering_engine.target_layer_idx
+        if isinstance(output, tuple):
+            hidden = output[0]
+            modified_last = self.steering_engine.apply_steering(
+                hidden[:, -1:, :], target
+            )
+            hidden = hidden.clone()
+            hidden[:, -1:, :] = modified_last
+            return (hidden,) + output[1:]
+        else:
+            modified_last = self.steering_engine.apply_steering(
+                output[:, -1:, :], target
+            )
+            output = output.clone()
+            output[:, -1:, :] = modified_last
+            return output
+
+    def _tq_hook(self, _module, _input, output):
+        if hasattr(output, "past_key_values"):
+            self.kv_compressor.compress_cache(output.past_key_values)
+        return output
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        """Apply DoLa contrastive decoding using captured hidden states."""
+        if not self._captured_hidden:
+            return scores
+
+        # Find the final layer hidden state
+        layers = _get_decoder_layers(self.model)
+        if layers is None:
+            return scores
+        final_idx = len(layers) - 1
+
+        if final_idx not in self._captured_hidden:
+            return scores
+
+        final_hidden = self._captured_hidden[final_idx].to(self.lm_head.weight.device)
+        final_logits = self.lm_head(final_hidden).squeeze(0).float()
+        final_probs = F.softmax(final_logits, dim=-1)
+
+        # Compute candidate layer logits via lm_head
+        candidate_probs: dict[int, torch.Tensor] = {}
+        candidate_raw: dict[int, torch.Tensor] = {}
+
+        for layer_idx in self.candidate_layers:
+            if layer_idx in self._captured_hidden:
+                h = self._captured_hidden[layer_idx].to(self.lm_head.weight.device)
+                raw = self.lm_head(h).squeeze(0).float()
+                candidate_probs[layer_idx] = F.softmax(raw, dim=-1)
+                candidate_raw[layer_idx] = raw
+
+        if not candidate_probs:
+            self._captured_hidden.clear()
+            return scores
+
+        # DoLa: select premature layer via JSD maximization
+        best_layer = None
+        best_jsd = -1.0
+        for layer_idx, q_j in candidate_probs.items():
+            jsd = compute_jsd(final_probs, q_j)
+            if jsd > best_jsd:
+                best_jsd = jsd
+                best_layer = layer_idx
+
+        if best_layer is None:
+            self._captured_hidden.clear()
+            return scores
+
+        # Contrastive logits with V_head constraint
+        max_prob = final_probs.max().item()
+        threshold = self.alpha * max_prob
+        v_head_mask = final_probs >= threshold
+
+        contrastive = torch.full_like(final_logits, float("-inf"))
+        contrastive[v_head_mask] = (
+            final_logits[v_head_mask] - candidate_raw[best_layer][v_head_mask]
+        )
+
+        # Clear captured states for next step
+        self._captured_hidden.clear()
+
+        # Return contrastive logits reshaped to match scores
+        return contrastive.unsqueeze(0)
+
+    def __del__(self):
+        self.remove_hooks()
+
+
+def _get_decoder_layers(model):
+    """Find the decoder layer list in the model architecture."""
+    # Gemma4 / LLaMA / Mistral: model.model.layers
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return model.model.layers
+    # GPT-2 style: model.transformer.h
+    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        return model.transformer.h
+    return None
+
+
+# ---------------------------------------------------------------------------
+# VRAM logging
+# ---------------------------------------------------------------------------
+
+
+def _log_vram(label: str = "") -> None:
     if torch.cuda.is_available():
         alloc = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
-        total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1024**3
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        total = props.total_memory / 1024**3
         logger.info(
-            f"VRAM [{label}]: allocated={alloc:.2f}GB, reserved={reserved:.2f}GB, "
-            f"total={total:.2f}GB, free={total - reserved:.2f}GB"
+            "vram",
+            label=label,
+            allocated_gb=round(alloc, 2),
+            reserved_gb=round(reserved, 2),
+            total_gb=round(total, 2),
+            free_gb=round(total - reserved, 2),
         )
 
 
+# ---------------------------------------------------------------------------
+# InferenceEngine
+# ---------------------------------------------------------------------------
+
+
 class InferenceEngine:
-    """Composed inference: HF Transformers + DoLa + TurboQuant + Steering."""
+    """Composed inference: HF Transformers + DoLa + TurboQuant + Steering.
 
-    def __init__(self, model_name, dola_enabled=True, dola_alpha=ALPHA_DEFAULT,
-                 turboquant_bits=4, steering_enabled=False, steering_coefficient=COEFFICIENT_DEFAULT,
-                 steering_layer="auto", max_new_tokens=256, device_map="auto",
-                 load_in_4bit=True):
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    Uses model.generate() with a custom DoLaSteeringProcessor for the decode
+    loop, and TextIteratorStreamer for real token streaming.
+    """
 
-        logger.info(f"Loading model: {model_name} (4bit={load_in_4bit})")
+    def __init__(
+        self,
+        model_name: str,
+        dola_enabled: bool = True,
+        dola_alpha: float = ALPHA_DEFAULT,
+        turboquant_bits: int = 4,
+        steering_enabled: bool = False,
+        steering_coefficient: float = COEFFICIENT_DEFAULT,
+        steering_layer: str = "auto",
+        max_new_tokens: int = MAX_NEW_TOKENS_DEFAULT,
+        device_map: str = "auto",
+        load_in_4bit: bool = True,
+    ):
+        logger.info("loading_model", model=model_name, load_in_4bit=load_in_4bit)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if load_in_4bit:
@@ -325,27 +571,30 @@ class InferenceEngine:
                 bnb_4bit_use_double_quant=True,
             )
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, quantization_config=bnb_config, device_map=device_map,
+                model_name,
+                quantization_config=bnb_config,
+                device_map=device_map,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, torch_dtype=torch.bfloat16, device_map=device_map,
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=device_map,
             )
         self.model.eval()
-        self.lm_head = self.model.lm_head
         self.lock = Lock()
-        _log_vram("after model load")
+        _log_vram("after_model_load")
 
         # Model config
-        if hasattr(self.model.config, 'text_config'):
+        if hasattr(self.model.config, "text_config"):
             tc = self.model.config.text_config
             self.n_layers = tc.num_hidden_layers
             self.hidden_dim = tc.hidden_size
-            self.head_dim = getattr(tc, 'head_dim', 256)
+            self.head_dim = getattr(tc, "head_dim", 256)
         else:
             self.n_layers = self.model.config.num_hidden_layers
             self.hidden_dim = self.model.config.hidden_size
-            self.head_dim = getattr(self.model.config, 'head_dim', 256)
+            self.head_dim = getattr(self.model.config, "head_dim", 256)
 
         self.candidate_layers = get_candidate_layers(self.n_layers)
         self.dola_enabled = dola_enabled
@@ -357,755 +606,930 @@ class InferenceEngine:
 
         # Steering vectors
         self.steering_enabled = steering_enabled
-        self.steering_engine = SteeringEngine(
-            self.n_layers, self.hidden_dim, steering_coefficient, steering_layer
-        ) if steering_enabled else None
+        self.steering_engine: SteeringEngine | None = None
+        if steering_enabled:
+            self.steering_engine = SteeringEngine(
+                self.n_layers, self.hidden_dim, steering_coefficient, steering_layer
+            )
+
+        # DoLa+Steering processor (registered lazily per generate call)
+        self._dola_processor: DoLaSteeringProcessor | None = None
+        if dola_enabled:
+            self._dola_processor = DoLaSteeringProcessor(
+                model=self.model,
+                candidate_layers=self.candidate_layers,
+                alpha=dola_alpha,
+                steering_engine=self.steering_engine,
+                kv_compressor=self.kv_compressor if self.kv_compressor.enabled else None,
+            )
 
         logger.info(
-            f"Engine ready: layers={self.n_layers}, hidden_dim={self.hidden_dim}, head_dim={self.head_dim}, "
-            f"dola={'ON' if dola_enabled else 'OFF'} (alpha={dola_alpha}), "
-            f"turboquant={'ON' if self.kv_compressor.enabled else 'OFF'} ({turboquant_bits}-bit), "
-            f"steering={'ON' if steering_enabled and self.steering_engine else 'OFF'}"
+            "engine_ready",
+            layers=self.n_layers,
+            hidden_dim=self.hidden_dim,
+            head_dim=self.head_dim,
+            dola=dola_enabled,
+            dola_alpha=dola_alpha,
+            turboquant=self.kv_compressor.enabled,
+            turboquant_bits=turboquant_bits,
+            steering=steering_enabled,
         )
 
-    def generate(self, prompt, max_tokens=None, temperature=0.0, stream=False):
-        """Generate text with DoLa + TurboQuant."""
+    def _format_prompt(self, prompt: str) -> str:
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                return self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+            except Exception:
+                logger.warning("chat_template_failed_in_format", prompt_len=len(prompt))
+        return prompt
+
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: int | None = None,
+        temperature: float = 0.0,
+    ) -> tuple[str, list[int], int]:
+        """Generate text synchronously. Returns (text, token_ids, input_token_count)."""
         max_tokens = max_tokens or self.max_new_tokens
 
         with self.lock:
             return self._generate_impl(prompt, max_tokens, temperature)
 
-    def _generate_impl(self, prompt, max_tokens, temperature):
-        gen_start = time.time()
-        # Format with chat template if available
-        if hasattr(self.tokenizer, 'apply_chat_template'):
-            try:
-                messages = [{"role": "user", "content": prompt}]
-                formatted = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-            except Exception:
-                formatted = prompt
-        else:
-            formatted = prompt
+    def generate_streaming(
+        self,
+        prompt: str,
+        max_tokens: int | None = None,
+        temperature: float = 0.0,
+    ) -> tuple[TextIteratorStreamer, int]:
+        """Start streaming generation in a background thread.
 
+        Returns (streamer, input_token_count). The caller iterates the
+        streamer to get token chunks as they are produced.
+        """
+        max_tokens = max_tokens or self.max_new_tokens
+        formatted = self._format_prompt(prompt)
         inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
-        input_ids = inputs.input_ids.clone()
-        input_token_count = input_ids.shape[1]
-        logger.info(
-            f"[request] prompt_chars={len(prompt)}, formatted_chars={len(formatted)}, "
-            f"input_tokens={input_token_count}, max_tokens={max_tokens}"
+        input_token_count = inputs.input_ids.shape[1]
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=False,
+            timeout=STREAMER_TIMEOUT_S,
         )
-        generated_tokens = []
-        past = None
 
-        for step in range(max_tokens):
+        generation_kwargs = {
+            "input_ids": inputs.input_ids,
+            "attention_mask": inputs.attention_mask,
+            "max_new_tokens": max_tokens,
+            "do_sample": temperature > 0,
+            "streamer": streamer,
+            "output_hidden_states": self.dola_enabled,
+            "return_dict_in_generate": True,
+        }
+        if temperature > 0:
+            generation_kwargs["temperature"] = temperature
+
+        logits_processors = []
+        if self.dola_enabled and self._dola_processor is not None:
+            self._dola_processor.register_hooks()
+            logits_processors.append(self._dola_processor)
+            generation_kwargs["logits_processor"] = logits_processors
+
+        def _run():
+            try:
+                with self.lock, torch.inference_mode():
+                    self.model.generate(**generation_kwargs)
+            finally:
+                if self._dola_processor is not None:
+                    self._dola_processor.remove_hooks()
+
+        _thread_pool.submit(_run)
+
+        logger.info(
+            "streaming_started",
+            input_tokens=input_token_count,
+            max_tokens=max_tokens,
+            prompt_chars=len(prompt),
+        )
+        return streamer, input_token_count
+
+    def _generate_impl(
+        self, prompt: str, max_tokens: int, temperature: float
+    ) -> tuple[str, list[int], int]:
+        gen_start = time.time()
+        formatted = self._format_prompt(prompt)
+        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
+        input_token_count = inputs.input_ids.shape[1]
+
+        logger.info(
+            "request",
+            prompt_chars=len(prompt),
+            formatted_chars=len(formatted),
+            input_tokens=input_token_count,
+            max_tokens=max_tokens,
+        )
+
+        generation_kwargs = {
+            "input_ids": inputs.input_ids,
+            "attention_mask": inputs.attention_mask,
+            "max_new_tokens": max_tokens,
+            "do_sample": temperature > 0,
+            "output_hidden_states": self.dola_enabled,
+            "return_dict_in_generate": True,
+        }
+        if temperature > 0:
+            generation_kwargs["temperature"] = temperature
+
+        logits_processors = []
+        if self.dola_enabled and self._dola_processor is not None:
+            self._dola_processor.register_hooks()
+            logits_processors.append(self._dola_processor)
+            generation_kwargs["logits_processor"] = logits_processors
+
+        try:
             with torch.inference_mode():
-                if self.dola_enabled and past is None:
-                    # First token: need hidden states for DoLa
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        output_hidden_states=True,
-                        use_cache=True,
-                        return_dict=True,
-                    )
-                    next_token = self._dola_select(outputs)
-                    past = outputs.past_key_values
-                elif self.dola_enabled:
-                    # Subsequent tokens with KV cache
-                    next_input = torch.tensor(
-                        [[generated_tokens[-1]]], device=self.model.device
-                    )
-                    outputs = self.model(
-                        input_ids=next_input,
-                        past_key_values=past,
-                        output_hidden_states=True,
-                        use_cache=True,
-                        return_dict=True,
-                    )
-                    next_token = self._dola_select(outputs)
-                    past = outputs.past_key_values
-                else:
-                    # No DoLa: standard greedy
-                    if past is None:
-                        outputs = self.model(
-                            input_ids=input_ids,
-                            use_cache=True,
-                            return_dict=True,
-                        )
-                    else:
-                        next_input = torch.tensor(
-                            [[generated_tokens[-1]]], device=self.model.device
-                        )
-                        outputs = self.model(
-                            input_ids=next_input,
-                            past_key_values=past,
-                            use_cache=True,
-                            return_dict=True,
-                        )
-                    next_token = outputs.logits[:, -1, :].argmax(dim=-1).item()
-                    past = outputs.past_key_values
+                outputs = self.model.generate(**generation_kwargs)
+        finally:
+            if self._dola_processor is not None:
+                self._dola_processor.remove_hooks()
 
-            # TurboQuant: compress KV cache after each step
-            if self.kv_compressor.enabled:
-                self.kv_compressor.compress_cache(past)
+        # outputs.sequences includes the input tokens
+        generated_ids = outputs.sequences[0, input_token_count:].tolist()
+        text = self.tokenizer.decode(generated_ids, skip_special_tokens=False)
 
-            generated_tokens.append(next_token)
-
-            # Check EOS
-            eos_ids = self.tokenizer.eos_token_id
-            if isinstance(eos_ids, int):
-                eos_ids = [eos_ids]
-            elif eos_ids is None:
-                eos_ids = []
-            if next_token in eos_ids:
-                break
-
-            # Check for tool call stop — decode recent tokens to detect <tool_call|>
-            if len(generated_tokens) >= 3:
-                recent = self.tokenizer.decode(generated_tokens[-10:], skip_special_tokens=False)
-                if '<tool_call|>' in recent:
-                    break
-
-        text = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
-        # Clean up special tokens but preserve tool call markers for parsing
-        # Remove <bos>, <eos>, turn markers, but keep tool_call markers
-        for token in ['<bos>', '<eos>', '<pad>']:
-            text = text.replace(token, '')
+        # Clean special tokens but keep tool call markers
+        for token in ["<bos>", "<eos>", "<pad>"]:
+            text = text.replace(token, "")
 
         gen_elapsed_ms = (time.time() - gen_start) * 1000
-        out_tokens = len(generated_tokens)
+        out_tokens = len(generated_ids)
         tps = out_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0
         logger.info(
-            f"[response] input_tokens={input_token_count}, output_tokens={out_tokens}, "
-            f"elapsed={gen_elapsed_ms:.0f}ms, tok/s={tps:.1f}"
+            "response",
+            input_tokens=input_token_count,
+            output_tokens=out_tokens,
+            elapsed_ms=round(gen_elapsed_ms),
+            tok_per_s=round(tps, 1),
         )
-        _log_vram("after generate")
-        return text.strip(), generated_tokens, input_token_count
+        _log_vram("after_generate")
 
-    def _dola_select(self, outputs):
-        """Apply steering + DoLa contrastive decoding to select next token."""
-        hidden_states = outputs.hidden_states
-
-        # Early return if steering disabled or no vectors loaded
-        if not (self.steering_enabled and self.steering_engine and self.steering_engine.is_active()):
-            # Skip steering, proceed directly to DoLa
-            pass
-        else:
-            # Apply steering to hidden states at target layer (in-place, no cloning)
-            for layer_idx, hs in enumerate(hidden_states):
-                # Apply steering at target layer (hs[layer_idx] corresponds to layer_idx)
-                modified = self.steering_engine.apply_steering(hs[:, -1, :], layer_idx)
-                # Modify in-place: only change if steering was applied
-                if not torch.equal(modified, hs[:, -1, :]):
-                    hs[:, -1, :] = modified
-
-        final_hidden = hidden_states[-1][:, -1, :].to(self.lm_head.weight.device)
-        final_logits = self.lm_head(final_hidden).squeeze(0).float()
-        final_probs = F.softmax(final_logits, dim=-1)
-
-        candidate_probs = {}
-        candidate_raw = {}
-        n_hidden = len(hidden_states)
-
-        for layer_idx in self.candidate_layers:
-            hs_idx = layer_idx + 1
-            if hs_idx < n_hidden:
-                h = hidden_states[hs_idx][:, -1, :].to(self.lm_head.weight.device)
-                raw = self.lm_head(h).squeeze(0).float()
-                candidate_probs[layer_idx] = F.softmax(raw, dim=-1)
-                candidate_raw[layer_idx] = raw
-
-        if not candidate_probs:
-            return final_logits.argmax().item()
-
-        token, _ = dola_decode_token(
-            final_logits, final_probs, candidate_raw, candidate_probs,
-            self.dola_alpha
-        )
-        return token
+        return text.strip(), generated_ids, input_token_count
 
 
 # ---------------------------------------------------------------------------
-# HTTP Server (OpenAI-compatible /v1/completions)
+# Anthropic message format helpers
 # ---------------------------------------------------------------------------
 
-class InferenceHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    engine: InferenceEngine = None  # Set by server setup
+_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL
+)
 
-    def do_GET(self):
-        if self.path == "/health":
-            self._json_response(200, {"status": "healthy"})
-        elif self.path == "/v1/models":
-            self._json_response(200, {
-                "data": [{"id": "elai-composed", "object": "model"}]
+
+def _anthropic_to_gemma_prompt(
+    tokenizer, messages: list, system: str = "", tools: list | None = None
+) -> str:
+    gemma_tools = None
+    if tools:
+        gemma_tools = []
+        for tool in tools:
+            name = tool.get("name", "")
+            if name not in CORE_TOOLS:
+                continue
+            desc = tool.get("description", "")
+            if len(desc) > 200:
+                desc = desc[:200] + "..."
+            gemma_tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": tool.get("input_schema", {}),
+                },
             })
-        else:
-            self._json_response(404, {"error": "not found"})
+        if not gemma_tools:
+            gemma_tools = None
 
-    def do_POST(self):
-        if self.path == "/v1/messages":
-            return self._handle_messages()
-        elif self.path == "/v1/completions":
-            return self._handle_completions()
-        elif self.path == "/shutdown":
-            self._json_response(200, {"status": "shutting down"})
-            import threading
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-        else:
-            self._json_response(404, {"error": "not found"})
+    gemma_messages = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
 
-    def _handle_messages(self):
-        """Anthropic Messages API compatible endpoint with streaming SSE."""
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        try:
-            request = json.loads(body)
-        except json.JSONDecodeError:
-            self._json_response(400, {"error": "invalid JSON"})
-            return
+        if role == "assistant":
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            text_parts.append(
+                                _format_gemma_tool_call(tool_name, tool_input)
+                            )
+                content = "\n".join(text_parts)
+            gemma_messages.append({"role": "assistant", "content": content})
 
-        # Extract request fields
-        messages = request.get("messages", [])
-        system = request.get("system", "")
-        max_tokens = request.get("max_tokens", 256)
-        stream = request.get("stream", False)
-        tools = request.get("tools", [])
+        elif role == "user":
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "tool_result":
+                            result_content = block.get("content", "")
+                            if isinstance(result_content, list):
+                                result_text = "\n".join(
+                                    b.get("text", "")
+                                    for b in result_content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            else:
+                                result_text = str(result_content)
+                            text_parts.append(f"Tool result: {result_text}")
+                content = "\n".join(text_parts)
+            gemma_messages.append({"role": "user", "content": content})
 
-        # Convert Anthropic messages+tools to Gemma4 chat format
-        prompt = self._anthropic_to_gemma_prompt(messages, system, tools)
+    # Prepend system to first user message
+    if system and gemma_messages:
+        for i, m in enumerate(gemma_messages):
+            if m["role"] == "user":
+                gemma_messages[i]["content"] = system + "\n\n" + m["content"]
+                break
 
-        system_chars = len(system) if system else 0
-        msg_count = len(messages)
-        tool_count = len(tools) if tools else 0
-        tool_names = [t.get("name", "?") for t in tools] if tools else []
-        logger.info(
-            f"[turn] system_chars={system_chars}, messages={msg_count}, "
-            f"tools={tool_count} ({', '.join(tool_names[:10])}{'...' if tool_count > 10 else ''}), "
-            f"prompt_chars={len(prompt)}"
+    try:
+        return tokenizer.apply_chat_template(
+            gemma_messages,
+            tools=gemma_tools,
+            tokenize=False,
+            add_generation_prompt=True,
         )
-        logger.info(f"[prompt_preview] {prompt[:300]}...")
-
-        if stream:
-            self._stream_messages_response(prompt, max_tokens, request.get("model", "elai-local"), tools)
-        else:
-            self._non_stream_messages_response(prompt, max_tokens, request.get("model", "elai-local"), tools)
-
-    def _anthropic_to_gemma_prompt(self, messages, system="", tools=None):
-        """Convert Anthropic messages format to Gemma4 chat template input."""
-        tokenizer = self.engine.tokenizer
-
-        # Convert Anthropic tool definitions to OpenAI format (what Gemma4 chat template expects)
-        # Filter to core tools only — small models can't handle 40+ tool definitions
-        CORE_TOOLS = {
-            "bash", "read_file", "write_file", "edit_file",
-            "glob_search", "grep_search", "WebFetch", "WebSearch",
-            "TodoWrite", "AskUserQuestion",
-        }
-
-        gemma_tools = None
-        if tools:
-            gemma_tools = []
-            for tool in tools:
-                name = tool.get("name", "")
-                if name not in CORE_TOOLS:
-                    continue
-                # Truncate long descriptions to save context
-                desc = tool.get("description", "")
-                if len(desc) > 200:
-                    desc = desc[:200] + "..."
-                gemma_tool = {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": desc,
-                        "parameters": tool.get("input_schema", {}),
-                    },
-                }
-                gemma_tools.append(gemma_tool)
-            if not gemma_tools:
-                gemma_tools = None
-
-        # Convert Anthropic messages to Gemma4 chat format
-        gemma_messages = []
-
-        # System message
-        if system:
-            # Gemma4 doesn't have a separate system role in chat template;
-            # prepend to first user message or use as system instruction
-            pass  # Handled below
-
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-
-            if role == "assistant":
-                # Check for tool_use blocks
-                if isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif block.get("type") == "tool_use":
-                                # Format as Gemma4 tool call inline
-                                tool_name = block.get("name", "")
-                                tool_input = block.get("input", {})
-                                tool_call_str = self._format_gemma_tool_call(tool_name, tool_input)
-                                text_parts.append(tool_call_str)
-                    content = "\n".join(text_parts)
-                gemma_messages.append({"role": "assistant", "content": content})
-
-            elif role == "user":
-                if isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif block.get("type") == "tool_result":
-                                # Format as Gemma4 tool response
-                                tool_id = block.get("tool_use_id", "")
-                                result_content = block.get("content", "")
-                                if isinstance(result_content, list):
-                                    result_text = "\n".join(
-                                        b.get("text", "") for b in result_content
-                                        if isinstance(b, dict) and b.get("type") == "text"
-                                    )
-                                else:
-                                    result_text = str(result_content)
-                                text_parts.append(f"Tool result: {result_text}")
-                    content = "\n".join(text_parts)
-                gemma_messages.append({"role": "user", "content": content})
-
-        # Prepend system to first user message if present
-        if system and gemma_messages:
-            for i, m in enumerate(gemma_messages):
-                if m["role"] == "user":
-                    gemma_messages[i]["content"] = system + "\n\n" + m["content"]
-                    break
-
-        # Use Gemma4's chat template
-        try:
-            formatted = tokenizer.apply_chat_template(
-                gemma_messages,
-                tools=gemma_tools if gemma_tools else None,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            return formatted
-        except Exception as e:
-            logger.warning(f"Chat template failed: {e}, falling back to plain concat")
-            # Fallback: plain concatenation
-            parts = []
-            if system:
-                parts.append(system)
-            for m in gemma_messages:
-                parts.append(m.get("content", ""))
-            return "\n".join(parts)
-
-    def _format_gemma_tool_call(self, name, args):
-        """Format a tool call in Gemma4's native format."""
-        # Gemma4 format: <|tool_call>call:name{key:value,...}<tool_call|>
+    except Exception as exc:
+        logger.warning("chat_template_failed", error=str(exc))
         parts = []
-        for k, v in args.items():
-            if isinstance(v, str):
-                parts.append(f'{k}:<|"|>{v}<|"|>')
-            else:
-                parts.append(f'{k}:{json.dumps(v)}')
-        args_str = ",".join(parts)
-        return f"<|tool_call>call:{name}{{{args_str}}}<tool_call|>"
+        if system:
+            parts.append(system)
+        for m in gemma_messages:
+            parts.append(m.get("content", ""))
+        return "\n".join(parts)
 
-    def _parse_tool_calls(self, text):
-        """Parse Gemma4 tool call output into Anthropic tool_use blocks.
 
-        Gemma4 format: <|tool_call>call:tool_name{arg1:<|"|>val<|"|>,arg2:123}<tool_call|>
-        Returns: list of (tool_name, args_dict, remaining_text)
-        """
-        import re
+def _format_gemma_tool_call(name: str, args: dict) -> str:
+    parts = []
+    for k, v in args.items():
+        if isinstance(v, str):
+            parts.append(f'{k}:<|"|>{v}<|"|>')
+        else:
+            parts.append(f"{k}:{orjson.dumps(v).decode()}")
+    args_str = ",".join(parts)
+    return f"<|tool_call>call:{name}{{{args_str}}}<tool_call|>"
 
-        tool_calls = []
-        remaining = text
 
-        # Pattern: <|tool_call>call:NAME{...}<tool_call|>
-        pattern = r'<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>'
-        matches = list(re.finditer(pattern, text, re.DOTALL))
+def _parse_tool_calls(text: str) -> tuple[list[tuple[str, dict]], str]:
+    """Parse Gemma4 tool call output into (name, args) pairs + remaining text."""
+    matches = list(_TOOL_CALL_RE.finditer(text))
+    if not matches:
+        return [], text
 
-        if not matches:
-            return [], text
+    tool_calls = []
+    for match in matches:
+        tool_name = match.group(1)
+        args_raw = match.group(2)
+        args = _parse_gemma_args(args_raw)
+        tool_calls.append((tool_name, args))
 
-        for match in matches:
-            tool_name = match.group(1)
-            args_raw = match.group(2)
+    remaining = _TOOL_CALL_RE.sub("", text).strip()
+    return tool_calls, remaining
 
-            # Parse the Gemma4 arg format: key:<|"|>value<|"|>,key2:123
-            args = {}
-            # Split on commas that are outside <|"|>...<|"|> blocks
+
+def _parse_gemma_args(args_raw: str) -> dict:
+    args: dict = {}
+    current_key = ""
+    current_val = ""
+    in_string = False
+    parsing_key = True
+    i = 0
+
+    while i < len(args_raw):
+        ch = args_raw[i]
+        if args_raw[i : i + 5] == '<|"|>':
+            in_string = not in_string
+            i += 5
+            continue
+        if in_string:
+            current_val += ch
+            i += 1
+            continue
+        if ch == ":" and parsing_key:
+            parsing_key = False
+            i += 1
+            continue
+        if ch == "," and not in_string:
+            if current_key:
+                args[current_key.strip()] = _parse_arg_value(current_val.strip())
             current_key = ""
             current_val = ""
-            in_string = False
             parsing_key = True
-            i = 0
+            i += 1
+            continue
+        if parsing_key:
+            current_key += ch
+        else:
+            current_val += ch
+        i += 1
 
-            while i < len(args_raw):
-                ch = args_raw[i]
+    if current_key:
+        args[current_key.strip()] = _parse_arg_value(current_val.strip())
+    return args
 
-                # Check for <|"|> string delimiter
-                if args_raw[i:i+5] == '<|"|>':
-                    in_string = not in_string
-                    i += 5
-                    continue
 
-                if in_string:
-                    current_val += ch
-                    i += 1
-                    continue
+def _parse_arg_value(val: str):
+    if not val:
+        return ""
+    try:
+        return orjson.loads(val.encode())
+    except (orjson.JSONDecodeError, ValueError):
+        return val
 
-                if ch == ':' and parsing_key:
-                    parsing_key = False
-                    i += 1
-                    continue
 
-                if ch == ',' and not in_string:
-                    # Save current key-value
-                    if current_key:
-                        args[current_key.strip()] = self._parse_arg_value(current_val.strip())
-                    current_key = ""
-                    current_val = ""
-                    parsing_key = True
-                    i += 1
-                    continue
+# ---------------------------------------------------------------------------
+# orjson response helper
+# ---------------------------------------------------------------------------
 
-                if parsing_key:
-                    current_key += ch
-                else:
-                    current_val += ch
-                i += 1
 
-            # Save last key-value
-            if current_key:
-                args[current_key.strip()] = self._parse_arg_value(current_val.strip())
+class OrjsonResponse(Response):
+    media_type = "application/json"
 
-            tool_calls.append((tool_name, args))
+    def render(self, content) -> bytes:
+        return orjson.dumps(content)
 
-        # Remove tool call tokens from text to get remaining text
-        remaining = re.sub(pattern, '', text, flags=re.DOTALL).strip()
 
-        return tool_calls, remaining
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
 
-    def _parse_arg_value(self, val):
-        """Parse a tool argument value — try JSON types, fall back to string."""
-        if not val:
-            return ""
-        # Try to parse as JSON (number, bool, null, object, array)
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, ValueError):
-            return val
+_engine: InferenceEngine | None = None
+# Separate pools: _thread_pool for GPU-bound model.generate() calls,
+# _drain_pool for lightweight streamer-drain threads. Prevents deadlock
+# when concurrent streaming requests exhaust a single shared pool.
+_thread_pool: ThreadPoolExecutor = ThreadPoolExecutor(
+    max_workers=THREAD_POOL_SIZE, thread_name_prefix="elai-gpu"
+)
+_drain_pool: ThreadPoolExecutor = ThreadPoolExecutor(
+    max_workers=THREAD_POOL_SIZE * 2, thread_name_prefix="elai-drain"
+)
 
-    def _stream_messages_response(self, prompt, max_tokens, model_name, tools=None):
-        """Stream response in Anthropic SSE format with tool calling support."""
-        msg_id = f"msg_elai_{int(time.time())}"
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    yield
+    # Shutdown: cleanup
+    _thread_pool.shutdown(wait=False)
+    _drain_pool.shutdown(wait=False)
+    if _engine is not None and _engine._dola_processor is not None:
+        _engine._dola_processor.remove_hooks()
+    logger.info("server_shutdown")
 
-        # Generate full response (get real token counts from tokenizer)
-        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens)
 
-        # 1. message_start
-        message_start = {
-            "type": "message_start",
-            "message": {
-                "id": msg_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": model_name,
-                "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {
-                    "input_tokens": input_token_count,
-                    "output_tokens": 0,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0,
+app = FastAPI(title="ELAI Inference Sidecar", lifespan=_lifespan)
+
+
+@app.get("/health")
+async def health():
+    return OrjsonResponse({"status": "healthy"})
+
+
+@app.get("/v1/models")
+async def list_models():
+    return OrjsonResponse({
+        "data": [{"id": "elai-composed", "object": "model"}]
+    })
+
+
+@app.post("/shutdown")
+async def shutdown():
+    logger.info("shutdown_requested")
+    # Schedule shutdown after response is sent
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.5, lambda: signal.raise_signal(signal.SIGINT))
+    return OrjsonResponse({"status": "shutting down"})
+
+
+@app.post("/v1/compute_steering")
+async def compute_steering(request: Request):
+    """Compute a steering vector from a contrast prompt pair (ActAdd: h+ - h-).
+
+    Expected JSON: {"positive_prompt": str, "negative_prompt": str, "layer_idx": int}
+    Returns: {"vector": [float, ...]}
+    """
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+
+    body = await request.body()
+    try:
+        data = orjson.loads(body)
+    except orjson.JSONDecodeError:
+        return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
+
+    positive_prompt = data.get("positive_prompt", "")
+    negative_prompt = data.get("negative_prompt", "")
+    layer_idx = data.get("layer_idx")
+
+    if not positive_prompt or not negative_prompt:
+        return OrjsonResponse(
+            {"error": "positive_prompt and negative_prompt are required"},
+            status_code=400,
+        )
+    if layer_idx is None or not isinstance(layer_idx, int):
+        return OrjsonResponse(
+            {"error": "layer_idx (int) is required"}, status_code=400
+        )
+    if layer_idx < 0 or layer_idx >= _engine.n_layers:
+        return OrjsonResponse(
+            {"error": f"layer_idx must be in [0, {_engine.n_layers})"},
+            status_code=400,
+        )
+
+    # Lazily create steering engine if not already active (under lock for thread safety)
+    def _compute():
+        with _engine.lock:
+            if _engine.steering_engine is None:
+                _engine.steering_engine = SteeringEngine(
+                    _engine.n_layers, _engine.hidden_dim,
+                )
+            return _engine.steering_engine.compute_vector(
+                _engine.model, _engine.tokenizer,
+                positive_prompt, negative_prompt, layer_idx,
+            )
+
+    loop = asyncio.get_running_loop()
+    vector = await loop.run_in_executor(_thread_pool, _compute)
+
+    if vector is None:
+        return OrjsonResponse(
+            {"error": "failed to compute steering vector"}, status_code=500
+        )
+
+    return OrjsonResponse({"vector": vector.tolist()})
+
+
+@app.post("/v1/messages")
+async def handle_messages(request: Request):
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+    body = await request.body()
+    try:
+        data = orjson.loads(body)
+    except orjson.JSONDecodeError:
+        return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
+
+    messages = data.get("messages", [])
+    system_raw = data.get("system", "")
+    # Anthropic API allows system as str or list[ContentBlock]
+    if isinstance(system_raw, list):
+        system = "\n".join(
+            b.get("text", "") for b in system_raw
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    else:
+        system = str(system_raw) if system_raw else ""
+    max_tokens = data.get("max_tokens", MAX_NEW_TOKENS_DEFAULT)
+    stream = data.get("stream", False)
+    tools = data.get("tools", [])
+    model_name = data.get("model", "elai-local")
+    temperature = data.get("temperature", 0.0)
+
+    prompt = _anthropic_to_gemma_prompt(_engine.tokenizer, messages, system, tools)
+
+    tool_names = [t.get("name", "?") for t in tools] if tools else []
+    logger.info(
+        "turn",
+        system_chars=len(system) if system else 0,
+        messages=len(messages),
+        tools=len(tools),
+        tool_names=tool_names[:10],
+        prompt_chars=len(prompt),
+    )
+
+    if stream:
+        return _stream_messages_response(prompt, max_tokens, model_name, tools, temperature)
+    return await _non_stream_messages_response(prompt, max_tokens, model_name, tools, temperature)
+
+
+@app.post("/v1/completions")
+async def handle_completions(request: Request):
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+    body = await request.body()
+    try:
+        data = orjson.loads(body)
+    except orjson.JSONDecodeError:
+        return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
+
+    prompt = data.get("prompt", "")
+    max_tokens = data.get("max_tokens", MAX_NEW_TOKENS_DEFAULT)
+    temperature = data.get("temperature", 0.0)
+
+    t0 = time.time()
+    loop = asyncio.get_running_loop()
+    text, tokens, input_token_count = await loop.run_in_executor(
+        _thread_pool,
+        lambda: _engine.generate(prompt, max_tokens, temperature),
+    )
+    elapsed = time.time() - t0
+
+    # Determine finish reason
+    eos_ids = _engine.tokenizer.eos_token_id
+    if isinstance(eos_ids, int):
+        eos_ids = [eos_ids]
+    elif eos_ids is None:
+        eos_ids = []
+    finish_reason = "stop" if (tokens and tokens[-1] in eos_ids) else "length"
+
+    response = {
+        "id": f"cmpl-elai-{int(time.time())}",
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": "elai-composed",
+        "choices": [{
+            "text": text,
+            "index": 0,
+            "finish_reason": finish_reason,
+        }],
+        "usage": {
+            "prompt_tokens": input_token_count,
+            "completion_tokens": len(tokens),
+            "total_tokens": input_token_count + len(tokens),
+        },
+        "elai_metadata": {
+            "dola_enabled": _engine.dola_enabled,
+            "turboquant_enabled": _engine.kv_compressor.enabled,
+            "turboquant_bits": _engine.kv_compressor.bit_width,
+            "steering_enabled": _engine.steering_enabled,
+            "steering_coefficient": (
+                _engine.steering_engine.coefficient
+                if _engine.steering_engine
+                else None
+            ),
+            "steering_layer": (
+                _engine.steering_engine.target_layer
+                if _engine.steering_engine
+                else None
+            ),
+            "elapsed_ms": int(elapsed * 1000),
+        },
+    }
+    return OrjsonResponse(response)
+
+
+# ---------------------------------------------------------------------------
+# Streaming helpers
+# ---------------------------------------------------------------------------
+
+
+def _stream_messages_response(
+    prompt: str, max_tokens: int, model_name: str, tools: list | None,
+    temperature: float = 0.0,
+) -> StreamingResponse:
+    """Real streaming: tokens are yielded as model.generate() produces them."""
+
+    async def event_generator() -> AsyncIterator[bytes]:
+        msg_id = f"msg_elai_{uuid.uuid4().hex[:12]}"
+        streamer, input_token_count = _engine.generate_streaming(
+            prompt, max_tokens, temperature
+        )
+
+        # message_start
+        yield _sse_bytes(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": model_name,
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": input_token_count,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
                 },
             },
-        }
-        self._send_sse("message_start", message_start)
+        )
 
-        # Check for tool calls in the output
-        tool_calls, remaining_text = self._parse_tool_calls(text) if tools else ([], text)
-
+        # Accumulate full text for tool call parsing at the end
+        full_text_parts: list[str] = []
         block_index = 0
+        text_block_started = False
 
-        # Stream text content (if any)
-        if remaining_text.strip():
-            # content_block_start for text
-            self._send_sse("content_block_start", {
+        # content_block_start for text
+        yield _sse_bytes(
+            "content_block_start",
+            {
                 "type": "content_block_start",
                 "index": block_index,
                 "content_block": {"type": "text", "text": ""},
-            })
+            },
+        )
+        text_block_started = True
 
-            # Stream word by word
-            words = remaining_text.strip().split(' ')
-            for i, word in enumerate(words):
-                chunk = word if i == 0 else ' ' + word
-                self._send_sse("content_block_delta", {
+        # Bridge TextIteratorStreamer (sync, blocking) to async via queue.
+        # A background thread drains the streamer and feeds an asyncio.Queue
+        # so the async generator yields tokens as they arrive (real streaming).
+        token_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _drain_streamer():
+            try:
+                for chunk in streamer:
+                    loop.call_soon_threadsafe(token_queue.put_nowait, chunk)
+            except Exception as exc:
+                logger.error("streamer_drain_error", error=str(exc))
+            finally:
+                loop.call_soon_threadsafe(token_queue.put_nowait, None)
+
+        _drain_pool.submit(_drain_streamer)
+
+        while True:
+            chunk = await token_queue.get()
+            if chunk is None:
+                break
+            if not chunk:
+                continue
+
+            # Clean special tokens
+            for token in ["<bos>", "<eos>", "<pad>"]:
+                chunk = chunk.replace(token, "")
+            if not chunk:
+                continue
+
+            full_text_parts.append(chunk)
+
+            # Stream as text_delta (tool calls will be re-parsed post-hoc)
+            yield _sse_bytes(
+                "content_block_delta",
+                {
                     "type": "content_block_delta",
                     "index": block_index,
                     "delta": {"type": "text_delta", "text": chunk},
-                })
+                },
+            )
 
-            self._send_sse("content_block_stop", {
-                "type": "content_block_stop", "index": block_index,
-            })
+        # Close text block
+        if text_block_started:
+            yield _sse_bytes(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": block_index},
+            )
             block_index += 1
 
-        # Stream tool_use blocks (if any)
+        # Parse tool calls from accumulated text
+        full_text = "".join(full_text_parts)
+        tool_calls, remaining_text = (
+            _parse_tool_calls(full_text) if tools else ([], full_text)
+        )
+
+        # If tool calls found, emit tool_use blocks
         for tool_name, tool_args in tool_calls:
-            tool_id = f"toolu_elai_{int(time.time())}_{block_index}"
+            tool_id = f"toolu_elai_{uuid.uuid4().hex[:12]}"
 
-            # content_block_start for tool_use
-            self._send_sse("content_block_start", {
-                "type": "content_block_start",
-                "index": block_index,
-                "content_block": {
-                    "type": "tool_use",
-                    "id": tool_id,
-                    "name": tool_name,
-                    "input": {},
+            yield _sse_bytes(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": block_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": tool_name,
+                        "input": {},
+                    },
                 },
-            })
+            )
 
-            # Send tool input as input_json_delta
-            input_json = json.dumps(tool_args)
-            self._send_sse("content_block_delta", {
-                "type": "content_block_delta",
-                "index": block_index,
-                "delta": {
-                    "type": "input_json_delta",
-                    "partial_json": input_json,
+            yield _sse_bytes(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": orjson.dumps(tool_args).decode(),
+                    },
                 },
-            })
+            )
 
-            self._send_sse("content_block_stop", {
-                "type": "content_block_stop", "index": block_index,
-            })
+            yield _sse_bytes(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": block_index},
+            )
             block_index += 1
 
-        # Determine stop reason
         stop_reason = "tool_use" if tool_calls else "end_turn"
 
-        # message_delta
-        self._send_sse("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {
-                "input_tokens": input_token_count,
-                "output_tokens": len(tokens),
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
+        # Count actual output tokens from accumulated text (full_text set above)
+        actual_output_tokens = len(
+            _engine.tokenizer.encode(full_text, add_special_tokens=False)
+        )
+
+        # message_delta (Anthropic spec: usage only has output_tokens)
+        yield _sse_bytes(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                "usage": {"output_tokens": actual_output_tokens},
             },
-        })
+        )
 
         # message_stop
-        self._send_sse("message_stop", {"type": "message_stop"})
+        yield _sse_bytes("message_stop", {"type": "message_stop"})
 
-        # Terminate chunked transfer
-        self.wfile.write(b"0\r\n\r\n")
-        self.wfile.flush()
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
-    def _non_stream_messages_response(self, prompt, max_tokens, model_name, tools=None):
-        """Non-streaming Anthropic Messages response with tool calling support."""
-        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens)
 
-        # Check for tool calls
-        tool_calls, remaining_text = self._parse_tool_calls(text) if tools else ([], text)
+async def _non_stream_messages_response(
+    prompt: str, max_tokens: int, model_name: str, tools: list | None,
+    temperature: float = 0.0,
+) -> OrjsonResponse:
+    loop = asyncio.get_running_loop()
+    text, tokens, input_token_count = await loop.run_in_executor(
+        _thread_pool,
+        lambda: _engine.generate(prompt, max_tokens, temperature),
+    )
 
-        content = []
-        if remaining_text.strip():
-            content.append({"type": "text", "text": remaining_text.strip()})
-        for tool_name, tool_args in tool_calls:
-            tool_id = f"toolu_elai_{int(time.time())}_{len(content)}"
-            content.append({
-                "type": "tool_use",
-                "id": tool_id,
-                "name": tool_name,
-                "input": tool_args,
-            })
+    tool_calls, remaining_text = (
+        _parse_tool_calls(text) if tools else ([], text)
+    )
 
-        if not content:
-            content.append({"type": "text", "text": text})
+    content = []
+    if remaining_text.strip():
+        content.append({"type": "text", "text": remaining_text.strip()})
+    for tool_name, tool_args in tool_calls:
+        tool_id = f"toolu_elai_{uuid.uuid4().hex[:12]}"
+        content.append({
+            "type": "tool_use",
+            "id": tool_id,
+            "name": tool_name,
+            "input": tool_args,
+        })
 
-        stop_reason = "tool_use" if tool_calls else "end_turn"
+    if not content:
+        content.append({"type": "text", "text": text})
 
-        response = {
-            "id": f"msg_elai_{int(time.time())}",
-            "type": "message",
-            "role": "assistant",
-            "content": content,
-            "model": model_name,
-            "stop_reason": stop_reason,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": input_token_count,
-                "output_tokens": len(tokens),
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            },
-        }
-        self._json_response(200, response)
+    stop_reason = "tool_use" if tool_calls else "end_turn"
 
-    def _send_sse(self, event_type, data):
-        """Send a single SSE event using chunked transfer encoding."""
-        payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-        chunk = f"{len(payload.encode()):x}\r\n{payload}\r\n"
-        self.wfile.write(chunk.encode())
-        self.wfile.flush()
+    response = {
+        "id": f"msg_elai_{uuid.uuid4().hex[:12]}",
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+        "model": model_name,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": input_token_count,
+            "output_tokens": len(tokens),
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
+    }
+    return OrjsonResponse(response)
 
-    def _handle_completions(self):
 
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        try:
-            request = json.loads(body)
-        except json.JSONDecodeError:
-            self._json_response(400, {"error": "invalid JSON"})
-            return
+def _sse_bytes(event_type: str, data: dict) -> bytes:
+    payload = f"event: {event_type}\ndata: {orjson.dumps(data).decode()}\n\n"
+    return payload.encode()
 
-        prompt = request.get("prompt", "")
-        max_tokens = request.get("max_tokens", 256)
-        temperature = request.get("temperature", 0.0)
 
-        t0 = time.time()
-        text, tokens, input_token_count = self.engine.generate(prompt, max_tokens, temperature)
-        elapsed = time.time() - t0
-
-        # OpenAI-compatible response (non-streaming)
-        response = {
-            "id": f"cmpl-elai-{int(time.time())}",
-            "object": "text_completion",
-            "created": int(time.time()),
-            "model": "elai-composed",
-            "choices": [{
-                "text": text,
-                "index": 0,
-                "finish_reason": "stop" if (tokens and tokens[-1] in
-                    ([self.engine.tokenizer.eos_token_id] if isinstance(
-                        self.engine.tokenizer.eos_token_id, int)
-                     else self.engine.tokenizer.eos_token_id or []))
-                    else "length",
-            }],
-            "usage": {
-                "prompt_tokens": input_token_count,
-                "completion_tokens": len(tokens),
-                "total_tokens": input_token_count + len(tokens),
-            },
-            "elai_metadata": {
-                "dola_enabled": self.engine.dola_enabled,
-                "turboquant_enabled": self.engine.kv_compressor.enabled,
-                "turboquant_bits": self.engine.kv_compressor.bit_width,
-                "steering_enabled": self.engine.steering_enabled,
-                "steering_coefficient": self.engine.steering_engine.coefficient if self.engine.steering_engine else None,
-                "steering_layer": self.engine.steering_engine.target_layer if self.engine.steering_engine else None,
-                "elapsed_ms": int(elapsed * 1000),
-            },
-        }
-        self._json_response(200, response)
-
-    def _json_response(self, status, data):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format, *args):
-        logger.debug(format, *args)
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
 
 
 def main():
     parser = argparse.ArgumentParser(description="ELAI Inference Sidecar")
     parser.add_argument("--model", default="google/gemma-4-E2B-it")
-    parser.add_argument("--port", type=int, default=8100)
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--dola", action="store_true", default=True,
-                        help="Enable DoLa decoding")
+    parser.add_argument("--port", type=int, default=SIDECAR_PORT_DEFAULT)
+    parser.add_argument("--host", default=SIDECAR_HOST_DEFAULT)
+    parser.add_argument(
+        "--dola", action="store_true", default=True, help="Enable DoLa decoding"
+    )
     parser.add_argument("--no-dola", dest="dola", action="store_false")
     parser.add_argument("--dola-alpha", type=float, default=ALPHA_DEFAULT)
-    parser.add_argument("--turboquant-bits", type=int, default=4,
-                        choices=[0, 2, 3, 4],
-                        help="TurboQuant bit-width (0=disabled)")
-    parser.add_argument("--steering", action="store_true", default=False,
-                        help="Enable steering vectors (ActAdd)")
+    parser.add_argument(
+        "--turboquant-bits",
+        type=int,
+        default=4,
+        choices=[0, 2, 3, 4],
+        help="TurboQuant bit-width (0=disabled)",
+    )
+    parser.add_argument(
+        "--steering", action="store_true", default=False,
+        help="Enable steering vectors (ActAdd)",
+    )
     parser.add_argument("--no-steering", dest="steering", action="store_false")
-    parser.add_argument("--steering-coefficient", type=float, default=COEFFICIENT_DEFAULT,
-                        help="Steering coefficient (typical range [3, 20])")
-    parser.add_argument("--steering-layer", default="auto",
-                        help="Steering target layer (or 'auto' for model_layers / 3)")
-    parser.add_argument("--steering-vector-path", default=None,
-                        help="Path to pre-computed steering vector (.npz or .safetensors), or comma-separated list for multiple vectors")
-    parser.add_argument("--max-tokens", type=int, default=256)
-    parser.add_argument("--load-in-4bit", action="store_true", default=True,
-                        help="Load model with bitsandbytes 4-bit quantization (default: on)")
-    parser.add_argument("--no-4bit", dest="load_in_4bit", action="store_false",
-                        help="Load model in FP16 (no quantization)")
+    parser.add_argument(
+        "--steering-coefficient",
+        type=float,
+        default=COEFFICIENT_DEFAULT,
+        help="Steering coefficient (typical range [3, 20])",
+    )
+    parser.add_argument(
+        "--steering-layer",
+        default="auto",
+        help="Steering target layer (or 'auto' for model_layers / 3)",
+    )
+    parser.add_argument(
+        "--steering-vector-path",
+        default=None,
+        help="Path to pre-computed steering vector (.npz or .safetensors), "
+        "or comma-separated list for multiple vectors",
+    )
+    parser.add_argument("--max-tokens", type=int, default=MAX_NEW_TOKENS_DEFAULT)
+    parser.add_argument(
+        "--load-in-4bit",
+        action="store_true",
+        default=True,
+        help="Load model with bitsandbytes 4-bit quantization (default: on)",
+    )
+    parser.add_argument(
+        "--no-4bit", dest="load_in_4bit", action="store_false",
+        help="Load model in FP16 (no quantization)",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    # Configure structlog level filter
+    level_map = {
+        "DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50,
+    }
+    min_level = level_map.get(args.log_level.upper(), 20)
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(min_level),
     )
 
-    engine = InferenceEngine(
+    global _engine
+    _engine = InferenceEngine(
         model_name=args.model,
         dola_enabled=args.dola,
         dola_alpha=args.dola_alpha,
-        turboquant_bits=args.turboquant_bits if args.turboquant_bits > 0 else 4,
+        turboquant_bits=args.turboquant_bits,
         steering_enabled=args.steering,
         steering_coefficient=args.steering_coefficient,
         steering_layer=args.steering_layer,
         max_new_tokens=args.max_tokens,
         load_in_4bit=args.load_in_4bit,
     )
-    if args.turboquant_bits == 0:
-        engine.kv_compressor.enabled = False
 
     # Load pre-computed steering vectors if provided
-    if args.steering and engine.steering_engine and args.steering_vector_path:
-        # Support comma-separated list of vector paths
-        vector_paths = [p.strip() for p in args.steering_vector_path.split(',')]
+    if args.steering and _engine.steering_engine and args.steering_vector_path:
+        vector_paths = [p.strip() for p in args.steering_vector_path.split(",")]
         for i, path in enumerate(vector_paths):
-            # For multiple vectors, assign to different layers (spread across model)
-            layer_idx = engine.steering_engine.target_layer_idx + i
-            if layer_idx < engine.n_layers:
-                engine.steering_engine.load_vector_from_file(layer_idx, path)
+            layer_idx = _engine.steering_engine.target_layer_idx + i
+            if layer_idx < _engine.n_layers:
+                _engine.steering_engine.load_vector_from_file(layer_idx, path)
             else:
-                logger.warning(f"Skipping vector {path}: layer {layer_idx} exceeds model layers {engine.n_layers}")
+                logger.warning(
+                    "vector_layer_overflow",
+                    path=path,
+                    layer=layer_idx,
+                    max_layers=_engine.n_layers,
+                )
 
-    InferenceHandler.engine = engine
+    import uvicorn
 
-    server = HTTPServer((args.host, args.port), InferenceHandler)
-    logger.info(f"Serving on {args.host}:{args.port}")
-    logger.info(f"  DoLa: {'ON' if args.dola else 'OFF'}")
-    logger.info(f"  TurboQuant: {'ON' if engine.kv_compressor.enabled else 'OFF'}")
-    logger.info(f"  Endpoint: http://{args.host}:{args.port}/v1/completions")
+    logger.info(
+        "serving",
+        host=args.host,
+        port=args.port,
+        dola=args.dola,
+        turboquant=_engine.kv_compressor.enabled,
+        endpoint_messages=f"http://{args.host}:{args.port}/v1/messages",
+        endpoint_completions=f"http://{args.host}:{args.port}/v1/completions",
+    )
 
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down")
-        server.shutdown()
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        access_log=False,
+    )
 
 
 if __name__ == "__main__":
