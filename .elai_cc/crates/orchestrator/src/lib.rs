@@ -212,8 +212,11 @@ pub use elai_core::sandbox::{
 pub use sandbox::{
     AgentEnvironment, AgentProcess, AgentSandbox, AppContainerConfig, JobObjectLimits,
     PlatformSandboxHandle, SandboxError, SandboxHandle, SelfModificationLocks, create_sandbox,
-    WindowsAppContainerSandbox, WindowsSandboxHandle,
 };
+#[cfg(target_os = "windows")]
+pub use sandbox::{WindowsAppContainerSandbox, WindowsSandboxHandle};
+#[cfg(target_os = "linux")]
+pub use sandbox::{LinuxSandbox, LinuxSandboxHandle};
 pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
