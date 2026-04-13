@@ -29,7 +29,7 @@ DEFAULT_CONFIG = SCRIPT_DIR / "bench_config.toml"
 FIXTURES_DIR = SCRIPT_DIR / "fixtures"
 
 REQUEST_TIMEOUT_S = 180
-SIDECAR_PORT = 8102
+SIDECAR_PORT = 8103
 SIDECAR_ENDPOINT = f"http://127.0.0.1:{SIDECAR_PORT}"
 
 # Attention curve tasks (simple, deterministic)

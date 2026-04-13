@@ -1,5 +1,5 @@
 [model]
-endpoint = "http://127.0.0.1:8102"
+endpoint = "http://127.0.0.1:8103"
 api_format = "openai"
 model_name = "gemma4:e2b"
 tokenizer = "D:/.ELAI_workflow/.elai_cc/models/gemma-4-E2B-it"

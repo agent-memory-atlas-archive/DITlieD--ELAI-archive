@@ -505,16 +505,26 @@ class DoLaSteeringProcessor(LogitsProcessor):
 
 def _get_decoder_layers(model):
     """Find the decoder layer list in the model architecture."""
-    # Gemma4 / LLaMA / Mistral: model.model.layers
+    # Standard LLaMA / Mistral / Gemma2: model.model.layers
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         return model.model.layers
-    # Gemma4 VLM (e.g., E2B): model.language_model.model.layers
-    if hasattr(model, "language_model"):
-        lm = model.language_model
-        if hasattr(lm, "model") and hasattr(lm.model, "layers"):
-            return lm.model.layers
+    # Gemma4 VLM (Gemma4ForConditionalGeneration):
+    #   model.model = Gemma4Model
+    #   model.model.language_model = Gemma4TextModel
+    #   model.model.language_model.layers = ModuleList of decoder layers
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        lm = model.model.language_model
         if hasattr(lm, "layers"):
             return lm.layers
+        if hasattr(lm, "model") and hasattr(lm.model, "layers"):
+            return lm.model.layers
+    # Fallback: top-level language_model
+    if hasattr(model, "language_model"):
+        lm = model.language_model
+        if hasattr(lm, "layers"):
+            return lm.layers
+        if hasattr(lm, "model") and hasattr(lm.model, "layers"):
+            return lm.model.layers
     # GPT-2 style: model.transformer.h
     if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         return model.transformer.h
@@ -581,12 +591,14 @@ class InferenceEngine:
                 model_name,
                 quantization_config=bnb_config,
                 device_map=device_map,
+                attn_implementation="sdpa",
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
                 device_map=device_map,
+                attn_implementation="sdpa",
             )
         self.model.eval()
         self.lock = Lock()
