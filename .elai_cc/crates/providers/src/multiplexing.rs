@@ -219,6 +219,8 @@ pub enum MultiplexingError {
     VramOverflow,
     #[error("safety margin exceeds GPU capacity")]
     SafetyMarginExceedsCapacity,
+    #[error("no GPU available (NVML discovery failed or no devices found)")]
+    NoGpuAvailable,
 }
 
 // ---------------------------------------------------------------------------

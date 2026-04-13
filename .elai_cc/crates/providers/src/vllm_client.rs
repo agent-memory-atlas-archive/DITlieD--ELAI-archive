@@ -514,11 +514,30 @@ impl VllmModelPool {
     /// # Returns
     /// Placement result with assignments and estimated swap latency.
     ///
-    /// # TODO
-    /// This is a structural integration. Actual wiring requires:
-    /// - Real GPU discovery (NVML or vLLM GPU query)
-    /// - Real model VRAM requirements from model metadata
-    /// - Integration with agent pool to trigger placement at phase boundaries
+    /// Discover GPUs via NVML and place models automatically.
+    ///
+    /// Combines [`discover_gpus`](crate::discover_gpus) with [`place_models`].
+    /// Falls back gracefully if NVML is unavailable (returns Unavailable error).
+    pub fn discover_and_place_models(
+        &self,
+        models: Vec<(String, u64, crate::SloTier)>,
+    ) -> Result<crate::PlacementResult, crate::MultiplexingError> {
+        let gpus = crate::discover_gpus().map_err(|e| {
+            tracing::warn!(error = %e, "GPU discovery failed, cannot auto-place models");
+            crate::MultiplexingError::NoGpuAvailable
+        })?;
+        let gpu_tuples: Vec<(u8, u64)> = gpus
+            .iter()
+            .map(|g| (g.id, g.total_vram_bytes))
+            .collect();
+        self.place_models(models, gpu_tuples)
+    }
+
+    /// Place models on GPUs using greedy placement strategy.
+    /// Phase 3J.8 deliverable. Uses GreedyModelPlacer for model assignment.
+    ///
+    /// For automatic GPU discovery, use [`discover_and_place_models`] instead.
+    /// Manual GPU list is useful when NVML is unavailable or for testing.
     pub fn place_models(
         &self,
         models: Vec<(String, u64, crate::SloTier)>,

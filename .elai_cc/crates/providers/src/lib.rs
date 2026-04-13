@@ -59,7 +59,8 @@ pub use multiplexing::{
 
 pub mod model_placer;
 pub use model_placer::{
-    GpuSpec, GreedyModelPlacer, ModelSpec, PlacementResult,
+    GpuDiscoveryError, GpuSpec, GreedyModelPlacer, ModelSpec, PlacementResult,
+    discover_gpus,
 };
 
 #[cfg(test)]

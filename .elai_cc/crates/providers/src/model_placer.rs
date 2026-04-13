@@ -239,6 +239,57 @@ impl GreedyModelPlacer {
 }
 
 // ---------------------------------------------------------------------------
+// GPU Discovery via NVML
+// ---------------------------------------------------------------------------
+
+/// Error from GPU discovery.
+#[derive(Debug, thiserror::Error)]
+pub enum GpuDiscoveryError {
+    #[error("NVML not available (feature 'vllm' disabled or driver not installed)")]
+    Unavailable,
+    #[cfg(feature = "vllm")]
+    #[error("NVML error: {0}")]
+    Nvml(#[from] nvml_wrapper::error::NvmlError),
+}
+
+/// Discover GPUs on the system via NVML and return their specs.
+///
+/// Returns one [`GpuSpec`] per visible compute device with current VRAM usage.
+/// Requires the `vllm` feature and an NVIDIA driver with NVML support.
+pub fn discover_gpus() -> Result<Vec<GpuSpec>, GpuDiscoveryError> {
+    #[cfg(feature = "vllm")]
+    {
+        let nvml = nvml_wrapper::Nvml::init()?;
+        let count = nvml.device_count()?;
+        let mut gpus = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let device = nvml.device_by_index(i)?;
+            let mem = device.memory_info()?;
+            let id = u8::try_from(i).unwrap_or(u8::MAX);
+            gpus.push(GpuSpec {
+                id,
+                total_vram_bytes: mem.total,
+                current_vram_used_bytes: mem.used,
+                colocated_count: 0,
+            });
+            tracing::info!(
+                gpu = id,
+                name = %device.name().unwrap_or_else(|_| "unknown".into()),
+                total_mb = mem.total / (1024 * 1024),
+                used_mb = mem.used / (1024 * 1024),
+                free_mb = mem.free / (1024 * 1024),
+                "Discovered GPU via NVML"
+            );
+        }
+        Ok(gpus)
+    }
+    #[cfg(not(feature = "vllm"))]
+    {
+        Err(GpuDiscoveryError::Unavailable)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
