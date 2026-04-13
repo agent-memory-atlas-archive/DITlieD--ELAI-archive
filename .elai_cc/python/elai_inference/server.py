@@ -248,66 +248,376 @@ class SteeringEngine:
 
 
 # ---------------------------------------------------------------------------
-# TurboQuant KV compression
+# KV cache quantization (KIVI-style per-head-per-token 4-bit)
 # ---------------------------------------------------------------------------
+
+# Quantize/dequantize operate entirely on GPU tensors. No numpy, no CPU roundtrip.
+# Shape convention: (batch, num_kv_heads, seq_len, head_dim).
+# Quantization granularity: one scale+zero per (batch, head, token) along head_dim.
+
+
+KV_GROUP_SIZE = 32  # groups within head_dim for finer quantization
+
+
+def _quantize_per_token(
+    tensor: torch.Tensor, bits: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Asymmetric per-group quantization on GPU (KIVI-style).
+
+    Groups head_dim into KV_GROUP_SIZE chunks. Each group gets its own
+    scale and zero to contain outliers (RoPE keys can have range [-448, 258]
+    in some heads while most values are near 0).
+
+    Args:
+        tensor: (batch, heads, seq_len, head_dim) bf16/fp16 tensor.
+        bits: quantization bit-width (2 or 4).
+
+    Returns:
+        (packed_uint8, scales_fp16, zeros_fp16).
+        packed_uint8 shape: (batch, heads, seq_len, head_dim // pack_factor).
+        scales shape: (batch, heads, seq_len, n_groups).
+        zeros shape: (batch, heads, seq_len, n_groups).
+    """
+    b, h, s, d = tensor.shape
+    g = KV_GROUP_SIZE
+    n_groups = d // g
+    max_val = (1 << bits) - 1
+
+    # Reshape to expose groups: (b, h, s, n_groups, g)
+    grouped = tensor.reshape(b, h, s, n_groups, g)
+
+    # Per-group min/max
+    vmin = grouped.amin(dim=-1, keepdim=True)  # (b, h, s, n_groups, 1)
+    vmax = grouped.amax(dim=-1, keepdim=True)
+    scale = ((vmax - vmin) / max_val).clamp(min=1e-10)
+
+    quantized = ((grouped - vmin) / scale).round().clamp(0, max_val).to(torch.uint8)
+    # Flatten groups back: (b, h, s, d)
+    quantized = quantized.reshape(b, h, s, d)
+
+    if bits == 4:
+        packed = (quantized[..., 0::2] << 4) | quantized[..., 1::2]
+    elif bits == 2:
+        packed = (
+            (quantized[..., 0::4] << 6)
+            | (quantized[..., 1::4] << 4)
+            | (quantized[..., 2::4] << 2)
+            | quantized[..., 3::4]
+        )
+    else:
+        packed = quantized
+
+    # Scales/zeros: (b, h, s, n_groups)
+    return packed, scale.squeeze(-1).half(), vmin.squeeze(-1).half()
+
+
+def _dequantize_per_token(
+    packed: torch.Tensor,
+    scale: torch.Tensor,
+    zero: torch.Tensor,
+    bits: int = 4,
+    dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor:
+    """Dequantize packed uint8 back to float tensor on GPU.
+
+    Returns: (batch, heads, seq_len, head_dim) tensor in the requested dtype.
+    """
+    if bits == 4:
+        high = (packed >> 4).to(dtype)
+        low = (packed & 0x0F).to(dtype)
+        quantized = torch.stack([high, low], dim=-1).flatten(-2)
+    elif bits == 2:
+        b3 = ((packed >> 6) & 0x03).to(dtype)
+        b2 = ((packed >> 4) & 0x03).to(dtype)
+        b1 = ((packed >> 2) & 0x03).to(dtype)
+        b0 = (packed & 0x03).to(dtype)
+        quantized = torch.stack([b3, b2, b1, b0], dim=-1).flatten(-2)
+    else:
+        quantized = packed.to(dtype)
+
+    # scale/zero shape: (b, h, s, n_groups) -> expand to (b, h, s, n_groups, group_size)
+    g = KV_GROUP_SIZE
+    s_expanded = scale.unsqueeze(-1).expand(*scale.shape, g).reshape(*scale.shape[:-1], -1).to(dtype)
+    z_expanded = zero.unsqueeze(-1).expand(*zero.shape, g).reshape(*zero.shape[:-1], -1).to(dtype)
+
+    return quantized * s_expanded + z_expanded
+
+
+class KVQuantLayer:
+    """Cache layer with KIVI-style per-head-per-token quantization.
+
+    Stores historical tokens as packed uint8 on GPU with per-vector scales.
+    Keeps recent tokens (residual) in full bf16/fp16.
+    On update(), decompresses historical, concatenates with residual + new,
+    returns full tensors for attention, then stores new state.
+    """
+
+    is_sliding = False
+
+    def __init__(self, bits: int = 4, residual_length: int = 128):
+        self.bits = bits
+        self.residual_length = residual_length
+        self.is_initialized = False
+        self.dtype = None
+        self.device = None
+
+        # Residual (full precision recent tokens)
+        self.keys: torch.Tensor | None = None
+        self.values: torch.Tensor | None = None
+
+        # Compressed historical tokens
+        self._packed_keys: torch.Tensor | None = None
+        self._key_scales: torch.Tensor | None = None
+        self._key_zeros: torch.Tensor | None = None
+        self._packed_values: torch.Tensor | None = None
+        self._value_scales: torch.Tensor | None = None
+        self._value_zeros: torch.Tensor | None = None
+        self._compressed_len: int = 0
+
+    def update(
+        self, key_states: torch.Tensor, value_states: torch.Tensor, *args, **kwargs
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self.is_initialized:
+            self.dtype = key_states.dtype
+            self.device = key_states.device
+            self.is_initialized = True
+
+        # Append new tokens to residual
+        if self.keys is not None and self.keys.numel() > 0:
+            self.keys = torch.cat([self.keys, key_states], dim=-2)
+            self.values = torch.cat([self.values, value_states], dim=-2)
+        else:
+            self.keys = key_states
+            self.values = value_states
+
+        res_len = self.keys.shape[-2]
+
+        # If residual exceeds limit, compress the overflow
+        if res_len > self.residual_length:
+            overflow = res_len - self.residual_length
+            k_overflow = self.keys[:, :, :overflow, :]
+            v_overflow = self.values[:, :, :overflow, :]
+
+            pk, ks, kz = _quantize_per_token(k_overflow, self.bits)
+            pv, vs, vz = _quantize_per_token(v_overflow, self.bits)
+
+            if self._packed_keys is not None:
+                self._packed_keys = torch.cat([self._packed_keys, pk], dim=2)
+                self._key_scales = torch.cat([self._key_scales, ks], dim=2)
+                self._key_zeros = torch.cat([self._key_zeros, kz], dim=2)
+                self._packed_values = torch.cat([self._packed_values, pv], dim=2)
+                self._value_scales = torch.cat([self._value_scales, vs], dim=2)
+                self._value_zeros = torch.cat([self._value_zeros, vz], dim=2)
+            else:
+                self._packed_keys = pk
+                self._key_scales = ks
+                self._key_zeros = kz
+                self._packed_values = pv
+                self._value_scales = vs
+                self._value_zeros = vz
+
+            self._compressed_len += overflow
+            self.keys = self.keys[:, :, overflow:, :]
+            self.values = self.values[:, :, overflow:, :]
+
+        # Build full tensors for attention
+        if self._packed_keys is not None:
+            dk = _dequantize_per_token(
+                self._packed_keys, self._key_scales, self._key_zeros,
+                self.bits, self.dtype,
+            )
+            dv = _dequantize_per_token(
+                self._packed_values, self._value_scales, self._value_zeros,
+                self.bits, self.dtype,
+            )
+            full_keys = torch.cat([dk, self.keys], dim=-2)
+            full_values = torch.cat([dv, self.values], dim=-2)
+            del dk, dv
+        else:
+            full_keys = self.keys
+            full_values = self.values
+
+        return full_keys, full_values
+
+    def get_seq_length(self) -> int:
+        res_len = 0
+        if self.keys is not None and self.keys.numel() > 0:
+            res_len = self.keys.shape[-2]
+        return self._compressed_len + res_len
+
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
+        return self.get_seq_length() + query_length, 0
+
+    def get_max_cache_shape(self) -> int:
+        return -1
+
+    def crop(self, max_length: int) -> None:
+        if max_length < 0:
+            max_length = self.get_seq_length() - abs(max_length)
+        if self.get_seq_length() <= max_length:
+            return
+        # For simplicity, decompress everything, crop, and re-init
+        # This is rare (only on explicit crop calls)
+        if self._packed_keys is not None:
+            dk = _dequantize_per_token(
+                self._packed_keys, self._key_scales, self._key_zeros,
+                self.bits, self.dtype,
+            )
+            dv = _dequantize_per_token(
+                self._packed_values, self._value_scales, self._value_zeros,
+                self.bits, self.dtype,
+            )
+            full_keys = torch.cat([dk, self.keys], dim=-2)
+            full_values = torch.cat([dv, self.values], dim=-2)
+            del dk, dv
+        else:
+            full_keys = self.keys
+            full_values = self.values
+
+        cropped_k = full_keys[..., :max_length, :]
+        cropped_v = full_values[..., :max_length, :]
+        del full_keys, full_values
+
+        # Reset compressed state
+        self._packed_keys = None
+        self._key_scales = None
+        self._key_zeros = None
+        self._packed_values = None
+        self._value_scales = None
+        self._value_zeros = None
+        self._compressed_len = 0
+
+        # Re-set as residual (will compress on next overflow)
+        self.keys = cropped_k
+        self.values = cropped_v
+
+    def batch_repeat_interleave(self, repeats: int) -> None:
+        if self.keys is not None and self.keys.numel() > 0:
+            self.keys = self.keys.repeat_interleave(repeats, dim=0)
+            self.values = self.values.repeat_interleave(repeats, dim=0)
+        if self._packed_keys is not None:
+            self._packed_keys = self._packed_keys.repeat_interleave(repeats, dim=0)
+            self._key_scales = self._key_scales.repeat_interleave(repeats, dim=0)
+            self._key_zeros = self._key_zeros.repeat_interleave(repeats, dim=0)
+            self._packed_values = self._packed_values.repeat_interleave(repeats, dim=0)
+            self._value_scales = self._value_scales.repeat_interleave(repeats, dim=0)
+            self._value_zeros = self._value_zeros.repeat_interleave(repeats, dim=0)
+
+    def batch_select_indices(self, indices: torch.Tensor) -> None:
+        if self.keys is not None and self.keys.numel() > 0:
+            self.keys = self.keys[indices, ...]
+            self.values = self.values[indices, ...]
+        if self._packed_keys is not None:
+            self._packed_keys = self._packed_keys[indices, ...]
+            self._key_scales = self._key_scales[indices, ...]
+            self._key_zeros = self._key_zeros[indices, ...]
+            self._packed_values = self._packed_values[indices, ...]
+            self._value_scales = self._value_scales[indices, ...]
+            self._value_zeros = self._value_zeros[indices, ...]
+
+    def compressed_bytes(self) -> int:
+        total = 0
+        if self._packed_keys is not None:
+            for t in (
+                self._packed_keys, self._key_scales, self._key_zeros,
+                self._packed_values, self._value_scales, self._value_zeros,
+            ):
+                total += t.nbytes
+        return total
 
 
 class KVCompressor:
-    """Compress KV cache using TurboQuant. Falls back to no-op if unavailable."""
+    """Factory for KV cache quantization. Creates quantized cache objects."""
 
-    def __init__(self, head_dim: int, bit_width: int = 4):
-        self.head_dim = head_dim
+    def __init__(self, bit_width: int = 8, residual_length: int = 512):
         self.bit_width = bit_width
-        self.tq = None
-        self.enabled = False
+        self.residual_length = residual_length
+        self.enabled = bit_width > 0
 
-        if bit_width == 0:
-            logger.info("turboquant_disabled_by_config")
-            return
+        if self.enabled:
+            logger.info("kv_quantization_enabled", bits=bit_width, residual=residual_length)
+        else:
+            logger.info("kv_quantization_disabled")
 
-        try:
-            from turboquant import TurboQuantMSE
+    def make_cache(self, config=None) -> "DynamicCache | _KVQuantCache":
+        """Create a KV cache: quantized if enabled, else standard DynamicCache."""
+        if not self.enabled:
+            from transformers import DynamicCache as DC
+            return DC()
+        return _KVQuantCache(bits=self.bit_width, residual_length=self.residual_length)
 
-            self.tq = TurboQuantMSE(d=head_dim, bit_width=bit_width)
-            self.enabled = True
-            logger.info("turboquant_enabled", bit_width=bit_width, head_dim=head_dim)
-        except ImportError:
-            logger.warning("turboquant_unavailable")
 
-    def compress_cache(self, past_key_values) -> None:
-        if not self.enabled or past_key_values is None:
-            return
-        if not hasattr(past_key_values, "layers"):
-            return
+class _KVQuantCache:
+    """Quantized KV cache compatible with HF Transformers model.generate().
 
-        for layer in past_key_values.layers:
-            if not hasattr(layer, "keys") or not hasattr(layer, "values"):
-                continue
+    Drop-in replacement for DynamicCache. Each layer is a KVQuantLayer
+    that compresses historical tokens and keeps recent tokens at full precision.
+    """
 
-            keys = layer.keys
-            values = layer.values
-            batch, n_heads, seq_len, head_dim = keys.shape
-            if head_dim != self.head_dim:
-                continue
+    is_compileable = False
 
-            device = keys.device
-            dtype = keys.dtype
+    def __init__(self, bits: int = 4, residual_length: int = 128):
+        self.bits = bits
+        self.residual_length = residual_length
+        self.layers: list[KVQuantLayer] = []
 
-            k_flat = keys.float().cpu().numpy().reshape(-1, head_dim)
-            v_flat = values.float().cpu().numpy().reshape(-1, head_dim)
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
+        cache_kwargs: dict | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        while layer_idx >= len(self.layers):
+            self.layers.append(KVQuantLayer(self.bits, self.residual_length))
+        return self.layers[layer_idx].update(key_states, value_states)
 
-            for i in range(k_flat.shape[0]):
-                ki, kn = self.tq.quantize(k_flat[i])
-                k_flat[i] = self.tq.dequantize(ki, kn)
-                vi, vn = self.tq.quantize(v_flat[i])
-                v_flat[i] = self.tq.dequantize(vi, vn)
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        if layer_idx >= len(self.layers):
+            return 0
+        return self.layers[layer_idx].get_seq_length()
 
-            layer.keys = torch.from_numpy(
-                k_flat.reshape(batch, n_heads, seq_len, head_dim)
-            ).to(dtype=dtype, device=device)
-            layer.values = torch.from_numpy(
-                v_flat.reshape(batch, n_heads, seq_len, head_dim)
-            ).to(dtype=dtype, device=device)
+    def get_max_cache_shape(self) -> int:
+        return -1
+
+    def get_mask_sizes(self, query_length: int, layer_idx: int = 0) -> tuple[int, int]:
+        if layer_idx < len(self.layers):
+            return self.layers[layer_idx].get_mask_sizes(query_length)
+        return query_length, 0
+
+    def crop(self, max_length: int) -> None:
+        for layer in self.layers:
+            layer.crop(max_length)
+
+    def batch_repeat_interleave(self, repeats: int) -> None:
+        for layer in self.layers:
+            layer.batch_repeat_interleave(repeats)
+
+    def batch_select_indices(self, indices: torch.Tensor) -> None:
+        for layer in self.layers:
+            layer.batch_select_indices(indices)
+
+    def __len__(self) -> int:
+        return len(self.layers)
+
+    def __getitem__(self, idx: int):
+        return self.layers[idx]
+
+    def __iter__(self):
+        for layer in self.layers:
+            k = layer.keys if layer.keys is not None else torch.tensor([])
+            v = layer.values if layer.values is not None else torch.tensor([])
+            yield k, v, None
+
+    def compressed_bytes(self) -> int:
+        return sum(layer.compressed_bytes() for layer in self.layers)
+
+    def residual_bytes(self) -> int:
+        total = 0
+        for layer in self.layers:
+            if layer.keys is not None and layer.keys.numel() > 0:
+                total += layer.keys.nbytes + layer.values.nbytes
+        return total
 
 
 # ---------------------------------------------------------------------------
@@ -330,14 +640,12 @@ class DoLaSteeringProcessor(LogitsProcessor):
         candidate_layers: list[int],
         alpha: float,
         steering_engine: SteeringEngine | None,
-        kv_compressor: KVCompressor | None,
     ):
         self.model = model
         self.lm_head = model.lm_head
         self.candidate_layers = candidate_layers
         self.alpha = alpha
         self.steering_engine = steering_engine
-        self.kv_compressor = kv_compressor
 
         # Storage for captured hidden states (reset each forward pass)
         self._captured_hidden: dict[int, torch.Tensor] = {}
@@ -382,16 +690,10 @@ class DoLaSteeringProcessor(LogitsProcessor):
                 )
                 self._hooks.append(steer_hook)
 
-        # TurboQuant: register post-forward hook on model for KV compression
-        if self.kv_compressor is not None and self.kv_compressor.enabled:
-            tq_hook = self.model.register_forward_hook(self._tq_hook)
-            self._hooks.append(tq_hook)
-
         logger.info(
             "hooks_registered",
             candidate_layers=len(self.candidate_layers),
             steering=self.steering_engine is not None and self.steering_engine.is_active(),
-            turboquant=self.kv_compressor is not None and self.kv_compressor.enabled,
         )
 
     def remove_hooks(self) -> None:
@@ -429,11 +731,6 @@ class DoLaSteeringProcessor(LogitsProcessor):
             output = output.clone()
             output[:, -1:, :] = modified_last
             return output
-
-    def _tq_hook(self, _module, _input, output):
-        if hasattr(output, "past_key_values"):
-            self.kv_compressor.compress_cache(output.past_key_values)
-        return output
 
     def __call__(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
@@ -569,7 +866,7 @@ class InferenceEngine:
         model_name: str,
         dola_enabled: bool = True,
         dola_alpha: float = ALPHA_DEFAULT,
-        turboquant_bits: int = 4,
+        turboquant_bits: int = 8,
         steering_enabled: bool = False,
         steering_coefficient: float = COEFFICIENT_DEFAULT,
         steering_layer: str = "auto",
@@ -577,7 +874,15 @@ class InferenceEngine:
         device_map: str = "auto",
         load_in_4bit: bool = True,
     ):
-        logger.info("loading_model", model=model_name, load_in_4bit=load_in_4bit)
+        # Auto-detect FA2 availability
+        try:
+            import flash_attn  # noqa: F401
+            _attn_impl = "flash_attention_2"
+            logger.info("flash_attention_2_available", version=flash_attn.__version__)
+        except ImportError:
+            _attn_impl = "sdpa"
+
+        logger.info("loading_model", model=model_name, load_in_4bit=load_in_4bit, attn=_attn_impl)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if load_in_4bit:
@@ -591,14 +896,14 @@ class InferenceEngine:
                 model_name,
                 quantization_config=bnb_config,
                 device_map=device_map,
-                attn_implementation="sdpa",
+                attn_implementation=_attn_impl,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 device_map=device_map,
-                attn_implementation="sdpa",
+                attn_implementation=_attn_impl,
             )
         self.model.eval()
         self.lock = Lock()
@@ -620,8 +925,8 @@ class InferenceEngine:
         self.dola_alpha = dola_alpha
         self.max_new_tokens = max_new_tokens
 
-        # TurboQuant
-        self.kv_compressor = KVCompressor(self.head_dim, turboquant_bits)
+        # KV cache quantization (KIVI-style per-head-per-token)
+        self.kv_compressor = KVCompressor(bit_width=turboquant_bits)
 
         # Steering vectors
         self.steering_enabled = steering_enabled
@@ -639,7 +944,6 @@ class InferenceEngine:
                 candidate_layers=self.candidate_layers,
                 alpha=dola_alpha,
                 steering_engine=self.steering_engine,
-                kv_compressor=self.kv_compressor if self.kv_compressor.enabled else None,
             )
 
         logger.info(
@@ -649,8 +953,8 @@ class InferenceEngine:
             head_dim=self.head_dim,
             dola=dola_enabled,
             dola_alpha=dola_alpha,
-            turboquant=self.kv_compressor.enabled,
-            turboquant_bits=turboquant_bits,
+            kv_quant=self.kv_compressor.enabled,
+            kv_quant_bits=turboquant_bits,
             steering=steering_enabled,
         )
 
@@ -736,6 +1040,45 @@ class InferenceEngine:
         )
         return streamer, input_token_count
 
+    # Chunked prefill: cap FFN activation scratch to chunk_size tokens
+    PREFILL_CHUNK_SIZE = 8192
+
+    def _make_cache(self):
+        """Create a KV cache: quantized (KIVI-style) if enabled, else DynamicCache."""
+        return self.kv_compressor.make_cache()
+
+    def _chunked_prefill(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
+    ):
+        """Process long input in chunks, building KV cache incrementally.
+
+        Returns (past_key_values, full_attention_mask) ready for generate().
+        Peak FFN activation is bounded by chunk_size instead of full seq_len.
+        """
+        seq_len = input_ids.shape[1]
+        cache = self._make_cache()
+        position = 0
+
+        while position < seq_len:
+            end = min(position + self.PREFILL_CHUNK_SIZE, seq_len)
+            chunk_ids = input_ids[:, position:end]
+            chunk_mask = attention_mask[:, :end]
+
+            with torch.inference_mode():
+                outputs = self.model(
+                    input_ids=chunk_ids,
+                    attention_mask=chunk_mask,
+                    past_key_values=cache,
+                    use_cache=True,
+                )
+            cache = outputs.past_key_values
+            position = end
+
+            if end < seq_len:
+                logger.info("chunked_prefill", processed=end, total=seq_len)
+
+        return cache
+
     def _generate_impl(
         self, prompt: str, max_tokens: int, temperature: float
     ) -> tuple[str, list[int], int]:
@@ -752,14 +1095,32 @@ class InferenceEngine:
             max_tokens=max_tokens,
         )
 
+        # Chunked prefill for long inputs to cap FFN activation memory
+        past_kv = None
+        if input_token_count > self.PREFILL_CHUNK_SIZE:
+            past_kv = self._chunked_prefill(
+                inputs.input_ids, inputs.attention_mask,
+            )
+            # For generate(), pass only the last token + cached KV
+            gen_input_ids = inputs.input_ids[:, -1:]
+            gen_attention_mask = inputs.attention_mask
+        else:
+            gen_input_ids = inputs.input_ids
+            gen_attention_mask = inputs.attention_mask
+            # Use quantized cache even for short prompts if TQ enabled
+            if self.kv_compressor.enabled:
+                past_kv = self._make_cache()
+
         generation_kwargs = {
-            "input_ids": inputs.input_ids,
-            "attention_mask": inputs.attention_mask,
+            "input_ids": gen_input_ids,
+            "attention_mask": gen_attention_mask,
             "max_new_tokens": max_tokens,
             "do_sample": temperature > 0,
             "output_hidden_states": self.dola_enabled,
             "return_dict_in_generate": True,
         }
+        if past_kv is not None:
+            generation_kwargs["past_key_values"] = past_kv
         if temperature > 0:
             generation_kwargs["temperature"] = temperature
 
@@ -776,12 +1137,16 @@ class InferenceEngine:
             if self._dola_processor is not None:
                 self._dola_processor.remove_hooks()
 
-        # outputs.sequences includes the input tokens
-        generated_ids = outputs.sequences[0, input_token_count:].tolist()
+        # Extract generated tokens (after the input we passed to generate)
+        gen_prefix_len = gen_input_ids.shape[1]
+        generated_ids = outputs.sequences[0, gen_prefix_len:].tolist()
         text = self.tokenizer.decode(generated_ids, skip_special_tokens=False)
 
         # Clean special tokens but keep tool call markers
-        for token in ["<bos>", "<eos>", "<pad>"]:
+        for token in [
+            "<bos>", "<eos>", "<pad>",
+            "<|im_end|>", "<|endoftext|>", "<|im_start|>",
+        ]:
             text = text.replace(token, "")
 
         gen_elapsed_ms = (time.time() - gen_start) * 1000
@@ -793,6 +1158,7 @@ class InferenceEngine:
             output_tokens=out_tokens,
             elapsed_ms=round(gen_elapsed_ms),
             tok_per_s=round(tps, 1),
+            chunked=input_token_count > self.PREFILL_CHUNK_SIZE,
         )
         _log_vram("after_generate")
 
@@ -1287,7 +1653,10 @@ def _stream_messages_response(
                 continue
 
             # Clean special tokens
-            for token in ["<bos>", "<eos>", "<pad>"]:
+            for token in [
+                "<bos>", "<eos>", "<pad>",
+                "<|im_end|>", "<|endoftext|>", "<|im_start|>",
+            ]:
                 chunk = chunk.replace(token, "")
             if not chunk:
                 continue
@@ -1453,9 +1822,9 @@ def main():
     parser.add_argument(
         "--turboquant-bits",
         type=int,
-        default=4,
-        choices=[0, 2, 3, 4],
-        help="TurboQuant bit-width (0=disabled)",
+        default=8,
+        choices=[0, 2, 4, 8],
+        help="KV cache quantization bit-width (0=disabled, 8=recommended)",
     )
     parser.add_argument(
         "--steering", action="store_true", default=False,
