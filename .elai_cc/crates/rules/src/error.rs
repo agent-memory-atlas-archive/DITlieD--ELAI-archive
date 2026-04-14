@@ -6,6 +6,12 @@ pub enum RulesDbError {
 
     #[error("unexpected schema version: expected {expected}, found {found}")]
     SchemaVersion { expected: i64, found: i64 },
+
+    #[error("interrogation tree deserialization error: {0}")]
+    TreeDeserialize(String),
+
+    #[error("interrogation tree validation error: {0}")]
+    TreeValidation(String),
 }
 
 /// Errors produced by rule lifecycle transitions.

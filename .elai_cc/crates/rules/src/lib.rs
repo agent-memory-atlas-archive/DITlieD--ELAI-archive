@@ -1,5 +1,6 @@
 pub mod error;
 pub mod green_contract;
+pub mod interrogation_store;
 pub mod lifecycle;
 pub mod policy_engine;
 pub mod predicate;

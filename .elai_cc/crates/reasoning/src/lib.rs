@@ -1,5 +1,6 @@
 pub mod config;
 pub mod engine;
+pub mod traversal;
 pub mod types;
 pub mod verification;
 
@@ -11,6 +12,7 @@ pub use types::{
     InlineFeasibilityResult, InlineFeasibilityState, PlanGroundingResult, TestRunResult,
     ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
 };
+pub use traversal::{traverse_with_answers, TreeTraverser};
 pub use verification::{
     FileReader, LocalVerifier, MockFileReader, MockTestRunner, NetworkVerifier, NoopTestRunner,
     StdFileReader, TestRunner, Verifier,

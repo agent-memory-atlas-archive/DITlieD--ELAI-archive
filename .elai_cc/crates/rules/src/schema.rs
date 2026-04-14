@@ -18,7 +18,7 @@ use crate::error::RulesDbError;
 // ---------------------------------------------------------------------------
 
 /// Current schema version. Bump when any CREATE/ALTER statement changes.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -127,6 +127,20 @@ CREATE TABLE IF NOT EXISTS deprecated_patterns (
     severity         TEXT NOT NULL CHECK(severity IN ('BLOCK', 'WARN')),
     reason           TEXT
 )";
+
+const CREATE_INTERROGATION_TREES_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS interrogation_trees (
+    tree_id      TEXT PRIMARY KEY,
+    language     TEXT NOT NULL,
+    domain       TEXT,
+    description  TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    tree_json    TEXT NOT NULL
+)";
+
+const CREATE_INTERROGATION_TREES_INDEX: &str = "\
+CREATE INDEX IF NOT EXISTS idx_interrogation_trees_lang_domain \
+ON interrogation_trees (language, domain)";
 
 // ---------------------------------------------------------------------------
 // Seed data for deprecated_patterns (from outdated-tech-audit.md)
@@ -415,6 +429,24 @@ pub fn run_migration(conn: &Connection, clock: &impl ClockProvider) -> Result<()
         )?;
     }
 
+    // Version 3 → 4: add interrogation_trees table + seed data.
+    if current < 4 {
+        conn.execute_batch(CREATE_INTERROGATION_TREES_TABLE)?;
+        conn.execute_batch(CREATE_INTERROGATION_TREES_INDEX)?;
+        crate::interrogation_store::seed_interrogation_trees(conn)?;
+
+        let now_epoch = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![4_i64, now_epoch],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -466,6 +498,7 @@ mod tests {
         assert!(tables.contains(&"violation_patterns".to_string()));
         assert!(tables.contains(&"rule_transitions".to_string()));
         assert!(tables.contains(&"deprecated_patterns".to_string()));
+        assert!(tables.contains(&"interrogation_trees".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
     }
 
