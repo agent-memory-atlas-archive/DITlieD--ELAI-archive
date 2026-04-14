@@ -15,6 +15,12 @@ thiserror = { version = "2.0", optional = true }
 blake3.workspace = true
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
 tracing.workspace = true
 regex.workspace = true
 urlencoding = "2"

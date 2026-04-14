@@ -14,6 +14,10 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Instant;
 
+use crate::import_extractor::{
+    check_deprecated_imports, extract_imports, DeprecatedImport, ImportLanguage,
+};
+
 // ---------------------------------------------------------------------------
 // Hook verdict types
 // ---------------------------------------------------------------------------
@@ -206,6 +210,9 @@ const MAX_NESTING_DEPTH: usize = 8;
 /// - Overly deep nesting (configurable threshold)
 pub struct T2Hook {
     circuit_breaker_lines: usize,
+    /// Deprecated import patterns for cross-referencing AST-extracted imports.
+    /// Loaded from rules.db deprecated_patterns table at construction time.
+    deprecated_imports: Vec<DeprecatedImport>,
 }
 
 /// Detected language for tree-sitter parsing.
@@ -219,7 +226,29 @@ impl T2Hook {
     pub fn new(circuit_breaker_lines: usize) -> Self {
         Self {
             circuit_breaker_lines,
+            deprecated_imports: Vec::new(),
         }
+    }
+
+    /// Create a T2 hook with deprecated import patterns for cross-referencing.
+    pub fn with_deprecated_imports(
+        circuit_breaker_lines: usize,
+        deprecated_imports: Vec<DeprecatedImport>,
+    ) -> Self {
+        tracing::info!(
+            count = deprecated_imports.len(),
+            "T2 hook loaded with deprecated import patterns"
+        );
+        Self {
+            circuit_breaker_lines,
+            deprecated_imports,
+        }
+    }
+
+    /// Replace the deprecated import patterns at runtime.
+    pub fn set_deprecated_imports(&mut self, patterns: Vec<DeprecatedImport>) {
+        tracing::debug!(count = patterns.len(), "T2 deprecated imports updated");
+        self.deprecated_imports = patterns;
     }
 
     /// Detect language from file extension.
@@ -255,53 +284,56 @@ impl T2Hook {
             return Ok(None);
         }
 
-        let lang = match Self::detect_language(file_path) {
-            Some(l) => l,
-            None => return Ok(None), // Unsupported language, skip
-        };
+        let lang = Self::detect_language(file_path);
+        let import_lang = ImportLanguage::from_extension(file_path);
 
-        let mut parser = tree_sitter::Parser::new();
+        // If neither the legacy detector nor the import extractor recognizes
+        // this language, skip entirely.
+        if lang.is_none() && import_lang.is_none() {
+            return Ok(None);
+        }
+
+        let mut findings: Vec<(String, String)> = Vec::new();
+
+        // --- Legacy pattern checks (Rust AST / Python regex) ---
         match lang {
-            DetectedLanguage::Rust => {
+            Some(DetectedLanguage::Rust) => {
+                let mut parser = tree_sitter::Parser::new();
                 parser
                     .set_language(&tree_sitter_rust::LANGUAGE.into())
                     .map_err(|e| T2Error::ParseError(format!("Rust parser init: {e}")))?;
-            }
-            DetectedLanguage::Python => {
-                // Python grammar not compiled in (avoids C compilation overhead).
-                // Fall back to regex-based detection for Python patterns.
-                return self.evaluate_python_regex(source, start);
-            }
-        }
-
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| T2Error::ParseError("tree-sitter parse returned None".to_string()))?;
-
-        let root = tree.root_node();
-        if root.has_error() {
-            tracing::debug!(file = file_path, "tree-sitter parse had errors, continuing");
-        }
-
-        // Walk AST for patterns
-        let mut findings: Vec<(String, String)> = Vec::new();
-
-        match lang {
-            DetectedLanguage::Rust => {
+                let tree = parser
+                    .parse(source, None)
+                    .ok_or_else(|| {
+                        T2Error::ParseError("tree-sitter parse returned None".to_string())
+                    })?;
+                let root = tree.root_node();
+                if root.has_error() {
+                    tracing::debug!(file = file_path, "tree-sitter parse had errors, continuing");
+                }
                 self.check_rust_patterns(&root, source, &mut findings);
+                let max_depth = self.max_nesting_depth(&root, 0);
+                if max_depth > MAX_NESTING_DEPTH {
+                    findings.push((
+                        format!("deep_nesting_{max_depth}"),
+                        format!(
+                            "Nesting depth {max_depth} exceeds limit {MAX_NESTING_DEPTH}"
+                        ),
+                    ));
+                }
             }
-            DetectedLanguage::Python => {
-                // Already handled above via regex fallback
+            Some(DetectedLanguage::Python) => {
+                // Python security/lazy patterns via regex
+                self.collect_python_regex_findings(source, &mut findings);
             }
+            None => {} // No legacy checks for other languages
         }
 
-        // Check nesting depth
-        let max_depth = self.max_nesting_depth(&root, 0);
-        if max_depth > MAX_NESTING_DEPTH {
-            findings.push((
-                format!("deep_nesting_{max_depth}"),
-                format!("Nesting depth {max_depth} exceeds limit {MAX_NESTING_DEPTH}"),
-            ));
+        // --- A-14: AST import extraction + deprecated pattern cross-reference ---
+        if let Some(il) = import_lang {
+            if !self.deprecated_imports.is_empty() {
+                self.check_deprecated_ast_imports(source, il, &mut findings);
+            }
         }
 
         let duration = start.elapsed();
@@ -313,7 +345,11 @@ impl T2Hook {
             return Ok(Some(HookVerdict::Allow));
         }
 
-        // Classify findings: security patterns -> BLOCK, lazy code/unsafe -> WARN
+        // Classify findings: deprecated imports and security patterns -> BLOCK,
+        // lazy code/unsafe -> WARN
+        let has_deprecated_block = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("deprecated_import_BLOCK"));
         let has_security_block = findings
             .iter()
             .any(|(id, _)| id.starts_with("unwrap_call") || id.starts_with("eval_call"));
@@ -322,7 +358,7 @@ impl T2Hook {
         });
 
         let (pattern_id, message) = &findings[0];
-        let verdict = if has_security_block {
+        let verdict = if has_deprecated_block || has_security_block {
             HookVerdict::Block {
                 message: message.clone(),
                 pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
@@ -335,6 +371,14 @@ impl T2Hook {
                 message: message.clone(),
                 pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
             }
+        } else if findings
+            .iter()
+            .any(|(id, _)| id.starts_with("deprecated_import_WARN"))
+        {
+            HookVerdict::Warn {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }
         } else {
             HookVerdict::Block {
                 message: message.clone(),
@@ -342,6 +386,45 @@ impl T2Hook {
             }
         };
         Ok(Some(verdict))
+    }
+
+    /// Extract imports via tree-sitter AST and cross-reference against deprecated patterns.
+    ///
+    /// Appends findings to the provided vec. Each finding ID encodes severity
+    /// (deprecated_import_BLOCK_... or deprecated_import_WARN_...).
+    fn check_deprecated_ast_imports(
+        &self,
+        source: &str,
+        language: ImportLanguage,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let imports = match extract_imports(source, language) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::debug!(
+                    lang = ?language,
+                    err = %e,
+                    "import extraction failed, skipping deprecated check"
+                );
+                return;
+            }
+        };
+
+        let violations =
+            check_deprecated_imports(&imports, &self.deprecated_imports, language);
+
+        for v in violations {
+            findings.push((
+                format!(
+                    "deprecated_import_{}_L{}_{}",
+                    v.severity, v.line, v.import_name
+                ),
+                format!(
+                    "Deprecated import '{}' at line {} (use '{}' instead)",
+                    v.deprecated_name, v.line, v.replacement_name
+                ),
+            ));
+        }
     }
 
     /// Check Rust-specific AST patterns (security + lazy code).
@@ -416,16 +499,15 @@ impl T2Hook {
         }
     }
 
-    /// Regex-based Python pattern detection (fallback when tree-sitter-python
-    /// is not compiled in to avoid C build overhead).
+    /// Collect Python security + lazy code findings via regex.
     ///
-    /// Checks both security patterns (eval, os.system, subprocess.shell) and
-    /// lazy code patterns (bare pass, NotImplementedError, ellipsis bodies).
-    fn evaluate_python_regex(
+    /// Appends to the provided findings vec rather than returning a verdict directly,
+    /// so the caller can combine with import extraction findings.
+    fn collect_python_regex_findings(
         &self,
         source: &str,
-        start: Instant,
-    ) -> Result<Option<HookVerdict>, T2Error> {
+        findings: &mut Vec<(String, String)>,
+    ) {
         // Security patterns
         static EVAL_RE: LazyLock<regex::Regex> =
             LazyLock::new(|| regex::Regex::new(r"\beval\s*\(").unwrap());
@@ -444,8 +526,6 @@ impl T2Hook {
             LazyLock::new(|| regex::Regex::new(r"(?m)def\s+\w+\([^)]*\):\s*\.\.\.").unwrap());
         static TODO_COMMENT_RE: LazyLock<regex::Regex> =
             LazyLock::new(|| regex::Regex::new(r"#\s*TODO\b").unwrap());
-
-        let mut findings: Vec<(String, String)> = Vec::new();
 
         // Security findings (BLOCK severity)
         if let Some(m) = EVAL_RE.find(source) {
@@ -472,63 +552,38 @@ impl T2Hook {
             ));
         }
 
-        // Lazy code findings (WARN severity — T1 fires WARN, T2 determines final)
-        let mut lazy_findings: Vec<(String, String)> = Vec::new();
-
+        // Lazy code findings (WARN severity)
         if let Some(m) = BARE_PASS_RE.find(source) {
             let line = source[..m.start()].lines().count() + 1;
-            lazy_findings.push((
-                format!("bare_pass_L{line}"),
+            findings.push((
+                format!("lazy_bare_pass_L{line}"),
                 format!("Bare pass statement at line {line}"),
             ));
         }
 
         if let Some(m) = NOT_IMPLEMENTED_RE.find(source) {
             let line = source[..m.start()].lines().count() + 1;
-            lazy_findings.push((
-                format!("not_implemented_L{line}"),
+            findings.push((
+                format!("lazy_not_implemented_L{line}"),
                 format!("raise NotImplementedError at line {line}"),
             ));
         }
 
         if let Some(m) = ELLIPSIS_BODY_RE.find(source) {
             let line = source[..m.start()].lines().count() + 1;
-            lazy_findings.push((
-                format!("ellipsis_body_L{line}"),
+            findings.push((
+                format!("lazy_ellipsis_body_L{line}"),
                 format!("Function body is just ... at line {line}"),
             ));
         }
 
         if let Some(m) = TODO_COMMENT_RE.find(source) {
             let line = source[..m.start()].lines().count() + 1;
-            lazy_findings.push((
-                format!("todo_comment_L{line}"),
+            findings.push((
+                format!("lazy_todo_comment_L{line}"),
                 format!("TODO comment at line {line}"),
             ));
         }
-
-        let duration = start.elapsed();
-        if duration.as_millis() > 10 {
-            tracing::warn!(duration_ms = ?duration.as_millis(), "T2 Python regex exceeded 10ms");
-        }
-
-        // Security findings take precedence (BLOCK)
-        if let Some((pattern_id, message)) = findings.first() {
-            return Ok(Some(HookVerdict::Block {
-                message: message.clone(),
-                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
-            }));
-        }
-
-        // Lazy code findings produce WARN
-        if let Some((pattern_id, message)) = lazy_findings.first() {
-            return Ok(Some(HookVerdict::Warn {
-                message: message.clone(),
-                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
-            }));
-        }
-
-        Ok(Some(HookVerdict::Allow))
     }
 
     /// Compute maximum nesting depth of the AST.
@@ -693,6 +748,11 @@ impl TieredAnalysis {
         self.t1.set_rules(rules);
     }
 
+    /// Update T2 deprecated import patterns at runtime.
+    pub fn set_t2_deprecated_imports(&mut self, patterns: Vec<DeprecatedImport>) {
+        self.t2.set_deprecated_imports(patterns);
+    }
+
     /// Access the T1 rule engine for filtering/compilation.
     pub fn rule_engine(&self) -> &dyn RuleEngine {
         &*self.t1.rule_engine
@@ -707,6 +767,20 @@ impl TieredAnalysis {
         Self {
             t1: T1Hook::with_rules(rule_engine, fsm_phase, rules),
             t2: T2Hook::new(5000),
+            t3: T3Hook::new(),
+        }
+    }
+
+    /// Create with pre-loaded T1 rules and T2 deprecated import patterns.
+    pub fn with_rules_and_deprecated_imports(
+        rule_engine: Box<dyn RuleEngine>,
+        fsm_phase: FsmPhaseBit,
+        rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+        deprecated_imports: Vec<DeprecatedImport>,
+    ) -> Self {
+        Self {
+            t1: T1Hook::with_rules(rule_engine, fsm_phase, rules),
+            t2: T2Hook::with_deprecated_imports(5000, deprecated_imports),
             t3: T3Hook::new(),
         }
     }

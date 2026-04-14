@@ -8,18 +8,24 @@ use tree_sitter::StreamingIterator;
 /// Evaluates AST queries using tree-sitter grammars.
 ///
 /// Holds a registry of language name -> `tree_sitter::Language`.
-/// Currently supports Rust only; returns `UnsupportedLanguage` for others.
+/// Supports 7 languages: Rust, Python, TypeScript, Go, Java, C#, Ruby.
 pub struct TreeSitterAstEvaluator {
     languages: HashMap<String, tree_sitter::Language>,
 }
 
 impl TreeSitterAstEvaluator {
     pub fn new() -> Self {
-        let mut languages = HashMap::new();
+        let mut languages = HashMap::with_capacity(7);
+        languages.insert("rust".to_string(), tree_sitter_rust::LANGUAGE.into());
+        languages.insert("python".to_string(), tree_sitter_python::LANGUAGE.into());
         languages.insert(
-            "rust".to_string(),
-            tree_sitter_rust::LANGUAGE.into(),
+            "typescript".to_string(),
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         );
+        languages.insert("go".to_string(), tree_sitter_go::LANGUAGE.into());
+        languages.insert("java".to_string(), tree_sitter_java::LANGUAGE.into());
+        languages.insert("c_sharp".to_string(), tree_sitter_c_sharp::LANGUAGE.into());
+        languages.insert("ruby".to_string(), tree_sitter_ruby::LANGUAGE.into());
         Self { languages }
     }
 
@@ -99,8 +105,16 @@ mod tests {
     #[test]
     fn unsupported_language_returns_error() {
         let eval = TreeSitterAstEvaluator::new();
-        let result = eval.evaluate_query("python", "x = 1", "(identifier) @id");
+        let result = eval.evaluate_query("haskell", "main = putStrLn", "(identifier) @id");
         assert!(matches!(result, Err(AstError::UnsupportedLanguage(_))));
+    }
+
+    #[test]
+    fn python_language_supported() {
+        let eval = TreeSitterAstEvaluator::new();
+        let source = "import os\nx = 1";
+        let result = eval.evaluate_query("python", source, "(identifier) @id");
+        assert!(result.is_ok());
     }
 
     #[test]

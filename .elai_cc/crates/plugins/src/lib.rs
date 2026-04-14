@@ -1,4 +1,5 @@
 mod hooks;
+pub mod import_extractor;
 pub mod tiered_analysis;
 
 #[cfg(feature = "mcp")]
