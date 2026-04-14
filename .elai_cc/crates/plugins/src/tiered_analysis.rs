@@ -193,6 +193,7 @@ impl From<elai_rules::rule_engine::RuleEngineError> for T1Error {
 /// Maximum nesting depth before flagging as overly complex.
 const MAX_NESTING_DEPTH: usize = 8;
 
+
 /// T2 hook performs tree-sitter parse + pattern matching for file_write actions.
 ///
 /// Fires only on action_type='file_write'. Circuit breaker: files >5000 lines degrade to T1-only.
@@ -308,26 +309,42 @@ impl T2Hook {
             tracing::warn!(duration_ms = ?duration.as_millis(), "T2 hook exceeded 10ms target");
         }
 
-        if let Some((pattern_id, message)) = findings.first() {
-            let severity = if findings.iter().any(|(id, _)| id.starts_with("unsafe_block")) {
-                // unsafe blocks are WARN (they may be legitimate)
-                HookVerdict::Warn {
-                    message: message.clone(),
-                    pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
-                }
-            } else {
-                HookVerdict::Block {
-                    message: message.clone(),
-                    pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
-                }
-            };
-            Ok(Some(severity))
-        } else {
-            Ok(Some(HookVerdict::Allow))
+        if findings.is_empty() {
+            return Ok(Some(HookVerdict::Allow));
         }
+
+        // Classify findings: security patterns -> BLOCK, lazy code/unsafe -> WARN
+        let has_security_block = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("unwrap_call") || id.starts_with("eval_call"));
+        let has_lazy_code = findings.iter().any(|(id, _)| {
+            id.starts_with("lazy_") || id.starts_with("empty_fn_body")
+        });
+
+        let (pattern_id, message) = &findings[0];
+        let verdict = if has_security_block {
+            HookVerdict::Block {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }
+        } else if has_lazy_code
+            || findings.iter().any(|(id, _)| id.starts_with("unsafe_block"))
+        {
+            // Lazy code and unsafe blocks are WARN (may be legitimate in tests)
+            HookVerdict::Warn {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }
+        } else {
+            HookVerdict::Block {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }
+        };
+        Ok(Some(verdict))
     }
 
-    /// Check Rust-specific AST patterns.
+    /// Check Rust-specific AST patterns (security + lazy code).
     fn check_rust_patterns(
         &self,
         node: &tree_sitter::Node<'_>,
@@ -359,6 +376,39 @@ impl T2Hook {
             }
         }
 
+        // Lazy code: todo!() and unimplemented!() macro invocations
+        if node.kind() == "macro_invocation" {
+            if let Some(macro_node) = node.child_by_field_name("macro") {
+                let macro_text = &source[macro_node.byte_range()];
+                if macro_text == "todo" || macro_text == "unimplemented" {
+                    let start_line = node.start_position().row + 1;
+                    findings.push((
+                        format!("lazy_{macro_text}_L{start_line}"),
+                        format!("{macro_text}!() placeholder at line {start_line}"),
+                    ));
+                }
+            }
+        }
+
+        // Lazy code: empty function bodies (fn foo() {})
+        // tree-sitter-rust: function_item has a "body" field (block node).
+        // An empty body has only "{" and "}" tokens, zero named children.
+        if node.kind() == "function_item" {
+            if let Some(body) = node.child_by_field_name("body") {
+                if body.named_child_count() == 0 {
+                    let start_line = node.start_position().row + 1;
+                    let fn_name = node
+                        .child_by_field_name("name")
+                        .map(|n| &source[n.byte_range()])
+                        .unwrap_or("<unknown>");
+                    findings.push((
+                        format!("empty_fn_body_L{start_line}"),
+                        format!("Empty function body '{}' at line {}", fn_name, start_line),
+                    ));
+                }
+            }
+        }
+
         // Recurse into children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -368,11 +418,15 @@ impl T2Hook {
 
     /// Regex-based Python pattern detection (fallback when tree-sitter-python
     /// is not compiled in to avoid C build overhead).
+    ///
+    /// Checks both security patterns (eval, os.system, subprocess.shell) and
+    /// lazy code patterns (bare pass, NotImplementedError, ellipsis bodies).
     fn evaluate_python_regex(
         &self,
         source: &str,
         start: Instant,
     ) -> Result<Option<HookVerdict>, T2Error> {
+        // Security patterns
         static EVAL_RE: LazyLock<regex::Regex> =
             LazyLock::new(|| regex::Regex::new(r"\beval\s*\(").unwrap());
         static OS_SYSTEM_RE: LazyLock<regex::Regex> =
@@ -381,8 +435,19 @@ impl T2Hook {
             regex::Regex::new(r"subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True").unwrap()
         });
 
+        // Lazy code patterns (code-completeness enforcement)
+        static BARE_PASS_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"(?m)\bpass\s*$").unwrap());
+        static NOT_IMPLEMENTED_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"\braise NotImplementedError\b").unwrap());
+        static ELLIPSIS_BODY_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"(?m)def\s+\w+\([^)]*\):\s*\.\.\.").unwrap());
+        static TODO_COMMENT_RE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"#\s*TODO\b").unwrap());
+
         let mut findings: Vec<(String, String)> = Vec::new();
 
+        // Security findings (BLOCK severity)
         if let Some(m) = EVAL_RE.find(source) {
             let line = source[..m.start()].lines().count() + 1;
             findings.push((
@@ -407,19 +472,63 @@ impl T2Hook {
             ));
         }
 
+        // Lazy code findings (WARN severity — T1 fires WARN, T2 determines final)
+        let mut lazy_findings: Vec<(String, String)> = Vec::new();
+
+        if let Some(m) = BARE_PASS_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            lazy_findings.push((
+                format!("bare_pass_L{line}"),
+                format!("Bare pass statement at line {line}"),
+            ));
+        }
+
+        if let Some(m) = NOT_IMPLEMENTED_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            lazy_findings.push((
+                format!("not_implemented_L{line}"),
+                format!("raise NotImplementedError at line {line}"),
+            ));
+        }
+
+        if let Some(m) = ELLIPSIS_BODY_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            lazy_findings.push((
+                format!("ellipsis_body_L{line}"),
+                format!("Function body is just ... at line {line}"),
+            ));
+        }
+
+        if let Some(m) = TODO_COMMENT_RE.find(source) {
+            let line = source[..m.start()].lines().count() + 1;
+            lazy_findings.push((
+                format!("todo_comment_L{line}"),
+                format!("TODO comment at line {line}"),
+            ));
+        }
+
         let duration = start.elapsed();
         if duration.as_millis() > 10 {
             tracing::warn!(duration_ms = ?duration.as_millis(), "T2 Python regex exceeded 10ms");
         }
 
+        // Security findings take precedence (BLOCK)
         if let Some((pattern_id, message)) = findings.first() {
-            Ok(Some(HookVerdict::Block {
+            return Ok(Some(HookVerdict::Block {
                 message: message.clone(),
                 pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
-            }))
-        } else {
-            Ok(Some(HookVerdict::Allow))
+            }));
         }
+
+        // Lazy code findings produce WARN
+        if let Some((pattern_id, message)) = lazy_findings.first() {
+            return Ok(Some(HookVerdict::Warn {
+                message: message.clone(),
+                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+            }));
+        }
+
+        Ok(Some(HookVerdict::Allow))
     }
 
     /// Compute maximum nesting depth of the AST.
@@ -772,5 +881,198 @@ mod tests {
         // Should not match clean code
         let clean_code = "try:\n    pass\nexcept Exception as e:\n    log.error(e)";
         assert!(hook.evaluate(clean_code, "test.py").is_none());
+    }
+
+    // -- T2 lazy code detection (Rust AST) --
+
+    #[test]
+    fn test_t2_detects_todo_macro() {
+        let hook = T2Hook::new(5000);
+        let source = "fn main() {\n    todo!()\n}\n";
+        let result = hook.evaluate(source, "src/main.rs").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "todo!() should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_unimplemented_macro() {
+        let hook = T2Hook::new(5000);
+        let source = "fn compute() -> i32 {\n    unimplemented!()\n}\n";
+        let result = hook.evaluate(source, "src/lib.rs").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "unimplemented!() should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_empty_fn_body_rust() {
+        let hook = T2Hook::new(5000);
+        let source = "fn placeholder() {}\n";
+        let result = hook.evaluate(source, "src/lib.rs").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "empty fn body should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_allows_clean_rust() {
+        let hook = T2Hook::new(5000);
+        let source = "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let result = hook.evaluate(source, "src/lib.rs").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), HookVerdict::Allow);
+    }
+
+    // -- T2 lazy code detection (Python regex) --
+
+    #[test]
+    fn test_t2_detects_bare_pass_python() {
+        let hook = T2Hook::new(5000);
+        let source = "def handler():\n    pass\n";
+        let result = hook.evaluate(source, "handler.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "bare pass should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_not_implemented_python() {
+        let hook = T2Hook::new(5000);
+        let source = "def compute():\n    raise NotImplementedError\n";
+        let result = hook.evaluate(source, "compute.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "raise NotImplementedError should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_ellipsis_body_python() {
+        let hook = T2Hook::new(5000);
+        let source = "def stub(x): ...\n";
+        let result = hook.evaluate(source, "stub.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "ellipsis body should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_todo_comment_python() {
+        let hook = T2Hook::new(5000);
+        let source = "def process():\n    # TODO implement this\n    return None\n";
+        let result = hook.evaluate(source, "process.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "TODO comment should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_security_overrides_lazy_python() {
+        let hook = T2Hook::new(5000);
+        // Source with both eval (security) and TODO (lazy)
+        let source = "# TODO fix this\nresult = eval(user_input)\n";
+        let result = hook.evaluate(source, "bad.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_block(), "security finding should BLOCK even with lazy code, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_allows_clean_python() {
+        let hook = T2Hook::new(5000);
+        let source = "def add(a, b):\n    return a + b\n";
+        let result = hook.evaluate(source, "math.py").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), HookVerdict::Allow);
+    }
+
+    // -- T1 with loaded rules --
+
+    #[test]
+    fn test_t1_with_rules_evaluates() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit, Rule};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+
+        let engine = DefaultRuleEngine::new(
+            Box::new(PassAstEvaluator),
+            Box::new(EmptyDkgQuerier),
+        );
+
+        let rule = Rule {
+            rule_id: "r-test-grep".into(),
+            domain: "engineering".into(),
+            tier: 1,
+            severity: "WARN".into(),
+            title: "Detects TODO".into(),
+            predicate_json: r#"{"type":"grep_pattern","pattern":"TODO","scope":null,"context_lines":0}"#.into(),
+            phase_mask: 0xFF,
+            escalate_target: None,
+        };
+
+        let compiled = engine.compile_predicate(&rule.predicate_json).unwrap();
+
+        let hook = T1Hook::with_rules(
+            Box::new(engine),
+            FsmPhaseBit::EXECUTING,
+            vec![(rule, compiled)],
+        );
+
+        // Source with TODO should trigger WARN
+        let result = hook.evaluate("file_write", "// TODO fix this", "src/lib.rs", HashMap::new());
+        assert!(result.is_ok());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "GREP_PATTERN TODO should produce WARN, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t1_empty_rules_allows_all() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+
+        let engine = DefaultRuleEngine::new(
+            Box::new(PassAstEvaluator),
+            Box::new(EmptyDkgQuerier),
+        );
+
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+
+        let result = hook.evaluate("file_write", "evil code todo!()", "src/main.rs", HashMap::new());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), HookVerdict::Allow, "empty rules should allow everything");
+    }
+
+    #[test]
+    fn test_t1_block_severity() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit, Rule};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+
+        let engine = DefaultRuleEngine::new(
+            Box::new(PassAstEvaluator),
+            Box::new(EmptyDkgQuerier),
+        );
+
+        let rule = Rule {
+            rule_id: "r-block-eval".into(),
+            domain: "security".into(),
+            tier: 1,
+            severity: "BLOCK".into(),
+            title: "Block eval".into(),
+            predicate_json: r#"{"type":"grep_pattern","pattern":"\\beval\\s*\\(","scope":null,"context_lines":0}"#.into(),
+            phase_mask: 0xFF,
+            escalate_target: None,
+        };
+
+        let compiled = engine.compile_predicate(&rule.predicate_json).unwrap();
+
+        let hook = T1Hook::with_rules(
+            Box::new(engine),
+            FsmPhaseBit::EXECUTING,
+            vec![(rule, compiled)],
+        );
+
+        let result = hook.evaluate("file_write", "result = eval(x)", "script.py", HashMap::new());
+        assert!(result.is_ok());
+        let verdict = result.unwrap();
+        assert!(verdict.is_block(), "BLOCK severity rule should produce Block verdict, got {:?}", verdict);
     }
 }
