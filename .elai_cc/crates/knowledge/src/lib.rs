@@ -10,6 +10,7 @@ pub mod dkg;
 pub mod dkg_adapter;
 pub mod error;
 pub mod freshness;
+pub mod hyde;
 pub mod index_version;
 pub mod pagerank;
 pub mod pipeline;

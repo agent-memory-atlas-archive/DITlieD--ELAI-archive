@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
+use crate::hyde::HydeStage;
 use crate::query_expansion::{self, ExpansionStrategy};
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
@@ -54,6 +55,7 @@ pub struct QueryPipeline {
     pub vector_indexer: Option<VectorIndexer>,
     pub dkg_engine: Option<DkgEngine>,
     pub freshness_db: Option<FreshnessDb>,
+    pub hyde_stage: Option<HydeStage>,
     #[cfg(feature = "splade")]
     pub splade: Option<SpladeExpander>,
 }
@@ -67,6 +69,7 @@ impl QueryPipeline {
             vector_indexer: None,
             dkg_engine: None,
             freshness_db: None,
+            hyde_stage: None,
             #[cfg(feature = "splade")]
             splade: None,
         }
@@ -97,6 +100,11 @@ impl QueryPipeline {
         self
     }
 
+    pub fn with_hyde(mut self, hyde: HydeStage) -> Self {
+        self.hyde_stage = Some(hyde);
+        self
+    }
+
     #[cfg(feature = "splade")]
     pub fn with_splade(mut self, expander: SpladeExpander) -> Self {
         self.splade = Some(expander);
@@ -118,7 +126,7 @@ impl QueryPipeline {
         // Pre-query validation (Phase 1I.3).
         QueryValidator::validate(query)?;
 
-        let mut stages = Vec::with_capacity(9);
+        let mut stages = Vec::with_capacity(10);
 
         // Phase 3K.2: template-based multi-query expansion.
         let expansions = query_expansion::expand_query(query);
@@ -147,7 +155,47 @@ impl QueryPipeline {
             error: None,
         });
 
+        // Phase 3K.3: HyDE — generate hypothetical document for complex queries.
+        // Sits between query expansion and retrieval stages (BM25 + vector).
+        // If hypothesis is generated, its embedding replaces the query embedding
+        // for vector search (arxiv 2212.10496). BM25 still uses original query.
+        // Cross-encoder reranks against the ORIGINAL query, not the hypothesis.
+        let (hyde_hypothesis, hyde_breaker_state, hyde_error) = match self.hyde_stage {
+            Some(ref hyde) => {
+                let breaker_state = hyde
+                    .breaker_state()
+                    .map(|s| format!("{s:?}"));
+                match hyde.hypothesize(query) {
+                    Some(hyp) => {
+                        tracing::debug!(
+                            hypothesis_len = hyp.len(),
+                            "hyde: hypothesis will be used for vector search"
+                        );
+                        (Some(hyp), breaker_state, None)
+                    }
+                    None => (None, breaker_state, None),
+                }
+            }
+            None => (None, None, None),
+        };
+        stages.push(PipelineStage {
+            stage: "hyde".to_string(),
+            results: hyde_hypothesis
+                .as_ref()
+                .map(|h| vec![RetrievalResult {
+                    chunk_id: "hyde:hypothesis".to_string(),
+                    snippet: h.clone(),
+                    score: 0.0,
+                    tool_used: "hyde".to_string(),
+                }])
+                .unwrap_or_default(),
+            latency_ms: 0,
+            circuit_breaker_state: hyde_breaker_state,
+            error: hyde_error,
+        });
+
         // Stage 0: BM25 — run per expansion, merge + dedup
+        // BM25 always uses original query + expansions (text matching).
         let mut bm25_seen: HashSet<String> = HashSet::new();
         let mut bm25_results: Vec<RetrievalResult> = Vec::new();
         for eq in &expansion_texts {
@@ -172,14 +220,23 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 1: vector — run per expansion, merge + dedup
+        // Stage 1: vector — run per expansion (or HyDE hypothesis), merge + dedup.
+        // Phase 3K.3: if HyDE produced a hypothesis, embed it and use that for
+        // vector search instead of the original query expansions. This improves
+        // query-document matching by searching in document space (arxiv 2212.10496).
+        // Falls back to expansion texts if HyDE is unavailable.
+        let vector_queries: Vec<String> = match hyde_hypothesis {
+            Some(ref hyp) => vec![hyp.clone()],
+            None => expansion_texts.clone(),
+        };
+
         let mut vector_seen: HashSet<String> = HashSet::new();
         let mut vector_results: Vec<RetrievalResult> = Vec::new();
         let mut vector_error: Option<String> = None;
         match (&self.vector_module, &self.vector_indexer) {
             (Some(vm), Some(indexer)) if !indexer.is_empty() => {
-                for eq in &expansion_texts {
-                    match vm.embed_text(eq) {
+                for vq in &vector_queries {
+                    match vm.embed_text(vq) {
                         Ok(query_vec) => {
                             match indexer.search(&query_vec, 10) {
                                 Ok(hits) => {
@@ -830,5 +887,168 @@ mod tests {
         let src = include_str!("pipeline.rs");
         assert!(src.contains("freshness_db"), "pipeline must reference freshness_db");
         assert!(src.contains("freshness_multiplier"), "pipeline must call freshness_multiplier");
+    }
+
+    // -------------------------------------------------------------------
+    // 3K.3 HyDE integration tests
+    // -------------------------------------------------------------------
+
+    use crate::hyde::{HydeClient, HydeStage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Mock HyDE client for pipeline tests.
+    struct PipelineMockHydeClient {
+        call_count: AtomicUsize,
+    }
+
+    impl PipelineMockHydeClient {
+        fn new() -> Self {
+            Self { call_count: AtomicUsize::new(0) }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl HydeClient for PipelineMockHydeClient {
+        fn generate_hypothesis(&self, _query: &str) -> Result<String, String> {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            Ok("The pipeline processes queries through BM25 text search \
+                and vector similarity using hypothetical document embeddings \
+                to improve retrieval accuracy for complex queries."
+                .to_string())
+        }
+    }
+
+    /// Failing HyDE client for graceful degradation tests.
+    struct PipelineFailingHydeClient;
+
+    impl HydeClient for PipelineFailingHydeClient {
+        fn generate_hypothesis(&self, _query: &str) -> Result<String, String> {
+            Err("sidecar unavailable: connection refused".to_string())
+        }
+    }
+
+    fn make_hyde_stage(client: Arc<dyn HydeClient>) -> HydeStage {
+        let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+        HydeStage::new(client, clock)
+    }
+
+    #[test]
+    fn pipeline_with_hyde_has_hyde_stage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client: Arc<dyn HydeClient> = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        let stages = pipeline.query("how does ELAI handle anti-spiral detection in the pipeline")
+            .expect("query");
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde");
+        assert!(hyde_stage.is_some(), "pipeline must include hyde stage");
+    }
+
+    #[test]
+    fn pipeline_hyde_generates_hypothesis_for_complex_query() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client.clone() as Arc<dyn HydeClient>);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        let stages = pipeline.query("how does ELAI handle anti-spiral detection in the pipeline")
+            .expect("query");
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").expect("hyde stage");
+
+        assert_eq!(client.calls(), 1, "sidecar should be called once");
+        assert!(!hyde_stage.results.is_empty(), "hyde stage should have hypothesis result");
+        assert_eq!(hyde_stage.results[0].chunk_id, "hyde:hypothesis");
+    }
+
+    #[test]
+    fn pipeline_hyde_skips_short_query() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client.clone() as Arc<dyn HydeClient>);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        let stages = pipeline.query("find main").expect("query");
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").expect("hyde stage");
+
+        assert_eq!(client.calls(), 0, "sidecar should NOT be called for short query");
+        assert!(hyde_stage.results.is_empty(), "no hypothesis for short query");
+    }
+
+    #[test]
+    fn pipeline_hyde_graceful_degradation_on_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client: Arc<dyn HydeClient> = Arc::new(PipelineFailingHydeClient);
+        let hyde = make_hyde_stage(client);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        // Pipeline should complete without error even though HyDE fails.
+        let stages = pipeline.query("how does ELAI handle anti-spiral detection in the pipeline")
+            .expect("query should succeed despite HyDE failure");
+
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").expect("hyde stage");
+        assert!(hyde_stage.results.is_empty(), "failed HyDE should produce no hypothesis");
+
+        // BM25 should still work.
+        let bm25_stage = stages.iter().find(|s| s.stage == "bm25").expect("bm25 stage");
+        assert!(bm25_stage.error.is_none(), "BM25 should not be affected by HyDE failure");
+    }
+
+    #[test]
+    fn pipeline_without_hyde_still_works() {
+        // Backwards compatibility: no HyDE stage configured.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let pipeline = make_pipeline(bm25);
+
+        let stages = pipeline.query("how does ELAI handle anti-spiral detection in the pipeline")
+            .expect("query");
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").expect("hyde stage");
+        assert!(hyde_stage.results.is_empty(), "no hypothesis without HyDE stage");
+    }
+
+    #[test]
+    fn pipeline_hyde_stage_between_expansion_and_bm25() {
+        // Structural: HyDE stage must appear after query_expansion and before bm25.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client: Arc<dyn HydeClient> = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        let stages = pipeline.query("how does ELAI handle anti-spiral detection in the pipeline")
+            .expect("query");
+        let stage_names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+        let expansion_pos = stage_names.iter().position(|&s| s == "query_expansion")
+            .expect("query_expansion stage");
+        let hyde_pos = stage_names.iter().position(|&s| s == "hyde")
+            .expect("hyde stage");
+        let bm25_pos = stage_names.iter().position(|&s| s == "bm25")
+            .expect("bm25 stage");
+
+        assert!(
+            expansion_pos < hyde_pos,
+            "hyde (pos={hyde_pos}) must come after query_expansion (pos={expansion_pos})"
+        );
+        assert!(
+            hyde_pos < bm25_pos,
+            "hyde (pos={hyde_pos}) must come before bm25 (pos={bm25_pos})"
+        );
+    }
+
+    #[test]
+    fn pipeline_hyde_structural_check() {
+        let src = include_str!("pipeline.rs");
+        assert!(src.contains("hyde_stage"), "pipeline must reference hyde_stage");
+        assert!(src.contains("hyde_hypothesis"), "pipeline must use hypothesis for vector search");
+        assert!(src.contains("HydeStage"), "pipeline must use HydeStage type");
+        assert!(src.contains("with_hyde"), "pipeline must have with_hyde builder");
     }
 }
