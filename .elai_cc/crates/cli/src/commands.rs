@@ -516,6 +516,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "profile",
+        aliases: &[],
+        summary: "Detect and show project profile (build system, languages, frameworks)",
+        argument_hint: Some("[path]"),
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "add-dir",
         aliases: &[],
         summary: "Add an additional directory to the context",
@@ -1179,6 +1186,9 @@ pub enum SlashCommand {
     OutputStyle {
         style: Option<String>,
     },
+    Profile {
+        path: Option<String>,
+    },
     AddDir {
         path: Option<String>,
     },
@@ -1414,6 +1424,7 @@ pub fn validate_slash_command_input(
         "ide" => SlashCommand::Ide { target: remainder },
         "tag" => SlashCommand::Tag { label: remainder },
         "output-style" => SlashCommand::OutputStyle { style: remainder },
+        "profile" => SlashCommand::Profile { path: remainder },
         "add-dir" => SlashCommand::AddDir { path: remainder },
         other => SlashCommand::Unknown(other.to_string()),
     }))
@@ -1795,7 +1806,7 @@ fn slash_command_category(name: &str) -> &'static str {
             "Workspace & git"
         }
         "agents" | "skills" | "teleport" | "debug-tool-call" | "mcp" | "context" | "tasks"
-        | "doctor" | "ide" | "desktop" => "Discovery & debugging",
+        | "doctor" | "ide" | "desktop" | "profile" => "Discovery & debugging",
         "bughunter" | "ultraplan" | "review" | "security-review" | "advisor" | "insights" => {
             "Analysis & automation"
         }
@@ -3678,6 +3689,7 @@ pub fn handle_slash_command(
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
+        | SlashCommand::Profile { .. }
         | SlashCommand::AddDir { .. }
         | SlashCommand::Unknown(_) => None,
     }

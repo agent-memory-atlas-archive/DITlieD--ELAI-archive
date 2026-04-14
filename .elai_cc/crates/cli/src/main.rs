@@ -61,7 +61,7 @@ use serde::Deserialize;
 use serde_json::json;
 use elai_rules::predicate::from_json;
 use elai_rules::rule_engine::{CompiledPredicate, DefaultRuleEngine, EvaluationContext, FsmPhaseBit, Rule, RuleEngine};
-use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter, DkgEngine};
+use elai_knowledge::{TreeSitterAstEvaluator, DkgQuerierAdapter, DkgEngine, detect_project_profile};
 use elai_knowledge::pipeline::{QueryPipeline, PipelineStage};
 use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::catrag::{CatRag, CatRagConfig};
@@ -2151,6 +2151,24 @@ fn run_resume_command(
             session: session.clone(),
             message: Some(render_doctor_report()?.render()),
         }),
+        SlashCommand::Profile { path } => {
+            let cwd = env::current_dir()?;
+            let root = path
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or(cwd);
+            match detect_project_profile(&root) {
+                Ok(profile) => {
+                    let output = elai_knowledge::serialize_profile(&profile)
+                        .unwrap_or_else(|e| format!("serialization error: {e}"));
+                    Ok(ResumeCommandOutcome {
+                        session: session.clone(),
+                        message: Some(output),
+                    })
+                }
+                Err(e) => Err(anyhow::anyhow!("profile detection failed: {e}")),
+            }
+        }
         SlashCommand::Unknown(name) => Err(anyhow::anyhow!(format_unknown_slash_command(name))),
         SlashCommand::Bughunter { .. }
         | SlashCommand::Commit { .. }
@@ -3807,6 +3825,21 @@ impl LiveCli {
             }
             SlashCommand::Doctor => {
                 println!("{}", render_doctor_report()?.render());
+                false
+            }
+            SlashCommand::Profile { path } => {
+                let root = path
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                match detect_project_profile(&root) {
+                    Ok(profile) => {
+                        let output = elai_knowledge::serialize_profile(&profile)
+                            .unwrap_or_else(|e| format!("serialization error: {e}"));
+                        println!("{output}");
+                    }
+                    Err(e) => eprintln!("profile detection failed: {e}"),
+                }
                 false
             }
             SlashCommand::Plan { mode } => {

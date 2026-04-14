@@ -22,6 +22,8 @@ tokenizers = { version = "0.22", default-features = false, features = ["progress
 tokio = { version = "1", features = ["sync"] }
 toml.workspace = true
 uuid.workspace = true
+ignore = "0.4"
+globset = "0.4"
 usearch = { version = "2", default-features = false, optional = true }
 
 [features]

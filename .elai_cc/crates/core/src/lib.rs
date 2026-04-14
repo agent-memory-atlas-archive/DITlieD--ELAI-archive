@@ -3,6 +3,7 @@ pub mod clock;
 pub mod config;
 pub mod entropy;
 pub mod json;
+pub mod project_profile;
 pub mod sandbox;
 mod usage;
 
@@ -24,6 +25,15 @@ pub use sandbox::{
 };
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
+};
+
+pub use project_profile::{
+    ArchitecturePattern, BuildCommand, BuildCommandRegistry, BuildSystem, BuildSystemProfile,
+    CiProfile, CiSystem, CommandScope, Convention, EntryPoint, EntryPointKind, ErrorHandlingProfile,
+    ErrorPattern, FrameworkCategory, FrameworkDetection, Language, LanguageProfile, LintProfile,
+    ModuleOrganization, NamingConventions, OrgPattern, ProjectProfile, ProjectProfileError,
+    PropagationStyle, TestLocationPattern, TestProfile, WorkspaceMember,
+    DEFAULT_COMMAND_TIMEOUT_S, MIN_DETECTION_CONFIDENCE, PROFILE_SCHEMA_VERSION,
 };
 
 // --- Entropy quarantine: all raw time/entropy access goes through these ---
