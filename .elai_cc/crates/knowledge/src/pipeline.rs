@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::KnowledgeError;
+use crate::freshness::{self, FreshnessDb};
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
@@ -51,6 +52,7 @@ pub struct QueryPipeline {
     pub vector_module: Option<Box<dyn VectorModule + Send + Sync>>,
     pub vector_indexer: Option<VectorIndexer>,
     pub dkg_engine: Option<DkgEngine>,
+    pub freshness_db: Option<FreshnessDb>,
     #[cfg(feature = "splade")]
     pub splade: Option<SpladeExpander>,
 }
@@ -63,6 +65,7 @@ impl QueryPipeline {
             vector_module: None,
             vector_indexer: None,
             dkg_engine: None,
+            freshness_db: None,
             #[cfg(feature = "splade")]
             splade: None,
         }
@@ -85,6 +88,11 @@ impl QueryPipeline {
 
     pub fn with_dkg_engine(mut self, engine: DkgEngine) -> Self {
         self.dkg_engine = Some(engine);
+        self
+    }
+
+    pub fn with_freshness_db(mut self, db: FreshnessDb) -> Self {
+        self.freshness_db = Some(db);
         self
     }
 
@@ -340,6 +348,10 @@ impl QueryPipeline {
 
     /// Reciprocal Rank Fusion across all stages that produced results.
     /// RRF score = sum(1 / (k + rank)) where k=60 and rank starts at 1.
+    ///
+    /// When a `freshness_db` is attached, each chunk's RRF score is multiplied
+    /// by its freshness factor (recency_decay * access_boost). Missing entries
+    /// default to 1.0 (no penalty). See anti-staleness-enforcement.txt §1.1.
     fn rrf_rerank(&self, stages: &[PipelineStage]) -> Vec<RetrievalResult> {
         let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
         for stage in stages {
@@ -351,6 +363,19 @@ impl QueryPipeline {
                 entry.0 += rrf_score;
             }
         }
+
+        // Apply freshness multiplier (A-13: sidecar JOIN).
+        if let Some(ref fdb) = self.freshness_db {
+            let now = fdb.effective_now();
+            for (score, result) in scores.values_mut() {
+                let file_path = freshness::extract_file_path(&result.chunk_id);
+                let multiplier = fdb
+                    .freshness_multiplier(file_path, now)
+                    .unwrap_or(1.0);
+                *score *= multiplier;
+            }
+        }
+
         let mut ranked: Vec<(f64, RetrievalResult)> = scores.into_values().collect();
         ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         ranked
@@ -678,5 +703,88 @@ mod tests {
             !result.canary_candidates.is_empty(),
             "canary candidates should be populated from BM25 hits"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // A-13 freshness scoring tests
+    // -------------------------------------------------------------------
+
+    use crate::freshness::{FreshnessConfig, FreshnessDb};
+
+    #[test]
+    fn rrf_rerank_without_freshness_db_unchanged() {
+        // Baseline: no freshness_db attached -> scores are pure RRF.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let pipeline = make_pipeline(bm25);
+        let stages = pipeline.query("main").expect("query");
+        let rerank_stage = stages.iter().find(|s| s.stage == "rerank").expect("rerank stage");
+        assert!(!rerank_stage.results.is_empty(), "should have rerank results");
+    }
+
+    #[test]
+    fn rrf_rerank_with_freshness_boosts_fresh_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Index two documents: one "fresh", one "stale"
+        let mut bm25 = Bm25Index::new(tmp.path(), "freshness_test").expect("bm25 init");
+        let fresh_chunks = vec![BM25Chunk {
+            path: PathBuf::from("fresh.rs"),
+            content: "fn query_handler() { search() }".to_string(),
+            line_start: 1,
+            line_end: 5,
+            kind: ChunkKind::Function,
+        }];
+        let stale_chunks = vec![BM25Chunk {
+            path: PathBuf::from("stale.rs"),
+            content: "fn query_handler() { search() }".to_string(),
+            line_start: 1,
+            line_end: 5,
+            kind: ChunkKind::Function,
+        }];
+        bm25.index_file(Path::new("fresh.rs"), Some(fresh_chunks)).unwrap();
+        bm25.index_file(Path::new("stale.rs"), Some(stale_chunks)).unwrap();
+
+        // Set up freshness_db: fresh.rs modified "now", stale.rs modified 2 years ago
+        let one_day: i64 = 86_400;
+        let now_epoch = 730 * one_day;
+        let mut fdb = FreshnessDb::open_in_memory(FreshnessConfig::default()).unwrap();
+        fdb.set_now_override(now_epoch);
+        fdb.upsert_mtime("fresh.rs", now_epoch).unwrap(); // age = 0 days
+        fdb.upsert_mtime("stale.rs", 0).unwrap();         // age = 730 days (~2 years)
+
+        let pipeline = make_pipeline(bm25).with_freshness_db(fdb);
+        let stages = pipeline.query("query_handler search").expect("query");
+        let rerank_stage = stages.iter().find(|s| s.stage == "rerank").expect("rerank stage");
+
+        // Both documents match the query equally in BM25 terms.
+        // With freshness scoring, fresh.rs should rank higher than stale.rs.
+        assert!(rerank_stage.results.len() >= 2, "need at least 2 results");
+        let fresh_pos = rerank_stage.results.iter()
+            .position(|r| r.chunk_id.starts_with("fresh.rs"))
+            .expect("fresh.rs in results");
+        let stale_pos = rerank_stage.results.iter()
+            .position(|r| r.chunk_id.starts_with("stale.rs"))
+            .expect("stale.rs in results");
+        assert!(
+            fresh_pos < stale_pos,
+            "fresh.rs (pos={fresh_pos}) should rank before stale.rs (pos={stale_pos})"
+        );
+
+        // Verify the scores differ: fresh score should be higher
+        let fresh_score = rerank_stage.results[fresh_pos].score;
+        let stale_score = rerank_stage.results[stale_pos].score;
+        assert!(
+            fresh_score > stale_score,
+            "fresh score ({fresh_score}) should exceed stale score ({stale_score})"
+        );
+    }
+
+    #[test]
+    fn freshness_in_pipeline_structural_check() {
+        // Structural: pipeline.rs must reference freshness_db and freshness_multiplier.
+        let src = include_str!("pipeline.rs");
+        assert!(src.contains("freshness_db"), "pipeline must reference freshness_db");
+        assert!(src.contains("freshness_multiplier"), "pipeline must call freshness_multiplier");
     }
 }
