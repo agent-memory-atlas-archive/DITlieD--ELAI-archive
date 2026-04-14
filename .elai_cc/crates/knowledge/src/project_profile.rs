@@ -222,6 +222,7 @@ pub fn detect_project_profile(project_root: &Path) -> Result<ProjectProfile, Pro
         module_organization: Default::default(),
         project_vision: None,
         architecture: None,
+        domains: Vec::new(),
         commands,
         overrides_applied: false,
     })

@@ -469,6 +469,7 @@ mod tests {
             },
             project_vision: None,
             architecture: None,
+            domains: Vec::new(),
             commands: BuildCommandRegistry::default(),
             overrides_applied: false,
         }

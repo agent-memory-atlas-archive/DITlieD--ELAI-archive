@@ -194,6 +194,9 @@ pub struct PhaseContext {
     /// Constitutional CONSTRAINTS block (A-7) injected into PhaseSpec content.
     /// Built from deprecated_patterns WHERE severity = 'BLOCK'.
     pub constraints_block: Option<crate::context_budget::ConstraintsBlock>,
+    /// Telescope context block (A-11) from ProjectProfile.
+    /// Set by caller after load_phase_context; not populated by PlanSkeleton.
+    pub telescope_block: Option<String>,
 }
 
 /// Adjacent phase contracts (one hop in dependency graph).
@@ -971,6 +974,7 @@ impl PlanSkeleton {
                 reduced: false,
                 staleness_warning,
                 constraints_block: constraints,
+                telescope_block: None,
             });
         }
 
@@ -989,6 +993,7 @@ impl PlanSkeleton {
             reduced: true,
             staleness_warning,
             constraints_block: constraints,
+            telescope_block: None,
         })
     }
 

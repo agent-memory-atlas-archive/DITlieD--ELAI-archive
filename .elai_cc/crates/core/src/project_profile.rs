@@ -41,9 +41,10 @@ pub struct ProjectProfile {
     pub error_handling: ErrorHandlingProfile,
     pub module_organization: ModuleOrganization,
 
-    // Tier 3 (optional, populated by later steps)
+    // Tier 3 (optional, populated by A-11)
     pub project_vision: Option<String>,
     pub architecture: Option<ArchitecturePattern>,
+    pub domains: Vec<DomainClassification>,
 
     // Commands
     pub commands: BuildCommandRegistry,
@@ -343,6 +344,54 @@ pub enum ArchitecturePattern {
     EventDriven,
     Serverless,
     Unknown,
+}
+
+// ---------------------------------------------------------------------------
+// Domain classification (spec section 4B: 12 domains from signal table)
+// ---------------------------------------------------------------------------
+
+/// Classified project domain with confidence and supporting signals.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DomainClassification {
+    pub domain: ProjectDomain,
+    pub confidence: f32,
+    pub signals: Vec<String>,
+}
+
+/// The 12 project domains from the spec signal table.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ProjectDomain {
+    WebBackend,
+    WebFrontend,
+    Fullstack,
+    CliTool,
+    Library,
+    Game,
+    MlPipeline,
+    DataPipeline,
+    Mobile,
+    Desktop,
+    Embedded,
+    DevOps,
+}
+
+impl ProjectDomain {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::WebBackend => "WEB_BACKEND",
+            Self::WebFrontend => "WEB_FRONTEND",
+            Self::Fullstack => "FULLSTACK",
+            Self::CliTool => "CLI_TOOL",
+            Self::Library => "LIBRARY",
+            Self::Game => "GAME",
+            Self::MlPipeline => "ML_PIPELINE",
+            Self::DataPipeline => "DATA_PIPELINE",
+            Self::Mobile => "MOBILE",
+            Self::Desktop => "DESKTOP",
+            Self::Embedded => "EMBEDDED",
+            Self::DevOps => "DEVOPS",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
