@@ -31,6 +31,88 @@ pub mod vector;
 // Core enums
 // ---------------------------------------------------------------------------
 
+/// Quality-tier routing for the retrieval pipeline (Phase 3K.4).
+///
+/// Distinct from `SearchMode` (Phase 1I degradation cascade): `SearchMode`
+/// handles graceful degradation when components fail. `QueryTier` is
+/// intentional quality-tier selection on a healthy pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QueryTier {
+    /// BM25 only, no vector search, no reranker, no HyDE, no expansion.
+    /// Target latency: <20ms. For agent context passing, simple lookups.
+    Fast,
+    /// BM25 + vector hybrid (RRF), cross-encoder reranker. No HyDE, no expansion.
+    /// Target latency: <200ms. Default for code search queries.
+    Standard,
+    /// Full pipeline: query expansion + HyDE + hybrid search + reranker.
+    /// Target latency: <5s. For research, debugging, architecture questions.
+    Deep,
+    /// Auto-detect tier from query characteristics (default, backwards compatible).
+    Auto,
+}
+
+impl QueryTier {
+    /// Auto-detect tier from query text.
+    ///
+    /// Rules (from spec 3K.4):
+    ///   <5 words -> Fast
+    ///   5-15 words, code-related keywords -> Standard
+    ///   >15 words, question form, debugging/architecture keywords -> Deep
+    pub fn detect(query: &str) -> Self {
+        let word_count = query.split_whitespace().count();
+
+        if word_count < TIER_FAST_MAX_WORDS {
+            return Self::Fast;
+        }
+
+        if word_count > TIER_DEEP_MIN_WORDS {
+            return Self::Deep;
+        }
+
+        // 5-15 words: check for deep-tier keywords (question form, debugging, architecture)
+        let lower = query.to_lowercase();
+        for kw in DEEP_KEYWORDS {
+            if lower.contains(kw) {
+                return Self::Deep;
+            }
+        }
+
+        Self::Standard
+    }
+
+    /// Resolve Auto to a concrete tier, or pass through if already concrete.
+    pub fn resolve(self, query: &str) -> Self {
+        match self {
+            Self::Auto => Self::detect(query),
+            concrete => concrete,
+        }
+    }
+}
+
+impl std::fmt::Display for QueryTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fast => write!(f, "FAST"),
+            Self::Standard => write!(f, "STANDARD"),
+            Self::Deep => write!(f, "DEEP"),
+            Self::Auto => write!(f, "AUTO"),
+        }
+    }
+}
+
+/// Queries with fewer words than this are classified as FAST.
+const TIER_FAST_MAX_WORDS: usize = 5;
+
+/// Queries with more words than this are classified as DEEP.
+const TIER_DEEP_MIN_WORDS: usize = 15;
+
+/// Keywords that push a query from STANDARD to DEEP tier.
+const DEEP_KEYWORDS: &[&str] = &[
+    "how does", "why does", "debug", "architecture", "design",
+    "explain", "investigate", "trace", "root cause", "anti-spiral",
+    "what happens when", "step by step",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReadinessStatus {
     Ready,

@@ -4,6 +4,7 @@ use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
 use crate::hyde::HydeStage;
 use crate::query_expansion::{self, ExpansionStrategy};
+use crate::QueryTier;
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
@@ -111,91 +112,135 @@ impl QueryPipeline {
         self
     }
 
-    /// Execute the full retrieval pipeline for a query.
+    /// Execute the retrieval pipeline for a query with AUTO tier (backwards compatible).
     ///
-    /// Returns stages in order. `latency_ms` is 0 for all stages;
-    /// callers should measure overall pipeline time externally.
-    ///
-    /// Phase 3K.2: queries >= 5 words are expanded into 2-3 template-based
-    /// variants. BM25 + vector run per expansion, results are merged and
-    /// deduplicated by chunk_id before downstream stages (rerank, cross-encoder).
+    /// Equivalent to `query_with_tier(query, QueryTier::Auto)`.
     pub fn query(
         &self,
         query: &str,
     ) -> Result<Vec<PipelineStage>, KnowledgeError> {
+        self.query_with_tier(query, QueryTier::Auto)
+    }
+
+    /// Execute the retrieval pipeline for a query at the specified tier.
+    ///
+    /// Phase 3K.4 tier routing gates which pipeline stages execute:
+    ///   FAST:     BM25 only. No expansion, no HyDE, no vector, no reranker.
+    ///   STANDARD: BM25 + vector hybrid (RRF) + cross-encoder reranker.
+    ///   DEEP:     Query expansion + HyDE + BM25 + vector + reranker.
+    ///   AUTO:     Auto-detect from query characteristics, then dispatch.
+    ///
+    /// Distinct from Phase 1I `SearchMode` cascade (degradation on failure).
+    pub fn query_with_tier(
+        &self,
+        query: &str,
+        tier: QueryTier,
+    ) -> Result<Vec<PipelineStage>, KnowledgeError> {
         // Pre-query validation (Phase 1I.3).
         QueryValidator::validate(query)?;
 
-        let mut stages = Vec::with_capacity(10);
-
-        // Phase 3K.2: template-based multi-query expansion.
-        let expansions = query_expansion::expand_query(query);
-        let expansion_count = expansions.len();
-        let expansion_texts: Vec<String> = expansions.iter().map(|e| e.text.clone()).collect();
+        let resolved_tier = tier.resolve(query);
         tracing::debug!(
-            "query_expansion: {} variants for query (len={}w)",
-            expansion_count,
-            query.split_whitespace().count(),
+            requested_tier = %tier,
+            resolved_tier = %resolved_tier,
+            "tier routing: resolved query tier"
         );
 
-        stages.push(PipelineStage {
-            stage: "query_expansion".to_string(),
-            results: expansions
-                .iter()
-                .filter(|e| e.strategy != ExpansionStrategy::Original)
-                .map(|e| RetrievalResult {
-                    chunk_id: format!("expansion:{:?}", e.strategy),
-                    snippet: e.text.clone(),
-                    score: 0.0,
-                    tool_used: "query_expansion".to_string(),
-                })
-                .collect(),
-            latency_ms: 0,
-            circuit_breaker_state: None,
-            error: None,
-        });
+        let use_expansion = resolved_tier == QueryTier::Deep;
+        let use_hyde = resolved_tier == QueryTier::Deep;
+        let use_vector = matches!(resolved_tier, QueryTier::Standard | QueryTier::Deep);
+        let use_reranker = matches!(resolved_tier, QueryTier::Standard | QueryTier::Deep);
 
-        // Phase 3K.3: HyDE — generate hypothetical document for complex queries.
-        // Sits between query expansion and retrieval stages (BM25 + vector).
-        // If hypothesis is generated, its embedding replaces the query embedding
-        // for vector search (arxiv 2212.10496). BM25 still uses original query.
-        // Cross-encoder reranks against the ORIGINAL query, not the hypothesis.
-        let (hyde_hypothesis, hyde_breaker_state, hyde_error) = match self.hyde_stage {
-            Some(ref hyde) => {
-                let breaker_state = hyde
-                    .breaker_state()
-                    .map(|s| format!("{s:?}"));
-                match hyde.hypothesize(query) {
-                    Some(hyp) => {
-                        tracing::debug!(
-                            hypothesis_len = hyp.len(),
-                            "hyde: hypothesis will be used for vector search"
-                        );
-                        (Some(hyp), breaker_state, None)
-                    }
-                    None => (None, breaker_state, None),
-                }
-            }
-            None => (None, None, None),
+        let mut stages = Vec::with_capacity(10);
+
+        // Phase 3K.2: template-based multi-query expansion (DEEP only).
+        let expansion_texts: Vec<String> = if use_expansion {
+            let expansions = query_expansion::expand_query(query);
+            let expansion_count = expansions.len();
+            tracing::debug!(
+                "query_expansion: {} variants for query (len={}w)",
+                expansion_count,
+                query.split_whitespace().count(),
+            );
+
+            stages.push(PipelineStage {
+                stage: "query_expansion".to_string(),
+                results: expansions
+                    .iter()
+                    .filter(|e| e.strategy != ExpansionStrategy::Original)
+                    .map(|e| RetrievalResult {
+                        chunk_id: format!("expansion:{:?}", e.strategy),
+                        snippet: e.text.clone(),
+                        score: 0.0,
+                        tool_used: "query_expansion".to_string(),
+                    })
+                    .collect(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+
+            expansions.iter().map(|e| e.text.clone()).collect()
+        } else {
+            // No expansion: original query only.
+            stages.push(PipelineStage {
+                stage: "query_expansion".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+            vec![query.to_string()]
         };
-        stages.push(PipelineStage {
-            stage: "hyde".to_string(),
-            results: hyde_hypothesis
-                .as_ref()
-                .map(|h| vec![RetrievalResult {
-                    chunk_id: "hyde:hypothesis".to_string(),
-                    snippet: h.clone(),
-                    score: 0.0,
-                    tool_used: "hyde".to_string(),
-                }])
-                .unwrap_or_default(),
-            latency_ms: 0,
-            circuit_breaker_state: hyde_breaker_state,
-            error: hyde_error,
-        });
 
-        // Stage 0: BM25 — run per expansion, merge + dedup
-        // BM25 always uses original query + expansions (text matching).
+        // Phase 3K.3: HyDE (DEEP only).
+        let hyde_hypothesis = if use_hyde {
+            let (hyp, breaker_state, error) = match self.hyde_stage {
+                Some(ref hyde) => {
+                    let breaker_state = hyde
+                        .breaker_state()
+                        .map(|s| format!("{s:?}"));
+                    match hyde.hypothesize(query) {
+                        Some(hyp) => {
+                            tracing::debug!(
+                                hypothesis_len = hyp.len(),
+                                "hyde: hypothesis will be used for vector search"
+                            );
+                            (Some(hyp), breaker_state, None)
+                        }
+                        None => (None, breaker_state, None),
+                    }
+                }
+                None => (None, None, None),
+            };
+            stages.push(PipelineStage {
+                stage: "hyde".to_string(),
+                results: hyp
+                    .as_ref()
+                    .map(|h| vec![RetrievalResult {
+                        chunk_id: "hyde:hypothesis".to_string(),
+                        snippet: h.clone(),
+                        score: 0.0,
+                        tool_used: "hyde".to_string(),
+                    }])
+                    .unwrap_or_default(),
+                latency_ms: 0,
+                circuit_breaker_state: breaker_state,
+                error,
+            });
+            hyp
+        } else {
+            stages.push(PipelineStage {
+                stage: "hyde".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+            None
+        };
+
+        // Stage 0: BM25 — always runs (all tiers).
         let mut bm25_seen: HashSet<String> = HashSet::new();
         let mut bm25_results: Vec<RetrievalResult> = Vec::new();
         for eq in &expansion_texts {
@@ -220,96 +265,105 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 1: vector — run per expansion (or HyDE hypothesis), merge + dedup.
-        // Phase 3K.3: if HyDE produced a hypothesis, embed it and use that for
-        // vector search instead of the original query expansions. This improves
-        // query-document matching by searching in document space (arxiv 2212.10496).
-        // Falls back to expansion texts if HyDE is unavailable.
-        let vector_queries: Vec<String> = match hyde_hypothesis {
-            Some(ref hyp) => vec![hyp.clone()],
-            None => expansion_texts.clone(),
-        };
+        // Stage 1: vector (STANDARD + DEEP only).
+        if use_vector {
+            let vector_queries: Vec<String> = match hyde_hypothesis {
+                Some(ref hyp) => vec![hyp.clone()],
+                None => expansion_texts.clone(),
+            };
 
-        let mut vector_seen: HashSet<String> = HashSet::new();
-        let mut vector_results: Vec<RetrievalResult> = Vec::new();
-        let mut vector_error: Option<String> = None;
-        match (&self.vector_module, &self.vector_indexer) {
-            (Some(vm), Some(indexer)) if !indexer.is_empty() => {
-                for vq in &vector_queries {
-                    match vm.embed_text(vq) {
-                        Ok(query_vec) => {
-                            match indexer.search(&query_vec, 10) {
-                                Ok(hits) => {
-                                    for (meta, score) in hits {
-                                        let chunk_id = format!(
-                                            "{}:{}-{}",
-                                            meta.path.display(),
-                                            meta.line_start,
-                                            meta.line_end
-                                        );
-                                        if vector_seen.insert(chunk_id.clone()) {
-                                            vector_results.push(RetrievalResult {
-                                                chunk_id,
-                                                snippet: meta.snippet,
-                                                score: score as f64,
-                                                tool_used: "vector".to_string(),
-                                            });
+            let mut vector_seen: HashSet<String> = HashSet::new();
+            let mut vector_results: Vec<RetrievalResult> = Vec::new();
+            let mut vector_error: Option<String> = None;
+            match (&self.vector_module, &self.vector_indexer) {
+                (Some(vm), Some(indexer)) if !indexer.is_empty() => {
+                    for vq in &vector_queries {
+                        match vm.embed_text(vq) {
+                            Ok(query_vec) => {
+                                match indexer.search(&query_vec, 10) {
+                                    Ok(hits) => {
+                                        for (meta, score) in hits {
+                                            let chunk_id = format!(
+                                                "{}:{}-{}",
+                                                meta.path.display(),
+                                                meta.line_start,
+                                                meta.line_end
+                                            );
+                                            if vector_seen.insert(chunk_id.clone()) {
+                                                vector_results.push(RetrievalResult {
+                                                    chunk_id,
+                                                    snippet: meta.snippet,
+                                                    score: score as f64,
+                                                    tool_used: "vector".to_string(),
+                                                });
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    tracing::debug!("vector search failed for expansion: {e}");
-                                    vector_error = Some(e.to_string());
+                                    Err(e) => {
+                                        tracing::debug!("vector search failed for expansion: {e}");
+                                        vector_error = Some(e.to_string());
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            tracing::debug!("vector embed failed for expansion: {e}");
-                            vector_error = Some(e.to_string());
+                            Err(e) => {
+                                tracing::debug!("vector embed failed for expansion: {e}");
+                                vector_error = Some(e.to_string());
+                            }
                         }
                     }
                 }
-            }
-            (Some(vm), _) => {
-                // Module present but no index — probe embed readiness only.
-                match vm.embed_text(query) {
-                    Ok(_) => {}
-                    Err(e) => { vector_error = Some(e.to_string()); }
+                (Some(vm), _) => {
+                    match vm.embed_text(query) {
+                        Ok(_) => {}
+                        Err(e) => { vector_error = Some(e.to_string()); }
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+            stages.push(PipelineStage {
+                stage: "vector".to_string(),
+                results: vector_results,
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: vector_error,
+            });
+        } else {
+            stages.push(PipelineStage {
+                stage: "vector".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
         }
-        stages.push(PipelineStage {
-            stage: "vector".to_string(),
-            results: vector_results,
-            latency_ms: 0,
-            circuit_breaker_state: None,
-            error: vector_error,
-        });
 
-        // Stage 1.5: splade keyword expansion
+        // Stage 1.5: splade keyword expansion (STANDARD + DEEP)
         #[cfg(feature = "splade")]
         {
-            let splade_results = if let Some(ref expander) = self.splade {
-                let expanded = expander.expand_query(query);
-                if expanded.is_empty() {
-                    Vec::new()
+            let splade_results = if use_vector {
+                if let Some(ref expander) = self.splade {
+                    let expanded = expander.expand_query(query);
+                    if expanded.is_empty() {
+                        Vec::new()
+                    } else {
+                        let expanded_query: String = expanded
+                            .iter()
+                            .map(|t| t.term.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        self.bm25.query(&expanded_query, 10)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|h| RetrievalResult {
+                                chunk_id: format!("{}:{}-{}", h.path, h.line_start, h.line_end),
+                                snippet: h.snippet,
+                                score: h.score as f64,
+                                tool_used: "splade".to_string(),
+                            })
+                            .collect()
+                    }
                 } else {
-                    let expanded_query: String = expanded
-                        .iter()
-                        .map(|t| t.term.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    self.bm25.query(&expanded_query, 10)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|h| RetrievalResult {
-                            chunk_id: format!("{}:{}-{}", h.path, h.line_start, h.line_end),
-                            snippet: h.snippet,
-                            score: h.score as f64,
-                            tool_used: "splade".to_string(),
-                        })
-                        .collect()
+                    Vec::new()
                 }
             } else {
                 Vec::new()
@@ -323,46 +377,61 @@ impl QueryPipeline {
             });
         }
 
-        // Stage 2: pagerank — build snapshot from DkgEngine if available
-        let (snapshot, pagerank_results, pagerank_error) = match self.dkg_engine {
-            Some(ref engine) => match DkgSnapshot::from_engine(engine) {
-                Ok(snap) => {
-                    let config = PageRankConfig::default();
-                    let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
-                    let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
-                    let results: Vec<RetrievalResult> = repo_map
-                        .ranked_symbols
-                        .iter()
-                        .map(|rs| RetrievalResult {
-                            chunk_id: format!("{}:{}", rs.file_path.display(), rs.symbol_name),
-                            snippet: rs.signature.clone(),
-                            score: rs.rank,
-                            tool_used: "pagerank".to_string(),
-                        })
-                        .collect();
-                    (snap, results, None)
-                }
-                Err(e) => {
-                    tracing::debug!("DkgSnapshot::from_engine failed: {e}");
+        // Stage 2: pagerank (STANDARD + DEEP)
+        let snapshot = if use_vector {
+            let (snap, pagerank_results, pagerank_error) = match self.dkg_engine {
+                Some(ref engine) => match DkgSnapshot::from_engine(engine) {
+                    Ok(snap) => {
+                        let config = PageRankConfig::default();
+                        let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
+                        let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
+                        let results: Vec<RetrievalResult> = repo_map
+                            .ranked_symbols
+                            .iter()
+                            .map(|rs| RetrievalResult {
+                                chunk_id: format!("{}:{}", rs.file_path.display(), rs.symbol_name),
+                                snippet: rs.signature.clone(),
+                                score: rs.rank,
+                                tool_used: "pagerank".to_string(),
+                            })
+                            .collect();
+                        (snap, results, None)
+                    }
+                    Err(e) => {
+                        tracing::debug!("DkgSnapshot::from_engine failed: {e}");
+                        let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
+                        (empty, Vec::new(), Some(e.to_string()))
+                    }
+                },
+                None => {
                     let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                    (empty, Vec::new(), Some(e.to_string()))
+                    (empty, Vec::new(), None)
                 }
-            },
-            None => {
-                let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                (empty, Vec::new(), None)
-            }
+            };
+            stages.push(PipelineStage {
+                stage: "pagerank".to_string(),
+                results: pagerank_results,
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: pagerank_error,
+            });
+            snap
+        } else {
+            let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
+            stages.push(PipelineStage {
+                stage: "pagerank".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+            empty
         };
-        stages.push(PipelineStage {
-            stage: "pagerank".to_string(),
-            results: pagerank_results,
-            latency_ms: 0,
-            circuit_breaker_state: None,
-            error: pagerank_error,
-        });
 
-        // Stage 3: catrag (uses real snapshot when DkgEngine is available)
-        let _overlay = self.catrag.compute_overlay(query, &snapshot, &[])?;
+        // Stage 3: catrag (STANDARD + DEEP)
+        if use_vector {
+            let _overlay = self.catrag.compute_overlay(query, &snapshot, &[])?;
+        }
         stages.push(PipelineStage {
             stage: "catrag".to_string(),
             results: Vec::new(),
@@ -371,8 +440,12 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 4: arag
-        let arag_results = self.arag.query_pipeline(query, &snapshot)?;
+        // Stage 4: arag (STANDARD + DEEP)
+        let arag_results = if use_vector {
+            self.arag.query_pipeline(query, &snapshot)?
+        } else {
+            Vec::new()
+        };
         stages.push(PipelineStage {
             stage: "arag".to_string(),
             results: arag_results,
@@ -381,7 +454,7 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 5: rerank (RRF fusion across all stages that produced results)
+        // Stage 5: rerank (RRF fusion — all tiers, but FAST has only BM25 input)
         let reranked = self.rrf_rerank(&stages);
         stages.push(PipelineStage {
             stage: "rerank".to_string(),
@@ -391,22 +464,25 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 6: cross_encoder (cross-encoder reranking after RRF fusion)
-        // In SPARSE_ONLY / BM25_ONLY modes, caller should not attach a cross_encoder.
-        // When cross_encoder is None, pass through RRF results unchanged.
+        // Stage 6: cross_encoder (STANDARD + DEEP only)
         let ce_input = stages.last().map(|s| s.results.clone()).unwrap_or_default();
-        let (ce_results, ce_breaker_state, ce_error) = if let Some(ref ce) = self.cross_encoder {
-            let breaker_state = ce
-                .breaker_state()
-                .map(|s| format!("{s:?}"));
-            match ce.rerank(query, ce_input.clone()) {
-                Ok(ranked) => (ranked, breaker_state, None),
-                Err(e) => {
-                    tracing::debug!("cross_encoder stage error: {e}");
-                    (ce_input, breaker_state, Some(e.to_string()))
+        let (ce_results, ce_breaker_state, ce_error) = if use_reranker {
+            if let Some(ref ce) = self.cross_encoder {
+                let breaker_state = ce
+                    .breaker_state()
+                    .map(|s| format!("{s:?}"));
+                match ce.rerank(query, ce_input.clone()) {
+                    Ok(ranked) => (ranked, breaker_state, None),
+                    Err(e) => {
+                        tracing::debug!("cross_encoder stage error: {e}");
+                        (ce_input, breaker_state, Some(e.to_string()))
+                    }
                 }
+            } else {
+                (ce_input, None, None)
             }
         } else {
+            // FAST tier: skip cross-encoder entirely.
             (ce_input, None, None)
         };
         stages.push(PipelineStage {
@@ -442,7 +518,13 @@ impl QueryPipeline {
         }).collect();
         let result_count = stages.last().map(|s| s.results.len()).unwrap_or(0);
         let trace = QueryTrace::new(stage_traces, 0, SearchMode::Hybrid, result_count);
-        tracing::debug!("query_trace: query_id={} stages={} results={}", trace.query_id, trace.stages.len(), trace.result_count);
+        tracing::debug!(
+            query_id = %trace.query_id,
+            tier = %resolved_tier,
+            stages = trace.stages.len(),
+            results = trace.result_count,
+            "query_trace"
+        );
 
         Ok(stages)
     }
@@ -1050,5 +1132,179 @@ mod tests {
         assert!(src.contains("hyde_hypothesis"), "pipeline must use hypothesis for vector search");
         assert!(src.contains("HydeStage"), "pipeline must use HydeStage type");
         assert!(src.contains("with_hyde"), "pipeline must have with_hyde builder");
+    }
+
+    // -------------------------------------------------------------------
+    // 3K.4 QueryTier routing tests
+    // -------------------------------------------------------------------
+
+    use crate::QueryTier;
+
+    #[test]
+    fn query_tier_auto_detect_short_query_is_fast() {
+        assert_eq!(QueryTier::detect("find main"), QueryTier::Fast);
+        assert_eq!(QueryTier::detect("imports"), QueryTier::Fast);
+        assert_eq!(QueryTier::detect("fn new"), QueryTier::Fast);
+        assert_eq!(QueryTier::detect("a b c d"), QueryTier::Fast); // 4 words
+    }
+
+    #[test]
+    fn query_tier_auto_detect_medium_code_query_is_standard() {
+        assert_eq!(
+            QueryTier::detect("search for error handling in pipeline"),
+            QueryTier::Standard,
+        );
+        assert_eq!(
+            QueryTier::detect("find all BM25 results with score above threshold"),
+            QueryTier::Standard,
+        );
+    }
+
+    #[test]
+    fn query_tier_auto_detect_complex_query_is_deep() {
+        // >15 words
+        assert_eq!(
+            QueryTier::detect(
+                "I need to understand the full pipeline flow from query expansion through \
+                 vector search to cross encoder reranking and token fitting"
+            ),
+            QueryTier::Deep,
+        );
+        // Deep keyword in 5-15 word range
+        assert_eq!(
+            QueryTier::detect("how does the FSM handle transitions"),
+            QueryTier::Deep,
+        );
+        assert_eq!(
+            QueryTier::detect("debug the anti-spiral detection logic"),
+            QueryTier::Deep,
+        );
+        assert_eq!(
+            QueryTier::detect("explain the architecture of the pipeline"),
+            QueryTier::Deep,
+        );
+    }
+
+    #[test]
+    fn query_tier_resolve_auto_delegates_to_detect() {
+        assert_eq!(
+            QueryTier::Auto.resolve("find main"),
+            QueryTier::Fast,
+        );
+        assert_eq!(
+            QueryTier::Auto.resolve("how does the FSM handle transitions"),
+            QueryTier::Deep,
+        );
+    }
+
+    #[test]
+    fn query_tier_resolve_concrete_passes_through() {
+        assert_eq!(QueryTier::Fast.resolve("some long complex query about architecture"), QueryTier::Fast);
+        assert_eq!(QueryTier::Deep.resolve("main"), QueryTier::Deep);
+        assert_eq!(QueryTier::Standard.resolve("x"), QueryTier::Standard);
+    }
+
+    #[test]
+    fn query_tier_display() {
+        assert_eq!(format!("{}", QueryTier::Fast), "FAST");
+        assert_eq!(format!("{}", QueryTier::Standard), "STANDARD");
+        assert_eq!(format!("{}", QueryTier::Deep), "DEEP");
+        assert_eq!(format!("{}", QueryTier::Auto), "AUTO");
+    }
+
+    #[test]
+    fn fast_tier_skips_vector_and_reranker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let pipeline = make_pipeline(bm25);
+
+        let stages = pipeline.query_with_tier("main", QueryTier::Fast).expect("query");
+        let stage_names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+
+        // All stage slots present for consistent indexing
+        assert!(stage_names.contains(&"bm25"), "FAST must run BM25");
+        assert!(stage_names.contains(&"vector"), "vector slot present");
+        assert!(stage_names.contains(&"cross_encoder"), "cross_encoder slot present");
+
+        // FAST: expansion, hyde, vector, pagerank, catrag, arag should be empty
+        let expansion = stages.iter().find(|s| s.stage == "query_expansion").unwrap();
+        assert!(expansion.results.is_empty(), "FAST skips expansion");
+
+        let hyde = stages.iter().find(|s| s.stage == "hyde").unwrap();
+        assert!(hyde.results.is_empty(), "FAST skips HyDE");
+
+        let vector = stages.iter().find(|s| s.stage == "vector").unwrap();
+        assert!(vector.results.is_empty(), "FAST skips vector search");
+    }
+
+    #[test]
+    fn deep_tier_includes_expansion_and_hyde() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client: Arc<dyn HydeClient> = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        // Force DEEP tier with a short query (explicit tier overrides auto-detect)
+        let stages = pipeline.query_with_tier(
+            "how does ELAI handle anti-spiral detection in the pipeline",
+            QueryTier::Deep,
+        ).expect("query");
+
+        let expansion = stages.iter().find(|s| s.stage == "query_expansion").unwrap();
+        // DEEP on a long query should produce expansions
+        // (query is >5 words so expansion module will expand it)
+        assert!(!expansion.results.is_empty(), "DEEP includes expansion");
+
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").unwrap();
+        assert!(!hyde_stage.results.is_empty(), "DEEP includes HyDE hypothesis");
+    }
+
+    #[test]
+    fn standard_tier_skips_expansion_and_hyde() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let client = Arc::new(PipelineMockHydeClient::new());
+        let hyde = make_hyde_stage(client.clone() as Arc<dyn HydeClient>);
+        let pipeline = make_pipeline(bm25).with_hyde(hyde);
+
+        let stages = pipeline.query_with_tier(
+            "search for error handling patterns in the codebase",
+            QueryTier::Standard,
+        ).expect("query");
+
+        let expansion = stages.iter().find(|s| s.stage == "query_expansion").unwrap();
+        assert!(expansion.results.is_empty(), "STANDARD skips expansion");
+
+        let hyde_stage = stages.iter().find(|s| s.stage == "hyde").unwrap();
+        assert!(hyde_stage.results.is_empty(), "STANDARD skips HyDE");
+
+        assert_eq!(client.calls(), 0, "sidecar should not be called for STANDARD tier");
+    }
+
+    #[test]
+    fn query_backwards_compatible_auto_tier() {
+        // Existing callers use query() without tier — must still work.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bm25 = make_bm25_with_canary(tmp.path());
+        let pipeline = make_pipeline(bm25);
+
+        let stages = pipeline.query("main").expect("query");
+        assert!(!stages.is_empty(), "query() must still return stages");
+
+        let bm25_stage = stages.iter().find(|s| s.stage == "bm25").unwrap();
+        assert!(bm25_stage.error.is_none(), "BM25 should work");
+    }
+
+    #[test]
+    fn pipeline_tier_routing_structural_check() {
+        let src = include_str!("pipeline.rs");
+        assert!(src.contains("QueryTier"), "pipeline must reference QueryTier");
+        assert!(src.contains("query_with_tier"), "pipeline must have query_with_tier method");
+        assert!(src.contains("use_expansion"), "pipeline must gate expansion by tier");
+        assert!(src.contains("use_hyde"), "pipeline must gate HyDE by tier");
+        assert!(src.contains("use_vector"), "pipeline must gate vector by tier");
+        assert!(src.contains("use_reranker"), "pipeline must gate reranker by tier");
+        assert!(src.contains("resolved_tier"), "pipeline must resolve AUTO tier");
     }
 }
