@@ -13,12 +13,250 @@ pub const FLOOR_GRC_HISTORY: usize = 500;
 pub const FLOOR_OUTPUT_RESERVE: usize = 2000;
 pub const SUM_DYNAMIC_FLOORS: usize = FLOOR_SSB_ENTRIES + FLOOR_GRC_HISTORY;
 
-// Percentage splits for dynamic budget (must sum to 100).
+// Default percentage splits for dynamic budget (must sum to 100).
+// Used by compute() for backward compatibility; compute_with_profile() uses SlotWeights.
 const PCT_REPO_MAP: usize = 15;
 const PCT_CODE_CONTEXT: usize = 40;
 const PCT_SSB_ENTRIES: usize = 25;
 const PCT_GRC_HISTORY: usize = 20;
 const _: () = assert!(PCT_REPO_MAP + PCT_CODE_CONTEXT + PCT_SSB_ENTRIES + PCT_GRC_HISTORY == 100);
+
+// ---------------------------------------------------------------------------
+// Model capability types (A-10: token-efficiency-design.txt section 13)
+// ---------------------------------------------------------------------------
+
+/// VRAM tier classification for hardware-specific model configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VramTier {
+    Vram8Gb,
+    Vram12Gb,
+    Vram16Gb,
+    Vram24Gb,
+    Vram48Gb,
+    Cloud,
+}
+
+/// Model quality tier — determines baby step sizing and decomposition depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelTier {
+    Micro,  // 3B-class, 72% pass@1
+    Small,  // 7B-class, 90% pass@1
+    Medium, // 14B-class, projected
+    Large,  // 32B-class, 92.7% HumanEval
+    Cloud,  // frontier API models
+}
+
+/// Per-slot allocation weights for dynamic budget distribution.
+/// The four dynamic slot weights (repo_map, code_context, ssb_entries, grc_history)
+/// must sum to 1.0. Fixed slot weights (system_prompt, rules, telescope) are target
+/// sizes used for validation, not distribution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotWeights {
+    pub system_prompt: f32,
+    pub rules: f32,
+    pub telescope: f32,
+    pub repo_map: f32,
+    pub code_context: f32,
+    pub ssb_entries: f32,
+    pub grc_history: f32,
+}
+
+/// Tolerance for floating-point weight sum validation.
+const WEIGHT_SUM_TOLERANCE: f32 = 0.01;
+
+impl SlotWeights {
+    /// Default weights matching the original fixed percentages (15/40/25/20).
+    pub fn default_fixed() -> Self {
+        Self {
+            system_prompt: 0.0,
+            rules: 0.0,
+            telescope: 0.0,
+            repo_map: 0.15,
+            code_context: 0.40,
+            ssb_entries: 0.25,
+            grc_history: 0.20,
+        }
+    }
+
+    /// Validate that dynamic slot weights sum to ~1.0.
+    pub fn validate_dynamic_sum(&self) -> bool {
+        let sum = self.repo_map + self.code_context + self.ssb_entries + self.grc_history;
+        (sum - 1.0).abs() < WEIGHT_SUM_TOLERANCE
+    }
+}
+
+/// Model feature flags — capabilities detected by baseline measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelFeatures {
+    pub supports_structured_output: bool,
+    pub supports_grammar: bool,
+    pub supports_stop_sequences: bool,
+    pub chunked_prefill: bool,
+    pub kv_compression: bool,
+}
+
+impl ModelFeatures {
+    /// Conservative defaults: no optional features.
+    pub fn none() -> Self {
+        Self {
+            supports_structured_output: false,
+            supports_grammar: false,
+            supports_stop_sequences: false,
+            chunked_prefill: false,
+            kv_compression: false,
+        }
+    }
+}
+
+/// Complete model capability profile — input to context budget allocator.
+/// Constructed from baseline measurements (model_baseline.toml) or config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCapabilityProfile {
+    pub vram_tier: VramTier,
+    pub model_tier: ModelTier,
+    pub model_name: String,
+    pub model_size_b: f32,
+    pub model_vram_mb: usize,
+    pub kv_bytes_per_token: usize,
+    pub in_vram_ceiling: usize,
+    pub attention_ceiling: usize,
+    /// min(in_vram_ceiling, attention_ceiling) — the real context limit.
+    /// 0 means unmeasured; falls back to model_max_context.
+    pub effective_ceiling: usize,
+    pub recommended_prompt_budget: usize,
+    pub output_reserve: usize,
+    pub slot_weights: SlotWeights,
+    pub features: ModelFeatures,
+    pub pass_at_1: f32,
+    pub optimal_retries: usize,
+    pub kv_quant_bits: u8,
+    pub requires_fa2: bool,
+    pub dola_viable: bool,
+    pub steering_viable: bool,
+    /// false for PROJECTED rows — numbers are estimates, not measurements.
+    pub measured: bool,
+}
+
+impl ModelCapabilityProfile {
+    /// Build a MICRO-tier profile from A-1 baseline measurements.
+    /// Suitable for Qwen2.5-Coder-7B NF4 on 12GB (measured configuration).
+    pub fn micro_7b_12gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram12Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-7B-Instruct".to_string(),
+            model_size_b: 7.61,
+            model_vram_mb: 5180,
+            kv_bytes_per_token: 57344,
+            in_vram_ceiling: 25000,
+            attention_ceiling: 25000,
+            effective_ceiling: 25000,
+            recommended_prompt_budget: 20000,
+            output_reserve: 750,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.15,
+                code_context: 0.40,
+                ssb_entries: 0.25,
+                grc_history: 0.20,
+            },
+            features: ModelFeatures::none(),
+            pass_at_1: 0.65,
+            optimal_retries: 3,
+            kv_quant_bits: 0,
+            requires_fa2: true,
+            dola_viable: false,
+            steering_viable: false,
+            measured: true,
+        }
+    }
+
+    /// Build a profile for 3B model on 12GB (measured configuration).
+    pub fn micro_3b_12gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram12Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-3B-Instruct".to_string(),
+            model_size_b: 3.0,
+            model_vram_mb: 1920,
+            kv_bytes_per_token: 1024,
+            in_vram_ceiling: 40000,
+            attention_ceiling: 40000,
+            effective_ceiling: 40000,
+            recommended_prompt_budget: 35000,
+            output_reserve: 512,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.12,
+                code_context: 0.43,
+                ssb_entries: 0.25,
+                grc_history: 0.20,
+            },
+            features: ModelFeatures::none(),
+            pass_at_1: 0.72,
+            optimal_retries: 3,
+            kv_quant_bits: 0,
+            requires_fa2: true,
+            dola_viable: false,
+            steering_viable: false,
+            measured: true,
+        }
+    }
+
+    /// Build a projected LARGE-tier profile for 32B on 48GB.
+    pub fn large_32b_48gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram48Gb,
+            model_tier: ModelTier::Large,
+            model_name: "Qwen2.5-Coder-32B-Instruct".to_string(),
+            model_size_b: 32.0,
+            model_vram_mb: 20000,
+            kv_bytes_per_token: 262144,
+            in_vram_ceiling: 35000,
+            attention_ceiling: 35000,
+            effective_ceiling: 35000,
+            recommended_prompt_budget: 30000,
+            output_reserve: 512,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.15,
+                code_context: 0.48,
+                ssb_entries: 0.20,
+                grc_history: 0.17,
+            },
+            features: ModelFeatures {
+                supports_structured_output: false,
+                supports_grammar: false,
+                supports_stop_sequences: false,
+                chunked_prefill: true,
+                kv_compression: true,
+            },
+            pass_at_1: 0.927,
+            optimal_retries: 2,
+            kv_quant_bits: 4,
+            requires_fa2: true,
+            dola_viable: true,
+            steering_viable: false,
+            measured: false,
+        }
+    }
+
+    /// Resolve effective ceiling: min(in_vram, attention), or model_max_context if both 0.
+    pub fn resolve_effective_ceiling(&self, model_max_context: usize) -> usize {
+        match (self.in_vram_ceiling, self.attention_ceiling) {
+            (0, 0) => model_max_context,
+            (0, a) => a,
+            (v, 0) => v,
+            (v, a) => v.min(a),
+        }
+    }
+}
 
 // Adaptive reduction factors for Level 2 (ReducedGranularity).
 // CodeContext reduced to 60% of current allocation; RepoMap to 50%.
@@ -296,6 +534,119 @@ impl ContextBudget {
         assert_eq!(
             budget.total_allocated, model_max_context,
             "total_allocated must equal model_max_context"
+        );
+
+        Ok(budget)
+    }
+
+    /// Compute a context budget using a ModelCapabilityProfile for tier-adaptive allocation.
+    ///
+    /// Key differences from `compute()`:
+    /// - Attention ceiling enforcement: effective context is capped to profile's effective_ceiling.
+    /// - Slot weights from profile replace fixed PCT_ constants.
+    /// - Output reserve from profile replaces caller-provided value.
+    /// - Floor enforcement and zero-sum invariants are preserved.
+    pub fn compute_with_profile(
+        model_max_context: usize,
+        fixed_slot_sizes: [usize; 3],
+        profile: &ModelCapabilityProfile,
+    ) -> Result<Self, BudgetError> {
+        // Attention ceiling enforcement: fill to quality limit, not VRAM limit.
+        let effective_max = profile.resolve_effective_ceiling(model_max_context).min(model_max_context);
+
+        let effective_reserve = profile.output_reserve.max(FLOOR_OUTPUT_RESERVE);
+        let fixed_total = fixed_slot_sizes[0] + fixed_slot_sizes[1] + fixed_slot_sizes[2];
+
+        let dynamic_budget = effective_max
+            .checked_sub(fixed_total)
+            .and_then(|v| v.checked_sub(effective_reserve))
+            .unwrap_or(0);
+
+        if dynamic_budget < SUM_DYNAMIC_FLOORS {
+            return Err(BudgetError::BudgetInfeasible {
+                dynamic_budget,
+                sum_floors: SUM_DYNAMIC_FLOORS,
+            });
+        }
+
+        let weights = &profile.slot_weights;
+
+        // Distribute dynamic budget by profile weights (f32 -> usize truncation).
+        let mut repo_map_alloc = (dynamic_budget as f64 * weights.repo_map as f64) as usize;
+        let mut code_ctx_alloc = (dynamic_budget as f64 * weights.code_context as f64) as usize;
+        let mut ssb_alloc = (dynamic_budget as f64 * weights.ssb_entries as f64) as usize;
+        let mut grc_alloc = (dynamic_budget as f64 * weights.grc_history as f64) as usize;
+
+        // Assign remainder from float truncation to CodeContext (largest slot).
+        let subtotal = repo_map_alloc + code_ctx_alloc + ssb_alloc + grc_alloc;
+        code_ctx_alloc += dynamic_budget.saturating_sub(subtotal);
+
+        // Floor enforcement for GrcHistory: steal from CodeContext first, then RepoMap.
+        if grc_alloc < FLOOR_GRC_HISTORY {
+            let deficit = FLOOR_GRC_HISTORY - grc_alloc;
+            let steal_from_code = deficit.min(code_ctx_alloc);
+            code_ctx_alloc -= steal_from_code;
+            let remaining_deficit = deficit - steal_from_code;
+            let steal_from_repo = remaining_deficit.min(repo_map_alloc);
+            repo_map_alloc -= steal_from_repo;
+            let final_deficit = remaining_deficit - steal_from_repo;
+            if final_deficit > 0 {
+                return Err(BudgetError::BudgetInfeasible {
+                    dynamic_budget,
+                    sum_floors: SUM_DYNAMIC_FLOORS,
+                });
+            }
+            grc_alloc = FLOOR_GRC_HISTORY;
+        }
+
+        // Floor enforcement for SsbEntries: steal from CodeContext first, then RepoMap.
+        if ssb_alloc < FLOOR_SSB_ENTRIES {
+            let deficit = FLOOR_SSB_ENTRIES - ssb_alloc;
+            let steal_from_code = deficit.min(code_ctx_alloc);
+            code_ctx_alloc -= steal_from_code;
+            let remaining_deficit = deficit - steal_from_code;
+            let steal_from_repo = remaining_deficit.min(repo_map_alloc);
+            repo_map_alloc -= steal_from_repo;
+            let final_deficit = remaining_deficit - steal_from_repo;
+            if final_deficit > 0 {
+                return Err(BudgetError::BudgetInfeasible {
+                    dynamic_budget,
+                    sum_floors: SUM_DYNAMIC_FLOORS,
+                });
+            }
+            ssb_alloc = FLOOR_SSB_ENTRIES;
+        }
+
+        // Zero-sum invariant: dynamic allocations must sum to dynamic_budget.
+        assert_eq!(
+            repo_map_alloc + code_ctx_alloc + ssb_alloc + grc_alloc,
+            dynamic_budget,
+            "zero-sum invariant violated after floor enforcement"
+        );
+
+        let mut budget = Self::new(effective_max);
+
+        // Fixed slots.
+        budget.slots[0].allocated_tokens = fixed_slot_sizes[0];
+        budget.slots[1].allocated_tokens = fixed_slot_sizes[1];
+        budget.slots[2].allocated_tokens = fixed_slot_sizes[2];
+
+        // Dynamic slots.
+        budget.slots[3].allocated_tokens = repo_map_alloc;
+        budget.slots[4].allocated_tokens = code_ctx_alloc;
+        budget.slots[5].allocated_tokens = ssb_alloc;
+        budget.slots[5].floor_tokens = FLOOR_SSB_ENTRIES;
+        budget.slots[6].allocated_tokens = grc_alloc;
+        budget.slots[6].floor_tokens = FLOOR_GRC_HISTORY;
+
+        // Output reserve.
+        budget.slots[7].allocated_tokens = effective_reserve;
+        budget.slots[7].floor_tokens = FLOOR_OUTPUT_RESERVE;
+
+        budget.total_allocated = fixed_total + dynamic_budget + effective_reserve;
+        assert_eq!(
+            budget.total_allocated, effective_max,
+            "total_allocated must equal effective_max"
         );
 
         Ok(budget)
@@ -1075,5 +1426,206 @@ mod tests {
         let block = ConstraintsBlock::from_entries(entries);
         assert!(block.estimated_tokens() <= MAX_CONSTRAINT_TOKENS);
         assert!(block.estimated_tokens() > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // A-10: ModelCapabilityProfile and compute_with_profile tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn slot_weights_default_sums_to_one() {
+        let w = SlotWeights::default_fixed();
+        assert!(w.validate_dynamic_sum(), "default weights must sum to 1.0");
+    }
+
+    #[test]
+    fn slot_weights_invalid_sum_detected() {
+        let w = SlotWeights {
+            system_prompt: 0.0,
+            rules: 0.0,
+            telescope: 0.0,
+            repo_map: 0.50,
+            code_context: 0.50,
+            ssb_entries: 0.25,
+            grc_history: 0.20,
+        };
+        assert!(!w.validate_dynamic_sum(), "weights summing to 1.45 must fail");
+    }
+
+    #[test]
+    fn micro_7b_profile_has_valid_weights() {
+        let p = ModelCapabilityProfile::micro_7b_12gb();
+        assert!(p.slot_weights.validate_dynamic_sum());
+        assert_eq!(p.model_tier, ModelTier::Micro);
+        assert_eq!(p.vram_tier, VramTier::Vram12Gb);
+        assert!(p.measured);
+    }
+
+    #[test]
+    fn micro_3b_profile_has_valid_weights() {
+        let p = ModelCapabilityProfile::micro_3b_12gb();
+        assert!(p.slot_weights.validate_dynamic_sum());
+        assert_eq!(p.effective_ceiling, 40000);
+    }
+
+    #[test]
+    fn large_32b_profile_has_valid_weights() {
+        let p = ModelCapabilityProfile::large_32b_48gb();
+        assert!(p.slot_weights.validate_dynamic_sum());
+        assert!(!p.measured);
+        assert!(p.dola_viable);
+    }
+
+    #[test]
+    fn resolve_effective_ceiling_both_nonzero() {
+        let mut p = ModelCapabilityProfile::micro_7b_12gb();
+        p.in_vram_ceiling = 25000;
+        p.attention_ceiling = 30000;
+        assert_eq!(p.resolve_effective_ceiling(131072), 25000);
+    }
+
+    #[test]
+    fn resolve_effective_ceiling_both_zero_fallback() {
+        let mut p = ModelCapabilityProfile::micro_7b_12gb();
+        p.in_vram_ceiling = 0;
+        p.attention_ceiling = 0;
+        assert_eq!(p.resolve_effective_ceiling(131072), 131072);
+    }
+
+    #[test]
+    fn resolve_effective_ceiling_one_zero() {
+        let mut p = ModelCapabilityProfile::micro_7b_12gb();
+        p.in_vram_ceiling = 0;
+        p.attention_ceiling = 16000;
+        assert_eq!(p.resolve_effective_ceiling(131072), 16000);
+    }
+
+    #[test]
+    fn compute_with_profile_matches_compute_for_default_weights() {
+        let profile = ModelCapabilityProfile {
+            vram_tier: VramTier::Cloud,
+            model_tier: ModelTier::Cloud,
+            model_name: "test".to_string(),
+            model_size_b: 0.0,
+            model_vram_mb: 0,
+            kv_bytes_per_token: 0,
+            in_vram_ceiling: 0,
+            attention_ceiling: 0,
+            effective_ceiling: 0,
+            recommended_prompt_budget: 0,
+            output_reserve: 2000,
+            slot_weights: SlotWeights::default_fixed(),
+            features: ModelFeatures::none(),
+            pass_at_1: 0.0,
+            optimal_retries: 0,
+            kv_quant_bits: 0,
+            requires_fa2: false,
+            dola_viable: false,
+            steering_viable: false,
+            measured: false,
+        };
+        // With both ceilings=0 and default weights, should match compute() output.
+        let b1 = ContextBudget::compute(8192, [100, 200, 300], 2000).unwrap();
+        let b2 = ContextBudget::compute_with_profile(8192, [100, 200, 300], &profile).unwrap();
+        assert_eq!(b1.slots[3].allocated_tokens, b2.slots[3].allocated_tokens);
+        assert_eq!(b1.slots[4].allocated_tokens, b2.slots[4].allocated_tokens);
+        assert_eq!(b1.slots[5].allocated_tokens, b2.slots[5].allocated_tokens);
+        assert_eq!(b1.slots[6].allocated_tokens, b2.slots[6].allocated_tokens);
+        assert_eq!(b1.total_allocated, b2.total_allocated);
+    }
+
+    #[test]
+    fn compute_with_profile_enforces_attention_ceiling() {
+        let profile = ModelCapabilityProfile::micro_7b_12gb();
+        // model_max_context=131072 but profile.effective_ceiling=25000
+        let budget = ContextBudget::compute_with_profile(131072, [100, 200, 300], &profile).unwrap();
+        // Budget should be capped to 25000, not 131072.
+        assert_eq!(budget.model_max_context, 25000);
+        assert_eq!(budget.total_allocated, 25000);
+    }
+
+    #[test]
+    fn compute_with_profile_uses_profile_output_reserve() {
+        let profile = ModelCapabilityProfile::micro_7b_12gb();
+        // profile.output_reserve=750, but floor is 2000, so should clamp to 2000.
+        let budget = ContextBudget::compute_with_profile(25000, [100, 200, 300], &profile).unwrap();
+        assert_eq!(budget.slots[7].allocated_tokens, FLOOR_OUTPUT_RESERVE);
+    }
+
+    #[test]
+    fn compute_with_profile_floor_enforcement() {
+        // Tight budget that forces floor stealing.
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        profile.in_vram_ceiling = 4000;
+        profile.attention_ceiling = 4000;
+        profile.effective_ceiling = 4000;
+        let budget = ContextBudget::compute_with_profile(4000, [100, 200, 300], &profile).unwrap();
+        assert!(budget.slots[6].allocated_tokens >= FLOOR_GRC_HISTORY);
+        assert!(budget.slots[5].allocated_tokens >= FLOOR_SSB_ENTRIES);
+        assert_eq!(budget.total_allocated, 4000);
+    }
+
+    #[test]
+    fn compute_with_profile_infeasible_when_ceiling_too_small() {
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        profile.in_vram_ceiling = 3000;
+        profile.attention_ceiling = 3000;
+        profile.effective_ceiling = 3000;
+        let result = ContextBudget::compute_with_profile(131072, [100, 200, 300], &profile);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_with_profile_custom_weights_shift_allocation() {
+        // Heavy code_context weight (60%) vs default 40%.
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        profile.slot_weights = SlotWeights {
+            system_prompt: 0.0,
+            rules: 0.0,
+            telescope: 0.0,
+            repo_map: 0.10,
+            code_context: 0.60,
+            ssb_entries: 0.15,
+            grc_history: 0.15,
+        };
+        profile.in_vram_ceiling = 0;
+        profile.attention_ceiling = 0;
+        profile.effective_ceiling = 0;
+        let budget = ContextBudget::compute_with_profile(20000, [100, 200, 300], &profile).unwrap();
+        let default_budget = ContextBudget::compute(20000, [100, 200, 300], 2000).unwrap();
+        // With 60% weight, code_context should be larger than default 40%.
+        assert!(budget.slots[4].allocated_tokens > default_budget.slots[4].allocated_tokens);
+        // RepoMap with 10% should be smaller than default 15%.
+        assert!(budget.slots[3].allocated_tokens < default_budget.slots[3].allocated_tokens);
+    }
+
+    #[test]
+    fn compute_with_profile_zero_sum_invariant_100_configs() {
+        let profile = ModelCapabilityProfile::micro_7b_12gb();
+        for max_ctx in (5000..=50000).step_by(500) {
+            let mut p = profile.clone();
+            p.in_vram_ceiling = max_ctx;
+            p.attention_ceiling = max_ctx;
+            p.effective_ceiling = max_ctx;
+            if let Ok(budget) = ContextBudget::compute_with_profile(max_ctx, [100, 200, 300], &p) {
+                let dynamic_sum = budget.slots[3].allocated_tokens
+                    + budget.slots[4].allocated_tokens
+                    + budget.slots[5].allocated_tokens
+                    + budget.slots[6].allocated_tokens;
+                let expected_dynamic = max_ctx - 600 - budget.slots[7].allocated_tokens;
+                assert_eq!(dynamic_sum, expected_dynamic, "zero-sum violated at max_ctx={max_ctx}");
+                assert_eq!(budget.total_allocated, max_ctx, "total != max at max_ctx={max_ctx}");
+            }
+        }
+    }
+
+    #[test]
+    fn model_features_none_all_false() {
+        let f = ModelFeatures::none();
+        assert!(!f.supports_structured_output);
+        assert!(!f.supports_grammar);
+        assert!(!f.supports_stop_sequences);
+        assert!(!f.chunked_prefill);
+        assert!(!f.kv_compression);
     }
 }

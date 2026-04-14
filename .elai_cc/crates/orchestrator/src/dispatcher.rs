@@ -4,7 +4,7 @@
 // enum), and build_dispatch_context() which assembles a context from FSM state,
 // budget breakdown, and backend config.
 
-use crate::context_budget::{BudgetError, ContextBudget};
+use crate::context_budget::{BudgetError, ContextBudget, ModelCapabilityProfile};
 use crate::fsm::FsmState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -137,6 +137,7 @@ pub fn build_dispatch_context(
     config: &BackendConfig,
     all_tool_names: &[String],
     priority_map: &HashMap<String, u8>,
+    profile: Option<&ModelCapabilityProfile>,
 ) -> Result<DispatchContext, DispatchError> {
     // Pre-filter tools by FSM state.
     let filtered: Vec<String> = all_tool_names
@@ -155,13 +156,13 @@ pub fn build_dispatch_context(
         filtered
     };
 
-    // Compute budget for local model (best-effort).
-    let budget = ContextBudget::compute(
-        LOCAL_MODEL_MAX_CONTEXT * LOCAL_BUDGET_FRACTION / 100,
-        [0, 0, 0],
-        4096,
-    )
-    .ok();
+    // Compute budget: use profile-aware allocation if profile is available,
+    // otherwise fall back to fixed-percentage allocation.
+    let raw_max = LOCAL_MODEL_MAX_CONTEXT * LOCAL_BUDGET_FRACTION / 100;
+    let budget = match profile {
+        Some(p) => ContextBudget::compute_with_profile(raw_max, [0, 0, 0], p).ok(),
+        None => ContextBudget::compute(raw_max, [0, 0, 0], 4096).ok(),
+    };
 
     Ok(DispatchContext {
         fsm_state,
@@ -218,7 +219,7 @@ mod tests {
 
         let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Executing, &config, &tools, &prio).expect("should succeed");
+            build_dispatch_context(FsmState::Executing, &config, &tools, &prio, None).expect("should succeed");
 
         assert_eq!(ctx.fsm_state, FsmState::Executing);
         assert_eq!(ctx.backend_mode, BackendMode::Api);
@@ -243,7 +244,7 @@ mod tests {
 
         let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Planning, &config, &tools, &prio).expect("should succeed");
+            build_dispatch_context(FsmState::Planning, &config, &tools, &prio, None).expect("should succeed");
 
         // Planning blocks: bash, edit_file, write_file
         assert!(!ctx.filtered_tool_names.contains(&"bash".to_string()));
@@ -269,7 +270,7 @@ mod tests {
         let prio: HashMap<String, u8> = (0..10u8).map(|i| (format!("read_file_{i}"), i)).collect();
 
         let ctx =
-            build_dispatch_context(FsmState::Idle, &config, &tools, &prio).expect("should succeed");
+            build_dispatch_context(FsmState::Idle, &config, &tools, &prio, None).expect("should succeed");
 
         // Idle allows everything, but capped at 3. Priority sort keeps 0, 1, 2.
         assert!(ctx.filtered_tool_names.len() <= 3);
