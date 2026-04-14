@@ -7,6 +7,7 @@ use crate::telemetry_types::SessionTracer;
 use crate::compact::{
     compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
 };
+use crate::output_postprocessor::{self, OutputConfig};
 use crate::config::RuntimeFeatureConfig;
 use crate::hooks::{HookAbortSignal, HookProgressReporter, HookRunResult, HookRunner};
 use crate::permissions::{
@@ -136,6 +137,7 @@ pub struct ConversationRuntime<C, T> {
     hook_abort_signal: HookAbortSignal,
     hook_progress_reporter: Option<Box<dyn HookProgressReporter>>,
     session_tracer: Option<SessionTracer>,
+    output_config: OutputConfig,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -193,6 +195,7 @@ where
             hook_abort_signal: HookAbortSignal::default(),
             hook_progress_reporter: None,
             session_tracer: None,
+            output_config: OutputConfig::default(),
         }
     }
 
@@ -226,6 +229,12 @@ where
     #[must_use]
     pub fn with_session_tracer(mut self, session_tracer: SessionTracer) -> Self {
         self.session_tracer = Some(session_tracer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_output_config(mut self, output_config: OutputConfig) -> Self {
+        self.output_config = output_config;
         self
     }
 
@@ -338,7 +347,7 @@ where
                     return Err(error);
                 }
             };
-            let (assistant_message, usage, turn_prompt_cache_events) =
+            let (mut assistant_message, usage, turn_prompt_cache_events) =
                 match build_assistant_message(events) {
                     Ok(result) => result,
                     Err(error) => {
@@ -346,6 +355,10 @@ where
                         return Err(error);
                     }
                 };
+
+            // A-30: postprocess text blocks (emoji strip, sycophancy, length).
+            postprocess_message_blocks(&mut assistant_message.blocks, &self.output_config);
+
             if let Some(usage) = usage {
                 self.usage_tracker.record(usage);
             }
@@ -720,6 +733,21 @@ fn build_assistant_message(
         usage,
         prompt_cache_events,
     ))
+}
+
+/// Apply output postprocessor to all text blocks in a message.
+fn postprocess_message_blocks(blocks: &mut Vec<ContentBlock>, config: &OutputConfig) {
+    for block in blocks.iter_mut() {
+        if let ContentBlock::Text { text } = block {
+            let processed = output_postprocessor::process(text, config);
+            *text = processed;
+        }
+    }
+    // Remove text blocks that became empty after postprocessing.
+    blocks.retain(|block| match block {
+        ContentBlock::Text { text } => !text.is_empty(),
+        _ => true,
+    });
 }
 
 fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {

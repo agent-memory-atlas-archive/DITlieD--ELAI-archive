@@ -50,6 +50,7 @@ pub use session_dag::{
     BranchRef, DagMessageRole, MergeResult, Stub,
 };
 pub mod mistake_book;
+pub mod output_postprocessor;
 pub mod ssb;
 pub mod supervision;
 pub mod validated_ssb;
@@ -245,6 +246,7 @@ pub use agent_pool::{
     AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
 pub use grc::{PipelineGrc, PipelineGrcError};
+pub use output_postprocessor::{process as postprocess_output, OutputConfig};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
