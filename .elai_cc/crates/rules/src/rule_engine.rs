@@ -97,6 +97,10 @@ pub enum CompiledPredicate {
         compiled_regex: Regex,
         scope: Option<String>,
         context_lines: u32,
+        /// Language filter — None means universal (all languages).
+        language: Option<String>,
+        /// File context filter — None means fire in all contexts.
+        file_context: Option<crate::predicate::FileContext>,
     },
     AstPattern {
         language: String,
@@ -295,6 +299,39 @@ fn eval_order(pred: &CompiledPredicate) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// A-21: Language detection + test file heuristics (for GrepPattern filtering)
+// ---------------------------------------------------------------------------
+
+fn detect_language_from_ext(file_path: &str) -> Option<String> {
+    let ext = file_path.rsplit('.').next()?;
+    match ext {
+        "rs" => Some("rust".into()),
+        "py" | "pyi" => Some("python".into()),
+        "go" => Some("go".into()),
+        "ts" | "tsx" => Some("typescript".into()),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript".into()),
+        "java" => Some("java".into()),
+        "cs" => Some("csharp".into()),
+        "rb" => Some("ruby".into()),
+        "ex" | "exs" => Some("elixir".into()),
+        "swift" => Some("swift".into()),
+        "kt" | "kts" => Some("kotlin".into()),
+        "c" | "h" => Some("c".into()),
+        "cpp" | "cc" | "cxx" | "hpp" => Some("cpp".into()),
+        _ => None,
+    }
+}
+
+fn is_test_file(file_path: &str) -> bool {
+    let path = file_path.replace('\\', "/");
+    if path.contains("/tests/") || path.contains("/test/") || path.contains("/__tests__/") || path.contains("/spec/") || path.starts_with("tests/") || path.starts_with("test/") || path.starts_with("__tests__/") || path.starts_with("spec/") {
+        return true;
+    }
+    let filename = path.rsplit('/').next().unwrap_or(&path);
+    filename.ends_with("_test.rs") || (filename.starts_with("test_") && filename.ends_with(".py")) || filename.ends_with("_test.py") || filename.ends_with("_test.go") || filename.contains(".test.") || filename.contains(".spec.") || filename.ends_with("Test.java") || filename.ends_with("Test.cs") || filename.ends_with("_spec.rb")
+}
+
+// ---------------------------------------------------------------------------
 // Severity ordering for tie-breaking
 // ---------------------------------------------------------------------------
 
@@ -456,24 +493,45 @@ impl DefaultRuleEngine {
             CompiledPredicate::GrepPattern {
                 compiled_regex,
                 scope,
+                language,
+                file_context,
                 ..
             } => {
-                let in_scope = scope
-                    .as_ref()
-                    .is_none_or(|s| context.file_path.starts_with(s.as_str()));
-                if in_scope {
-                    if let Some(m) = compiled_regex.find(context.source) {
-                        let ev = format!(
-                            "grep match at offset {} in {}",
-                            m.start(),
-                            context.file_path
-                        );
-                        (true, ev)
-                    } else {
-                        (false, String::new())
+                // A-21: Language filter — skip if pattern language doesn't match file
+                let lang_matches = language.as_ref().is_none_or(|lang| {
+                    detect_language_from_ext(context.file_path)
+                        .as_deref() == Some(lang.as_str())
+                });
+                // A-21: File context filter — skip if prod/test context doesn't match
+                let ctx_matches = file_context.as_ref().is_none_or(|ctx| {
+                    let test = is_test_file(context.file_path);
+                    match ctx {
+                        crate::predicate::FileContext::Production => !test,
+                        crate::predicate::FileContext::Test => test,
                     }
+                });
+                if !lang_matches {
+                    (false, "language mismatch".into())
+                } else if !ctx_matches {
+                    (false, "file context mismatch".into())
                 } else {
-                    (false, "out of scope".into())
+                    let in_scope = scope
+                        .as_ref()
+                        .is_none_or(|s| context.file_path.starts_with(s.as_str()));
+                    if in_scope {
+                        if let Some(m) = compiled_regex.find(context.source) {
+                            let ev = format!(
+                                "grep match at offset {} in {}",
+                                m.start(),
+                                context.file_path
+                            );
+                            (true, ev)
+                        } else {
+                            (false, String::new())
+                        }
+                    } else {
+                        (false, "out of scope".into())
+                    }
                 }
             }
             CompiledPredicate::AstPattern {
@@ -698,6 +756,8 @@ impl DefaultRuleEngine {
                 pattern,
                 scope,
                 context_lines,
+                language,
+                file_context,
             } => {
                 let compiled_regex = Regex::new(pattern).map_err(|e| {
                     PredicateError::ValidationFailed(format!("invalid regex: {e}"))
@@ -706,6 +766,8 @@ impl DefaultRuleEngine {
                     compiled_regex,
                     scope: scope.clone(),
                     context_lines: *context_lines,
+                    language: language.clone(),
+                    file_context: file_context.clone(),
                 })
             }
             Predicate::AstPattern {
@@ -1304,6 +1366,8 @@ mod tests {
             compiled_regex: Regex::new("x").unwrap(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         let composite = CompiledPredicate::Composite {
             operator: CompositeOperator::And,

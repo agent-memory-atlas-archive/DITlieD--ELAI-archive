@@ -3086,6 +3086,8 @@ mod proptest_tests {
                     compiled_regex: regex::Regex::new(pat).unwrap(),
                     scope: None,
                     context_lines: 0,
+                    language: None,
+                    file_context: None,
                 },
                 PredDesc::And(children) => CompiledPredicate::Composite {
                     operator: CompositeOperator::And,
@@ -3234,6 +3236,8 @@ mod proptest_tests {
                 pattern: "test".into(),
                 scope: None,
                 context_lines: 0,
+                language: None,
+                file_context: None,
             };
             let mut current = leaf;
             for _ in 0..depth {
@@ -3253,6 +3257,8 @@ mod proptest_tests {
                 pattern: "test".into(),
                 scope: None,
                 context_lines: 0,
+                language: None,
+                file_context: None,
             };
             let mut current = leaf;
             for _ in 0..MAX_COMPOSITE_DEPTH + extra {
@@ -3272,6 +3278,8 @@ mod proptest_tests {
                     pattern: "x".into(),
                     scope: None,
                     context_lines: 0,
+                    language: None,
+                    file_context: None,
                 }),
                 0..=5usize,
             ).prop_filter("not exactly 1", |v| v.len() != 1),

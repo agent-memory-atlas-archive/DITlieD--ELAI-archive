@@ -19,6 +19,200 @@ use crate::import_extractor::{
 };
 
 // ---------------------------------------------------------------------------
+// File discipline configuration (elai_cc.toml [file_discipline])
+// ---------------------------------------------------------------------------
+
+/// Per-language line limits for file size enforcement.
+#[derive(Debug, Clone)]
+pub struct LanguageLimits {
+    /// WARN threshold for production files.
+    pub production_warn: usize,
+    /// WARN threshold for test files.
+    pub test_warn: usize,
+    /// Hard BLOCK threshold (4x production WARN per spec).
+    pub hard_block: usize,
+}
+
+/// File discipline configuration. Loaded from elai_cc.toml `[file_discipline]`.
+#[derive(Debug, Clone)]
+pub struct FileDisciplineConfig {
+    pub limits: HashMap<String, LanguageLimits>,
+    /// File extensions exempt from size checks (e.g. generated code).
+    pub exempt_extensions: Vec<String>,
+    /// Path prefixes exempt from size checks.
+    pub exempt_paths: Vec<String>,
+}
+
+impl Default for FileDisciplineConfig {
+    fn default() -> Self {
+        let mut limits = HashMap::new();
+        // Per CC design spec section 3.2 table
+        limits.insert("rust".into(), LanguageLimits { production_warn: 100, test_warn: 200, hard_block: 400 });
+        limits.insert("go".into(), LanguageLimits { production_warn: 100, test_warn: 200, hard_block: 400 });
+        limits.insert("python".into(), LanguageLimits { production_warn: 120, test_warn: 250, hard_block: 480 });
+        limits.insert("typescript".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+        limits.insert("javascript".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+        limits.insert("java".into(), LanguageLimits { production_warn: 200, test_warn: 300, hard_block: 800 });
+        limits.insert("kotlin".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+        limits.insert("csharp".into(), LanguageLimits { production_warn: 200, test_warn: 300, hard_block: 800 });
+        limits.insert("c".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+        limits.insert("cpp".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+        limits.insert("ruby".into(), LanguageLimits { production_warn: 120, test_warn: 200, hard_block: 480 });
+        limits.insert("elixir".into(), LanguageLimits { production_warn: 120, test_warn: 200, hard_block: 480 });
+        limits.insert("swift".into(), LanguageLimits { production_warn: 150, test_warn: 250, hard_block: 600 });
+
+        Self {
+            limits,
+            exempt_extensions: Vec::new(),
+            exempt_paths: Vec::new(),
+        }
+    }
+}
+
+/// Default limits for unrecognized languages.
+const DEFAULT_PRODUCTION_WARN: usize = 150;
+const DEFAULT_TEST_WARN: usize = 250;
+const DEFAULT_HARD_BLOCK: usize = 600;
+
+/// Threshold multiplier for "approaching limit" INFO (80% of WARN).
+const APPROACHING_LIMIT_RATIO: f64 = 0.8;
+
+// ---------------------------------------------------------------------------
+// Language detection + test file heuristics (shared by T1 + T2)
+// ---------------------------------------------------------------------------
+
+/// Detect language from file extension. Returns lowercase language name.
+fn detect_language(file_path: &str) -> Option<&'static str> {
+    let ext = file_path.rsplit('.').next()?;
+    match ext {
+        "rs" => Some("rust"),
+        "py" | "pyi" => Some("python"),
+        "go" => Some("go"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "java" => Some("java"),
+        "cs" => Some("csharp"),
+        "rb" => Some("ruby"),
+        "ex" | "exs" => Some("elixir"),
+        "swift" => Some("swift"),
+        "kt" | "kts" => Some("kotlin"),
+        "c" | "h" => Some("c"),
+        "cpp" | "cc" | "cxx" | "hpp" => Some("cpp"),
+        _ => None,
+    }
+}
+
+/// Heuristic: is this file path a test file?
+fn is_test_file(file_path: &str) -> bool {
+    let path = file_path.replace('\\', "/");
+    // Directory-based patterns (also match at start of path)
+    if path.contains("/tests/")
+        || path.contains("/test/")
+        || path.contains("/__tests__/")
+        || path.contains("/spec/")
+        || path.starts_with("tests/")
+        || path.starts_with("test/")
+        || path.starts_with("__tests__/")
+        || path.starts_with("spec/")
+    {
+        return true;
+    }
+    let filename = path.rsplit('/').next().unwrap_or(&path);
+    filename.ends_with("_test.rs")
+        || (filename.starts_with("test_") && filename.ends_with(".py"))
+        || filename.ends_with("_test.py")
+        || filename.ends_with("_test.go")
+        || filename.contains(".test.")
+        || filename.contains(".spec.")
+        || filename.ends_with("Test.java")
+        || filename.ends_with("Test.cs")
+        || filename.ends_with("_spec.rb")
+}
+
+// ---------------------------------------------------------------------------
+// T1 lazy code pattern registry (per-language regex, <1ms)
+// ---------------------------------------------------------------------------
+
+/// A compiled lazy code detection pattern.
+struct LazyPattern {
+    id: &'static str,
+    regex: &'static LazyLock<regex::Regex>,
+    /// None = universal (all languages).
+    language: Option<&'static str>,
+}
+
+// Universal patterns
+static RE_TODO_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*TODO\b").unwrap());
+static RE_FIXME_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*FIXME\b").unwrap());
+static RE_HACK_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*HACK\b").unwrap());
+static RE_ELLIPSIS_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*\.\.\.").unwrap());
+static RE_REST_OF_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*rest of").unwrap());
+static RE_TODO_HASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"#\s*TODO\b").unwrap());
+static RE_FIXME_HASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"#\s*FIXME\b").unwrap());
+static RE_ELLIPSIS_HASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"#\s*\.\.\.").unwrap());
+static RE_PLACEHOLDER_STR: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#""placeholder""#).unwrap());
+
+// Rust-specific
+static RE_RUST_TODO: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\btodo!\(").unwrap());
+static RE_RUST_UNIMPL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bunimplemented!\(").unwrap());
+static RE_RUST_EMPTY_FN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"fn\s+\w+\([^)]*\)[^{]*\{\s*\}").unwrap());
+
+// Python-specific
+static RE_PY_PASS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?m)\bpass\s*$").unwrap());
+static RE_PY_NOT_IMPL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\braise NotImplementedError\b").unwrap());
+static RE_PY_ELLIPSIS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"def\s+\w+\([^)]*\):\s*\.\.\.").unwrap());
+
+// TypeScript/JavaScript-specific
+static RE_TS_NOT_IMPL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"throw new Error\(['"](?:not |todo|implement)"#).unwrap());
+static RE_TS_CONSOLE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"console\.log\(").unwrap());
+
+// Go-specific
+static RE_GO_PANIC: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"\bpanic\(\s*['"](?:not |todo|implement)"#).unwrap());
+static RE_GO_EMPTY_FN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"func\s+\w+\([^)]*\)[^{]*\{\s*\}").unwrap());
+
+// Java-specific
+static RE_JAVA_UNSUP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"throw new UnsupportedOperationException\(").unwrap());
+static RE_JAVA_TODO: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"throw new RuntimeException\(['"]TODO"#).unwrap());
+
+// C#-specific
+static RE_CS_NOT_IMPL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"throw new NotImplementedException\(").unwrap());
+
+/// Full pattern registry. Order does not matter — all are checked.
+static LAZY_PATTERNS: LazyLock<Vec<LazyPattern>> = LazyLock::new(|| vec![
+    // Universal
+    LazyPattern { id: "todo_slash", regex: &RE_TODO_SLASH, language: None },
+    LazyPattern { id: "fixme_slash", regex: &RE_FIXME_SLASH, language: None },
+    LazyPattern { id: "hack_slash", regex: &RE_HACK_SLASH, language: None },
+    LazyPattern { id: "ellipsis_slash", regex: &RE_ELLIPSIS_SLASH, language: None },
+    LazyPattern { id: "rest_of_slash", regex: &RE_REST_OF_SLASH, language: None },
+    LazyPattern { id: "todo_hash", regex: &RE_TODO_HASH, language: None },
+    LazyPattern { id: "fixme_hash", regex: &RE_FIXME_HASH, language: None },
+    LazyPattern { id: "ellipsis_hash", regex: &RE_ELLIPSIS_HASH, language: None },
+    LazyPattern { id: "placeholder_str", regex: &RE_PLACEHOLDER_STR, language: None },
+    // Rust
+    LazyPattern { id: "rust_todo_macro", regex: &RE_RUST_TODO, language: Some("rust") },
+    LazyPattern { id: "rust_unimplemented", regex: &RE_RUST_UNIMPL, language: Some("rust") },
+    LazyPattern { id: "rust_empty_fn", regex: &RE_RUST_EMPTY_FN, language: Some("rust") },
+    // Python
+    LazyPattern { id: "py_bare_pass", regex: &RE_PY_PASS, language: Some("python") },
+    LazyPattern { id: "py_not_implemented", regex: &RE_PY_NOT_IMPL, language: Some("python") },
+    LazyPattern { id: "py_ellipsis_body", regex: &RE_PY_ELLIPSIS, language: Some("python") },
+    // TypeScript/JavaScript
+    LazyPattern { id: "ts_not_implemented", regex: &RE_TS_NOT_IMPL, language: Some("typescript") },
+    LazyPattern { id: "ts_console_log", regex: &RE_TS_CONSOLE, language: Some("typescript") },
+    LazyPattern { id: "js_not_implemented", regex: &RE_TS_NOT_IMPL, language: Some("javascript") },
+    LazyPattern { id: "js_console_log", regex: &RE_TS_CONSOLE, language: Some("javascript") },
+    // Go
+    LazyPattern { id: "go_panic_placeholder", regex: &RE_GO_PANIC, language: Some("go") },
+    LazyPattern { id: "go_empty_fn", regex: &RE_GO_EMPTY_FN, language: Some("go") },
+    // Java
+    LazyPattern { id: "java_unsupported_op", regex: &RE_JAVA_UNSUP, language: Some("java") },
+    LazyPattern { id: "java_todo_exception", regex: &RE_JAVA_TODO, language: Some("java") },
+    // C#
+    LazyPattern { id: "cs_not_implemented", regex: &RE_CS_NOT_IMPL, language: Some("csharp") },
+]);
+
+// ---------------------------------------------------------------------------
 // Hook verdict types
 // ---------------------------------------------------------------------------
 
@@ -74,6 +268,8 @@ pub struct T1Hook {
     fsm_phase: FsmPhaseBit,
     /// Pre-loaded and compiled rules from rules.db, cached for fast evaluation.
     loaded_rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
+    /// File discipline config for size enforcement.
+    file_discipline: FileDisciplineConfig,
 }
 
 impl T1Hook {
@@ -83,14 +279,11 @@ impl T1Hook {
             rule_engine,
             fsm_phase,
             loaded_rules: Vec::new(),
+            file_discipline: FileDisciplineConfig::default(),
         }
     }
 
     /// Create a T1 hook with pre-loaded rules from rules.db.
-    ///
-    /// The caller (typically orchestrator) loads rules from SQLite, compiles
-    /// predicates, and passes the compiled pairs here. This avoids adding
-    /// a SQLite dependency to the plugins crate.
     pub fn with_rules(
         rule_engine: Box<dyn RuleEngine>,
         fsm_phase: FsmPhaseBit,
@@ -101,6 +294,7 @@ impl T1Hook {
             rule_engine,
             fsm_phase,
             loaded_rules: rules,
+            file_discipline: FileDisciplineConfig::default(),
         }
     }
 
@@ -113,8 +307,14 @@ impl T1Hook {
         self.loaded_rules = rules;
     }
 
+    /// Replace file discipline config at runtime.
+    pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
+        self.file_discipline = config;
+    }
+
     /// Evaluate predicates for active rules matching current phase + domain.
     ///
+    /// Also runs T1 lazy code detection and file size enforcement.
     /// Performance target: <1ms for typical rule sets (100 rules).
     pub fn evaluate(
         &self,
@@ -135,8 +335,8 @@ impl T1Hook {
 
         let verdicts = self.rule_engine.evaluate(&self.loaded_rules, &ctx)?;
 
-        // Find the most severe verdict (BLOCK > WARN > ALLOW)
-        let final_verdict = verdicts
+        // Find the most severe verdict from rules (BLOCK > WARN > ALLOW)
+        let mut final_verdict = verdicts
             .into_iter()
             .fold(HookVerdict::Allow, |acc, verdict| {
                 match (acc.clone(), verdict.result) {
@@ -153,12 +353,126 @@ impl T1Hook {
                 }
             });
 
+        // T1 lazy code detection: per-language regex patterns -> WARN
+        if !source.is_empty() {
+            let lazy_verdict = self.evaluate_lazy_patterns(source, file_path);
+            final_verdict = Self::merge_verdicts(final_verdict, lazy_verdict);
+        }
+
+        // T1 file size enforcement: language-specific line limits
+        if action == "file_write" && !source.is_empty() {
+            let size_verdict = self.evaluate_file_size(source, file_path);
+            final_verdict = Self::merge_verdicts(final_verdict, size_verdict);
+        }
+
         let duration = start.elapsed();
         if duration.as_millis() > 1 {
             tracing::warn!("T1 hook exceeded 1ms target: {:?}", duration);
         }
 
         Ok(final_verdict)
+    }
+
+    /// Evaluate lazy code detection patterns against source.
+    ///
+    /// Returns WARN on first match. Per spec: T1 always WARNs, T2 determines
+    /// final verdict based on AST context (test vs production).
+    fn evaluate_lazy_patterns(&self, source: &str, file_path: &str) -> HookVerdict {
+        let file_lang = detect_language(file_path);
+        // console.log exemption for test files (per audit I-4)
+        let is_test = is_test_file(file_path);
+
+        for pat in LAZY_PATTERNS.iter() {
+            // Language filter: skip if pattern is language-specific and doesn't match
+            if let Some(pat_lang) = pat.language {
+                if file_lang != Some(pat_lang) {
+                    continue;
+                }
+            }
+            // console.log exemption for test files
+            if (pat.id == "ts_console_log" || pat.id == "js_console_log") && is_test {
+                continue;
+            }
+            if pat.regex.is_match(source) {
+                return HookVerdict::Warn {
+                    message: format!("Lazy code pattern '{}' detected", pat.id),
+                    pattern_hash: blake3::hash(pat.id.as_bytes()).to_hex().to_string(),
+                };
+            }
+        }
+        HookVerdict::Allow
+    }
+
+    /// Evaluate file size against language-specific limits.
+    ///
+    /// Returns BLOCK for extreme monoliths (4x WARN), WARN for oversized files,
+    /// Allow otherwise. Per CC design spec section 3.2.
+    fn evaluate_file_size(&self, source: &str, file_path: &str) -> HookVerdict {
+        // Check exemptions
+        for ext in &self.file_discipline.exempt_extensions {
+            if file_path.ends_with(ext.as_str()) {
+                return HookVerdict::Allow;
+            }
+        }
+        for prefix in &self.file_discipline.exempt_paths {
+            if file_path.starts_with(prefix.as_str()) {
+                return HookVerdict::Allow;
+            }
+        }
+
+        let lang = detect_language(file_path).unwrap_or("default");
+        let is_test = is_test_file(file_path);
+        let line_count = source.lines().count();
+
+        let (warn_limit, hard_block) = if let Some(limits) = self.file_discipline.limits.get(lang) {
+            let warn = if is_test { limits.test_warn } else { limits.production_warn };
+            (warn, limits.hard_block)
+        } else {
+            let warn = if is_test { DEFAULT_TEST_WARN } else { DEFAULT_PRODUCTION_WARN };
+            (warn, DEFAULT_HARD_BLOCK)
+        };
+
+        if line_count > hard_block {
+            HookVerdict::Block {
+                message: format!(
+                    "File exceeds hard block limit ({} lines > {} max for {})",
+                    line_count, hard_block, lang
+                ),
+                pattern_hash: blake3::hash(
+                    format!("file_size_block_{}_{}", lang, line_count).as_bytes()
+                ).to_hex().to_string(),
+            }
+        } else if line_count > warn_limit {
+            HookVerdict::Warn {
+                message: format!(
+                    "File exceeds size limit ({} lines > {} warn for {})",
+                    line_count, warn_limit, lang
+                ),
+                pattern_hash: blake3::hash(
+                    format!("file_size_warn_{}_{}", lang, line_count).as_bytes()
+                ).to_hex().to_string(),
+            }
+        } else {
+            let approaching = (warn_limit as f64 * APPROACHING_LIMIT_RATIO) as usize;
+            if line_count > approaching {
+                tracing::info!(
+                    lines = line_count, limit = warn_limit, file = file_path,
+                    "File approaching size limit"
+                );
+            }
+            HookVerdict::Allow
+        }
+    }
+
+    /// Merge two verdicts, keeping the most severe.
+    fn merge_verdicts(a: HookVerdict, b: HookVerdict) -> HookVerdict {
+        match (&a, &b) {
+            (HookVerdict::Block { .. }, _) => a,
+            (_, HookVerdict::Block { .. }) => b,
+            (HookVerdict::Warn { .. }, _) => a,
+            (_, HookVerdict::Warn { .. }) => b,
+            _ => a,
+        }
     }
 
     fn hash_pattern(rule_id: &str, evidence: &str) -> String {
@@ -308,8 +622,12 @@ impl T2Hook {
                         T2Error::ParseError("tree-sitter parse returned None".to_string())
                     })?;
                 let root = tree.root_node();
+                // CC spec Check 1: ERROR nodes in AST -> BLOCK
                 if root.has_error() {
-                    tracing::debug!(file = file_path, "tree-sitter parse had errors, continuing");
+                    findings.push((
+                        format!("ast_error_{}", file_path),
+                        format!("AST contains ERROR nodes (unparseable code) in {}", file_path),
+                    ));
                 }
                 self.check_rust_patterns(&root, source, &mut findings);
                 let max_depth = self.max_nesting_depth(&root, 0);
@@ -325,6 +643,8 @@ impl T2Hook {
             Some(DetectedLanguage::Python) => {
                 // Python security/lazy patterns via regex
                 self.collect_python_regex_findings(source, &mut findings);
+                // A-21: Python AST empty body detection via tree-sitter
+                self.check_python_ast_completeness(source, file_path, &mut findings);
             }
             None => {} // No legacy checks for other languages
         }
@@ -345,8 +665,11 @@ impl T2Hook {
             return Ok(Some(HookVerdict::Allow));
         }
 
-        // Classify findings: deprecated imports and security patterns -> BLOCK,
+        // Classify findings: AST errors, deprecated imports, security -> BLOCK,
         // lazy code/unsafe -> WARN
+        let has_ast_error = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("ast_error"));
         let has_deprecated_block = findings
             .iter()
             .any(|(id, _)| id.starts_with("deprecated_import_BLOCK"));
@@ -358,7 +681,7 @@ impl T2Hook {
         });
 
         let (pattern_id, message) = &findings[0];
-        let verdict = if has_deprecated_block || has_security_block {
+        let verdict = if has_ast_error || has_deprecated_block || has_security_block {
             HookVerdict::Block {
                 message: message.clone(),
                 pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
@@ -586,6 +909,80 @@ impl T2Hook {
         }
     }
 
+    /// A-21: Python AST completeness check via tree-sitter.
+    ///
+    /// Detects empty function bodies (function_definition with block containing
+    /// only pass or ellipsis). Also checks for ERROR nodes.
+    fn check_python_ast_completeness(
+        &self,
+        source: &str,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let mut parser = tree_sitter::Parser::new();
+        if parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .is_err()
+        {
+            tracing::debug!(file = file_path, "Python parser init failed");
+            return;
+        }
+        let tree = match parser.parse(source, None) {
+            Some(t) => t,
+            None => return,
+        };
+        let root = tree.root_node();
+        if root.has_error() {
+            findings.push((
+                format!("ast_error_{}", file_path),
+                format!("Python AST contains ERROR nodes in {}", file_path),
+            ));
+        }
+        self.check_python_empty_bodies(&root, source, findings);
+    }
+
+    /// Recursively find Python function_definition nodes with empty/stub bodies.
+    fn check_python_empty_bodies(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        if node.kind() == "function_definition" {
+            if let Some(body) = node.child_by_field_name("body") {
+                // A block with only `pass`, `...`, or comments is considered empty.
+                let is_empty = body.named_child_count() == 0
+                    || (body.named_child_count() == 1
+                        && body.named_child(0).is_some_and(|c| {
+                            let kind = c.kind();
+                            kind == "pass_statement"
+                                || kind == "ellipsis"
+                                || kind == "expression_statement"
+                                    && c.named_child(0)
+                                        .is_some_and(|e| e.kind() == "ellipsis")
+                        }));
+                if is_empty {
+                    let start_line = node.start_position().row + 1;
+                    let fn_name = node
+                        .child_by_field_name("name")
+                        .map(|n| &source[n.byte_range()])
+                        .unwrap_or("<unknown>");
+                    findings.push((
+                        format!("empty_fn_body_L{start_line}"),
+                        format!(
+                            "Empty/stub function body '{}' at line {}",
+                            fn_name, start_line
+                        ),
+                    ));
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.check_python_empty_bodies(&child, source, findings);
+        }
+    }
+
     /// Compute maximum nesting depth of the AST.
     fn max_nesting_depth(&self, node: &tree_sitter::Node<'_>, current_depth: usize) -> usize {
         let is_nesting = matches!(
@@ -751,6 +1148,11 @@ impl TieredAnalysis {
     /// Update T2 deprecated import patterns at runtime.
     pub fn set_t2_deprecated_imports(&mut self, patterns: Vec<DeprecatedImport>) {
         self.t2.set_deprecated_imports(patterns);
+    }
+
+    /// Update T1 file discipline config at runtime.
+    pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
+        self.t1.set_file_discipline(config);
     }
 
     /// Access the T1 rule engine for filtering/compilation.
@@ -1110,9 +1512,10 @@ mod tests {
 
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
 
-        let result = hook.evaluate("file_write", "evil code todo!()", "src/main.rs", HashMap::new());
+        // Use clean source — lazy patterns still fire even with empty rule set
+        let result = hook.evaluate("file_write", "fn add(a: i32, b: i32) -> i32 { a + b }", "src/main.rs", HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), HookVerdict::Allow, "empty rules should allow everything");
+        assert_eq!(result.unwrap(), HookVerdict::Allow, "empty rules + clean source should allow");
     }
 
     #[test]
@@ -1148,5 +1551,213 @@ mod tests {
         assert!(result.is_ok());
         let verdict = result.unwrap();
         assert!(verdict.is_block(), "BLOCK severity rule should produce Block verdict, got {:?}", verdict);
+    }
+
+    // -- A-21: T1 lazy code detection --
+
+    #[test]
+    fn test_t1_lazy_detects_todo_comment_rust() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "fn main() {\n    // TODO implement\n}\n";
+        let result = hook.evaluate("file_write", source, "src/main.rs", HashMap::new()).unwrap();
+        assert!(result.is_warn(), "T1 should WARN on TODO comment, got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_lazy_detects_rust_todo_macro() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "fn compute() -> i32 { todo!() }";
+        let result = hook.evaluate("file_write", source, "src/lib.rs", HashMap::new()).unwrap();
+        assert!(result.is_warn(), "T1 should WARN on todo!(), got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_lazy_detects_python_pass() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "def handler():\n    pass\n";
+        let result = hook.evaluate("file_write", source, "handler.py", HashMap::new()).unwrap();
+        assert!(result.is_warn(), "T1 should WARN on bare pass, got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_lazy_detects_ts_throw_not_implemented() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "function handler() { throw new Error('not implemented'); }";
+        let result = hook.evaluate("file_write", source, "handler.ts", HashMap::new()).unwrap();
+        assert!(result.is_warn(), "T1 should WARN on throw not implemented, got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_lazy_skips_console_log_in_test_file() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "console.log('debug');\n";
+        let result = hook.evaluate("file_write", source, "handler.test.ts", HashMap::new()).unwrap();
+        assert_eq!(result, HookVerdict::Allow, "console.log in test files should be allowed");
+    }
+
+    #[test]
+    fn test_t1_lazy_allows_clean_code() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = "fn add(a: i32, b: i32) -> i32 { a + b }\n";
+        let result = hook.evaluate("file_write", source, "src/math.rs", HashMap::new()).unwrap();
+        assert_eq!(result, HookVerdict::Allow, "clean code should be allowed");
+    }
+
+    // -- A-21: T1 file size enforcement --
+
+    #[test]
+    fn test_t1_file_size_blocks_extreme_monolith() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        // Rust hard block is 400 lines
+        let source = (0..450).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let result = hook.evaluate("file_write", &source, "src/big.rs", HashMap::new()).unwrap();
+        assert!(result.is_block(), "File >400 lines Rust should BLOCK, got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_file_size_warns_oversized() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        // Rust production WARN is 100, hard block is 400
+        let source = (0..150).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let result = hook.evaluate("file_write", &source, "src/medium.rs", HashMap::new()).unwrap();
+        assert!(result.is_warn(), "File >100 lines Rust should WARN, got {:?}", result);
+    }
+
+    #[test]
+    fn test_t1_file_size_allows_small() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        let source = (0..50).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let result = hook.evaluate("file_write", &source, "src/small.rs", HashMap::new()).unwrap();
+        assert_eq!(result, HookVerdict::Allow, "Small file should be allowed");
+    }
+
+    #[test]
+    fn test_t1_file_size_uses_test_limits() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        // Rust test WARN is 200, so 150 lines in a test file should be fine
+        let source = (0..150).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let result = hook.evaluate("file_write", &source, "tests/integration_test.rs", HashMap::new()).unwrap();
+        assert_eq!(result, HookVerdict::Allow, "150 lines in test file (limit 200) should be allowed");
+    }
+
+    #[test]
+    fn test_t1_file_size_not_checked_on_non_file_write() {
+        use elai_rules::rule_engine::{DefaultRuleEngine, FsmPhaseBit};
+        use elai_rules::stubs::{EmptyDkgQuerier, PassAstEvaluator};
+        let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
+        let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
+        // 500 lines on a non-file_write action should not trigger size check
+        let source = (0..500).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
+        let result = hook.evaluate("ssb_write", &source, "src/big.rs", HashMap::new()).unwrap();
+        // Only lazy patterns would fire (no TODO/pass/etc in this source), so Allow
+        assert_eq!(result, HookVerdict::Allow, "Non-file_write should skip file size check");
+    }
+
+    // -- A-21: T2 AST error node detection --
+
+    #[test]
+    fn test_t2_blocks_on_ast_error_nodes() {
+        let hook = T2Hook::new(5000);
+        // Invalid Rust syntax should produce error nodes
+        let source = "fn main() { let x = ; }";
+        let result = hook.evaluate(source, "src/bad.rs").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_block(), "AST error nodes should BLOCK, got {:?}", verdict);
+    }
+
+    // -- A-21: T2 Python AST empty body detection --
+
+    #[test]
+    fn test_t2_detects_python_ast_empty_pass() {
+        let hook = T2Hook::new(5000);
+        let source = "def handler(request):\n    pass\n";
+        let result = hook.evaluate(source, "handler.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "Python pass body should WARN via AST, got {:?}", verdict);
+    }
+
+    #[test]
+    fn test_t2_detects_python_ast_ellipsis_body() {
+        let hook = T2Hook::new(5000);
+        let source = "def stub(x):\n    ...\n";
+        let result = hook.evaluate(source, "stub.py").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(verdict.is_warn(), "Python ... body should WARN via AST, got {:?}", verdict);
+    }
+
+    // -- A-21: helper function tests --
+
+    #[test]
+    fn test_detect_language() {
+        assert_eq!(detect_language("src/main.rs"), Some("rust"));
+        assert_eq!(detect_language("app.py"), Some("python"));
+        assert_eq!(detect_language("handler.go"), Some("go"));
+        assert_eq!(detect_language("index.ts"), Some("typescript"));
+        assert_eq!(detect_language("app.jsx"), Some("javascript"));
+        assert_eq!(detect_language("Main.java"), Some("java"));
+        assert_eq!(detect_language("Util.cs"), Some("csharp"));
+        assert_eq!(detect_language("README.md"), None);
+    }
+
+    #[test]
+    fn test_is_test_file() {
+        assert!(is_test_file("tests/integration.rs"));
+        assert!(is_test_file("src/handler_test.rs"));
+        assert!(is_test_file("test_handler.py"));
+        assert!(is_test_file("handler_test.py"));
+        assert!(is_test_file("handler_test.go"));
+        assert!(is_test_file("handler.test.ts"));
+        assert!(is_test_file("handler.spec.js"));
+        assert!(is_test_file("__tests__/handler.ts"));
+        assert!(is_test_file("UserTest.java"));
+        assert!(is_test_file("spec/user_spec.rb"));
+        assert!(!is_test_file("src/handler.rs"));
+        assert!(!is_test_file("handler.py"));
+        assert!(!is_test_file("main.go"));
+    }
+
+    #[test]
+    fn test_file_discipline_config_defaults() {
+        let config = FileDisciplineConfig::default();
+        let rust = config.limits.get("rust").unwrap();
+        assert_eq!(rust.production_warn, 100);
+        assert_eq!(rust.test_warn, 200);
+        assert_eq!(rust.hard_block, 400);
+        let python = config.limits.get("python").unwrap();
+        assert_eq!(python.production_warn, 120);
+        assert_eq!(python.hard_block, 480);
     }
 }

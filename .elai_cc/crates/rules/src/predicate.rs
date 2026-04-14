@@ -72,6 +72,20 @@ pub const SUPPORTED_ECOSYSTEMS: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// File context for GREP_PATTERN filtering
+// ---------------------------------------------------------------------------
+
+/// File context for filtering patterns to production or test code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileContext {
+    /// Only fire in production code.
+    Production,
+    /// Only fire in test code.
+    Test,
+}
+
+// ---------------------------------------------------------------------------
 // Predicate enum (7 variants)
 // ---------------------------------------------------------------------------
 
@@ -96,6 +110,12 @@ pub enum Predicate {
         pattern: String,
         scope: Option<String>,
         context_lines: u32,
+        /// Optional language filter (e.g. "rust", "python"). None = universal.
+        #[serde(default)]
+        language: Option<String>,
+        /// Optional file context filter. None = fire in all contexts.
+        #[serde(default)]
+        file_context: Option<FileContext>,
     },
 
     SchemaRequired {
@@ -469,6 +489,8 @@ mod tests {
             pattern: "TODO".into(),
             scope: Some("src/".into()),
             context_lines: 5,
+            language: None,
+            file_context: None,
         };
         let json = serde_json::to_string(&pred).unwrap();
         let rt: Predicate = serde_json::from_str(&json).unwrap();
@@ -518,6 +540,8 @@ mod tests {
             pattern: "eval".into(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         let pred = Predicate::Composite {
             operator: CompositeOperator::Or,
@@ -556,6 +580,8 @@ mod tests {
             pattern: "x".into(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         let mut current = leaf;
         for _ in 0..depth {
@@ -573,6 +599,8 @@ mod tests {
             pattern: "x".into(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         assert!(depth_check(&pred).is_ok());
     }
@@ -600,6 +628,8 @@ mod tests {
             pattern: "x".into(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         let mut current = Predicate::Composite {
             operator: CompositeOperator::And,
@@ -659,6 +689,8 @@ mod tests {
                 pattern: "x".into(),
                 scope: None,
                 context_lines: 0,
+                language: None,
+                file_context: None,
             }],
         };
         assert!(validate(&pred).is_ok());
@@ -686,6 +718,8 @@ mod tests {
             pattern: "x".into(),
             scope: None,
             context_lines: 0,
+            language: None,
+            file_context: None,
         };
         let pred = Predicate::Composite {
             operator: CompositeOperator::Not,

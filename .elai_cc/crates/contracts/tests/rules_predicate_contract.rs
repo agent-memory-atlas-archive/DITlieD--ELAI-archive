@@ -57,6 +57,8 @@ fn contract_grep_pattern_round_trip() {
         pattern: "TODO".into(),
         scope: None,
         context_lines: 3,
+        language: None,
+        file_context: None,
     };
     let rt = round_trip(&pred);
     assert_eq!(pred, rt);
@@ -103,6 +105,8 @@ fn contract_composite_round_trip() {
         pattern: "import os".into(),
         scope: None,
         context_lines: 0,
+        language: None,
+        file_context: None,
     };
     let pred = Predicate::Composite {
         operator: CompositeOperator::And,
@@ -118,6 +122,8 @@ fn contract_composite_not_round_trip() {
         pattern: "eval(".into(),
         scope: None,
         context_lines: 0,
+        language: None,
+        file_context: None,
     };
     let pred = Predicate::Composite {
         operator: CompositeOperator::Not,
@@ -205,6 +211,8 @@ fn nested_composite(depth: usize) -> Predicate {
         pattern: "leaf".into(),
         scope: None,
         context_lines: 0,
+        language: None,
+        file_context: None,
     };
     let mut current = leaf;
     for _ in 0..depth {
@@ -277,6 +285,8 @@ fn contract_not_arity_two_rejected() {
         pattern: "x".into(),
         scope: None,
         context_lines: 0,
+        language: None,
+        file_context: None,
     };
     let pred = Predicate::Composite {
         operator: CompositeOperator::Not,
@@ -292,6 +302,8 @@ fn contract_not_arity_one_accepted() {
         pattern: "x".into(),
         scope: None,
         context_lines: 0,
+        language: None,
+        file_context: None,
     };
     let pred = Predicate::Composite {
         operator: CompositeOperator::Not,
