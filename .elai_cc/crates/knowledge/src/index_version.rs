@@ -15,7 +15,8 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// Current index format version. Tracks the overall index layout; a change
 /// here triggers at minimum a BM25-only rebuild.
-pub const CURRENT_INDEX_VERSION: u32 = 1;
+/// v2: AST-aware chunking replaces 50-line fixed windows (3K.1).
+pub const CURRENT_INDEX_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // IndexVersion
@@ -477,8 +478,8 @@ mod tests {
         assert_eq!(action, UpgradeAction::FullRebuild);
         assert!(notifier.called.get(), "notifier should have been called");
 
-        // Archive should exist.
-        let archive = project.join("index_backup_1");
+        // Archive should exist (named after the old version).
+        let archive = project.join(format!("index_backup_{CURRENT_INDEX_VERSION}"));
         assert!(archive.exists());
         assert!(archive.join("dkg.db").exists());
 

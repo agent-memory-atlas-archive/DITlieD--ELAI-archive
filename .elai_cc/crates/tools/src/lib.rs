@@ -1929,6 +1929,22 @@ fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> 
 }
 
 fn run_bash(input: BashCommandInput) -> Result<String, String> {
+    // A-26: Tool routing layer — reject commands that should use dedicated tools.
+    if let Some(rejection) = routing_rules::check_routing(&input.command) {
+        return Err(structured_error(
+            "tool_routing",
+            &format!(
+                "tool_routing: {} (target: {})",
+                rejection.hint, rejection.target_tool
+            ),
+        ));
+    }
+
+    // A-27: Safety filter — block dangerous/destructive commands.
+    if let Err(msg) = safety_filter::check_bash_safety(&input.command) {
+        return Err(structured_error("safety_blocked", &msg));
+    }
+
     if let Some(output) = workspace_test_branch_preflight(&input.command) {
         return serde_json::to_string_pretty(&output).map_err(|error| error.to_string());
     }
@@ -5269,7 +5285,10 @@ fn parse_skill_description(contents: &str) -> Option<String> {
     None
 }
 
+pub mod action_classifier;
 pub mod lane_completion;
+pub mod routing_rules;
+pub mod safety_filter;
 
 #[cfg(test)]
 mod tests {

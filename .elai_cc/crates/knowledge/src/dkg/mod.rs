@@ -1544,7 +1544,7 @@ const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "py", "go", "ts", "tsx", "java", "cs", "rb",
 ];
 
-fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
+pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
     match ext {
         "rs" => Some("rust"),
         "py" => Some("python"),
