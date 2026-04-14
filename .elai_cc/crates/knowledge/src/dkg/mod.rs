@@ -102,8 +102,18 @@ impl DkgEngine {
         }
 
         let mut grammars: HashMap<&'static str, Box<dyn LanguageGrammar>> = HashMap::new();
-        let rust_grammar = RustGrammar;
-        grammars.insert(rust_grammar.language_id(), Box::new(rust_grammar));
+        let langs: Vec<Box<dyn LanguageGrammar>> = vec![
+            Box::new(RustGrammar),
+            Box::new(PythonGrammar),
+            Box::new(GoGrammar),
+            Box::new(TypeScriptGrammar),
+            Box::new(JavaGrammar),
+            Box::new(CSharpGrammar),
+            Box::new(RubyGrammar),
+        ];
+        for g in langs {
+            grammars.insert(g.language_id(), g);
+        }
 
         Ok(Self {
             conn,
@@ -115,20 +125,20 @@ impl DkgEngine {
     }
 
     pub fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, Box<dyn std::error::Error>> {
-        let mut rs_files = Vec::new();
-        walk_rs_files(project_root, &mut rs_files);
-        rs_files.sort();
+        let mut source_files = Vec::new();
+        walk_source_files(project_root, &mut source_files);
+        source_files.sort();
 
         let mut files_parsed: usize = 0;
         let mut total_node_count: usize = 0;
 
         let mut parser = tree_sitter::Parser::new();
 
-        for file_path in &rs_files {
+        for file_path in &source_files {
             let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let lang_id = match ext {
-                "rs" => "rust",
-                _ => { continue; }
+            let lang_id = match ext_to_lang_id(ext) {
+                Some(id) => id,
+                None => { continue; }
             };
             let grammar = match self.grammars.get(lang_id) {
                 Some(g) => g,
@@ -502,6 +512,851 @@ impl LanguageGrammar for RustGrammar {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PythonGrammar
+// ---------------------------------------------------------------------------
+
+pub struct PythonGrammar;
+
+const PYTHON_KINDS: &[&str] = &[
+    "function_definition",
+    "class_definition",
+    "import_statement",
+    "import_from_statement",
+    "decorated_definition",
+];
+
+impl LanguageGrammar for PythonGrammar {
+    fn language_id(&self) -> &'static str { "python" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_python::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        python_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn python_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        // decorated_definition: descend into the inner definition
+        if kind == "decorated_definition" {
+            if cursor.goto_first_child() {
+                python_extract_recursive(cursor, source, nodes, parent_idx);
+                cursor.goto_parent();
+            }
+            if !cursor.goto_next_sibling() { break; }
+            continue;
+        }
+
+        if PYTHON_KINDS.contains(&kind) {
+            let name = python_extract_name(&node, source, kind);
+            let signature = python_build_signature(&node, source, kind, &name);
+            let symbol_kind = python_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            python_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn python_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_statement" | "import_from_statement" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn python_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "function_definition" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("return_type")
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("def {}({}) -> {}", name, params.trim_start_matches('(').trim_end_matches(')'), r),
+                None => format!("def {}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "class_definition" => format!("class {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn python_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_definition" => SymbolKind::Function,
+        "class_definition" => SymbolKind::Struct,
+        "import_statement" | "import_from_statement" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GoGrammar
+// ---------------------------------------------------------------------------
+
+pub struct GoGrammar;
+
+const GO_KINDS: &[&str] = &[
+    "function_declaration",
+    "method_declaration",
+    "type_declaration",
+    "import_declaration",
+    "const_declaration",
+    "var_declaration",
+    "package_clause",
+];
+
+impl LanguageGrammar for GoGrammar {
+    fn language_id(&self) -> &'static str { "go" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_go::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        go_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn go_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if GO_KINDS.contains(&kind) {
+            let name = go_extract_name(&node, source, kind);
+            let signature = go_build_signature(&node, source, kind, &name);
+            let symbol_kind = go_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            go_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn go_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_declaration" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "package_clause" => {
+            node.child_by_field_name("name")
+                .or_else(|| node.child(1u32))
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "type_declaration" => {
+            // type_declaration contains type_spec children
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "type_spec" {
+                        return child.child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("?")
+                            .to_string();
+                    }
+                }
+            }
+            "?".to_string()
+        }
+        "method_declaration" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn go_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "function_declaration" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let result = node
+                .child_by_field_name("result")
+                .and_then(|n| n.utf8_text(source).ok());
+            match result {
+                Some(r) => format!("func {}({}) {}", name, params.trim_start_matches('(').trim_end_matches(')'), r),
+                None => format!("func {}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "method_declaration" => {
+            let receiver = node
+                .child_by_field_name("receiver")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(?)");
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            format!("func {} {}({})", receiver, name, params.trim_start_matches('(').trim_end_matches(')'))
+        }
+        "type_declaration" => format!("type {}", name),
+        "package_clause" => format!("package {}", name),
+        "const_declaration" => format!("const {}", name),
+        "var_declaration" => format!("var {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn go_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_declaration" | "method_declaration" => SymbolKind::Function,
+        "type_declaration" => SymbolKind::Struct,
+        "import_declaration" => SymbolKind::Module,
+        "package_clause" => SymbolKind::Module,
+        "const_declaration" => SymbolKind::Const,
+        "var_declaration" => SymbolKind::Static,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TypeScriptGrammar
+// ---------------------------------------------------------------------------
+
+pub struct TypeScriptGrammar;
+
+const TS_KINDS: &[&str] = &[
+    "function_declaration",
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "type_alias_declaration",
+    "import_statement",
+    "export_statement",
+    "method_definition",
+    "lexical_declaration",
+    "arrow_function",
+];
+
+impl LanguageGrammar for TypeScriptGrammar {
+    fn language_id(&self) -> &'static str { "typescript" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        ts_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn ts_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        // export_statement wraps declarations — descend into it
+        if kind == "export_statement" {
+            if cursor.goto_first_child() {
+                ts_extract_recursive(cursor, source, nodes, parent_idx);
+                cursor.goto_parent();
+            }
+            if !cursor.goto_next_sibling() { break; }
+            continue;
+        }
+
+        if TS_KINDS.contains(&kind) {
+            let name = ts_extract_name(&node, source, kind);
+            let signature = ts_build_signature(&node, source, kind, &name);
+            let symbol_kind = ts_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            ts_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn ts_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_statement" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "lexical_declaration" => {
+            // const/let/var — find the first variable_declarator's name
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "variable_declarator" {
+                        return child.child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("?")
+                            .to_string();
+                    }
+                }
+            }
+            "?".to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn ts_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "function_declaration" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("return_type")
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("function {}({}): {}", name, params.trim_start_matches('(').trim_end_matches(')'), r),
+                None => format!("function {}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "class_declaration" => format!("class {}", name),
+        "interface_declaration" => format!("interface {}", name),
+        "enum_declaration" => format!("enum {}", name),
+        "type_alias_declaration" => format!("type {}", name),
+        "method_definition" => format!("method {}", name),
+        "lexical_declaration" => format!("const {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn ts_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_declaration" | "method_definition" | "arrow_function" => SymbolKind::Function,
+        "class_declaration" => SymbolKind::Struct,
+        "interface_declaration" => SymbolKind::Trait,
+        "enum_declaration" => SymbolKind::Enum,
+        "type_alias_declaration" => SymbolKind::TypeAlias,
+        "import_statement" => SymbolKind::Module,
+        "lexical_declaration" => SymbolKind::Const,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JavaGrammar
+// ---------------------------------------------------------------------------
+
+pub struct JavaGrammar;
+
+const JAVA_KINDS: &[&str] = &[
+    "method_declaration",
+    "constructor_declaration",
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "import_declaration",
+    "package_declaration",
+    "field_declaration",
+    "annotation_type_declaration",
+];
+
+impl LanguageGrammar for JavaGrammar {
+    fn language_id(&self) -> &'static str { "java" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_java::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        java_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn java_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if JAVA_KINDS.contains(&kind) {
+            let name = java_extract_name(&node, source, kind);
+            let signature = java_build_signature(&node, source, kind, &name);
+            let symbol_kind = java_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            java_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn java_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_declaration" | "package_declaration" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "field_declaration" => {
+            // Find the variable_declarator child for the field name
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "variable_declarator" {
+                        return child.child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("?")
+                            .to_string();
+                    }
+                }
+            }
+            "?".to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn java_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "method_declaration" | "constructor_declaration" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("{} {}({})", r, name, params.trim_start_matches('(').trim_end_matches(')')),
+                None => format!("{}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "class_declaration" => format!("class {}", name),
+        "interface_declaration" => format!("interface {}", name),
+        "enum_declaration" => format!("enum {}", name),
+        "annotation_type_declaration" => format!("@interface {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn java_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "method_declaration" | "constructor_declaration" => SymbolKind::Function,
+        "class_declaration" => SymbolKind::Struct,
+        "interface_declaration" => SymbolKind::Trait,
+        "enum_declaration" => SymbolKind::Enum,
+        "import_declaration" | "package_declaration" => SymbolKind::Module,
+        "field_declaration" => SymbolKind::Static,
+        "annotation_type_declaration" => SymbolKind::Trait,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CSharpGrammar
+// ---------------------------------------------------------------------------
+
+pub struct CSharpGrammar;
+
+const CSHARP_KINDS: &[&str] = &[
+    "method_declaration",
+    "constructor_declaration",
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "struct_declaration",
+    "namespace_declaration",
+    "using_directive",
+    "property_declaration",
+    "field_declaration",
+    "record_declaration",
+];
+
+impl LanguageGrammar for CSharpGrammar {
+    fn language_id(&self) -> &'static str { "csharp" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_c_sharp::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        csharp_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn csharp_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if CSHARP_KINDS.contains(&kind) {
+            let name = csharp_extract_name(&node, source, kind);
+            let signature = csharp_build_signature(&node, source, kind, &name);
+            let symbol_kind = csharp_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            csharp_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn csharp_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "using_directive" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "namespace_declaration" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "field_declaration" => {
+            // Walk children to find variable_declaration -> variable_declarator
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "variable_declaration" {
+                        for j in 0..child.child_count() as u32 {
+                            if let Some(decl) = child.child(j) {
+                                if decl.kind() == "variable_declarator" {
+                                    return decl.child_by_field_name("name")
+                                        .or_else(|| decl.child(0u32))
+                                        .and_then(|n| n.utf8_text(source).ok())
+                                        .unwrap_or("?")
+                                        .to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "?".to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn csharp_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "method_declaration" | "constructor_declaration" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("type")
+                .or_else(|| node.child_by_field_name("returns"))
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("{} {}({})", r, name, params.trim_start_matches('(').trim_end_matches(')')),
+                None => format!("{}({})", name, params.trim_start_matches('(').trim_end_matches(')')),
+            }
+        }
+        "class_declaration" | "record_declaration" => format!("class {}", name),
+        "struct_declaration" => format!("struct {}", name),
+        "interface_declaration" => format!("interface {}", name),
+        "enum_declaration" => format!("enum {}", name),
+        "namespace_declaration" => format!("namespace {}", name),
+        "property_declaration" => format!("property {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn csharp_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "method_declaration" | "constructor_declaration" => SymbolKind::Function,
+        "class_declaration" | "record_declaration" | "struct_declaration" => SymbolKind::Struct,
+        "interface_declaration" => SymbolKind::Trait,
+        "enum_declaration" => SymbolKind::Enum,
+        "namespace_declaration" | "using_directive" => SymbolKind::Module,
+        "property_declaration" | "field_declaration" => SymbolKind::Static,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RubyGrammar
+// ---------------------------------------------------------------------------
+
+pub struct RubyGrammar;
+
+const RUBY_KINDS: &[&str] = &[
+    "method",
+    "singleton_method",
+    "class",
+    "module",
+    "constant",
+    "assignment",
+];
+
+impl LanguageGrammar for RubyGrammar {
+    fn language_id(&self) -> &'static str { "ruby" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_ruby::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        ruby_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn ruby_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        // Only capture top-level constant assignments (CONST = ...)
+        if kind == "assignment" {
+            let lhs = node.child(0u32);
+            let is_const = lhs.map_or(false, |n| n.kind() == "constant");
+            if is_const {
+                let name = lhs
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("?")
+                    .to_string();
+                let start_line = node.start_position().row as u32 + 1;
+                let end_line = node.end_position().row as u32 + 1;
+                nodes.push(DkgNode {
+                    name: name.clone(),
+                    kind: SymbolKind::Const,
+                    signature: format!("const {}", name),
+                    start_line,
+                    end_line,
+                    parent_idx,
+                });
+            }
+            if !cursor.goto_next_sibling() { break; }
+            continue;
+        }
+
+        if RUBY_KINDS.contains(&kind) && kind != "assignment" && kind != "constant" {
+            let name = ruby_extract_name(&node, source, kind);
+            let signature = ruby_build_signature(kind, &name);
+            let symbol_kind = ruby_kind_to_symbol(kind);
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            ruby_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn ruby_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "method" | "singleton_method" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "class" | "module" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        _ => "?".to_string(),
+    }
+}
+
+fn ruby_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "method" | "singleton_method" => format!("def {}", name),
+        "class" => format!("class {}", name),
+        "module" => format!("module {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn ruby_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "method" | "singleton_method" => SymbolKind::Function,
+        "class" => SymbolKind::Struct,
+        "module" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
 const EXTRACTED_KINDS: &[&str] = &[
     "function_item",
     "struct_item",
@@ -682,9 +1537,27 @@ fn parse_symbol_kind(s: &str) -> SymbolKind {
     }
 }
 
-const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules"];
+const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules", "__pycache__", ".venv", "vendor", "dist", "build"];
 
-fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Extensions that have a registered grammar.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "py", "go", "ts", "tsx", "java", "cs", "rb",
+];
+
+fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
+    match ext {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "go" => Some("go"),
+        "ts" | "tsx" => Some("typescript"),
+        "java" => Some("java"),
+        "cs" => Some("csharp"),
+        "rb" => Some("ruby"),
+        _ => None,
+    }
+}
+
+fn walk_source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -697,9 +1570,208 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
                     continue;
                 }
             }
-            walk_rs_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
+            walk_source_files(&path, out);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if SOURCE_EXTENSIONS.contains(&ext) {
+                out.push(path);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod grammar_tests {
+    use super::*;
+
+    fn parse_and_extract(grammar: &dyn LanguageGrammar, source: &str) -> Vec<DkgNode> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar.tree_sitter_language()).expect("set language");
+        let tree = parser.parse(source.as_bytes(), None).expect("parse");
+        grammar.extract_nodes(&tree, source.as_bytes())
+    }
+
+    #[test]
+    fn python_grammar_extracts_class_and_functions() {
+        let src = r#"
+class Foo:
+    def bar(self):
+        pass
+
+def standalone(x: int) -> str:
+    return str(x)
+"#;
+        let nodes = parse_and_extract(&PythonGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"Foo"), "missing class Foo, got: {:?}", names);
+        assert!(names.contains(&"bar"), "missing method bar, got: {:?}", names);
+        assert!(names.contains(&"standalone"), "missing function standalone, got: {:?}", names);
+        // Verify kinds
+        let foo = nodes.iter().find(|n| n.name == "Foo").expect("Foo node");
+        assert_eq!(foo.kind, SymbolKind::Struct);
+        let bar = nodes.iter().find(|n| n.name == "bar").expect("bar node");
+        assert_eq!(bar.kind, SymbolKind::Function);
+        // bar should be a child of Foo
+        assert!(bar.parent_idx.is_some());
+    }
+
+    #[test]
+    fn go_grammar_extracts_func_and_type() {
+        let src = r#"
+package main
+
+import "fmt"
+
+type Server struct {
+    Port int
+}
+
+func (s *Server) Start() error {
+    return nil
+}
+
+func main() {
+    fmt.Println("hello")
+}
+"#;
+        let nodes = parse_and_extract(&GoGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"main"), "missing func main, got: {:?}", names);
+        assert!(names.contains(&"Server"), "missing type Server, got: {:?}", names);
+        assert!(names.contains(&"Start"), "missing method Start, got: {:?}", names);
+        let server = nodes.iter().find(|n| n.name == "Server").expect("Server");
+        assert_eq!(server.kind, SymbolKind::Struct);
+    }
+
+    #[test]
+    fn typescript_grammar_extracts_class_and_interface() {
+        let src = r#"
+import { foo } from 'bar';
+
+interface Config {
+    port: number;
+}
+
+class App {
+    constructor(private config: Config) {}
+
+    start(): void {
+        console.log("started");
+    }
+}
+
+function helper(x: number): string {
+    return x.toString();
+}
+
+enum Status { Active, Inactive }
+"#;
+        let nodes = parse_and_extract(&TypeScriptGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"Config"), "missing interface Config, got: {:?}", names);
+        assert!(names.contains(&"App"), "missing class App, got: {:?}", names);
+        assert!(names.contains(&"helper"), "missing function helper, got: {:?}", names);
+        assert!(names.contains(&"Status"), "missing enum Status, got: {:?}", names);
+        let config = nodes.iter().find(|n| n.name == "Config").expect("Config");
+        assert_eq!(config.kind, SymbolKind::Trait);
+    }
+
+    #[test]
+    fn java_grammar_extracts_class_and_methods() {
+        let src = r#"
+package com.example;
+
+import java.util.List;
+
+public class MyService {
+    private int count;
+
+    public MyService() {
+        this.count = 0;
+    }
+
+    public List<String> process(String input) {
+        return List.of(input);
+    }
+}
+
+enum Color { RED, GREEN, BLUE }
+"#;
+        let nodes = parse_and_extract(&JavaGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"MyService"), "missing class MyService, got: {:?}", names);
+        assert!(names.contains(&"process"), "missing method process, got: {:?}", names);
+        assert!(names.contains(&"Color"), "missing enum Color, got: {:?}", names);
+        let svc = nodes.iter().find(|n| n.name == "MyService").expect("MyService");
+        assert_eq!(svc.kind, SymbolKind::Struct);
+    }
+
+    #[test]
+    fn csharp_grammar_extracts_class_and_namespace() {
+        let src = r#"
+using System;
+
+namespace MyApp {
+    public class Program {
+        public static void Main(string[] args) {
+            Console.WriteLine("Hello");
+        }
+    }
+
+    public interface IService {
+        void Run();
+    }
+
+    public enum Status { Active, Inactive }
+}
+"#;
+        let nodes = parse_and_extract(&CSharpGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"MyApp"), "missing namespace MyApp, got: {:?}", names);
+        assert!(names.contains(&"Program"), "missing class Program, got: {:?}", names);
+        assert!(names.contains(&"Main"), "missing method Main, got: {:?}", names);
+        assert!(names.contains(&"IService"), "missing interface IService, got: {:?}", names);
+        assert!(names.contains(&"Status"), "missing enum Status, got: {:?}", names);
+    }
+
+    #[test]
+    fn ruby_grammar_extracts_class_and_methods() {
+        let src = r#"
+module Helpers
+  class Greeter
+    def greet(name)
+      "Hello #{name}"
+    end
+
+    def self.default
+      new
+    end
+  end
+end
+"#;
+        let nodes = parse_and_extract(&RubyGrammar, src);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"Helpers"), "missing module Helpers, got: {:?}", names);
+        assert!(names.contains(&"Greeter"), "missing class Greeter, got: {:?}", names);
+        assert!(names.contains(&"greet"), "missing method greet, got: {:?}", names);
+        assert!(names.contains(&"default"), "missing singleton method default, got: {:?}", names);
+        let helpers = nodes.iter().find(|n| n.name == "Helpers").expect("Helpers");
+        assert_eq!(helpers.kind, SymbolKind::Module);
+        let greeter = nodes.iter().find(|n| n.name == "Greeter").expect("Greeter");
+        assert_eq!(greeter.kind, SymbolKind::Struct);
+        // Greeter should be child of Helpers
+        assert!(greeter.parent_idx.is_some());
+    }
+
+    #[test]
+    fn ext_to_lang_id_mapping() {
+        assert_eq!(ext_to_lang_id("py"), Some("python"));
+        assert_eq!(ext_to_lang_id("go"), Some("go"));
+        assert_eq!(ext_to_lang_id("ts"), Some("typescript"));
+        assert_eq!(ext_to_lang_id("tsx"), Some("typescript"));
+        assert_eq!(ext_to_lang_id("java"), Some("java"));
+        assert_eq!(ext_to_lang_id("cs"), Some("csharp"));
+        assert_eq!(ext_to_lang_id("rb"), Some("ruby"));
+        assert_eq!(ext_to_lang_id("rs"), Some("rust"));
+        assert_eq!(ext_to_lang_id("txt"), None);
     }
 }
