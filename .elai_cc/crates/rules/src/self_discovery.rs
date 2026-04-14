@@ -43,11 +43,18 @@ const INITIAL_FPR: f64 = 0.0;
 // ---------------------------------------------------------------------------
 
 /// A single violation occurrence reported by the auditor.
+///
+/// When `replacement_name` is `Some(...)`, self-discovery proposes a
+/// `VERSION_GATE` predicate instead of `GREP_PATTERN`. This enables
+/// the anti-staleness pipeline (see anti-staleness-enforcement.txt 1.2).
 #[derive(Debug, Clone)]
 pub struct ViolationRecord {
     pub pattern_text: String,
     pub example_code: String,
     pub domain: Option<String>,
+    /// If the auditor identified a replacement, set this to enable VERSION_GATE
+    /// auto-proposal. When None, a GREP_PATTERN is proposed instead (existing behavior).
+    pub replacement_name: Option<String>,
 }
 
 /// Configuration for the self-discovery mechanism.
@@ -248,6 +255,24 @@ fn make_test_id(rule_id: &str, idx: u32) -> String {
     format!("{}-ct{}", rule_id, idx)
 }
 
+/// Map a rule domain to the most likely package ecosystem.
+///
+/// Used by self-discovery to populate VERSION_GATE ecosystem field when
+/// the auditor provides a replacement_name but no explicit ecosystem.
+fn domain_to_ecosystem(domain: Option<&str>) -> &'static str {
+    match domain {
+        Some("python") | Some("data_science") => "pip",
+        Some("frontend") | Some("web") => "npm",
+        Some("java") | Some("android") => "maven",
+        Some("dotnet") | Some("csharp") => "nuget",
+        Some("ruby") => "bundler",
+        Some("php") => "composer",
+        Some("go") | Some("golang") => "go",
+        // Default to cargo for Rust-centric project.
+        _ => "cargo",
+    }
+}
+
 /// Record a violation pattern. Deduplicates by blake3 hash.
 ///
 /// Returns the outcome: New, Incremented, or Proposed (if threshold met).
@@ -297,14 +322,16 @@ pub fn record_violation(
             sp.execute(
                 "INSERT INTO violation_patterns \
                  (pattern_id, pattern_hash, occurrences, first_seen, last_seen, \
-                  domain, example_code, score_clarity, score_frequency, score_precision) \
-                 VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, ?8)",
+                  domain, example_code, replacement_name, \
+                  score_clarity, score_frequency, score_precision) \
+                 VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     &pattern_id,
                     hash_bytes,
                     now,
                     &record.domain,
                     &record.example_code,
+                    &record.replacement_name,
                     clarity,
                     frequency,
                     precision,
@@ -377,29 +404,46 @@ pub fn try_propose_rule(
     engine: &dyn RuleEngine,
     clock: &impl ClockProvider,
 ) -> Result<Option<String>, SelfDiscoveryError> {
-    // Fetch the violation pattern record.
-    let (example_code, domain): (String, Option<String>) = conn
+    // Fetch the violation pattern record including replacement_name.
+    let (example_code, domain, replacement_name): (String, Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT example_code, domain FROM violation_patterns WHERE pattern_id = ?1",
+            "SELECT example_code, domain, replacement_name \
+             FROM violation_patterns WHERE pattern_id = ?1",
             params![pattern_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
         .ok_or_else(|| SelfDiscoveryError::PatternNotFound {
             pattern_id: pattern_id.to_string(),
         })?;
 
-    // Generate a grep_pattern predicate JSON from the example code.
-    // Serde tag is "snake_case" per predicate.rs, fields: pattern, scope, context_lines.
-    // Use serde_json to properly escape the pattern string for JSON embedding.
-    let escaped_code = regex::escape(&example_code);
-    let pattern_json_value = serde_json::json!({
-        "type": "grep_pattern",
-        "pattern": escaped_code,
-        "scope": null,
-        "context_lines": 0
-    });
-    let predicate_json = pattern_json_value.to_string();
+    // Generate predicate JSON: VERSION_GATE when replacement_name is available,
+    // GREP_PATTERN otherwise (preserves existing behavior per WARN-4 resolution).
+    let predicate_json = match &replacement_name {
+        Some(repl) => {
+            // Infer ecosystem from domain: "engineering" -> "cargo" (Rust-centric project).
+            // Fallback to "cargo" if domain doesn't map to a known ecosystem.
+            let ecosystem = domain_to_ecosystem(domain.as_deref());
+            serde_json::json!({
+                "type": "version_gate",
+                "ecosystem": ecosystem,
+                "deprecated_name": example_code,
+                "replacement_name": repl,
+                "severity": DEFAULT_SEVERITY,
+            })
+            .to_string()
+        }
+        None => {
+            let escaped_code = regex::escape(&example_code);
+            serde_json::json!({
+                "type": "grep_pattern",
+                "pattern": escaped_code,
+                "scope": null,
+                "context_lines": 0
+            })
+            .to_string()
+        }
+    };
 
     // Validate the predicate via compile_predicate.
     // If it fails, this is an intentional discard: invalid predicates are never inserted.
@@ -630,6 +674,7 @@ mod tests {
             pattern_text: "unsafe block without justification".to_string(),
             example_code: "unsafe { ptr::read(p) }".to_string(),
             domain: Some("safety".to_string()),
+            replacement_name: None,
         };
 
         let result = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -647,6 +692,7 @@ mod tests {
             pattern_text: "unused import".to_string(),
             example_code: "use std::io;".to_string(),
             domain: Some("style".to_string()),
+            replacement_name: None,
         };
 
         let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -668,6 +714,7 @@ mod tests {
             pattern_text: "hardcoded password".to_string(),
             example_code: "password = \"secret123\"".to_string(),
             domain: Some("security".to_string()),
+            replacement_name: None,
         };
 
         let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -687,6 +734,7 @@ mod tests {
             pattern_text: "  // only a comment\n ".to_string(),
             example_code: "x".to_string(),
             domain: None,
+            replacement_name: None,
         };
 
         let err = record_violation(&mut conn, &record, &engine, &clock, &config);
@@ -704,6 +752,7 @@ mod tests {
             pattern_text: "duplicate test".to_string(),
             example_code: "x = 1".to_string(),
             domain: None,
+            replacement_name: None,
         };
 
         for _ in 0..5 {
@@ -731,6 +780,7 @@ mod tests {
             pattern_text: "already proposed".to_string(),
             example_code: "bad_code()".to_string(),
             domain: None,
+            replacement_name: None,
         };
 
         let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -756,6 +806,7 @@ mod tests {
             pattern_text: "test auditor source".to_string(),
             example_code: "eval(input())".to_string(),
             domain: Some("security".to_string()),
+            replacement_name: None,
         };
 
         // Record 3 times to trigger proposal.
@@ -789,6 +840,7 @@ mod tests {
             pattern_text: "contract test creation".to_string(),
             example_code: "os.system(cmd)".to_string(),
             domain: None,
+            replacement_name: None,
         };
 
         let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -845,6 +897,121 @@ mod tests {
         let h1 = hash_pattern(&normalize_pattern("unsafe block without justification"));
         let h2 = hash_pattern(&normalize_pattern("unsafe pointer dereference without check"));
         assert_ne!(h1, h2);
+    }
+
+    // -- VERSION_GATE proposal path --
+
+    #[test]
+    fn record_with_replacement_proposes_version_gate() {
+        let mut conn = mem_db();
+        let engine = make_engine();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        let record = ViolationRecord {
+            pattern_text: "blake2 used instead of blake3".to_string(),
+            example_code: "blake2".to_string(),
+            domain: Some("engineering".to_string()),
+            replacement_name: Some("blake3".to_string()),
+        };
+
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let result = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+
+        let rule_id = match result {
+            RecordOutcome::Proposed { rule_id, .. } => rule_id,
+            other => panic!("expected Proposed, got {:?}", other),
+        };
+
+        // Verify the proposed rule uses version_gate predicate type.
+        let predicate_json: String = conn
+            .query_row(
+                "SELECT predicate FROM rules WHERE rule_id = ?1",
+                params![&rule_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let pred: serde_json::Value = serde_json::from_str(&predicate_json).unwrap();
+        assert_eq!(pred["type"], "version_gate", "must be version_gate, not grep_pattern");
+        assert_eq!(pred["ecosystem"], "cargo", "engineering domain -> cargo ecosystem");
+        assert_eq!(pred["deprecated_name"], "blake2");
+        assert_eq!(pred["replacement_name"], "blake3");
+    }
+
+    #[test]
+    fn record_without_replacement_proposes_grep_pattern() {
+        let mut conn = mem_db();
+        let engine = make_engine();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        let record = ViolationRecord {
+            pattern_text: "generic violation".to_string(),
+            example_code: "bad_pattern()".to_string(),
+            domain: Some("engineering".to_string()),
+            replacement_name: None,
+        };
+
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let result = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+
+        let rule_id = match result {
+            RecordOutcome::Proposed { rule_id, .. } => rule_id,
+            other => panic!("expected Proposed, got {:?}", other),
+        };
+
+        let predicate_json: String = conn
+            .query_row(
+                "SELECT predicate FROM rules WHERE rule_id = ?1",
+                params![&rule_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let pred: serde_json::Value = serde_json::from_str(&predicate_json).unwrap();
+        assert_eq!(pred["type"], "grep_pattern", "must be grep_pattern when no replacement");
+    }
+
+    #[test]
+    fn replacement_name_stored_in_violation_patterns() {
+        let mut conn = mem_db();
+        let engine = make_engine();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig { proposal_threshold: 100 };
+
+        let record = ViolationRecord {
+            pattern_text: "http.server usage".to_string(),
+            example_code: "http.server".to_string(),
+            domain: Some("python".to_string()),
+            replacement_name: Some("fastapi+uvicorn".to_string()),
+        };
+
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+
+        let stored_replacement: Option<String> = conn
+            .query_row(
+                "SELECT replacement_name FROM violation_patterns LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_replacement, Some("fastapi+uvicorn".to_string()));
+    }
+
+    // -- domain_to_ecosystem --
+
+    #[test]
+    fn domain_to_ecosystem_mappings() {
+        assert_eq!(domain_to_ecosystem(Some("python")), "pip");
+        assert_eq!(domain_to_ecosystem(Some("data_science")), "pip");
+        assert_eq!(domain_to_ecosystem(Some("frontend")), "npm");
+        assert_eq!(domain_to_ecosystem(Some("go")), "go");
+        assert_eq!(domain_to_ecosystem(Some("engineering")), "cargo");
+        assert_eq!(domain_to_ecosystem(None), "cargo");
+        assert_eq!(domain_to_ecosystem(Some("unknown")), "cargo");
     }
 
     // -- SelfDiscoveryConfig --

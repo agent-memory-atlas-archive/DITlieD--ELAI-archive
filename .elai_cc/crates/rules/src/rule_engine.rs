@@ -115,6 +115,12 @@ pub enum CompiledPredicate {
     GraphReachability {
         params: ReachabilityParams,
     },
+    VersionGate {
+        ecosystem: String,
+        deprecated_name: String,
+        replacement_name: String,
+        severity: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -274,13 +280,15 @@ impl DefaultRuleEngine {
 // ---------------------------------------------------------------------------
 
 /// Returns a sort key for evaluation ordering. Lower = evaluated first.
-/// MetricGate(0) → GrepPattern(1) → AstPattern(2) → Composite(3) → GraphReachability(4).
+/// MetricGate(0) → VersionGate/GrepPattern(1) → AstPattern(2) → Composite(3) → GraphReachability(4).
 fn eval_order(pred: &CompiledPredicate) -> u8 {
     match pred {
         CompiledPredicate::MetricGate { .. } => 0,
+        // VERSION_GATE is O(n) string matching, same tier as GREP.
+        CompiledPredicate::VersionGate { .. } => 1,
         CompiledPredicate::GrepPattern { .. } => 1,
         CompiledPredicate::AstPattern { .. } => 2,
-        CompiledPredicate::SchemaRequired { .. } => 2, // same tier as AST
+        CompiledPredicate::SchemaRequired { .. } => 2,
         CompiledPredicate::Composite { .. } => 3,
         CompiledPredicate::GraphReachability { .. } => 4,
     }
@@ -573,6 +581,23 @@ impl DefaultRuleEngine {
                 };
                 (graph_fires, ev)
             }
+            CompiledPredicate::VersionGate {
+                deprecated_name,
+                replacement_name,
+                ..
+            } => {
+                // Check if the deprecated name appears in the source code.
+                let fires = context.source.contains(deprecated_name.as_str());
+                let ev = if fires {
+                    format!(
+                        "deprecated '{}' found; use '{}' instead",
+                        deprecated_name, replacement_name
+                    )
+                } else {
+                    String::new()
+                };
+                (fires, ev)
+            }
         };
 
         // Map fires → VerdictResult, then apply ESCALATE routing.
@@ -744,6 +769,20 @@ impl DefaultRuleEngine {
                     PredicateError::ValidationFailed(format!("invalid DKG params: {e}"))
                 })?;
                 Ok(CompiledPredicate::GraphReachability { params })
+            }
+            Predicate::VersionGate {
+                ecosystem,
+                deprecated_name,
+                replacement_name,
+                severity,
+            } => {
+                // Validation already done by predicate::validate (ecosystem, names, severity).
+                Ok(CompiledPredicate::VersionGate {
+                    ecosystem: ecosystem.clone(),
+                    deprecated_name: deprecated_name.clone(),
+                    replacement_name: replacement_name.clone(),
+                    severity: severity.clone(),
+                })
             }
         }
     }

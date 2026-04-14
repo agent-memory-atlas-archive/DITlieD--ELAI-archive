@@ -18,7 +18,7 @@ use crate::error::RulesDbError;
 // ---------------------------------------------------------------------------
 
 /// Current schema version. Bump when any CREATE/ALTER statement changes.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -83,17 +83,18 @@ CREATE TABLE IF NOT EXISTS contract_tests (
 
 const CREATE_VIOLATION_PATTERNS_TABLE: &str = "\
 CREATE TABLE IF NOT EXISTS violation_patterns (
-    pattern_id      TEXT PRIMARY KEY,
-    pattern_hash    BLOB UNIQUE NOT NULL,
-    occurrences     INTEGER NOT NULL DEFAULT 1,
-    first_seen      INTEGER NOT NULL,
-    last_seen       INTEGER NOT NULL,
-    proposed_rule   TEXT,
-    domain          TEXT,
-    example_code    TEXT NOT NULL,
-    score_clarity   INTEGER CHECK(score_clarity BETWEEN 0 AND 5),
-    score_frequency INTEGER CHECK(score_frequency BETWEEN 0 AND 5),
-    score_precision INTEGER CHECK(score_precision BETWEEN 0 AND 5)
+    pattern_id       TEXT PRIMARY KEY,
+    pattern_hash     BLOB UNIQUE NOT NULL,
+    occurrences      INTEGER NOT NULL DEFAULT 1,
+    first_seen       INTEGER NOT NULL,
+    last_seen        INTEGER NOT NULL,
+    proposed_rule    TEXT,
+    domain           TEXT,
+    example_code     TEXT NOT NULL,
+    replacement_name TEXT,
+    score_clarity    INTEGER CHECK(score_clarity BETWEEN 0 AND 5),
+    score_frequency  INTEGER CHECK(score_frequency BETWEEN 0 AND 5),
+    score_precision  INTEGER CHECK(score_precision BETWEEN 0 AND 5)
 )";
 
 const CREATE_RULE_TRANSITIONS_TABLE: &str = "\
@@ -113,6 +114,81 @@ CREATE TABLE IF NOT EXISTS rule_transitions (
     tpr              REAL,
     ccr              REAL
 )";
+
+const CREATE_DEPRECATED_PATTERNS_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS deprecated_patterns (
+    pattern_id       TEXT PRIMARY KEY,
+    ecosystem        TEXT NOT NULL CHECK(ecosystem IN (
+        'cargo', 'pip', 'npm', 'go', 'maven', 'nuget', 'bundler', 'composer'
+    )),
+    deprecated_name  TEXT NOT NULL,
+    replacement_name TEXT NOT NULL,
+    deprecated_since TEXT,
+    severity         TEXT NOT NULL CHECK(severity IN ('BLOCK', 'WARN')),
+    reason           TEXT
+)";
+
+// ---------------------------------------------------------------------------
+// Seed data for deprecated_patterns (from outdated-tech-audit.md)
+// ---------------------------------------------------------------------------
+
+/// Seed entries: (pattern_id, ecosystem, deprecated_name, replacement_name,
+///                deprecated_since, severity, reason)
+const DEPRECATED_PATTERNS_SEED: &[(&str, &str, &str, &str, Option<&str>, &str, &str)] = &[
+    // Rust / cargo — BLOCK
+    ("dp-cargo-blake2", "cargo", "blake2", "blake3",
+     Some("2024-01"), "BLOCK", "blake3 is 3-5x faster; blake2 inconsistent with project standard"),
+    ("dp-cargo-rand08", "cargo", "rand 0.8", "rand >= 0.9",
+     Some("2024-06"), "BLOCK", "rand 0.8 is two major versions behind"),
+    ("dp-cargo-log", "cargo", "log", "tracing",
+     Some("2023-01"), "BLOCK", "tracing is the modern Rust async logging standard"),
+    ("dp-cargo-getrandom02", "cargo", "getrandom 0.2", "getrandom >= 0.3",
+     Some("2024-01"), "BLOCK", "getrandom 0.2 is outdated"),
+    ("dp-cargo-ort-rc", "cargo", "ort 2.0.0-rc", "ort 2",
+     Some("2024-06"), "BLOCK", "pre-release ort; stable 2.0 is released"),
+    ("dp-cargo-box-dyn-error", "cargo", "Box<dyn Error>", "thiserror/anyhow",
+     None, "BLOCK", "erases error context; project uses thiserror/anyhow"),
+    // Rust / cargo — WARN
+    ("dp-cargo-async-trait", "cargo", "async-trait", "native async fn in traits",
+     Some("2023-12"), "WARN", "Rust 1.75+ supports native async fn in traits"),
+    ("dp-cargo-r2d2", "cargo", "r2d2", "deadpool/bb8",
+     Some("2020-01"), "WARN", "r2d2 last updated 2020; sync pool in async codebase"),
+    ("dp-cargo-glob03", "cargo", "glob 0.3", "globset/ignore",
+     Some("2016-01"), "WARN", "glob 0.3 is a 2016-era crate; globset is more capable"),
+    // Python / pip — BLOCK
+    ("dp-pip-http-server", "pip", "http.server", "fastapi+uvicorn",
+     None, "BLOCK", "single-threaded, blocking; not recommended for production"),
+    ("dp-pip-manual-token-loop", "pip", "manual token loop", "model.generate()+LogitsProcessor",
+     None, "BLOCK", "10-50x slower than model.generate() C++/CUDA path"),
+    // Python / pip — WARN
+    ("dp-pip-torch-no-grad", "pip", "torch.no_grad", "torch.inference_mode",
+     Some("2022-01"), "WARN", "inference_mode() is faster, skips autograd metadata"),
+    ("dp-pip-json", "pip", "json", "orjson",
+     None, "WARN", "orjson is 3-10x faster for hot paths"),
+    ("dp-pip-dtype", "pip", "dtype=", "torch_dtype=",
+     None, "BLOCK", "dtype= is silently ignored by from_pretrained; use torch_dtype="),
+    ("dp-pip-float16-compute", "pip", "float16 compute", "bfloat16 compute",
+     None, "WARN", "bfloat16 is preferred compute dtype for NF4 on Ampere+ GPUs"),
+];
+
+/// Insert seed deprecated patterns into the database.
+///
+/// Uses INSERT OR IGNORE to be idempotent — running multiple times does not
+/// duplicate rows. Called during schema migration v2 -> v3.
+pub fn seed_deprecated_patterns(conn: &Connection) -> Result<(), RulesDbError> {
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO deprecated_patterns \
+         (pattern_id, ecosystem, deprecated_name, replacement_name, \
+          deprecated_since, severity, reason) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+
+    for &(id, eco, dep, repl, since, sev, reason) in DEPRECATED_PATTERNS_SEED {
+        stmt.execute(rusqlite::params![id, eco, dep, repl, since, sev, reason])?;
+    }
+
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -213,6 +289,30 @@ pub fn run_migration(conn: &Connection, clock: &impl ClockProvider) -> Result<()
         )?;
     }
 
+    // Version 2 → 3: add deprecated_patterns table + seed data,
+    // extend violation_patterns with replacement_name for VERSION_GATE auto-proposal.
+    if current < 3 {
+        conn.execute_batch(CREATE_DEPRECATED_PATTERNS_TABLE)?;
+        seed_deprecated_patterns(conn)?;
+        // Add replacement_name to violation_patterns for VERSION_GATE auto-proposal.
+        // Column already exists in fresh v1+ schemas (DDL includes it), so ignore
+        // "duplicate column name" errors from ALTER TABLE on upgraded DBs.
+        let _ = conn.execute_batch(
+            "ALTER TABLE violation_patterns ADD COLUMN replacement_name TEXT",
+        );
+
+        let now_epoch = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![3_i64, now_epoch],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -249,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn all_five_tables_exist() {
+    fn all_tables_exist() {
         let conn = mem_db();
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -263,6 +363,7 @@ mod tests {
         assert!(tables.contains(&"contract_tests".to_string()));
         assert!(tables.contains(&"violation_patterns".to_string()));
         assert!(tables.contains(&"rule_transitions".to_string()));
+        assert!(tables.contains(&"deprecated_patterns".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
     }
 
@@ -427,6 +528,104 @@ mod tests {
         .unwrap();
         let result = run_migration(&conn, &test_clock());
         assert!(result.is_err(), "schema version from the future must be rejected");
+    }
+
+    #[test]
+    fn deprecated_patterns_table_exists() {
+        let conn = mem_db();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(tables.contains(&"deprecated_patterns".to_string()));
+    }
+
+    #[test]
+    fn deprecated_patterns_seed_data_loaded() {
+        let conn = mem_db();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deprecated_patterns", [], |row| row.get(0))
+            .unwrap();
+        assert!(count >= 15, "expected at least 15 seed patterns, got {}", count);
+    }
+
+    #[test]
+    fn deprecated_patterns_ecosystem_check_rejects_invalid() {
+        let conn = mem_db();
+        let result = conn.execute(
+            "INSERT INTO deprecated_patterns (pattern_id, ecosystem, deprecated_name, \
+             replacement_name, severity) \
+             VALUES ('test', 'homebrew', 'foo', 'bar', 'BLOCK')",
+            [],
+        );
+        assert!(result.is_err(), "ecosystem='homebrew' must violate CHECK constraint");
+    }
+
+    #[test]
+    fn deprecated_patterns_severity_check_rejects_invalid() {
+        let conn = mem_db();
+        let result = conn.execute(
+            "INSERT INTO deprecated_patterns (pattern_id, ecosystem, deprecated_name, \
+             replacement_name, severity) \
+             VALUES ('test', 'cargo', 'foo', 'bar', 'FATAL')",
+            [],
+        );
+        assert!(result.is_err(), "severity='FATAL' must violate CHECK constraint");
+    }
+
+    #[test]
+    fn deprecated_patterns_valid_insert() {
+        let conn = mem_db();
+        let result = conn.execute(
+            "INSERT INTO deprecated_patterns (pattern_id, ecosystem, deprecated_name, \
+             replacement_name, severity, reason) \
+             VALUES ('dp-test', 'npm', 'moment', 'date-fns', 'WARN', 'moment is unmaintained')",
+            [],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deprecated_patterns_seed_idempotent() {
+        let conn = mem_db();
+        // Seed already loaded by migration. Run again — must not fail.
+        seed_deprecated_patterns(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deprecated_patterns", [], |row| row.get(0))
+            .unwrap();
+        // Count unchanged (INSERT OR IGNORE).
+        assert!(count >= 15);
+    }
+
+    #[test]
+    fn deprecated_patterns_seed_has_expected_entries() {
+        let conn = mem_db();
+        // Spot-check a few entries.
+        let blake2: (String, String, String) = conn
+            .query_row(
+                "SELECT ecosystem, replacement_name, severity FROM deprecated_patterns \
+                 WHERE pattern_id = 'dp-cargo-blake2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(blake2.0, "cargo");
+        assert_eq!(blake2.1, "blake3");
+        assert_eq!(blake2.2, "BLOCK");
+
+        let http_srv: (String, String) = conn
+            .query_row(
+                "SELECT ecosystem, severity FROM deprecated_patterns \
+                 WHERE pattern_id = 'dp-pip-http-server'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(http_srv.0, "pip");
+        assert_eq!(http_srv.1, "BLOCK");
     }
 
     #[test]

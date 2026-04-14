@@ -1,8 +1,8 @@
 //! Predicate types for the rules engine.
 //!
-//! Defines the 6 predicate variants (AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED,
-//! METRIC_GATE, COMPOSITE, GRAPH_REACHABILITY), verdict types, evaluator traits,
-//! and a depth guard for nested composites.
+//! Defines the 7 predicate variants (AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED,
+//! METRIC_GATE, COMPOSITE, GRAPH_REACHABILITY, VERSION_GATE), verdict types,
+//! evaluator traits, and a depth guard for nested composites.
 
 use serde::{Deserialize, Serialize};
 
@@ -63,8 +63,16 @@ pub enum CompositeOperator {
     Not,
 }
 
+/// Supported ecosystem identifiers for VERSION_GATE predicates.
+///
+/// Each maps to a package manager's dependency declaration format and
+/// language-specific import regex sets (see anti-staleness-enforcement.txt 1.2).
+pub const SUPPORTED_ECOSYSTEMS: &[&str] = &[
+    "cargo", "pip", "npm", "go", "maven", "nuget", "bundler", "composer",
+];
+
 // ---------------------------------------------------------------------------
-// Predicate enum (6 variants)
+// Predicate enum (7 variants)
 // ---------------------------------------------------------------------------
 
 /// Maximum nesting depth for Composite predicates.
@@ -120,6 +128,23 @@ pub enum Predicate {
         must_not_exist: bool,
         max_depth: u8,
         edge_types: Vec<String>,
+    },
+
+    /// Version-aware dependency gate.
+    ///
+    /// Matches deprecated imports/dependencies against the `deprecated_patterns`
+    /// table, filtered by ecosystem. Returns BLOCK or WARN based on the
+    /// pattern's severity. See anti-staleness-enforcement.txt section 1.2.
+    VersionGate {
+        /// Package ecosystem: "cargo", "pip", "npm", "go", "maven", "nuget",
+        /// "bundler", "composer".
+        ecosystem: String,
+        /// The deprecated dependency/import name (e.g. "blake2", "http.server").
+        deprecated_name: String,
+        /// The recommended replacement (e.g. "blake3", "fastapi+uvicorn").
+        replacement_name: String,
+        /// Severity: "BLOCK" or "WARN".
+        severity: String,
     },
 }
 
@@ -185,6 +210,37 @@ fn validate_structure(predicate: &Predicate) -> Result<(), PredicateError> {
                 return Err(PredicateError::ValidationFailed(
                     "Lt/Gt/Eq operators require threshold to be Some".into(),
                 ));
+            }
+            Ok(())
+        }
+        Predicate::VersionGate {
+            ecosystem,
+            deprecated_name,
+            replacement_name,
+            severity,
+        } => {
+            if !SUPPORTED_ECOSYSTEMS.contains(&ecosystem.as_str()) {
+                return Err(PredicateError::ValidationFailed(format!(
+                    "unsupported ecosystem '{}', expected one of: {}",
+                    ecosystem,
+                    SUPPORTED_ECOSYSTEMS.join(", ")
+                )));
+            }
+            if deprecated_name.is_empty() {
+                return Err(PredicateError::ValidationFailed(
+                    "deprecated_name must not be empty".into(),
+                ));
+            }
+            if replacement_name.is_empty() {
+                return Err(PredicateError::ValidationFailed(
+                    "replacement_name must not be empty".into(),
+                ));
+            }
+            if severity != "BLOCK" && severity != "WARN" {
+                return Err(PredicateError::ValidationFailed(format!(
+                    "severity must be 'BLOCK' or 'WARN', got '{}'",
+                    severity
+                )));
             }
             Ok(())
         }
@@ -755,5 +811,113 @@ mod tests {
         let r: Result<Predicate, _> =
             serde_json::from_str(r#"{"type":"grep_pattern","context_lines":0}"#);
         assert!(r.is_err());
+    }
+
+    // -- VersionGate --
+
+    #[test]
+    fn predicate_version_gate_round_trip() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "cargo".into(),
+            deprecated_name: "blake2".into(),
+            replacement_name: "blake3".into(),
+            severity: "BLOCK".into(),
+        };
+        let json = serde_json::to_string(&pred).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "version_gate");
+        assert_eq!(v["ecosystem"], "cargo");
+        assert_eq!(v["deprecated_name"], "blake2");
+        assert_eq!(v["replacement_name"], "blake3");
+        assert_eq!(v["severity"], "BLOCK");
+        let rt: Predicate = serde_json::from_str(&json).unwrap();
+        assert_eq!(pred, rt);
+    }
+
+    #[test]
+    fn validate_version_gate_valid() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "pip".into(),
+            deprecated_name: "http.server".into(),
+            replacement_name: "fastapi+uvicorn".into(),
+            severity: "BLOCK".into(),
+        };
+        assert!(validate(&pred).is_ok());
+    }
+
+    #[test]
+    fn validate_version_gate_bad_ecosystem() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "homebrew".into(),
+            deprecated_name: "foo".into(),
+            replacement_name: "bar".into(),
+            severity: "BLOCK".into(),
+        };
+        let err = validate(&pred).unwrap_err();
+        match err {
+            PredicateError::ValidationFailed(msg) => {
+                assert!(msg.contains("homebrew"));
+                assert!(msg.contains("unsupported ecosystem"));
+            }
+            _ => panic!("expected ValidationFailed"),
+        }
+    }
+
+    #[test]
+    fn validate_version_gate_empty_deprecated_name() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "cargo".into(),
+            deprecated_name: "".into(),
+            replacement_name: "blake3".into(),
+            severity: "BLOCK".into(),
+        };
+        assert!(validate(&pred).is_err());
+    }
+
+    #[test]
+    fn validate_version_gate_empty_replacement_name() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "cargo".into(),
+            deprecated_name: "blake2".into(),
+            replacement_name: "".into(),
+            severity: "BLOCK".into(),
+        };
+        assert!(validate(&pred).is_err());
+    }
+
+    #[test]
+    fn validate_version_gate_bad_severity() {
+        let pred = Predicate::VersionGate {
+            ecosystem: "cargo".into(),
+            deprecated_name: "blake2".into(),
+            replacement_name: "blake3".into(),
+            severity: "FATAL".into(),
+        };
+        let err = validate(&pred).unwrap_err();
+        match err {
+            PredicateError::ValidationFailed(msg) => assert!(msg.contains("FATAL")),
+            _ => panic!("expected ValidationFailed"),
+        }
+    }
+
+    #[test]
+    fn from_json_version_gate_valid() {
+        let json = r#"{"type":"version_gate","ecosystem":"cargo","deprecated_name":"blake2","replacement_name":"blake3","severity":"BLOCK"}"#;
+        let pred = from_json(json).unwrap();
+        match pred {
+            Predicate::VersionGate { ecosystem, deprecated_name, replacement_name, severity } => {
+                assert_eq!(ecosystem, "cargo");
+                assert_eq!(deprecated_name, "blake2");
+                assert_eq!(replacement_name, "blake3");
+                assert_eq!(severity, "BLOCK");
+            }
+            _ => panic!("expected VersionGate"),
+        }
+    }
+
+    #[test]
+    fn from_json_version_gate_bad_ecosystem_rejected() {
+        let json = r#"{"type":"version_gate","ecosystem":"brew","deprecated_name":"x","replacement_name":"y","severity":"BLOCK"}"#;
+        assert!(from_json(json).is_err());
     }
 }

@@ -3343,6 +3343,7 @@ mod contract_self_mod_lock {
             pattern_text: "eval(user_input)".into(),
             example_code: "eval(user_input)".into(),
             domain: Some("security".into()),
+            replacement_name: None,
         };
 
         let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();

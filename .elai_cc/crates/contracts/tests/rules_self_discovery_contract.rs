@@ -134,6 +134,7 @@ fn contract_record_first_insert_new() {
         pattern_text: "contract test pattern".to_string(),
         example_code: "let x = 42;".to_string(),
         domain: Some("test".to_string()),
+        replacement_name: None,
     };
 
     let result = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -154,6 +155,7 @@ fn contract_record_second_insert_incremented() {
         pattern_text: "duplicate pattern".to_string(),
         example_code: "bad()".to_string(),
         domain: None,
+        replacement_name: None,
     };
 
     let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -178,6 +180,7 @@ fn contract_record_third_insert_proposed() {
         pattern_text: "repeated violation".to_string(),
         example_code: "unsafe_op()".to_string(),
         domain: Some("safety".to_string()),
+        replacement_name: None,
     };
 
     let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -203,6 +206,7 @@ fn contract_record_unique_constraint_no_duplicates() {
         pattern_text: "unique test".to_string(),
         example_code: "x".to_string(),
         domain: None,
+        replacement_name: None,
     };
 
     for _ in 0..10 {
@@ -274,6 +278,7 @@ fn contract_propose_valid_creates_auditor_proposed_rule() {
         pattern_text: "auditor source contract".to_string(),
         example_code: "dangerous_call()".to_string(),
         domain: Some("security".to_string()),
+        replacement_name: None,
     };
 
     // Trigger proposal.
@@ -312,6 +317,7 @@ fn contract_propose_generates_block_contract_test() {
         pattern_text: "contract test generation".to_string(),
         example_code: "eval(user_input)".to_string(),
         domain: None,
+        replacement_name: None,
     };
 
     let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
@@ -356,6 +362,7 @@ fn contract_circular_trust_blocks_auditor_self_promotion() {
         pattern_text: "circular trust test".to_string(),
         example_code: "risky_fn()".to_string(),
         domain: Some("trust".to_string()),
+        replacement_name: None,
     };
 
     // Trigger proposal.
