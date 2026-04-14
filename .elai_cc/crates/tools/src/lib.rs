@@ -1221,6 +1221,34 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             compact_schema: None,
         },
         ToolSpec {
+            name: "git_commit",
+            description: "Create a git commit with specified files and message.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Files to stage. Explicit paths only — never \".\" or \"-A\"."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message summary (1-2 sentences)."
+                    },
+                    "include_test_results": {
+                        "type": "boolean",
+                        "description": "If true, append test pass/fail counts to commit message."
+                    }
+                },
+                "required": ["files", "message"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::WorkspaceWrite,
+            priority: 1,
+            compact_schema: None,
+        },
+        ToolSpec {
             name: "TestingPermission",
             description: "Test-only tool for verifying permission enforcement behavior.",
             input_schema: json!({
@@ -1436,6 +1464,11 @@ fn execute_tool_with_enforcer(
                     &format!("invalid FSM target: {target}"),
                 )),
             }
+        }
+        "git_commit" => {
+            maybe_enforce_permission_check(enforcer, name, input)?;
+            from_value::<git_commit::GitCommitInput>(input)
+                .and_then(git_commit::run_git_commit)
         }
         "list_hidden_paths" => {
             let patterns: Vec<&str> = HIDDEN_PATH_PATTERNS.to_vec();
@@ -5286,6 +5319,7 @@ fn parse_skill_description(contents: &str) -> Option<String> {
 }
 
 pub mod action_classifier;
+pub mod git_commit;
 pub mod lane_completion;
 pub mod routing_rules;
 pub mod safety_filter;
