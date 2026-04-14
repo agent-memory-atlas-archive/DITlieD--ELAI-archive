@@ -17,6 +17,7 @@ pub mod project_profile;
 pub mod query_trace;
 pub mod query_validator;
 pub mod reranker;
+pub mod shortcoder;
 #[cfg(feature = "splade")]
 pub mod splade;
 pub mod startup;
@@ -123,4 +124,5 @@ pub use dkg_adapter::DkgQuerierAdapter;
 pub use error::KnowledgeError;
 pub use project_profile::{detect_project_profile, populate_tier2_conventions, serialize_profile, deserialize_profile};
 pub use tier3::populate_tier3;
+pub use shortcoder::ShortCoder;
 pub use telescope::{assemble_telescope, TelescopeContext};
