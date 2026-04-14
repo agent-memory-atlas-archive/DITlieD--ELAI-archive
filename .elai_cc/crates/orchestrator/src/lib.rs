@@ -1,4 +1,5 @@
 pub mod agent_pool;
+pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
 pub mod sandbox;
@@ -234,6 +235,10 @@ pub use elai_providers::telemetry_types::{
     DEFAULT_ANTHROPIC_VERSION,
 };
 pub use anti_spiral::{AntiSpiralDetector, SpiralResult, ESCALATION_DEPTH, ESCALATION_MESSAGE, HARD_STOP_DEPTH, RING_SIZE, SPIRAL_THRESHOLD};
+pub use deterministic_auditor::{
+    CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
+    DeterministicFinding, DeterministicSeverity,
+};
 pub use agent_pool::{
     default_grc_config, AgentHandle, AgentMessage, AgentPool, AgentPoolConfig, AgentPoolError,
     AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
