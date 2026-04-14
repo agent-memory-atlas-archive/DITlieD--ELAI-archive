@@ -160,7 +160,7 @@ pub fn build_dispatch_context(
     // otherwise fall back to fixed-percentage allocation.
     let raw_max = LOCAL_MODEL_MAX_CONTEXT * LOCAL_BUDGET_FRACTION / 100;
     let budget = match profile {
-        Some(p) => ContextBudget::compute_with_profile(raw_max, [0, 0, 0], p).ok(),
+        Some(p) => ContextBudget::compute_with_profile(raw_max, p.fixed_slot_targets, p).ok(),
         None => ContextBudget::compute(raw_max, [0, 0, 0], 4096).ok(),
     };
 

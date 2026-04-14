@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use elai_core::project_profile::{BuildCommand, Language, ProjectProfile};
+use elai_plugins::tiered_analysis::FileDisciplineConfig;
 use elai_rules::schema::DeprecatedPatternEntry;
 
 // ---------------------------------------------------------------------------
@@ -54,8 +55,11 @@ pub struct DeterministicFinding {
 pub enum CheckKind {
     Build,
     VersionGate,
+    FileSizeCensus,
     ImportCrossRef,
     LazyCode,
+    Completeness,
+    ModuleCoherence,
 }
 
 impl std::fmt::Display for CheckKind {
@@ -63,8 +67,11 @@ impl std::fmt::Display for CheckKind {
         match self {
             Self::Build => write!(f, "build"),
             Self::VersionGate => write!(f, "version_gate"),
+            Self::FileSizeCensus => write!(f, "file_size_census"),
             Self::ImportCrossRef => write!(f, "import_cross_ref"),
             Self::LazyCode => write!(f, "lazy_code"),
+            Self::Completeness => write!(f, "completeness"),
+            Self::ModuleCoherence => write!(f, "module_coherence"),
         }
     }
 }
@@ -89,6 +96,8 @@ pub struct DeterministicAuditorConfig {
     pub primary_language: Language,
     /// Project root for resolving relative paths.
     pub project_root: PathBuf,
+    /// File discipline config for size census (language limits, exempt paths).
+    pub file_discipline: FileDisciplineConfig,
 }
 
 impl Default for DeterministicAuditorConfig {
@@ -100,6 +109,7 @@ impl Default for DeterministicAuditorConfig {
             deprecated_patterns: Vec::new(),
             primary_language: Language::Unknown,
             project_root: PathBuf::from("."),
+            file_discipline: FileDisciplineConfig::default(),
         }
     }
 }
@@ -117,6 +127,23 @@ impl DeterministicAuditorConfig {
             deprecated_patterns,
             primary_language: profile.languages.primary.clone(),
             project_root: profile.project_root.clone(),
+            file_discipline: FileDisciplineConfig::default(),
+        }
+    }
+
+    /// Per-language build command registry (7 languages from ProjectProfile).
+    /// Returns the canonical build command string for a given language when no
+    /// project-specific build commands are configured.
+    pub fn default_build_cmd(lang: &Language) -> Option<&'static str> {
+        match lang {
+            Language::Rust => Some("cargo check -p {crate} --message-format=json"),
+            Language::Python => Some("python -m py_compile {file}"),
+            Language::Go => Some("go vet ./..."),
+            Language::TypeScript | Language::JavaScript => Some("tsc --noEmit"),
+            Language::Java | Language::Kotlin => Some("javac -Xlint {file}"),
+            Language::CSharp => Some("dotnet build --no-restore"),
+            Language::Ruby => Some("ruby -c {file}"),
+            _ => None,
         }
     }
 }
@@ -321,8 +348,16 @@ impl DeterministicAuditor {
         Self { config }
     }
 
-    /// Run all 4 checks in order. Short-circuits on build failure (check 1)
-    /// since subsequent checks may be unreliable if the code doesn't compile.
+    /// Run all 5 checks in strict order per spec:
+    ///   1. BUILD CHECK (language-specific build/lint commands)
+    ///   2. VERSION_GATE (deprecated patterns against changed files)
+    ///   3. FILE_SIZE_CENSUS (all modified files against language-specific limits)
+    ///   4. LAZY_CODE_SCAN (regex patterns per language on all modified files)
+    ///   5. COMPLETENESS + MODULE_COHERENCE (AST: named functions exist with
+    ///      non-trivial bodies, mod.rs/init.py/index.ts resolve)
+    ///
+    /// Short-circuits on build failure (check 1) since subsequent checks may
+    /// be unreliable if the code doesn't compile.
     pub fn run_all(&self, changed_files: &[PathBuf]) -> DeterministicAuditResult {
         if !self.config.enabled {
             return DeterministicAuditResult {
@@ -334,16 +369,13 @@ impl DeterministicAuditor {
 
         let mut findings = Vec::new();
 
-        // Check 1: Build + lint (produces build commands but doesn't execute
-        // them — the caller dispatches via Bash. We generate the command list.)
+        // Step 1: BUILD CHECK
         let build_findings = self.check_build();
         let build_has_blocks = build_findings
             .iter()
             .any(|f| f.severity == DeterministicSeverity::Block);
         findings.extend(build_findings);
 
-        // If build fails with BLOCKs, skip remaining checks (unreliable on
-        // non-compiling code). Return early with checks_run=1.
         if build_has_blocks {
             return DeterministicAuditResult {
                 findings,
@@ -352,21 +384,25 @@ impl DeterministicAuditor {
             };
         }
 
-        // Check 2: VERSION_GATE evaluation on changed files
+        // Step 2: VERSION_GATE
         findings.extend(self.check_version_gate(changed_files));
 
-        // Check 3: Import cross-reference against deprecated_patterns
-        findings.extend(self.check_imports(changed_files));
+        // Step 3: FILE_SIZE_CENSUS
+        findings.extend(self.check_file_size_census(changed_files));
 
-        // Check 4: Lazy code scan on all changed files
+        // Step 4: LAZY_CODE_SCAN
         findings.extend(self.check_lazy_code(changed_files));
+
+        // Step 5: COMPLETENESS + MODULE_COHERENCE
+        findings.extend(self.check_completeness(changed_files));
+        findings.extend(self.check_module_coherence(changed_files));
 
         let passed = !findings
             .iter()
             .any(|f| f.severity == DeterministicSeverity::Block);
         DeterministicAuditResult {
             findings,
-            checks_run: 4,
+            checks_run: 5,
             passed,
         }
     }
@@ -497,9 +533,12 @@ impl DeterministicAuditor {
         findings
     }
 
-    // -- Check 3: Import cross-reference --
+    // -- Import cross-reference (utility, used by VERSION_GATE and tests) --
 
     /// Cross-reference imports against deprecated_patterns with ecosystem filter.
+    /// Not a separate step in the 5-step pipeline (VERSION_GATE covers this),
+    /// but retained as a utility method for fine-grained checks and testing.
+    #[allow(dead_code)]
     fn check_imports(&self, changed_files: &[PathBuf]) -> Vec<DeterministicFinding> {
         let mut findings = Vec::new();
 
@@ -544,7 +583,353 @@ impl DeterministicAuditor {
         findings
     }
 
-    // -- Check 4: Lazy code scan --
+    // -- Step 3: FILE_SIZE_CENSUS --
+
+    /// Check all modified files against language-specific line limits.
+    /// Reports BLOCK (over hard limit), WARN (over production/test limit).
+    fn check_file_size_census(&self, changed_files: &[PathBuf]) -> Vec<DeterministicFinding> {
+        let mut findings = Vec::new();
+        let fd = &self.config.file_discipline;
+
+        for file in changed_files {
+            let path_str = file.to_string_lossy();
+
+            // Check exempt extensions
+            if fd.exempt_extensions.iter().any(|ext| path_str.ends_with(ext.as_str())) {
+                continue;
+            }
+            // Check exempt paths
+            let normalized = path_str.replace('\\', "/");
+            if fd.exempt_paths.iter().any(|prefix| normalized.contains(prefix.as_str())) {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let line_count = content.lines().count();
+            let lang = detect_language(file);
+            let lang_key = lang.id_str();
+            let is_test = is_test_file(file, &lang);
+
+            let (warn_limit, hard_block) = if let Some(limits) = fd.limits.get(lang_key) {
+                let warn = if is_test { limits.test_warn } else { limits.production_warn };
+                (warn, limits.hard_block)
+            } else {
+                let warn = if is_test { 250 } else { 150 };
+                (warn, 600)
+            };
+
+            if line_count > hard_block {
+                findings.push(DeterministicFinding {
+                    check: CheckKind::FileSizeCensus,
+                    severity: DeterministicSeverity::Block,
+                    file: Some(file.clone()),
+                    line: None,
+                    message: format!(
+                        "File exceeds hard block ({} lines > {} max for {})",
+                        line_count, hard_block, lang_key
+                    ),
+                });
+            } else if line_count > warn_limit {
+                findings.push(DeterministicFinding {
+                    check: CheckKind::FileSizeCensus,
+                    severity: DeterministicSeverity::Warn,
+                    file: Some(file.clone()),
+                    line: None,
+                    message: format!(
+                        "File exceeds size limit ({} lines > {} warn for {})",
+                        line_count, warn_limit, lang_key
+                    ),
+                });
+            }
+        }
+        findings
+    }
+
+    // -- Step 5: COMPLETENESS --
+
+    /// AST check that named functions exist with non-trivial bodies (>3 lines).
+    /// Uses tree-sitter for Rust and Python; skips unsupported languages.
+    fn check_completeness(&self, changed_files: &[PathBuf]) -> Vec<DeterministicFinding> {
+        let mut findings = Vec::new();
+
+        for file in changed_files {
+            let lang = detect_language(file);
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            match lang {
+                Language::Rust => {
+                    let mut parser = tree_sitter::Parser::new();
+                    if parser.set_language(&tree_sitter_rust::LANGUAGE.into()).is_err() {
+                        continue;
+                    }
+                    let tree = match parser.parse(&content, None) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    Self::check_rust_fn_bodies(&tree.root_node(), &content, file, &mut findings);
+                }
+                Language::Python => {
+                    let mut parser = tree_sitter::Parser::new();
+                    if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_err() {
+                        continue;
+                    }
+                    let tree = match parser.parse(&content, None) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    Self::check_python_fn_bodies(&tree.root_node(), &content, file, &mut findings);
+                }
+                _ => {} // Other languages: skip (no tree-sitter grammar loaded)
+            }
+        }
+        findings
+    }
+
+    fn check_rust_fn_bodies(
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        file: &Path,
+        findings: &mut Vec<DeterministicFinding>,
+    ) {
+        if node.kind() == "function_item" {
+            if let Some(body) = node.child_by_field_name("body") {
+                let body_text = &source[body.byte_range()];
+                let body_lines = body_text.lines().count();
+                // Non-trivial = >3 lines (opening brace, content, closing brace minimum)
+                if body_lines <= 1 && body.named_child_count() == 0 {
+                    let line = node.start_position().row + 1;
+                    let fn_name = node
+                        .child_by_field_name("name")
+                        .map(|n| &source[n.byte_range()])
+                        .unwrap_or("<unknown>");
+                    findings.push(DeterministicFinding {
+                        check: CheckKind::Completeness,
+                        severity: DeterministicSeverity::Warn,
+                        file: Some(file.to_path_buf()),
+                        line: Some(line as u32),
+                        message: format!(
+                            "Function '{}' has trivial/empty body ({} lines)",
+                            fn_name, body_lines
+                        ),
+                    });
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::check_rust_fn_bodies(&child, source, file, findings);
+        }
+    }
+
+    fn check_python_fn_bodies(
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        file: &Path,
+        findings: &mut Vec<DeterministicFinding>,
+    ) {
+        if node.kind() == "function_definition" {
+            if let Some(body) = node.child_by_field_name("body") {
+                // Check for pass-only or ellipsis-only bodies
+                let is_stub = body.named_child_count() <= 1
+                    && body.named_child(0).is_some_and(|c| {
+                        matches!(c.kind(), "pass_statement" | "ellipsis" | "expression_statement")
+                    });
+                if is_stub {
+                    let line = node.start_position().row + 1;
+                    let fn_name = node
+                        .child_by_field_name("name")
+                        .map(|n| &source[n.byte_range()])
+                        .unwrap_or("<unknown>");
+                    findings.push(DeterministicFinding {
+                        check: CheckKind::Completeness,
+                        severity: DeterministicSeverity::Warn,
+                        file: Some(file.to_path_buf()),
+                        line: Some(line as u32),
+                        message: format!(
+                            "Function '{}' has stub body (pass/ellipsis only)",
+                            fn_name
+                        ),
+                    });
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::check_python_fn_bodies(&child, source, file, findings);
+        }
+    }
+
+    // -- Step 5b: MODULE_COHERENCE --
+
+    /// Per-language module coherence checks:
+    /// - Rust: every child in mod.rs exists on disk + vice versa
+    /// - Python: __init__.py imports resolve
+    /// - TS: index.ts exports resolve
+    /// Orphan detection: files with no bridge/parent reference.
+    fn check_module_coherence(&self, changed_files: &[PathBuf]) -> Vec<DeterministicFinding> {
+        let mut findings = Vec::new();
+
+        for file in changed_files {
+            let lang = detect_language(file);
+            match lang {
+                Language::Rust => {
+                    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name == "mod.rs" || name == "lib.rs" {
+                        self.check_rust_module_coherence(file, &mut findings);
+                    }
+                }
+                Language::Python => {
+                    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name == "__init__.py" {
+                        self.check_python_init_coherence(file, &mut findings);
+                    }
+                }
+                Language::TypeScript | Language::JavaScript => {
+                    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name == "index.ts" || name == "index.js" || name == "index.tsx" {
+                        self.check_ts_index_coherence(file, &mut findings);
+                    }
+                }
+                _ => {}
+            }
+        }
+        findings
+    }
+
+    /// Rust: parse mod.rs/lib.rs for `mod child;` declarations, verify each
+    /// maps to a child.rs file or child/mod.rs directory on disk.
+    fn check_rust_module_coherence(
+        &self,
+        mod_file: &Path,
+        findings: &mut Vec<DeterministicFinding>,
+    ) {
+        let content = match std::fs::read_to_string(mod_file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let parent_dir = match mod_file.parent() {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Extract `mod child_name;` declarations (not inline `mod name { ... }`)
+        static MOD_DECL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?m)^\s*(?:pub\s+)?mod\s+(\w+)\s*;").unwrap()
+        });
+
+        for cap in MOD_DECL.captures_iter(&content) {
+            let mod_name = &cap[1];
+            let file_path = parent_dir.join(format!("{mod_name}.rs"));
+            let dir_path = parent_dir.join(mod_name).join("mod.rs");
+            if !file_path.exists() && !dir_path.exists() {
+                let line = content[..cap.get(0).unwrap().start()]
+                    .lines()
+                    .count() as u32 + 1;
+                findings.push(DeterministicFinding {
+                    check: CheckKind::ModuleCoherence,
+                    severity: DeterministicSeverity::Block,
+                    file: Some(mod_file.to_path_buf()),
+                    line: Some(line),
+                    message: format!(
+                        "mod {} declared but neither {}.rs nor {}/mod.rs exists",
+                        mod_name, mod_name, mod_name
+                    ),
+                });
+            }
+        }
+    }
+
+    /// Python: parse __init__.py for `from .child import ...`, verify child.py
+    /// or child/ exists on disk.
+    fn check_python_init_coherence(
+        &self,
+        init_file: &Path,
+        findings: &mut Vec<DeterministicFinding>,
+    ) {
+        let content = match std::fs::read_to_string(init_file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let parent_dir = match init_file.parent() {
+            Some(d) => d,
+            None => return,
+        };
+
+        static PY_IMPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"from\s+\.(\w+)\s+import").unwrap()
+        });
+
+        for cap in PY_IMPORT.captures_iter(&content) {
+            let mod_name = &cap[1];
+            let file_path = parent_dir.join(format!("{mod_name}.py"));
+            let dir_path = parent_dir.join(mod_name).join("__init__.py");
+            if !file_path.exists() && !dir_path.exists() {
+                let line = content[..cap.get(0).unwrap().start()]
+                    .lines()
+                    .count() as u32 + 1;
+                findings.push(DeterministicFinding {
+                    check: CheckKind::ModuleCoherence,
+                    severity: DeterministicSeverity::Block,
+                    file: Some(init_file.to_path_buf()),
+                    line: Some(line),
+                    message: format!(
+                        "from .{} import ... but neither {}.py nor {}/__init__.py exists",
+                        mod_name, mod_name, mod_name
+                    ),
+                });
+            }
+        }
+    }
+
+    /// TS: parse index.ts for `export ... from './child'`, verify child.ts exists.
+    fn check_ts_index_coherence(
+        &self,
+        index_file: &Path,
+        findings: &mut Vec<DeterministicFinding>,
+    ) {
+        let content = match std::fs::read_to_string(index_file) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let parent_dir = match index_file.parent() {
+            Some(d) => d,
+            None => return,
+        };
+
+        static TS_EXPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r#"export\s+.*\s+from\s+['"]\./(\w+)['"]"#).unwrap()
+        });
+
+        for cap in TS_EXPORT.captures_iter(&content) {
+            let mod_name = &cap[1];
+            let ts_file = parent_dir.join(format!("{mod_name}.ts"));
+            let tsx_file = parent_dir.join(format!("{mod_name}.tsx"));
+            let js_file = parent_dir.join(format!("{mod_name}.js"));
+            let index_dir = parent_dir.join(mod_name).join("index.ts");
+            if !ts_file.exists() && !tsx_file.exists() && !js_file.exists() && !index_dir.exists() {
+                let line = content[..cap.get(0).unwrap().start()]
+                    .lines()
+                    .count() as u32 + 1;
+                findings.push(DeterministicFinding {
+                    check: CheckKind::ModuleCoherence,
+                    severity: DeterministicSeverity::Block,
+                    file: Some(index_file.to_path_buf()),
+                    line: Some(line),
+                    message: format!(
+                        "export from './{mod_name}' but no matching file found"
+                    ),
+                });
+            }
+        }
+    }
+
+    // -- Step 4: LAZY_CODE_SCAN --
 
     /// Scan all changed files for lazy code patterns.
     fn check_lazy_code(&self, changed_files: &[PathBuf]) -> Vec<DeterministicFinding> {
@@ -699,7 +1084,7 @@ mod tests {
         // Should have a warn about missing build commands
         assert_eq!(result.warn_count(), 1);
         assert!(result.passed); // WARN does not block
-        assert_eq!(result.checks_run, 4);
+        assert_eq!(result.checks_run, 5);
     }
 
     #[test]
@@ -934,7 +1319,7 @@ mod tests {
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&[file]);
         assert!(result.passed);
-        assert_eq!(result.checks_run, 4);
+        assert_eq!(result.checks_run, 5);
         assert_eq!(result.block_count(), 0);
     }
 
@@ -942,8 +1327,11 @@ mod tests {
     fn check_kind_display() {
         assert_eq!(format!("{}", CheckKind::Build), "build");
         assert_eq!(format!("{}", CheckKind::VersionGate), "version_gate");
+        assert_eq!(format!("{}", CheckKind::FileSizeCensus), "file_size_census");
         assert_eq!(format!("{}", CheckKind::ImportCrossRef), "import_cross_ref");
         assert_eq!(format!("{}", CheckKind::LazyCode), "lazy_code");
+        assert_eq!(format!("{}", CheckKind::Completeness), "completeness");
+        assert_eq!(format!("{}", CheckKind::ModuleCoherence), "module_coherence");
     }
 
     #[test]

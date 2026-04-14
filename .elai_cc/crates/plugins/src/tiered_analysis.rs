@@ -41,6 +41,10 @@ pub struct FileDisciplineConfig {
     pub exempt_extensions: Vec<String>,
     /// Path prefixes exempt from size checks.
     pub exempt_paths: Vec<String>,
+    /// Maximum cyclomatic complexity per function (T2 Check 6a). Default: 10.
+    pub max_cyclomatic_complexity: usize,
+    /// Maximum distinct external symbols per file (T2 Check 6b). Default: 15.
+    pub max_coupling_score: usize,
 }
 
 impl Default for FileDisciplineConfig {
@@ -63,8 +67,17 @@ impl Default for FileDisciplineConfig {
 
         Self {
             limits,
-            exempt_extensions: Vec::new(),
-            exempt_paths: Vec::new(),
+            exempt_extensions: vec![
+                ".toml".into(), ".json".into(), ".yaml".into(), ".yml".into(),
+                ".xml".into(), ".lock".into(), ".sql".into(), ".proto".into(),
+                ".graphql".into(),
+            ],
+            exempt_paths: vec![
+                "generated/".into(), "build/".into(), "vendor/".into(),
+                "node_modules/".into(), "migrations/".into(), "target/".into(),
+            ],
+            max_cyclomatic_complexity: 10,
+            max_coupling_score: 15,
         }
     }
 }
@@ -518,15 +531,21 @@ const MAX_NESTING_DEPTH: usize = 8;
 /// Performance target: <10ms for files <5000 lines.
 ///
 /// Detects:
+/// - Check 1: tree-sitter ERROR nodes (any ERROR node = BLOCK)
 /// - `unsafe` blocks in Rust
 /// - `eval()` calls in Python
 /// - Shell injection patterns (`os.system`, `subprocess.call` with `shell=True`)
 /// - Overly deep nesting (configurable threshold)
+/// - Check 5: magic number detection at AST level (WARN only, const/static/0/1/2/-1/test exempt)
+/// - Check 6a: cyclomatic complexity per function (BLOCK if > max_cyclomatic_complexity)
+/// - Check 6b: coupling score per file (BLOCK if > max_coupling_score distinct external symbols)
 pub struct T2Hook {
     circuit_breaker_lines: usize,
     /// Deprecated import patterns for cross-referencing AST-extracted imports.
     /// Loaded from rules.db deprecated_patterns table at construction time.
     deprecated_imports: Vec<DeprecatedImport>,
+    /// File discipline config for responsibility metrics (complexity, coupling).
+    file_discipline: FileDisciplineConfig,
 }
 
 /// Detected language for tree-sitter parsing.
@@ -541,6 +560,7 @@ impl T2Hook {
         Self {
             circuit_breaker_lines,
             deprecated_imports: Vec::new(),
+            file_discipline: FileDisciplineConfig::default(),
         }
     }
 
@@ -556,6 +576,7 @@ impl T2Hook {
         Self {
             circuit_breaker_lines,
             deprecated_imports,
+            file_discipline: FileDisciplineConfig::default(),
         }
     }
 
@@ -563,6 +584,11 @@ impl T2Hook {
     pub fn set_deprecated_imports(&mut self, patterns: Vec<DeprecatedImport>) {
         tracing::debug!(count = patterns.len(), "T2 deprecated imports updated");
         self.deprecated_imports = patterns;
+    }
+
+    /// Replace file discipline config at runtime.
+    pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
+        self.file_discipline = config;
     }
 
     /// Detect language from file extension.
@@ -639,13 +665,21 @@ impl T2Hook {
                         ),
                     ));
                 }
+                // Check 5: magic number detection (WARN only)
+                self.check_magic_numbers_rust(&root, source, file_path, &mut findings);
+                // Check 6a: cyclomatic complexity per function (BLOCK)
+                self.check_cyclomatic_complexity_rust(&root, source, &mut findings);
+                // Check 6b: coupling score per file (BLOCK)
+                self.check_coupling_score_rust(&root, source, file_path, &mut findings);
             }
             Some(DetectedLanguage::Python) => {
                 // Python security/lazy patterns via regex
                 self.collect_python_regex_findings(source, &mut findings);
-                // A-21: Python AST empty body detection via tree-sitter
+                // A-21: Python AST empty body detection + magic numbers via tree-sitter
                 self.check_python_ast_completeness(source, file_path, &mut findings);
             }
+            // Note: magic numbers for Python are checked inside check_python_ast_completeness
+            // since it already has the parsed tree available.
             None => {} // No legacy checks for other languages
         }
 
@@ -665,8 +699,8 @@ impl T2Hook {
             return Ok(Some(HookVerdict::Allow));
         }
 
-        // Classify findings: AST errors, deprecated imports, security -> BLOCK,
-        // lazy code/unsafe -> WARN
+        // Classify findings: AST errors, deprecated imports, security, complexity, coupling -> BLOCK,
+        // lazy code/unsafe/magic numbers -> WARN
         let has_ast_error = findings
             .iter()
             .any(|(id, _)| id.starts_with("ast_error"));
@@ -676,17 +710,33 @@ impl T2Hook {
         let has_security_block = findings
             .iter()
             .any(|(id, _)| id.starts_with("unwrap_call") || id.starts_with("eval_call"));
+        let has_complexity_block = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("cyclomatic_complexity") || id.starts_with("coupling_score"));
         let has_lazy_code = findings.iter().any(|(id, _)| {
             id.starts_with("lazy_") || id.starts_with("empty_fn_body")
         });
+        let has_magic_number = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("magic_number"));
 
         let (pattern_id, message) = &findings[0];
-        let verdict = if has_ast_error || has_deprecated_block || has_security_block {
+        let verdict = if has_ast_error || has_deprecated_block || has_security_block || has_complexity_block {
+            // Find the first BLOCK-level finding for the message
+            let block_finding = findings.iter().find(|(id, _)| {
+                id.starts_with("ast_error") || id.starts_with("deprecated_import_BLOCK")
+                    || id.starts_with("unwrap_call") || id.starts_with("eval_call")
+                    || id.starts_with("cyclomatic_complexity") || id.starts_with("coupling_score")
+            });
+            let (bid, bmsg) = match block_finding {
+                Some((id, msg)) => (id.as_str(), msg.as_str()),
+                None => (pattern_id.as_str(), message.as_str()),
+            };
             HookVerdict::Block {
-                message: message.clone(),
-                pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
+                message: bmsg.to_string(),
+                pattern_hash: blake3::hash(bid.as_bytes()).to_hex().to_string(),
             }
-        } else if has_lazy_code
+        } else if has_lazy_code || has_magic_number
             || findings.iter().any(|(id, _)| id.starts_with("unsafe_block"))
         {
             // Lazy code and unsafe blocks are WARN (may be legitimate in tests)
@@ -939,6 +989,8 @@ impl T2Hook {
             ));
         }
         self.check_python_empty_bodies(&root, source, findings);
+        // Check 5: magic number detection for Python
+        self.check_magic_numbers_python(&root, source, file_path, findings);
     }
 
     /// Recursively find Python function_definition nodes with empty/stub bodies.
@@ -980,6 +1032,264 @@ impl T2Hook {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.check_python_empty_bodies(&child, source, findings);
+        }
+    }
+
+    // -- T2 Check 5: magic number detection (AST level, WARN only) --
+
+    /// Detect magic numbers in AST. ALLOW for: const/static declarations,
+    /// literal values 0/1/2/-1, test files. WARN only (per audit B-2).
+    fn check_magic_numbers_rust(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        if is_test_file(file_path) {
+            return;
+        }
+        self.walk_magic_numbers_rust(root, source, false, findings);
+    }
+
+    fn walk_magic_numbers_rust(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        in_const_or_static: bool,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        // Track if we're inside a const/static declaration
+        let is_const_ctx = in_const_or_static
+            || matches!(node.kind(), "const_item" | "static_item");
+
+        if node.kind() == "integer_literal" || node.kind() == "float_literal" {
+            if !is_const_ctx {
+                let text = &source[node.byte_range()];
+                // Allow 0, 1, 2, -1 (common sentinels)
+                let is_allowed = matches!(
+                    text.trim_end_matches(|c: char| c.is_alphabetic() || c == '_'),
+                    "0" | "1" | "2" | "-1" | "0.0" | "1.0"
+                );
+                if !is_allowed {
+                    let line = node.start_position().row + 1;
+                    findings.push((
+                        format!("magic_number_L{line}"),
+                        format!("Magic number '{}' at line {} (use named constant)", text, line),
+                    ));
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.walk_magic_numbers_rust(&child, source, is_const_ctx, findings);
+        }
+    }
+
+    fn check_magic_numbers_python(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        if is_test_file(file_path) {
+            return;
+        }
+        self.walk_magic_numbers_python(root, source, false, findings);
+    }
+
+    fn walk_magic_numbers_python(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        in_assignment: bool,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        // Python: uppercase variable assignment = constant context
+        let is_const_ctx = in_assignment
+            || (node.kind() == "assignment"
+                && node.child_by_field_name("left")
+                    .map(|n| {
+                        let t = &source[n.byte_range()];
+                        t.chars().all(|c| c.is_uppercase() || c == '_')
+                    })
+                    .unwrap_or(false));
+
+        if node.kind() == "integer" || node.kind() == "float" {
+            if !is_const_ctx {
+                let text = &source[node.byte_range()];
+                let is_allowed = matches!(text, "0" | "1" | "2" | "-1" | "0.0" | "1.0");
+                if !is_allowed {
+                    let line = node.start_position().row + 1;
+                    findings.push((
+                        format!("magic_number_L{line}"),
+                        format!("Magic number '{}' at line {} (use named constant)", text, line),
+                    ));
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.walk_magic_numbers_python(&child, source, is_const_ctx, findings);
+        }
+    }
+
+    // -- T2 Check 6a: cyclomatic complexity per function (BLOCK) --
+
+    /// Count cyclomatic complexity of a Rust function body.
+    /// Counts: if, else, for, while, loop, match arms, &&, ||, ?, try-catch.
+    fn cyclomatic_complexity_rust(
+        &self,
+        body: &tree_sitter::Node<'_>,
+        source: &str,
+    ) -> usize {
+        let mut complexity = 1; // base path
+        self.count_complexity_rust(body, source, &mut complexity);
+        complexity
+    }
+
+    fn count_complexity_rust(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        count: &mut usize,
+    ) {
+        match node.kind() {
+            "if_expression" | "else_clause" | "for_expression" | "while_expression"
+            | "loop_expression" => {
+                *count += 1;
+            }
+            "match_arm" => {
+                *count += 1;
+            }
+            "binary_expression" => {
+                if let Some(op) = node.child_by_field_name("operator") {
+                    let op_text = &source[op.byte_range()];
+                    if op_text == "&&" || op_text == "||" {
+                        *count += 1;
+                    }
+                }
+            }
+            "try_expression" => {
+                // ? operator
+                *count += 1;
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.count_complexity_rust(&child, source, count);
+        }
+    }
+
+    /// Check cyclomatic complexity for all functions in a Rust AST.
+    fn check_cyclomatic_complexity_rust(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let max = self.file_discipline.max_cyclomatic_complexity;
+        self.walk_functions_complexity_rust(root, source, max, findings);
+    }
+
+    fn walk_functions_complexity_rust(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        max: usize,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        if node.kind() == "function_item" {
+            if let Some(body) = node.child_by_field_name("body") {
+                let cc = self.cyclomatic_complexity_rust(&body, source);
+                if cc > max {
+                    let line = node.start_position().row + 1;
+                    let fn_name = node
+                        .child_by_field_name("name")
+                        .map(|n| &source[n.byte_range()])
+                        .unwrap_or("<unknown>");
+                    findings.push((
+                        format!("cyclomatic_complexity_L{line}"),
+                        format!(
+                            "Function '{}' at line {} has cyclomatic complexity {} (max {})",
+                            fn_name, line, cc, max
+                        ),
+                    ));
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.walk_functions_complexity_rust(&child, source, max, findings);
+        }
+    }
+
+    // -- T2 Check 6b: coupling score per file (BLOCK) --
+
+    /// Count distinct external symbols imported in a Rust file via tree-sitter.
+    fn coupling_score_rust(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+    ) -> usize {
+        let mut external_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.collect_use_paths_rust(root, source, &mut external_symbols);
+        external_symbols.len()
+    }
+
+    fn collect_use_paths_rust(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        symbols: &mut std::collections::HashSet<String>,
+    ) {
+        // use_declaration -> path -> identifier (crate name)
+        if node.kind() == "use_declaration" {
+            let text = &source[node.byte_range()];
+            // Extract the top-level crate/module from the use path
+            // e.g., "use std::collections::HashMap;" -> "std::collections::HashMap"
+            if let Some(path) = text.strip_prefix("use ").and_then(|s| s.strip_suffix(';')) {
+                let path = path.trim();
+                // Skip self/crate/super imports (internal)
+                if !path.starts_with("self")
+                    && !path.starts_with("crate")
+                    && !path.starts_with("super")
+                {
+                    symbols.insert(path.to_string());
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_use_paths_rust(&child, source, symbols);
+        }
+    }
+
+    /// Check coupling score for a Rust file.
+    fn check_coupling_score_rust(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let max = self.file_discipline.max_coupling_score;
+        let score = self.coupling_score_rust(root, source);
+        if score > max {
+            findings.push((
+                format!("coupling_score_{}", file_path),
+                format!(
+                    "File has {} distinct external symbols (max {})",
+                    score, max
+                ),
+            ));
         }
     }
 
@@ -1150,8 +1460,9 @@ impl TieredAnalysis {
         self.t2.set_deprecated_imports(patterns);
     }
 
-    /// Update T1 file discipline config at runtime.
+    /// Update file discipline config at runtime (propagates to T1 and T2).
     pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
+        self.t2.set_file_discipline(config.clone());
         self.t1.set_file_discipline(config);
     }
 

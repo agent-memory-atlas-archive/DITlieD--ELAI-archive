@@ -832,6 +832,9 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tree-sitter",
+ "tree-sitter-python",
+ "tree-sitter-rust",
  "uuid",
  "walkdir",
  "windows-sys 0.59.0",
@@ -915,10 +918,12 @@ dependencies = [
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

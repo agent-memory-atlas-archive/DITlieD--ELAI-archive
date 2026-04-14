@@ -273,6 +273,208 @@ fn truncate_question(q: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Seed trees: canonical question templates per spec (RA design Layer 3)
+// ---------------------------------------------------------------------------
+
+/// Build a Choice with the standard label format (A/B/C/D/E).
+fn choice(label_char: char, text: &str, hint: f32) -> Choice {
+    Choice {
+        id: ChoiceId::new(label_char.to_string()),
+        label: text.to_string(),
+        confidence_hint: hint,
+    }
+}
+
+/// Build a leaf QuestionNode (terminal, no children).
+fn leaf(question: &str, choices: Vec<Choice>, fix: FixTemplate) -> QuestionNode {
+    QuestionNode {
+        question_template: question.to_string(),
+        choices,
+        children: HashMap::new(),
+        terminal: Some(fix),
+    }
+}
+
+/// Build a branch QuestionNode (children, optional fallback terminal).
+fn branch(
+    question: &str,
+    choices: Vec<Choice>,
+    children: Vec<(char, QuestionNode)>,
+    fallback: Option<FixTemplate>,
+) -> QuestionNode {
+    let mut child_map = HashMap::new();
+    for (c, node) in children {
+        child_map.insert(ChoiceId::new(c.to_string()), node);
+    }
+    QuestionNode {
+        question_template: question.to_string(),
+        choices,
+        children: child_map,
+        terminal: fallback,
+    }
+}
+
+/// Generate the canonical seed interrogation trees per reasoning-architecture spec.
+///
+/// Trees: one general-purpose tree per language (Rust, Python, Go, TypeScript).
+/// Structure: Q1 error location (5 choices) -> Q2 root cause (conditional) ->
+/// Q3 fix approach (conditional). 3-7 questions x ~310 tokens each.
+pub fn seed_trees() -> Vec<InterrogationTree> {
+    vec![
+        seed_tree_general("rust"),
+        seed_tree_general("python"),
+        seed_tree_general("go"),
+        seed_tree_general("typescript"),
+    ]
+}
+
+fn seed_tree_general(language: &str) -> InterrogationTree {
+    // Q3 fix approach leaves (shared across Q2 branches)
+    let fix_modify = FixTemplate {
+        instruction: "Modify existing logic at {line}: {action}".to_string(),
+        category: "modify_logic".to_string(),
+    };
+    let fix_add_branch = FixTemplate {
+        instruction: "Add new branch/case at {line} to handle {condition}".to_string(),
+        category: "add_branch".to_string(),
+    };
+    let fix_change_sig = FixTemplate {
+        instruction: "Change type signature of {function} at {line}: {new_signature}".to_string(),
+        category: "signature_change".to_string(),
+    };
+    let fix_use_different = FixTemplate {
+        instruction: "Replace {function} call at {line} with {replacement}".to_string(),
+        category: "replace_function".to_string(),
+    };
+
+    // Q3: fix approach (terminal leaves)
+    let q3_fix = |fix: FixTemplate| -> QuestionNode {
+        leaf(
+            "Which fix approach is most appropriate?",
+            vec![
+                choice('A', "modify existing logic", 0.3),
+                choice('B', "add new branch/case", 0.25),
+                choice('C', "change type signature", 0.2),
+                choice('D', "use different function/method", 0.25),
+            ],
+            fix,
+        )
+    };
+
+    // Q2 root cause: conditional on Q1=B (function body logic)
+    let q2_body_logic = branch(
+        "The root cause in the function body is:",
+        vec![
+            choice('A', "wrong algorithm", 0.2),
+            choice('B', "missing edge case", 0.3),
+            choice('C', "wrong variable", 0.2),
+            choice('D', "incorrect operator", 0.15),
+            choice('E', "off-by-one", 0.15),
+        ],
+        vec![
+            ('A', q3_fix(fix_modify.clone())),
+            ('B', q3_fix(fix_add_branch.clone())),
+            ('C', q3_fix(fix_modify.clone())),
+            ('D', q3_fix(fix_modify.clone())),
+            ('E', q3_fix(fix_modify.clone())),
+        ],
+        Some(fix_modify.clone()),
+    );
+
+    // Q2 root cause: conditional on Q1=A (function signature)
+    let q2_signature = branch(
+        "The signature issue is:",
+        vec![
+            choice('A', "wrong parameter type", 0.3),
+            choice('B', "missing parameter", 0.25),
+            choice('C', "wrong return type", 0.25),
+            choice('D', "missing lifetime/generic", 0.2),
+        ],
+        vec![
+            ('A', q3_fix(fix_change_sig.clone())),
+            ('B', q3_fix(fix_change_sig.clone())),
+            ('C', q3_fix(fix_change_sig.clone())),
+        ],
+        Some(fix_change_sig.clone()),
+    );
+
+    // Q2 root cause: conditional on Q1=C (return value)
+    let q2_return = branch(
+        "The return value issue is:",
+        vec![
+            choice('A', "wrong value computed", 0.3),
+            choice('B', "missing early return", 0.25),
+            choice('C', "wrong error variant", 0.25),
+            choice('D', "unwrapped None/Err", 0.2),
+        ],
+        vec![
+            ('A', q3_fix(fix_modify.clone())),
+            ('B', q3_fix(fix_add_branch.clone())),
+            ('C', q3_fix(fix_modify.clone())),
+        ],
+        Some(fix_modify.clone()),
+    );
+
+    // Q2 root cause: conditional on Q1=D (imported dependency)
+    let q2_dependency = branch(
+        "The dependency issue is:",
+        vec![
+            choice('A', "wrong version/API", 0.3),
+            choice('B', "missing feature flag", 0.25),
+            choice('C', "deprecated function", 0.25),
+            choice('D', "incompatible types", 0.2),
+        ],
+        vec![
+            ('A', q3_fix(fix_use_different.clone())),
+            ('B', q3_fix(fix_modify.clone())),
+            ('C', q3_fix(fix_use_different.clone())),
+        ],
+        Some(fix_use_different.clone()),
+    );
+
+    // Q1: error location (5 choices, entry point)
+    let root = branch(
+        "Where is the error in {function}?",
+        vec![
+            choice('A', "function signature", 0.15),
+            choice('B', "function body logic", 0.35),
+            choice('C', "return value", 0.2),
+            choice('D', "imported dependency", 0.15),
+            choice('E', "test expectations", 0.15),
+        ],
+        vec![
+            ('A', q2_signature),
+            ('B', q2_body_logic),
+            ('C', q2_return),
+            ('D', q2_dependency),
+            ('E', leaf(
+                "The test expectation issue is:",
+                vec![
+                    choice('A', "wrong expected value", 0.3),
+                    choice('B', "wrong assertion method", 0.25),
+                    choice('C', "missing setup/teardown", 0.25),
+                    choice('D', "testing wrong function", 0.2),
+                ],
+                FixTemplate {
+                    instruction: "Fix test at {line}: {action}".to_string(),
+                    category: "fix_test".to_string(),
+                },
+            )),
+        ],
+        Some(fix_modify),
+    );
+
+    InterrogationTree {
+        tree_id: format!("{language}-general"),
+        root,
+        language: language.to_string(),
+        domain: None,
+        description: format!("General error diagnosis tree for {language}"),
+        version: TREE_SCHEMA_VERSION,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -392,6 +594,51 @@ mod tests {
     fn choice_id_round_trip() {
         let id = ChoiceId::new("B");
         assert_eq!(id.as_str(), "B");
+    }
+
+    #[test]
+    fn seed_trees_are_valid() {
+        let trees = seed_trees();
+        assert_eq!(trees.len(), 4, "should have 4 language seed trees");
+        for tree in &trees {
+            tree.validate().unwrap_or_else(|errs| {
+                panic!("seed tree '{}' invalid: {:?}", tree.tree_id, errs);
+            });
+        }
+        // Verify languages
+        let langs: Vec<&str> = trees.iter().map(|t| t.language.as_str()).collect();
+        assert!(langs.contains(&"rust"));
+        assert!(langs.contains(&"python"));
+        assert!(langs.contains(&"go"));
+        assert!(langs.contains(&"typescript"));
+    }
+
+    #[test]
+    fn seed_tree_root_has_five_choices() {
+        let trees = seed_trees();
+        for tree in &trees {
+            assert_eq!(
+                tree.root.choices.len(), 5,
+                "Q1 should have 5 choices for tree '{}'", tree.tree_id
+            );
+        }
+    }
+
+    #[test]
+    fn seed_tree_terminals_exist() {
+        // At least some leaf nodes should have terminal FixTemplates
+        let trees = seed_trees();
+        for tree in &trees {
+            fn count_terminals(node: &QuestionNode) -> usize {
+                let mut count = if node.terminal.is_some() { 1 } else { 0 };
+                for child in node.children.values() {
+                    count += count_terminals(child);
+                }
+                count
+            }
+            let terminals = count_terminals(&tree.root);
+            assert!(terminals > 0, "tree '{}' should have at least one terminal", tree.tree_id);
+        }
     }
 
     #[test]

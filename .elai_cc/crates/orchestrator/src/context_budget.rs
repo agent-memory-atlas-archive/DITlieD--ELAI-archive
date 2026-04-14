@@ -81,7 +81,7 @@ impl GenerationProfile {
 // Named constants for generation parameters (no magic numbers).
 const TEMP_FIRST_ATTEMPT: f32 = 0.3;
 const TEMP_MICRO_REFLECTION: f32 = 0.3;
-const TEMP_INTERROGATION: f32 = 0.1;
+const TEMP_INTERROGATION: f32 = 0.5;
 const TEMP_REPAIR_RETRY: f32 = 1.0;
 const TEMP_TREE_BRANCH_A: f32 = 0.7;
 const TEMP_TREE_BRANCH_B: f32 = 1.0;
@@ -89,9 +89,9 @@ const TEMP_TREE_BRANCH_C: f32 = 0.3;
 
 const TOP_P_FIRST_ATTEMPT: f32 = 0.9;
 const TOP_P_MICRO_REFLECTION: f32 = 0.9;
-const TOP_P_INTERROGATION: f32 = 0.9;
+const TOP_P_INTERROGATION: f32 = 0.95;
 const TOP_P_REPAIR_RETRY: f32 = 1.0;
-const TOP_P_TREE_BRANCH_A: f32 = 1.0;
+const TOP_P_TREE_BRANCH_A: f32 = 0.95;
 const TOP_P_TREE_BRANCH_B: f32 = 1.0;
 const TOP_P_TREE_BRANCH_C: f32 = 0.9;
 
@@ -256,6 +256,10 @@ pub struct ModelCapabilityProfile {
     pub recommended_prompt_budget: usize,
     pub output_reserve: usize,
     pub slot_weights: SlotWeights,
+    /// Per-tier absolute token targets for fixed slots: [SystemPrompt, Rules, Telescope].
+    /// Used by `build_dispatch_context` to replace the `[0, 0, 0]` default.
+    /// From token-efficiency-design.txt section 2.
+    pub fixed_slot_targets: [usize; 3],
     pub features: ModelFeatures,
     pub pass_at_1: f32,
     pub optimal_retries: usize,
@@ -270,7 +274,11 @@ pub struct ModelCapabilityProfile {
 impl ModelCapabilityProfile {
     /// Build a MICRO-tier profile from A-1 baseline measurements.
     /// Suitable for Qwen2.5-Coder-7B NF4 on 12GB (measured configuration).
+    /// Per-tier allocation from TE design section 2:
+    ///   12GB-7B (20K): System=330, Rules=400, Telescope=800,
+    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
     pub fn micro_7b_12gb() -> Self {
+        // Dynamic proportions: 1500:8000:1500:1000 = total 12000
         Self {
             vram_tier: VramTier::Vram12Gb,
             model_tier: ModelTier::Micro,
@@ -287,11 +295,12 @@ impl ModelCapabilityProfile {
                 system_prompt: 0.0,
                 rules: 0.0,
                 telescope: 0.0,
-                repo_map: 0.15,
-                code_context: 0.40,
-                ssb_entries: 0.25,
-                grc_history: 0.20,
+                repo_map: 0.125,
+                code_context: 0.667,
+                ssb_entries: 0.125,
+                grc_history: 0.083,
             },
+            fixed_slot_targets: [330, 400, 800],
             features: ModelFeatures::none(),
             pass_at_1: 0.65,
             optimal_retries: 3,
@@ -304,7 +313,11 @@ impl ModelCapabilityProfile {
     }
 
     /// Build a profile for 3B model on 12GB (measured configuration).
+    /// Per-tier allocation from TE design section 2:
+    ///   12GB-3B (35K): System=330, Rules=500, Telescope=1500,
+    ///   RepoMap=3000, CodeContext=14000, SSB=3000, GRC=2000, Reserve=750.
     pub fn micro_3b_12gb() -> Self {
+        // Dynamic proportions: 3000:14000:3000:2000 = total 22000
         Self {
             vram_tier: VramTier::Vram12Gb,
             model_tier: ModelTier::Micro,
@@ -316,16 +329,17 @@ impl ModelCapabilityProfile {
             attention_ceiling: 40000,
             effective_ceiling: 40000,
             recommended_prompt_budget: 35000,
-            output_reserve: 512,
+            output_reserve: 750,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
                 telescope: 0.0,
-                repo_map: 0.12,
-                code_context: 0.43,
-                ssb_entries: 0.25,
-                grc_history: 0.20,
+                repo_map: 0.136,
+                code_context: 0.637,
+                ssb_entries: 0.136,
+                grc_history: 0.091,
             },
+            fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures::none(),
             pass_at_1: 0.72,
             optimal_retries: 3,
@@ -338,7 +352,11 @@ impl ModelCapabilityProfile {
     }
 
     /// Build a projected LARGE-tier profile for 32B on 48GB.
+    /// Per-tier allocation from TE design section 2:
+    ///   48GB (30K): System=330, Rules=500, Telescope=1500,
+    ///   RepoMap=3000, CodeContext=10000, SSB=3000, GRC=2000, Reserve=4000.
     pub fn large_32b_48gb() -> Self {
+        // Dynamic proportions: 3000:10000:3000:2000 = total 18000
         Self {
             vram_tier: VramTier::Vram48Gb,
             model_tier: ModelTier::Large,
@@ -350,16 +368,17 @@ impl ModelCapabilityProfile {
             attention_ceiling: 35000,
             effective_ceiling: 35000,
             recommended_prompt_budget: 30000,
-            output_reserve: 512,
+            output_reserve: 4000,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
                 telescope: 0.0,
-                repo_map: 0.15,
-                code_context: 0.48,
-                ssb_entries: 0.20,
-                grc_history: 0.17,
+                repo_map: 0.167,
+                code_context: 0.555,
+                ssb_entries: 0.167,
+                grc_history: 0.111,
             },
+            fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures {
                 supports_structured_output: false,
                 supports_grammar: false,
@@ -372,6 +391,45 @@ impl ModelCapabilityProfile {
             kv_quant_bits: 4,
             requires_fa2: true,
             dola_viable: true,
+            steering_viable: false,
+            measured: false,
+        }
+    }
+
+    /// Build a profile for small models on 8GB VRAM.
+    /// Per-tier allocation from TE design section 2:
+    ///   8GB (20K): System=200, Rules=300, Telescope=600,
+    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
+    pub fn micro_8gb() -> Self {
+        // Dynamic proportions: 1500:8000:1500:1000 = total 12000
+        Self {
+            vram_tier: VramTier::Vram8Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-3B-Instruct".to_string(),
+            model_size_b: 3.0,
+            model_vram_mb: 1920,
+            kv_bytes_per_token: 1024,
+            in_vram_ceiling: 25000,
+            attention_ceiling: 25000,
+            effective_ceiling: 25000,
+            recommended_prompt_budget: 20000,
+            output_reserve: 750,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.125,
+                code_context: 0.667,
+                ssb_entries: 0.125,
+                grc_history: 0.083,
+            },
+            fixed_slot_targets: [200, 300, 600],
+            features: ModelFeatures::none(),
+            pass_at_1: 0.72,
+            optimal_retries: 3,
+            kv_quant_bits: 0,
+            requires_fa2: false,
+            dola_viable: false,
             steering_viable: false,
             measured: false,
         }
@@ -1642,6 +1700,62 @@ mod tests {
     }
 
     #[test]
+    fn micro_8gb_profile_has_valid_weights() {
+        let p = ModelCapabilityProfile::micro_8gb();
+        assert!(p.slot_weights.validate_dynamic_sum());
+        assert_eq!(p.vram_tier, VramTier::Vram8Gb);
+        assert_eq!(p.model_tier, ModelTier::Micro);
+        assert_eq!(p.fixed_slot_targets, [200, 300, 600]);
+    }
+
+    #[test]
+    fn per_tier_output_reserve_micro_750() {
+        let p7b = ModelCapabilityProfile::micro_7b_12gb();
+        assert_eq!(p7b.output_reserve, 750, "MICRO 7B output_reserve must be 750");
+        let p3b = ModelCapabilityProfile::micro_3b_12gb();
+        assert_eq!(p3b.output_reserve, 750, "MICRO 3B output_reserve must be 750");
+        let p8g = ModelCapabilityProfile::micro_8gb();
+        assert_eq!(p8g.output_reserve, 750, "MICRO 8GB output_reserve must be 750");
+    }
+
+    #[test]
+    fn per_tier_output_reserve_large_4000() {
+        let p = ModelCapabilityProfile::large_32b_48gb();
+        assert_eq!(p.output_reserve, 4000, "LARGE output_reserve must be 4000");
+    }
+
+    #[test]
+    fn per_tier_fixed_slot_targets_nonzero() {
+        // All profiles must have non-zero fixed slot targets.
+        for (name, p) in [
+            ("micro_7b", ModelCapabilityProfile::micro_7b_12gb()),
+            ("micro_3b", ModelCapabilityProfile::micro_3b_12gb()),
+            ("micro_8gb", ModelCapabilityProfile::micro_8gb()),
+            ("large_32b", ModelCapabilityProfile::large_32b_48gb()),
+        ] {
+            assert!(
+                p.fixed_slot_targets.iter().all(|&v| v > 0),
+                "{name} must have non-zero fixed_slot_targets: {:?}",
+                p.fixed_slot_targets,
+            );
+        }
+    }
+
+    #[test]
+    fn compute_with_profile_uses_fixed_slot_targets() {
+        let p = ModelCapabilityProfile::micro_7b_12gb();
+        let budget = ContextBudget::compute_with_profile(
+            25000,
+            p.fixed_slot_targets,
+            &p,
+        ).unwrap();
+        // Fixed slots should match profile targets.
+        assert_eq!(budget.slots[0].allocated_tokens, 330, "SystemPrompt");
+        assert_eq!(budget.slots[1].allocated_tokens, 400, "Rules");
+        assert_eq!(budget.slots[2].allocated_tokens, 800, "Telescope");
+    }
+
+    #[test]
     fn resolve_effective_ceiling_both_nonzero() {
         let mut p = ModelCapabilityProfile::micro_7b_12gb();
         p.in_vram_ceiling = 25000;
@@ -1680,6 +1794,7 @@ mod tests {
             recommended_prompt_budget: 0,
             output_reserve: 2000,
             slot_weights: SlotWeights::default_fixed(),
+            fixed_slot_targets: [100, 200, 300],
             features: ModelFeatures::none(),
             pass_at_1: 0.0,
             optimal_retries: 0,
@@ -1813,10 +1928,10 @@ mod tests {
     }
 
     #[test]
-    fn interrogation_profile_near_deterministic() {
+    fn interrogation_profile_params() {
         let p = GenerationProfile::Interrogation;
-        assert!((p.temperature() - 0.1).abs() < f32::EPSILON);
-        assert!((p.top_p() - 0.9).abs() < f32::EPSILON);
+        assert!((p.temperature() - 0.5).abs() < f32::EPSILON);
+        assert!((p.top_p() - 0.95).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1835,6 +1950,10 @@ mod tests {
         assert!((a.temperature() - 0.7).abs() < f32::EPSILON);
         assert!((b.temperature() - 1.0).abs() < f32::EPSILON);
         assert!((c.temperature() - 0.3).abs() < f32::EPSILON);
+        // Top-p: A=0.95, B=1.0, C=0.9.
+        assert!((a.top_p() - 0.95).abs() < f32::EPSILON);
+        assert!((b.top_p() - 1.0).abs() < f32::EPSILON);
+        assert!((c.top_p() - 0.9).abs() < f32::EPSILON);
     }
 
     #[test]

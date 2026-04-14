@@ -23,6 +23,9 @@ thiserror.workspace = true
 serde_json.workspace = true
 blake3 = "1.8"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time", "sync", "fs"] }
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
 tracing.workspace = true
 uuid = { workspace = true }
 walkdir = "2"

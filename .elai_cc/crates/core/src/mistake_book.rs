@@ -145,6 +145,79 @@ pub struct MistakeEntry {
 }
 
 // ---------------------------------------------------------------------------
+// ForbiddenDiffs — separate Vec<DiffHash> concept for cycle prevention
+// ---------------------------------------------------------------------------
+
+/// Explicit collection of forbidden diff hashes. Prevents regenerating
+/// known-failed patches across retries. Injected as separate
+/// "Do NOT produce patch {hash}" lines in the CONSTRAINTS block.
+///
+/// This is a distinct concept from MistakeEntry: a MistakeEntry carries
+/// structured diagnosis metadata, while ForbiddenDiffs is the pure blocklist.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ForbiddenDiffs {
+    hashes: Vec<DiffHash>,
+}
+
+impl ForbiddenDiffs {
+    pub fn new() -> Self {
+        Self { hashes: Vec::new() }
+    }
+
+    /// Collect forbidden diffs from a set of MistakeEntries.
+    pub fn from_entries(entries: &[MistakeEntry]) -> Self {
+        Self {
+            hashes: entries.iter().map(|e| e.diff_hash.clone()).collect(),
+        }
+    }
+
+    /// Add a new diff hash (deduplicates).
+    pub fn add(&mut self, hash: DiffHash) {
+        if !self.hashes.iter().any(|h| h == &hash) {
+            self.hashes.push(hash);
+        }
+    }
+
+    /// Check if a diff is forbidden.
+    pub fn contains(&self, hash: &DiffHash) -> bool {
+        self.hashes.iter().any(|h| h == hash)
+    }
+
+    /// Number of forbidden diffs tracked.
+    pub fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    /// Whether the forbidden list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
+    /// Get all forbidden diff hashes.
+    pub fn hashes(&self) -> &[DiffHash] {
+        &self.hashes
+    }
+
+    /// Format as injection lines for the CONSTRAINTS block.
+    /// Each line: "Do NOT produce patch {hash_short}."
+    pub fn format_injection(&self) -> String {
+        if self.hashes.is_empty() {
+            return String::new();
+        }
+        let mut out = String::new();
+        for hash in &self.hashes {
+            out.push_str(&format!(
+                "- Do NOT produce patch {}.\n",
+                hash.to_short_hex()
+            ));
+        }
+        let summary: Vec<String> = self.hashes.iter().map(|h| h.to_short_hex()).collect();
+        out.push_str(&format!("- Forbidden patterns: {}\n", summary.join(", ")));
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prompt injection formatter
 // ---------------------------------------------------------------------------
 
@@ -343,6 +416,44 @@ mod tests {
         assert_eq!(json, "\"borrow_check\"");
         let back: FailureCategory = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cat);
+    }
+
+    #[test]
+    fn forbidden_diffs_from_entries() {
+        let entries = vec![
+            make_entry(1, "diff-a", 100),
+            make_entry(2, "diff-b", 200),
+        ];
+        let fd = ForbiddenDiffs::from_entries(&entries);
+        assert_eq!(fd.len(), 2);
+        assert!(fd.contains(&DiffHash::from_diff("diff-a")));
+        assert!(fd.contains(&DiffHash::from_diff("diff-b")));
+        assert!(!fd.contains(&DiffHash::from_diff("diff-c")));
+    }
+
+    #[test]
+    fn forbidden_diffs_deduplicates() {
+        let mut fd = ForbiddenDiffs::new();
+        let hash = DiffHash::from_diff("same");
+        fd.add(hash.clone());
+        fd.add(hash.clone());
+        assert_eq!(fd.len(), 1);
+    }
+
+    #[test]
+    fn forbidden_diffs_format_injection() {
+        let entries = vec![make_entry(1, "diff-x", 100)];
+        let fd = ForbiddenDiffs::from_entries(&entries);
+        let output = fd.format_injection();
+        assert!(output.contains("Do NOT produce patch"));
+        assert!(output.contains("Forbidden patterns:"));
+    }
+
+    #[test]
+    fn forbidden_diffs_empty() {
+        let fd = ForbiddenDiffs::new();
+        assert!(fd.is_empty());
+        assert_eq!(fd.format_injection(), "");
     }
 
     #[test]
