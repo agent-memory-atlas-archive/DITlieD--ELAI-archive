@@ -49,6 +49,7 @@ pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
     BranchRef, DagMessageRole, MergeResult, Stub,
 };
+pub mod mistake_book;
 pub mod ssb;
 pub mod supervision;
 pub mod validated_ssb;
@@ -250,7 +251,7 @@ pub use worker_boot::{
 };
 pub use ssb::{
     Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbReader, SsbWriteRequest,
+    SsbPayload, SsbReader, SsbWriteRequest, MistakeEntryPayload,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

@@ -1,0 +1,355 @@
+//! MistakeBook: structured constraint store for externalized error memory.
+//!
+//! NOT a narrative log. Stores structured constraints (forbidden diffs,
+//! failure categories, root causes) injected into prompts as <=150 tokens.
+//! Per baby step. Max 5 entries, oldest-evicted on overflow.
+//!
+//! Research grounding: Code-A1 (arXiv:2603.15611) MistakeBook mechanism,
+//! CTIM-Rover finding (episodic text degrades small models 42%->31-40%),
+//! GISclaw+OpenSage (external JSON state, max 150 token injection).
+
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Maximum mistake entries retained per baby step. Oldest evicted on overflow.
+pub const MAX_ENTRIES_PER_STEP: usize = 5;
+
+/// Maximum tokens for the injected CONSTRAINTS block.
+pub const MAX_INJECTION_TOKENS: usize = 150;
+
+/// Length of the short diff hash prefix shown in prompts (hex chars).
+pub const DIFF_HASH_SHORT_LEN: usize = 12;
+
+// ---------------------------------------------------------------------------
+// DiffHash — blake3 hash of a failed patch for forbidden_diffs deduplication
+// ---------------------------------------------------------------------------
+
+/// Blake3 hash of a failed diff/patch. Used for forbidden_diffs deduplication.
+/// Stored as raw 32 bytes; displays as hex.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DiffHash([u8; 32]);
+
+impl DiffHash {
+    /// Compute blake3 hash of a diff string.
+    pub fn from_diff(diff: &str) -> Self {
+        Self(*blake3::hash(diff.as_bytes()).as_bytes())
+    }
+
+    /// Compute blake3 hash of raw bytes.
+    pub fn from_bytes(data: &[u8]) -> Self {
+        Self(*blake3::hash(data).as_bytes())
+    }
+
+    /// Full hex representation (64 chars).
+    pub fn to_hex(&self) -> String {
+        blake3::Hash::from_bytes(self.0).to_hex().to_string()
+    }
+
+    /// Short hex prefix for prompt injection (DIFF_HASH_SHORT_LEN chars).
+    pub fn to_short_hex(&self) -> String {
+        self.to_hex()[..DIFF_HASH_SHORT_LEN].to_string()
+    }
+
+    /// Raw 32-byte array.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for DiffHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_short_hex())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FailureCategory — from FailureTaxonomy (Layer 1)
+// ---------------------------------------------------------------------------
+
+/// Coarse failure categories from the FailureTaxonomy (reasoning Layer 1).
+/// Each variant maps to a deterministic diagnosis path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCategory {
+    CompileError,
+    TestFailure,
+    TypeMismatch,
+    MissingImport,
+    UndefinedSymbol,
+    BorrowCheck,
+    LifetimeError,
+    LazyCode,
+    EmptyBody,
+    FileSizeExceeded,
+    RuntimePanic,
+    LogicError,
+    Timeout,
+    Unknown,
+}
+
+impl FailureCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CompileError => "compile_error",
+            Self::TestFailure => "test_failure",
+            Self::TypeMismatch => "type_mismatch",
+            Self::MissingImport => "missing_import",
+            Self::UndefinedSymbol => "undefined_symbol",
+            Self::BorrowCheck => "borrow_check",
+            Self::LifetimeError => "lifetime_error",
+            Self::LazyCode => "lazy_code",
+            Self::EmptyBody => "empty_body",
+            Self::FileSizeExceeded => "file_size_exceeded",
+            Self::RuntimePanic => "runtime_panic",
+            Self::LogicError => "logic_error",
+            Self::Timeout => "timeout",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for FailureCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MistakeEntry — single externalized error record
+// ---------------------------------------------------------------------------
+
+/// A single mistake record stored in SSB per baby step.
+/// Structured constraint, not narrative. Variable names and code snippets
+/// from failed attempts are never stored (CTIM-Rover finding).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MistakeEntry {
+    /// Which retry attempt produced this mistake (1-indexed).
+    pub attempt_number: u32,
+    /// Blake3 hash of the failed patch (for forbidden_diffs deduplication).
+    pub diff_hash: DiffHash,
+    /// Coarse failure category from FailureTaxonomy.
+    pub failure_category: FailureCategory,
+    /// Line number where the fault was localized (if available).
+    pub faulty_line: Option<u32>,
+    /// Structured root cause from micro-reflection (Layer 2), JSON string.
+    /// Contains action field only, never variable names or code snippets.
+    pub root_cause_json: Option<String>,
+    /// What corrective action was taken: "decomposed", "templated", "branched", etc.
+    pub action_taken: String,
+    /// Unix timestamp (seconds) for ordering. Oldest evicted on overflow.
+    pub timestamp: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Prompt injection formatter
+// ---------------------------------------------------------------------------
+
+/// Format a set of MistakeEntries into the CONSTRAINTS block for prompt injection.
+/// Output is structured data, not narrative. Max `MAX_INJECTION_TOKENS` tokens
+/// (approximated as ~4 chars per token).
+///
+/// Format:
+/// ```text
+/// CONSTRAINTS (from previous attempts):
+/// - Do NOT produce patch {hash}. (failed: {category})
+/// - Line {line}: {action} (from diagnosis)
+/// - Forbidden patterns: {hash1}, {hash2}, ...
+/// ```
+pub fn format_constraints(entries: &[MistakeEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    // ~4 chars per token, budget = MAX_INJECTION_TOKENS * 4
+    let char_budget = MAX_INJECTION_TOKENS * 4;
+    let mut out = String::with_capacity(char_budget);
+    out.push_str("CONSTRAINTS (from previous attempts):\n");
+
+    // Per-entry constraint lines
+    for entry in entries {
+        let line = format!(
+            "- Do NOT produce patch {}. (failed: {})\n",
+            entry.diff_hash.to_short_hex(),
+            entry.failure_category,
+        );
+        if out.len() + line.len() > char_budget {
+            break;
+        }
+        out.push_str(&line);
+
+        // Add localization hint if available
+        if let (Some(line_num), Some(root_cause)) = (entry.faulty_line, entry.root_cause_json.as_deref()) {
+            let hint = format!("- Line {line_num}: {root_cause}\n");
+            if out.len() + hint.len() <= char_budget {
+                out.push_str(&hint);
+            }
+        }
+    }
+
+    // Forbidden patterns summary line
+    let hashes: Vec<String> = entries.iter().map(|e| e.diff_hash.to_short_hex()).collect();
+    let forbidden = format!("- Forbidden patterns: {}\n", hashes.join(", "));
+    if out.len() + forbidden.len() <= char_budget {
+        out.push_str(&forbidden);
+    }
+
+    out
+}
+
+/// Check if a diff hash already exists in the entries (deduplication).
+pub fn contains_diff(entries: &[MistakeEntry], hash: &DiffHash) -> bool {
+    entries.iter().any(|e| &e.diff_hash == hash)
+}
+
+/// Insert a new entry, evicting the oldest if at capacity.
+/// Returns the evicted entry if overflow occurred.
+pub fn insert_with_eviction(entries: &mut Vec<MistakeEntry>, entry: MistakeEntry) -> Option<MistakeEntry> {
+    // Deduplicate by diff_hash
+    if contains_diff(entries, &entry.diff_hash) {
+        return None;
+    }
+
+    if entries.len() >= MAX_ENTRIES_PER_STEP {
+        // Evict oldest (lowest timestamp)
+        let oldest_idx = entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, e)| e.timestamp)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let evicted = entries.remove(oldest_idx);
+        entries.push(entry);
+        Some(evicted)
+    } else {
+        entries.push(entry);
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(attempt: u32, diff: &str, ts: u64) -> MistakeEntry {
+        MistakeEntry {
+            attempt_number: attempt,
+            diff_hash: DiffHash::from_diff(diff),
+            failure_category: FailureCategory::CompileError,
+            faulty_line: Some(42),
+            root_cause_json: Some("missing semicolon".to_string()),
+            action_taken: "templated".to_string(),
+            timestamp: ts,
+        }
+    }
+
+    #[test]
+    fn diff_hash_deterministic() {
+        let h1 = DiffHash::from_diff("--- a/foo.rs\n+++ b/foo.rs\n-old\n+new");
+        let h2 = DiffHash::from_diff("--- a/foo.rs\n+++ b/foo.rs\n-old\n+new");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.to_hex().len(), 64);
+        assert_eq!(h1.to_short_hex().len(), DIFF_HASH_SHORT_LEN);
+    }
+
+    #[test]
+    fn diff_hash_different_inputs() {
+        let h1 = DiffHash::from_diff("patch-A");
+        let h2 = DiffHash::from_diff("patch-B");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn format_constraints_empty() {
+        assert_eq!(format_constraints(&[]), "");
+    }
+
+    #[test]
+    fn format_constraints_single_entry() {
+        let entries = vec![make_entry(1, "diff-1", 100)];
+        let out = format_constraints(&entries);
+        assert!(out.starts_with("CONSTRAINTS (from previous attempts):"));
+        assert!(out.contains("Do NOT produce patch"));
+        assert!(out.contains("compile_error"));
+        assert!(out.contains("Line 42"));
+        assert!(out.contains("Forbidden patterns:"));
+    }
+
+    #[test]
+    fn format_constraints_within_token_budget() {
+        let entries: Vec<_> = (0..MAX_ENTRIES_PER_STEP)
+            .map(|i| make_entry(i as u32, &format!("diff-{i}"), i as u64))
+            .collect();
+        let out = format_constraints(&entries);
+        // ~4 chars per token
+        let approx_tokens = out.len() / 4;
+        assert!(
+            approx_tokens <= MAX_INJECTION_TOKENS + 10, // small margin for rounding
+            "injection too large: ~{approx_tokens} tokens, budget {MAX_INJECTION_TOKENS}"
+        );
+    }
+
+    #[test]
+    fn insert_with_eviction_under_capacity() {
+        let mut entries = Vec::new();
+        let evicted = insert_with_eviction(&mut entries, make_entry(1, "d1", 100));
+        assert!(evicted.is_none());
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn insert_with_eviction_at_capacity() {
+        let mut entries: Vec<_> = (0..MAX_ENTRIES_PER_STEP)
+            .map(|i| make_entry(i as u32, &format!("d{i}"), (i + 1) as u64))
+            .collect();
+        assert_eq!(entries.len(), MAX_ENTRIES_PER_STEP);
+
+        let evicted = insert_with_eviction(&mut entries, make_entry(99, "new-diff", 100));
+        assert!(evicted.is_some());
+        let evicted = evicted.unwrap();
+        // Should have evicted the one with lowest timestamp (1)
+        assert_eq!(evicted.timestamp, 1);
+        assert_eq!(entries.len(), MAX_ENTRIES_PER_STEP);
+    }
+
+    #[test]
+    fn insert_with_eviction_deduplicates() {
+        let mut entries = vec![make_entry(1, "same-diff", 100)];
+        let evicted = insert_with_eviction(&mut entries, make_entry(2, "same-diff", 200));
+        assert!(evicted.is_none());
+        assert_eq!(entries.len(), 1); // no duplicate added
+    }
+
+    #[test]
+    fn contains_diff_works() {
+        let entries = vec![make_entry(1, "target", 100)];
+        let target_hash = DiffHash::from_diff("target");
+        let other_hash = DiffHash::from_diff("other");
+        assert!(contains_diff(&entries, &target_hash));
+        assert!(!contains_diff(&entries, &other_hash));
+    }
+
+    #[test]
+    fn failure_category_roundtrip() {
+        let cat = FailureCategory::BorrowCheck;
+        let json = serde_json::to_string(&cat).unwrap();
+        assert_eq!(json, "\"borrow_check\"");
+        let back: FailureCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cat);
+    }
+
+    #[test]
+    fn mistake_entry_serde_roundtrip() {
+        let entry = make_entry(3, "test-diff", 999);
+        let bytes = serde_json::to_vec(&entry).unwrap();
+        let back: MistakeEntry = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, entry);
+    }
+}

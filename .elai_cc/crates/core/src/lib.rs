@@ -3,6 +3,7 @@ pub mod clock;
 pub mod config;
 pub mod entropy;
 pub mod interrogation_tree;
+pub mod mistake_book;
 pub mod json;
 pub mod project_profile;
 pub mod sandbox;
@@ -35,6 +36,11 @@ pub use project_profile::{
     ModuleOrganization, NamingConventions, OrgPattern, ProjectProfile, ProjectProfileError,
     PropagationStyle, TestLocationPattern, TestProfile, WorkspaceMember,
     DEFAULT_COMMAND_TIMEOUT_S, MIN_DETECTION_CONFIDENCE, PROFILE_SCHEMA_VERSION,
+};
+
+pub use mistake_book::{
+    contains_diff, format_constraints, insert_with_eviction, DiffHash, FailureCategory,
+    MistakeEntry, DIFF_HASH_SHORT_LEN, MAX_ENTRIES_PER_STEP, MAX_INJECTION_TOKENS,
 };
 
 pub use interrogation_tree::{

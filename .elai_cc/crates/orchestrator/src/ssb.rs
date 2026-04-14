@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'phase_complete', 'memory_monitoring', 'workload_profile',
         'death_event', 'recovery_event',
         'supervision_exhausted', 'spiral_detected',
-        'context_reduction', 'branch_merge'
+        'context_reduction', 'branch_merge',
+        'mistake_entry'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -68,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 24 action types recorded in SSB entries.
+/// All 25 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -96,6 +97,7 @@ pub enum SsbActionType {
     SpiralDetected,
     ContextReduction,
     BranchMerge,
+    MistakeEntry,
 }
 
 impl SsbActionType {
@@ -126,6 +128,7 @@ impl SsbActionType {
             Self::SpiralDetected => "spiral_detected",
             Self::ContextReduction => "context_reduction",
             Self::BranchMerge => "branch_merge",
+            Self::MistakeEntry => "mistake_entry",
         }
     }
 }
@@ -156,6 +159,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "spiral_detected" => Ok(SsbActionType::SpiralDetected),
         "context_reduction" => Ok(SsbActionType::ContextReduction),
         "branch_merge" => Ok(SsbActionType::BranchMerge),
+        "mistake_entry" => Ok(SsbActionType::MistakeEntry),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -392,6 +396,16 @@ pub struct BranchMergePayload {
     pub from_snap_ids: Vec<String>,
 }
 
+/// SSB payload for MistakeBook entries (A-20). Wraps `elai_core::MistakeEntry`
+/// for SSB storage with baby-step scoping via `baby_step_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MistakeEntryPayload {
+    /// Identifies which baby step this mistake belongs to.
+    pub baby_step_id: String,
+    /// The structured mistake record (from elai_core).
+    pub entry: elai_core::MistakeEntry,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkloadProfilePayload {
     pub agent_role: String, // Serialized as snake_case string from AgentRole enum
@@ -409,7 +423,7 @@ pub struct WorkloadProfilePayload {
 // SsbPayload enum (typed wrapper over all 24 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (24 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (25 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -437,6 +451,7 @@ pub enum SsbPayload {
     SpiralDetected(SpiralDetectedPayload),
     ContextReduction(ContextReductionPayload),
     BranchMerge(BranchMergePayload),
+    MistakeEntry(MistakeEntryPayload),
 }
 
 impl SsbPayload {
@@ -468,6 +483,7 @@ impl SsbPayload {
             Self::SpiralDetected(_) => SsbActionType::SpiralDetected,
             Self::ContextReduction(_) => SsbActionType::ContextReduction,
             Self::BranchMerge(_) => SsbActionType::BranchMerge,
+            Self::MistakeEntry(_) => SsbActionType::MistakeEntry,
         }
     }
 }
@@ -1624,6 +1640,7 @@ mod tests {
             SsbActionType::ContextReduction,
             SsbActionType::BranchMerge,
             SsbActionType::WorkloadProfile,
+            SsbActionType::MistakeEntry,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1643,7 +1660,7 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 24, "must have inserted all 24 types");
+        assert_eq!(count, 25, "must have inserted all 25 types");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
