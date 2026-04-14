@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
+use crate::query_expansion::{self, ExpansionStrategy};
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::bm25::Bm25Index;
@@ -104,8 +105,12 @@ impl QueryPipeline {
 
     /// Execute the full retrieval pipeline for a query.
     ///
-    /// Returns 8 stages in order. `latency_ms` is 0 for all stages;
+    /// Returns stages in order. `latency_ms` is 0 for all stages;
     /// callers should measure overall pipeline time externally.
+    ///
+    /// Phase 3K.2: queries >= 5 words are expanded into 2-3 template-based
+    /// variants. BM25 + vector run per expansion, results are merged and
+    /// deduplicated by chunk_id before downstream stages (rerank, cross-encoder).
     pub fn query(
         &self,
         query: &str,
@@ -113,19 +118,52 @@ impl QueryPipeline {
         // Pre-query validation (Phase 1I.3).
         QueryValidator::validate(query)?;
 
-        let mut stages = Vec::with_capacity(7);
+        let mut stages = Vec::with_capacity(9);
 
-        // Stage 0: bm25
-        let bm25_hits = self.bm25.query(query, 10).unwrap_or_default();
-        let bm25_results: Vec<RetrievalResult> = bm25_hits
-            .into_iter()
-            .map(|h| RetrievalResult {
-                chunk_id: format!("{}:{}-{}", h.path, h.line_start, h.line_end),
-                snippet: h.snippet,
-                score: h.score as f64,
-                tool_used: "bm25".to_string(),
-            })
-            .collect();
+        // Phase 3K.2: template-based multi-query expansion.
+        let expansions = query_expansion::expand_query(query);
+        let expansion_count = expansions.len();
+        let expansion_texts: Vec<String> = expansions.iter().map(|e| e.text.clone()).collect();
+        tracing::debug!(
+            "query_expansion: {} variants for query (len={}w)",
+            expansion_count,
+            query.split_whitespace().count(),
+        );
+
+        stages.push(PipelineStage {
+            stage: "query_expansion".to_string(),
+            results: expansions
+                .iter()
+                .filter(|e| e.strategy != ExpansionStrategy::Original)
+                .map(|e| RetrievalResult {
+                    chunk_id: format!("expansion:{:?}", e.strategy),
+                    snippet: e.text.clone(),
+                    score: 0.0,
+                    tool_used: "query_expansion".to_string(),
+                })
+                .collect(),
+            latency_ms: 0,
+            circuit_breaker_state: None,
+            error: None,
+        });
+
+        // Stage 0: BM25 — run per expansion, merge + dedup
+        let mut bm25_seen: HashSet<String> = HashSet::new();
+        let mut bm25_results: Vec<RetrievalResult> = Vec::new();
+        for eq in &expansion_texts {
+            let hits = self.bm25.query(eq, 10).unwrap_or_default();
+            for h in hits {
+                let chunk_id = format!("{}:{}-{}", h.path, h.line_start, h.line_end);
+                if bm25_seen.insert(chunk_id.clone()) {
+                    bm25_results.push(RetrievalResult {
+                        chunk_id,
+                        snippet: h.snippet,
+                        score: h.score as f64,
+                        tool_used: "bm25".to_string(),
+                    });
+                }
+            }
+        }
         stages.push(PipelineStage {
             stage: "bm25".to_string(),
             results: bm25_results,
@@ -134,50 +172,56 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 1: vector (embed query, search BruteForceIndex if populated)
-        let (vector_results, vector_error) = match (&self.vector_module, &self.vector_indexer) {
+        // Stage 1: vector — run per expansion, merge + dedup
+        let mut vector_seen: HashSet<String> = HashSet::new();
+        let mut vector_results: Vec<RetrievalResult> = Vec::new();
+        let mut vector_error: Option<String> = None;
+        match (&self.vector_module, &self.vector_indexer) {
             (Some(vm), Some(indexer)) if !indexer.is_empty() => {
-                match vm.embed_text(query) {
-                    Ok(query_vec) => {
-                        match indexer.search(&query_vec, 10) {
-                            Ok(hits) => {
-                                let results: Vec<RetrievalResult> = hits
-                                    .into_iter()
-                                    .map(|(meta, score)| RetrievalResult {
-                                        chunk_id: format!(
+                for eq in &expansion_texts {
+                    match vm.embed_text(eq) {
+                        Ok(query_vec) => {
+                            match indexer.search(&query_vec, 10) {
+                                Ok(hits) => {
+                                    for (meta, score) in hits {
+                                        let chunk_id = format!(
                                             "{}:{}-{}",
                                             meta.path.display(),
                                             meta.line_start,
                                             meta.line_end
-                                        ),
-                                        snippet: meta.snippet,
-                                        score: score as f64,
-                                        tool_used: "vector".to_string(),
-                                    })
-                                    .collect();
-                                (results, None)
-                            }
-                            Err(e) => {
-                                tracing::debug!("vector search failed: {e}");
-                                (Vec::new(), Some(e.to_string()))
+                                        );
+                                        if vector_seen.insert(chunk_id.clone()) {
+                                            vector_results.push(RetrievalResult {
+                                                chunk_id,
+                                                snippet: meta.snippet,
+                                                score: score as f64,
+                                                tool_used: "vector".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!("vector search failed for expansion: {e}");
+                                    vector_error = Some(e.to_string());
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::debug!("vector embed failed: {e}");
-                        (Vec::new(), Some(e.to_string()))
+                        Err(e) => {
+                            tracing::debug!("vector embed failed for expansion: {e}");
+                            vector_error = Some(e.to_string());
+                        }
                     }
                 }
             }
             (Some(vm), _) => {
                 // Module present but no index — probe embed readiness only.
                 match vm.embed_text(query) {
-                    Ok(_) => (Vec::new(), None),
-                    Err(e) => (Vec::new(), Some(e.to_string())),
+                    Ok(_) => {}
+                    Err(e) => { vector_error = Some(e.to_string()); }
                 }
             }
-            _ => (Vec::new(), None),
-        };
+            _ => {}
+        }
         stages.push(PipelineStage {
             stage: "vector".to_string(),
             results: vector_results,

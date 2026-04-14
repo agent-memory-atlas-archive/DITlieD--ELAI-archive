@@ -14,6 +14,7 @@ pub mod index_version;
 pub mod pagerank;
 pub mod pipeline;
 pub mod project_profile;
+pub mod query_expansion;
 pub mod query_trace;
 pub mod query_validator;
 pub mod reranker;
