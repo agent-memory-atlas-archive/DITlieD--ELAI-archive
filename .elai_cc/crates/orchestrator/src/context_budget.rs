@@ -534,6 +534,135 @@ fn scale_down(current: usize, factor: f64, floor: usize) -> usize {
     reduced.max(floor)
 }
 
+// ---------------------------------------------------------------------------
+// Constitutional CONSTRAINTS block (A-7: anti-staleness injection)
+// ---------------------------------------------------------------------------
+
+/// Maximum token budget for the CONSTRAINTS block within PhaseSpec content.
+/// If total constraints exceed this, truncate to highest-severity entries.
+/// This budget is part of the PhaseSpec fixed allocation, not additive.
+const MAX_CONSTRAINT_TOKENS: usize = 200;
+
+/// Approximate characters per token for constraint text estimation.
+/// Conservative estimate (matches TOKEN_CHARS_PER_TOKEN used elsewhere).
+const CONSTRAINT_CHARS_PER_TOKEN: usize = 4;
+
+/// A single constraint entry for the CONSTRAINTS block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintEntry {
+    pub deprecated_name: String,
+    pub replacement_name: String,
+}
+
+/// Auto-generated CONSTRAINTS block injected into PhaseSpec content at assembly time.
+///
+/// Built from `deprecated_patterns WHERE severity = 'BLOCK'`.
+/// Format (appended to PhaseSpec content before token counting):
+/// ```text
+/// CONSTRAINTS (auto-generated from rules.db, do not violate):
+/// - DO NOT USE blake2. Use blake3.
+/// - DO NOT USE rand 0.8. Use rand >= 0.9.
+/// ```
+///
+/// See anti-staleness-enforcement.txt section 1.3 and WARN-7 resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintsBlock {
+    entries: Vec<ConstraintEntry>,
+    truncated: bool,
+}
+
+impl ConstraintsBlock {
+    /// Build a ConstraintsBlock from deprecated pattern entries.
+    ///
+    /// Entries are expected to be pre-filtered to severity=BLOCK and sorted
+    /// by name. If the formatted block exceeds [`MAX_CONSTRAINT_TOKENS`],
+    /// entries are truncated from the end (lowest priority kept out).
+    pub fn from_entries(entries: Vec<ConstraintEntry>) -> Self {
+        if entries.is_empty() {
+            return Self {
+                entries: Vec::new(),
+                truncated: false,
+            };
+        }
+
+        // Check if all entries fit within budget.
+        let header = "\nCONSTRAINTS (auto-generated from rules.db, do not violate):\n";
+        let truncation_notice = "- [truncated: additional constraints omitted for token budget]\n";
+        let header_tokens = header.len() / CONSTRAINT_CHARS_PER_TOKEN;
+        let truncation_tokens = truncation_notice.len() / CONSTRAINT_CHARS_PER_TOKEN;
+
+        let mut budget_remaining = MAX_CONSTRAINT_TOKENS.saturating_sub(header_tokens);
+        let mut kept = Vec::new();
+        let mut truncated = false;
+
+        for (i, entry) in entries.iter().enumerate() {
+            let line = format!(
+                "- DO NOT USE {}. Use {}.\n",
+                entry.deprecated_name, entry.replacement_name
+            );
+            let line_tokens = line.len() / CONSTRAINT_CHARS_PER_TOKEN;
+
+            // Reserve space for truncation notice if more entries remain.
+            let reserve = if i + 1 < entries.len() { truncation_tokens } else { 0 };
+            if line_tokens + reserve > budget_remaining {
+                truncated = true;
+                break;
+            }
+            budget_remaining -= line_tokens;
+            kept.push(entry.clone());
+        }
+
+        Self {
+            entries: kept,
+            truncated,
+        }
+    }
+
+    /// Returns true if the block has no entries (nothing to inject).
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns true if entries were truncated due to token budget.
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Number of constraint entries in the block.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Estimated token count for the formatted block.
+    pub fn estimated_tokens(&self) -> usize {
+        if self.entries.is_empty() {
+            return 0;
+        }
+        self.format().len() / CONSTRAINT_CHARS_PER_TOKEN
+    }
+
+    /// Format the CONSTRAINTS block as a string to append to PhaseSpec content.
+    ///
+    /// Returns an empty string if no entries exist.
+    pub fn format(&self) -> String {
+        if self.entries.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::from("\nCONSTRAINTS (auto-generated from rules.db, do not violate):\n");
+        for entry in &self.entries {
+            out.push_str(&format!(
+                "- DO NOT USE {}. Use {}.\n",
+                entry.deprecated_name, entry.replacement_name
+            ));
+        }
+        if self.truncated {
+            out.push_str("- [truncated: additional constraints omitted for token budget]\n");
+        }
+        out
+    }
+}
+
 impl fmt::Display for ContextBudget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -852,5 +981,99 @@ mod tests {
                 - dynamic * PCT_SSB_ENTRIES / 100
                 - dynamic * PCT_GRC_HISTORY / 100);
         assert_eq!(budget.slots[4].allocated_tokens, expected_code);
+    }
+
+    // -----------------------------------------------------------------------
+    // ConstraintsBlock tests (A-7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn constraints_block_empty_entries() {
+        let block = ConstraintsBlock::from_entries(vec![]);
+        assert!(block.is_empty());
+        assert!(!block.is_truncated());
+        assert_eq!(block.len(), 0);
+        assert_eq!(block.estimated_tokens(), 0);
+        assert_eq!(block.format(), "");
+    }
+
+    #[test]
+    fn constraints_block_single_entry() {
+        let entries = vec![ConstraintEntry {
+            deprecated_name: "blake2".to_string(),
+            replacement_name: "blake3".to_string(),
+        }];
+        let block = ConstraintsBlock::from_entries(entries);
+        assert!(!block.is_empty());
+        assert_eq!(block.len(), 1);
+        let formatted = block.format();
+        assert!(formatted.contains("CONSTRAINTS"));
+        assert!(formatted.contains("DO NOT USE blake2"));
+        assert!(formatted.contains("Use blake3"));
+    }
+
+    #[test]
+    fn constraints_block_multiple_entries() {
+        let entries = vec![
+            ConstraintEntry {
+                deprecated_name: "blake2".to_string(),
+                replacement_name: "blake3".to_string(),
+            },
+            ConstraintEntry {
+                deprecated_name: "http.server".to_string(),
+                replacement_name: "fastapi+uvicorn".to_string(),
+            },
+            ConstraintEntry {
+                deprecated_name: "log".to_string(),
+                replacement_name: "tracing".to_string(),
+            },
+        ];
+        let block = ConstraintsBlock::from_entries(entries);
+        assert_eq!(block.len(), 3);
+        assert!(!block.is_truncated());
+        let formatted = block.format();
+        assert!(formatted.contains("DO NOT USE blake2"));
+        assert!(formatted.contains("DO NOT USE http.server"));
+        assert!(formatted.contains("DO NOT USE log"));
+    }
+
+    #[test]
+    fn constraints_block_truncation_at_budget() {
+        // Create many entries that will exceed 200-token budget.
+        let entries: Vec<ConstraintEntry> = (0..100)
+            .map(|i| ConstraintEntry {
+                deprecated_name: format!("deprecated_package_{i:04}"),
+                replacement_name: format!("replacement_package_{i:04}"),
+            })
+            .collect();
+        let block = ConstraintsBlock::from_entries(entries);
+        assert!(block.is_truncated());
+        assert!(block.len() < 100);
+        // Allow small rounding tolerance (integer division per-line vs total).
+        let rounding_tolerance = 5;
+        let est = block.estimated_tokens();
+        assert!(
+            est <= MAX_CONSTRAINT_TOKENS + rounding_tolerance,
+            "estimated_tokens {est} > MAX {MAX_CONSTRAINT_TOKENS} + tolerance {rounding_tolerance}"
+        );
+        let formatted = block.format();
+        assert!(formatted.contains("[truncated:"));
+    }
+
+    #[test]
+    fn constraints_block_estimated_tokens_within_budget() {
+        let entries = vec![
+            ConstraintEntry {
+                deprecated_name: "blake2".to_string(),
+                replacement_name: "blake3".to_string(),
+            },
+            ConstraintEntry {
+                deprecated_name: "rand 0.8".to_string(),
+                replacement_name: "rand >= 0.9".to_string(),
+            },
+        ];
+        let block = ConstraintsBlock::from_entries(entries);
+        assert!(block.estimated_tokens() <= MAX_CONSTRAINT_TOKENS);
+        assert!(block.estimated_tokens() > 0);
     }
 }

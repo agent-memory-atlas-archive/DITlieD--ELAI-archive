@@ -191,6 +191,9 @@ pub struct PhaseContext {
     pub total_tokens: usize,
     pub reduced: bool,
     pub staleness_warning: Option<StalenessWarning>,
+    /// Constitutional CONSTRAINTS block (A-7) injected into PhaseSpec content.
+    /// Built from deprecated_patterns WHERE severity = 'BLOCK'.
+    pub constraints_block: Option<crate::context_budget::ConstraintsBlock>,
 }
 
 /// Adjacent phase contracts (one hop in dependency graph).
@@ -831,6 +834,7 @@ impl PlanSkeleton {
         slot3_budget: usize,
         provider: &dyn LlmProvider,
         phases_dir: &Path,
+        constraints: Option<crate::context_budget::ConstraintsBlock>,
     ) -> Result<PhaseContext, PlanSkeletonError> {
         // Measure skeleton tokens.
         let skeleton_toml = self.to_toml()?;
@@ -944,10 +948,17 @@ impl PlanSkeleton {
                 0
             };
 
+        // Constitutional constraints token cost (A-7).
+        let constraints_tokens = constraints
+            .as_ref()
+            .map(|c| c.estimated_tokens())
+            .unwrap_or(0);
+
         let total_full = skeleton_tokens
             + contracts_tokens
             + adjacent_tokens
-            + detail_tokens;
+            + detail_tokens
+            + constraints_tokens;
 
         // If combined fits within Slot 3, return full context.
         if total_full <= slot3_budget {
@@ -959,13 +970,15 @@ impl PlanSkeleton {
                 total_tokens: total_full,
                 reduced: false,
                 staleness_warning,
+                constraints_block: constraints,
             });
         }
 
         // Adaptive reduction: skeleton + contracts only, drop detail.
         let total_reduced = skeleton_tokens
             + contracts_tokens
-            + adjacent_tokens;
+            + adjacent_tokens
+            + constraints_tokens;
 
         Ok(PhaseContext {
             skeleton_tokens,
@@ -975,6 +988,7 @@ impl PlanSkeleton {
             total_tokens: total_reduced,
             reduced: true,
             staleness_warning,
+            constraints_block: constraints,
         })
     }
 
@@ -1826,6 +1840,7 @@ mod tests {
                 2000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -1870,6 +1885,7 @@ mod tests {
                 skel_tokens + 200, // just enough for skeleton + contracts, not detail
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -1902,6 +1918,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -1928,6 +1945,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -1968,6 +1986,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -1995,6 +2014,7 @@ mod tests {
             10, // impossibly small budget
             &provider,
             &phases_dir,
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2033,6 +2053,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -2058,6 +2079,7 @@ mod tests {
             5000,
             &provider,
             &phases_dir,
+            None,
         );
         assert!(result.is_err());
         assert!(result
@@ -2086,6 +2108,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -2119,6 +2142,7 @@ mod tests {
                 skel_tokens + 300,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -2150,6 +2174,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .unwrap();
 
@@ -2707,6 +2732,7 @@ mod tests {
                 5000,
                 &provider,
                 &phases_dir,
+                None,
             )
             .expect("load_phase_context B");
         assert!(

@@ -171,6 +171,25 @@ const DEPRECATED_PATTERNS_SEED: &[(&str, &str, &str, &str, Option<&str>, &str, &
      None, "WARN", "bfloat16 is preferred compute dtype for NF4 on Ampere+ GPUs"),
 ];
 
+/// Return BLOCK-severity entries from the static seed data.
+///
+/// Used by CLI bootstrap to build the CONSTRAINTS block without
+/// requiring a database connection. Returns (deprecated_name, replacement_name)
+/// pairs, sorted by deprecated_name.
+pub fn block_entries_from_seed() -> Vec<DeprecatedPatternEntry> {
+    let mut entries: Vec<DeprecatedPatternEntry> = DEPRECATED_PATTERNS_SEED
+        .iter()
+        .filter(|&&(_, _, _, _, _, sev, _)| sev == "BLOCK")
+        .map(|&(_, _, dep, repl, _, sev, _)| DeprecatedPatternEntry {
+            deprecated_name: dep.to_string(),
+            replacement_name: repl.to_string(),
+            severity: sev.to_string(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.deprecated_name.cmp(&b.deprecated_name));
+    entries
+}
+
 /// Insert seed deprecated patterns into the database.
 ///
 /// Uses INSERT OR IGNORE to be idempotent — running multiple times does not
@@ -188,6 +207,57 @@ pub fn seed_deprecated_patterns(conn: &Connection) -> Result<(), RulesDbError> {
     }
 
     Ok(())
+}
+
+/// A single deprecated pattern entry returned by [`query_block_patterns`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeprecatedPatternEntry {
+    pub deprecated_name: String,
+    pub replacement_name: String,
+    pub severity: String,
+}
+
+/// Query deprecated patterns from the database, ordered by severity (BLOCK first).
+///
+/// If `severity_filter` is `Some`, only patterns with that severity are returned.
+/// Used by constitutional injection to build the CONSTRAINTS block
+/// (typically filtered to severity = "BLOCK").
+pub fn query_deprecated_patterns(
+    conn: &Connection,
+    severity_filter: Option<&str>,
+) -> Result<Vec<DeprecatedPatternEntry>, RulesDbError> {
+    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match severity_filter {
+        Some(sev) => (
+            "SELECT deprecated_name, replacement_name, severity \
+             FROM deprecated_patterns \
+             WHERE severity = ?1 \
+             ORDER BY CASE severity WHEN 'BLOCK' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END, \
+                      deprecated_name ASC",
+            vec![Box::new(sev.to_string())],
+        ),
+        None => (
+            "SELECT deprecated_name, replacement_name, severity \
+             FROM deprecated_patterns \
+             ORDER BY CASE severity WHEN 'BLOCK' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END, \
+                      deprecated_name ASC",
+            vec![],
+        ),
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(DeprecatedPatternEntry {
+            deprecated_name: row.get(0)?,
+            replacement_name: row.get(1)?,
+            severity: row.get(2)?,
+        })
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
 }
 
 // ---------------------------------------------------------------------------
@@ -659,5 +729,84 @@ mod tests {
         assert_eq!(edct_p, 10);
         assert_eq!(edct_f, 1);
         assert!((conf - 0.85).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // A-7: query_deprecated_patterns + block_entries_from_seed tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn block_entries_from_seed_returns_only_block_severity() {
+        let entries = block_entries_from_seed();
+        assert!(!entries.is_empty());
+        for entry in &entries {
+            assert_eq!(entry.severity, "BLOCK", "non-BLOCK entry found: {}", entry.deprecated_name);
+        }
+    }
+
+    #[test]
+    fn block_entries_from_seed_sorted_by_name() {
+        let entries = block_entries_from_seed();
+        for window in entries.windows(2) {
+            assert!(
+                window[0].deprecated_name <= window[1].deprecated_name,
+                "not sorted: {} > {}",
+                window[0].deprecated_name,
+                window[1].deprecated_name
+            );
+        }
+    }
+
+    #[test]
+    fn block_entries_from_seed_contains_known_entries() {
+        let entries = block_entries_from_seed();
+        let names: Vec<&str> = entries.iter().map(|e| e.deprecated_name.as_str()).collect();
+        assert!(names.contains(&"blake2"), "missing blake2");
+        assert!(names.contains(&"log"), "missing log crate");
+        assert!(names.contains(&"http.server"), "missing http.server");
+    }
+
+    #[test]
+    fn query_deprecated_patterns_block_filter() {
+        let conn = mem_db();
+        let entries = query_deprecated_patterns(&conn, Some("BLOCK")).unwrap();
+        assert!(!entries.is_empty());
+        for entry in &entries {
+            assert_eq!(entry.severity, "BLOCK");
+        }
+    }
+
+    #[test]
+    fn query_deprecated_patterns_warn_filter() {
+        let conn = mem_db();
+        let entries = query_deprecated_patterns(&conn, Some("WARN")).unwrap();
+        assert!(!entries.is_empty());
+        for entry in &entries {
+            assert_eq!(entry.severity, "WARN");
+        }
+    }
+
+    #[test]
+    fn query_deprecated_patterns_no_filter_returns_all() {
+        let conn = mem_db();
+        let all = query_deprecated_patterns(&conn, None).unwrap();
+        let blocks = query_deprecated_patterns(&conn, Some("BLOCK")).unwrap();
+        let warns = query_deprecated_patterns(&conn, Some("WARN")).unwrap();
+        assert_eq!(all.len(), blocks.len() + warns.len());
+    }
+
+    #[test]
+    fn query_deprecated_patterns_ordered_block_first() {
+        let conn = mem_db();
+        let all = query_deprecated_patterns(&conn, None).unwrap();
+        let mut seen_warn = false;
+        for entry in &all {
+            if entry.severity == "WARN" {
+                seen_warn = true;
+            }
+            if entry.severity == "BLOCK" && seen_warn {
+                panic!("BLOCK entry found after WARN: {}", entry.deprecated_name);
+            }
+        }
     }
 }

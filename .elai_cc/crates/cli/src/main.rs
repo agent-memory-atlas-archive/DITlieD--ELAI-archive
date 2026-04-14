@@ -4578,9 +4578,30 @@ fn load_plan_if_exists() -> Option<elai_orchestrator::PlanSkeleton> {
 }
 
 fn plan_phase_slot_tokens(plan: Option<&elai_orchestrator::PlanSkeleton>) -> usize {
-    plan.and_then(|p| p.to_toml().ok())
+    let skeleton_tokens = plan
+        .and_then(|p| p.to_toml().ok())
         .map(|s| s.len() / TOKEN_CHARS_PER_TOKEN)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    // A-7: include constitutional CONSTRAINTS block in PhaseSpec budget.
+    let constraints_tokens = build_constraints_block().estimated_tokens();
+    skeleton_tokens + constraints_tokens
+}
+
+/// Build the CONSTRAINTS block from static seed data (A-7: constitutional injection).
+///
+/// Uses BLOCK-severity entries from deprecated_patterns seed to generate
+/// the constraint text appended to PhaseSpec content at assembly time.
+fn build_constraints_block() -> elai_orchestrator::context_budget::ConstraintsBlock {
+    use elai_orchestrator::context_budget::{ConstraintEntry, ConstraintsBlock};
+    let seed_entries = elai_rules::schema::block_entries_from_seed();
+    let entries: Vec<ConstraintEntry> = seed_entries
+        .into_iter()
+        .map(|e| ConstraintEntry {
+            deprecated_name: e.deprecated_name,
+            replacement_name: e.replacement_name,
+        })
+        .collect();
+    ConstraintsBlock::from_entries(entries)
 }
 
 impl Drop for LiveCli {
