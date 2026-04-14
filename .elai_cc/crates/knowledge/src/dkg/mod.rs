@@ -444,6 +444,28 @@ impl DkgEngine {
         Ok(result)
     }
 
+    /// Extract project conventions from the DKG symbol graph.
+    ///
+    /// Queries all nodes, classifies naming patterns, error handling, module
+    /// organization, and test patterns. Requires a populated graph (Rust-only
+    /// as of Phase 1A). Returns an error if the graph is empty/unavailable.
+    ///
+    /// Spec: project-intelligence-design.txt sections 3A-3D, 10.
+    pub fn extract_conventions(
+        &self,
+        project_root: &Path,
+    ) -> Result<crate::conventions::ConventionStats, Box<dyn std::error::Error>> {
+        let readiness = self.dkg_readiness();
+        if readiness != DkgReadiness::Ready {
+            return Err(format!(
+                "DKG not ready for convention extraction (status: {readiness:?})"
+            )
+            .into());
+        }
+        let nodes = self.nodes()?;
+        Ok(crate::conventions::extract_from_dkg(&nodes, project_root))
+    }
+
     pub fn dkg_readiness(&self) -> DkgReadiness {
         let count: Result<i64, _> = self
             .conn

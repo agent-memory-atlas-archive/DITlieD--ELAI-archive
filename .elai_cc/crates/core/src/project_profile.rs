@@ -137,6 +137,40 @@ pub enum Language {
     Unknown,
 }
 
+impl Language {
+    /// Lowercase string identifier for this language (used by convention extraction).
+    pub fn id_str(&self) -> &str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::Kotlin => "kotlin",
+            Self::CSharp => "csharp",
+            Self::Cpp => "cpp",
+            Self::C => "c",
+            Self::Ruby => "ruby",
+            Self::Elixir => "elixir",
+            Self::PHP => "php",
+            Self::Swift => "swift",
+            Self::Zig => "zig",
+            Self::Dart => "dart",
+            Self::Lua => "lua",
+            Self::Svelte => "svelte",
+            Self::Vue => "vue",
+            Self::Haskell => "haskell",
+            Self::Scala => "scala",
+            Self::Clojure => "clojure",
+            Self::OCaml => "ocaml",
+            Self::Gleam => "gleam",
+            Self::Other(s) => s.as_str(),
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Framework
 // ---------------------------------------------------------------------------

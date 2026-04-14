@@ -781,6 +781,50 @@ fn make_cmd_vec_if_nonempty(cmd: &str, working_dir: &Path) -> Vec<BuildCommand> 
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2 convention population
+// ---------------------------------------------------------------------------
+
+/// Populate Tier 2 convention fields on an existing profile.
+///
+/// Uses DKG-based extraction if the engine has data (Rust projects),
+/// otherwise falls back to regex-based scanning. Updates naming,
+/// error_handling, module_organization, and test_profile.location_pattern.
+///
+/// Spec: project-intelligence-design.txt sections 3A-3E, 10.
+pub fn populate_tier2_conventions(
+    profile: &mut ProjectProfile,
+    dkg_engine: Option<&crate::dkg::DkgEngine>,
+) {
+    let primary_lang = profile.languages.primary.id_str();
+    let project_root = profile.project_root.clone();
+
+    // Try DKG path first (Rust projects with populated graph).
+    let stats = if let Some(engine) = dkg_engine {
+        match engine.extract_conventions(&project_root) {
+            Ok(s) => {
+                debug!(source = "dkg", "Tier 2 conventions extracted from DKG");
+                s
+            }
+            Err(e) => {
+                debug!(error = %e, "DKG extraction failed, falling back to regex");
+                crate::conventions::extract_from_regex_fallback(&project_root, primary_lang)
+            }
+        }
+    } else {
+        debug!("no DKG engine provided, using regex fallback for conventions");
+        crate::conventions::extract_from_regex_fallback(&project_root, primary_lang)
+    };
+
+    profile.naming = stats.naming;
+    profile.error_handling = stats.error_handling;
+    profile.module_organization = stats.module_organization;
+    // Only update test location if detection found something meaningful.
+    if stats.test_location != elai_core::project_profile::TestLocationPattern::Unknown {
+        profile.test_profile.location_pattern = stats.test_location;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TOML serialization
 // ---------------------------------------------------------------------------
 
