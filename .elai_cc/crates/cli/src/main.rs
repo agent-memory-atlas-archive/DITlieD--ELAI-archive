@@ -6669,6 +6669,7 @@ impl RuntimeClient {
             elai_orchestrator::FsmState::Auditing => FsmPhaseBit::AUDITING,
             elai_orchestrator::FsmState::Memorizing => FsmPhaseBit::MEMORIZING,
             elai_orchestrator::FsmState::Configuring => FsmPhaseBit::CONFIGURING,
+            elai_orchestrator::FsmState::Researching => FsmPhaseBit::RESEARCHING,
             elai_orchestrator::FsmState::Idle
             | elai_orchestrator::FsmState::Complete => FsmPhaseBit::EXECUTING,
         };

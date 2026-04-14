@@ -311,6 +311,18 @@ impl FsmState {
                 ToolCategory::Meta,
                 ToolCategory::FsmInternal,
             ],
+
+            // RESEARCHING: WebSearch + KnowledgeEngine query + GRC reasoning.
+            // Blocks: file edit, bash, git, all mutation tools.
+            // Source: pipeline-modes-design.txt §2 (FSM PATH), INTEGRATION §2.
+            FsmState::Researching => &[
+                ToolCategory::Read,
+                ToolCategory::Web,
+                ToolCategory::Knowledge,
+                ToolCategory::Meta,
+                ToolCategory::FsmInternal,
+                ToolCategory::Mcp,
+            ],
         }
     }
 
@@ -344,6 +356,9 @@ impl FsmState {
 
             // CONFIGURING: config rules only.
             FsmState::Configuring => &[RuleCategory::Config],
+
+            // RESEARCHING: planning rules (research informs planning decisions).
+            FsmState::Researching => &[RuleCategory::Planning],
         }
     }
 
@@ -537,6 +552,30 @@ mod tests {
         assert!(FsmState::Configuring.check_tool_allowed("read_file").is_ok());
     }
 
+    #[test]
+    fn test_researching_allows_web_knowledge_blocks_edit_bash() {
+        // Source: pipeline-modes-design.txt §2 — RESEARCHING: WebSearch + Knowledge,
+        // blocks file edit, bash, git, all mutation tools.
+        assert!(FsmState::Researching.check_tool_allowed("WebSearch").is_ok());
+        assert!(FsmState::Researching.check_tool_allowed("WebFetch").is_ok());
+        assert!(FsmState::Researching.check_tool_allowed("read_file").is_ok());
+        assert!(FsmState::Researching.check_tool_allowed("mcp__local_rag__search_context").is_ok());
+        // Blocks
+        assert!(FsmState::Researching.check_tool_allowed("edit_file").is_err());
+        assert!(FsmState::Researching.check_tool_allowed("write_file").is_err());
+        assert!(FsmState::Researching.check_tool_allowed("bash").is_err());
+        assert!(FsmState::Researching.check_tool_allowed("EnterPlanMode").is_err());
+    }
+
+    #[test]
+    fn test_researching_rules() {
+        let active = FsmState::Researching.active_rule_categories();
+        assert!(active.contains(&RuleCategory::Planning));
+        assert!(!active.contains(&RuleCategory::CodeQuality));
+        assert!(!active.contains(&RuleCategory::Testing));
+        assert!(!active.contains(&RuleCategory::Memory));
+    }
+
     // -----------------------------------------------------------------------
     // Adversarial: tool filter enforcement (spec: phase-3A.txt L132-136)
     // -----------------------------------------------------------------------
@@ -667,6 +706,7 @@ mod tests {
             FsmState::Memorizing,
             FsmState::Complete,
             FsmState::Configuring,
+            FsmState::Researching,
         ];
         for state in restricted {
             let allowed = state.allowed_tool_categories();
@@ -736,6 +776,14 @@ mod tests {
         assert!(fsm.check_tool_allowed("edit_file").await.is_ok());
         assert!(fsm.check_tool_allowed("bash").await.is_ok());
         assert!(fsm.check_tool_allowed("EnterPlanMode").await.is_err());
+
+        // Reset and test RESEARCHING
+        fsm.reset().await.unwrap();
+        fsm.transition(FsmState::Researching, "test", vec![]).await.unwrap();
+        assert!(fsm.check_tool_allowed("WebSearch").await.is_ok());
+        assert!(fsm.check_tool_allowed("read_file").await.is_ok());
+        assert!(fsm.check_tool_allowed("edit_file").await.is_err());
+        assert!(fsm.check_tool_allowed("bash").await.is_err());
     }
 
     #[tokio::test]

@@ -175,6 +175,13 @@ pub fn default_risk_level(source: FsmState, target: FsmState) -> RiskLevel {
         // LOW: CONFIGURING -> IDLE (config exit, no risk)
         (FsmState::Configuring, FsmState::Idle) => RiskLevel::Low,
 
+        // LOW: all RESEARCHING transitions (read-only, no mutations)
+        // Source: pipeline-modes-design.txt §2 — RESEARCHING blocks all mutation tools.
+        (FsmState::Idle, FsmState::Researching) => RiskLevel::Low,
+        (FsmState::Researching, FsmState::Researching) => RiskLevel::Low,
+        (FsmState::Researching, FsmState::Idle) => RiskLevel::Low,
+        (FsmState::Researching, FsmState::Planning) => RiskLevel::Low,
+
         // HIGH: EXECUTING -> PLANNING (replan = major course change)
         (FsmState::Executing, FsmState::Planning) => RiskLevel::High,
         // HIGH: AUDITING -> EXECUTING (fix BLOCKs = re-entering execution)
@@ -504,6 +511,23 @@ mod tests {
         );
         assert_eq!(
             default_risk_level(FsmState::Configuring, FsmState::Idle),
+            RiskLevel::Low
+        );
+        // RESEARCHING transitions are all LOW (read-only, no mutations).
+        assert_eq!(
+            default_risk_level(FsmState::Idle, FsmState::Researching),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            default_risk_level(FsmState::Researching, FsmState::Researching),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            default_risk_level(FsmState::Researching, FsmState::Idle),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            default_risk_level(FsmState::Researching, FsmState::Planning),
             RiskLevel::Low
         );
     }

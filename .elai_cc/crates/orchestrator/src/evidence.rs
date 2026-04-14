@@ -1009,6 +1009,12 @@ mod tests {
 
         // COMPLETE -> IDLE is ungated
         assert!(gates_for_transition(FsmState::Complete, FsmState::Idle).is_empty());
+
+        // RESEARCHING transitions are ungated (research-only, no code changes)
+        assert!(gates_for_transition(FsmState::Idle, FsmState::Researching).is_empty());
+        assert!(gates_for_transition(FsmState::Researching, FsmState::Idle).is_empty());
+        assert!(gates_for_transition(FsmState::Researching, FsmState::Researching).is_empty());
+        assert!(gates_for_transition(FsmState::Researching, FsmState::Planning).is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -24,7 +24,7 @@ use crate::predicate::{
 /// whose `phase_mask` includes the current phase.
 ///
 /// Bit ordering: 0=PLANNING, 1=FEASIBILITY_PROBE, 2=TESTING_FIRST,
-/// 3=EXECUTING, 4=AUDITING, 5=MEMORIZING, 6=CONFIGURING.
+/// 3=EXECUTING, 4=AUDITING, 5=MEMORIZING, 6=CONFIGURING, 7=RESEARCHING.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsmPhaseBit(u8);
 
@@ -36,9 +36,10 @@ impl FsmPhaseBit {
     pub const AUDITING: Self = Self(4);
     pub const MEMORIZING: Self = Self(5);
     pub const CONFIGURING: Self = Self(6);
+    pub const RESEARCHING: Self = Self(7);
 
     /// Maximum valid bit index (inclusive).
-    const MAX_BIT: u8 = 6;
+    const MAX_BIT: u8 = 7;
 
     /// Create from a raw bit index. Returns `None` if out of range.
     pub fn from_raw(bit: u8) -> Option<Self> {
@@ -990,7 +991,9 @@ mod tests {
 
     #[test]
     fn fsm_phase_bit_from_raw_invalid() {
-        assert!(FsmPhaseBit::from_raw(7).is_none());
+        // Bit 7 is now valid (RESEARCHING), so test starts at 8.
+        assert!(FsmPhaseBit::from_raw(7).is_some()); // RESEARCHING
+        assert!(FsmPhaseBit::from_raw(8).is_none());
         assert!(FsmPhaseBit::from_raw(255).is_none());
     }
 

@@ -18,7 +18,8 @@ pub use crate::gate::{default_risk_level, RiskLevel};
 // FsmState enum (9 states)
 // ---------------------------------------------------------------------------
 
-/// All 9 FSM states. Source: orchestrator.txt §2, architecture-overview.txt §4.
+/// All 10 FSM states. Source: orchestrator.txt §2, architecture-overview.txt §4,
+/// pipeline-modes-design.txt §2 (RESEARCHING).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FsmState {
     Idle,
@@ -30,11 +31,15 @@ pub enum FsmState {
     Memorizing,
     Complete,
     Configuring,
+    /// Research-only state for Oracle Mode. Allows WebSearch + KnowledgeEngine +
+    /// GRC reasoning. Blocks file edit, bash, git, all mutation tools.
+    /// Source: pipeline-modes-design.txt §2 (FSM PATH), INTEGRATION §2.
+    Researching,
 }
 
 impl FsmState {
-    /// All 9 states for iteration.
-    pub const ALL: [FsmState; 9] = [
+    /// All 10 states for iteration.
+    pub const ALL: [FsmState; 10] = [
         FsmState::Idle,
         FsmState::Planning,
         FsmState::FeasibilityProbe,
@@ -44,12 +49,14 @@ impl FsmState {
         FsmState::Memorizing,
         FsmState::Complete,
         FsmState::Configuring,
+        FsmState::Researching,
     ];
 
-    /// Valid target states from `self`. Source: phase-3A.txt transition matrix.
+    /// Valid target states from `self`. Source: phase-3A.txt transition matrix,
+    /// pipeline-modes-design.txt §2 + INTEGRATION §2 (RESEARCHING transitions).
     pub fn valid_targets(self) -> &'static [FsmState] {
         match self {
-            FsmState::Idle => &[FsmState::Planning, FsmState::Configuring],
+            FsmState::Idle => &[FsmState::Planning, FsmState::Configuring, FsmState::Researching],
             FsmState::Planning => &[FsmState::FeasibilityProbe, FsmState::TestingFirst],
             FsmState::FeasibilityProbe => &[FsmState::Planning, FsmState::TestingFirst],
             FsmState::TestingFirst => &[FsmState::Executing],
@@ -62,6 +69,10 @@ impl FsmState {
             FsmState::Memorizing => &[FsmState::Planning, FsmState::Complete],
             FsmState::Complete => &[FsmState::Idle],
             FsmState::Configuring => &[FsmState::Idle],
+            // RESEARCHING: follow-up queries (self-loop), exit to IDLE, or
+            // escalate to PLANNING if research reveals need for code changes.
+            // Source: pipeline-modes-design.txt §2 L327-338, open question 5 L1354.
+            FsmState::Researching => &[FsmState::Researching, FsmState::Idle, FsmState::Planning],
         }
     }
 
@@ -83,6 +94,7 @@ impl std::fmt::Display for FsmState {
             FsmState::Memorizing => "MEMORIZING",
             FsmState::Complete => "COMPLETE",
             FsmState::Configuring => "CONFIGURING",
+            FsmState::Researching => "RESEARCHING",
         };
         f.write_str(name)
     }
@@ -672,6 +684,7 @@ mod tests {
             Just(FsmState::Memorizing),
             Just(FsmState::Complete),
             Just(FsmState::Configuring),
+            Just(FsmState::Researching),
         ]
     }
 
@@ -727,6 +740,7 @@ mod tests {
             // IDLE
             (FsmState::Idle, FsmState::Planning),
             (FsmState::Idle, FsmState::Configuring),
+            (FsmState::Idle, FsmState::Researching),
             // PLANNING
             (FsmState::Planning, FsmState::FeasibilityProbe),
             (FsmState::Planning, FsmState::TestingFirst),
@@ -749,6 +763,10 @@ mod tests {
             (FsmState::Complete, FsmState::Idle),
             // CONFIGURING
             (FsmState::Configuring, FsmState::Idle),
+            // RESEARCHING (follow-up self-loop, exit to IDLE, escalate to PLANNING)
+            (FsmState::Researching, FsmState::Researching),
+            (FsmState::Researching, FsmState::Idle),
+            (FsmState::Researching, FsmState::Planning),
         ];
 
         // Verify all valid pairs
@@ -759,7 +777,7 @@ mod tests {
             );
         }
 
-        // Verify all other pairs are invalid (81 - valid_count = invalid_count)
+        // 10 states = 100 pairs. valid_count = 20.
         let mut valid_count = 0;
         let mut invalid_count = 0;
         for src in FsmState::ALL {
@@ -775,8 +793,8 @@ mod tests {
                 }
             }
         }
-        assert_eq!(valid_count, 16);
-        assert_eq!(valid_count + invalid_count, 81);
+        assert_eq!(valid_count, 20);
+        assert_eq!(valid_count + invalid_count, 100);
     }
 
     // -- Unit: specific invalid transitions from adversarial spec --
@@ -1068,6 +1086,7 @@ mod tests {
             "MEMORIZING",
             "COMPLETE",
             "CONFIGURING",
+            "RESEARCHING",
         ];
         for (state, name) in FsmState::ALL.iter().zip(expected.iter()) {
             assert_eq!(state.to_string(), *name);
@@ -1171,6 +1190,7 @@ mod tests {
                 FsmState::Complete,
             ],
             FsmState::Configuring => &[FsmState::Configuring],
+            FsmState::Researching => &[FsmState::Researching],
         };
 
         for &step in path {
@@ -1204,6 +1224,76 @@ mod tests {
         let history = fsm.transition_history().await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].evidence.len(), 1);
+    }
+
+    // -- Unit: RESEARCHING state traversal (A-22) --
+
+    #[tokio::test]
+    async fn test_researching_traversal() {
+        let fsm = Fsm::new(None, 8000);
+
+        // IDLE -> RESEARCHING
+        fsm.transition(FsmState::Researching, "oracle", vec![])
+            .await
+            .expect("IDLE -> RESEARCHING");
+        assert_eq!(fsm.get_state().await, FsmState::Researching);
+
+        // RESEARCHING -> RESEARCHING (follow-up query)
+        fsm.transition(FsmState::Researching, "oracle-followup", vec![])
+            .await
+            .expect("RESEARCHING -> RESEARCHING");
+        assert_eq!(fsm.get_state().await, FsmState::Researching);
+
+        // RESEARCHING -> IDLE (research complete, no code changes needed)
+        fsm.transition(FsmState::Idle, "oracle-done", vec![])
+            .await
+            .expect("RESEARCHING -> IDLE");
+        assert_eq!(fsm.get_state().await, FsmState::Idle);
+    }
+
+    #[tokio::test]
+    async fn test_researching_escalate_to_planning() {
+        let fsm = Fsm::new(None, 8000);
+
+        // IDLE -> RESEARCHING -> PLANNING (research reveals code change needed)
+        fsm.transition(FsmState::Researching, "oracle", vec![])
+            .await
+            .expect("IDLE -> RESEARCHING");
+        fsm.transition(FsmState::Planning, "escalate", vec![])
+            .await
+            .expect("RESEARCHING -> PLANNING");
+        assert_eq!(fsm.get_state().await, FsmState::Planning);
+    }
+
+    // -- Adversarial: RESEARCHING cannot reach EXECUTING/AUDITING directly --
+
+    #[tokio::test]
+    async fn test_researching_blocks_invalid_transitions() {
+        let fsm = Fsm::new(None, 8000);
+        fsm.transition(FsmState::Researching, "oracle", vec![])
+            .await
+            .unwrap();
+
+        // RESEARCHING -> EXECUTING: must be invalid
+        assert!(fsm
+            .transition(FsmState::Executing, "bad", vec![])
+            .await
+            .is_err());
+        assert_eq!(fsm.get_state().await, FsmState::Researching);
+
+        // RESEARCHING -> AUDITING: must be invalid
+        assert!(fsm
+            .transition(FsmState::Auditing, "bad", vec![])
+            .await
+            .is_err());
+        assert_eq!(fsm.get_state().await, FsmState::Researching);
+
+        // RESEARCHING -> CONFIGURING: must be invalid
+        assert!(fsm
+            .transition(FsmState::Configuring, "bad", vec![])
+            .await
+            .is_err());
+        assert_eq!(fsm.get_state().await, FsmState::Researching);
     }
 
     // -- Adversarial: replan log clears on phase boundary --
