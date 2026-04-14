@@ -8,6 +8,28 @@ use crate::pagerank::DkgSnapshot;
 // Query tokenization helpers
 // ---------------------------------------------------------------------------
 
+/// Extract named entities from query: CamelCase and UPPER_SNAKE tokens only.
+///
+/// CamelCase: first char uppercase, contains at least one lowercase char after.
+/// UPPER_SNAKE: all uppercase letters with underscores, at least 2 chars.
+/// Operates on raw query before lowercasing.
+fn extract_named_entities(query: &str) -> Vec<String> {
+    let mut entities = Vec::new();
+    let mut seen = HashSet::new();
+    for word in query.split_whitespace() {
+        let is_camel_case = word.starts_with(|c: char| c.is_uppercase())
+            && word.chars().any(|c| c.is_lowercase())
+            && word.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let is_upper_snake = word.len() >= 2
+            && word.chars().all(|c| c.is_uppercase() || c == '_')
+            && word.chars().any(|c| c.is_alphabetic());
+        if (is_camel_case || is_upper_snake) && seen.insert(word.to_string()) {
+            entities.push(word.to_string());
+        }
+    }
+    entities
+}
+
 /// Split query into lowercase tokens: whitespace, camelCase, and snake_case splitting.
 fn tokenize_query(query: &str) -> Vec<String> {
     let mut raw_tokens: Vec<String> = Vec::new();
@@ -136,6 +158,76 @@ impl CatRag {
         Self { config }
     }
 
+    /// Symbolic anchoring: find DKG nodes matching named entities from the query.
+    ///
+    /// Returns (combined_weights, anchored_flags) where combined_weights[i] is the
+    /// anchoring weight for node i, and anchored_flags[i] indicates entity match.
+    fn symbolic_anchor(
+        &self,
+        query: &str,
+        snapshot: &DkgSnapshot,
+        tokens: &[String],
+        n: usize,
+    ) -> (Vec<f64>, Vec<bool>) {
+        let entities = extract_named_entities(query);
+        let entity_tokens: Vec<String> = entities.iter().map(|e| e.to_lowercase()).collect();
+
+        // Use entity tokens for anchoring if any exist, otherwise fall back to query tokens
+        let anchor_tokens = if entity_tokens.is_empty() { tokens } else { &entity_tokens };
+
+        let mut combined = vec![0.0_f64; n];
+        let mut anchored = vec![false; n];
+
+        for (i, node) in snapshot.nodes.iter().enumerate() {
+            let name_lower = node.symbol_name.to_lowercase();
+            for tok in anchor_tokens {
+                let reverse_match =
+                    name_lower.len() >= 3 && tok.contains(name_lower.as_str());
+                if name_lower.contains(tok.as_str()) || reverse_match {
+                    anchored[i] = true;
+                    let weight =
+                        self.config.epsilon * (node.ref_count.max(1) as f64).recip();
+                    combined[i] += weight;
+                    break;
+                }
+            }
+        }
+
+        (combined, anchored)
+    }
+
+    /// Key-fact enhancement: boost verified edges by beta factor.
+    ///
+    /// For edges from t_seed nodes whose name matches a query token,
+    /// multiply the edge weight by (1 + beta).
+    fn key_fact_enhance(
+        &self,
+        snapshot: &DkgSnapshot,
+        tokens: &[String],
+        t_seed: &[bool],
+        edge_weight_deltas: &mut Vec<(usize, usize, f64)>,
+    ) {
+        let boost = 1.0 + self.config.beta;
+        for &(src, tgt, base_weight) in &snapshot.edges {
+            if !t_seed[src] {
+                continue;
+            }
+            let src_lower = snapshot.nodes[src].symbol_name.to_lowercase();
+            let has_match = tokens.iter().any(|tok| src_lower.contains(tok.as_str()));
+            if !has_match {
+                continue;
+            }
+            if let Some(entry) = edge_weight_deltas
+                .iter_mut()
+                .find(|e| e.0 == src && e.1 == tgt)
+            {
+                entry.2 *= boost;
+            } else if base_weight > 0.0 {
+                edge_weight_deltas.push((src, tgt, base_weight * boost));
+            }
+        }
+    }
+
     /// Compute a PPR overlay for the given query against the DKG snapshot.
     ///
     /// Returns an overlay with seed reset distribution and edge weight deltas.
@@ -169,24 +261,7 @@ impl CatRag {
 
         // --- Symbolic anchoring ---
         let tokens = tokenize_query(query);
-        let mut combined: Vec<f64> = vec![0.0; n];
-
-        // Anchored nodes: query token is substring of symbol_name or vice versa
-        let mut anchored: Vec<bool> = vec![false; n];
-        for (i, node) in snapshot.nodes.iter().enumerate() {
-            let name_lower = node.symbol_name.to_lowercase();
-            for tok in &tokens {
-                let reverse_match = name_lower.len() >= 3
-                    && tok.contains(name_lower.as_str());
-                if name_lower.contains(tok.as_str()) || reverse_match {
-                    anchored[i] = true;
-                    let weight = self.config.epsilon
-                        * (node.ref_count.max(1) as f64).recip();
-                    combined[i] += weight;
-                    break;
-                }
-            }
-        }
+        let (mut combined, anchored) = self.symbolic_anchor(query, snapshot, &tokens, n);
 
         // Merge with pagerank scores
         for &(idx, pr_score) in pagerank_scores {
@@ -273,25 +348,7 @@ impl CatRag {
             t_seed[idx] = true;
         }
 
-        for &(src, tgt, base_weight) in &snapshot.edges {
-            if !t_seed[src] {
-                continue;
-            }
-            let src_lower = snapshot.nodes[src].symbol_name.to_lowercase();
-            let has_match = tokens.iter().any(|tok| src_lower.contains(tok.as_str()));
-            if !has_match {
-                continue;
-            }
-            let boost = 1.0 + self.config.beta;
-            if let Some(entry) = edge_weight_deltas
-                .iter_mut()
-                .find(|e| e.0 == src && e.1 == tgt)
-            {
-                entry.2 *= boost;
-            } else if base_weight > 0.0 {
-                edge_weight_deltas.push((src, tgt, base_weight * boost));
-            }
-        }
+        self.key_fact_enhance(snapshot, &tokens, &t_seed, &mut edge_weight_deltas);
 
         Ok(CatRagOverlay {
             reset_distribution,

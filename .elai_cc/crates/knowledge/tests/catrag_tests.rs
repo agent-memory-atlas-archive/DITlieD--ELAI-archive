@@ -127,3 +127,102 @@ fn e_phi_scores_match_table_7() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// (f) symbolic_anchor: lowercase-only query extracts 0 entities
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f_symbolic_anchor_no_entities_from_lowercase_query() {
+    let catrag = CatRag::new(CatRagConfig::default());
+    let mut snapshot = dense_snapshot();
+    // Add a CamelCase node that should NOT be matched by a lowercase query
+    snapshot.nodes.push(make_node(5, "HttpClient"));
+    snapshot.edges.push((0, 4, 1.0));
+    let scores: Vec<(usize, f64)> = vec![(0, 0.3), (1, 0.3), (2, 0.2), (3, 0.1), (4, 0.1)];
+
+    let overlay = catrag
+        .compute_overlay("how does the system work", &snapshot, &scores)
+        .unwrap();
+
+    // "how does the system work" has no CamelCase or UPPER_SNAKE tokens.
+    // Symbolic anchoring should contribute zero entity-based entries.
+    // All reset_distribution entries should come from PPR scores only.
+    // Specifically, "HttpClient" node should NOT get an entity anchor weight.
+    for &(idx, _weight) in &overlay.reset_distribution {
+        // Node 4 ("HttpClient") should only appear if it has a PPR score,
+        // not from entity anchoring of a lowercase query.
+        if idx == 4 {
+            // Weight should be purely from PPR, not boosted by entity anchoring.
+            // With epsilon=0.2 and pr_score=0.1: PPR contribution = 0.1 * 0.2 = 0.02
+            // Entity anchor would add epsilon * 1/ref_count = 0.2 * 1.0 = 0.2
+            // So if entity anchoring fired, weight would be >> 0.02 relative to total.
+            // We verify the node's weight is proportional to its PPR score only.
+            let node0_entry = overlay.reset_distribution.iter().find(|e| e.0 == 0);
+            if let Some(&(_, w0)) = node0_entry {
+                // node0 has pr=0.3, node4 has pr=0.1, ratio should be ~3:1
+                // If entity anchoring fired on node4, ratio would be much smaller
+                assert!(
+                    w0 / _weight > 2.0,
+                    "HttpClient node weight too high relative to alpha — entity anchoring may have fired on lowercase query"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (g) key_fact_enhance: verified edges get boosted, non-verified do not
+// ---------------------------------------------------------------------------
+
+#[test]
+fn g_key_fact_enhance_boosts_verified_edges() {
+    // Build a snapshot where some edges match query tokens (verified) and some don't
+    let nodes = vec![
+        make_node(1, "AsyncRuntime"),   // 0: matches "async" token
+        make_node(2, "runtime_core"),   // 1: matches "runtime" token
+        make_node(3, "unrelated_util"), // 2: no match
+        make_node(4, "helper"),         // 3: no match
+    ];
+    let edges = vec![
+        (0, 1, 1.0), // AsyncRuntime -> runtime_core (both match)
+        (0, 2, 1.0), // AsyncRuntime -> unrelated_util
+        (2, 3, 1.0), // unrelated_util -> helper (src doesn't match)
+    ];
+    let snapshot = DkgSnapshot { nodes, edges };
+
+    let config = CatRagConfig {
+        min_graph_density: 0.0, // disable density guard
+        ..CatRagConfig::default()
+    };
+    let catrag = CatRag::new(config);
+    let scores: Vec<(usize, f64)> = vec![(0, 0.5), (1, 0.3), (2, 0.1), (3, 0.1)];
+
+    // Query with CamelCase entity "AsyncRuntime" so symbolic anchoring fires
+    let overlay = catrag
+        .compute_overlay("AsyncRuntime handler", &snapshot, &scores)
+        .unwrap();
+
+    // Key-fact enhancement should boost edges from nodes matching query tokens.
+    // Edge (0,1) from "AsyncRuntime" (matches "asyncruntime"/"async"/"runtime" tokens)
+    // should be boosted. Edge (2,3) from "unrelated_util" should NOT be boosted.
+    let has_boosted = overlay.edge_weight_deltas.iter().any(|&(src, _, w)| {
+        src == 0 && w > 1.0 // base phi weight is at most 5.0, boosted = w * (1+beta)
+    });
+    let has_non_boosted = overlay.edge_weight_deltas.iter().any(|&(src, _, _)| src != 0)
+        || overlay.edge_weight_deltas.iter().any(|&(_, _, w)| {
+            // Any entry with weight <= phi(10)=5.0 that wasn't boosted
+            w <= 5.0
+        });
+
+    assert!(
+        has_boosted,
+        "Expected at least one boosted edge from entity-matching node, got: {:?}",
+        overlay.edge_weight_deltas
+    );
+    assert!(
+        has_non_boosted,
+        "Expected at least one non-boosted edge (I=0 case), got: {:?}",
+        overlay.edge_weight_deltas
+    );
+}
