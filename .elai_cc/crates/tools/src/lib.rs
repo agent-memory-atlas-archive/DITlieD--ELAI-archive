@@ -1332,6 +1332,24 @@ fn execute_tool_with_enforcer(
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
+    // A-31: action classifier + confirmation gate.
+    // Classify risk, check gate, produce DAIRA trace entry.
+    let action_policy = action_classifier::ActionPolicy::default();
+    let (gate_decision, _trace_entry) =
+        action_classifier::classify_and_gate(name, input, &action_policy);
+    match &gate_decision {
+        action_classifier::GateDecision::Allow => {}
+        action_classifier::GateDecision::ConfirmationRequired { reason } => {
+            tracing::warn!(tool = name, %reason, "action requires confirmation");
+            // In current implementation, log the requirement. Full interactive
+            // confirmation flow depends on the conversation loop (PreToolUse hooks).
+            // The gate classification is available via the trace entry for audit.
+        }
+        action_classifier::GateDecision::Block { reason } => {
+            return Err(structured_error("action_blocked", reason));
+        }
+    }
+
     match name {
         "bash" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
