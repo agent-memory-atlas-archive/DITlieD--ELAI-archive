@@ -119,6 +119,22 @@ pub struct SearchTriggerPayload {
     pub trigger_token_idx: i64,
 }
 
+/// GG intrinsic verification signals (A-17).
+///
+/// Extracted from token logprobs and entropy during generation at zero
+/// additional inference cost. Used for AB-MCTS branch scoring (Layer 4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GGSignals {
+    /// Mean log-probability of generated tokens (higher = more confident).
+    pub mean_logprob: Option<f64>,
+    /// Minimum (worst) log-probability among generated tokens.
+    pub min_logprob: Option<f64>,
+    /// Mean token-level entropy across the generation.
+    pub entropy_mean: Option<f64>,
+    /// Peak (maximum) token-level entropy during generation.
+    pub entropy_max: Option<f64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct CompletionChoice {
     text: String,
@@ -131,6 +147,15 @@ struct CompletionResponse {
     choices: Vec<CompletionChoice>,
     /// ETC search trigger — present only when entropy monitoring fires.
     search_trigger: Option<SearchTriggerPayload>,
+    /// GG intrinsic verification signals (A-17).
+    #[serde(default)]
+    mean_logprob: Option<f64>,
+    #[serde(default)]
+    min_logprob: Option<f64>,
+    #[serde(default)]
+    entropy_mean: Option<f64>,
+    #[serde(default)]
+    entropy_max: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +170,8 @@ pub struct SidecarProvider {
     clock: Arc<dyn ClockProvider>,
     /// Last ETC search trigger from the most recent completion (if any).
     last_search_trigger: Mutex<Option<SearchTriggerPayload>>,
+    /// Last GG intrinsic verification signals from the most recent completion.
+    last_gg_signals: Mutex<GGSignals>,
 }
 
 impl std::fmt::Debug for SidecarProvider {
@@ -170,6 +197,7 @@ impl SidecarProvider {
             client,
             clock,
             last_search_trigger: Mutex::new(None),
+            last_gg_signals: Mutex::new(GGSignals::default()),
         })
     }
 
@@ -190,11 +218,11 @@ impl SidecarProvider {
 
     /// Send a completion request to /v1/completions.
     ///
-    /// Returns (completions, optional ETC search trigger).
+    /// Returns (completions, optional ETC search trigger, GG signals).
     async fn complete_impl(
         &self,
         prompt: &str,
-    ) -> Result<(Vec<String>, Option<SearchTriggerPayload>), ApiError> {
+    ) -> Result<(Vec<String>, Option<SearchTriggerPayload>, GGSignals), ApiError> {
         let url = format!("{}/v1/completions", self.config.server_url);
         let body = serde_json::json!({
             "prompt": prompt,
@@ -236,7 +264,13 @@ impl SidecarProvider {
                 }
             })
             .collect();
-        Ok((tokens, resp.search_trigger))
+        let gg = GGSignals {
+            mean_logprob: resp.mean_logprob,
+            min_logprob: resp.min_logprob,
+            entropy_mean: resp.entropy_mean,
+            entropy_max: resp.entropy_max,
+        };
+        Ok((tokens, resp.search_trigger, gg))
     }
 
     /// Access the last ETC search trigger from the most recent completion.
@@ -246,6 +280,16 @@ impl SidecarProvider {
             .lock()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    /// Access GG intrinsic verification signals from the most recent completion.
+    /// Used for AB-MCTS branch scoring (Layer 4).
+    pub fn last_gg_signals(&self) -> GGSignals {
+        self.last_gg_signals
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -265,10 +309,13 @@ impl LlmProvider for SidecarProvider {
             let elapsed = self.clock.elapsed_since(start);
 
             match result {
-                Ok((completions, trigger)) => {
+                Ok((completions, trigger, gg)) => {
                     let triggered = trigger.is_some();
                     if let Ok(mut guard) = self.last_search_trigger.lock() {
                         *guard = trigger;
+                    }
+                    if let Ok(mut guard) = self.last_gg_signals.lock() {
+                        *guard = gg;
                     }
                     tracing::debug!(
                         target: "providers::sidecar",
@@ -379,5 +426,45 @@ mod tests {
         assert_eq!(payload.partial_text, "import ");
         assert_eq!(payload.detected_context, "import");
         assert_eq!(payload.trigger_token_idx, 42);
+    }
+
+    #[test]
+    fn gg_signals_default() {
+        let gg = GGSignals::default();
+        assert!(gg.mean_logprob.is_none());
+        assert!(gg.min_logprob.is_none());
+        assert!(gg.entropy_mean.is_none());
+        assert!(gg.entropy_max.is_none());
+    }
+
+    #[test]
+    fn completion_response_with_gg_signals() {
+        let json = r#"{
+            "choices": [{"text": "fn main() {}", "finish_reason": "stop"}],
+            "search_trigger": null,
+            "mean_logprob": -1.23,
+            "min_logprob": -4.56,
+            "entropy_mean": 2.1,
+            "entropy_max": 5.8
+        }"#;
+        let resp: CompletionResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.choices.len(), 1);
+        assert!((resp.mean_logprob.unwrap() - (-1.23)).abs() < f64::EPSILON);
+        assert!((resp.min_logprob.unwrap() - (-4.56)).abs() < f64::EPSILON);
+        assert!((resp.entropy_mean.unwrap() - 2.1).abs() < f64::EPSILON);
+        assert!((resp.entropy_max.unwrap() - 5.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn completion_response_without_gg_signals() {
+        let json = r#"{
+            "choices": [{"text": "hello", "finish_reason": "length"}],
+            "search_trigger": null
+        }"#;
+        let resp: CompletionResponse = serde_json::from_str(json).expect("deserialize");
+        assert!(resp.mean_logprob.is_none());
+        assert!(resp.min_logprob.is_none());
+        assert!(resp.entropy_mean.is_none());
+        assert!(resp.entropy_max.is_none());
     }
 }

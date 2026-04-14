@@ -918,6 +918,65 @@ class ETCLogitsProcessor(LogitsProcessor):
 
 
 # ---------------------------------------------------------------------------
+# GGSignalCollector — intrinsic verification signals (A-17)
+# ---------------------------------------------------------------------------
+
+
+class GGSignalCollector(LogitsProcessor):
+    """Collects per-token logprob and entropy during model.generate().
+
+    Zero additional inference cost: observes the softmax distribution that
+    model.generate() already computes. Never modifies scores.
+
+    Provides 4 GG signals for AB-MCTS branch scoring (Layer 4):
+      mean_logprob  — mean of chosen-token log-probabilities
+      min_logprob   — worst single-token log-probability
+      entropy_mean  — mean token-level entropy
+      entropy_max   — peak token-level entropy
+    """
+
+    def __init__(self) -> None:
+        self._logprobs: list[float] = []
+        self._entropies: list[float] = []
+
+    def reset(self) -> None:
+        self._logprobs.clear()
+        self._entropies.clear()
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        probs = torch.softmax(scores[0], dim=-1)
+        log_probs = torch.log(probs + EPSILON)
+
+        # Entropy of the full distribution
+        h = -(probs * log_probs).sum().item()
+        self._entropies.append(h)
+
+        # Log-prob of the token that will be selected (greedy = argmax)
+        chosen_idx = probs.argmax().item()
+        self._logprobs.append(log_probs[chosen_idx].item())
+
+        return scores  # never modify scores, only observe
+
+    def signals(self) -> dict[str, float | None]:
+        """Return the 4 GG signal fields, or None values if no tokens."""
+        if not self._logprobs:
+            return {
+                "mean_logprob": None,
+                "min_logprob": None,
+                "entropy_mean": None,
+                "entropy_max": None,
+            }
+        return {
+            "mean_logprob": sum(self._logprobs) / len(self._logprobs),
+            "min_logprob": min(self._logprobs),
+            "entropy_mean": sum(self._entropies) / len(self._entropies),
+            "entropy_max": max(self._entropies),
+        }
+
+
+# ---------------------------------------------------------------------------
 # VRAM logging
 # ---------------------------------------------------------------------------
 
@@ -1056,6 +1115,9 @@ class InferenceEngine:
                 tokenizer=self.tokenizer,
             )
 
+        # GG intrinsic verification signal collector (A-17)
+        self._gg_collector = GGSignalCollector()
+
         logger.info(
             "engine_ready",
             layers=self.n_layers,
@@ -1086,11 +1148,12 @@ class InferenceEngine:
         prompt: str,
         max_tokens: int | None = None,
         temperature: float = 0.0,
-    ) -> tuple[str, list[int], int, dict | None]:
+    ) -> tuple[str, list[int], int, dict | None, dict[str, float | None]]:
         """Generate text synchronously.
 
-        Returns (text, token_ids, input_token_count, search_trigger).
+        Returns (text, token_ids, input_token_count, search_trigger, gg_signals).
         search_trigger is None unless ETC detected a high-entropy import context.
+        gg_signals contains mean_logprob, min_logprob, entropy_mean, entropy_max.
         """
         max_tokens = max_tokens or self.max_new_tokens
 
@@ -1197,7 +1260,7 @@ class InferenceEngine:
 
     def _generate_impl(
         self, prompt: str, max_tokens: int, temperature: float
-    ) -> tuple[str, list[int], int]:
+    ) -> tuple[str, list[int], int, dict | None, dict[str, float | None]]:
         gen_start = time.time()
         formatted = self._format_prompt(prompt)
         inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
@@ -1247,6 +1310,9 @@ class InferenceEngine:
         if self._etc_processor is not None:
             self._etc_processor.reset()
             logits_processors.append(self._etc_processor)
+        # GG signal collector (A-17) — always active, zero cost
+        self._gg_collector.reset()
+        logits_processors.append(self._gg_collector)
         if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
@@ -1294,7 +1360,8 @@ class InferenceEngine:
         )
         _log_vram("after_generate")
 
-        return text.strip(), generated_ids, input_token_count, search_trigger
+        gg_signals = self._gg_collector.signals()
+        return text.strip(), generated_ids, input_token_count, search_trigger, gg_signals
 
 
 # ---------------------------------------------------------------------------
@@ -1656,7 +1723,7 @@ async def handle_completions(request: Request):
 
     t0 = time.time()
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count, search_trigger = await loop.run_in_executor(
+    text, tokens, input_token_count, search_trigger, gg_signals = await loop.run_in_executor(
         _thread_pool,
         lambda: _engine.generate(prompt, max_tokens, temperature),
     )
@@ -1686,6 +1753,10 @@ async def handle_completions(request: Request):
             "total_tokens": input_token_count + len(tokens),
         },
         "search_trigger": search_trigger,
+        "mean_logprob": gg_signals.get("mean_logprob"),
+        "min_logprob": gg_signals.get("min_logprob"),
+        "entropy_mean": gg_signals.get("entropy_mean"),
+        "entropy_max": gg_signals.get("entropy_max"),
         "elai_metadata": {
             "dola_enabled": _engine.dola_enabled,
             "turboquant_enabled": _engine.kv_compressor.enabled,
@@ -1898,7 +1969,7 @@ async def _non_stream_messages_response(
     temperature: float = 0.0,
 ) -> OrjsonResponse:
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count, _search_trigger = await loop.run_in_executor(
+    text, tokens, input_token_count, _search_trigger, _gg_signals = await loop.run_in_executor(
         _thread_pool,
         lambda: _engine.generate(prompt, max_tokens, temperature),
     )
