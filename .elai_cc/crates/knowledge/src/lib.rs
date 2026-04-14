@@ -25,6 +25,7 @@ pub mod splade;
 pub mod startup;
 pub mod telescope;
 pub mod tier3;
+pub mod benchmark;
 pub mod vector;
 
 // ---------------------------------------------------------------------------
