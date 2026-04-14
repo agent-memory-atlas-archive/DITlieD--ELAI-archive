@@ -1264,6 +1264,111 @@ mod tests {
         Arc::new(SeededClock::new())
     }
 
+    /// Generate a valid serialized payload for any action type.
+    /// Used by tests that don't care about payload contents but need
+    /// valid msgpack bytes to pass write-time validation (3J.12).
+    fn test_payload(action_type: SsbActionType) -> Vec<u8> {
+        let payload = match action_type {
+            SsbActionType::FileWrite => SsbPayload::FileWrite(FileWritePayload {
+                path: "test.rs".into(), size_bytes: 0, hash: "h".into(),
+            }),
+            SsbActionType::FileRead => SsbPayload::FileRead(FileReadPayload {
+                path: "test.rs".into(),
+            }),
+            SsbActionType::ToolResult => SsbPayload::ToolResult(ToolResultPayload {
+                tool_id: "t".into(), success: true, output_summary: "ok".into(),
+            }),
+            SsbActionType::TestOutcome => SsbPayload::TestOutcome(TestOutcomePayload {
+                test_name: "t".into(), passed: true, duration_ms: 1,
+            }),
+            SsbActionType::Finding => SsbPayload::Finding(FindingPayload {
+                severity: "INFO".into(), category: "c".into(), message: "m".into(),
+                file_path: None, line: None,
+            }),
+            SsbActionType::Claim => SsbPayload::Claim(ClaimPayload {
+                claim_text: "c".into(), grounding_source: "s".into(), verified: false,
+            }),
+            SsbActionType::Checkpoint => SsbPayload::Checkpoint(CheckpointPayload {
+                agent_state_hash: "h".into(), grc_history_hash: "g".into(),
+                agent_id: "a".into(), step_index: 0, file_sizes: vec![],
+            }),
+            SsbActionType::ModelSwap => SsbPayload::ModelSwap(ModelSwapPayload {
+                from_model: "a".into(), to_model: "b".into(), gpu_id: 0,
+                swap_duration_ms: 1, reason: "r".into(),
+            }),
+            SsbActionType::PhaseTransition => SsbPayload::PhaseTransition(PhaseTransitionPayload {
+                from_state: "a".into(), to_state: "b".into(), evidence_summary: "e".into(),
+            }),
+            SsbActionType::KnowledgeDegradation => SsbPayload::KnowledgeDegradation(KnowledgeDegradationPayload {
+                component: "c".into(), old_mode: "a".into(), new_mode: "b".into(), reason: "r".into(),
+            }),
+            SsbActionType::IsolationMetric => SsbPayload::IsolationMetric(IsolationMetricPayload {
+                agent_id: "a".into(), phase_id: "p".into(), context_savings_ratio: 0.5,
+            }),
+            SsbActionType::PlanUpdate => SsbPayload::PlanUpdate(PlanUpdatePayload {
+                phase_id: "p".into(), version: "v".into(), change_summary: "s".into(),
+            }),
+            SsbActionType::ReplanRequest => SsbPayload::ReplanRequest(ReplanRequestPayload {
+                agent_id: "a".into(), severity: "MINOR".into(), evidence: "e".into(),
+            }),
+            SsbActionType::StubReference => SsbPayload::StubReference(StubReferencePayload {
+                phase_id: "p".into(), step_id: "s".into(), stub_hash: "h".into(),
+            }),
+            SsbActionType::ReasoningTrace => SsbPayload::ReasoningTrace(ReasoningTracePayload {
+                agent_id: "a".into(), step_index: 0, step_type: "observe".into(),
+                content_summary: "c".into(), grounding_source: "s".into(),
+                grounding_level: "verified".into(), confidence: 0.9,
+                elapsed_ms: 1, topic: "t".into(), budget_remaining: 5,
+            }),
+            SsbActionType::PhaseComplete => SsbPayload::PhaseComplete(PhaseCompletePayload {
+                phase_id: "p".into(), agent_id: "a".into(), fsm_state: "IDLE".into(),
+                evidence_artifacts: vec![], commit_hashes: vec![], test_outcomes: vec![],
+            }),
+            SsbActionType::MemoryMonitoring => SsbPayload::MemoryMonitoring(MemoryMonitoringPayload {
+                channel_id: "c".into(), deep_size_bytes: 0, threshold_exceeded: false,
+            }),
+            SsbActionType::WorkloadProfile => SsbPayload::WorkloadProfile(WorkloadProfilePayload {
+                agent_role: "coder".into(), phase_id: "p".into(), tokens_in: 0,
+                tokens_out: 0, latency_ms: 0, vram_peak_mb: 0,
+                model_id: "m".into(), gpu_id: 0, timestamp: 0,
+            }),
+            SsbActionType::DeathEvent => SsbPayload::DeathEvent(DeathEventPayload {
+                agent_id: "a".into(), classification: "c".into(),
+                prior_step_index: 0, checkpoint_path: "p".into(), had_checkpoint: false,
+            }),
+            SsbActionType::RecoveryEvent => SsbPayload::RecoveryEvent(RecoveryEventPayload {
+                agent_id: "a".into(), classification: "c".into(),
+                recovered_from_checkpoint: false, degraded: false,
+                first_grounding_source: "s".into(), prior_step_index: 0, recovery_step_index: 1,
+            }),
+            SsbActionType::SupervisionExhausted => SsbPayload::SupervisionExhausted(SupervisionExhaustedPayload {
+                agent_id: "a".into(), phase_id: "p".into(), restart_count: 0,
+                max_restarts: 3, restart_history: vec![], escalation_action: "stop".into(),
+            }),
+            SsbActionType::SpiralDetected => SsbPayload::SpiralDetected(SpiralDetectedPayload {
+                agent_id: "a".into(), phase_id: "p".into(), spiral_depth: 1,
+            }),
+            SsbActionType::ContextReduction => SsbPayload::ContextReduction(ContextReductionPayload {
+                level: 1, before_tokens: 100, after_tokens: 50, slots_affected: vec![1],
+            }),
+            SsbActionType::BranchMerge => SsbPayload::BranchMerge(BranchMergePayload {
+                winner_name: "w".into(), abandoned_names: vec![],
+                trunk_snap_id: "t".into(), from_snap_ids: vec![],
+            }),
+            SsbActionType::MistakeEntry => SsbPayload::MistakeEntry(MistakeEntryPayload {
+                baby_step_id: "step-1".into(),
+                entry: elai_core::MistakeEntry {
+                    attempt_number: 1,
+                    diff_hash: elai_core::DiffHash::from_diff("test"),
+                    failure_category: elai_core::FailureCategory::Unknown,
+                    faulty_line: None, root_cause_json: None,
+                    action_taken: "test".into(), timestamp: 0,
+                },
+            }),
+        };
+        rmp_serde::to_vec_named(&payload).expect("test payload serialization")
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_single_writer() {
         let dir = TempDir::new().expect("tempdir");
@@ -1276,7 +1381,7 @@ mod tests {
                     action_type: SsbActionType::FileWrite,
                     agent_id: format!("agent-{i}"),
                     superstep: 0,
-                    payload: vec![i as u8],
+                    payload: test_payload(SsbActionType::FileWrite),
                     files: vec![format!("src/file_{i}.rs")],
                 })
                 .await
@@ -1302,7 +1407,7 @@ mod tests {
             action_type: SsbActionType::Checkpoint,
             agent_id: "agent-1".into(),
             superstep: 0,
-            payload: vec![1],
+            payload: test_payload(SsbActionType::Checkpoint),
             files: vec![],
         })
         .await
@@ -1316,7 +1421,7 @@ mod tests {
                 action_type: SsbActionType::Checkpoint,
                 agent_id: "agent-1".into(),
                 superstep: 0,
-                payload: vec![2],
+                payload: test_payload(SsbActionType::Checkpoint),
                 files: vec![],
             })
             .await;
@@ -1345,7 +1450,7 @@ mod tests {
                     action_type: SsbActionType::ToolResult,
                     agent_id: format!("agent-{i}"),
                     superstep: 0,
-                    payload: vec![i as u8],
+                    payload: test_payload(SsbActionType::ToolResult),
                     files: vec![format!("src/mod_{i}.rs")],
                 })
                 .await
@@ -1373,12 +1478,13 @@ mod tests {
 
         let mut rx = ssb.subscribe();
 
+        let finding_bytes = test_payload(SsbActionType::Finding);
         let seq = ssb
             .write(SsbWriteRequest {
                 action_type: SsbActionType::Finding,
                 agent_id: "agent-x".into(),
                 superstep: 1,
-                payload: b"test-payload".to_vec(),
+                payload: finding_bytes.clone(),
                 files: vec!["src/main.rs".into()],
             })
             .await
@@ -1393,7 +1499,7 @@ mod tests {
         assert_eq!(entry.agent_id, "agent-x");
         assert_eq!(entry.superstep, 1);
         assert_eq!(entry.action_type, SsbActionType::Finding);
-        assert_eq!(&*entry.payload, b"test-payload");
+        assert_eq!(&*entry.payload, &*finding_bytes);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1499,7 +1605,7 @@ mod tests {
             action_type: SsbActionType::Claim,
             agent_id: "agent-clock".into(),
             superstep: 0,
-            payload: vec![],
+            payload: test_payload(SsbActionType::Claim),
             files: vec![],
         })
         .await
@@ -1565,7 +1671,7 @@ mod tests {
             action_type: SsbActionType::FileRead,
             agent_id: "agent-m".into(),
             superstep: 0,
-            payload: vec![42],
+            payload: test_payload(SsbActionType::FileRead),
             files: vec![],
         })
         .await
@@ -1591,7 +1697,7 @@ mod tests {
                 action_type: SsbActionType::FileWrite,
                 agent_id: "agent-f".into(),
                 superstep: 0,
-                payload: vec![1],
+                payload: test_payload(SsbActionType::FileWrite),
                 files: vec!["src/a.rs".into(), "src/b.rs".into()],
             })
             .await
@@ -1648,7 +1754,7 @@ mod tests {
                 action_type: *at,
                 agent_id: format!("agent-{i}"),
                 superstep: 0,
-                payload: vec![i as u8],
+                payload: test_payload(*at),
                 files: vec![],
             })
             .await
@@ -1668,6 +1774,7 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let mut ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
+        let bulk_payload = test_payload(SsbActionType::ToolResult);
         let mut prev_seq = 0i64;
         for i in 0..10_000 {
             let seq = ssb
@@ -1675,7 +1782,7 @@ mod tests {
                     action_type: SsbActionType::ToolResult,
                     agent_id: "agent-bulk".into(),
                     superstep: 0,
-                    payload: vec![(i & 0xFF) as u8],
+                    payload: bulk_payload.clone(),
                     files: vec![],
                 })
                 .await
@@ -1712,7 +1819,7 @@ mod tests {
                 action_type: *at,
                 agent_id: format!("agent-{i}"),
                 superstep: 0,
-                payload: vec![i as u8],
+                payload: test_payload(*at),
                 files: vec![format!("src/f{i}.rs")],
             })
             .await
@@ -1773,7 +1880,7 @@ mod tests {
             action_type: SsbActionType::FileWrite,
             agent_id: "agent-A".into(),
             superstep: 1,
-            payload: vec![1],
+            payload: test_payload(SsbActionType::FileWrite),
             files: vec!["src/f1.rs".into(), "src/f2.rs".into()],
         })
         .await
@@ -1850,7 +1957,7 @@ mod tests {
                 action_type: SsbActionType::FileWrite,
                 agent_id: "agent-alpha".into(),
                 superstep: 0,
-                payload: vec![1],
+                payload: test_payload(SsbActionType::FileWrite),
                 files: vec!["src/shared.rs".into()],
             })
             .await
@@ -1862,7 +1969,7 @@ mod tests {
                 action_type: SsbActionType::FileWrite,
                 agent_id: "agent-beta".into(),
                 superstep: 0,
-                payload: vec![2],
+                payload: test_payload(SsbActionType::FileWrite),
                 files: vec!["src/shared.rs".into()],
             })
             .await
@@ -1933,7 +2040,7 @@ mod tests {
             action_type: SsbActionType::Checkpoint,
             agent_id: "agent-test".into(),
             superstep: 0,
-            payload: vec![1],
+            payload: test_payload(SsbActionType::Checkpoint),
             files: vec![],
         })
         .await
@@ -2001,7 +2108,7 @@ mod tests {
                 action_type: SsbActionType::Checkpoint,
                 agent_id: "agent-verify".into(),
                 superstep: 0,
-                payload: vec![2],
+                payload: test_payload(SsbActionType::Checkpoint),
                 files: vec![],
             })
             .await
@@ -2169,6 +2276,18 @@ mod tests {
                 gpu_id: 0,
                 timestamp: 1700000000,
             }),
+            SsbPayload::MistakeEntry(MistakeEntryPayload {
+                baby_step_id: "step-1".into(),
+                entry: elai_core::MistakeEntry {
+                    attempt_number: 1,
+                    diff_hash: elai_core::DiffHash::from_diff("bad-patch"),
+                    failure_category: elai_core::FailureCategory::CompileError,
+                    faulty_line: Some(42),
+                    root_cause_json: Some("missing semicolon".into()),
+                    action_taken: "templated".into(),
+                    timestamp: 1700000000,
+                },
+            }),
         ]
     }
 
@@ -2178,7 +2297,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 24, "must cover all 24 action types");
+        assert_eq!(payloads.len(), 25, "must cover all 25 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2383,6 +2502,21 @@ mod tests {
                  proptest::collection::vec("[a-f0-9]{8}", 1..4))
                     .prop_map(|(winner_name, abandoned_names, trunk_snap_id, from_snap_ids)| SsbPayload::BranchMerge(
                         BranchMergePayload { winner_name, abandoned_names, trunk_snap_id, from_snap_ids }
+                    )),
+                ("[a-z0-9-]{1,20}", 1u32..10, "[a-z_]{1,30}", any::<bool>())
+                    .prop_map(|(baby_step_id, attempt, action_taken, has_line)| SsbPayload::MistakeEntry(
+                        MistakeEntryPayload {
+                            baby_step_id,
+                            entry: elai_core::MistakeEntry {
+                                attempt_number: attempt,
+                                diff_hash: elai_core::DiffHash::from_diff(&action_taken),
+                                failure_category: elai_core::FailureCategory::CompileError,
+                                faulty_line: if has_line { Some(42) } else { None },
+                                root_cause_json: None,
+                                action_taken,
+                                timestamp: 0,
+                            },
+                        }
                     )),
             ]
         }
