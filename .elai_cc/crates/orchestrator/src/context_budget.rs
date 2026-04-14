@@ -22,6 +22,136 @@ const PCT_GRC_HISTORY: usize = 20;
 const _: () = assert!(PCT_REPO_MAP + PCT_CODE_CONTEXT + PCT_SSB_ENTRIES + PCT_GRC_HISTORY == 100);
 
 // ---------------------------------------------------------------------------
+// Generation profile (A-18: reasoning-architecture-design.txt GENERATION PARAMETERS)
+// ---------------------------------------------------------------------------
+
+/// Per-use-case generation parameters for temperature and top-p.
+///
+/// Research grounding (FixAudit, arXiv:2604.05560): repair retries use
+/// temperature=1.0, top-p=1.0 to prevent cyclic traps. Single 7B model
+/// zero-shot 11.93% -> FixAudit 30.40%.
+///
+/// First attempts use low temperature (0.3) for maximum pass@1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GenerationProfile {
+    /// Initial code generation — focused, high pass@1.
+    FirstAttempt,
+    /// Micro-reflection diagnosis — focused, precise.
+    MicroReflection,
+    /// Interrogation tree multiple choice — near-deterministic.
+    Interrogation,
+    /// Repair retry after failure — high temp to escape local minima.
+    RepairRetry,
+    /// AB-MCTS branch A — moderate diversity.
+    TreeBranchA,
+    /// AB-MCTS branch B — max diversity.
+    TreeBranchB,
+    /// AB-MCTS branch C — focused alternative.
+    TreeBranchC,
+}
+
+impl GenerationProfile {
+    /// Temperature for this profile.
+    pub fn temperature(&self) -> f32 {
+        match self {
+            Self::FirstAttempt => TEMP_FIRST_ATTEMPT,
+            Self::MicroReflection => TEMP_MICRO_REFLECTION,
+            Self::Interrogation => TEMP_INTERROGATION,
+            Self::RepairRetry => TEMP_REPAIR_RETRY,
+            Self::TreeBranchA => TEMP_TREE_BRANCH_A,
+            Self::TreeBranchB => TEMP_TREE_BRANCH_B,
+            Self::TreeBranchC => TEMP_TREE_BRANCH_C,
+        }
+    }
+
+    /// Top-p for this profile.
+    pub fn top_p(&self) -> f32 {
+        match self {
+            Self::FirstAttempt => TOP_P_FIRST_ATTEMPT,
+            Self::MicroReflection => TOP_P_MICRO_REFLECTION,
+            Self::Interrogation => TOP_P_INTERROGATION,
+            Self::RepairRetry => TOP_P_REPAIR_RETRY,
+            Self::TreeBranchA => TOP_P_TREE_BRANCH_A,
+            Self::TreeBranchB => TOP_P_TREE_BRANCH_B,
+            Self::TreeBranchC => TOP_P_TREE_BRANCH_C,
+        }
+    }
+}
+
+// Named constants for generation parameters (no magic numbers).
+const TEMP_FIRST_ATTEMPT: f32 = 0.3;
+const TEMP_MICRO_REFLECTION: f32 = 0.3;
+const TEMP_INTERROGATION: f32 = 0.1;
+const TEMP_REPAIR_RETRY: f32 = 1.0;
+const TEMP_TREE_BRANCH_A: f32 = 0.7;
+const TEMP_TREE_BRANCH_B: f32 = 1.0;
+const TEMP_TREE_BRANCH_C: f32 = 0.3;
+
+const TOP_P_FIRST_ATTEMPT: f32 = 0.9;
+const TOP_P_MICRO_REFLECTION: f32 = 0.9;
+const TOP_P_INTERROGATION: f32 = 0.9;
+const TOP_P_REPAIR_RETRY: f32 = 1.0;
+const TOP_P_TREE_BRANCH_A: f32 = 1.0;
+const TOP_P_TREE_BRANCH_B: f32 = 1.0;
+const TOP_P_TREE_BRANCH_C: f32 = 0.9;
+
+// ---------------------------------------------------------------------------
+// REPAIR_CONTEXT slot allocation (A-18: compressed context replay)
+// ---------------------------------------------------------------------------
+
+/// Total token budget for repair context (fits any model tier).
+const REPAIR_CONTEXT_TOTAL: usize = 1400;
+
+/// Repair context slot token allocations from reasoning-architecture-design.txt.
+const REPAIR_SLOT_SYSTEM_PROMPT: usize = 50;
+const REPAIR_SLOT_BABY_STEP_SPEC: usize = 200;
+const REPAIR_SLOT_MISTAKE_BOOK: usize = 150;
+const REPAIR_SLOT_RELEVANT_CODE: usize = 500;
+const REPAIR_SLOT_WORKING_EXAMPLE: usize = 300;
+const REPAIR_SLOT_FIX_INSTRUCTION: usize = 100;
+const REPAIR_SLOT_OUTPUT_RESERVE: usize = 100;
+
+const _: () = assert!(
+    REPAIR_SLOT_SYSTEM_PROMPT
+        + REPAIR_SLOT_BABY_STEP_SPEC
+        + REPAIR_SLOT_MISTAKE_BOOK
+        + REPAIR_SLOT_RELEVANT_CODE
+        + REPAIR_SLOT_WORKING_EXAMPLE
+        + REPAIR_SLOT_FIX_INSTRUCTION
+        + REPAIR_SLOT_OUTPUT_RESERVE
+        == REPAIR_CONTEXT_TOTAL
+);
+
+/// Repair context slot weights for the context budget system.
+/// Maps the 7-slot repair layout onto the existing 8-slot ContextSlot scheme:
+///   SystemPrompt  -> SystemPrompt (50 tokens)
+///   Rules         -> BabyStepSpec (200 tokens — spec replaces rules in retry)
+///   PhaseSpec     -> MistakeBook (150 tokens — constraints replace phase spec)
+///   RepoMap       -> 0 (dropped in repair context — DKG replaces broad map)
+///   CodeContext   -> RelevantCode + WorkingExample (800 tokens combined)
+///   SsbEntries    -> 0 (SSB history dropped — fresh start per retry)
+///   GrcHistory    -> FixInstruction (100 tokens — diagnosis replaces GRC)
+///   OutputReserve -> OutputReserve (100 tokens)
+impl SlotWeights {
+    /// Repair context weights: heavy code context (DKG + example), no RepoMap/SSB.
+    ///
+    /// Dynamic slots (repo_map + code_context + ssb_entries + grc_history) must sum to 1.0.
+    /// Repair context: code_context=0.89 (relevant code + working example),
+    /// grc_history=0.11 (fix instruction), repo_map=0.0, ssb_entries=0.0.
+    pub fn repair_context() -> Self {
+        Self {
+            system_prompt: 0.0,
+            rules: 0.0,
+            telescope: 0.0,
+            repo_map: 0.0,
+            code_context: 0.89,
+            ssb_entries: 0.0,
+            grc_history: 0.11,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Model capability types (A-10: token-efficiency-design.txt section 13)
 // ---------------------------------------------------------------------------
 
@@ -650,6 +780,41 @@ impl ContextBudget {
         );
 
         Ok(budget)
+    }
+
+    /// Build a fixed-size REPAIR_CONTEXT budget for compressed context replay.
+    ///
+    /// Used for retry attempts after failure. The 1400-token budget is a fresh,
+    /// information-dense context assembly that replaces conversation history.
+    /// Research: Kimi-Dev (arXiv:2509.23045), E-mem (arXiv:2601.21714).
+    ///
+    /// Slot mapping to repair context roles:
+    ///   SystemPrompt  = role + output format (50 tokens)
+    ///   Rules         = baby step spec (200 tokens)
+    ///   PhaseSpec     = MistakeBook constraints (150 tokens)
+    ///   RepoMap       = 0 (dropped — DKG provides targeted code)
+    ///   CodeContext    = relevant code (DKG) + working example (800 tokens)
+    ///   SsbEntries    = 0 (SSB history dropped — fresh start)
+    ///   GrcHistory    = fix instruction from diagnosis layer (100 tokens)
+    ///   OutputReserve = output reserve (100 tokens)
+    pub fn compute_repair_context() -> Self {
+        let mut budget = Self::new(REPAIR_CONTEXT_TOTAL);
+
+        budget.slots[ContextSlot::SystemPrompt as usize].allocated_tokens = REPAIR_SLOT_SYSTEM_PROMPT;
+        budget.slots[ContextSlot::Rules as usize].allocated_tokens = REPAIR_SLOT_BABY_STEP_SPEC;
+        budget.slots[ContextSlot::PhaseSpec as usize].allocated_tokens = REPAIR_SLOT_MISTAKE_BOOK;
+        budget.slots[ContextSlot::RepoMap as usize].allocated_tokens = 0;
+        budget.slots[ContextSlot::CodeContext as usize].allocated_tokens =
+            REPAIR_SLOT_RELEVANT_CODE + REPAIR_SLOT_WORKING_EXAMPLE;
+        budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens = 0;
+        budget.slots[ContextSlot::GrcHistory as usize].allocated_tokens = REPAIR_SLOT_FIX_INSTRUCTION;
+        budget.slots[ContextSlot::OutputReserve as usize].allocated_tokens = REPAIR_SLOT_OUTPUT_RESERVE;
+
+        budget.total_allocated = REPAIR_CONTEXT_TOTAL;
+        budget.total_used = 0;
+        budget.adaptive_level = AdaptiveLevel::Normal;
+
+        budget
     }
 }
 
@@ -1627,5 +1792,148 @@ mod tests {
         assert!(!f.supports_stop_sequences);
         assert!(!f.chunked_prefill);
         assert!(!f.kv_compression);
+    }
+
+    // -----------------------------------------------------------------------
+    // A-18: GenerationProfile tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn first_attempt_profile_params() {
+        let p = GenerationProfile::FirstAttempt;
+        assert!((p.temperature() - 0.3).abs() < f32::EPSILON);
+        assert!((p.top_p() - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn repair_retry_profile_params() {
+        let p = GenerationProfile::RepairRetry;
+        assert!((p.temperature() - 1.0).abs() < f32::EPSILON);
+        assert!((p.top_p() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn interrogation_profile_near_deterministic() {
+        let p = GenerationProfile::Interrogation;
+        assert!((p.temperature() - 0.1).abs() < f32::EPSILON);
+        assert!((p.top_p() - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn micro_reflection_profile_params() {
+        let p = GenerationProfile::MicroReflection;
+        assert!((p.temperature() - 0.3).abs() < f32::EPSILON);
+        assert!((p.top_p() - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tree_branch_profiles_distinct_temperatures() {
+        let a = GenerationProfile::TreeBranchA;
+        let b = GenerationProfile::TreeBranchB;
+        let c = GenerationProfile::TreeBranchC;
+        // A=0.7, B=1.0, C=0.3 — all distinct.
+        assert!((a.temperature() - 0.7).abs() < f32::EPSILON);
+        assert!((b.temperature() - 1.0).abs() < f32::EPSILON);
+        assert!((c.temperature() - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn all_profiles_temperature_in_valid_range() {
+        let profiles = [
+            GenerationProfile::FirstAttempt,
+            GenerationProfile::MicroReflection,
+            GenerationProfile::Interrogation,
+            GenerationProfile::RepairRetry,
+            GenerationProfile::TreeBranchA,
+            GenerationProfile::TreeBranchB,
+            GenerationProfile::TreeBranchC,
+        ];
+        for p in &profiles {
+            assert!(p.temperature() >= 0.0 && p.temperature() <= 1.0,
+                "{:?} temperature {} out of [0.0, 1.0]", p, p.temperature());
+            assert!(p.top_p() > 0.0 && p.top_p() <= 1.0,
+                "{:?} top_p {} out of (0.0, 1.0]", p, p.top_p());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // A-18: REPAIR_CONTEXT SlotWeights and compute_repair_context tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn repair_context_weights_sum_to_one() {
+        let w = SlotWeights::repair_context();
+        assert!(w.validate_dynamic_sum(),
+            "repair_context dynamic weights must sum to 1.0, got {}",
+            w.repo_map + w.code_context + w.ssb_entries + w.grc_history);
+    }
+
+    #[test]
+    fn repair_context_weights_drop_repo_map_and_ssb() {
+        let w = SlotWeights::repair_context();
+        assert!((w.repo_map - 0.0).abs() < f32::EPSILON, "repo_map must be 0 in repair context");
+        assert!((w.ssb_entries - 0.0).abs() < f32::EPSILON, "ssb_entries must be 0 in repair context");
+    }
+
+    #[test]
+    fn repair_context_weights_prioritize_code_context() {
+        let w = SlotWeights::repair_context();
+        let default_w = SlotWeights::default_fixed();
+        assert!(w.code_context > default_w.code_context,
+            "repair code_context {} must exceed default {}",
+            w.code_context, default_w.code_context);
+    }
+
+    #[test]
+    fn compute_repair_context_total_1400() {
+        let budget = ContextBudget::compute_repair_context();
+        assert_eq!(budget.model_max_context, REPAIR_CONTEXT_TOTAL);
+        assert_eq!(budget.total_allocated, REPAIR_CONTEXT_TOTAL);
+    }
+
+    #[test]
+    fn compute_repair_context_slot_allocations() {
+        let budget = ContextBudget::compute_repair_context();
+        assert_eq!(budget.slots[ContextSlot::SystemPrompt as usize].allocated_tokens, 50);
+        assert_eq!(budget.slots[ContextSlot::Rules as usize].allocated_tokens, 200);
+        assert_eq!(budget.slots[ContextSlot::PhaseSpec as usize].allocated_tokens, 150);
+        assert_eq!(budget.slots[ContextSlot::RepoMap as usize].allocated_tokens, 0);
+        assert_eq!(budget.slots[ContextSlot::CodeContext as usize].allocated_tokens, 800);
+        assert_eq!(budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens, 0);
+        assert_eq!(budget.slots[ContextSlot::GrcHistory as usize].allocated_tokens, 100);
+        assert_eq!(budget.slots[ContextSlot::OutputReserve as usize].allocated_tokens, 100);
+    }
+
+    #[test]
+    fn compute_repair_context_slots_sum_to_total() {
+        let budget = ContextBudget::compute_repair_context();
+        let sum: usize = budget.slots.iter().map(|s| s.allocated_tokens).sum();
+        assert_eq!(sum, REPAIR_CONTEXT_TOTAL,
+            "slot allocations sum {} must equal REPAIR_CONTEXT_TOTAL {}",
+            sum, REPAIR_CONTEXT_TOTAL);
+    }
+
+    #[test]
+    fn compute_repair_context_is_normal_level() {
+        let budget = ContextBudget::compute_repair_context();
+        assert_eq!(budget.adaptive_level, AdaptiveLevel::Normal);
+    }
+
+    #[test]
+    fn repair_context_much_smaller_than_first_attempt() {
+        let repair = ContextBudget::compute_repair_context();
+        let first = ContextBudget::compute(25000, [100, 200, 300], 2000).unwrap();
+        assert!(repair.total_allocated < first.total_allocated,
+            "repair budget {} must be smaller than first-attempt {}",
+            repair.total_allocated, first.total_allocated);
+    }
+
+    #[test]
+    fn repair_context_no_repo_map_or_ssb() {
+        let budget = ContextBudget::compute_repair_context();
+        assert_eq!(budget.slots[ContextSlot::RepoMap as usize].allocated_tokens, 0,
+            "repair context must drop RepoMap");
+        assert_eq!(budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens, 0,
+            "repair context must drop SsbEntries");
     }
 }
