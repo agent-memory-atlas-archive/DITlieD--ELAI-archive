@@ -5,6 +5,16 @@ use crate::error::KnowledgeError;
 use crate::pagerank::DkgSnapshot;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Base phi score for "references" relationship tier (Section 4.2).
+const BASE_EDGE_SCORE: u8 = 5;
+
+/// Phi score bonus for query-token match in target symbol name.
+const QUERY_MATCH_BONUS: u8 = 3;
+
+// ---------------------------------------------------------------------------
 // Query tokenization helpers
 // ---------------------------------------------------------------------------
 
@@ -17,12 +27,20 @@ fn extract_named_entities(query: &str) -> Vec<String> {
     let mut entities = Vec::new();
     let mut seen = HashSet::new();
     for word in query.split_whitespace() {
-        let is_camel_case = word.starts_with(|c: char| c.is_uppercase())
-            && word.chars().any(|c| c.is_lowercase())
-            && word.chars().all(|c| c.is_alphanumeric() || c == '_');
+        // CamelCase: starts with uppercase letter, has internal case transition
+        // (e.g., "AsyncRuntime" has upper A then lower s). Single-letter prefix
+        // followed by underscore (e.g., "N_iter") is excluded.
+        let is_camel_case = word.len() >= 2
+            && word.starts_with(|c: char| c.is_uppercase())
+            && word.chars().all(|c| c.is_alphanumeric())
+            && word.chars().skip(1).any(|c| c.is_lowercase())
+            && !word.contains('_');
+        // UPPER_SNAKE: all uppercase + underscores, must start with letter,
+        // at least 2 alpha chars (e.g., "HTTP_CLIENT", not "_ABC")
         let is_upper_snake = word.len() >= 2
+            && word.starts_with(|c: char| c.is_uppercase())
             && word.chars().all(|c| c.is_uppercase() || c == '_')
-            && word.chars().any(|c| c.is_alphabetic());
+            && word.chars().filter(|c| c.is_alphabetic()).count() >= 2;
         if (is_camel_case || is_upper_snake) && seen.insert(word.to_string()) {
             entities.push(word.to_string());
         }
@@ -325,11 +343,11 @@ impl CatRag {
             }
 
             for (_, v, _) in outgoing {
-                let mut score: u8 = 5; // base "references" tier
+                let mut score: u8 = BASE_EDGE_SCORE;
                 let target_lower = snapshot.nodes[v].symbol_name.to_lowercase();
                 for tok in &tokens {
                     if target_lower.contains(tok.as_str()) {
-                        score = score.saturating_add(3);
+                        score = score.saturating_add(QUERY_MATCH_BONUS);
                         break;
                     }
                 }

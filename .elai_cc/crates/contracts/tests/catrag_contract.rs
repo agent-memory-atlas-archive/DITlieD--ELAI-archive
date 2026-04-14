@@ -2,9 +2,8 @@
 // Compile-time interface assertions for CatRag, CatRagOverlay, and phi().
 // Type-level checks — if the API surface changes, this file fails to compile.
 
-use std::error::Error;
-
 use elai_knowledge::catrag::{phi, CatRag, CatRagConfig, CatRagOverlay};
+use elai_knowledge::error::KnowledgeError;
 use elai_knowledge::pagerank::DkgSnapshot;
 
 // Verify phi signature: (u8) -> f64
@@ -24,7 +23,7 @@ fn _assert_compute_overlay_signature(catrag: &CatRag) {
         edges: vec![],
     };
     let scores: &[(usize, f64)] = &[];
-    let _: Result<CatRagOverlay, Box<dyn Error>> = catrag.compute_overlay("q", &snapshot, scores);
+    let _: Result<CatRagOverlay, KnowledgeError> = catrag.compute_overlay("q", &snapshot, scores);
 }
 
 // Verify CatRagOverlay fields are public

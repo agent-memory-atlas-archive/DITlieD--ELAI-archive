@@ -206,23 +206,35 @@ fn g_key_fact_enhance_boosts_verified_edges() {
     // Key-fact enhancement should boost edges from nodes matching query tokens.
     // Edge (0,1) from "AsyncRuntime" (matches "asyncruntime"/"async"/"runtime" tokens)
     // should be boosted. Edge (2,3) from "unrelated_util" should NOT be boosted.
-    let has_boosted = overlay.edge_weight_deltas.iter().any(|&(src, _, w)| {
-        src == 0 && w > 1.0 // base phi weight is at most 5.0, boosted = w * (1+beta)
-    });
-    let has_non_boosted = overlay.edge_weight_deltas.iter().any(|&(src, _, _)| src != 0)
-        || overlay.edge_weight_deltas.iter().any(|&(_, _, w)| {
-            // Any entry with weight <= phi(10)=5.0 that wasn't boosted
-            w <= 5.0
-        });
-
+    // Edge from node 0 ("AsyncRuntime") should be boosted (matches query tokens)
+    let boosted_entry = overlay
+        .edge_weight_deltas
+        .iter()
+        .find(|&&(src, tgt, _)| src == 0 && tgt == 1);
     assert!(
-        has_boosted,
-        "Expected at least one boosted edge from entity-matching node, got: {:?}",
+        boosted_entry.is_some(),
+        "Expected edge (0,1) from AsyncRuntime in deltas, got: {:?}",
         overlay.edge_weight_deltas
     );
+    let boosted_weight = boosted_entry.unwrap().2;
+    // phi(8)=2.5 is the base weight for a matched edge (score 5+3=8).
+    // After key_fact_enhance: 2.5 * (1 + 2.5) = 8.75
     assert!(
-        has_non_boosted,
-        "Expected at least one non-boosted edge (I=0 case), got: {:?}",
+        boosted_weight > 2.5,
+        "Expected boosted weight > 2.5 (phi(8)), got {boosted_weight}"
+    );
+
+    // Verify at least one edge exists that was NOT boosted by key_fact_enhance.
+    // Edge (2,3) from "unrelated_util" won't be in t_seed (not anchored, not top-N_seed)
+    // so it should not appear in deltas at all, OR appear at base phi weight.
+    // At minimum, not ALL edges should have the same boosted weight.
+    let non_boosted_exists = overlay
+        .edge_weight_deltas
+        .iter()
+        .any(|&(_, _, w)| (w - boosted_weight).abs() > f64::EPSILON);
+    assert!(
+        non_boosted_exists || overlay.edge_weight_deltas.len() == 1,
+        "All edges have identical weight — key_fact_enhance may be boosting indiscriminately: {:?}",
         overlay.edge_weight_deltas
     );
 }
