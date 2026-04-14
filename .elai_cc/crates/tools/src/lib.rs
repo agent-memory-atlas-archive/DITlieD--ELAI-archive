@@ -14,8 +14,10 @@ use elai_providers::{
 use elai_plugins::PluginTool;
 use reqwest::blocking::Client;
 use elai_orchestrator::{
+    build_agent_prompt, build_agent_system_preamble, AgentPromptContext, AgentTemplateConfig,
     check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
-    grep_search, load_system_prompt,
+    grep_search,
+    context_budget::ModelTier,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file,
@@ -3260,7 +3262,6 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
 }
 
 const DEFAULT_AGENT_MODEL: &str = "claude-opus-4-6";
-const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
@@ -3292,7 +3293,16 @@ where
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| slugify_agent_name(&input.description));
     let created_at = iso8601_now();
-    let system_prompt = build_agent_system_prompt(&normalized_subagent_type)?;
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let agent_context = AgentPromptContext::from_cwd(&cwd, ModelTier::Cloud, &model);
+    let template_config = AgentTemplateConfig::default();
+    let structured_prompt = build_agent_prompt(
+        &input.prompt,
+        &normalized_subagent_type,
+        &agent_context,
+        &template_config,
+    );
+    let system_prompt = vec![build_agent_system_preamble(&normalized_subagent_type)];
     let allowed_tools = allowed_tools_for_subagent(&normalized_subagent_type);
 
     let output_contents = format!(
@@ -3334,7 +3344,7 @@ where
     let manifest_for_spawn = manifest.clone();
     let job = AgentJob {
         manifest: manifest_for_spawn,
-        prompt: input.prompt,
+        prompt: structured_prompt,
         system_prompt,
         allowed_tools,
     };
@@ -3405,20 +3415,8 @@ fn build_agent_runtime(
     ))
 }
 
-fn build_agent_system_prompt(subagent_type: &str) -> Result<Vec<String>, String> {
-    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let mut prompt = load_system_prompt(
-        cwd,
-        DEFAULT_AGENT_SYSTEM_DATE.to_string(),
-        std::env::consts::OS,
-        "unknown",
-    )
-    .map_err(|error| error.to_string())?;
-    prompt.push(format!(
-        "You are a background sub-agent of type `{subagent_type}`. Work only on the delegated task, use only the tools available to you, do not ask the user questions, and finish with a concise result."
-    ));
-    Ok(prompt)
-}
+// build_agent_system_prompt removed in A-29: replaced by
+// elai_orchestrator::build_agent_system_preamble + build_agent_prompt template.
 
 fn resolve_agent_model(model: Option<&str>) -> String {
     model
@@ -6197,7 +6195,11 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .expect("spawn job should be captured");
-        assert_eq!(captured_job.prompt, "Check tests and outstanding work.");
+        // A-29: prompt is now the structured template wrapping the raw task.
+        assert!(captured_job.prompt.contains("=== TASK ==="));
+        assert!(captured_job.prompt.contains("Check tests and outstanding work."));
+        assert!(captured_job.prompt.contains("=== CONTEXT ==="));
+        assert!(captured_job.prompt.contains("=== OUTPUT ==="));
         assert!(captured_job.allowed_tools.contains("read_file"));
         assert!(!captured_job.allowed_tools.contains("Agent"));
 

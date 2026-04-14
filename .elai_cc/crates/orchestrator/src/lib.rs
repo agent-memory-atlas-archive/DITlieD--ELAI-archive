@@ -1,4 +1,5 @@
 pub mod agent_pool;
+pub mod agent_template;
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
@@ -244,6 +245,10 @@ pub use deterministic_auditor::{
 pub use agent_pool::{
     default_grc_config, AgentHandle, AgentMessage, AgentPool, AgentPoolConfig, AgentPoolError,
     AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
+};
+pub use agent_template::{
+    build_agent_prompt, build_agent_system_preamble, AgentOutputFormat, AgentPromptContext,
+    AgentTemplateConfig, AgentTypeConfig,
 };
 pub use grc::{PipelineGrc, PipelineGrcError};
 pub use output_postprocessor::{process as postprocess_output, OutputConfig};
