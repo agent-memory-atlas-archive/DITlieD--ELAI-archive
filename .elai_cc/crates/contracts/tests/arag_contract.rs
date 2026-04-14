@@ -20,7 +20,8 @@ fn _assert_execute_tool_signature(orch: &AragOrchestrator, tracker: &mut Context
         keywords: vec![],
         top_k: 1,
     };
-    let _: Result<Vec<RetrievalResult>, Box<dyn Error>> = orch.execute_tool(tool, tracker);
+    let _: Result<Vec<RetrievalResult>, Box<dyn Error>> =
+        orch.execute_tool(tool, tracker).map_err(|e| Box::new(e) as Box<dyn Error>);
 }
 
 // Verify query_pipeline signature: (&self, &str, &DkgSnapshot) -> Result<Vec<RetrievalResult>, ...>
@@ -30,7 +31,7 @@ fn _assert_query_pipeline_signature(orch: &AragOrchestrator) {
         edges: vec![],
     };
     let _: Result<Vec<RetrievalResult>, Box<dyn Error>> =
-        orch.query_pipeline("q", &snapshot);
+        orch.query_pipeline("q", &snapshot).map_err(|e| Box::new(e) as Box<dyn Error>);
 }
 
 // Verify ContextTracker methods
