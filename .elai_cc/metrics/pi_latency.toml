@@ -1,132 +1,137 @@
 # A-16: PI latency benchmark (spec 3L.8)
 # Grounds UNGROUNDED cost estimates from project-intelligence-design.txt
+#
+# GROUNDING STATUS: all tiers grounded across Rust + Python + mixed projects.
+# DKG now parses all 7 languages (Rust/Python/Go/TS/Java/C#/Ruby).
+# All spec targets pass. Scaling note: 626K LOC Python project = 13.5s Tier 2,
+# linear scaling suggests ~25-27s at 1M+ LOC (still under 30s target).
 
 [project.swarm_main]
 name = "swarm-main"
 loc = 4103
-total_p50_ms = 3.2
+total_p50_ms = 6.9
 tier1_p50_ms = 1.2
-tier1_p95_ms = 1.3
+tier1_p95_ms = 1.5
 tier1_min_ms = 1.2
-tier1_max_ms = 1.3
+tier1_max_ms = 1.5
 tier1_runs = 3
-tier2_p50_ms = 2.0
-tier2_p95_ms = 2.3
-tier2_min_ms = 1.9
-tier2_max_ms = 2.3
+tier2_p50_ms = 5.5
+tier2_p95_ms = 5.8
+tier2_min_ms = 5.0
+tier2_max_ms = 5.8
 tier2_runs = 3
-tier3_p50_ms = 0.0
-tier3_p95_ms = 0.0
-tier3_min_ms = 0.0
-tier3_max_ms = 0.0
+tier3_p50_ms = 0.1
+tier3_p95_ms = 0.1
+tier3_min_ms = 0.1
+tier3_max_ms = 0.1
 tier3_runs = 3
 
 [project.nextest_main]
 name = "nextest-main"
 loc = 104616
-total_p50_ms = 365.6
-tier1_p50_ms = 0.9
-tier1_p95_ms = 0.9
+total_p50_ms = 345.6
+tier1_p50_ms = 1.0
+tier1_p95_ms = 1.0
 tier1_min_ms = 0.9
-tier1_max_ms = 0.9
+tier1_max_ms = 1.0
 tier1_runs = 3
-tier2_p50_ms = 362.0
-tier2_p95_ms = 363.6
-tier2_min_ms = 354.4
-tier2_max_ms = 363.6
+tier2_p50_ms = 341.9
+tier2_p95_ms = 345.3
+tier2_min_ms = 341.1
+tier2_max_ms = 345.3
 tier2_runs = 3
-tier3_p50_ms = 2.7
-tier3_p95_ms = 2.9
+tier3_p50_ms = 2.8
+tier3_p95_ms = 3.0
 tier3_min_ms = 2.7
-tier3_max_ms = 2.9
+tier3_max_ms = 3.0
 tier3_runs = 3
 
 [project.aider_main]
 name = "aider-main"
 loc = 49595
-total_p50_ms = 0.9
-tier1_p50_ms = 0.9
-tier1_p95_ms = 1.0
-tier1_min_ms = 0.9
-tier1_max_ms = 1.0
+total_p50_ms = 96.8
+tier1_p50_ms = 1.1
+tier1_p95_ms = 1.2
+tier1_min_ms = 1.0
+tier1_max_ms = 1.2
 tier1_runs = 3
-tier2_p50_ms = 0.0
-tier2_p95_ms = 0.0
-tier2_min_ms = 0.0
-tier2_max_ms = 0.0
+tier2_p50_ms = 94.9
+tier2_p95_ms = 96.2
+tier2_min_ms = 94.3
+tier2_max_ms = 96.2
 tier2_runs = 3
-tier3_p50_ms = 0.0
-tier3_p95_ms = 0.0
-tier3_min_ms = 0.0
-tier3_max_ms = 0.0
+tier3_p50_ms = 0.9
+tier3_p95_ms = 1.1
+tier3_min_ms = 0.9
+tier3_max_ms = 1.1
 tier3_runs = 3
 
 [project.semantic_router_main]
 name = "semantic-router-main"
 loc = 626235
-total_p50_ms = 143.5
-tier1_p50_ms = 2.9
+total_p50_ms = 13485.4
+tier1_p50_ms = 2.7
 tier1_p95_ms = 2.9
-tier1_min_ms = 2.7
+tier1_min_ms = 2.6
 tier1_max_ms = 2.9
 tier1_runs = 3
-tier2_p50_ms = 138.6
-tier2_p95_ms = 139.9
-tier2_min_ms = 136.0
-tier2_max_ms = 139.9
+tier2_p50_ms = 13478.1
+tier2_p95_ms = 13668.3
+tier2_min_ms = 13346.3
+tier2_max_ms = 13668.3
 tier2_runs = 3
-tier3_p50_ms = 2.0
-tier3_p95_ms = 2.2
-tier3_min_ms = 1.6
-tier3_max_ms = 2.2
+tier3_p50_ms = 4.6
+tier3_p95_ms = 5.9
+tier3_min_ms = 4.3
+tier3_max_ms = 5.9
 tier3_runs = 3
 
 [project._ELAI_lang]
 name = ".ELAI_lang"
 loc = 100073
-total_p50_ms = 929.4
-tier1_p50_ms = 28.2
-tier1_p95_ms = 28.6
-tier1_min_ms = 27.8
-tier1_max_ms = 28.6
+total_p50_ms = 79.9
+tier1_p50_ms = 28.3
+tier1_p95_ms = 28.4
+tier1_min_ms = 28.0
+tier1_max_ms = 28.4
 tier1_runs = 3
-tier2_p50_ms = 901.2
-tier2_p95_ms = 904.5
-tier2_min_ms = 858.4
-tier2_max_ms = 904.5
+tier2_p50_ms = 50.4
+tier2_p95_ms = 51.8
+tier2_min_ms = 50.0
+tier2_max_ms = 51.8
 tier2_runs = 3
-tier3_p50_ms = 0.0
-tier3_p95_ms = 0.0
-tier3_min_ms = 0.0
-tier3_max_ms = 0.0
+tier3_p50_ms = 1.3
+tier3_p95_ms = 1.3
+tier3_min_ms = 1.3
+tier3_max_ms = 1.3
 tier3_runs = 3
 
 [project._elai_cc]
 name = ".elai_cc"
-loc = 5498654
-total_p50_ms = 405.4
-tier1_p50_ms = 6.2
-tier1_p95_ms = 6.8
-tier1_min_ms = 5.9
-tier1_max_ms = 6.8
+loc = 5500047
+total_p50_ms = 577.7
+tier1_p50_ms = 6.1
+tier1_p95_ms = 6.2
+tier1_min_ms = 6.0
+tier1_max_ms = 6.2
 tier1_runs = 3
-tier2_p50_ms = 395.6
-tier2_p95_ms = 399.3
-tier2_min_ms = 382.4
-tier2_max_ms = 399.3
+tier2_p50_ms = 568.1
+tier2_p95_ms = 570.6
+tier2_min_ms = 565.1
+tier2_max_ms = 570.6
 tier2_runs = 3
-tier3_p50_ms = 3.6
-tier3_p95_ms = 3.6
+tier3_p50_ms = 3.5
+tier3_p95_ms = 3.5
 tier3_min_ms = 3.5
-tier3_max_ms = 3.6
+tier3_max_ms = 3.5
 tier3_runs = 3
 
 [summary]
 # Spec targets (formerly UNGROUNDED): Tier1 <5s, Tier2 <30s, Tier3 <60s, Total <90s
-worst_tier1_p95_ms = 28.6
-worst_tier2_p95_ms = 904.5
-worst_tier3_p95_ms = 3.6
-worst_total_p50_ms = 929.4
+worst_tier1_p95_ms = 28.4
+worst_tier2_p95_ms = 13668.3
+worst_tier3_p95_ms = 5.9
+worst_total_p50_ms = 13485.4
 tier1_under_5s = true
 tier2_under_30s = true
 tier3_under_60s = true
