@@ -119,7 +119,7 @@ pub struct SearchTriggerPayload {
     pub trigger_token_idx: i64,
 }
 
-/// GG intrinsic verification signals (A-17).
+/// GG intrinsic verification signals (A-17, A-25).
 ///
 /// Extracted from token logprobs and entropy during generation at zero
 /// additional inference cost. Used for AB-MCTS branch scoring (Layer 4).
@@ -133,6 +133,11 @@ pub struct GGSignals {
     pub entropy_mean: Option<f64>,
     /// Peak (maximum) token-level entropy during generation.
     pub entropy_max: Option<f64>,
+    /// Generation novelty (A-25): 1.0 - cosine_sim(current, previous) for same prompt.
+    /// 0.0 = identical to previous attempt, 1.0 = completely different.
+    /// None on first generation for a given prompt.
+    #[serde(default)]
+    pub generation_novelty: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +161,9 @@ struct CompletionResponse {
     entropy_mean: Option<f64>,
     #[serde(default)]
     entropy_max: Option<f64>,
+    /// Generation novelty signal (A-25).
+    #[serde(default)]
+    generation_novelty: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +277,7 @@ impl SidecarProvider {
             min_logprob: resp.min_logprob,
             entropy_mean: resp.entropy_mean,
             entropy_max: resp.entropy_max,
+            generation_novelty: resp.generation_novelty,
         };
         Ok((tokens, resp.search_trigger, gg))
     }
@@ -435,6 +444,7 @@ mod tests {
         assert!(gg.min_logprob.is_none());
         assert!(gg.entropy_mean.is_none());
         assert!(gg.entropy_max.is_none());
+        assert!(gg.generation_novelty.is_none());
     }
 
     #[test]
@@ -445,7 +455,8 @@ mod tests {
             "mean_logprob": -1.23,
             "min_logprob": -4.56,
             "entropy_mean": 2.1,
-            "entropy_max": 5.8
+            "entropy_max": 5.8,
+            "generation_novelty": 0.73
         }"#;
         let resp: CompletionResponse = serde_json::from_str(json).expect("deserialize");
         assert_eq!(resp.choices.len(), 1);
@@ -453,6 +464,7 @@ mod tests {
         assert!((resp.min_logprob.unwrap() - (-4.56)).abs() < f64::EPSILON);
         assert!((resp.entropy_mean.unwrap() - 2.1).abs() < f64::EPSILON);
         assert!((resp.entropy_max.unwrap() - 5.8).abs() < f64::EPSILON);
+        assert!((resp.generation_novelty.unwrap() - 0.73).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -466,5 +478,20 @@ mod tests {
         assert!(resp.min_logprob.is_none());
         assert!(resp.entropy_mean.is_none());
         assert!(resp.entropy_max.is_none());
+        assert!(resp.generation_novelty.is_none());
+    }
+
+    #[test]
+    fn gg_signals_with_novelty_roundtrip() {
+        let gg = GGSignals {
+            mean_logprob: Some(-1.5),
+            min_logprob: Some(-3.0),
+            entropy_mean: Some(1.8),
+            entropy_max: Some(4.2),
+            generation_novelty: Some(0.65),
+        };
+        let json = serde_json::to_string(&gg).expect("serialize");
+        let back: GGSignals = serde_json::from_str(&json).expect("deserialize");
+        assert!((back.generation_novelty.unwrap() - 0.65).abs() < f64::EPSILON);
     }
 }

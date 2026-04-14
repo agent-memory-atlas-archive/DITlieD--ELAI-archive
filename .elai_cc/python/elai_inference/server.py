@@ -80,6 +80,9 @@ THREAD_POOL_SIZE = 2
 # ETC (Entropy-Trend Constraint) constants
 ETC_THRESHOLD_DISABLED = float("inf")  # BLOCK-7: disabled until calibration
 ETC_RECENT_WINDOW = 20  # tokens to decode for import-context check
+
+# Novelty tracker (A-25) — max cached embeddings per prompt
+NOVELTY_CACHE_MAX_ENTRIES = 256
 # Matches Python/Rust/Go/JS/TS import lines in generated code
 IMPORT_CONTEXT_RE = re.compile(
     r"(?:^|\n)\s*(?:import |from |use |require\(|#include )", re.MULTILINE
@@ -977,6 +980,82 @@ class GGSignalCollector(LogitsProcessor):
 
 
 # ---------------------------------------------------------------------------
+# NoveltyTracker — generation novelty signal (A-25)
+# ---------------------------------------------------------------------------
+
+
+class NoveltyTracker:
+    """Tracks per-prompt generation embeddings for novelty scoring.
+
+    Computes cosine similarity between current generation and the last
+    generation for the same prompt. Returns 0.0 (identical) to 1.0
+    (completely different). Uses the generation model's own last hidden
+    layer (mean-pooled) as the embedding — zero extra VRAM.
+    """
+
+    def __init__(self, max_entries: int = NOVELTY_CACHE_MAX_ENTRIES) -> None:
+        self._cache: dict[str, np.ndarray] = {}
+        self._max_entries = max_entries
+
+    def compute(
+        self,
+        prompt: str,
+        generated_text: str,
+        model: "AutoModelForCausalLM",
+        tokenizer: "AutoTokenizer",
+    ) -> float:
+        """Compute generation novelty for this prompt.
+
+        Returns 0.0 on first generation for a prompt (no prior to compare).
+        """
+        embedding = self._embed(generated_text, model, tokenizer)
+        if embedding is None:
+            return 0.0
+
+        prev = self._cache.get(prompt)
+
+        # Evict oldest if at capacity and this is a new prompt
+        if prev is None and len(self._cache) >= self._max_entries:
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+
+        self._cache[prompt] = embedding
+
+        if prev is None:
+            return 0.0
+
+        sim = self._cosine_similarity(prev, embedding)
+        return float(np.clip(1.0 - sim, 0.0, 1.0))
+
+    @staticmethod
+    def _embed(
+        text: str,
+        model: "AutoModelForCausalLM",
+        tokenizer: "AutoTokenizer",
+    ) -> np.ndarray | None:
+        """Mean-pool last hidden layer of the model for the given text."""
+        if not text.strip():
+            return None
+        tokens = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        tokens = {k: v.to(model.device) for k, v in tokens.items()}
+        with torch.inference_mode():
+            out = model(**tokens, output_hidden_states=True)
+        last_hidden = out.hidden_states[-1]  # (1, seq_len, hidden_dim)
+        mask = tokens["attention_mask"].unsqueeze(-1)  # (1, seq_len, 1)
+        pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        return pooled[0].float().cpu().numpy()
+
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        dot = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-12 or norm_b < 1e-12:
+            return 0.0
+        return float(dot / (norm_a * norm_b))
+
+
+# ---------------------------------------------------------------------------
 # VRAM logging
 # ---------------------------------------------------------------------------
 
@@ -1118,6 +1197,9 @@ class InferenceEngine:
         # GG intrinsic verification signal collector (A-17)
         self._gg_collector = GGSignalCollector()
 
+        # Generation novelty tracker (A-25)
+        self._novelty_tracker = NoveltyTracker()
+
         logger.info(
             "engine_ready",
             layers=self.n_layers,
@@ -1153,7 +1235,8 @@ class InferenceEngine:
 
         Returns (text, token_ids, input_token_count, search_trigger, gg_signals).
         search_trigger is None unless ETC detected a high-entropy import context.
-        gg_signals contains mean_logprob, min_logprob, entropy_mean, entropy_max.
+        gg_signals contains mean_logprob, min_logprob, entropy_mean, entropy_max,
+        generation_novelty (A-25).
         """
         max_tokens = max_tokens or self.max_new_tokens
 
@@ -1361,7 +1444,15 @@ class InferenceEngine:
         _log_vram("after_generate")
 
         gg_signals = self._gg_collector.signals()
-        return text.strip(), generated_ids, input_token_count, search_trigger, gg_signals
+
+        # A-25: generation novelty — cosine distance from previous attempt
+        stripped_text = text.strip()
+        novelty = self._novelty_tracker.compute(
+            prompt, stripped_text, self.model, self.tokenizer,
+        )
+        gg_signals["generation_novelty"] = novelty
+
+        return stripped_text, generated_ids, input_token_count, search_trigger, gg_signals
 
 
 # ---------------------------------------------------------------------------
@@ -1757,6 +1848,7 @@ async def handle_completions(request: Request):
         "min_logprob": gg_signals.get("min_logprob"),
         "entropy_mean": gg_signals.get("entropy_mean"),
         "entropy_max": gg_signals.get("entropy_max"),
+        "generation_novelty": gg_signals.get("generation_novelty"),
         "elai_metadata": {
             "dola_enabled": _engine.dola_enabled,
             "turboquant_enabled": _engine.kv_compressor.enabled,
