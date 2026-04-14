@@ -260,6 +260,38 @@ pub fn query_deprecated_patterns(
     Ok(entries)
 }
 
+/// Upsert a single entry into the deprecated_patterns table.
+///
+/// Uses INSERT OR REPLACE so that re-running the audit overwrites stale rows
+/// for the same (pattern_id). Called by the `dep-audit` CLI subcommand.
+pub fn upsert_deprecated_pattern(
+    conn: &Connection,
+    pattern_id: &str,
+    ecosystem: &str,
+    deprecated_name: &str,
+    replacement_name: &str,
+    deprecated_since: Option<&str>,
+    severity: &str,
+    reason: &str,
+) -> Result<(), RulesDbError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO deprecated_patterns \
+         (pattern_id, ecosystem, deprecated_name, replacement_name, \
+          deprecated_since, severity, reason) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            pattern_id,
+            ecosystem,
+            deprecated_name,
+            replacement_name,
+            deprecated_since,
+            severity,
+            reason,
+        ],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

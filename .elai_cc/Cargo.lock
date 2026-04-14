@@ -746,11 +746,13 @@ dependencies = [
  "pulldown-cmark",
  "reqwest",
  "rustyline",
+ "semver",
  "serde",
  "serde_json",
  "syntect",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]

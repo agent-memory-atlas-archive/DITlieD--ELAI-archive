@@ -7,6 +7,7 @@
     clippy::unused_self
 )]
 mod commands;
+mod dep_audit;
 mod init;
 mod input;
 mod render;
@@ -222,6 +223,10 @@ fn run() -> Result<(), anyhow::Error> {
             allowed_tools,
             permission_mode,
         } => run_repl(model, allowed_tools, permission_mode)?,
+        CliAction::DepAudit {
+            project_dir,
+            output_format,
+        } => run_dep_audit_command(&project_dir, output_format)?,
         CliAction::Local { port } => run_local_repl(port)?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
@@ -293,6 +298,10 @@ enum CliAction {
         model: String,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+    },
+    DepAudit {
+        project_dir: PathBuf,
+        output_format: CliOutputFormat,
     },
     Local {
         port: u16,
@@ -496,6 +505,17 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             output_format,
         }),
         "system-prompt" => parse_system_prompt_args(&rest[1..], output_format),
+        "dep-audit" => {
+            let project_dir = if rest.len() > 1 {
+                PathBuf::from(&rest[1])
+            } else {
+                std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?
+            };
+            Ok(CliAction::DepAudit {
+                project_dir,
+                output_format,
+            })
+        }
         "login" => Ok(CliAction::Login { output_format }),
         "logout" => Ok(CliAction::Logout { output_format }),
         "init" => Ok(CliAction::Init { output_format }),
@@ -574,6 +594,7 @@ fn bare_slash_command_guidance(command_name: &str) -> Option<String> {
             | "mcp"
             | "skills"
             | "system-prompt"
+            | "dep-audit"
             | "login"
             | "logout"
             | "init"
@@ -1045,6 +1066,49 @@ fn render_doctor_report() -> Result<DoctorReport, anyhow::Error> {
             check_system_health(&cwd, config.as_ref().ok()),
         ],
     })
+}
+
+fn run_dep_audit_command(
+    project_dir: &Path,
+    output_format: CliOutputFormat,
+) -> Result<(), anyhow::Error> {
+    let clock = elai_core::OsClock;
+    let rules_db_path = project_dir.join("rules.db");
+    let result = dep_audit::run_dep_audit(project_dir, &rules_db_path, &clock)?;
+
+    match output_format {
+        CliOutputFormat::Text => {
+            println!("dep-audit: {} ecosystem(s) scanned, {} outdated",
+                result.ecosystems_scanned.len(), result.total_outdated);
+            for entry in &result.entries {
+                println!("  [{severity}] {eco}/{name}: {cur} -> {lat}",
+                    severity = entry.severity,
+                    eco = entry.ecosystem,
+                    name = entry.name,
+                    cur = entry.current_version,
+                    lat = entry.latest_version,
+                );
+            }
+            if !result.errors.is_empty() {
+                println!("  {} error(s) during audit", result.errors.len());
+                for err in &result.errors {
+                    println!("    - {err}");
+                }
+            }
+        }
+        CliOutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "kind": "dep-audit",
+                "total_outdated": result.total_outdated,
+                "ecosystems_scanned": result.ecosystems_scanned,
+                "entries": result.entries,
+                "errors": result.errors,
+                "timestamp": result.timestamp,
+            }))?
+        ),
+    }
+    Ok(())
 }
 
 fn run_doctor(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
