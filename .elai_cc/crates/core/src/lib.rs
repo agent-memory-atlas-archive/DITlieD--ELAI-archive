@@ -3,6 +3,7 @@ pub mod clock;
 pub mod config;
 pub mod entropy;
 pub mod interrogation_tree;
+pub mod micro_reflection;
 pub mod mistake_book;
 pub mod json;
 pub mod project_profile;
@@ -41,6 +42,13 @@ pub use project_profile::{
 pub use mistake_book::{
     contains_diff, format_constraints, insert_with_eviction, DiffHash, FailureCategory,
     MistakeEntry, DIFF_HASH_SHORT_LEN, MAX_ENTRIES_PER_STEP, MAX_INJECTION_TOKENS,
+};
+
+pub use micro_reflection::{
+    parse_response as parse_reflection_response, MicroReflectionRequest, MicroReflectionResponse,
+    ReflectionError, CHARS_PER_TOKEN, CODE_BUDGET_TOKENS, CONTEXT_BUDGET_TOKENS,
+    ERROR_BUDGET_TOKENS, GOAL_BUDGET_TOKENS, MAX_ACTION_WORDS, MAX_OUTPUT_TOKENS,
+    MAX_ROOT_CAUSE_WORDS, REFLECTION_SCHEMA_VERSION, TYPES_BUDGET_TOKENS,
 };
 
 pub use interrogation_tree::{
