@@ -34,7 +34,7 @@ pub use providers::{
     detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind,
 };
 #[cfg(feature = "sidecar")]
-pub use sidecar_client::{SidecarConfig, SidecarProvider};
+pub use sidecar_client::{SearchTriggerPayload, SidecarConfig, SidecarProvider};
 #[cfg(feature = "vllm")]
 pub use vllm_client::{
     InferenceBackend, VllmConfig, VllmHealthStatus, VllmModelPool, VllmProvider,

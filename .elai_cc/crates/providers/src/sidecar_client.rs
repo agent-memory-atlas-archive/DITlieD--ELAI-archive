@@ -6,7 +6,7 @@
 //!
 //! All code in this module is gated behind `cfg(feature = "sidecar")`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,34 @@ use crate::providers::ollama::{LlmFuture, LlmProvider, OllamaConfig};
 
 /// Default sidecar server URL.
 pub const DEFAULT_SIDECAR_URL: &str = "http://localhost:8100";
+
+fn default_etc_threshold() -> f64 {
+    f64::INFINITY
+}
+
+/// Serde helper: serialize f64::INFINITY as null, deserialize null/missing as infinity.
+mod etc_threshold_serde {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value.is_infinite() {
+            serializer.serialize_none()
+        } else {
+            serializer.serialize_f64(*value)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<f64> = Option::deserialize(deserializer)?;
+        Ok(opt.unwrap_or(f64::INFINITY))
+    }
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // Longer — HF Transformers is slower
@@ -49,6 +77,9 @@ pub struct SidecarConfig {
     pub temperature: f32,
     /// Max tokens per completion.
     pub max_tokens: u32,
+    /// ETC entropy threshold (f64::INFINITY = disabled until calibration).
+    #[serde(default = "default_etc_threshold", with = "etc_threshold_serde")]
+    pub etc_threshold: f64,
 }
 
 impl Default for SidecarConfig {
@@ -64,6 +95,7 @@ impl Default for SidecarConfig {
             steering_layer: "auto".to_string(),
             temperature: 0.0,
             max_tokens: 256,
+            etc_threshold: f64::INFINITY,
         }
     }
 }
@@ -71,6 +103,21 @@ impl Default for SidecarConfig {
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
+
+/// ETC (Entropy-Trend Constraint) search trigger payload.
+///
+/// Populated when ETC detects a high-entropy moment in import context during
+/// generation. The orchestrator can use this to inject search results and
+/// regenerate from the trigger point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchTriggerPayload {
+    /// Generated text up to the high-entropy trigger point.
+    pub partial_text: String,
+    /// What context triggered ETC (e.g., "import").
+    pub detected_context: String,
+    /// Token index where the trigger occurred.
+    pub trigger_token_idx: i64,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct CompletionChoice {
@@ -82,6 +129,8 @@ struct CompletionChoice {
 #[derive(Debug, Clone, Deserialize)]
 struct CompletionResponse {
     choices: Vec<CompletionChoice>,
+    /// ETC search trigger — present only when entropy monitoring fires.
+    search_trigger: Option<SearchTriggerPayload>,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +143,8 @@ pub struct SidecarProvider {
     config: SidecarConfig,
     client: reqwest::Client,
     clock: Arc<dyn ClockProvider>,
+    /// Last ETC search trigger from the most recent completion (if any).
+    last_search_trigger: Mutex<Option<SearchTriggerPayload>>,
 }
 
 impl std::fmt::Debug for SidecarProvider {
@@ -118,6 +169,7 @@ impl SidecarProvider {
             config,
             client,
             clock,
+            last_search_trigger: Mutex::new(None),
         })
     }
 
@@ -137,7 +189,12 @@ impl SidecarProvider {
     }
 
     /// Send a completion request to /v1/completions.
-    async fn complete_impl(&self, prompt: &str) -> Result<Vec<String>, ApiError> {
+    ///
+    /// Returns (completions, optional ETC search trigger).
+    async fn complete_impl(
+        &self,
+        prompt: &str,
+    ) -> Result<(Vec<String>, Option<SearchTriggerPayload>), ApiError> {
         let url = format!("{}/v1/completions", self.config.server_url);
         let body = serde_json::json!({
             "prompt": prompt,
@@ -179,7 +236,16 @@ impl SidecarProvider {
                 }
             })
             .collect();
-        Ok(tokens)
+        Ok((tokens, resp.search_trigger))
+    }
+
+    /// Access the last ETC search trigger from the most recent completion.
+    /// Callers should check this after `complete()` to decide on search injection.
+    pub fn last_search_trigger(&self) -> Option<SearchTriggerPayload> {
+        self.last_search_trigger
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 }
 
@@ -197,14 +263,33 @@ impl LlmProvider for SidecarProvider {
             let start = self.clock.now();
             let result = self.complete_impl(prompt).await;
             let elapsed = self.clock.elapsed_since(start);
-            tracing::debug!(
-                target: "providers::sidecar",
-                elapsed_ms = elapsed.as_millis() as u64,
-                dola = self.config.dola_enabled,
-                turboquant_bits = self.config.turboquant_bits,
-                "sidecar completion finished"
-            );
-            result
+
+            match result {
+                Ok((completions, trigger)) => {
+                    let triggered = trigger.is_some();
+                    if let Ok(mut guard) = self.last_search_trigger.lock() {
+                        *guard = trigger;
+                    }
+                    tracing::debug!(
+                        target: "providers::sidecar",
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        dola = self.config.dola_enabled,
+                        turboquant_bits = self.config.turboquant_bits,
+                        etc_triggered = triggered,
+                        "sidecar completion finished"
+                    );
+                    Ok(completions)
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        target: "providers::sidecar",
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        error = %e,
+                        "sidecar completion failed"
+                    );
+                    Err(e)
+                }
+            }
         })
     }
 
@@ -245,6 +330,7 @@ mod tests {
         assert!(config.dola_enabled);
         assert_eq!(config.turboquant_bits, 4);
         assert_eq!(config.dola_alpha, 0.1);
+        assert!(config.etc_threshold.is_infinite());
     }
 
     #[test]
@@ -268,6 +354,7 @@ mod tests {
             steering_layer: "auto".to_string(),
             temperature: 0.7,
             max_tokens: 512,
+            etc_threshold: 2.5,
         };
 
         let json = serde_json::to_string(&config).expect("serialize");
@@ -275,5 +362,22 @@ mod tests {
         assert!(back.dola_enabled);
         assert_eq!(back.turboquant_bits, 3);
         assert_eq!(back.dola_alpha, 0.05);
+        assert!((back.etc_threshold - 2.5).abs() < f64::EPSILON);
+
+        // Verify infinity round-trips via null
+        let default_config = SidecarConfig::default();
+        let json2 = serde_json::to_string(&default_config).expect("serialize default");
+        assert!(json2.contains("\"etc_threshold\":null"));
+        let back2: SidecarConfig = serde_json::from_str(&json2).expect("deserialize default");
+        assert!(back2.etc_threshold.is_infinite());
+    }
+
+    #[test]
+    fn search_trigger_payload_deserialization() {
+        let json = r#"{"partial_text":"import ","detected_context":"import","trigger_token_idx":42}"#;
+        let payload: SearchTriggerPayload = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(payload.partial_text, "import ");
+        assert_eq!(payload.detected_context, "import");
+        assert_eq!(payload.trigger_token_idx, 42);
     }
 }

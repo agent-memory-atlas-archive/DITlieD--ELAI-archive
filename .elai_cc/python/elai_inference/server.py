@@ -77,6 +77,14 @@ MAX_NEW_TOKENS_DEFAULT = 256
 STREAMER_TIMEOUT_S = 30
 THREAD_POOL_SIZE = 2
 
+# ETC (Entropy-Trend Constraint) constants
+ETC_THRESHOLD_DISABLED = float("inf")  # BLOCK-7: disabled until calibration
+ETC_RECENT_WINDOW = 20  # tokens to decode for import-context check
+# Matches Python/Rust/Go/JS/TS import lines in generated code
+IMPORT_CONTEXT_RE = re.compile(
+    r"(?:^|\n)\s*(?:import |from |use |require\(|#include )", re.MULTILINE
+)
+
 # Core tools the small model can handle (filter from full tool list)
 CORE_TOOLS = frozenset({
     "bash", "read_file", "write_file", "edit_file",
@@ -224,8 +232,9 @@ class SteeringEngine:
                 logger.warning("steering_vector_too_small", magnitude=magnitude)
                 return None
 
-            logger.info("computed_steering_vector", layer=layer_idx, magnitude=round(magnitude, 4))
-            return steering_vector.numpy()
+            self.add_vector(layer_idx, steering_vector)
+            logger.info("computed_steering_vector", layer=layer_idx, magnitude=round(magnitude, 4), stored=True)
+            return steering_vector.float().numpy()
         except Exception:
             logger.exception("steering_vector_compute_failed")
             return None
@@ -829,6 +838,86 @@ def _get_decoder_layers(model):
 
 
 # ---------------------------------------------------------------------------
+# ETCLogitsProcessor — entropy-trend constraint monitoring (A-9)
+# ---------------------------------------------------------------------------
+
+
+class ETCLogitsProcessor(LogitsProcessor):
+    """Monitors entropy trends during model.generate() and flags
+    high-uncertainty tokens for post-generation search.
+
+    Observes the second derivative of token entropy (d2H). When d2H exceeds
+    the threshold AND the recent context matches an import pattern, sets
+    ``triggered = True`` with the trigger position. Never modifies scores.
+
+    BLOCK-7: threshold defaults to infinity (disabled) until calibration.
+    """
+
+    def __init__(
+        self,
+        threshold: float,
+        import_pattern: re.Pattern,
+        tokenizer,
+    ):
+        self.threshold = threshold
+        self.import_pattern = import_pattern
+        self.tokenizer = tokenizer
+        # Running state (reset per generation call)
+        self.h_prev: float = 0.0
+        self.dh_prev: float = 0.0
+        self.triggered: bool = False
+        self.trigger_token_idx: int = -1
+        # Calibration data (populated when threshold == 0)
+        self.d2h_log: list[tuple[int, float, bool]] = []
+
+    def reset(self) -> None:
+        """Reset state for a new generation call."""
+        self.h_prev = 0.0
+        self.dh_prev = 0.0
+        self.triggered = False
+        self.trigger_token_idx = -1
+        self.d2h_log.clear()
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        # Compute entropy of the score distribution
+        probs = torch.softmax(scores[0], dim=-1)
+        log_probs = torch.log(probs + EPSILON)
+        h = -(probs * log_probs).sum().item()
+
+        dh = h - self.h_prev
+        d2h = dh - self.dh_prev
+        self.h_prev = h
+        self.dh_prev = dh
+
+        # Check for import context in recent tokens
+        token_pos = input_ids.shape[1]
+        is_import = False
+        if d2h > self.threshold or self.threshold == 0.0:
+            recent_ids = input_ids[0, -ETC_RECENT_WINDOW:]
+            recent_text = self.tokenizer.decode(recent_ids, skip_special_tokens=True)
+            is_import = bool(self.import_pattern.search(recent_text))
+
+        # Log for calibration (when threshold == 0, log everything)
+        if self.threshold == 0.0:
+            self.d2h_log.append((token_pos, d2h, is_import))
+
+        # Trigger only when above threshold AND in import context
+        if not self.triggered and d2h > self.threshold and is_import:
+            self.triggered = True
+            self.trigger_token_idx = token_pos
+            logger.info(
+                "etc_triggered",
+                token_pos=token_pos,
+                d2h=round(d2h, 4),
+                h=round(h, 4),
+            )
+
+        return scores  # never modify scores, only observe
+
+
+# ---------------------------------------------------------------------------
 # VRAM logging
 # ---------------------------------------------------------------------------
 
@@ -873,6 +962,7 @@ class InferenceEngine:
         max_new_tokens: int = MAX_NEW_TOKENS_DEFAULT,
         device_map: str = "auto",
         load_in_4bit: bool = True,
+        etc_threshold: float = ETC_THRESHOLD_DISABLED,
     ):
         # Auto-detect FA2 availability
         try:
@@ -946,6 +1036,26 @@ class InferenceEngine:
                 steering_engine=self.steering_engine,
             )
 
+        # ETC entropy-trend constraint processor (A-9)
+        self.etc_threshold = etc_threshold
+        self.etc_enabled = etc_threshold != ETC_THRESHOLD_DISABLED
+        self._etc_processor: ETCLogitsProcessor | None = None
+        if self.etc_enabled:
+            # DoLa and ETC must not stack on models < 32B (spec constraint)
+            if dola_enabled and self.n_layers < 64:
+                logger.warning(
+                    "etc_dola_conflict",
+                    layers=self.n_layers,
+                    msg="DoLa disabled — ETC takes priority on <32B models",
+                )
+                self._dola_processor = None
+                self.dola_enabled = False
+            self._etc_processor = ETCLogitsProcessor(
+                threshold=etc_threshold,
+                import_pattern=IMPORT_CONTEXT_RE,
+                tokenizer=self.tokenizer,
+            )
+
         logger.info(
             "engine_ready",
             layers=self.n_layers,
@@ -956,6 +1066,8 @@ class InferenceEngine:
             kv_quant=self.kv_compressor.enabled,
             kv_quant_bits=turboquant_bits,
             steering=steering_enabled,
+            etc_enabled=self.etc_enabled,
+            etc_threshold=etc_threshold,
         )
 
     def _format_prompt(self, prompt: str) -> str:
@@ -974,8 +1086,12 @@ class InferenceEngine:
         prompt: str,
         max_tokens: int | None = None,
         temperature: float = 0.0,
-    ) -> tuple[str, list[int], int]:
-        """Generate text synchronously. Returns (text, token_ids, input_token_count)."""
+    ) -> tuple[str, list[int], int, dict | None]:
+        """Generate text synchronously.
+
+        Returns (text, token_ids, input_token_count, search_trigger).
+        search_trigger is None unless ETC detected a high-entropy import context.
+        """
         max_tokens = max_tokens or self.max_new_tokens
 
         with self.lock:
@@ -1128,6 +1244,10 @@ class InferenceEngine:
         if self.dola_enabled and self._dola_processor is not None:
             self._dola_processor.register_hooks()
             logits_processors.append(self._dola_processor)
+        if self._etc_processor is not None:
+            self._etc_processor.reset()
+            logits_processors.append(self._etc_processor)
+        if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
         try:
@@ -1149,6 +1269,17 @@ class InferenceEngine:
         ]:
             text = text.replace(token, "")
 
+        # Build ETC search trigger payload if triggered
+        search_trigger = None
+        if self._etc_processor is not None and self._etc_processor.triggered:
+            trigger_idx = self._etc_processor.trigger_token_idx - gen_prefix_len
+            partial = text[:max(0, trigger_idx * 4)]  # approximate char position
+            search_trigger = {
+                "partial_text": partial,
+                "detected_context": "import",
+                "trigger_token_idx": self._etc_processor.trigger_token_idx,
+            }
+
         gen_elapsed_ms = (time.time() - gen_start) * 1000
         out_tokens = len(generated_ids)
         tps = out_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0
@@ -1159,10 +1290,11 @@ class InferenceEngine:
             elapsed_ms=round(gen_elapsed_ms),
             tok_per_s=round(tps, 1),
             chunked=input_token_count > self.PREFILL_CHUNK_SIZE,
+            etc_triggered=search_trigger is not None,
         )
         _log_vram("after_generate")
 
-        return text.strip(), generated_ids, input_token_count
+        return text.strip(), generated_ids, input_token_count, search_trigger
 
 
 # ---------------------------------------------------------------------------
@@ -1430,9 +1562,11 @@ async def compute_steering(request: Request):
             {"error": "positive_prompt and negative_prompt are required"},
             status_code=400,
         )
-    if layer_idx is None or not isinstance(layer_idx, int):
+    if layer_idx is None:
+        layer_idx = _engine.n_layers // 3  # auto: target layer for steering
+    if not isinstance(layer_idx, int):
         return OrjsonResponse(
-            {"error": "layer_idx (int) is required"}, status_code=400
+            {"error": "layer_idx must be an int"}, status_code=400
         )
     if layer_idx < 0 or layer_idx >= _engine.n_layers:
         return OrjsonResponse(
@@ -1522,7 +1656,7 @@ async def handle_completions(request: Request):
 
     t0 = time.time()
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count = await loop.run_in_executor(
+    text, tokens, input_token_count, search_trigger = await loop.run_in_executor(
         _thread_pool,
         lambda: _engine.generate(prompt, max_tokens, temperature),
     )
@@ -1551,6 +1685,7 @@ async def handle_completions(request: Request):
             "completion_tokens": len(tokens),
             "total_tokens": input_token_count + len(tokens),
         },
+        "search_trigger": search_trigger,
         "elai_metadata": {
             "dola_enabled": _engine.dola_enabled,
             "turboquant_enabled": _engine.kv_compressor.enabled,
@@ -1567,6 +1702,14 @@ async def handle_completions(request: Request):
                 else None
             ),
             "elapsed_ms": int(elapsed * 1000),
+            "etc_enabled": _engine.etc_enabled,
+            "etc_triggered": search_trigger is not None,
+            "etc_d2h_log": (
+                _engine._etc_processor.d2h_log
+                if _engine._etc_processor is not None
+                and _engine.etc_threshold == 0.0
+                else []
+            ),
         },
     }
     return OrjsonResponse(response)
@@ -1755,7 +1898,7 @@ async def _non_stream_messages_response(
     temperature: float = 0.0,
 ) -> OrjsonResponse:
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count = await loop.run_in_executor(
+    text, tokens, input_token_count, _search_trigger = await loop.run_in_executor(
         _thread_pool,
         lambda: _engine.generate(prompt, max_tokens, temperature),
     )
@@ -1848,6 +1991,12 @@ def main():
         help="Path to pre-computed steering vector (.npz or .safetensors), "
         "or comma-separated list for multiple vectors",
     )
+    parser.add_argument(
+        "--etc-threshold",
+        type=float,
+        default=ETC_THRESHOLD_DISABLED,
+        help="ETC entropy threshold (inf=disabled until calibration, 0=calibration mode)",
+    )
     parser.add_argument("--max-tokens", type=int, default=MAX_NEW_TOKENS_DEFAULT)
     parser.add_argument(
         "--load-in-4bit",
@@ -1882,6 +2031,7 @@ def main():
         steering_layer=args.steering_layer,
         max_new_tokens=args.max_tokens,
         load_in_4bit=args.load_in_4bit,
+        etc_threshold=args.etc_threshold,
     )
 
     # Load pre-computed steering vectors if provided
