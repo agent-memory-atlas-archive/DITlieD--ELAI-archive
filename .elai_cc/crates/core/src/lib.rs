@@ -9,6 +9,8 @@ pub mod json;
 pub mod project_profile;
 pub mod sandbox;
 mod usage;
+pub mod research_types;
+pub mod source_tier;
 pub mod vram_tier;
 
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
@@ -56,6 +58,18 @@ pub use interrogation_tree::{
     Choice, ChoiceId, FixTemplate, InterrogationTree, QuestionNode, TraversalOutcome,
     TraversalState, MAX_CHOICES, MAX_TRAVERSAL_TOKENS, MAX_TREE_DEPTH, MIN_CHOICES,
     TOKENS_PER_QUESTION, TREE_SCHEMA_VERSION,
+};
+
+pub use source_tier::{
+    classify_source, load_source_tier_config, parse_source_tier_config,
+    ClassificationMethod, SourceClassification, SourceTier, SourceTierConfig, SourceTierError,
+};
+
+pub use research_types::{
+    generate_fact_id, AnswerConfidence, ExtractedFact, ResearchAnswer, ResearchPipelineError,
+    ResearchQuery, VerificationLevel, VerifiedClaim,
+    DEFAULT_MAX_SOURCES, FACT_ID_HEX_LEN, MAX_RESYNTHESIS_RETRIES, MAX_SEARCH_QUERIES,
+    MAX_UNCITED_SENTENCES, MIN_SEARCH_QUERIES, SUPPORTED_MIN_SOURCES, VERIFIED_MIN_SOURCES,
 };
 
 pub use vram_tier::{

@@ -1,0 +1,91 @@
+# Source tier classification config for Oracle research pipeline.
+# T1 = authoritative primary sources. T2 = strong community sources.
+# T3 = implicit default (anything not matched). T4 = blocklisted.
+
+[tier1]
+domains = [
+    "doc.rust-lang.org",
+    "docs.python.org",
+    "developer.mozilla.org",
+    "www.w3.org",
+    "tc39.es",
+    "www.rfc-editor.org",
+    "datatracker.ietf.org",
+    "peps.python.org",
+    "arxiv.org",
+    "dl.acm.org",
+    "ieeexplore.ieee.org",
+    "www.nature.com",
+    "www.science.org",
+    "learn.microsoft.com",
+    "docs.oracle.com",
+    "docs.aws.amazon.com",
+    "cloud.google.com",
+    "pytorch.org",
+    "huggingface.co",
+    "docs.rs",
+    "crates.io",
+    "pypi.org",
+    "nodejs.org",
+    "go.dev",
+    "cppreference.com",
+    "man7.org",
+    "www.kernel.org",
+    "openai.com",
+    "docs.anthropic.com",
+]
+patterns = [
+    '\.gov$',
+    '\.edu$',
+    '\.ac\.[a-z]{2}$',
+    '^docs\.',
+    '^api\.',
+    '^spec\.',
+    '^reference\.',
+    '^standards\.',
+]
+
+[tier2]
+domains = [
+    "github.com",
+    "stackoverflow.com",
+    "serverfault.com",
+    "superuser.com",
+    "news.ycombinator.com",
+    "www.reddit.com",
+    "blog.rust-lang.org",
+    "fasterthanli.me",
+    "matklad.github.io",
+    "without.boats",
+    "smallcultfollowing.com",
+    "realpython.com",
+    "testdriven.io",
+    "www.baeldung.com",
+    "css-tricks.com",
+    "web.dev",
+    "kentcdodds.com",
+    "overreacted.io",
+    "blog.logrocket.com",
+]
+min_so_score = 20
+
+[tier4_blocklist]
+domains = [
+    "w3schools.com",
+    "tutorialspoint.com",
+    "geeksforgeeks.org",
+    "programiz.com",
+    "javatpoint.com",
+    "guru99.com",
+    "freecodecamp.org",
+    "www.educba.com",
+    "www.simplilearn.com",
+]
+patterns = [
+    'seo-',
+    '-tutorial\.com$',
+    'generated-content\.',
+    'ai-written\.',
+    'auto-blog\.',
+    'content-farm\.',
+]

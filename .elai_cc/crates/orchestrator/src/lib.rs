@@ -35,6 +35,7 @@ mod preload;
 mod prompt;
 pub mod recovery;
 pub mod recovery_recipes;
+pub mod research_pipeline;
 mod remote;
 mod session;
 #[cfg(test)]
@@ -197,6 +198,12 @@ pub use elai_rules::policy_engine::{
 pub use prompt::{
     load_system_prompt, prepend_bullets, ContextFile, ProjectContext, PromptBuildError,
     SystemPromptBuilder, FRONTIER_MODEL_NAME, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+};
+pub use research_pipeline::{
+    run_research_pipeline, phase_a_formulate_queries, phase_b_search, phase_c_classify,
+    phase_d_extract_facts, phase_e_cross_verify, phase_f_synthesize, phase_g_post_verify,
+    ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
+    SearchBackend, SearchResult, StubSearchBackend,
 };
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
