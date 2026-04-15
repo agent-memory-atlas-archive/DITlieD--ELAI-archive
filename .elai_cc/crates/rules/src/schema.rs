@@ -18,7 +18,7 @@ use crate::error::RulesDbError;
 // ---------------------------------------------------------------------------
 
 /// Current schema version. Bump when any CREATE/ALTER statement changes.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -141,6 +141,22 @@ CREATE TABLE IF NOT EXISTS interrogation_trees (
 const CREATE_INTERROGATION_TREES_INDEX: &str = "\
 CREATE INDEX IF NOT EXISTS idx_interrogation_trees_lang_domain \
 ON interrogation_trees (language, domain)";
+
+const CREATE_FAILURE_CATEGORY_PROPOSALS_TABLE: &str = "\
+CREATE TABLE IF NOT EXISTS failure_category_proposals (
+    proposal_id             TEXT PRIMARY KEY,
+    suggested_name          TEXT NOT NULL,
+    description             TEXT NOT NULL,
+    evidence_pattern_ids    TEXT NOT NULL,
+    suggested_predicate_type TEXT NOT NULL CHECK(suggested_predicate_type IN (
+        'GREP_PATTERN', 'GRAPH_REACHABILITY'
+    )),
+    fix_template            TEXT NOT NULL,
+    closest_existing        TEXT NOT NULL,
+    confidence              INTEGER NOT NULL CHECK(confidence BETWEEN 0 AND 100),
+    created_at              TEXT NOT NULL,
+    domain                  TEXT
+)";
 
 // ---------------------------------------------------------------------------
 // Seed data for deprecated_patterns (from outdated-tech-audit.md)
@@ -447,6 +463,22 @@ pub fn run_migration(conn: &Connection, clock: &impl ClockProvider) -> Result<()
         )?;
     }
 
+    // Version 4 → 5: add failure_category_proposals table for taxonomy self-discovery.
+    if current < 5 {
+        conn.execute_batch(CREATE_FAILURE_CATEGORY_PROPOSALS_TABLE)?;
+
+        let now_epoch = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![5_i64, now_epoch],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -499,6 +531,7 @@ mod tests {
         assert!(tables.contains(&"rule_transitions".to_string()));
         assert!(tables.contains(&"deprecated_patterns".to_string()));
         assert!(tables.contains(&"interrogation_trees".to_string()));
+        assert!(tables.contains(&"failure_category_proposals".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
     }
 

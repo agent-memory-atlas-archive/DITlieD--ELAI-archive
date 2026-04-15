@@ -16,8 +16,9 @@ use elai_rules::predicate::{
 use elai_rules::rule_engine::DefaultRuleEngine;
 use elai_rules::schema::open_rules_db;
 use elai_rules::self_discovery::{
-    hash_pattern, normalize_pattern, record_violation, score_violation, try_propose_rule,
-    RecordOutcome, SelfDiscoveryConfig, SelfDiscoveryError, ViolationRecord,
+    detect_recurring_category_gap, hash_pattern, normalize_pattern, record_violation,
+    score_violation, try_propose_rule, RecordOutcome, SelfDiscoveryConfig, SelfDiscoveryError,
+    ViolationRecord,
 };
 
 use elai_rules::error::LifecycleError;
@@ -476,5 +477,144 @@ fn contract_score_composite_max_15() {
         composite <= 15,
         "composite {} > 15 (c={c}, f={f}, p={p})",
         composite
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A-34: failure category proposal contracts
+// ---------------------------------------------------------------------------
+
+/// Helper: insert a violation pattern directly for category gap testing.
+fn insert_test_pattern(
+    conn: &rusqlite::Connection,
+    pattern_id: &str,
+    domain: &str,
+    example_code: &str,
+    occurrences: u32,
+) {
+    let normalized = normalize_pattern(&format!("{}-{}", domain, pattern_id));
+    let hash = hash_pattern(&normalized);
+    let hash_bytes: &[u8] = &hash;
+    let (c, f, p) = score_violation(occurrences, 1, 0.0);
+    conn.execute(
+        "INSERT INTO violation_patterns \
+         (pattern_id, pattern_hash, occurrences, first_seen, last_seen, \
+          domain, example_code, score_clarity, score_frequency, score_precision) \
+         VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![pattern_id, hash_bytes, occurrences, domain, example_code, c, f, p],
+    )
+    .unwrap_or_else(|e| panic!("insert_test_pattern failed for {}: {}", pattern_id, e));
+}
+
+#[test]
+fn contract_category_gap_returns_proposals_at_threshold() {
+    let conn = mem_db();
+    let clock = test_clock();
+    let config = default_config();
+
+    insert_test_pattern(&conn, "vp-c1", "memory_safety", "unsafe { ptr::read(p) }", 3);
+    insert_test_pattern(&conn, "vp-c2", "memory_safety", "unsafe { ptr::write(p, v) }", 4);
+
+    let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert_eq!(
+        proposals.len(),
+        1,
+        "must produce exactly 1 proposal for domain group"
+    );
+    assert!(
+        !proposals[0].proposal_id.is_empty(),
+        "proposal_id must be non-empty"
+    );
+    assert!(
+        !proposals[0].suggested_name.is_empty(),
+        "suggested_name must be non-empty"
+    );
+    assert!(
+        !proposals[0].evidence_pattern_ids.is_empty(),
+        "evidence must reference at least one pattern"
+    );
+    assert!(
+        proposals[0].confidence >= 40 && proposals[0].confidence <= 100,
+        "confidence must be in [40, 100], got {}",
+        proposals[0].confidence
+    );
+}
+
+#[test]
+fn contract_category_gap_empty_below_threshold() {
+    let conn = mem_db();
+    let clock = test_clock();
+    let config = default_config();
+
+    insert_test_pattern(&conn, "vp-low1", "style", "let x = 1", 2);
+    insert_test_pattern(&conn, "vp-low2", "style", "let y = 2", 1);
+
+    let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert!(
+        proposals.is_empty(),
+        "below-threshold patterns must not generate proposals"
+    );
+}
+
+#[test]
+fn contract_category_gap_idempotent() {
+    let conn = mem_db();
+    let clock = test_clock();
+    let config = default_config();
+
+    insert_test_pattern(&conn, "vp-idem1", "concurrency", "Arc::new(Mutex::new(x))", 5);
+
+    let first = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert_eq!(first.len(), 1);
+
+    let second = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert!(
+        second.is_empty(),
+        "second scan must return empty (idempotent)"
+    );
+}
+
+#[test]
+fn contract_category_gap_skips_proposed_rules() {
+    let mut conn = mem_db();
+    let engine = make_engine();
+    let clock = test_clock();
+    let config = default_config();
+
+    // Record enough to trigger rule proposal.
+    let record = ViolationRecord {
+        pattern_text: "already has rule".to_string(),
+        example_code: "bad_fn()".to_string(),
+        domain: Some("handled".to_string()),
+        replacement_name: None,
+    };
+    let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+    let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+    let r = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+    assert!(matches!(r, RecordOutcome::Proposed { .. }));
+
+    // Category gap scan must skip patterns with proposed_rule.
+    let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert!(
+        proposals.is_empty(),
+        "patterns with proposed_rule must be excluded"
+    );
+}
+
+#[test]
+fn contract_category_gap_predicate_type_valid() {
+    let conn = mem_db();
+    let clock = test_clock();
+    let config = default_config();
+
+    insert_test_pattern(&conn, "vp-pred1", "imports", "use std::collections::HashMap", 5);
+
+    let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert!(
+        proposals[0].suggested_predicate_type == "GREP_PATTERN"
+            || proposals[0].suggested_predicate_type == "GRAPH_REACHABILITY",
+        "predicate type must be GREP_PATTERN or GRAPH_REACHABILITY, got {}",
+        proposals[0].suggested_predicate_type
     );
 }

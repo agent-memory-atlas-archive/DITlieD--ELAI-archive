@@ -11,6 +11,7 @@ use blake3;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use elai_core::clock::ClockProvider;
+use elai_core::FailureCategory;
 
 use crate::error::RulesDbError;
 use crate::predicate::PredicateError;
@@ -37,6 +38,21 @@ const INITIAL_PIPELINES: u32 = 1;
 
 /// Conservative default for false-positive rate (no FP data at discovery time).
 const INITIAL_FPR: f64 = 0.0;
+
+/// Minimum occurrences before a group of patterns qualifies for a category proposal.
+const CATEGORY_PROPOSAL_THRESHOLD: u32 = 3;
+
+/// Minimum confidence (0-100) required to store a category proposal.
+const MIN_CATEGORY_CONFIDENCE: u8 = 40;
+
+/// Maximum number of category proposals returned per scan.
+const MAX_CATEGORY_PROPOSALS_PER_SCAN: usize = 10;
+
+/// Predicate type for symbol-relationship patterns (imports, type deps).
+const PREDICATE_GRAPH_REACHABILITY: &str = "GRAPH_REACHABILITY";
+
+/// Predicate type for simple text/regex patterns.
+const PREDICATE_GREP_PATTERN: &str = "GREP_PATTERN";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,6 +85,35 @@ impl Default for SelfDiscoveryConfig {
             proposal_threshold: DEFAULT_PROPOSAL_THRESHOLD,
         }
     }
+}
+
+/// A proposed failure taxonomy category, generated when recurring patterns
+/// do not map cleanly to existing `FailureCategory` variants.
+///
+/// Proposals are stored in the `failure_category_proposals` table and require
+/// human review before any enum modification. This keeps the blast radius
+/// of taxonomy changes under control.
+#[derive(Debug, Clone)]
+pub struct FailureCategoryProposal {
+    /// Unique proposal identifier (fcp-{hash_prefix}-{epoch}).
+    pub proposal_id: String,
+    /// Suggested category name (snake_case, suitable for a future enum variant).
+    pub suggested_name: String,
+    /// Human-readable description of what this category covers.
+    pub description: String,
+    /// Pattern IDs from violation_patterns that evidence the gap.
+    pub evidence_pattern_ids: Vec<String>,
+    /// Suggested predicate type for root-cause localization.
+    /// One of GREP_PATTERN or GRAPH_REACHABILITY.
+    pub suggested_predicate_type: String,
+    /// Fix template with {placeholders} for Layer 1 resolution.
+    pub fix_template: String,
+    /// Closest existing category (for triage context).
+    pub closest_existing: FailureCategory,
+    /// Confidence score (0-100).
+    pub confidence: u8,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
 }
 
 /// Outcome of recording a violation pattern.
@@ -105,6 +150,9 @@ pub enum SelfDiscoveryError {
 
     #[error("empty pattern after normalization")]
     EmptyPattern,
+
+    #[error("serialization error: {0}")]
+    Serialization(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +278,7 @@ fn epoch_secs(clock: &impl ClockProvider) -> i64 {
     clock
         .system_now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
 
@@ -340,7 +388,7 @@ pub fn record_violation(
             RecordOutcome::New { pattern_id }
         }
         Some((pattern_id, current_occurrences)) => {
-            let new_occurrences = current_occurrences + 1;
+            let new_occurrences = current_occurrences.saturating_add(1);
             let (clarity, frequency, precision) =
                 score_violation(new_occurrences, INITIAL_PIPELINES, INITIAL_FPR);
             sp.execute(
@@ -490,6 +538,284 @@ pub fn try_propose_rule(
     )?;
 
     Ok(Some(rule_id))
+}
+
+// ---------------------------------------------------------------------------
+// Failure taxonomy self-discovery (A-34)
+// ---------------------------------------------------------------------------
+
+/// Keywords that suggest a symbol-relationship pattern, warranting
+/// GRAPH_REACHABILITY for root-cause localization rather than GREP_PATTERN.
+/// Keywords that suggest a symbol-relationship pattern, warranting
+/// GRAPH_REACHABILITY for root-cause localization rather than GREP_PATTERN.
+///
+/// Each entry is a (keyword, require_word_boundary) pair. When require_word_boundary
+/// is true, the keyword must appear at the start of the string or after whitespace.
+const SYMBOL_RELATIONSHIP_KEYWORDS: &[(&str, bool)] = &[
+    ("import", false),
+    ("use ", true),       // "use " at word boundary, not inside "reuse"
+    ("mod ", true),
+    ("pub use", false),
+    ("extern crate", false),
+    ("impl ", true),
+    ("trait ", true),
+    ("derive", false),
+    ("::new(", false),
+    ("::from(", false),
+];
+
+/// Generate a proposal_id from a domain+hash and epoch.
+fn make_proposal_id(domain: &str, epoch: i64) -> String {
+    let hash = hash_pattern(domain);
+    format!(
+        "fcp-{:02x}{:02x}{:02x}{:02x}-{}",
+        hash[0], hash[1], hash[2], hash[3], epoch
+    )
+}
+
+/// Select the closest existing FailureCategory for a domain string.
+///
+/// Uses simple keyword matching against domain names. Falls back to Unknown.
+fn closest_category_for_domain(domain: &str) -> FailureCategory {
+    let d = domain.to_lowercase();
+    if d.contains("compile") || d.contains("build") {
+        FailureCategory::CompileError
+    } else if d.contains("test") {
+        FailureCategory::TestFailure
+    } else if d.contains("type") {
+        FailureCategory::TypeMismatch
+    } else if d.contains("import") {
+        FailureCategory::MissingImport
+    } else if d.contains("borrow") {
+        FailureCategory::BorrowCheck
+    } else if d.contains("lifetime") {
+        FailureCategory::LifetimeError
+    } else if d.contains("lazy") || d.contains("empty") {
+        FailureCategory::LazyCode
+    } else if d.contains("panic") {
+        FailureCategory::RuntimePanic
+    } else if d.contains("logic") {
+        FailureCategory::LogicError
+    } else if d.contains("timeout") || d.contains("time") {
+        FailureCategory::Timeout
+    } else {
+        FailureCategory::Unknown
+    }
+}
+
+/// Determine whether a pattern's example code suggests symbol-relationship errors
+/// (warranting GRAPH_REACHABILITY) or simple text patterns (GREP_PATTERN).
+fn select_predicate_type(example_code: &str) -> &'static str {
+    let lower = example_code.to_lowercase();
+    for &(keyword, require_boundary) in SYMBOL_RELATIONSHIP_KEYWORDS {
+        if require_boundary {
+            // Keyword must appear at start of string or after whitespace.
+            if lower.starts_with(keyword)
+                || lower.contains(&format!(" {}", keyword))
+                || lower.contains(&format!("\n{}", keyword))
+                || lower.contains(&format!("\t{}", keyword))
+            {
+                return PREDICATE_GRAPH_REACHABILITY;
+            }
+        } else if lower.contains(keyword) {
+            return PREDICATE_GRAPH_REACHABILITY;
+        }
+    }
+    PREDICATE_GREP_PATTERN
+}
+
+/// Generate a fix template from a domain and example code.
+///
+/// Produces a template with {placeholders} suitable for Layer 1 resolution.
+fn generate_fix_template(domain: &str, example_code: &str) -> String {
+    format!(
+        "// Fix for {domain} category violation\n\
+         // Original: {example}\n\
+         // Replace with: {{replacement}}\n\
+         // Rationale: {{rationale}}",
+        domain = domain,
+        example = example_code.chars().take(80).collect::<String>(),
+    )
+}
+
+/// Convert an epoch timestamp to an ISO 8601 string (UTC, second precision).
+///
+/// Falls back to "1970-01-01T00:00:00Z" on overflow (should never happen in practice).
+fn epoch_to_iso8601(epoch: i64) -> String {
+    // Simple conversion without external crate. Acceptable precision for proposals.
+    let secs = epoch.max(0) as u64;
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Compute year/month/day from days since epoch (civil calendar).
+    let (year, month, day) = days_to_civil(days);
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day) civil date.
+///
+/// Algorithm from Howard Hinnant's `chrono`-compatible date library.
+fn days_to_civil(days: u64) -> (u64, u64, u64) {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// Scan violation_patterns for recurring patterns that suggest a missing
+/// FailureTaxonomy category, and propose new categories.
+///
+/// Returns proposals for pattern groups meeting these criteria:
+/// - occurrences >= CATEGORY_PROPOSAL_THRESHOLD
+/// - no existing proposed_rule (not already handled by rule auto-proposal)
+/// - grouped by domain (patterns in the same domain cluster together)
+///
+/// Proposals are stored in the `failure_category_proposals` table for human review.
+/// Idempotent: re-running with the same data returns existing proposals.
+pub fn detect_recurring_category_gap(
+    conn: &Connection,
+    clock: &impl ClockProvider,
+    config: &SelfDiscoveryConfig,
+) -> Result<Vec<FailureCategoryProposal>, SelfDiscoveryError> {
+    let threshold = config.proposal_threshold.max(CATEGORY_PROPOSAL_THRESHOLD);
+
+    // Query violation patterns that are frequent enough but haven't been
+    // turned into rules yet, grouped by domain.
+    let mut stmt = conn.prepare(
+        "SELECT domain, GROUP_CONCAT(pattern_id, ','), \
+                COUNT(*) as pattern_count, \
+                SUM(occurrences) as total_occurrences, \
+                GROUP_CONCAT(example_code, '|||') \
+         FROM violation_patterns \
+         WHERE occurrences >= ?1 \
+           AND proposed_rule IS NULL \
+         GROUP BY domain \
+         HAVING pattern_count >= 1 \
+         ORDER BY total_occurrences DESC \
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt.query_map(
+        params![threshold, MAX_CATEGORY_PROPOSALS_PER_SCAN as i64],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        },
+    )?;
+
+    let now = epoch_secs(clock);
+    let iso_now = epoch_to_iso8601(now);
+    let mut proposals = Vec::new();
+
+    for row_result in rows {
+        let (domain_opt, pattern_ids_csv, _pattern_count, total_occurrences, examples_concat) =
+            row_result?;
+
+        let domain = domain_opt.as_deref().unwrap_or("general");
+        let evidence_ids: Vec<String> = pattern_ids_csv
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+
+        // Check if a proposal already exists for this domain grouping.
+        let existing_proposal: Option<String> = conn
+            .query_row(
+                "SELECT proposal_id FROM failure_category_proposals WHERE domain = ?1",
+                params![domain],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if existing_proposal.is_some() {
+            continue; // Idempotent: skip already-proposed domains.
+        }
+
+        // Pick the first example for predicate type selection.
+        let first_example = examples_concat
+            .split("|||")
+            .next()
+            .unwrap_or("");
+
+        let predicate_type = select_predicate_type(first_example);
+        let closest = closest_category_for_domain(domain);
+        let fix_template = generate_fix_template(domain, first_example);
+
+        // Confidence based on total occurrences:
+        // threshold -> 40, 2x threshold -> 60, 3x+ -> 80. Cap at 90.
+        let ratio = total_occurrences as f64 / threshold as f64;
+        let raw_confidence = (MIN_CATEGORY_CONFIDENCE as f64 + (ratio - 1.0) * 20.0).round();
+        let confidence = (raw_confidence as u8).min(90).max(MIN_CATEGORY_CONFIDENCE);
+
+        // Generate a suggested name from domain.
+        let suggested_name = format!("{}_recurring", domain.replace(' ', "_").to_lowercase());
+
+        let proposal_id = make_proposal_id(domain, now);
+        let description = format!(
+            "Recurring violation pattern in domain '{}' ({} total occurrences across {} patterns). \
+             Closest existing category: {}.",
+            domain,
+            total_occurrences,
+            evidence_ids.len(),
+            closest.as_str(),
+        );
+
+        // Store the proposal.
+        let evidence_json = serde_json::to_string(&evidence_ids)
+            .map_err(|e| SelfDiscoveryError::Serialization(e.to_string()))?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO failure_category_proposals \
+             (proposal_id, suggested_name, description, evidence_pattern_ids, \
+              suggested_predicate_type, fix_template, closest_existing, confidence, \
+              created_at, domain) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &proposal_id,
+                &suggested_name,
+                &description,
+                &evidence_json,
+                predicate_type,
+                &fix_template,
+                closest.as_str(),
+                confidence,
+                &iso_now,
+                domain,
+            ],
+        )?;
+
+        proposals.push(FailureCategoryProposal {
+            proposal_id,
+            suggested_name,
+            description,
+            evidence_pattern_ids: evidence_ids,
+            suggested_predicate_type: predicate_type.to_string(),
+            fix_template,
+            closest_existing: closest,
+            confidence,
+            created_at: iso_now.clone(),
+        });
+    }
+
+    Ok(proposals)
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,5 +1347,210 @@ mod tests {
         let config = SelfDiscoveryConfig::default();
         assert_eq!(config.proposal_threshold, DEFAULT_PROPOSAL_THRESHOLD);
         assert_eq!(config.proposal_threshold, 3);
+    }
+
+    // -- A-34: failure taxonomy self-discovery tests --
+
+    /// Helper: insert N violation patterns with given domain and occurrences.
+    fn insert_violation_patterns(
+        conn: &Connection,
+        domain: &str,
+        patterns: &[(&str, u32)],
+    ) {
+        for (idx, (example, occurrences)) in patterns.iter().enumerate() {
+            let pattern_text = format!("{}-pattern-{}", domain, idx);
+            let normalized = normalize_pattern(&pattern_text);
+            let hash = hash_pattern(&normalized);
+            let hash_bytes: &[u8] = &hash;
+            let pattern_id = format!("vp-test-{}-{}", domain, idx);
+            let (c, f, p) = score_violation(*occurrences, INITIAL_PIPELINES, INITIAL_FPR);
+            conn.execute(
+                "INSERT INTO violation_patterns \
+                 (pattern_id, pattern_hash, occurrences, first_seen, last_seen, \
+                  domain, example_code, score_clarity, score_frequency, score_precision) \
+                 VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    &pattern_id, hash_bytes, *occurrences,
+                    domain, *example, c, f, p,
+                ],
+            )
+            .unwrap_or_else(|e| panic!("insert failed for {}: {}", pattern_id, e));
+        }
+    }
+
+    #[test]
+    fn category_gap_no_proposal_below_threshold() {
+        let conn = mem_db();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        // Insert patterns with only 2 occurrences (below threshold of 3).
+        insert_violation_patterns(&conn, "low_count", &[
+            ("let x = bad()", 2),
+            ("let y = bad()", 2),
+        ]);
+
+        let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert!(
+            proposals.is_empty(),
+            "expected no proposals below threshold, got {}",
+            proposals.len()
+        );
+    }
+
+    #[test]
+    fn category_gap_proposal_at_threshold() {
+        let conn = mem_db();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        // Insert patterns with exactly 3 occurrences each (meets threshold).
+        insert_violation_patterns(&conn, "security", &[
+            ("eval(input())", 3),
+            ("os.system(cmd)", 4),
+        ]);
+
+        let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert_eq!(proposals.len(), 1, "expected 1 proposal for 'security' domain");
+
+        let p = &proposals[0];
+        assert_eq!(p.suggested_name, "security_recurring");
+        assert!(p.confidence >= MIN_CATEGORY_CONFIDENCE);
+        assert!(!p.evidence_pattern_ids.is_empty());
+        assert!(!p.fix_template.is_empty());
+        assert!(!p.created_at.is_empty());
+    }
+
+    #[test]
+    fn category_gap_duplicate_proposal_idempotent() {
+        let conn = mem_db();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        insert_violation_patterns(&conn, "safety", &[
+            ("unsafe { ptr::read(p) }", 5),
+        ]);
+
+        let first = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert_eq!(first.len(), 1);
+
+        // Second call should return empty (proposal already exists).
+        let second = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert!(
+            second.is_empty(),
+            "duplicate scan must be idempotent, got {} proposals",
+            second.len()
+        );
+
+        // Verify only 1 row in the table.
+        let count: u32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM failure_category_proposals",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "must have exactly 1 proposal row");
+    }
+
+    #[test]
+    fn category_gap_predicate_type_selection() {
+        let conn = mem_db();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        // Insert patterns with symbol-relationship keywords (should get GRAPH_REACHABILITY).
+        insert_violation_patterns(&conn, "imports", &[
+            ("use std::collections::HashMap", 5),
+            ("use crate::module::Type", 4),
+        ]);
+
+        let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].suggested_predicate_type, PREDICATE_GRAPH_REACHABILITY,
+            "symbol-relationship pattern should use GRAPH_REACHABILITY"
+        );
+    }
+
+    #[test]
+    fn category_gap_grep_predicate_for_text_patterns() {
+        let conn = mem_db();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        // Insert patterns without symbol keywords (should get GREP_PATTERN).
+        insert_violation_patterns(&conn, "style", &[
+            ("let x = 42", 3),
+            ("let y = 99", 4),
+        ]);
+
+        let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].suggested_predicate_type, PREDICATE_GREP_PATTERN,
+            "non-symbol pattern should use GREP_PATTERN"
+        );
+    }
+
+    #[test]
+    fn category_gap_skips_already_proposed_rules() {
+        let mut conn = mem_db();
+        let engine = make_engine();
+        let clock = test_clock();
+        let config = SelfDiscoveryConfig::default();
+
+        // Record 3 violations to trigger rule proposal (existing mechanism).
+        let record = ViolationRecord {
+            pattern_text: "already handled".to_string(),
+            example_code: "bad_code()".to_string(),
+            domain: Some("handled".to_string()),
+            replacement_name: None,
+        };
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        let r = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+        assert!(matches!(r, RecordOutcome::Proposed { .. }));
+
+        // Category gap scan should find nothing (proposed_rule is set).
+        let proposals = detect_recurring_category_gap(&conn, &clock, &config).unwrap();
+        assert!(
+            proposals.is_empty(),
+            "patterns with proposed_rule should be skipped"
+        );
+    }
+
+    #[test]
+    fn category_gap_closest_existing_category() {
+        assert_eq!(closest_category_for_domain("compile_errors"), FailureCategory::CompileError);
+        assert_eq!(closest_category_for_domain("test_failures"), FailureCategory::TestFailure);
+        assert_eq!(closest_category_for_domain("borrow_issues"), FailureCategory::BorrowCheck);
+        assert_eq!(closest_category_for_domain("unknown_stuff"), FailureCategory::Unknown);
+        assert_eq!(closest_category_for_domain("security"), FailureCategory::Unknown);
+    }
+
+    #[test]
+    fn select_predicate_type_symbol_patterns() {
+        assert_eq!(select_predicate_type("use std::io"), PREDICATE_GRAPH_REACHABILITY);
+        assert_eq!(select_predicate_type("impl Foo for Bar"), PREDICATE_GRAPH_REACHABILITY);
+        assert_eq!(select_predicate_type("pub use crate::x"), PREDICATE_GRAPH_REACHABILITY);
+    }
+
+    #[test]
+    fn select_predicate_type_text_patterns() {
+        assert_eq!(select_predicate_type("let x = 42"), PREDICATE_GREP_PATTERN);
+        assert_eq!(select_predicate_type("password = secret"), PREDICATE_GREP_PATTERN);
+    }
+
+    #[test]
+    fn epoch_to_iso8601_known_date() {
+        // 2024-01-01T00:00:00Z = 1704067200
+        let result = epoch_to_iso8601(1704067200);
+        assert_eq!(result, "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn epoch_to_iso8601_zero() {
+        assert_eq!(epoch_to_iso8601(0), "1970-01-01T00:00:00Z");
     }
 }
