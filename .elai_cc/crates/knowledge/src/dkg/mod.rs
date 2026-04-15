@@ -5,7 +5,8 @@ use blake3;
 use rusqlite::Connection;
 
 use crate::{
-    DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, LanguageGrammar, SymbolKind,
+    DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, KnowledgeError, LanguageGrammar,
+    SymbolKind,
 };
 
 type EdgeList = Vec<(i64, i64, String)>;
@@ -80,7 +81,7 @@ impl DkgEngine {
         db_path: &Path,
         index_version_path: Option<&Path>,
         created_at: i64,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, KnowledgeError> {
         let conn = Connection::open(db_path)?;
 
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -98,7 +99,8 @@ impl DkgEngine {
 
         if let Some(ivp) = index_version_path {
             let version_file = crate::index_version::current_version(created_at);
-            crate::index_version::write(ivp, &version_file)?;
+            crate::index_version::write(ivp, &version_file)
+                .map_err(|e| KnowledgeError::Graph(format!("index_version write: {e}")))?;
         }
 
         let mut grammars: HashMap<&'static str, Box<dyn LanguageGrammar>> = HashMap::new();
@@ -107,6 +109,7 @@ impl DkgEngine {
             Box::new(PythonGrammar),
             Box::new(GoGrammar),
             Box::new(TypeScriptGrammar),
+            Box::new(TsxGrammar),
             Box::new(JavaGrammar),
             Box::new(CSharpGrammar),
             Box::new(RubyGrammar),
@@ -124,7 +127,7 @@ impl DkgEngine {
         })
     }
 
-    pub fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, Box<dyn std::error::Error>> {
+    pub fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, KnowledgeError> {
         let mut source_files = Vec::new();
         walk_source_files(project_root, &mut source_files);
         source_files.sort();
@@ -144,7 +147,9 @@ impl DkgEngine {
                 Some(g) => g,
                 None => { continue; }
             };
-            parser.set_language(&grammar.tree_sitter_language())?;
+            parser
+                .set_language(&grammar.tree_sitter_language())
+                .map_err(|e| KnowledgeError::Graph(format!("set_language failed: {e}")))?;
             let source_bytes = std::fs::read(file_path)?;
             let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -282,7 +287,8 @@ impl DkgEngine {
         // Write index_version.toml if path is set
         if let Some(ref ivp) = self.index_version_path {
             let version_file = crate::index_version::current_version(self.created_at);
-            crate::index_version::write(ivp, &version_file)?;
+            crate::index_version::write(ivp, &version_file)
+                .map_err(|e| KnowledgeError::Graph(format!("index_version write: {e}")))?;
         }
 
         Ok(DependencyGraph {
@@ -292,7 +298,7 @@ impl DkgEngine {
         })
     }
 
-    fn generate_cross_edges(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn generate_cross_edges(&self) -> Result<(), KnowledgeError> {
         // "imports" edges: use_declaration nodes -> matching named nodes
         // Gather use_declaration signatures
         let mut import_stmt = self.conn.prepare(
@@ -351,7 +357,7 @@ impl DkgEngine {
         Ok(())
     }
 
-    pub fn nodes(&self) -> Result<Vec<DkgNodeInfo>, Box<dyn std::error::Error>> {
+    pub fn nodes(&self) -> Result<Vec<DkgNodeInfo>, KnowledgeError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, file_path, signature, kind, start_line, end_line FROM dkg_nodes",
         )?;
@@ -376,7 +382,7 @@ impl DkgEngine {
         Ok(result)
     }
 
-    pub fn edges(&self) -> Result<EdgeList, Box<dyn std::error::Error>> {
+    pub fn edges(&self) -> Result<EdgeList, KnowledgeError> {
         let mut stmt = self
             .conn
             .prepare("SELECT source_id, target_id, edge_type FROM dkg_edges")?;
@@ -390,7 +396,7 @@ impl DkgEngine {
         Ok(result)
     }
 
-    pub fn node_by_id(&self, id: i64) -> Result<Option<DkgNodeInfo>, Box<dyn std::error::Error>> {
+    pub fn node_by_id(&self, id: i64) -> Result<Option<DkgNodeInfo>, KnowledgeError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, file_path, signature, kind, start_line, end_line FROM dkg_nodes WHERE id = ?1",
         )?;
@@ -414,7 +420,7 @@ impl DkgEngine {
         }
     }
 
-    pub fn outbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>, Box<dyn std::error::Error>> {
+    pub fn outbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>, KnowledgeError> {
         let mut stmt = self
             .conn
             .prepare("SELECT target_id, edge_type FROM dkg_edges WHERE source_id = ?1")?;
@@ -428,7 +434,7 @@ impl DkgEngine {
         Ok(result)
     }
 
-    pub fn inbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>, Box<dyn std::error::Error>> {
+    pub fn inbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>, KnowledgeError> {
         let mut stmt = self
             .conn
             .prepare("SELECT source_id, edge_type FROM dkg_edges WHERE target_id = ?1")?;
@@ -442,7 +448,7 @@ impl DkgEngine {
         Ok(result)
     }
 
-    pub fn failed_files(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    pub fn failed_files(&self) -> Result<Vec<String>, KnowledgeError> {
         let mut stmt = self
             .conn
             .prepare("SELECT file_path FROM dkg_files WHERE parse_status = 'failed'")?;
@@ -464,13 +470,12 @@ impl DkgEngine {
     pub fn extract_conventions(
         &self,
         project_root: &Path,
-    ) -> Result<crate::conventions::ConventionStats, Box<dyn std::error::Error>> {
+    ) -> Result<crate::conventions::ConventionStats, KnowledgeError> {
         let readiness = self.dkg_readiness();
         if readiness != DkgReadiness::Ready {
-            return Err(format!(
+            return Err(KnowledgeError::Graph(format!(
                 "DKG not ready for convention extraction (status: {readiness:?})"
-            )
-            .into());
+            )));
         }
         let nodes = self.nodes()?;
         Ok(crate::conventions::extract_from_dkg(&nodes, project_root))
@@ -814,6 +819,24 @@ impl LanguageGrammar for TypeScriptGrammar {
 
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        ts_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+// TSX grammar — uses LANGUAGE_TSX for JSX-aware parsing but same extraction logic.
+pub struct TsxGrammar;
+
+impl LanguageGrammar for TsxGrammar {
+    fn language_id(&self) -> &'static str { "tsx" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
     }
 
     fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
@@ -1549,7 +1572,8 @@ pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
         "rs" => Some("rust"),
         "py" => Some("python"),
         "go" => Some("go"),
-        "ts" | "tsx" => Some("typescript"),
+        "ts" => Some("typescript"),
+        "tsx" => Some("tsx"),
         "java" => Some("java"),
         "cs" => Some("csharp"),
         "rb" => Some("ruby"),
@@ -1767,7 +1791,7 @@ end
         assert_eq!(ext_to_lang_id("py"), Some("python"));
         assert_eq!(ext_to_lang_id("go"), Some("go"));
         assert_eq!(ext_to_lang_id("ts"), Some("typescript"));
-        assert_eq!(ext_to_lang_id("tsx"), Some("typescript"));
+        assert_eq!(ext_to_lang_id("tsx"), Some("tsx"));
         assert_eq!(ext_to_lang_id("java"), Some("java"));
         assert_eq!(ext_to_lang_id("cs"), Some("csharp"));
         assert_eq!(ext_to_lang_id("rb"), Some("ruby"));
