@@ -1,13 +1,16 @@
 // Output postprocessor: deterministic enforcement of tone/style rules.
 //
-// Three stages applied to every model text response:
+// Four stages applied to every model text response:
 //   1. Emoji stripper  — remove Unicode emoji ranges, preserve technical symbols
 //   2. Sycophancy filter — strip leading affirmation patterns
 //   3. Length enforcer  — truncate at sentence boundary if over limit
+//   4. Output formatting restoration — tree-sitter pretty-print (A-42-T2 stub)
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+
+use crate::context_budget::restore_output_formatting;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -29,6 +32,16 @@ pub struct OutputConfig {
     /// 0 = disabled (no truncation).
     #[serde(default)]
     pub max_response_tokens: usize,
+
+    /// Apply tree-sitter output formatting restoration (default: false).
+    /// A-42-T2: stub — tree-sitter not wired yet (dep cycle risk with knowledge crate).
+    #[serde(default)]
+    pub restore_formatting: bool,
+
+    /// Language hint for output formatting restoration (e.g. "rust", "python").
+    /// Used by stage 4 when restore_formatting is true.
+    #[serde(default)]
+    pub restore_formatting_language: String,
 }
 
 fn default_true() -> bool {
@@ -41,6 +54,8 @@ impl Default for OutputConfig {
             strip_emoji: true,
             strip_sycophancy: true,
             max_response_tokens: 0,
+            restore_formatting: false,
+            restore_formatting_language: String::new(),
         }
     }
 }
@@ -149,6 +164,16 @@ pub fn process(response: &str, config: &OutputConfig) -> String {
         text = enforce_length(&text, config.max_response_tokens);
     }
 
+    // Stage 4: output formatting restoration (A-42-T2, stub).
+    if config.restore_formatting {
+        let lang = if config.restore_formatting_language.is_empty() {
+            "rust"
+        } else {
+            &config.restore_formatting_language
+        };
+        text = restore_output_formatting(&text, lang);
+    }
+
     text
 }
 
@@ -226,6 +251,8 @@ mod tests {
             strip_emoji: true,
             strip_sycophancy: true,
             max_response_tokens: 0,
+            restore_formatting: false,
+            restore_formatting_language: String::new(),
         }
     }
 
@@ -385,6 +412,8 @@ mod tests {
             strip_emoji: false,
             strip_sycophancy: true,
             max_response_tokens: 512,
+            restore_formatting: false,
+            restore_formatting_language: String::new(),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let parsed: OutputConfig = serde_json::from_str(&json).expect("deserialize");

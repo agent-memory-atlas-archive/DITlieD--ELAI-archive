@@ -1385,6 +1385,401 @@ impl ContextBudget {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Token reclamation constants (A-42: token-efficiency-design.txt section 9)
+// ---------------------------------------------------------------------------
+
+/// Minimum number of consecutive import lines to trigger collapsing.
+const IMPORT_COLLAPSE_THRESHOLD: usize = 4;
+
+/// Minimum path length (chars) before abbreviation is applied.
+const PATH_ABBREV_MIN_LEN: usize = 8;
+
+/// Minimum symbol name length for deduplication (ignore short names like "T", "E").
+const DEDUP_MIN_SYMBOL_LEN: usize = 3;
+
+/// Recognized common path prefixes to strip during path abbreviation.
+const PATH_PREFIX_SRC: &str = "src/";
+const PATH_PREFIX_LIB: &str = "lib/";
+const PATH_PREFIX_CRATES: &str = "crates/";
+const PATH_PREFIX_ELAI_CC_SRC: &str = ".elai_cc/src/";
+
+/// All recognized path prefixes, ordered longest-first for greedy match.
+const PATH_PREFIXES: &[&str] = &[
+    PATH_PREFIX_ELAI_CC_SRC,
+    PATH_PREFIX_CRATES,
+    PATH_PREFIX_SRC,
+    PATH_PREFIX_LIB,
+];
+
+/// Rust import keyword prefix.
+const RUST_IMPORT_PREFIX: &str = "use ";
+/// Python import keyword prefix.
+const PYTHON_IMPORT_PREFIX: &str = "import ";
+/// Python from-import keyword prefix.
+const PYTHON_FROM_PREFIX: &str = "from ";
+
+/// Rust definition keywords for deduplication scanning.
+const DEDUP_KEYWORDS: &[&str] = &["struct ", "enum ", "fn ", "type ", "trait "];
+
+// ---------------------------------------------------------------------------
+// Token reclamation technique implementations (A-42)
+// ---------------------------------------------------------------------------
+
+/// Technique 1: formatting removal.
+///
+/// Strips trailing whitespace per line, collapses 2+ consecutive blank lines
+/// to 1, and removes trailing line comments (// ...) for non-Python files.
+/// Preserves: string literals, docstrings, Python indentation (semantic),
+/// doc comments (///).
+///
+/// Research-grounded: 24.5% token reduction on code content, zero accuracy
+/// degradation (LLM-Code-Generation-Summary.txt section 3e).
+fn reclaim_formatting(content: &str, language: Option<&str>) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+
+    let is_python = matches!(language, Some("python" | "py"));
+    let mut result = String::with_capacity(content.len());
+    let mut consecutive_blanks: usize = 0;
+
+    for line in content.lines() {
+        // Strip trailing whitespace (safe: trim_end works on char boundaries).
+        let trimmed_end = line.trim_end();
+
+        // For non-Python: strip trailing line comments (// but not ///).
+        let processed = if !is_python {
+            strip_trailing_comment(trimmed_end)
+        } else {
+            trimmed_end.to_owned()
+        };
+
+        // Collapse consecutive blank lines.
+        if processed.trim().is_empty() {
+            consecutive_blanks += 1;
+            if consecutive_blanks <= 1 {
+                result.push('\n');
+            }
+            continue;
+        }
+
+        consecutive_blanks = 0;
+
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push('\n');
+        }
+        result.push_str(&processed);
+    }
+
+    // Trim trailing newlines to avoid growth.
+    let final_result = result.trim_end_matches('\n');
+    final_result.to_owned()
+}
+
+/// Strip trailing line comments (// ...) from a line, preserving:
+/// - Doc comments (/// ...)
+/// - Comments inside string literals
+/// - Lines that are purely comments
+fn strip_trailing_comment(line: &str) -> String {
+    let trimmed = line.trim_start();
+
+    // Pure comment line — preserve entirely.
+    if trimmed.starts_with("//") {
+        return line.to_owned();
+    }
+
+    // Find // that is not inside a string literal.
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut string_char: char = '"';
+
+    for (i, ch) in line.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if !in_string && (ch == '"' || ch == '\'') {
+            in_string = true;
+            string_char = ch;
+            continue;
+        }
+        if in_string && ch == string_char {
+            in_string = false;
+            continue;
+        }
+        if !in_string && ch == '/' {
+            // Check next char.
+            let rest = &line[i..];
+            if rest.starts_with("///") {
+                // Doc comment — preserve.
+                return line.to_owned();
+            }
+            if rest.starts_with("//") {
+                // Trailing comment — strip it.
+                return line[..i].trim_end().to_owned();
+            }
+        }
+    }
+
+    line.to_owned()
+}
+
+/// Technique 3: path abbreviation.
+///
+/// Strips recognized common prefixes (src/, lib/, crates/, .elai_cc/src/) from
+/// file paths. Model can infer the prefix from context.
+/// Only abbreviates paths longer than PATH_ABBREV_MIN_LEN.
+/// Note: uses byte length for threshold check. Assumes ASCII file paths
+/// (standard for Rust/Python codebases). Non-ASCII paths with multibyte
+/// characters may behave slightly differently at the length boundary.
+pub fn abbreviate_path(path: &str) -> String {
+    if path.len() <= PATH_ABBREV_MIN_LEN {
+        return path.to_owned();
+    }
+
+    for prefix in PATH_PREFIXES {
+        if path.starts_with(prefix) {
+            // Safe: prefix is ASCII, so prefix.len() is a valid char boundary.
+            return path[prefix.len()..].to_owned();
+        }
+    }
+
+    path.to_owned()
+}
+
+/// Technique 4: import collapsing.
+///
+/// Detects runs of consecutive import lines (use/import/from). If a run has
+/// >= IMPORT_COLLAPSE_THRESHOLD lines, replaces with a placeholder comment.
+/// Non-import, non-blank lines break the current block.
+fn reclaim_imports(content: &str, language: Option<&str>) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+
+    let is_python = matches!(language, Some("python" | "py"));
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = String::with_capacity(content.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if is_import_line(lines[i], is_python) {
+            // Start of a potential import block.
+            let block_start = i;
+            while i < lines.len() && (is_import_line(lines[i], is_python) || lines[i].trim().is_empty()) {
+                i += 1;
+            }
+            // Count actual import lines (not blank lines).
+            let import_count = lines[block_start..i]
+                .iter()
+                .filter(|l| is_import_line(l, is_python))
+                .count();
+
+            if import_count >= IMPORT_COLLAPSE_THRESHOLD {
+                let comment_prefix = if is_python { "#" } else { "//" };
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push_str(&format!("{} [{} imports]", comment_prefix, import_count));
+            } else {
+                // Below threshold — keep all lines.
+                for line in &lines[block_start..i] {
+                    if !result.is_empty() && !result.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    result.push_str(line);
+                }
+            }
+        } else {
+            if !result.is_empty() && !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(lines[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Check if a line is an import statement.
+fn is_import_line(line: &str, is_python: bool) -> bool {
+    let trimmed = line.trim_start();
+    if is_python {
+        trimmed.starts_with(PYTHON_IMPORT_PREFIX) || trimmed.starts_with(PYTHON_FROM_PREFIX)
+    } else {
+        trimmed.starts_with(RUST_IMPORT_PREFIX)
+    }
+}
+
+/// Technique 5: deduplication of repeated type/struct/enum/fn definitions.
+///
+/// On second and subsequent occurrence of an identical definition header line,
+/// replaces with "// [dup: <symbol_name>]". Symbol name must be at least
+/// DEDUP_MIN_SYMBOL_LEN characters.
+fn reclaim_dedup(content: &str) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = String::with_capacity(content.len());
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if let Some(symbol) = extract_definition_symbol(trimmed) {
+            if symbol.len() >= DEDUP_MIN_SYMBOL_LEN {
+                // Normalize: use the trimmed line as key.
+                let key = trimmed.to_owned();
+                if seen.contains(&key) {
+                    if !result.is_empty() && !result.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    result.push_str(&format!("// [dup: {}]", symbol));
+                    continue;
+                }
+                seen.insert(key);
+            }
+        }
+
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push('\n');
+        }
+        result.push_str(line);
+    }
+
+    result
+}
+
+/// Extract a symbol name from a definition header line.
+/// Returns None if line is not a recognized definition.
+/// Note: handles `pub` prefix but not `pub(crate)` or `pub(super)` visibility
+/// qualifiers. Those definitions will pass through without deduplication.
+fn extract_definition_symbol(line: &str) -> Option<String> {
+    for keyword in DEDUP_KEYWORDS {
+        if line.starts_with(keyword) {
+            let rest = &line[keyword.len()..];
+            // Symbol is the next word (up to whitespace, '<', '(', or '{').
+            let symbol: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !symbol.is_empty() {
+                return Some(symbol);
+            }
+        }
+        // Also match "pub struct", "pub fn", etc.
+        let pub_keyword = format!("pub {}", keyword);
+        if line.starts_with(&pub_keyword) {
+            let rest = &line[pub_keyword.len()..];
+            let symbol: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !symbol.is_empty() {
+                return Some(symbol);
+            }
+        }
+    }
+    None
+}
+
+/// Technique 2: output formatting restoration (stub).
+///
+/// After LLM generates code, apply tree-sitter pretty-print to restore proper
+/// indentation before writing to disk. Model generates minimally formatted code,
+/// system restores deterministically.
+///
+/// STUB: tree-sitter not added to orchestrator due to dep cycle risk with
+/// knowledge crate. Wire after dep audit (see A-42-T2).
+pub fn restore_output_formatting(code: &str, _language: &str) -> String {
+    // A-42-T2: tree-sitter pretty-print blocked — adding tree-sitter to
+    // orchestrator risks dep cycle with knowledge crate. Wire after dep audit.
+    code.to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Token reclamation entry point (A-42)
+// ---------------------------------------------------------------------------
+
+/// Apply token reclamation techniques to slot content.
+///
+/// For CodeContext (slot 4): applies T1 (formatting) -> T4 (imports) -> T5 (dedup).
+/// For SsbEntries (slot 5): applies T3 (path abbreviation) line-by-line.
+/// Other slots: returns content unchanged.
+///
+/// The caller must set `SlotAllocation.source_truncated = true` if the returned
+/// string is shorter than the input.
+pub fn apply_token_reclamation(
+    content: &str,
+    slot: ContextSlot,
+    language: Option<&str>,
+) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+
+    match slot {
+        ContextSlot::CodeContext => {
+            let step1 = reclaim_formatting(content, language);
+            let step2 = reclaim_imports(&step1, language);
+            reclaim_dedup(&step2)
+        }
+        ContextSlot::SsbEntries => {
+            // Path abbreviation applied line-by-line to SSB entries.
+            content
+                .lines()
+                .map(|line| {
+                    // Try to find a path-like token and abbreviate it.
+                    abbreviate_ssb_line(line)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => content.to_owned(),
+    }
+}
+
+/// Abbreviate paths found in an SSB entry line.
+/// Looks for tokens that look like file paths (contain '/' and end with
+/// a file extension) and abbreviates them.
+fn abbreviate_ssb_line(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut last_end = 0;
+
+    // Simple heuristic: find tokens that contain '/' (potential paths).
+    for (start, _) in line.char_indices() {
+        if start < last_end {
+            continue;
+        }
+        // Find word boundaries around this position.
+        if start == 0 || line.as_bytes().get(start.wrapping_sub(1)).map_or(true, |b| *b == b' ' || *b == b'\t' || *b == b':' || *b == b'(' || *b == b'[') {
+            // Potential start of a path token.
+            let rest = &line[start..];
+            let token_len = rest.find(|c: char| c == ' ' || c == '\t' || c == ')' || c == ']' || c == ',' || c == ';')
+                .unwrap_or(rest.len());
+            let token = &rest[..token_len];
+            if token.contains('/') && token.len() > PATH_ABBREV_MIN_LEN {
+                let abbreviated = abbreviate_path(token);
+                if abbreviated.len() < token.len() {
+                    result.push_str(&line[last_end..start]);
+                    result.push_str(&abbreviated);
+                    last_end = start + token_len;
+                }
+            }
+        }
+    }
+
+    result.push_str(&line[last_end..]);
+    result
+}
+
 impl fmt::Display for ContextBudget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -2202,5 +2597,221 @@ mod tests {
             "repair context must drop RepoMap");
         assert_eq!(budget.slots[ContextSlot::SsbEntries as usize].allocated_tokens, 0,
             "repair context must drop SsbEntries");
+    }
+
+    // -- Token reclamation tests (A-42) ------------------------------------
+
+    #[test]
+    fn test_reclamation_formatting_strips_trailing_whitespace() {
+        let input = "fn main() {   \n    let x = 1;  \n}  ";
+        let out = reclaim_formatting(input, None);
+        for line in out.lines() {
+            assert_eq!(line, line.trim_end(), "trailing whitespace found: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn test_reclamation_formatting_collapses_blank_lines() {
+        let input = "line1\n\n\n\nline2\n\n\n\n\nline3";
+        let out = reclaim_formatting(input, None);
+        // No run of 2+ consecutive blank lines.
+        assert!(!out.contains("\n\n\n"), "3+ blanks found in: {:?}", out);
+        assert!(out.contains("line1"));
+        assert!(out.contains("line2"));
+        assert!(out.contains("line3"));
+    }
+
+    #[test]
+    fn test_reclamation_formatting_preserves_python_indentation() {
+        let input = "def foo():\n    if True:\n        pass\n    return 1";
+        let out = reclaim_formatting(input, Some("python"));
+        assert!(out.contains("    if True:"), "Python indentation lost");
+        assert!(out.contains("        pass"), "Python nested indentation lost");
+    }
+
+    #[test]
+    fn test_reclamation_formatting_preserves_string_literals() {
+        let input = r#"let s = "hello // world";"#;
+        let out = reclaim_formatting(input, None);
+        assert!(out.contains(r#""hello // world""#), "string literal modified");
+    }
+
+    #[test]
+    fn test_reclamation_formatting_empty_input() {
+        let out = reclaim_formatting("", None);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_reclamation_formatting_strips_trailing_comment() {
+        let input = "let x = 1; // set x to 1";
+        let out = reclaim_formatting(input, None);
+        assert_eq!(out, "let x = 1;");
+    }
+
+    #[test]
+    fn test_reclamation_formatting_preserves_doc_comment() {
+        let input = "/// This is a doc comment";
+        let out = reclaim_formatting(input, None);
+        assert_eq!(out, "/// This is a doc comment");
+    }
+
+    #[test]
+    fn test_reclamation_formatting_preserves_pure_comment_line() {
+        let input = "// This is a standalone comment";
+        let out = reclaim_formatting(input, None);
+        assert_eq!(out, "// This is a standalone comment");
+    }
+
+    #[test]
+    fn test_reclamation_path_abbreviation_strips_src() {
+        assert_eq!(abbreviate_path("src/foo/bar.rs"), "foo/bar.rs");
+    }
+
+    #[test]
+    fn test_reclamation_path_abbreviation_strips_crates() {
+        assert_eq!(abbreviate_path("crates/orchestrator/src/main.rs"), "orchestrator/src/main.rs");
+    }
+
+    #[test]
+    fn test_reclamation_path_abbreviation_no_match() {
+        assert_eq!(abbreviate_path("external/path.rs"), "external/path.rs");
+    }
+
+    #[test]
+    fn test_reclamation_path_abbreviation_short_path() {
+        // Path <= PATH_ABBREV_MIN_LEN (8) must not be abbreviated.
+        assert_eq!(abbreviate_path("src/a.r"), "src/a.r");
+        // Exactly 8 chars — still not abbreviated.
+        assert_eq!(abbreviate_path("src/a.rs"), "src/a.rs");
+    }
+
+    #[test]
+    fn test_reclamation_path_abbreviation_elai_cc_src() {
+        assert_eq!(
+            abbreviate_path(".elai_cc/src/context_budget.rs"),
+            "context_budget.rs"
+        );
+    }
+
+    #[test]
+    fn test_reclamation_import_collapsing_below_threshold() {
+        let input = "use std::io;\nuse std::fs;\nuse std::path;\n\nfn main() {}";
+        let out = reclaim_imports(input, None);
+        assert!(out.contains("use std::io;"), "imports below threshold should be kept");
+        assert!(out.contains("use std::fs;"));
+        assert!(out.contains("use std::path;"));
+    }
+
+    #[test]
+    fn test_reclamation_import_collapsing_at_threshold() {
+        let input = "use std::io;\nuse std::fs;\nuse std::path;\nuse std::env;\n\nfn main() {}";
+        let out = reclaim_imports(input, None);
+        assert!(out.contains("// [4 imports]"), "4 imports should be collapsed: {:?}", out);
+        assert!(!out.contains("use std::io;"));
+    }
+
+    #[test]
+    fn test_reclamation_import_collapsing_non_import_breaks_block() {
+        let input = "use a;\nuse b;\n\nlet x = 1;\n\nuse c;\nuse d;";
+        let out = reclaim_imports(input, None);
+        // Both groups have < 4 imports, so both should be kept.
+        assert!(out.contains("use a;"));
+        assert!(out.contains("use b;"));
+        assert!(out.contains("use c;"));
+        assert!(out.contains("use d;"));
+    }
+
+    #[test]
+    fn test_reclamation_import_collapsing_python() {
+        let input = "import os\nimport sys\nimport json\nimport math\n\ndef main(): pass";
+        let out = reclaim_imports(input, Some("python"));
+        assert!(out.contains("# [4 imports]"), "Python imports should collapse: {:?}", out);
+    }
+
+    #[test]
+    fn test_reclamation_dedup_second_occurrence_replaced() {
+        let input = "struct Foo {\n    x: i32,\n}\n\nstruct Foo {\n    x: i32,\n}";
+        let out = reclaim_dedup(input);
+        // First occurrence kept.
+        assert!(out.contains("struct Foo {"));
+        // Second occurrence replaced.
+        assert!(out.contains("// [dup: Foo]"));
+    }
+
+    #[test]
+    fn test_reclamation_dedup_first_occurrence_preserved() {
+        let input = "struct MyType {\n    val: u32,\n}\nstruct MyType {";
+        let out = reclaim_dedup(input);
+        let first_pos = out.find("struct MyType");
+        assert!(first_pos.is_some(), "first occurrence must be preserved");
+    }
+
+    #[test]
+    fn test_reclamation_dedup_short_symbol_not_deduped() {
+        let input = "fn ab() {}\nfn ab() {}";
+        let out = reclaim_dedup(input);
+        // "ab" has len 2 < DEDUP_MIN_SYMBOL_LEN (3), so both kept.
+        let count = out.matches("fn ab()").count();
+        assert_eq!(count, 2, "short symbols should not be deduped");
+    }
+
+    #[test]
+    fn test_reclamation_dedup_pub_struct() {
+        let input = "pub struct Config {\n}\npub struct Config {";
+        let out = reclaim_dedup(input);
+        assert!(out.contains("// [dup: Config]"), "pub struct should be deduped: {:?}", out);
+    }
+
+    #[test]
+    fn test_reclamation_apply_reduces_length() {
+        let input = "use std::io;\nuse std::fs;\nuse std::path;\nuse std::env;\n\n\n\n\nfn main() {   \n    let x = 1; // comment\n}\n";
+        let out = apply_token_reclamation(input, ContextSlot::CodeContext, None);
+        assert!(out.len() <= input.len(), "reclamation must not increase length: out={} in={}", out.len(), input.len());
+    }
+
+    #[test]
+    fn test_reclamation_apply_empty_input() {
+        let out = apply_token_reclamation("", ContextSlot::CodeContext, None);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_reclamation_apply_non_code_slot_unchanged() {
+        let input = "system prompt content";
+        let out = apply_token_reclamation(input, ContextSlot::SystemPrompt, None);
+        assert_eq!(out, input, "non-CodeContext/SsbEntries slots should be unchanged");
+    }
+
+    #[test]
+    fn test_reclamation_ssb_path_abbreviation() {
+        let input = "changed: src/middleware/auth.rs\nmodified: crates/orchestrator/src/main.rs";
+        let out = apply_token_reclamation(input, ContextSlot::SsbEntries, None);
+        assert!(out.contains("middleware/auth.rs"), "src/ prefix should be stripped: {:?}", out);
+    }
+
+    #[test]
+    fn test_reclamation_source_truncated_detection() {
+        let input = "fn main() {   \n    let x = 1; // a comment  \n}\n\n\n\n";
+        let out = apply_token_reclamation(input, ContextSlot::CodeContext, None);
+        // Verify the caller can detect truncation.
+        assert!(out.len() < input.len(), "reclamation should shorten this input");
+    }
+
+    #[test]
+    fn test_reclamation_restore_output_formatting_stub() {
+        let code = "fn main() { println!(\"hello\"); }";
+        let out = restore_output_formatting(code, "rust");
+        assert_eq!(out, code, "stub must return input unchanged");
+    }
+
+    #[test]
+    fn test_reclamation_constants_valid() {
+        assert!(IMPORT_COLLAPSE_THRESHOLD >= 2, "threshold must be >= 2");
+        assert!(PATH_ABBREV_MIN_LEN > 0, "min path length must be > 0");
+        assert!(DEDUP_MIN_SYMBOL_LEN >= 1, "min symbol length must be >= 1");
+        for prefix in PATH_PREFIXES {
+            assert!(prefix.ends_with('/'), "prefix {:?} must end with '/'", prefix);
+        }
     }
 }

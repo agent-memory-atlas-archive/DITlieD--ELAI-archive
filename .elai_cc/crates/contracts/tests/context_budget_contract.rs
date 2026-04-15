@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use elai_core::clock::SeededClock;
 use elai_orchestrator::context_budget::{
+    abbreviate_path, apply_token_reclamation, restore_output_formatting,
     AdaptiveError, AdaptiveLevel, BudgetError, CacheBreakpoint, ContextBudget,
     ContextSlot, ExecutionMode, ModelTier, SlotAllocation,
     CACHE_BREAKPOINT_COUNT, FLOOR_GRC_HISTORY, FLOOR_OUTPUT_RESERVE, FLOOR_SSB_ENTRIES,
@@ -455,4 +456,61 @@ fn slot_assembly_config_micro_vs_large_differ_on_all_slots() {
             slot
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Token reclamation contract tests (A-42)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_apply_token_reclamation_code_context_never_increases_length() {
+    let input = "use std::io;\nuse std::fs;\nuse std::path;\nuse std::env;\n\n\n\nfn main() {   \n    let x = 1; // comment  \n}\n";
+    let out = apply_token_reclamation(input, ContextSlot::CodeContext, None);
+    assert!(out.len() <= input.len(),
+        "reclamation must not increase length: out={} in={}", out.len(), input.len());
+}
+
+#[test]
+fn contract_apply_token_reclamation_empty_input_is_safe() {
+    let out = apply_token_reclamation("", ContextSlot::CodeContext, None);
+    assert_eq!(out, "");
+    let out2 = apply_token_reclamation("", ContextSlot::SsbEntries, None);
+    assert_eq!(out2, "");
+    let out3 = apply_token_reclamation("", ContextSlot::SystemPrompt, None);
+    assert_eq!(out3, "");
+}
+
+#[test]
+fn contract_apply_token_reclamation_non_target_slot_unchanged() {
+    let input = "unchanged content";
+    for slot in [ContextSlot::SystemPrompt, ContextSlot::Rules, ContextSlot::PhaseSpec,
+                 ContextSlot::RepoMap, ContextSlot::GrcHistory, ContextSlot::OutputReserve] {
+        let out = apply_token_reclamation(input, slot, None);
+        assert_eq!(out, input, "slot {:?} should return unchanged content", slot);
+    }
+}
+
+#[test]
+fn contract_abbreviate_path_strips_known_prefixes() {
+    assert_eq!(abbreviate_path("src/foo/bar.rs"), "foo/bar.rs");
+    assert_eq!(abbreviate_path("crates/core/src/lib.rs"), "core/src/lib.rs");
+    assert_eq!(abbreviate_path("lib/utils/helper.rs"), "utils/helper.rs");
+}
+
+#[test]
+fn contract_abbreviate_path_preserves_unknown_prefix() {
+    assert_eq!(abbreviate_path("external/vendor/lib.rs"), "external/vendor/lib.rs");
+}
+
+#[test]
+fn contract_abbreviate_path_short_path_unchanged() {
+    assert_eq!(abbreviate_path("src/a.rs"), "src/a.rs");
+}
+
+#[test]
+fn contract_restore_output_formatting_is_identity_stub() {
+    let code = "fn main() { let x = 1; }";
+    assert_eq!(restore_output_formatting(code, "rust"), code);
+    assert_eq!(restore_output_formatting(code, "python"), code);
+    assert_eq!(restore_output_formatting("", "rust"), "");
 }
