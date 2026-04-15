@@ -1,4 +1,5 @@
 mod bootstrap;
+pub mod bounded_string;
 pub mod clock;
 pub mod config;
 pub mod entropy;
@@ -8,6 +9,7 @@ pub mod mistake_book;
 pub mod json;
 pub mod project_profile;
 pub mod sandbox;
+pub mod telescope;
 mod usage;
 pub mod research_types;
 pub mod source_tier;

@@ -236,6 +236,8 @@ pub struct PhaseEntry {
     pub visual_check: bool,
     #[serde(default)]
     pub split_depth: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl PhaseEntry {
@@ -261,6 +263,7 @@ impl PhaseEntry {
             output_type: None,
             visual_check: false,
             split_depth: 0,
+            summary: None,
         })
     }
 

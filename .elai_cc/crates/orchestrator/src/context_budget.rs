@@ -33,6 +33,10 @@ pub const LARGE_SLOT_SSB_ENTRIES: usize = 1500;
 pub const LARGE_SLOT_GRC_HISTORY: usize = 1000;
 pub const LARGE_SLOT_OUTPUT_RESERVE: usize = 4000;
 
+/// Fixed Slot 3 (PhaseSpec/Telescope) target across all model tiers.
+/// Updated in A-46 to accommodate telescope content (~550-1050 tokens).
+pub const FIXED_SLOT_TELESCOPE_TARGET: usize = 1050;
+
 // Default percentage splits for dynamic budget (must sum to 100).
 // Used by compute() for backward compatibility; compute_with_profile() uses SlotWeights.
 const PCT_REPO_MAP: usize = 15;
@@ -287,7 +291,7 @@ impl ModelCapabilityProfile {
     /// Build a MICRO-tier profile from A-1 baseline measurements.
     /// Suitable for Qwen2.5-Coder-7B NF4 on 12GB (measured configuration).
     /// Per-tier allocation from TE design section 2:
-    ///   12GB-7B (20K): System=330, Rules=400, Telescope=800,
+    ///   12GB-7B (20K): System=330, Rules=400, Telescope=1050,
     ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
     pub fn micro_7b_12gb() -> Self {
         // Dynamic proportions: 1500:8000:1500:1000 = total 12000
@@ -312,7 +316,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.125,
                 grc_history: 0.083,
             },
-            fixed_slot_targets: [330, 400, 800],
+            fixed_slot_targets: [330, 400, FIXED_SLOT_TELESCOPE_TARGET],
             features: ModelFeatures::none(),
             pass_at_1: 0.65,
             optimal_retries: 3,
@@ -326,7 +330,7 @@ impl ModelCapabilityProfile {
 
     /// Build a profile for 3B model on 12GB (measured configuration).
     /// Per-tier allocation from TE design section 2:
-    ///   12GB-3B (35K): System=330, Rules=500, Telescope=1500,
+    ///   12GB-3B (35K): System=330, Rules=500, Telescope=1050,
     ///   RepoMap=3000, CodeContext=14000, SSB=3000, GRC=2000, Reserve=750.
     pub fn micro_3b_12gb() -> Self {
         // Dynamic proportions: 3000:14000:3000:2000 = total 22000
@@ -351,7 +355,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.136,
                 grc_history: 0.091,
             },
-            fixed_slot_targets: [330, 500, 1500],
+            fixed_slot_targets: [330, 500, FIXED_SLOT_TELESCOPE_TARGET],
             features: ModelFeatures::none(),
             pass_at_1: 0.72,
             optimal_retries: 3,
@@ -365,7 +369,7 @@ impl ModelCapabilityProfile {
 
     /// Build a projected LARGE-tier profile for 32B on 48GB.
     /// Per-tier allocation from TE design section 2:
-    ///   48GB (30K): System=330, Rules=500, Telescope=1500,
+    ///   48GB (30K): System=330, Rules=500, Telescope=1050,
     ///   RepoMap=3000, CodeContext=10000, SSB=3000, GRC=2000, Reserve=4000.
     pub fn large_32b_48gb() -> Self {
         // Dynamic proportions: 3000:10000:3000:2000 = total 18000
@@ -390,7 +394,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.167,
                 grc_history: 0.111,
             },
-            fixed_slot_targets: [330, 500, 1500],
+            fixed_slot_targets: [330, 500, FIXED_SLOT_TELESCOPE_TARGET],
             features: ModelFeatures {
                 supports_structured_output: false,
                 supports_grammar: false,
@@ -410,7 +414,7 @@ impl ModelCapabilityProfile {
 
     /// Build a profile for small models on 8GB VRAM.
     /// Per-tier allocation from TE design section 2:
-    ///   8GB (20K): System=200, Rules=300, Telescope=600,
+    ///   8GB (20K): System=200, Rules=300, Telescope=1050,
     ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
     pub fn micro_8gb() -> Self {
         // Dynamic proportions: 1500:8000:1500:1000 = total 12000
@@ -435,7 +439,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.125,
                 grc_history: 0.083,
             },
-            fixed_slot_targets: [200, 300, 600],
+            fixed_slot_targets: [200, 300, FIXED_SLOT_TELESCOPE_TARGET],
             features: ModelFeatures::none(),
             pass_at_1: 0.72,
             optimal_retries: 3,
@@ -2248,7 +2252,7 @@ mod tests {
         assert!(p.slot_weights.validate_dynamic_sum());
         assert_eq!(p.vram_tier, VramTier::Vram8Gb);
         assert_eq!(p.model_tier, ModelTier::Micro);
-        assert_eq!(p.fixed_slot_targets, [200, 300, 600]);
+        assert_eq!(p.fixed_slot_targets, [200, 300, FIXED_SLOT_TELESCOPE_TARGET]);
     }
 
     #[test]
@@ -2295,7 +2299,7 @@ mod tests {
         // Fixed slots should match profile targets.
         assert_eq!(budget.slots[0].allocated_tokens, 330, "SystemPrompt");
         assert_eq!(budget.slots[1].allocated_tokens, 400, "Rules");
-        assert_eq!(budget.slots[2].allocated_tokens, 800, "Telescope");
+        assert_eq!(budget.slots[2].allocated_tokens, FIXED_SLOT_TELESCOPE_TARGET, "Telescope");
     }
 
     #[test]
