@@ -455,6 +455,7 @@ pub fn detect_project_profile(project_root: &Path) -> Result<ProjectProfile, Pro
         naming: Default::default(),
         error_handling: Default::default(),
         module_organization: Default::default(),
+        dep_profile: Default::default(),
         project_vision: None,
         architecture: None,
         domains: Vec::new(),
@@ -1569,6 +1570,7 @@ pub fn populate_tier2_conventions(
     profile.naming = stats.naming;
     profile.error_handling = stats.error_handling;
     profile.module_organization = stats.module_organization;
+    profile.dep_profile = stats.dep_profile;
     // Only update test location if detection found something meaningful.
     if stats.test_location != elai_core::project_profile::TestLocationPattern::Unknown {
         profile.test_profile.location_pattern = stats.test_location;

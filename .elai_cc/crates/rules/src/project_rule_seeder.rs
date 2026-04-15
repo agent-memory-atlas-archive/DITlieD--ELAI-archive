@@ -88,7 +88,7 @@ impl ProjectRuleSeeder {
         let now = clock
             .system_now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);
 
         let mut inserted = 0usize;
@@ -381,6 +381,98 @@ impl ProjectRuleSeeder {
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle wiring: auto-promotion and auto-retirement (A-33, spec section 6)
+// ---------------------------------------------------------------------------
+
+/// Minimum true-positive (success) count before a SHADOW seed rule can promote.
+const AUTO_PROMOTE_SUCCESSES: i64 = 5;
+
+/// False-positive count threshold for auto-retiring an ACTIVE seed rule.
+const AUTO_RETIRE_FP_COUNT: i64 = 3;
+
+/// Check whether a seeded rule qualifies for auto-promotion (SHADOW -> ACTIVE).
+///
+/// Returns `Ok(())` if promotion succeeds, rule lacks sufficient data, or rule
+/// is not in SHADOW state (no-op). Only returns `Err` on unexpected DB errors.
+pub fn check_and_promote_seeded_rules(
+    conn: &Connection,
+    rule_id: &str,
+    clock: &impl ClockProvider,
+) -> Result<(), RulesDbError> {
+    let metrics = match crate::lifecycle::compute_metrics_snapshot(conn, rule_id) {
+        Ok(m) => m,
+        Err(crate::error::LifecycleError::RuleNotFound { .. }) => return Ok(()),
+        Err(crate::error::LifecycleError::Sqlite(e)) => return Err(RulesDbError::Sqlite(e)),
+        Err(_) => return Ok(()),
+    };
+
+    // LIFECYCLE_GATE_ORDER: check InsufficientShadowData before thresholds.
+    // CCR=None means no shadow evaluations recorded — too early to promote.
+    if metrics.counterfactual_causal_rate.is_none() {
+        debug!(rule_id, "insufficient shadow data for promotion check, skipping");
+        return Ok(());
+    }
+
+    // Not enough successes yet.
+    if metrics.true_positives < AUTO_PROMOTE_SUCCESSES {
+        return Ok(());
+    }
+
+    // Attempt transition; InvalidTransition means not in SHADOW (already promoted or retired).
+    match crate::lifecycle::transition_to_active(conn, rule_id, &metrics, false, clock) {
+        Ok(()) => {
+            debug!(rule_id, "auto-promoted seeded rule to ACTIVE");
+            Ok(())
+        }
+        Err(crate::error::LifecycleError::InvalidTransition { .. }) => Ok(()),
+        Err(crate::error::LifecycleError::ThresholdNotMet { .. }) => Ok(()),
+        Err(crate::error::LifecycleError::InsufficientShadowData) => Ok(()),
+        Err(crate::error::LifecycleError::Sqlite(e)) => Err(RulesDbError::Sqlite(e)),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Check whether a seeded rule qualifies for auto-retirement (ACTIVE -> RETIRED).
+///
+/// Returns `Ok(())` if retirement succeeds, rule has insufficient FPs, or rule
+/// is not in ACTIVE state (no-op). Only returns `Err` on unexpected DB errors.
+pub fn check_and_retire_seeded_rules(
+    conn: &Connection,
+    rule_id: &str,
+    clock: &impl ClockProvider,
+) -> Result<(), RulesDbError> {
+    let metrics = match crate::lifecycle::compute_metrics_snapshot(conn, rule_id) {
+        Ok(m) => m,
+        Err(crate::error::LifecycleError::RuleNotFound { .. }) => return Ok(()),
+        Err(crate::error::LifecycleError::Sqlite(e)) => return Err(RulesDbError::Sqlite(e)),
+        Err(_) => return Ok(()),
+    };
+
+    // Not enough false positives to retire.
+    if metrics.false_positives < AUTO_RETIRE_FP_COUNT {
+        return Ok(());
+    }
+
+    // Attempt transition; InvalidTransition means not in ACTIVE (still SHADOW or already retired).
+    match crate::lifecycle::transition_to_retired(
+        conn,
+        rule_id,
+        "auto-retired: false positive count exceeded threshold",
+        false,
+        clock,
+    ) {
+        Ok(()) => {
+            debug!(rule_id, "auto-retired seeded rule");
+            Ok(())
+        }
+        Err(crate::error::LifecycleError::InvalidTransition { .. }) => Ok(()),
+        Err(crate::error::LifecycleError::ImmutableRuleCannotAutoRetire) => Ok(()),
+        Err(crate::error::LifecycleError::Sqlite(e)) => Err(RulesDbError::Sqlite(e)),
+        Err(_) => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -467,6 +559,7 @@ mod tests {
             module_organization: ModuleOrganization {
                 pattern: OrgPattern::Monorepo,
             },
+            dep_profile: elai_core::project_profile::DependencyProfile::default(),
             project_vision: None,
             architecture: None,
             domains: Vec::new(),

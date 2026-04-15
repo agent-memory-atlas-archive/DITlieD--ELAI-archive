@@ -539,6 +539,7 @@ mod tests {
             naming: NamingConventions::default(),
             error_handling: ErrorHandlingProfile::default(),
             module_organization: ModuleOrganization::default(),
+            dep_profile: DependencyProfile::default(),
             project_vision: None,
             architecture: None,
             domains: Vec::new(),

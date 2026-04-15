@@ -40,6 +40,8 @@ pub struct ProjectProfile {
     pub naming: NamingConventions,
     pub error_handling: ErrorHandlingProfile,
     pub module_organization: ModuleOrganization,
+    #[serde(default)]
+    pub dep_profile: DependencyProfile,
 
     // Tier 3 (optional, populated by A-11)
     pub project_vision: Option<String>,
@@ -329,6 +331,74 @@ pub enum OrgPattern {
     Layered,
     Monorepo,
     Unknown,
+}
+
+// ---------------------------------------------------------------------------
+// Dependency profile (spec section 3E)
+// ---------------------------------------------------------------------------
+
+/// How deeply dependencies were analyzed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClassificationDepth {
+    /// Only manifest-declared deps (all languages).
+    DeclarationOnly,
+    /// DKG import-edge analysis (Rust-only, Tier B).
+    UsageBased,
+}
+
+impl Default for ClassificationDepth {
+    fn default() -> Self {
+        Self::DeclarationOnly
+    }
+}
+
+/// Pinning strategy detected from manifest lock files.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PinningStrategy {
+    /// All deps pinned to exact versions.
+    Pinned,
+    /// Semver ranges (^, ~).
+    Ranged,
+    /// Wildcard or no version constraints.
+    Wild,
+    Unknown,
+}
+
+impl Default for PinningStrategy {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// Dependency analysis results (Tier 2, spec section 3E).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DependencyProfile {
+    pub total: usize,
+    pub declared: Vec<String>,
+    pub dev_only: Vec<String>,
+    /// Tier B Rust-only: core deps (high import fan-in).
+    pub core: Vec<String>,
+    /// Tier B Rust-only: peripheral deps (low import fan-in).
+    pub peripheral: Vec<String>,
+    /// Tier B Rust-only: declared but unused deps.
+    pub unused: Vec<String>,
+    pub pinning_strategy: PinningStrategy,
+    pub classification_depth: ClassificationDepth,
+}
+
+impl Default for DependencyProfile {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            declared: Vec::new(),
+            dev_only: Vec::new(),
+            core: Vec::new(),
+            peripheral: Vec::new(),
+            unused: Vec::new(),
+            pinning_strategy: PinningStrategy::Unknown,
+            classification_depth: ClassificationDepth::DeclarationOnly,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

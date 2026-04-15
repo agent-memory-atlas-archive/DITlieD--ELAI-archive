@@ -177,6 +177,7 @@ pub struct ConventionStats {
     pub error_handling: ErrorHandlingProfile,
     pub module_organization: ModuleOrganization,
     pub test_location: TestLocationPattern,
+    pub dep_profile: elai_core::project_profile::DependencyProfile,
     /// "dkg" or "regex_fallback" — indicates which path produced the data.
     pub source: String,
 }
@@ -277,6 +278,7 @@ pub fn extract_from_dkg(
         error_handling,
         module_organization,
         test_location,
+        dep_profile: elai_core::project_profile::DependencyProfile::default(),
         source: "dkg".to_owned(),
     }
 }
@@ -416,6 +418,7 @@ pub fn extract_from_regex_fallback(
         error_handling,
         module_organization,
         test_location,
+        dep_profile: elai_core::project_profile::DependencyProfile::default(),
         source: "regex_fallback".to_owned(),
     }
 }
@@ -452,6 +455,9 @@ fn detect_error_handling_regex(
     let mut try_except_count = 0usize;
     let mut if_err_nil_count = 0usize;
     let mut error_crate: Option<String> = None;
+    let mut custom_exception_count = 0usize;
+    let mut fp_ts_neverthrow_count = 0usize;
+    let mut errorf_wrap_count = 0usize;
 
     let walker = ignore::WalkBuilder::new(project_root)
         .hidden(true)
@@ -489,21 +495,39 @@ fn detect_error_handling_regex(
             "python" => {
                 try_except_count += content.matches("try:").count();
                 try_except_count += content.matches("except ").count();
+                // A-33: detect custom exception classes (spec 3B Python).
+                // Match both single-inheritance and multi-inheritance patterns.
+                custom_exception_count += content.matches("(Exception)").count();
+                custom_exception_count += content.matches("(Exception,").count();
+                custom_exception_count += content.matches("(BaseException)").count();
+                custom_exception_count += content.matches("(BaseException,").count();
+                custom_exception_count += content.matches("(ValueError)").count();
+                custom_exception_count += content.matches("(ValueError,").count();
+                custom_exception_count += content.matches("(TypeError)").count();
+                custom_exception_count += content.matches("(RuntimeError)").count();
             }
             "typescript" | "javascript" => {
                 try_except_count += content.matches("try {").count();
                 try_except_count += content.matches("catch (").count();
                 try_except_count += content.matches("catch(").count();
+                // A-33: detect fp-ts/neverthrow Result types (spec 3B TypeScript).
+                fp_ts_neverthrow_count += content.matches("from 'fp-ts").count();
+                fp_ts_neverthrow_count += content.matches("from \"fp-ts").count();
+                fp_ts_neverthrow_count += content.matches("from 'neverthrow").count();
+                fp_ts_neverthrow_count += content.matches("from \"neverthrow").count();
             }
             "go" => {
                 if_err_nil_count += content.matches("if err != nil").count();
                 if_err_nil_count += content.matches("if err !=nil").count();
+                // A-33: detect error wrapping with fmt.Errorf %w (spec 3B Go).
+                errorf_wrap_count += content.matches("fmt.Errorf(").count();
             }
             _ => {}
         }
     }
 
-    let total = result_count + try_except_count + if_err_nil_count;
+    let total = result_count + try_except_count + if_err_nil_count
+        + custom_exception_count + fp_ts_neverthrow_count + errorf_wrap_count;
     if total < MIN_SAMPLE_SIZE {
         return ErrorHandlingProfile::default();
     }
@@ -518,6 +542,17 @@ fn detect_error_handling_regex(
     } else {
         (ErrorPattern::Mixed, PropagationStyle::Mixed)
     };
+
+    // A-33: refine error_crate based on per-language signals.
+    if error_crate.is_none() {
+        if custom_exception_count > 0 {
+            error_crate = Some("custom_exceptions".to_owned());
+        } else if fp_ts_neverthrow_count > 0 {
+            error_crate = Some("fp-ts/neverthrow".to_owned());
+        } else if errorf_wrap_count > 0 {
+            error_crate = Some("fmt.Errorf".to_owned());
+        }
+    }
 
     ErrorHandlingProfile {
         pattern,

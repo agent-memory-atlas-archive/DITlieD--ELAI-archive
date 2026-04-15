@@ -272,6 +272,7 @@ mod tests {
                 error_crate: Some("thiserror".to_owned()),
             },
             module_organization: ModuleOrganization { pattern: OrgPattern::Layered },
+            dep_profile: DependencyProfile::default(),
             project_vision: Some("Rust WEB_BACKEND using Axum. Build: cargo build. Test: cargo test.".to_owned()),
             architecture: Some(ArchitecturePattern::Layered),
             domains: vec![DomainClassification {
@@ -384,6 +385,7 @@ mod tests {
             naming: NamingConventions::default(),
             error_handling: ErrorHandlingProfile::default(),
             module_organization: ModuleOrganization::default(),
+            dep_profile: DependencyProfile::default(),
             project_vision: None,
             architecture: None,
             domains: Vec::new(),
