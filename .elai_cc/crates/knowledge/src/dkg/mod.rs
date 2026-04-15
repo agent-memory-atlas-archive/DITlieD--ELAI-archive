@@ -5,8 +5,8 @@ use blake3;
 use rusqlite::Connection;
 
 use crate::{
-    DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, KnowledgeError, LanguageGrammar,
-    SymbolKind,
+    DataFlowEdge, DkgNode, DkgNodeInfo, DkgReadiness, DependencyGraph, FlowType, KnowledgeError,
+    LanguageGrammar, SymbolKind,
 };
 
 type EdgeList = Vec<(i64, i64, String)>;
@@ -50,10 +50,22 @@ CREATE TABLE IF NOT EXISTS dkg_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS dkg_data_flow (
+    id             INTEGER PRIMARY KEY,
+    source_node_id INTEGER NOT NULL REFERENCES dkg_nodes ON DELETE CASCADE,
+    target_node_id INTEGER NOT NULL REFERENCES dkg_nodes ON DELETE CASCADE,
+    variable_name  TEXT    NOT NULL,
+    flow_type      TEXT    NOT NULL CHECK(flow_type IN
+                   ('PARAMETER','RETURN','ASSIGNMENT','FIELD_ACCESS')),
+    UNIQUE(source_node_id, target_node_id, variable_name, flow_type)
+);
+
 CREATE INDEX IF NOT EXISTS idx_nodes_name   ON dkg_nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_file   ON dkg_nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind   ON dkg_nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_files_status ON dkg_files(parse_status);
+CREATE INDEX IF NOT EXISTS idx_data_flow_source ON dkg_data_flow(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_data_flow_target ON dkg_data_flow(target_node_id);
 ";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +75,12 @@ CREATE INDEX IF NOT EXISTS idx_files_status ON dkg_files(parse_status);
 pub const EDGE_IMPORTS: &str = "imports";
 pub const EDGE_CONTAINS: &str = "contains";
 pub const EDGE_IMPLEMENTS: &str = "implements";
+
+// Data flow edge type strings (match CHECK constraint in dkg_data_flow)
+pub const FLOW_PARAMETER: &str = "PARAMETER";
+pub const FLOW_RETURN: &str = "RETURN";
+pub const FLOW_ASSIGNMENT: &str = "ASSIGNMENT";
+pub const FLOW_FIELD_ACCESS: &str = "FIELD_ACCESS";
 
 // ---------------------------------------------------------------------------
 // DkgEngine
@@ -276,8 +294,17 @@ impl DkgEngine {
         // Generate cross-file edges: "imports" and "implements"
         self.generate_cross_edges()?;
 
+        // A-48: Extract heuristic data flow edges from tree-sitter ASTs
+        self.extract_all_data_flow_edges(&source_files)?;
+
         let edge_count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM dkg_edges",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let data_flow_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM dkg_data_flow",
             [],
             |row| row.get(0),
         )?;
@@ -295,6 +322,7 @@ impl DkgEngine {
             node_count: total_node_count,
             edge_count: edge_count as usize,
             files_parsed,
+            data_flow_count: data_flow_count as usize,
         })
     }
 
@@ -460,6 +488,356 @@ impl DkgEngine {
         Ok(result)
     }
 
+    // -----------------------------------------------------------------------
+    // A-48: Data flow edge queries
+    // -----------------------------------------------------------------------
+
+    /// Return all data flow edges in the graph.
+    pub fn data_flow_edges(&self) -> Result<Vec<DataFlowEdge>, KnowledgeError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_node_id, target_node_id, variable_name, flow_type FROM dkg_data_flow",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let ft_str: String = row.get(3)?;
+            Ok(DataFlowEdge {
+                source_node_id: row.get(0)?,
+                target_node_id: row.get(1)?,
+                variable_name: row.get(2)?,
+                flow_type: FlowType::from_str(&ft_str).unwrap_or_else(|| {
+                    tracing::warn!("unknown flow_type in dkg_data_flow: {ft_str}");
+                    FlowType::Assignment
+                }),
+            })
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
+    /// Return data flow edges where the given node is source or target.
+    pub fn data_flow_for_node(&self, node_id: i64) -> Result<Vec<DataFlowEdge>, KnowledgeError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_node_id, target_node_id, variable_name, flow_type \
+             FROM dkg_data_flow WHERE source_node_id = ?1 OR target_node_id = ?1",
+        )?;
+        let rows = stmt.query_map([node_id], |row| {
+            let ft_str: String = row.get(3)?;
+            Ok(DataFlowEdge {
+                source_node_id: row.get(0)?,
+                target_node_id: row.get(1)?,
+                variable_name: row.get(2)?,
+                flow_type: FlowType::from_str(&ft_str).unwrap_or_else(|| {
+                    tracing::warn!("unknown flow_type in dkg_data_flow: {ft_str}");
+                    FlowType::Assignment
+                }),
+            })
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
+    /// Insert a data flow edge directly (test-only helper).
+    /// Auto-inserts stub dkg_nodes if the referenced IDs don't exist (avoids FK errors).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn insert_test_data_flow(
+        &self,
+        source_node_id: i64,
+        target_node_id: i64,
+        variable_name: &str,
+        flow_type: FlowType,
+    ) {
+        for nid in [source_node_id, target_node_id] {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO dkg_nodes (id, file_path, name, kind, signature, start_line, end_line) \
+                     VALUES (?1, 'test.rs', ?2, 'function', '', 1, 1)",
+                    rusqlite::params![nid, format!("stub_{nid}")],
+                )
+                .expect("insert stub node");
+        }
+        self.conn
+            .execute(
+                "INSERT INTO dkg_data_flow (source_node_id, target_node_id, variable_name, flow_type) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![source_node_id, target_node_id, variable_name, flow_type.as_str()],
+            )
+            .expect("insert_test_data_flow is test-only");
+    }
+
+    // -----------------------------------------------------------------------
+    // A-48: Data flow extraction (heuristic, tree-sitter based)
+    // -----------------------------------------------------------------------
+
+    fn extract_all_data_flow_edges(
+        &mut self,
+        source_files: &[PathBuf],
+    ) -> Result<(), KnowledgeError> {
+        // Clear existing data flow edges (full rebuild, like cross-edges)
+        self.conn
+            .execute("DELETE FROM dkg_data_flow", [])?;
+
+        let mut parser = tree_sitter::Parser::new();
+
+        for file_path in source_files {
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang_id = match ext_to_lang_id(ext) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Only extract data flow for Rust files for now (primary language)
+            if lang_id != "rust" {
+                continue;
+            }
+
+            let grammar = match self.grammars.get(lang_id) {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let source_bytes = match std::fs::read(file_path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            if std::str::from_utf8(&source_bytes).is_err() {
+                continue;
+            }
+
+            parser
+                .set_language(&grammar.tree_sitter_language())
+                .map_err(|e| KnowledgeError::Graph(format!("set_language: {e}")))?;
+
+            let tree = match parser.parse(&source_bytes, None) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if tree.root_node().has_error() {
+                continue;
+            }
+
+            let file_path_str = file_path.to_string_lossy().to_string();
+            self.extract_rust_data_flow(&tree, &source_bytes, &file_path_str)?;
+        }
+
+        Ok(())
+    }
+
+    /// Walk tree-sitter AST iteratively (cursor-based, stack-safe) and extract
+    /// heuristic data flow edges between DKG-level nodes.
+    ///
+    /// Edges extracted:
+    /// - call_expression `callee(args)` → RETURN edge callee->enclosing_fn
+    /// - call_expression arguments → PARAMETER edge enclosing_fn->callee
+    /// - let_declaration with identifier RHS → ASSIGNMENT edge (if both resolve)
+    /// - field_expression `obj.field` → FIELD_ACCESS edge obj_type->enclosing_fn
+    ///
+    /// Limitations (heuristic, not semantic analysis):
+    /// - Method calls (`self.foo()`) resolve callee as `foo`, not the full path
+    /// - Cannot track closures, dynamic dispatch, macros, complex control flow
+    /// - Only resolves names that exist as DKG nodes (functions, structs, etc.)
+    fn extract_rust_data_flow(
+        &self,
+        tree: &tree_sitter::Tree,
+        source: &[u8],
+        file_path: &str,
+    ) -> Result<(), KnowledgeError> {
+        let mut cursor = tree.root_node().walk();
+        let mut did_enter = true;
+
+        loop {
+            if did_enter {
+                let node = cursor.node();
+                let kind = node.kind();
+
+                match kind {
+                    "call_expression" => {
+                        // Extract the bare function name (strip method receiver)
+                        let callee_raw = node
+                            .child_by_field_name("function")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("");
+                        // For method calls like `self.conn.execute`, take last segment
+                        let callee_name = callee_raw
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(callee_raw);
+
+                        let enclosing = find_enclosing_function(node, source);
+
+                        if !callee_name.is_empty() {
+                            if let Some(ref enc_name) = enclosing {
+                                // RETURN edge: callee -> enclosing function
+                                self.insert_flow_edge_by_name(
+                                    file_path,
+                                    callee_name,
+                                    enc_name,
+                                    callee_name,
+                                    FLOW_RETURN,
+                                )?;
+                            }
+
+                            // PARAMETER edges for identifier arguments
+                            if let Some(args_node) = node.child_by_field_name("arguments") {
+                                let arg_count = args_node.named_child_count().min(u32::MAX as usize) as u32;
+                                for i in 0..arg_count {
+                                    if let Some(arg) = args_node.named_child(i) {
+                                        if arg.kind() == "identifier" {
+                                            let arg_text = arg.utf8_text(source).unwrap_or("");
+                                            if !arg_text.is_empty() {
+                                                if let Some(ref enc_name) = enclosing {
+                                                    self.insert_flow_edge_by_name(
+                                                        file_path,
+                                                        enc_name,
+                                                        callee_name,
+                                                        arg_text,
+                                                        FLOW_PARAMETER,
+                                                    )?;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "let_declaration" => {
+                        // ASSIGNMENT: let x = some_identifier
+                        if let Some(value_node) = node.child_by_field_name("value") {
+                            if value_node.kind() == "identifier" {
+                                let rhs_name = value_node
+                                    .utf8_text(source)
+                                    .unwrap_or("");
+                                let lhs_name = node
+                                    .child_by_field_name("pattern")
+                                    .and_then(|n| n.utf8_text(source).ok())
+                                    .unwrap_or("");
+                                if !rhs_name.is_empty() && !lhs_name.is_empty() {
+                                    if let Some(enc_name) = find_enclosing_function(node, source) {
+                                        // ASSIGNMENT between DKG nodes (if rhs resolves)
+                                        self.insert_flow_edge_by_name(
+                                            file_path,
+                                            rhs_name,
+                                            &enc_name,
+                                            lhs_name,
+                                            FLOW_ASSIGNMENT,
+                                        )?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "field_expression" => {
+                        // FIELD_ACCESS: obj.field → edge from obj_type to enclosing fn
+                        let field_name = node
+                            .child_by_field_name("field")
+                            .and_then(|n| n.utf8_text(source).ok())
+                            .unwrap_or("");
+                        // Try to get the object identifier (for `self.field`, obj = "self")
+                        let obj_node = node.child_by_field_name("value");
+                        let obj_name = obj_node
+                            .and_then(|n| {
+                                // For simple identifiers, use directly
+                                if n.kind() == "identifier" || n.kind() == "self" {
+                                    n.utf8_text(source).ok()
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or("");
+
+                        if !field_name.is_empty() {
+                            if let Some(enc_name) = find_enclosing_function(node, source) {
+                                // Try to resolve obj as a struct/type DKG node
+                                // For `self`, look up the enclosing impl's type
+                                let type_name = if obj_name == "self" || obj_name == "Self" {
+                                    find_enclosing_impl_type(node, source)
+                                } else {
+                                    Some(obj_name.to_string())
+                                };
+
+                                if let Some(ref tname) = type_name {
+                                    self.insert_flow_edge_by_name(
+                                        file_path,
+                                        tname,
+                                        &enc_name,
+                                        field_name,
+                                        FLOW_FIELD_ACCESS,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Iterative traversal: try child, then sibling, then parent's sibling
+            if did_enter && cursor.goto_first_child() {
+                did_enter = true;
+            } else if cursor.goto_next_sibling() {
+                did_enter = true;
+            } else if cursor.goto_parent() {
+                did_enter = false;
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Insert a data flow edge resolving names to DKG node IDs.
+    /// If either name cannot be resolved to a DKG node, the edge is silently
+    /// skipped (heuristic enrichment, not a gate).
+    fn insert_flow_edge_by_name(
+        &self,
+        file_path: &str,
+        source_name: &str,
+        target_name: &str,
+        variable_name: &str,
+        flow_type: &str,
+    ) -> Result<(), KnowledgeError> {
+        let source_id = self.resolve_node_id(source_name, file_path);
+        let target_id = self.resolve_node_id(target_name, file_path);
+
+        if let (Some(sid), Some(tid)) = (source_id, target_id) {
+            if sid != tid {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO dkg_data_flow (source_node_id, target_node_id, variable_name, flow_type) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![sid, tid, variable_name, flow_type],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_node_id(&self, name: &str, file_path: &str) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT id FROM dkg_nodes WHERE name = ?1 AND file_path = ?2 LIMIT 1",
+                rusqlite::params![name, file_path],
+                |row| row.get(0),
+            )
+            .ok()
+            .or_else(|| {
+                self.conn
+                    .query_row(
+                        "SELECT id FROM dkg_nodes WHERE name = ?1 LIMIT 1",
+                        [name],
+                        |row| row.get(0),
+                    )
+                    .ok()
+            })
+    }
+
     /// Extract project conventions from the DKG symbol graph.
     ///
     /// Queries all nodes, classifies naming patterns, error handling, module
@@ -606,6 +984,43 @@ fn tokenize_symbol(name: &str) -> Vec<String> {
         .map(|t| t.to_lowercase())
         .filter(|t| !t.is_empty())
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Data flow helpers
+// ---------------------------------------------------------------------------
+
+/// Walk up the tree-sitter AST from `node` to find the nearest enclosing
+/// function_item (Rust). Returns the function name if found.
+fn find_enclosing_function(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_item" {
+            return parent
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string());
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// Walk up from `node` to find the enclosing impl_item and return its type name.
+/// For `impl Config { ... }` returns `"Config"`. For `impl Trait for Type`
+/// returns `"Type"` (the concrete type, not the trait).
+fn find_enclosing_impl_type(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "impl_item" {
+            return parent
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string());
+        }
+        current = parent.parent();
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

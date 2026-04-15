@@ -144,6 +144,50 @@ pub enum SymbolKind {
 }
 
 // ---------------------------------------------------------------------------
+// Data flow types (A-48: DKG data flow edges)
+// ---------------------------------------------------------------------------
+
+/// Heuristic data flow edge type extracted via tree-sitter.
+/// Cannot track closures, dynamic dispatch, complex control flow, or macros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FlowType {
+    Parameter,
+    Return,
+    Assignment,
+    FieldAccess,
+}
+
+impl FlowType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Parameter => "PARAMETER",
+            Self::Return => "RETURN",
+            Self::Assignment => "ASSIGNMENT",
+            Self::FieldAccess => "FIELD_ACCESS",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "PARAMETER" => Some(Self::Parameter),
+            "RETURN" => Some(Self::Return),
+            "ASSIGNMENT" => Some(Self::Assignment),
+            "FIELD_ACCESS" => Some(Self::FieldAccess),
+            _ => None,
+        }
+    }
+}
+
+/// A single data flow edge between two DKG nodes.
+#[derive(Debug, Clone)]
+pub struct DataFlowEdge {
+    pub source_node_id: i64,
+    pub target_node_id: i64,
+    pub variable_name: String,
+    pub flow_type: FlowType,
+}
+
+// ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
 
@@ -152,6 +196,7 @@ pub struct DependencyGraph {
     pub node_count: usize,
     pub edge_count: usize,
     pub files_parsed: usize,
+    pub data_flow_count: usize,
 }
 
 #[derive(Debug, Clone)]
