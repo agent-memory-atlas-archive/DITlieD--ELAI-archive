@@ -19,18 +19,6 @@ task in - researched, tested, built, audited - result out
 
 <br>
 
-models are execution units, not decision makers<br>
-workflow logic is Rust code, not prompts<br>
-every output verified by deterministic scripts<br>
-every reasoning step grounded in evidence<br>
-every state transition gated by artifacts
-
-<br>
-
----
-
-<br>
-
 most tools write rules in markdown and hope the model follows them<br>
 elai enforces rules as code - violations are physically impossible
 
@@ -53,6 +41,21 @@ elai opens any directory and knows your language, framework, conventions, and bu
 
 most tools charge you to babysit<br>
 elai hands you code that was tested and audited before you ever see it
+
+<br>
+
+---
+
+<br>
+
+runs on what you have
+
+<br>
+
+8gb - single model, full pipeline, zero compromise<br>
+12gb - smarter model, same pipeline<br>
+24gb - dual models, zero swap latency<br>
+48gb+ - every role gets its own model, full parallel
 
 <br>
 
