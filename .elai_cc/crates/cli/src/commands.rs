@@ -1047,6 +1047,27 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: None,
         resume_supported: true,
     },
+    SlashCommandSpec {
+        name: "research",
+        aliases: &["ask"],
+        summary: "Research a question using Oracle Mode (web + knowledge, no code edits)",
+        argument_hint: Some("<question>"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "task",
+        aliases: &[],
+        summary: "Route to task mode with optional flags",
+        argument_hint: Some("[--surgical|--new] <description>"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
+        name: "explore",
+        aliases: &[],
+        summary: "Explore project context around a question",
+        argument_hint: Some("<question>"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1191,6 +1212,20 @@ pub enum SlashCommand {
     },
     AddDir {
         path: Option<String>,
+    },
+    Research {
+        question: Option<String>,
+    },
+    Ask {
+        question: Option<String>,
+    },
+    Explore {
+        target: Option<String>,
+    },
+    Task {
+        description: Option<String>,
+        surgical: bool,
+        new_project: bool,
     },
     Unknown(String),
 }
@@ -1426,6 +1461,13 @@ pub fn validate_slash_command_input(
         "output-style" => SlashCommand::OutputStyle { style: remainder },
         "profile" => SlashCommand::Profile { path: remainder },
         "add-dir" => SlashCommand::AddDir { path: remainder },
+        "research" => SlashCommand::Research { question: remainder },
+        "ask" => SlashCommand::Ask { question: remainder },
+        "explore" => SlashCommand::Explore { target: remainder },
+        "task" => {
+            let (description, surgical, new_project) = parse_task_flags(remainder.as_deref());
+            SlashCommand::Task { description, surgical, new_project }
+        }
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1723,6 +1765,32 @@ fn command_error(message: &str, command: &str, usage: &str) -> SlashCommandParse
     SlashCommandParseError::new(format!("{message}\n  Usage            {usage}{detail}"))
 }
 
+/// Parse `/task` flags: `--surgical`, `--new`. Returns (description, surgical, new_project).
+fn parse_task_flags(input: Option<&str>) -> (Option<String>, bool, bool) {
+    let Some(raw) = input else {
+        return (None, false, false);
+    };
+
+    let mut surgical = false;
+    let mut new_project = false;
+    let mut rest_parts: Vec<&str> = Vec::new();
+
+    for token in raw.split_whitespace() {
+        match token {
+            "--surgical" => surgical = true,
+            "--new" => new_project = true,
+            _ => rest_parts.push(token),
+        }
+    }
+
+    let desc = if rest_parts.is_empty() {
+        None
+    } else {
+        Some(rest_parts.join(" "))
+    };
+    (desc, surgical, new_project)
+}
+
 fn remainder_after_command(input: &str, command: &str) -> Option<String> {
     input
         .trim()
@@ -1812,6 +1880,7 @@ fn slash_command_category(name: &str) -> &'static str {
         }
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
+        "research" | "ask" | "explore" | "task" => "Routing & modes",
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -3691,6 +3760,10 @@ pub fn handle_slash_command(
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::Profile { .. }
         | SlashCommand::AddDir { .. }
+        | SlashCommand::Research { .. }
+        | SlashCommand::Ask { .. }
+        | SlashCommand::Explore { .. }
+        | SlashCommand::Task { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -4123,7 +4196,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|install <path>|help]"));
-        assert_eq!(slash_command_specs().len(), 141);
+        assert_eq!(slash_command_specs().len(), 145);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 
@@ -4849,5 +4922,141 @@ mod tests {
 
         let _ = fs::remove_dir_all(config_home);
         let _ = fs::remove_dir_all(bundled_root);
+    }
+
+    // -- A-47: /research, /ask, /explore, /task parse tests --
+
+    #[test]
+    fn parses_research_command() {
+        assert_eq!(
+            SlashCommand::parse("/research what is RLHF"),
+            Ok(Some(SlashCommand::Research {
+                question: Some("what is RLHF".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_research_no_args() {
+        assert_eq!(
+            SlashCommand::parse("/research"),
+            Ok(Some(SlashCommand::Research { question: None }))
+        );
+    }
+
+    #[test]
+    fn parses_ask_command() {
+        assert_eq!(
+            SlashCommand::parse("/ask how does auth work"),
+            Ok(Some(SlashCommand::Ask {
+                question: Some("how does auth work".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_explore_command() {
+        assert_eq!(
+            SlashCommand::parse("/explore the fsm module"),
+            Ok(Some(SlashCommand::Explore {
+                target: Some("the fsm module".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_task_with_surgical_flag() {
+        assert_eq!(
+            SlashCommand::parse("/task --surgical fix the parser"),
+            Ok(Some(SlashCommand::Task {
+                description: Some("fix the parser".to_string()),
+                surgical: true,
+                new_project: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_task_with_new_flag() {
+        assert_eq!(
+            SlashCommand::parse("/task --new build a dashboard"),
+            Ok(Some(SlashCommand::Task {
+                description: Some("build a dashboard".to_string()),
+                surgical: false,
+                new_project: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_task_with_both_flags() {
+        assert_eq!(
+            SlashCommand::parse("/task --surgical --new do things"),
+            Ok(Some(SlashCommand::Task {
+                description: Some("do things".to_string()),
+                surgical: true,
+                new_project: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_task_no_flags() {
+        assert_eq!(
+            SlashCommand::parse("/task clean up the code"),
+            Ok(Some(SlashCommand::Task {
+                description: Some("clean up the code".to_string()),
+                surgical: false,
+                new_project: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn existing_commands_still_parse_correctly() {
+        // Regression: 5+ existing commands must continue working.
+        assert_eq!(SlashCommand::parse("/help"), Ok(Some(SlashCommand::Help)));
+        assert_eq!(
+            SlashCommand::parse("/status"),
+            Ok(Some(SlashCommand::Status))
+        );
+        assert_eq!(
+            SlashCommand::parse("/commit"),
+            Ok(Some(SlashCommand::Commit))
+        );
+        assert_eq!(
+            SlashCommand::parse("/plan show"),
+            Ok(Some(SlashCommand::Plan {
+                mode: Some("show".to_string()),
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/tasks list"),
+            Ok(Some(SlashCommand::Tasks {
+                args: Some("list".to_string()),
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/version"),
+            Ok(Some(SlashCommand::Version))
+        );
+    }
+
+    #[test]
+    fn research_does_not_fall_to_unknown() {
+        let result = SlashCommand::parse("/research foo");
+        assert!(
+            !matches!(result, Ok(Some(SlashCommand::Unknown(_)))),
+            "/research must not fall through to Unknown"
+        );
+    }
+
+    #[test]
+    fn ask_does_not_fall_to_unknown() {
+        let result = SlashCommand::parse("/ask bar");
+        assert!(
+            !matches!(result, Ok(Some(SlashCommand::Unknown(_)))),
+            "/ask must not fall through to Unknown"
+        );
     }
 }

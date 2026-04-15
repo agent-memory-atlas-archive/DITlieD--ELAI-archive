@@ -6,6 +6,7 @@
     clippy::unnecessary_wraps,
     clippy::unused_self
 )]
+mod classifier;
 mod commands;
 mod dep_audit;
 mod init;
@@ -200,6 +201,11 @@ const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
 const DEGRADED_PROMPT_PREFIX: &str = "[degraded] using ollama fallback";
 const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const KNOWLEDGE_TOP_K: usize = 5;
+/// Minimal source-tiers TOML for research pipeline when no config file is loaded.
+const EMPTY_TIER_TOML: &str = "\
+[tier1]\ndomains = []\npatterns = []\n\
+[tier2]\ndomains = []\nmin_so_score = 5\n\
+[tier4_blocklist]\ndomains = []\npatterns = []\n";
 
 /// Char-based token estimator implementing LlmProvider for plan_skeleton usage.
 /// Only token_count and token_count_estimate are meaningful; complete/embed are stubs.
@@ -2415,7 +2421,11 @@ fn run_resume_command(
         | SlashCommand::Ide { .. }
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
-        | SlashCommand::AddDir { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
+        | SlashCommand::AddDir { .. }
+        | SlashCommand::Research { .. }
+        | SlashCommand::Ask { .. }
+        | SlashCommand::Explore { .. }
+        | SlashCommand::Task { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }
 
@@ -2448,7 +2458,35 @@ fn run_repl(
                         }
                         continue;
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        // Bare message: run fallback classifier for routing.
+                        let routed = classifier::classify_bare_message(&trimmed, &[]);
+                        match routed {
+                            SlashCommand::Research { .. } => {
+                                // Route to research mode via handle_repl_command.
+                                if cli.handle_repl_command(SlashCommand::Research {
+                                    question: Some(trimmed.clone()),
+                                })? {
+                                    cli.persist_session()?;
+                                }
+                                editor.push_history(input);
+                                continue;
+                            }
+                            SlashCommand::Explore { .. } => {
+                                tracing::debug!(route = "explore", input = %trimmed, "classifier routed to explore");
+                            }
+                            SlashCommand::Task { surgical, new_project, .. } => {
+                                tracing::debug!(
+                                    route = "task",
+                                    surgical = surgical,
+                                    new_project = new_project,
+                                    input = %trimmed,
+                                    "classifier routed to task"
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     Err(error) => {
                         eprintln!("{error}");
                         continue;
@@ -4270,6 +4308,60 @@ impl LiveCli {
             | SlashCommand::OutputStyle { .. }
             | SlashCommand::AddDir { .. } => {
                 eprintln!("Command registered but not yet implemented.");
+                false
+            }
+            SlashCommand::Research { question } | SlashCommand::Ask { question } => {
+                self.fsm_transition_sync(elai_orchestrator::FsmState::Researching);
+                match question {
+                    Some(q) => {
+                        let query = elai_core::ResearchQuery::new(&q);
+                        let tier_cfg = match elai_core::parse_source_tier_config(EMPTY_TIER_TOML) {
+                            Ok(cfg) => cfg,
+                            Err(e) => {
+                                eprintln!("Failed to load tier config: {e}");
+                                self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
+                                return Ok(false);
+                            }
+                        };
+                        let backend = elai_orchestrator::StubSearchBackend::new();
+                        match elai_orchestrator::run_research_pipeline(&query, &tier_cfg, &backend) {
+                            Ok(answer) => {
+                                println!("Research answer ({} sources, {} caveats):",
+                                    answer.sources_consulted.len(), answer.caveats.len());
+                                println!("{}", answer.answer_text);
+                            }
+                            Err(e) => eprintln!("Research pipeline error: {e}"),
+                        }
+                    }
+                    None => eprintln!("Usage: /research <question>"),
+                }
+                self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
+                false
+            }
+            SlashCommand::Explore { target } => {
+                match target {
+                    Some(t) => {
+                        tracing::info!(mode = "explore", query = %t, "routed to explore mode");
+                        println!("[explore] {t}");
+                    }
+                    None => eprintln!("Usage: /explore <question>"),
+                }
+                false
+            }
+            SlashCommand::Task { description, surgical, new_project } => {
+                match description {
+                    Some(d) => {
+                        tracing::info!(
+                            mode = "task",
+                            surgical = surgical,
+                            new_project = new_project,
+                            description = %d,
+                            "routed to task mode"
+                        );
+                        println!("[task] {d}");
+                    }
+                    None => eprintln!("Usage: /task [--surgical|--new] <description>"),
+                }
                 false
             }
             SlashCommand::Unknown(name) => {
