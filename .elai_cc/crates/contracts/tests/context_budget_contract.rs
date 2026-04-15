@@ -3,8 +3,14 @@ use std::sync::Arc;
 use elai_core::clock::SeededClock;
 use elai_orchestrator::context_budget::{
     AdaptiveError, AdaptiveLevel, BudgetError, CacheBreakpoint, ContextBudget,
-    ContextSlot, ExecutionMode, SlotAllocation,
+    ContextSlot, ExecutionMode, ModelTier, SlotAllocation,
     CACHE_BREAKPOINT_COUNT, FLOOR_GRC_HISTORY, FLOOR_OUTPUT_RESERVE, FLOOR_SSB_ENTRIES,
+    LARGE_SLOT_CODE_CONTEXT, LARGE_SLOT_GRC_HISTORY, LARGE_SLOT_OUTPUT_RESERVE,
+    LARGE_SLOT_REPO_MAP, LARGE_SLOT_RULES, LARGE_SLOT_SSB_ENTRIES,
+    LARGE_SLOT_SYSTEM_PROMPT, LARGE_SLOT_TELESCOPE,
+    MICRO_SLOT_CODE_CONTEXT, MICRO_SLOT_GRC_HISTORY, MICRO_SLOT_OUTPUT_RESERVE,
+    MICRO_SLOT_RULES, MICRO_SLOT_SSB_ENTRIES,
+    MICRO_SLOT_SYSTEM_PROMPT, MICRO_SLOT_TELESCOPE,
     SLOT_COUNT, SUM_DYNAMIC_FLOORS,
 };
 use elai_orchestrator::ssb::{Ssb, SsbConfig};
@@ -320,4 +326,133 @@ async fn adaptive_reduce_floors_respected() {
             >= budget.slots[ContextSlot::GrcHistory as usize].floor_tokens,
         "GrcHistory must respect floor"
     );
+}
+
+// ---------------------------------------------------------------------------
+// A-40: SlotAssemblyConfig contract tests (MICRO per-slot optimizations)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn micro_slot_system_prompt_target_200() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::SystemPrompt, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_SYSTEM_PROMPT);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_rules_target_150() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::Rules, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_RULES);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_telescope_target_400() {
+    // ContextSlot::PhaseSpec maps to spec "Telescope" slot (index 2).
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::PhaseSpec, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_TELESCOPE);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_repo_map_skipped() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::RepoMap, ModelTier::Micro);
+    assert!(cfg.skip_content, "MICRO tier must skip RepoMap content entirely");
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_code_context_target_1200() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::CodeContext, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_CODE_CONTEXT);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_ssb_entry_limit_2() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::SsbEntries, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_SSB_ENTRIES);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, Some(2), "MICRO SSB must limit to last 2 entries");
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn micro_slot_grc_conclusion_only() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::GrcHistory, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_GRC_HISTORY);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(cfg.conclusion_only, "MICRO GRC must include only last CONVERGE conclusion");
+}
+
+#[test]
+fn micro_slot_output_reserve_750() {
+    let cfg = ContextBudget::slot_assembly_config(ContextSlot::OutputReserve, ModelTier::Micro);
+    assert_eq!(cfg.max_tokens, MICRO_SLOT_OUTPUT_RESERVE);
+    assert!(!cfg.skip_content);
+    assert_eq!(cfg.entry_limit, None);
+    assert!(!cfg.conclusion_only);
+}
+
+#[test]
+fn large_slot_targets_match_spec() {
+    let sys = ContextBudget::slot_assembly_config(ContextSlot::SystemPrompt, ModelTier::Large);
+    assert_eq!(sys.max_tokens, LARGE_SLOT_SYSTEM_PROMPT);
+    assert!(!sys.skip_content);
+
+    let rules = ContextBudget::slot_assembly_config(ContextSlot::Rules, ModelTier::Large);
+    assert_eq!(rules.max_tokens, LARGE_SLOT_RULES);
+
+    let code = ContextBudget::slot_assembly_config(ContextSlot::CodeContext, ModelTier::Large);
+    assert_eq!(code.max_tokens, LARGE_SLOT_CODE_CONTEXT);
+
+    let telescope = ContextBudget::slot_assembly_config(ContextSlot::PhaseSpec, ModelTier::Large);
+    assert_eq!(telescope.max_tokens, LARGE_SLOT_TELESCOPE);
+
+    let repo = ContextBudget::slot_assembly_config(ContextSlot::RepoMap, ModelTier::Large);
+    assert_eq!(repo.max_tokens, LARGE_SLOT_REPO_MAP);
+    assert!(!repo.skip_content, "LARGE tier must not skip RepoMap");
+
+    let ssb = ContextBudget::slot_assembly_config(ContextSlot::SsbEntries, ModelTier::Large);
+    assert_eq!(ssb.max_tokens, LARGE_SLOT_SSB_ENTRIES);
+
+    let grc = ContextBudget::slot_assembly_config(ContextSlot::GrcHistory, ModelTier::Large);
+    assert_eq!(grc.max_tokens, LARGE_SLOT_GRC_HISTORY);
+    assert!(!grc.conclusion_only, "LARGE tier must include full GRC chain");
+
+    let out = ContextBudget::slot_assembly_config(ContextSlot::OutputReserve, ModelTier::Large);
+    assert_eq!(out.max_tokens, LARGE_SLOT_OUTPUT_RESERVE);
+}
+
+#[test]
+fn slot_assembly_config_micro_vs_large_differ_on_all_slots() {
+    let slots = [
+        ContextSlot::SystemPrompt,
+        ContextSlot::Rules,
+        ContextSlot::PhaseSpec,
+        ContextSlot::RepoMap,
+        ContextSlot::CodeContext,
+        ContextSlot::SsbEntries,
+        ContextSlot::GrcHistory,
+        ContextSlot::OutputReserve,
+    ];
+    for slot in slots {
+        let micro = ContextBudget::slot_assembly_config(slot, ModelTier::Micro);
+        let large = ContextBudget::slot_assembly_config(slot, ModelTier::Large);
+        assert_ne!(
+            micro.max_tokens, large.max_tokens,
+            "MICRO and LARGE must differ for {:?}",
+            slot
+        );
+    }
 }

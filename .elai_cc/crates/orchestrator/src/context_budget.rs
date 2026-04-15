@@ -13,6 +13,26 @@ pub const FLOOR_GRC_HISTORY: usize = 500;
 pub const FLOOR_OUTPUT_RESERVE: usize = 2000;
 pub const SUM_DYNAMIC_FLOORS: usize = FLOOR_SSB_ENTRIES + FLOOR_GRC_HISTORY;
 
+// Assembly-time token targets per slot per tier (token-efficiency-design.txt section 9).
+// These control content trimming at dispatch time — independent of budget allocation.
+pub const MICRO_SLOT_SYSTEM_PROMPT: usize = 200;
+pub const MICRO_SLOT_RULES: usize = 150;
+pub const MICRO_SLOT_TELESCOPE: usize = 400;
+pub const MICRO_SLOT_REPO_MAP: usize = 0;
+pub const MICRO_SLOT_CODE_CONTEXT: usize = 1200;
+pub const MICRO_SLOT_SSB_ENTRIES: usize = 200;
+pub const MICRO_SLOT_GRC_HISTORY: usize = 100;
+pub const MICRO_SLOT_OUTPUT_RESERVE: usize = 750;
+
+pub const LARGE_SLOT_SYSTEM_PROMPT: usize = 330;
+pub const LARGE_SLOT_RULES: usize = 500;
+pub const LARGE_SLOT_TELESCOPE: usize = 1000;
+pub const LARGE_SLOT_REPO_MAP: usize = 2000;
+pub const LARGE_SLOT_CODE_CONTEXT: usize = 6000;
+pub const LARGE_SLOT_SSB_ENTRIES: usize = 1500;
+pub const LARGE_SLOT_GRC_HISTORY: usize = 1000;
+pub const LARGE_SLOT_OUTPUT_RESERVE: usize = 4000;
+
 // Default percentage splits for dynamic budget (must sum to 100).
 // Used by compute() for backward compatibility; compute_with_profile() uses SlotWeights.
 const PCT_REPO_MAP: usize = 15;
@@ -511,6 +531,21 @@ pub struct SlotAllocation {
     pub floor_tokens: usize,
     pub actual_tokens: usize,
     pub source_truncated: bool,
+}
+
+/// Per-slot assembly behavior configuration produced by `slot_assembly_config()`.
+/// Controls content trimming at dispatch time, independent of budget allocation.
+/// Spec: token-efficiency-design.txt section 9.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotAssemblyConfig {
+    /// Hard token ceiling for assembled slot content.
+    pub max_tokens: usize,
+    /// If true, skip filling this slot entirely (content = empty). Budget allocation unchanged.
+    pub skip_content: bool,
+    /// For list-type slots (SSB): maximum number of entries to include (last N, reverse-chronological).
+    pub entry_limit: Option<usize>,
+    /// For GRC history slot: include only the conclusion of the last CONVERGE step.
+    pub conclusion_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1226,6 +1261,127 @@ impl ConstraintsBlock {
             out.push_str("- [truncated: additional constraints omitted for token budget]\n");
         }
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-slot assembly configuration (A-40: token-efficiency-design.txt section 9)
+// ---------------------------------------------------------------------------
+
+impl ContextBudget {
+    /// Return assembly-time configuration for a given slot and model tier.
+    ///
+    /// This is a pure function — it does not read or modify `ContextBudget` fields.
+    /// The assembler calls this to decide how aggressively to trim each slot's
+    /// content before dispatch. Independent of budget allocation (fixed_slot_targets).
+    pub fn slot_assembly_config(slot: ContextSlot, tier: ModelTier) -> SlotAssemblyConfig {
+        match tier {
+            ModelTier::Micro => match slot {
+                ContextSlot::SystemPrompt => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_SYSTEM_PROMPT,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+                ContextSlot::Rules => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_RULES,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+                ContextSlot::PhaseSpec => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_TELESCOPE,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+                ContextSlot::RepoMap => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_REPO_MAP,
+                    skip_content: true,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+                ContextSlot::CodeContext => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_CODE_CONTEXT,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+                ContextSlot::SsbEntries => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_SSB_ENTRIES,
+                    skip_content: false,
+                    entry_limit: Some(2),
+                    conclusion_only: false,
+                },
+                ContextSlot::GrcHistory => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_GRC_HISTORY,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: true,
+                },
+                ContextSlot::OutputReserve => SlotAssemblyConfig {
+                    max_tokens: MICRO_SLOT_OUTPUT_RESERVE,
+                    skip_content: false,
+                    entry_limit: None,
+                    conclusion_only: false,
+                },
+            },
+            // Small, Medium, Large, Cloud all use LARGE_SLOT_* assembly targets.
+            // Spec section 9 defines only MICRO and LARGE tiers for assembly.
+            // Future phases may differentiate Small/Medium if needed.
+            ModelTier::Small | ModelTier::Medium | ModelTier::Large | ModelTier::Cloud => {
+                match slot {
+                    ContextSlot::SystemPrompt => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_SYSTEM_PROMPT,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::Rules => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_RULES,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::PhaseSpec => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_TELESCOPE,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::RepoMap => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_REPO_MAP,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::CodeContext => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_CODE_CONTEXT,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::SsbEntries => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_SSB_ENTRIES,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::GrcHistory => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_GRC_HISTORY,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                    ContextSlot::OutputReserve => SlotAssemblyConfig {
+                        max_tokens: LARGE_SLOT_OUTPUT_RESERVE,
+                        skip_content: false,
+                        entry_limit: None,
+                        conclusion_only: false,
+                    },
+                }
+            }
+        }
     }
 }
 
