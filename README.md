@@ -51,7 +51,11 @@ and it gets more efficient the longer you use it
 most tools burn tokens like they're free<br>
 elai doesn't
 
-<br><br>
+<br>
+
+---
+
+<br>
 
 context loaded per-state, not dumped whole<br>
 retrieval budget-fitted, not "hope it fits"<br>
@@ -59,13 +63,13 @@ rules enforced as code, not as prompt tokens<br>
 binary internals, zero json bloat<br>
 ~330 tokens overhead per turn — others use 1600-2600
 
-<br><br>
+<br>
 
 local gpu first, cloud when necessary<br>
 each task routed to the cheapest model that handles it<br>
 $20/mo doing the work of $200/mo
 
-<br><br>
+<br>
 
 and it gets more efficient the longer you use it
 
