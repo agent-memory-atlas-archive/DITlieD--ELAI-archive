@@ -27,23 +27,6 @@ every state transition gated by artifacts
 
 <br>
 
-most tools burn tokens like they're free
-elai doesn't
-
-context loaded per-state, not dumped whole
-retrieval budget-fitted, not "hope it fits"
-rules enforced as code, not as prompt tokens
-binary internals, zero json bloat
-~330 tokens overhead per turn — others use 1600-2600
-
-local gpu first, cloud when necessary
-each task routed to the cheapest model that handles it
-$20/mo doing the work of $200/mo
-
-and it gets more efficient the longer you use it
-
-<br>
-
 ---
 
 <br>
