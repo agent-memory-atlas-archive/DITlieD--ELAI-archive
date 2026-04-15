@@ -4,11 +4,12 @@
 //! Spec: anti-staleness-enforcement.txt §3.3, code-completeness-enforcement-design.txt Layer 4.
 //! Step: A-12. Prerequisites: A-6 (VERSION_GATE), A-4 (ProjectProfile).
 //!
-//! Checks (in order):
+//! Checks (in order, early-exit on BLOCK at any step):
 //!   1. Build check — runs `ProjectProfile.commands.build` + lint commands
 //!   2. VERSION_GATE — evaluates deprecated_patterns against changed files
-//!   3. Import cross-reference — language-specific regex import extraction
-//!   4. Lazy code scan — regex patterns per language on all modified files
+//!   3. FILE_SIZE_CENSUS — language-specific line count limits
+//!   4. LAZY_CODE_SCAN — regex patterns per language on all modified files
+//!   5. COMPLETENESS + MODULE_COHERENCE — AST checks for non-trivial fn bodies
 //!
 //! Only after all checks pass (zero BLOCKs) does the LLM auditor run.
 
@@ -24,6 +25,9 @@ use elai_rules::schema::DeprecatedPatternEntry;
 
 /// Maximum time (seconds) for a single build/lint command.
 pub const BUILD_CMD_TIMEOUT_S: u32 = 120;
+
+/// Maximum characters of stderr to include in a build failure finding.
+const STDERR_TRUNCATE_CHARS: usize = 500;
 
 // ---------------------------------------------------------------------------
 // Finding severity (mirrors evidence::FindingSeverity but local to this module)
@@ -143,6 +147,22 @@ impl DeterministicAuditorConfig {
             Language::Java | Language::Kotlin => Some("javac -Xlint {file}"),
             Language::CSharp => Some("dotnet build --no-restore"),
             Language::Ruby => Some("ruby -c {file}"),
+            _ => None,
+        }
+    }
+
+    /// Per-language lint command registry (companion to `default_build_cmd`).
+    /// Returns the canonical lint command string for a given language when no
+    /// project-specific lint commands are configured.
+    pub fn default_lint_cmd(lang: &Language) -> Option<&'static str> {
+        match lang {
+            Language::Rust => Some("cargo clippy -p {crate} -- -D warnings"),
+            Language::Python => Some("ruff check {file}"),
+            Language::Go => Some("golangci-lint run ./..."),
+            Language::TypeScript | Language::JavaScript => Some("npx eslint {file}"),
+            Language::Java | Language::Kotlin => Some("./gradlew lint"),
+            Language::CSharp => Some("dotnet format --verify-no-changes"),
+            Language::Ruby => Some("rubocop {file}"),
             _ => None,
         }
     }
@@ -356,8 +376,8 @@ impl DeterministicAuditor {
     ///   5. COMPLETENESS + MODULE_COHERENCE (AST: named functions exist with
     ///      non-trivial bodies, mod.rs/init.py/index.ts resolve)
     ///
-    /// Short-circuits on build failure (check 1) since subsequent checks may
-    /// be unreliable if the code doesn't compile.
+    /// Short-circuits on BLOCK at any step (A-41): if any step produces a
+    /// BLOCK finding, returns immediately without running subsequent steps.
     pub fn run_all(&self, changed_files: &[PathBuf]) -> DeterministicAuditResult {
         if !self.config.enabled {
             return DeterministicAuditResult {
@@ -396,7 +416,9 @@ impl DeterministicAuditor {
                 if parts.is_empty() {
                     continue;
                 }
-                let (program, args) = parts.split_first().expect("non-empty");
+                let Some((program, args)) = parts.split_first() else {
+                    continue;
+                };
                 let output = std::process::Command::new(program)
                     .args(args)
                     .current_dir(&build_cmd.working_dir)
@@ -452,12 +474,33 @@ impl DeterministicAuditor {
 
         // Step 2: VERSION_GATE
         findings.extend(self.check_version_gate(changed_files));
+        if findings.iter().any(|f| f.severity == DeterministicSeverity::Block) {
+            return DeterministicAuditResult {
+                findings,
+                checks_run: 2,
+                passed: false,
+            };
+        }
 
         // Step 3: FILE_SIZE_CENSUS
         findings.extend(self.check_file_size_census(changed_files));
+        if findings.iter().any(|f| f.severity == DeterministicSeverity::Block) {
+            return DeterministicAuditResult {
+                findings,
+                checks_run: 3,
+                passed: false,
+            };
+        }
 
         // Step 4: LAZY_CODE_SCAN
         findings.extend(self.check_lazy_code(changed_files));
+        if findings.iter().any(|f| f.severity == DeterministicSeverity::Block) {
+            return DeterministicAuditResult {
+                findings,
+                checks_run: 4,
+                passed: false,
+            };
+        }
 
         // Step 5: COMPLETENESS + MODULE_COHERENCE
         findings.extend(self.check_completeness(changed_files));
@@ -516,9 +559,10 @@ impl DeterministicAuditor {
         stderr: &str,
     ) -> Option<DeterministicFinding> {
         if exit_code != 0 {
-            // Truncate stderr to first 500 chars for finding message
-            let truncated = if stderr.len() > 500 {
-                format!("{}... (truncated)", &stderr[..500])
+            // Truncate stderr to first N chars (char-boundary safe)
+            let truncated = if stderr.chars().count() > STDERR_TRUNCATE_CHARS {
+                let s: String = stderr.chars().take(STDERR_TRUNCATE_CHARS).collect();
+                format!("{s}... (truncated)")
             } else {
                 stderr.to_string()
             };

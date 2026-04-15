@@ -38,3 +38,8 @@ dola_on_32b_only = true
 # Calibration target model — thresholds are architecture-specific.
 # Do not apply calibrated values across different model families.
 calibration_target_model = "Qwen2.5-Coder-7B"
+
+[agents.auditor]
+# deterministic_first: run Build/VersionGate/FileSizeCensus/LazyCode/Completeness checks
+# before LLM auditor. Default: true. Set false only for rapid iteration debugging.
+deterministic_first = true

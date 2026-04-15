@@ -93,6 +93,49 @@ impl Default for InferenceConfig {
 }
 
 // ---------------------------------------------------------------------------
+// AuditorConfig (A-41: deterministic-first auditor toggle)
+// ---------------------------------------------------------------------------
+
+/// Serde helper: returns `true` for `deterministic_first` default.
+fn default_true() -> bool {
+    true
+}
+
+/// Configuration for the auditor agent behavior.
+///
+/// Controls whether deterministic checks (build, version gate, file size,
+/// lazy code, completeness) run before the LLM auditor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditorConfig {
+    /// When `true`, run all 5 deterministic checks before the LLM auditor.
+    /// When `false`, skip deterministic checks and go straight to LLM audit.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub deterministic_first: bool,
+}
+
+impl Default for AuditorConfig {
+    fn default() -> Self {
+        Self {
+            deterministic_first: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgentsConfig (A-41: agent-level configuration)
+// ---------------------------------------------------------------------------
+
+/// Aggregated config for the `[agents]` TOML section.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// `[agents.auditor]` — deterministic-first auditor toggle.
+    pub auditor: AuditorConfig,
+}
+
+// ---------------------------------------------------------------------------
 // ElaiRuntimeConfig
 // ---------------------------------------------------------------------------
 
@@ -111,6 +154,8 @@ pub struct ElaiRuntimeConfig {
     pub actions: ActionPolicy,
     /// `[inference]` section — during-generation feature safety defaults (A-39).
     pub inference: InferenceConfig,
+    /// `[agents]` section — agent-level configuration (A-41).
+    pub agents: AgentsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,5 +318,31 @@ calibration_target_model = "Qwen2.5-Coder-14B"
             assert!(cfg.inference.dola_on_32b_only);
             assert_eq!(cfg.inference.calibration_target_model, "Qwen2.5-Coder-7B");
         });
+    }
+
+    #[test]
+    fn auditor_config_defaults_deterministic_first_true() {
+        // When [agents.auditor] is absent, deterministic_first defaults to true.
+        with_toml_file("[output]\nstrip_emoji = false\n", |root| {
+            let cfg = load_elai_config(root);
+            assert!(
+                cfg.agents.auditor.deterministic_first,
+                "deterministic_first must default to true when [agents.auditor] is absent"
+            );
+        });
+    }
+
+    #[test]
+    fn auditor_config_explicit_false() {
+        with_toml_file(
+            "[agents.auditor]\ndeterministic_first = false\n",
+            |root| {
+                let cfg = load_elai_config(root);
+                assert!(
+                    !cfg.agents.auditor.deterministic_first,
+                    "deterministic_first = false must be respected"
+                );
+            },
+        );
     }
 }
