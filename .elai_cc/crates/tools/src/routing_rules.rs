@@ -4,6 +4,22 @@
 //! Glob, Grep) and rejects them with a hint message. This replaces ~375 prompt
 //! tokens of "use X not Y" instructions with a physical gate that local models
 //! cannot bypass.
+//!
+//! # Config wiring point
+//!
+//! To enable runtime configuration, add a `routing_config` field to the tools
+//! section of `elai_cc.toml`:
+//!
+//! ```toml
+//! [tools.routing_rules]
+//! enabled = true
+//! allow_override_prefix = "!"
+//! ```
+//!
+//! The types below are already serde-ready. Currently the builtin rules use
+//! hardcoded constants; a full runtime config override (loading `RoutingConfig`
+//! from `elai_cc.toml` and passing it into `check_routing`) is planned for the
+//! `tools.routing_rules` TOML section.
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -17,6 +33,34 @@ const BUILTIN_RULE_COUNT: usize = 5;
 
 /// Override prefix: commands starting with '!' bypass routing checks.
 const OVERRIDE_PREFIX: char = '!';
+
+// ---------------------------------------------------------------------------
+// Config (serde-ready; not yet wired to elai_cc.toml loader)
+// ---------------------------------------------------------------------------
+
+/// Runtime configuration for the routing rules layer.
+///
+/// All fields have sane defaults so `RoutingConfig::default()` gives the same
+/// behaviour as the current hardcoded constants. Wire this into the tools
+/// config loader when `[tools.routing_rules]` TOML support is added.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct RoutingConfig {
+    /// When `false`, `check_routing` always returns `None` (all commands pass).
+    pub enabled: bool,
+    /// Commands that start with this string bypass routing entirely.
+    /// Maps to the `OVERRIDE_PREFIX` constant when config is not loaded.
+    pub allow_override_prefix: String,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_override_prefix: OVERRIDE_PREFIX.to_string(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +128,24 @@ fn builtin_rules() -> &'static [RoutingRule; BUILTIN_RULE_COUNT] {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime config (set once at startup from elai_cc.toml)
+// ---------------------------------------------------------------------------
+
+/// Initialize the routing config from `elai_cc.toml` at startup.
+///
+/// Call this once before any tool invocations. Safe to call multiple times —
+/// only the first call takes effect (OnceLock semantics).
+pub fn init_routing_config(config: RoutingConfig) {
+    let _ = RUNTIME_ROUTING_CONFIG.set(config);
+}
+
+static RUNTIME_ROUTING_CONFIG: std::sync::OnceLock<RoutingConfig> = std::sync::OnceLock::new();
+
+fn runtime_routing_config() -> &'static RoutingConfig {
+    RUNTIME_ROUTING_CONFIG.get_or_init(RoutingConfig::default)
+}
+
+// ---------------------------------------------------------------------------
 // Core routing check
 // ---------------------------------------------------------------------------
 
@@ -99,10 +161,22 @@ fn builtin_rules() -> &'static [RoutingRule; BUILTIN_RULE_COUNT] {
 /// or the first token after the last pipe. Compound commands where the
 /// pattern appears only in a non-primary position are allowed through.
 pub fn check_routing(command: &str) -> Option<RoutingRejection> {
+    let config = runtime_routing_config();
+
+    // When routing is disabled, all commands pass through.
+    if !config.enabled {
+        return None;
+    }
+
     let trimmed = command.trim();
 
-    // Override escape: leading '!' skips all routing.
-    if trimmed.starts_with(OVERRIDE_PREFIX) {
+    // Override escape: configured prefix skips all routing.
+    let override_prefix = config
+        .allow_override_prefix
+        .chars()
+        .next()
+        .unwrap_or(OVERRIDE_PREFIX);
+    if trimmed.starts_with(override_prefix) {
         return None;
     }
 
@@ -129,11 +203,17 @@ pub fn check_routing(command: &str) -> Option<RoutingRejection> {
     None
 }
 
-/// Strip the '!' override prefix from a command, if present.
+/// Strip the override prefix from a command, if present.
+/// The prefix character is taken from the runtime routing config (default: '!').
 /// Returns the command unchanged if no prefix.
 pub fn strip_override_prefix(command: &str) -> &str {
     let trimmed = command.trim();
-    if trimmed.starts_with(OVERRIDE_PREFIX) {
+    let prefix = runtime_routing_config()
+        .allow_override_prefix
+        .chars()
+        .next()
+        .unwrap_or(OVERRIDE_PREFIX);
+    if trimmed.starts_with(prefix) {
         trimmed[1..].trim_start()
     } else {
         trimmed

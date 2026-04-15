@@ -329,6 +329,17 @@ pub struct PolicyOverride {
 }
 
 /// Configuration for the action gate, loadable from elai_cc.toml [actions].
+///
+/// TOML wiring point (same pattern as A-26/A-27/A-30):
+///   [actions]
+///   mode = "Autonomous"            # or "Interactive" (default)
+///   [actions.tool_overrides.bash]
+///   allow_autonomous = true
+///   [actions.pattern_overrides."git push"]
+///   risk_override = "Reversible"
+///
+/// Load via: `toml::from_str::<ActionPolicy>(config_str)` and pass to
+/// `classify_and_gate()` instead of `ActionPolicy::default()`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActionPolicy {
     /// Per-tool name overrides.

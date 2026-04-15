@@ -23,7 +23,7 @@ use crate::import_extractor::{
 // ---------------------------------------------------------------------------
 
 /// Per-language line limits for file size enforcement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct LanguageLimits {
     /// WARN threshold for production files.
     pub production_warn: usize,
@@ -34,17 +34,47 @@ pub struct LanguageLimits {
 }
 
 /// File discipline configuration. Loaded from elai_cc.toml `[file_discipline]`.
-#[derive(Debug, Clone)]
+///
+/// # Config wiring
+/// To make this configurable via `elai_cc.toml`, add the following field to the
+/// top-level TOML config struct in the crate that owns elai_cc.toml parsing
+/// (NOT in `elai-core`, which would create a circular dependency since
+/// `elai-plugins` already depends on `elai-core`):
+///
+/// ```toml
+/// [file_discipline]
+/// exempt_extensions = [".toml", ".json"]
+/// max_cyclomatic_complexity = 12
+/// ```
+///
+/// In the owning crate's config struct:
+/// ```rust
+/// #[serde(default)]
+/// pub file_discipline: elai_plugins::tiered_analysis::FileDisciplineConfig,
+/// ```
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct FileDisciplineConfig {
+    #[serde(default)]
     pub limits: HashMap<String, LanguageLimits>,
     /// File extensions exempt from size checks (e.g. generated code).
+    #[serde(default)]
     pub exempt_extensions: Vec<String>,
     /// Path prefixes exempt from size checks.
+    #[serde(default)]
     pub exempt_paths: Vec<String>,
     /// Maximum cyclomatic complexity per function (T2 Check 6a). Default: 10.
+    #[serde(default = "FileDisciplineConfig::default_max_cyclomatic_complexity")]
     pub max_cyclomatic_complexity: usize,
     /// Maximum distinct external symbols per file (T2 Check 6b). Default: 15.
+    #[serde(default = "FileDisciplineConfig::default_max_coupling_score")]
     pub max_coupling_score: usize,
+}
+
+impl FileDisciplineConfig {
+    /// Serde default helper for `max_cyclomatic_complexity`.
+    fn default_max_cyclomatic_complexity() -> usize { 10 }
+    /// Serde default helper for `max_coupling_score`.
+    fn default_max_coupling_score() -> usize { 15 }
 }
 
 impl Default for FileDisciplineConfig {
@@ -76,8 +106,8 @@ impl Default for FileDisciplineConfig {
                 "generated/".into(), "build/".into(), "vendor/".into(),
                 "node_modules/".into(), "migrations/".into(), "target/".into(),
             ],
-            max_cyclomatic_complexity: 10,
-            max_coupling_score: 15,
+            max_cyclomatic_complexity: Self::default_max_cyclomatic_complexity(),
+            max_coupling_score: Self::default_max_coupling_score(),
         }
     }
 }
@@ -549,10 +579,16 @@ pub struct T2Hook {
 }
 
 /// Detected language for tree-sitter parsing.
+/// Covers all languages with available tree-sitter grammars in the plugins crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetectedLanguage {
     Rust,
     Python,
+    Go,
+    TypeScript,
+    Java,
+    CSharp,
+    Ruby,
 }
 
 impl T2Hook {
@@ -593,12 +629,29 @@ impl T2Hook {
 
     /// Detect language from file extension.
     fn detect_language(file_path: &str) -> Option<DetectedLanguage> {
-        if file_path.ends_with(".rs") {
-            Some(DetectedLanguage::Rust)
-        } else if file_path.ends_with(".py") {
-            Some(DetectedLanguage::Python)
-        } else {
-            None
+        let ext = file_path.rsplit('.').next()?;
+        match ext {
+            "rs" => Some(DetectedLanguage::Rust),
+            "py" | "pyi" => Some(DetectedLanguage::Python),
+            "go" => Some(DetectedLanguage::Go),
+            "ts" | "tsx" => Some(DetectedLanguage::TypeScript),
+            "java" => Some(DetectedLanguage::Java),
+            "cs" => Some(DetectedLanguage::CSharp),
+            "rb" => Some(DetectedLanguage::Ruby),
+            _ => None,
+        }
+    }
+
+    /// Get the tree-sitter Language for a DetectedLanguage.
+    fn tree_sitter_language(lang: DetectedLanguage) -> tree_sitter::Language {
+        match lang {
+            DetectedLanguage::Rust => tree_sitter_rust::LANGUAGE.into(),
+            DetectedLanguage::Python => tree_sitter_python::LANGUAGE.into(),
+            DetectedLanguage::Go => tree_sitter_go::LANGUAGE.into(),
+            DetectedLanguage::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            DetectedLanguage::Java => tree_sitter_java::LANGUAGE.into(),
+            DetectedLanguage::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            DetectedLanguage::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         }
     }
 
@@ -635,52 +688,63 @@ impl T2Hook {
 
         let mut findings: Vec<(String, String)> = Vec::new();
 
-        // --- Legacy pattern checks (Rust AST / Python regex) ---
-        match lang {
-            Some(DetectedLanguage::Rust) => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_rust::LANGUAGE.into())
-                    .map_err(|e| T2Error::ParseError(format!("Rust parser init: {e}")))?;
-                let tree = parser
-                    .parse(source, None)
-                    .ok_or_else(|| {
-                        T2Error::ParseError("tree-sitter parse returned None".to_string())
-                    })?;
-                let root = tree.root_node();
-                // CC spec Check 1: ERROR nodes in AST -> BLOCK
-                if root.has_error() {
-                    findings.push((
-                        format!("ast_error_{}", file_path),
-                        format!("AST contains ERROR nodes (unparseable code) in {}", file_path),
-                    ));
-                }
-                self.check_rust_patterns(&root, source, &mut findings);
-                let max_depth = self.max_nesting_depth(&root, 0);
-                if max_depth > MAX_NESTING_DEPTH {
-                    findings.push((
-                        format!("deep_nesting_{max_depth}"),
-                        format!(
-                            "Nesting depth {max_depth} exceeds limit {MAX_NESTING_DEPTH}"
-                        ),
-                    ));
-                }
-                // Check 5: magic number detection (WARN only)
-                self.check_magic_numbers_rust(&root, source, file_path, &mut findings);
-                // Check 6a: cyclomatic complexity per function (BLOCK)
-                self.check_cyclomatic_complexity_rust(&root, source, &mut findings);
-                // Check 6b: coupling score per file (BLOCK)
-                self.check_coupling_score_rust(&root, source, file_path, &mut findings);
+        // --- Check 1: tree-sitter ERROR node detection (all languages) ---
+        // Parse with tree-sitter for any recognized language. ERROR nodes = BLOCK.
+        if let Some(detected) = lang {
+            let ts_lang = Self::tree_sitter_language(detected);
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_language(&ts_lang)
+                .map_err(|e| T2Error::ParseError(format!("{:?} parser init: {e}", detected)))?;
+            let tree = parser
+                .parse(source, None)
+                .ok_or_else(|| {
+                    T2Error::ParseError("tree-sitter parse returned None".to_string())
+                })?;
+            let root = tree.root_node();
+
+            // Check 1: ERROR nodes in AST -> BLOCK (all languages)
+            if root.has_error() {
+                findings.push((
+                    format!("ast_error_{}", file_path),
+                    format!("AST contains ERROR nodes (unparseable code) in {}", file_path),
+                ));
             }
-            Some(DetectedLanguage::Python) => {
-                // Python security/lazy patterns via regex
-                self.collect_python_regex_findings(source, &mut findings);
-                // A-21: Python AST empty body detection + magic numbers via tree-sitter
-                self.check_python_ast_completeness(source, file_path, &mut findings);
+
+            // Check 6a: cyclomatic complexity (all languages with function nodes)
+            self.check_cyclomatic_complexity_generic(&root, source, detected, &mut findings);
+
+            // Check 6b: coupling score (all languages with import nodes)
+            self.check_coupling_score_generic(&root, source, detected, file_path, &mut findings);
+
+            // --- Language-specific deep checks ---
+            match detected {
+                DetectedLanguage::Rust => {
+                    self.check_rust_patterns(&root, source, &mut findings);
+                    let max_depth = self.max_nesting_depth(&root, 0);
+                    if max_depth > MAX_NESTING_DEPTH {
+                        findings.push((
+                            format!("deep_nesting_{max_depth}"),
+                            format!(
+                                "Nesting depth {max_depth} exceeds limit {MAX_NESTING_DEPTH}"
+                            ),
+                        ));
+                    }
+                    // Check 5: magic number detection (WARN only)
+                    self.check_magic_numbers_rust(&root, source, file_path, &mut findings);
+                }
+                DetectedLanguage::Python => {
+                    // Python security/lazy patterns via regex
+                    self.collect_python_regex_findings(source, &mut findings);
+                    // Empty body detection + magic numbers (reuses parsed tree from above)
+                    self.check_python_empty_bodies(&root, source, &mut findings);
+                    self.check_magic_numbers_python(&root, source, file_path, &mut findings);
+                }
+                _ => {
+                    // Other languages: Check 1 + 6a + 6b already ran above.
+                    // Deep pattern checks (magic numbers, nesting) are Rust/Python-only for now.
+                }
             }
-            // Note: magic numbers for Python are checked inside check_python_ast_completeness
-            // since it already has the parsed tree available.
-            None => {} // No legacy checks for other languages
         }
 
         // --- A-14: AST import extraction + deprecated pattern cross-reference ---
@@ -963,6 +1027,9 @@ impl T2Hook {
     ///
     /// Detects empty function bodies (function_definition with block containing
     /// only pass or ellipsis). Also checks for ERROR nodes.
+    /// Note: evaluate() now calls sub-methods directly with the pre-parsed tree.
+    /// This method retained for standalone use outside the tiered pipeline.
+    #[allow(dead_code)]
     fn check_python_ast_completeness(
         &self,
         source: &str,
@@ -1186,50 +1253,6 @@ impl T2Hook {
         }
     }
 
-    /// Check cyclomatic complexity for all functions in a Rust AST.
-    fn check_cyclomatic_complexity_rust(
-        &self,
-        root: &tree_sitter::Node<'_>,
-        source: &str,
-        findings: &mut Vec<(String, String)>,
-    ) {
-        let max = self.file_discipline.max_cyclomatic_complexity;
-        self.walk_functions_complexity_rust(root, source, max, findings);
-    }
-
-    fn walk_functions_complexity_rust(
-        &self,
-        node: &tree_sitter::Node<'_>,
-        source: &str,
-        max: usize,
-        findings: &mut Vec<(String, String)>,
-    ) {
-        if node.kind() == "function_item" {
-            if let Some(body) = node.child_by_field_name("body") {
-                let cc = self.cyclomatic_complexity_rust(&body, source);
-                if cc > max {
-                    let line = node.start_position().row + 1;
-                    let fn_name = node
-                        .child_by_field_name("name")
-                        .map(|n| &source[n.byte_range()])
-                        .unwrap_or("<unknown>");
-                    findings.push((
-                        format!("cyclomatic_complexity_L{line}"),
-                        format!(
-                            "Function '{}' at line {} has cyclomatic complexity {} (max {})",
-                            fn_name, line, cc, max
-                        ),
-                    ));
-                }
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.walk_functions_complexity_rust(&child, source, max, findings);
-        }
-    }
-
     // -- T2 Check 6b: coupling score per file (BLOCK) --
 
     /// Count distinct external symbols imported in a Rust file via tree-sitter.
@@ -1290,6 +1313,186 @@ impl T2Hook {
                     score, max
                 ),
             ));
+        }
+    }
+
+    // -- Check 6a generic: cyclomatic complexity for all languages --
+
+    /// Language-generic cyclomatic complexity. Uses tree-sitter node kind names
+    /// that are standard across grammars (if_statement, for_statement, etc.).
+    /// Falls back to Rust-specific implementation for DetectedLanguage::Rust.
+    fn check_cyclomatic_complexity_generic(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        lang: DetectedLanguage,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let max = self.file_discipline.max_cyclomatic_complexity;
+        // Function node kinds per language
+        let fn_kinds: &[&str] = match lang {
+            DetectedLanguage::Rust => &["function_item"],
+            DetectedLanguage::Python => &["function_definition"],
+            DetectedLanguage::Go => &["function_declaration", "method_declaration"],
+            DetectedLanguage::TypeScript => &["function_declaration", "method_definition", "arrow_function"],
+            DetectedLanguage::Java => &["method_declaration", "constructor_declaration"],
+            DetectedLanguage::CSharp => &["method_declaration", "constructor_declaration"],
+            DetectedLanguage::Ruby => &["method"],
+        };
+        self.walk_functions_complexity_generic(root, source, fn_kinds, lang, max, findings);
+    }
+
+    fn walk_functions_complexity_generic(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        fn_kinds: &[&str],
+        lang: DetectedLanguage,
+        max: usize,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        if fn_kinds.contains(&node.kind()) {
+            // For Rust, use the dedicated counter which knows about ? and match arms
+            let cc = if lang == DetectedLanguage::Rust {
+                if let Some(body) = node.child_by_field_name("body") {
+                    self.cyclomatic_complexity_rust(&body, source)
+                } else {
+                    1
+                }
+            } else {
+                self.cyclomatic_complexity_generic(node, source)
+            };
+            if cc > max {
+                let line = node.start_position().row + 1;
+                let fn_name = node
+                    .child_by_field_name("name")
+                    .map(|n| &source[n.byte_range()])
+                    .unwrap_or("<anonymous>");
+                findings.push((
+                    format!("cyclomatic_complexity_L{line}"),
+                    format!(
+                        "Function '{}' at line {} has cyclomatic complexity {} (max {})",
+                        fn_name, line, cc, max
+                    ),
+                ));
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.walk_functions_complexity_generic(&child, source, fn_kinds, lang, max, findings);
+        }
+    }
+
+    /// Generic cyclomatic complexity counter. Counts node kinds that represent
+    /// branching across most tree-sitter grammars.
+    fn cyclomatic_complexity_generic(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+    ) -> usize {
+        let mut complexity = 1;
+        self.count_complexity_generic(node, source, &mut complexity);
+        complexity
+    }
+
+    fn count_complexity_generic(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        count: &mut usize,
+    ) {
+        match node.kind() {
+            // Common branching constructs across languages
+            "if_statement" | "if_expression" | "else_clause" | "elif_clause"
+            | "for_statement" | "for_expression" | "for_in_clause"
+            | "while_statement" | "while_expression"
+            | "loop_expression"
+            | "catch_clause" | "except_clause" | "rescue"
+            | "case" | "when" | "match_arm"
+            | "conditional_expression" | "ternary_expression" => {
+                *count += 1;
+            }
+            "binary_expression" | "boolean_operator" => {
+                if let Some(op) = node.child_by_field_name("operator") {
+                    let op_text = &source[op.byte_range()];
+                    if op_text == "&&" || op_text == "||" || op_text == "and" || op_text == "or" {
+                        *count += 1;
+                    }
+                }
+            }
+            "try_expression" => {
+                *count += 1; // ? operator (Rust)
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.count_complexity_generic(&child, source, count);
+        }
+    }
+
+    // -- Check 6b generic: coupling score for all languages --
+
+    /// Language-generic coupling score. Counts distinct import/use paths.
+    fn check_coupling_score_generic(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        source: &str,
+        lang: DetectedLanguage,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let max = self.file_discipline.max_coupling_score;
+
+        // For Rust, use the dedicated counter
+        if lang == DetectedLanguage::Rust {
+            self.check_coupling_score_rust(root, source, file_path, findings);
+            return;
+        }
+
+        // Generic: count import-like node kinds
+        let import_kinds: &[&str] = match lang {
+            DetectedLanguage::Python => &["import_statement", "import_from_statement"],
+            DetectedLanguage::Go => &["import_spec"],
+            DetectedLanguage::TypeScript => &["import_statement"],
+            DetectedLanguage::Java | DetectedLanguage::CSharp => &["import_declaration", "using_directive"],
+            DetectedLanguage::Ruby => &["call"], // require/gem calls
+            DetectedLanguage::Rust => unreachable!(), // handled above
+        };
+
+        let mut symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.collect_import_nodes(root, source, import_kinds, &mut symbols);
+
+        if symbols.len() > max {
+            findings.push((
+                format!("coupling_score_{}", file_path),
+                format!(
+                    "File has {} distinct external symbols (max {})",
+                    symbols.len(), max
+                ),
+            ));
+        }
+    }
+
+    fn collect_import_nodes(
+        &self,
+        node: &tree_sitter::Node<'_>,
+        source: &str,
+        import_kinds: &[&str],
+        symbols: &mut std::collections::HashSet<String>,
+    ) {
+        if import_kinds.contains(&node.kind()) {
+            let text = source[node.byte_range()].trim().to_string();
+            if !text.is_empty() {
+                symbols.insert(text);
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_import_nodes(&child, source, import_kinds, symbols);
         }
     }
 
@@ -2070,5 +2273,31 @@ mod tests {
         let python = config.limits.get("python").unwrap();
         assert_eq!(python.production_warn, 120);
         assert_eq!(python.hard_block, 480);
+    }
+
+    // -- T2 deprecated import detection (integration) --
+
+    #[test]
+    fn test_t2_deprecated_import_blake2_blocks() {
+        use crate::import_extractor::DeprecatedImport;
+        let hook = T2Hook::with_deprecated_imports(
+            5000,
+            vec![DeprecatedImport {
+                ecosystem: "cargo".to_string(),
+                deprecated_name: "blake2".to_string(),
+                replacement_name: "blake3".to_string(),
+                severity: "BLOCK".to_string(),
+                reason: "Use blake3 for non-RFC hashing".to_string(),
+            }],
+        );
+        let source = "use blake2::Digest;\nfn hash() {}\n";
+        let result = hook.evaluate(source, "src/crypto.rs").unwrap();
+        assert!(result.is_some());
+        let verdict = result.unwrap();
+        assert!(
+            verdict.is_block(),
+            "deprecated blake2 import should produce BLOCK verdict, got {:?}",
+            verdict
+        );
     }
 }

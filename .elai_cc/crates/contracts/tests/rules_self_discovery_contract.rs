@@ -404,6 +404,52 @@ fn contract_circular_trust_blocks_auditor_self_promotion() {
 }
 
 // ---------------------------------------------------------------------------
+// VERSION_GATE auto-proposal contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_version_gate_proposed_on_replacement_name() {
+    let mut conn = mem_db();
+    let engine = make_engine();
+    let clock = test_clock();
+    let config = default_config(); // threshold = 3
+
+    let record = ViolationRecord {
+        pattern_text: "blake2 used instead of blake3".to_string(),
+        example_code: "blake2".to_string(),
+        domain: Some("engineering".to_string()),
+        replacement_name: Some("blake3".into()),
+    };
+
+    let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+    let _ = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+    let result = record_violation(&mut conn, &record, &engine, &clock, &config).unwrap();
+
+    let rule_id = match result {
+        RecordOutcome::Proposed { rule_id, .. } => rule_id,
+        other => panic!("expected Proposed, got {:?}", other),
+    };
+
+    let predicate_json: String = conn
+        .query_row(
+            "SELECT predicate FROM rules WHERE rule_id = ?1",
+            rusqlite::params![&rule_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let pred: serde_json::Value = serde_json::from_str(&predicate_json).unwrap();
+    assert_eq!(
+        pred["type"], "version_gate",
+        "replacement_name path must produce version_gate predicate, not grep_pattern"
+    );
+    assert_eq!(
+        pred["replacement_name"], "blake3",
+        "predicate must carry the replacement_name from ViolationRecord"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // score_violation contracts
 // ---------------------------------------------------------------------------
 

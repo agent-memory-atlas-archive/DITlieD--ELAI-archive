@@ -29,7 +29,7 @@ DEFAULT_CONFIG = SCRIPT_DIR / "bench_config.toml"
 FIXTURES_DIR = SCRIPT_DIR / "fixtures"
 
 REQUEST_TIMEOUT_S = 180
-SIDECAR_PORT = 8103
+SIDECAR_PORT = 8100
 SIDECAR_ENDPOINT = f"http://127.0.0.1:{SIDECAR_PORT}"
 
 # Attention curve tasks (simple, deterministic)
@@ -1129,7 +1129,7 @@ def measure_steering(
                 {
                     "positive_prompt": pair["positive"],
                     "negative_prompt": pair["negative"],
-                    "layer_idx": 9,  # ~n_layers/3 for E2B (35 layers)
+                    # layer_idx omitted: server defaults to n_layers//3 (auto)
                 },
                 timeout=30,
             )
@@ -1166,6 +1166,22 @@ def measure_composition(
 ) -> dict:
     """Test all three features working together: DoLa + TurboQuant + Steering."""
     print("\n=== Composition Test: DoLa + TQ + Steering ===")
+
+    # Pre-compute steering vector so it's active during inference
+    try:
+        resp = http_post(
+            f"{endpoint}/v1/compute_steering",
+            {
+                "positive_prompt": "fn validate(s: &str) -> bool { !s.is_empty() && s.len() < 256 }",
+                "negative_prompt": "fn validate(s: &str) -> bool { todo!() }",
+            },
+            timeout=30,
+        )
+        vec = resp.get("vector", [])
+        mag = math.sqrt(sum(v * v for v in vec)) if vec else 0
+        print(f"  Steering vector active: magnitude={mag:.2f}, dim={len(vec)}")
+    except Exception as e:
+        print(f"  Steering vector not computed: {e}")
 
     # Run coding tasks and factuality tasks to see combined effect
     code_results = []
@@ -1483,6 +1499,16 @@ def _build_python_test(task: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Swap latency stub (N/A for single-model configurations)
+# ---------------------------------------------------------------------------
+
+def measure_swap_latency(config: dict, endpoint: str) -> dict:
+    """Stub: swap latency is not applicable for single-model configurations."""
+    print("\n=== Swap Latency: skipped (single-model configuration) ===")
+    return {"status": "skipped", "reason": "single-model configuration, swap latency N/A"}
+
+
+# ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
 
@@ -1533,8 +1559,8 @@ def generate_report(
         f'',
         f'[meta]',
         f'model_name = "{config.get("model", {}).get("model_name", "unknown")}"',
-        f'model_size_b = 2.3',
-        f'quantization = "NF4 (bitsandbytes)"',
+        f'model_size_b = {config.get("model", {}).get("model_size_b", "unknown")}',
+        f'quantization = "{config.get("model", {}).get("quantization", "unknown")}"',
         f'gpu = "{hw.get("gpu_name", "unknown")} {hw.get("total_vram_mb", 0)}MB"',
         f'usable_vram_mb = {hw.get("usable_vram_mb", 0)}',
         f'benchmark_date = "{datetime.now().strftime("%Y-%m-%d")}"',
@@ -1680,7 +1706,7 @@ def main():
         time.sleep(5)
     else:
         print("ERROR: Sidecar not reachable. Start it first:")
-        print("  python -m elai_inference.server --model D:/.ELAI_workflow/.elai_cc/models/gemma-4-E2B-it --port 8100")
+        print("  python -m elai_inference.server --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct --port 8100")
         sys.exit(1)
 
     measurements = config.get("measurements", {})
@@ -1695,6 +1721,7 @@ def main():
         "structured": ("run_structured", measure_structured),
         "template": ("run_template", measure_template),
         "turboquant": ("run_turboquant", measure_turboquant_impact),
+        "swap": ("run_swap", measure_swap_latency),
         "dola": ("run_dola_comparison", measure_dola_comparison),
         "steering": ("run_steering_test", measure_steering),
         "composition": ("run_composition", measure_composition),
@@ -1709,6 +1736,7 @@ def main():
         "structured": "structured_output",
         "template": "template_fill",
         "turboquant": "turboquant",
+        "swap": "swap_latency",
         "dola": "dola_comparison",
         "steering": "steering",
         "composition": "composition",

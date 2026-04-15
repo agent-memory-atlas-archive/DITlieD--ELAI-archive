@@ -1,0 +1,18 @@
+# elai_cc configuration
+# All sections are optional — defaults are used when absent.
+# This file is read once at startup by load_elai_config() in crates/cli/src/runtime_config.rs.
+
+[tools.routing_rules]
+# enabled = true
+# allow_override_prefix = "!"
+
+[tools.safety_filter]
+# enabled = true
+
+[output]
+# strip_emoji = true
+# strip_sycophancy = true
+# max_response_tokens = 0  # 0 = no truncation
+
+[actions]
+# mode = "Interactive"  # "Interactive" | "Autonomous"

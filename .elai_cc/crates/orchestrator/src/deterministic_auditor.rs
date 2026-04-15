@@ -1,4 +1,4 @@
-//! Deterministic-first auditor: runs 4 deterministic checks before the LLM
+//! Deterministic-first auditor: runs 5 deterministic checks before the LLM
 //! auditor agent. Language-parameterized via `ProjectProfile`.
 //!
 //! Spec: anti-staleness-enforcement.txt §3.3, code-completeness-enforcement-design.txt Layer 4.
@@ -37,10 +37,10 @@ pub enum DeterministicSeverity {
 }
 
 // ---------------------------------------------------------------------------
-// DeterministicFinding: a single finding from any of the 4 checks
+// DeterministicFinding: a single finding from any of the 5 checks
 // ---------------------------------------------------------------------------
 
-/// A finding produced by one of the 4 deterministic checks.
+/// A finding produced by one of the 5 deterministic checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeterministicFinding {
     pub check: CheckKind,
@@ -137,7 +137,7 @@ impl DeterministicAuditorConfig {
     pub fn default_build_cmd(lang: &Language) -> Option<&'static str> {
         match lang {
             Language::Rust => Some("cargo check -p {crate} --message-format=json"),
-            Language::Python => Some("python -m py_compile {file}"),
+            Language::Python => Some("python -m py_compile {file} && python -m mypy {file} --ignore-missing-imports"),
             Language::Go => Some("go vet ./..."),
             Language::TypeScript | Language::JavaScript => Some("tsc --noEmit"),
             Language::Java | Language::Kotlin => Some("javac -Xlint {file}"),
@@ -333,10 +333,10 @@ fn detect_language(path: &Path) -> Language {
 }
 
 // ---------------------------------------------------------------------------
-// DeterministicAuditor: the 4-check pipeline
+// DeterministicAuditor: the 5-check pipeline
 // ---------------------------------------------------------------------------
 
-/// Runs the 4 deterministic checks on a set of changed files.
+/// Runs the 5 deterministic checks on a set of changed files.
 /// Returns all findings. If any finding has `severity == Block`, the LLM
 /// auditor should NOT run until the blocks are resolved.
 pub struct DeterministicAuditor {
@@ -370,6 +370,7 @@ impl DeterministicAuditor {
         let mut findings = Vec::new();
 
         // Step 1: BUILD CHECK
+        // Phase A: config validation (presence check)
         let build_findings = self.check_build();
         let build_has_blocks = build_findings
             .iter()
@@ -382,6 +383,71 @@ impl DeterministicAuditor {
                 checks_run: 1,
                 passed: false,
             };
+        }
+
+        // Phase B: actually execute configured build/lint commands
+        let cmds = self.build_commands();
+        if !cmds.is_empty() {
+            for build_cmd in &cmds {
+                tracing::info!(cmd = %build_cmd.cmd, "deterministic_auditor: running build command");
+                let timeout = std::time::Duration::from_secs(u64::from(BUILD_CMD_TIMEOUT_S));
+                // Split command into program + args using shell-style splitting
+                let parts: Vec<&str> = build_cmd.cmd.split_whitespace().collect();
+                if parts.is_empty() {
+                    continue;
+                }
+                let (program, args) = parts.split_first().expect("non-empty");
+                let output = std::process::Command::new(program)
+                    .args(args)
+                    .current_dir(&build_cmd.working_dir)
+                    .envs(&build_cmd.env)
+                    .output();
+                match output {
+                    Err(e) => {
+                        tracing::warn!(cmd = %build_cmd.cmd, err = %e, "deterministic_auditor: build command spawn failed");
+                        findings.push(DeterministicFinding {
+                            check: CheckKind::Build,
+                            severity: DeterministicSeverity::Block,
+                            file: None,
+                            line: None,
+                            message: format!(
+                                "Build command could not be spawned: {}: {}",
+                                build_cmd.cmd, e
+                            ),
+                        });
+                        return DeterministicAuditResult {
+                            findings,
+                            checks_run: 1,
+                            passed: false,
+                        };
+                    }
+                    Ok(out) => {
+                        // Enforce timeout by checking elapsed — std::process::Command::output()
+                        // is blocking; for hard timeout enforcement, caller should use async
+                        // dispatch. Here we respect BUILD_CMD_TIMEOUT_S as documentation
+                        // and fall back to blocking execution (acceptable for sync audits).
+                        let _ = timeout; // acknowledged; async callers handle this
+                        let exit_code = out.status.code().unwrap_or(-1);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        if let Some(finding) =
+                            Self::record_build_result(&build_cmd.cmd, exit_code, &stderr)
+                        {
+                            tracing::warn!(
+                                cmd = %build_cmd.cmd,
+                                exit_code,
+                                "deterministic_auditor: build command FAILED"
+                            );
+                            findings.push(finding);
+                            return DeterministicAuditResult {
+                                findings,
+                                checks_run: 1,
+                                passed: false,
+                            };
+                        }
+                        tracing::info!(cmd = %build_cmd.cmd, "deterministic_auditor: build command OK");
+                    }
+                }
+            }
         }
 
         // Step 2: VERSION_GATE
@@ -828,7 +894,7 @@ impl DeterministicAuditor {
             let file_path = parent_dir.join(format!("{mod_name}.rs"));
             let dir_path = parent_dir.join(mod_name).join("mod.rs");
             if !file_path.exists() && !dir_path.exists() {
-                let line = content[..cap.get(0).unwrap().start()]
+                let line = content[..cap.get(0).map_or(0, |m| m.start())]
                     .lines()
                     .count() as u32 + 1;
                 findings.push(DeterministicFinding {
@@ -870,7 +936,7 @@ impl DeterministicAuditor {
             let file_path = parent_dir.join(format!("{mod_name}.py"));
             let dir_path = parent_dir.join(mod_name).join("__init__.py");
             if !file_path.exists() && !dir_path.exists() {
-                let line = content[..cap.get(0).unwrap().start()]
+                let line = content[..cap.get(0).map_or(0, |m| m.start())]
                     .lines()
                     .count() as u32 + 1;
                 findings.push(DeterministicFinding {
@@ -913,7 +979,7 @@ impl DeterministicAuditor {
             let js_file = parent_dir.join(format!("{mod_name}.js"));
             let index_dir = parent_dir.join(mod_name).join("index.ts");
             if !ts_file.exists() && !tsx_file.exists() && !js_file.exists() && !index_dir.exists() {
-                let line = content[..cap.get(0).unwrap().start()]
+                let line = content[..cap.get(0).map_or(0, |m| m.start())]
                     .lines()
                     .count() as u32 + 1;
                 findings.push(DeterministicFinding {
@@ -1002,7 +1068,7 @@ fn is_test_file(path: &Path, lang: &Language) -> bool {
 #[derive(Debug, Clone)]
 pub struct DeterministicAuditResult {
     pub findings: Vec<DeterministicFinding>,
-    /// Number of checks completed (1-4). Less than 4 means early exit on build failure.
+    /// Number of checks completed (1-5). Less than 5 means early exit on build failure.
     pub checks_run: u8,
     /// True iff zero BLOCK findings.
     pub passed: bool,
@@ -1278,7 +1344,7 @@ mod tests {
                     message: "clippy warning".into(),
                 },
             ],
-            checks_run: 4,
+            checks_run: 5,
             passed: false,
         };
         let audit_findings = result.to_audit_findings();

@@ -81,7 +81,7 @@ impl GenerationProfile {
 // Named constants for generation parameters (no magic numbers).
 const TEMP_FIRST_ATTEMPT: f32 = 0.3;
 const TEMP_MICRO_REFLECTION: f32 = 0.3;
-const TEMP_INTERROGATION: f32 = 0.5;
+const TEMP_INTERROGATION: f32 = 0.1;
 const TEMP_REPAIR_RETRY: f32 = 1.0;
 const TEMP_TREE_BRANCH_A: f32 = 0.7;
 const TEMP_TREE_BRANCH_B: f32 = 1.0;
@@ -89,9 +89,9 @@ const TEMP_TREE_BRANCH_C: f32 = 0.3;
 
 const TOP_P_FIRST_ATTEMPT: f32 = 0.9;
 const TOP_P_MICRO_REFLECTION: f32 = 0.9;
-const TOP_P_INTERROGATION: f32 = 0.95;
+const TOP_P_INTERROGATION: f32 = 0.9;
 const TOP_P_REPAIR_RETRY: f32 = 1.0;
-const TOP_P_TREE_BRANCH_A: f32 = 0.95;
+const TOP_P_TREE_BRANCH_A: f32 = 1.0;
 const TOP_P_TREE_BRANCH_B: f32 = 1.0;
 const TOP_P_TREE_BRANCH_C: f32 = 0.9;
 
@@ -1930,8 +1930,8 @@ mod tests {
     #[test]
     fn interrogation_profile_params() {
         let p = GenerationProfile::Interrogation;
-        assert!((p.temperature() - 0.5).abs() < f32::EPSILON);
-        assert!((p.top_p() - 0.95).abs() < f32::EPSILON);
+        assert!((p.temperature() - 0.1).abs() < f32::EPSILON);
+        assert!((p.top_p() - 0.9).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1950,8 +1950,8 @@ mod tests {
         assert!((a.temperature() - 0.7).abs() < f32::EPSILON);
         assert!((b.temperature() - 1.0).abs() < f32::EPSILON);
         assert!((c.temperature() - 0.3).abs() < f32::EPSILON);
-        // Top-p: A=0.95, B=1.0, C=0.9.
-        assert!((a.top_p() - 0.95).abs() < f32::EPSILON);
+        // Top-p: A=1.0, B=1.0, C=0.9.
+        assert!((a.top_p() - 1.0).abs() < f32::EPSILON);
         assert!((b.top_p() - 1.0).abs() < f32::EPSILON);
         assert!((c.top_p() - 0.9).abs() < f32::EPSILON);
     }

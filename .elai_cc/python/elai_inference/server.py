@@ -1129,7 +1129,7 @@ class InferenceEngine:
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                dtype=torch.bfloat16,
+                torch_dtype=torch.bfloat16,
                 device_map=device_map,
                 attn_implementation=_attn_impl,
             )

@@ -123,8 +123,12 @@ impl fmt::Display for FailureCategory {
 // ---------------------------------------------------------------------------
 
 /// A single mistake record stored in SSB per baby step.
-/// Structured constraint, not narrative. Variable names and code snippets
-/// from failed attempts are never stored (CTIM-Rover finding).
+/// Structured constraint, not narrative.
+///
+/// CALLERS MUST NOT include variable names, identifier names, or code snippets
+/// in any field (root_cause_json, action_taken, etc.). Episodic text with
+/// variable names degrades small-model performance 42%→31-40% per CTIM-Rover
+/// findings (arXiv:2603.15611). Only structured action codes are allowed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MistakeEntry {
     /// Which retry attempt produced this mistake (1-indexed).

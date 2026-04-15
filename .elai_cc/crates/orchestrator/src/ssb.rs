@@ -398,12 +398,21 @@ pub struct BranchMergePayload {
 
 /// SSB payload for MistakeBook entries (A-20). Wraps `elai_core::MistakeEntry`
 /// for SSB storage with baby-step scoping via `baby_step_id`.
+///
+/// Tombstone support: when `cleared = true` this record is a clear-on-success
+/// marker. All `MistakeEntry` rows for `baby_step_id` written before this
+/// tombstone's `seq` are logically deleted. `query_by_baby_step` filters them
+/// out automatically. This preserves SSB append-only invariant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MistakeEntryPayload {
     /// Identifies which baby step this mistake belongs to.
     pub baby_step_id: String,
     /// The structured mistake record (from elai_core).
     pub entry: elai_core::MistakeEntry,
+    /// When true: this is a tombstone. All prior entries for `baby_step_id`
+    /// are logically cleared. Default false for normal entries.
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1364,6 +1373,7 @@ mod tests {
                     faulty_line: None, root_cause_json: None,
                     action_taken: "test".into(), timestamp: 0,
                 },
+                cleared: false,
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
@@ -2287,6 +2297,7 @@ mod tests {
                     action_taken: "templated".into(),
                     timestamp: 1700000000,
                 },
+                cleared: false,
             }),
         ]
     }
@@ -2516,6 +2527,7 @@ mod tests {
                                 action_taken,
                                 timestamp: 0,
                             },
+                            cleared: false,
                         }
                     )),
             ]

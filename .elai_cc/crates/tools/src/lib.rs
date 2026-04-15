@@ -113,6 +113,8 @@ pub struct GlobalToolRegistry {
     plugin_tools: Vec<PluginTool>,
     runtime_tools: Vec<RuntimeToolDefinition>,
     enforcer: Option<PermissionEnforcer>,
+    /// A-31: action policy from [actions] section of elai_cc.toml.
+    action_policy: action_classifier::ActionPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,7 +132,15 @@ impl GlobalToolRegistry {
             plugin_tools: Vec::new(),
             runtime_tools: Vec::new(),
             enforcer: None,
+            action_policy: action_classifier::ActionPolicy::default(),
         }
+    }
+
+    /// Set the action policy loaded from `[actions]` in `elai_cc.toml`.
+    #[must_use]
+    pub fn with_action_policy(mut self, policy: action_classifier::ActionPolicy) -> Self {
+        self.action_policy = policy;
+        self
     }
 
     pub fn with_plugin_tools(plugin_tools: Vec<PluginTool>) -> Result<Self, String> {
@@ -156,6 +166,7 @@ impl GlobalToolRegistry {
             plugin_tools,
             runtime_tools: Vec::new(),
             enforcer: None,
+            action_policy: action_classifier::ActionPolicy::default(),
         })
     }
 
@@ -341,12 +352,12 @@ impl GlobalToolRegistry {
 
     pub fn execute(&self, name: &str, input: &Value) -> Result<String, String> {
         if mvp_tool_specs().iter().any(|spec| spec.name == name) {
-            return execute_tool_with_enforcer(self.enforcer.as_ref(), name, input);
+            return execute_tool_with_enforcer(self.enforcer.as_ref(), &self.action_policy, name, input);
         }
         if let Some(plugin) = self.plugin_tools.iter().find(|tool| tool.definition().name == name) {
             return plugin.execute(input).map_err(|error| error.to_string());
         }
-        execute_tool_with_enforcer(self.enforcer.as_ref(), name, input)
+        execute_tool_with_enforcer(self.enforcer.as_ref(), &self.action_policy, name, input)
     }
 
     fn searchable_tool_specs(&self) -> Vec<SearchableToolSpec> {
@@ -1284,7 +1295,7 @@ pub fn enforce_permission_check(
 }
 
 pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
-    execute_tool_with_enforcer(None, name, input)
+    execute_tool_with_enforcer(None, &action_classifier::ActionPolicy::default(), name, input)
 }
 
 struct FsmState {
@@ -1331,21 +1342,31 @@ fn structured_error(error_code: &str, message: &str) -> String {
 
 fn execute_tool_with_enforcer(
     enforcer: Option<&PermissionEnforcer>,
+    action_policy: &action_classifier::ActionPolicy,
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
     // A-31: action classifier + confirmation gate.
     // Classify risk, check gate, produce DAIRA trace entry.
-    let action_policy = action_classifier::ActionPolicy::default();
-    let (gate_decision, _trace_entry) =
-        action_classifier::classify_and_gate(name, input, &action_policy);
+    let (gate_decision, trace_entry) =
+        action_classifier::classify_and_gate(name, input, action_policy);
+    tracing::info!(
+        tool = trace_entry.tool_name,
+        risk_level = ?trace_entry.risk_level,
+        gate_decision = %trace_entry.gate_outcome,
+        reason = %trace_entry.reason,
+        "action classifier trace"
+    );
     match &gate_decision {
         action_classifier::GateDecision::Allow => {}
         action_classifier::GateDecision::ConfirmationRequired { reason } => {
-            tracing::warn!(tool = name, %reason, "action requires confirmation");
-            // In current implementation, log the requirement. Full interactive
-            // confirmation flow depends on the conversation loop (PreToolUse hooks).
-            // The gate classification is available via the trace entry for audit.
+            let risk_label = format!("{:?}", trace_entry.risk_level);
+            return Err(structured_error(
+                "confirmation_required",
+                &format!(
+                    "Action requires confirmation: {reason}. Tool: {name}, Risk: {risk_label}"
+                ),
+            ));
         }
         action_classifier::GateDecision::Block { reason } => {
             return Err(structured_error("action_blocked", reason));
@@ -2330,6 +2351,16 @@ struct AgentInput {
     subagent_type: Option<String>,
     name: Option<String>,
     model: Option<String>,
+    /// Files currently active in the caller's session (from SSB / checkpoint).
+    /// Forwarded into the sub-agent CONTEXT section so it knows what the parent
+    /// was working on.  Absent means "caller did not provide" — rendered as empty.
+    #[serde(default)]
+    active_files: Vec<String>,
+    /// Rule names/slugs currently active in the caller's session (from rules.db
+    /// or policy engine).  Forwarded into the sub-agent CONSTRAINTS section.
+    /// Absent means "caller did not provide" — rendered as empty.
+    #[serde(default)]
+    active_rules: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3294,7 +3325,10 @@ where
         .unwrap_or_else(|| slugify_agent_name(&input.description));
     let created_at = iso8601_now();
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let agent_context = AgentPromptContext::from_cwd(&cwd, ModelTier::Cloud, &model);
+    let model_tier = model_tier_for_name(&model);
+    let agent_context = AgentPromptContext::from_cwd(&cwd, model_tier, &model)
+        .with_active_files(input.active_files.clone())
+        .with_active_rules(input.active_rules.clone());
     let template_config = AgentTemplateConfig::default();
     let structured_prompt = build_agent_prompt(
         &input.prompt,
@@ -3424,6 +3458,35 @@ fn resolve_agent_model(model: Option<&str>) -> String {
         .filter(|model| !model.is_empty())
         .unwrap_or(DEFAULT_AGENT_MODEL)
         .to_string()
+}
+
+/// Infer a `ModelTier` from a resolved model name string.
+///
+/// Uses substring matching on lowercased name to classify without requiring
+/// a full capability profile load.  Falls back to `Cloud` for anything that
+/// looks like an API-hosted frontier model (claude, gpt, gemini, etc.) and
+/// for any unrecognised name so that the constraint section is never wrong
+/// about capability ceiling — it may over-allocate but never under-allocate.
+fn model_tier_for_name(model_name: &str) -> ModelTier {
+    let lower = model_name.to_lowercase();
+    // Local small/micro models — 3B class.
+    if lower.contains("3b") || lower.contains("qwen2.5-coder-3") || lower.contains("gemma3:4b") || lower.contains("gemma4:e2b") {
+        return ModelTier::Micro;
+    }
+    // Local small models — 7B class.
+    if lower.contains("7b") || lower.contains("qwen2.5-coder-7") {
+        return ModelTier::Small;
+    }
+    // Local medium models — 14B class.
+    if lower.contains("14b") || lower.contains("qwen2.5-coder-14") {
+        return ModelTier::Medium;
+    }
+    // Local large models — 32B class.
+    if lower.contains("32b") || lower.contains("qwen2.5-coder-32") {
+        return ModelTier::Large;
+    }
+    // Frontier cloud models (API-hosted).
+    ModelTier::Cloud
 }
 
 fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
@@ -3888,7 +3951,7 @@ impl ToolExecutor for SubagentToolExecutor {
         }
         let value = serde_json::from_str(input)
             .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
-        execute_tool_with_enforcer(self.enforcer.as_ref(), tool_name, &value)
+        execute_tool_with_enforcer(self.enforcer.as_ref(), &action_classifier::ActionPolicy::default(), tool_name, &value)
             .map_err(ToolError::new)
     }
 }
@@ -6161,6 +6224,8 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("ship-audit".to_string()),
                 model: None,
+                active_files: vec![],
+                active_rules: vec![],
             },
             move |job| {
                 *captured_for_spawn
@@ -6246,6 +6311,8 @@ mod tests {
                 subagent_type: Some("Explore".to_string()),
                 name: Some("complete-task".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
+                active_files: vec![],
+                active_rules: vec![],
             },
             |job| {
                 persist_agent_terminal_state(
@@ -6295,6 +6362,8 @@ mod tests {
                 subagent_type: Some("Verification".to_string()),
                 name: Some("fail-task".to_string()),
                 model: None,
+                active_files: vec![],
+                active_rules: vec![],
             },
             |job| {
                 persist_agent_terminal_state(
@@ -6342,6 +6411,8 @@ mod tests {
                 subagent_type: None,
                 name: Some("spawn-error".to_string()),
                 model: None,
+                active_files: vec![],
+                active_rules: vec![],
             },
             |_| Err(String::from("thread creation failed")),
         )

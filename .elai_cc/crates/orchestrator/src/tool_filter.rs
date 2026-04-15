@@ -160,6 +160,9 @@ impl ToolCategory {
             "mcp" => ToolCategory::Mcp,
             "remotetrigger" | "remote_trigger" => ToolCategory::Mcp,
 
+            // Knowledge engine
+            "knowledgeengine" | "knowledge_engine" => ToolCategory::Knowledge,
+
             // FSM internal
             "fsm_get_state" => ToolCategory::FsmInternal,
             "fsm_transition" => ToolCategory::FsmInternal,

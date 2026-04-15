@@ -37,6 +37,7 @@ struct ProjectResult {
     loc: usize,
     tiers: Vec<TierMeasurement>,
     total_p50_ms: f64,
+    tier2_dkg_build_p50_ms: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -44,11 +45,23 @@ struct ProjectResult {
 // ---------------------------------------------------------------------------
 
 fn count_loc(root: &Path) -> usize {
+    // Build-artifact directories excluded to prevent LOC inflation.
+    // git_ignore is enabled so .gitignore rules are respected. The explicit
+    // segment check below catches projects without a .gitignore.
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
-        .git_ignore(false)
+        .git_ignore(true)
         .git_global(false)
         .git_exclude(false)
+        .filter_entry(|e| {
+            // Skip well-known build / cache directories regardless of .gitignore.
+            let excluded = ["target", "node_modules", "build", "dist", ".git", "__pycache__", ".mypy_cache", ".pytest_cache"];
+            if e.file_type().map_or(false, |ft| ft.is_dir()) {
+                let name = e.file_name().to_string_lossy();
+                return !excluded.iter().any(|ex| name == *ex);
+            }
+            true
+        })
         .build();
 
     let mut total = 0usize;
@@ -91,8 +104,9 @@ fn measure_tier1(root: &Path, runs: usize) -> (Vec<u128>, bool) {
     (durations, ok)
 }
 
-fn measure_tier2(root: &Path, runs: usize) -> (Vec<u128>, bool) {
+fn measure_tier2(root: &Path, runs: usize) -> (Vec<u128>, bool, Vec<u128>) {
     let mut durations = Vec::with_capacity(runs);
+    let mut dkg_build_durations = Vec::with_capacity(runs);
     let mut ok = true;
     for _ in 0..runs {
         let mut profile = match detect_project_profile(root) {
@@ -105,10 +119,19 @@ fn measure_tier2(root: &Path, runs: usize) -> (Vec<u128>, bool) {
         let db_path = db_dir.join("bench.db");
         let _ = std::fs::remove_file(&db_path);
 
+        // Time DKG build_graph() separately — this cost was previously excluded
+        // from the tier2 timer, hiding the true DKG construction overhead.
         let dkg_engine = DkgEngine::new(&db_path, None, 0).ok();
         let built_engine = dkg_engine.and_then(|mut e| {
-            e.build_graph(root).ok().map(|_| e)
+            let t = Instant::now();
+            let result = e.build_graph(root).ok().map(|_| e);
+            dkg_build_durations.push(t.elapsed().as_micros());
+            result
         });
+        // If DkgEngine::new() failed we never pushed a duration; pad with 0.
+        if dkg_build_durations.len() < durations.len() + 1 {
+            dkg_build_durations.push(0);
+        }
 
         let start = Instant::now();
         populate_tier2_conventions(&mut profile, built_engine.as_ref());
@@ -117,7 +140,7 @@ fn measure_tier2(root: &Path, runs: usize) -> (Vec<u128>, bool) {
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_dir(&db_dir);
     }
-    (durations, ok)
+    (durations, ok, dkg_build_durations)
 }
 
 fn measure_tier3(root: &Path, runs: usize) -> (Vec<u128>, bool) {
@@ -175,6 +198,28 @@ fn to_measurement(tier: &'static str, mut durations: Vec<u128>) -> TierMeasureme
     }
 }
 
+// ---------------------------------------------------------------------------
+// Missing LOC bracket note (A-16 audit finding)
+// ---------------------------------------------------------------------------
+//
+// The benchmark needs representative projects at ~1K LOC and ~10K LOC to
+// bracket the cost estimates from project-intelligence-design.txt. The current
+// test set only covers small toy repos. Suitable open-source candidates:
+//
+//   ~1K LOC:
+//     - https://github.com/BurntSushi/ripgrep  (crate ripgrep-lib, ~1.2K LOC)
+//     - https://github.com/sharkdp/bat         (src/ only, ~1.1K LOC)
+//
+//   ~10K LOC:
+//     - https://github.com/tokio-rs/tokio       (tokio/src/, ~14K LOC)
+//     - https://github.com/rust-lang/cargo      (src/cargo/, ~11K LOC)
+//
+// To add a bracket: clone the repo locally, then pass its root as an argument:
+//   cargo run --example measure_pi_latency -- /path/to/ripgrep /path/to/tokio
+//
+// Until these runs are executed, the Tier 1/2/3 latency targets for mid-size
+// projects remain UNGROUNDED and should not be treated as validated baselines.
+//
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -240,9 +285,10 @@ fn main() {
         let m1 = to_measurement("tier1", d1);
         eprintln!("  Tier 1: p50={:.1}ms p95={:.1}ms ok={ok1}", m1.p50_ms, m1.p95_ms);
 
-        let (d2, ok2) = measure_tier2(root, MEASURED_RUNS);
+        let (d2, ok2, d2_dkg) = measure_tier2(root, MEASURED_RUNS);
         let m2 = to_measurement("tier2", d2);
-        eprintln!("  Tier 2: p50={:.1}ms p95={:.1}ms ok={ok2}", m2.p50_ms, m2.p95_ms);
+        let m2_dkg = to_measurement("tier2_dkg_build", d2_dkg);
+        eprintln!("  Tier 2: p50={:.1}ms p95={:.1}ms ok={ok2} (dkg_build p50={:.1}ms)", m2.p50_ms, m2.p95_ms, m2_dkg.p50_ms);
 
         let (d3, ok3) = measure_tier3(root, MEASURED_RUNS);
         let m3 = to_measurement("tier3", d3);
@@ -256,6 +302,7 @@ fn main() {
             loc,
             tiers: vec![m1, m2, m3],
             total_p50_ms: total_p50,
+            tier2_dkg_build_p50_ms: m2_dkg.p50_ms,
         });
     }
 
@@ -269,6 +316,7 @@ fn main() {
         toml.push_str(&format!("name = \"{}\"\n", res.name));
         toml.push_str(&format!("loc = {}\n", res.loc));
         toml.push_str(&format!("total_p50_ms = {:.1}\n", res.total_p50_ms));
+        toml.push_str(&format!("tier2_dkg_build_ms = {:.1}\n", res.tier2_dkg_build_p50_ms));
 
         for tier in &res.tiers {
             toml.push_str(&format!(

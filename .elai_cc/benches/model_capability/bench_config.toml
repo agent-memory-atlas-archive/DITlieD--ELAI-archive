@@ -1,8 +1,10 @@
 [model]
-endpoint = "http://127.0.0.1:8103"
+endpoint = "http://127.0.0.1:8100"
 api_format = "openai"
-model_name = "gemma4:e2b"
-tokenizer = "D:/.ELAI_workflow/.elai_cc/models/gemma-4-E2B-it"
+model_name = "Qwen2.5-Coder-7B-Instruct"
+model_size_b = 7.61
+quantization = "NF4 (bitsandbytes)"
+tokenizer = "D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct"
 
 [hardware]
 gpu_name = "RTX 3060"
@@ -15,7 +17,8 @@ run_retry = true
 run_few_shot = true
 run_structured = true
 run_template = true
-run_turboquant = true
+run_turboquant = false
+# run_swap = false: single-model configuration — no model swapping occurs, swap latency is N/A
 run_swap = false
 run_dola_comparison = true
 run_steering_test = true
@@ -24,7 +27,7 @@ run_hallucination = true
 run_context_cache = true
 
 [attention]
-context_sizes = [512, 1024, 2048, 3072, 4096, 6144]
+context_sizes = [512, 1024, 2048, 4096, 8192, 16384]
 task_repeats = 3
 pass_threshold = 0.8
 

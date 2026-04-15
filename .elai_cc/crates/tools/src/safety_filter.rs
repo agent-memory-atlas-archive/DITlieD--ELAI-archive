@@ -269,15 +269,40 @@ pub fn format_violations(violations: &[SafetyViolation]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime config (set once at startup from elai_cc.toml)
+// ---------------------------------------------------------------------------
+
+/// Initialize the safety filter enabled flag from `elai_cc.toml` at startup.
+///
+/// Call this once before any tool invocations. Safe to call multiple times —
+/// only the first call takes effect (OnceLock semantics).
+pub fn init_safety_config(enabled: bool) {
+    let _ = RUNTIME_SAFETY_ENABLED.set(enabled);
+}
+
+static RUNTIME_SAFETY_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn safety_enabled() -> bool {
+    // Default: enabled
+    *RUNTIME_SAFETY_ENABLED.get_or_init(|| true)
+}
+
+// ---------------------------------------------------------------------------
 // Integration point: call from run_bash()
 // ---------------------------------------------------------------------------
 
 /// Check a bash command for safety violations. Returns `Err(message)` if the
 /// command should be blocked, `Ok(())` if it may proceed.
 ///
+/// When safety is disabled via `elai_cc.toml [tools.safety_filter] enabled = false`,
+/// this function always returns `Ok(())`.
+///
 /// In autonomous mode (our default), both Block and WarnAndConfirm reject.
 /// A future interactive mode could return a confirmation prompt for Warn.
 pub fn check_bash_safety(command: &str) -> Result<(), String> {
+    if !safety_enabled() {
+        return Ok(());
+    }
     let filter = global_safety_filter();
     let violations = filter.check(command);
     if violations.is_empty() {

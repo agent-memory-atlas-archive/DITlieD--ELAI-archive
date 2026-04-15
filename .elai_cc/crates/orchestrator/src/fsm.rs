@@ -1,4 +1,4 @@
-//! FSM engine: 9-state machine with validated transitions, msgpack persistence,
+//! FSM engine: 10-state machine with validated transitions, msgpack persistence,
 //! concurrent safety, ReplanRequest support, and risk-level classification.
 //!
 //! Phase 3A.1 + 3A.5 deliverable. See docs/specs/crates/orchestrator.txt §2, §13

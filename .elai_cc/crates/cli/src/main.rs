@@ -11,6 +11,7 @@ mod dep_audit;
 mod init;
 mod input;
 mod render;
+mod runtime_config;
 
 use std::collections::{BTreeSet, HashMap};
 use std::env;
@@ -1171,6 +1172,38 @@ fn run_dep_audit_command(
     let clock = elai_core::OsClock;
     let rules_db_path = project_dir.join("rules.db");
     let result = dep_audit::run_dep_audit(project_dir, &rules_db_path, &clock)?;
+
+    // Trigger steering vector recomputation when deprecated_patterns changed.
+    // total_outdated > 0 means at least one pattern was upserted this run.
+    if result.total_outdated > 0 {
+        tracing::info!(
+            count = result.total_outdated,
+            "deprecated_patterns changed, triggering steering vector recomputation"
+        );
+        let script_path = project_dir.join("metrics").join("compute_steering_vector.py");
+        let status = Command::new("python")
+            .arg(&script_path)
+            .arg("--batch")
+            .current_dir(project_dir)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                tracing::info!("steering vector recomputation succeeded");
+            }
+            Ok(s) => {
+                tracing::warn!(
+                    exit_code = ?s.code(),
+                    "steering vector recomputation exited with non-zero status; continuing"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "steering vector recomputation failed to launch; continuing"
+                );
+            }
+        }
+    }
 
     match output_format {
         CliOutputFormat::Text => {
@@ -3160,13 +3193,18 @@ impl LiveCli {
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
     ) -> Result<Self, anyhow::Error> {
-        let system_prompt = build_system_prompt(false)?;
+        let mut system_prompt = build_system_prompt(false)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
         let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
         let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
         let plan = load_plan_if_exists();
+        // A-7 + A-11: inject plan skeleton + CONSTRAINTS block + telescope context into PhaseSpec system prompt.
+        let telescope_block = build_telescope_block();
+        if let Some(phase_spec_content) = build_phase_spec_content(plan.as_ref(), telescope_block.as_deref()) {
+            system_prompt.push(phase_spec_content);
+        }
         let plan_slot_tokens = plan_phase_slot_tokens(plan.as_ref());
         let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
@@ -3223,13 +3261,18 @@ impl LiveCli {
         backend_config: BackendConfig,
         permission_mode: PermissionMode,
     ) -> Result<Self, anyhow::Error> {
-        let system_prompt = build_system_prompt(true)?;
+        let mut system_prompt = build_system_prompt(true)?;
         let session_state = Session::new();
         let session = create_managed_session_handle(&session_state.session_id)?;
         let fsm_persist_path = session.path.parent().map(|p| p.join(".fsm-state.msgpack"));
         let fsm = Arc::new(elai_orchestrator::Fsm::new(fsm_persist_path, 200_000));
         let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
         let plan = load_plan_if_exists();
+        // A-7 + A-11: inject plan skeleton + CONSTRAINTS block + telescope context into PhaseSpec system prompt.
+        let telescope_block = build_telescope_block();
+        if let Some(phase_spec_content) = build_phase_spec_content(plan.as_ref(), telescope_block.as_deref()) {
+            system_prompt.push(phase_spec_content);
+        }
         let plan_slot_tokens = plan_phase_slot_tokens(plan.as_ref());
         let (runtime, ssb) = build_runtime(
             session_state.with_persistence_path(session.path.clone()),
@@ -4764,6 +4807,58 @@ fn build_constraints_block() -> elai_orchestrator::context_budget::ConstraintsBl
         })
         .collect();
     ConstraintsBlock::from_entries(entries)
+}
+
+/// Build the telescope context block (A-11) from the current project profile.
+///
+/// Detects the project profile from cwd, then formats the telescope context
+/// for injection into the PhaseSpec system prompt. Returns None if detection fails.
+fn build_telescope_block() -> Option<String> {
+    let project_root = std::env::current_dir().ok()?;
+    let mut profile = detect_project_profile(&project_root).ok()?;
+    populate_tier3(&mut profile, &[]);
+    let telescope_ctx = assemble_telescope(&profile);
+    let formatted = telescope_ctx.format_for_phase_spec();
+    if formatted.is_empty() {
+        None
+    } else {
+        Some(formatted)
+    }
+}
+
+/// Build the PhaseSpec content string: plan skeleton TOML + CONSTRAINTS block + telescope block.
+///
+/// Returns None if no plan is loaded, constraints block is empty, and telescope is None.
+/// This string is appended to the system prompt as an additional section so that
+/// the constitutional CONSTRAINTS block and telescope context are visible to the model (A-7, A-11).
+fn build_phase_spec_content(
+    plan: Option<&elai_orchestrator::PlanSkeleton>,
+    telescope: Option<&str>,
+) -> Option<String> {
+    let skeleton_toml = plan.and_then(|p| p.to_toml().ok());
+    let constraints = build_constraints_block();
+    let constraints_text = constraints.format();
+
+    let base = match (skeleton_toml, constraints_text.is_empty()) {
+        (None, true) => None,
+        (Some(toml), true) => Some(toml),
+        (None, false) => Some(constraints_text),
+        (Some(mut toml), false) => {
+            toml.push_str(&constraints_text);
+            Some(toml)
+        }
+    };
+
+    match (base, telescope) {
+        (None, None) => None,
+        (Some(b), None) => Some(b),
+        (None, Some(t)) => Some(t.to_string()),
+        (Some(mut b), Some(t)) => {
+            b.push('\n');
+            b.push_str(t);
+            Some(b)
+        }
+    }
 }
 
 impl Drop for LiveCli {
@@ -6481,6 +6576,47 @@ fn build_runtime_with_plugin_state(
     );
     let compiled_rules = load_seed_rules(&rule_engine);
 
+    // PI Tier 2 + Rule Seeding: detect project profile, enrich with Tier 2
+    // conventions, then seed project-specific rules into the rules DB.
+    {
+        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match detect_project_profile(&project_root) {
+            Ok(mut profile) => {
+                // Tier 2: DkgEngine not available at this point; regex fallback used.
+                elai_knowledge::populate_tier2_conventions(&mut profile, None);
+                tracing::info!(
+                    project = %project_root.display(),
+                    lang = %profile.languages.primary.id_str(),
+                    "PI Tier 2 conventions populated"
+                );
+
+                // Seed project-specific rules into rules.db.
+                // rules.db lives in the session persistence directory (sibling of dkg.db).
+                let rules_db_path = session
+                    .persistence_path()
+                    .map(|p| p.parent().unwrap_or(p).join("rules.db"))
+                    .unwrap_or_else(|| project_root.join(".elai").join("rules.db"));
+                let clock = elai_core::OsClock;
+                match elai_rules::schema::open_rules_db(&rules_db_path, &clock) {
+                    Ok(conn) => {
+                        match elai_rules::project_rule_seeder::ProjectRuleSeeder::seed_rules(
+                            &conn, &profile, &clock,
+                        ) {
+                            Ok(n) => tracing::info!(count = n, "PI rule seeding complete"),
+                            Err(e) => tracing::warn!(error = %e, "PI rule seeding failed"),
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        path = %rules_db_path.display(),
+                        error = %e,
+                        "rules.db open failed; PI rule seeding skipped"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "project profile detection failed; PI Tier 2 + seeding skipped"),
+        }
+    }
+
     let runtime_client = RuntimeClient {
         runtime: tokio_runtime,
         client: client_builder,
@@ -6499,19 +6635,34 @@ fn build_runtime_with_plugin_state(
         phase_slot_tokens,
     };
 
+    // Load elai_cc.toml from the working directory. Defaults are used when absent.
+    let elai_config = env::current_dir()
+        .map(|cwd| runtime_config::load_elai_config(&cwd))
+        .unwrap_or_default();
+
+    // A-26/A-27: init routing and safety filter from elai_cc.toml (OnceLock — first call wins).
+    elai_tools::routing_rules::init_routing_config(elai_config.tools.routing_rules.clone());
+    elai_tools::safety_filter::init_safety_config(elai_config.tools.safety_filter.enabled);
+
+    // A-31: apply action policy from elai_cc.toml [actions] to the tool registry.
+    let tool_registry_with_policy = tool_registry
+        .clone()
+        .with_action_policy(elai_config.actions.clone());
     let mut runtime = ConversationRuntime::new_with_features(
         session,
         runtime_client,
         CliToolExecutor::new(
             allowed_tools.clone(),
             emit_output,
-            tool_registry.clone(),
+            tool_registry_with_policy,
             mcp_state.clone(),
         ),
         policy,
         system_prompt,
         &feature_config,
     );
+    // A-30: wire OutputConfig from elai_cc.toml [output] section.
+    runtime = runtime.with_output_config(elai_config.output);
     if emit_output {
         runtime = runtime.with_hook_progress_reporter(Box::new(CliHookProgressReporter));
     }

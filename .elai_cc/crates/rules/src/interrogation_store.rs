@@ -218,8 +218,23 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
     };
 
     // Q1: error location
+    let q1e_rust = QuestionNode {
+        question_template: "To fix the test expectation in {function}, should we:".to_string(),
+        choices: vec![
+            Choice { id: ChoiceId::new("A"), label: "fix the assertion value or type".to_string(), confidence_hint: 0.4 },
+            Choice { id: ChoiceId::new("B"), label: "fix the test setup / fixture".to_string(), confidence_hint: 0.35 },
+            Choice { id: ChoiceId::new("C"), label: "update expected output to match new behaviour".to_string(), confidence_hint: 0.2 },
+        ],
+        children: HashMap::new(),
+        terminal: Some(FixTemplate {
+            instruction: "fix test assertion or setup in {function} at line {line}".to_string(),
+            category: "test_fix".to_string(),
+        }),
+    };
+
     let mut root_children = HashMap::new();
     root_children.insert(ChoiceId::new("B"), q2_with_children);
+    root_children.insert(ChoiceId::new("E"), q1e_rust);
 
     let root = QuestionNode {
         question_template: "The error in {function} is in:".to_string(),
@@ -228,6 +243,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "function body logic".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "return value or type conversion".to_string(), confidence_hint: 0.2 },
             Choice { id: ChoiceId::new("D"), label: "an imported dependency or module".to_string(), confidence_hint: 0.1 },
+            Choice { id: ChoiceId::new("E"), label: "test expectations (wrong assertion or test setup)".to_string(), confidence_hint: 0.1 },
         ],
         children: root_children,
         terminal: Some(FixTemplate {
@@ -300,8 +316,23 @@ fn build_python_import_tree() -> InterrogationTree {
         }),
     };
 
+    let q1e_python = QuestionNode {
+        question_template: "To fix the test expectation in {function}, should we:".to_string(),
+        choices: vec![
+            Choice { id: ChoiceId::new("A"), label: "fix the mock return value or side effect".to_string(), confidence_hint: 0.4 },
+            Choice { id: ChoiceId::new("B"), label: "fix the assertion (assertEqual, assertTrue, etc.)".to_string(), confidence_hint: 0.35 },
+            Choice { id: ChoiceId::new("C"), label: "fix the test fixture or setUp method".to_string(), confidence_hint: 0.2 },
+        ],
+        children: HashMap::new(),
+        terminal: Some(FixTemplate {
+            instruction: "fix mock or assertion in {function} at line {line}".to_string(),
+            category: "test_fix".to_string(),
+        }),
+    };
+
     let mut root_children = HashMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
+    root_children.insert(ChoiceId::new("E"), q1e_python);
 
     let root = QuestionNode {
         question_template: "The error in {function} is in:".to_string(),
@@ -310,6 +341,7 @@ fn build_python_import_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "function body logic".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "return value".to_string(), confidence_hint: 0.2 },
             Choice { id: ChoiceId::new("D"), label: "an imported dependency".to_string(), confidence_hint: 0.15 },
+            Choice { id: ChoiceId::new("E"), label: "test expectations (mock or assertion error)".to_string(), confidence_hint: 0.05 },
         ],
         children: root_children,
         terminal: Some(FixTemplate {
@@ -382,8 +414,23 @@ fn build_go_error_tree() -> InterrogationTree {
         }),
     };
 
+    let q1e_go = QuestionNode {
+        question_template: "To fix the test expectation in {function}, should we:".to_string(),
+        choices: vec![
+            Choice { id: ChoiceId::new("A"), label: "fix the assert/require call arguments".to_string(), confidence_hint: 0.4 },
+            Choice { id: ChoiceId::new("B"), label: "fix the test setup or TestMain".to_string(), confidence_hint: 0.35 },
+            Choice { id: ChoiceId::new("C"), label: "update expected value to match new behaviour".to_string(), confidence_hint: 0.2 },
+        ],
+        children: HashMap::new(),
+        terminal: Some(FixTemplate {
+            instruction: "fix assert or test setup in {function} at line {line}".to_string(),
+            category: "test_fix".to_string(),
+        }),
+    };
+
     let mut root_children = HashMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
+    root_children.insert(ChoiceId::new("E"), q1e_go);
 
     let root = QuestionNode {
         question_template: "The error in {function} is in:".to_string(),
@@ -392,6 +439,7 @@ fn build_go_error_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "function body logic".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "return values".to_string(), confidence_hint: 0.2 },
             Choice { id: ChoiceId::new("D"), label: "an imported package".to_string(), confidence_hint: 0.15 },
+            Choice { id: ChoiceId::new("E"), label: "test expectations (wrong assert or test setup)".to_string(), confidence_hint: 0.05 },
         ],
         children: root_children,
         terminal: Some(FixTemplate {
@@ -464,8 +512,23 @@ fn build_typescript_type_tree() -> InterrogationTree {
         }),
     };
 
+    let q1e_ts = QuestionNode {
+        question_template: "To fix the test expectation in {function}, should we:".to_string(),
+        choices: vec![
+            Choice { id: ChoiceId::new("A"), label: "fix the assertion value or type mismatch in test".to_string(), confidence_hint: 0.4 },
+            Choice { id: ChoiceId::new("B"), label: "fix the test setup or mock type".to_string(), confidence_hint: 0.35 },
+            Choice { id: ChoiceId::new("C"), label: "update expected output to match new behaviour".to_string(), confidence_hint: 0.2 },
+        ],
+        children: HashMap::new(),
+        terminal: Some(FixTemplate {
+            instruction: "fix test assertion or type in {function} at line {line}".to_string(),
+            category: "test_fix".to_string(),
+        }),
+    };
+
     let mut root_children = HashMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
+    root_children.insert(ChoiceId::new("E"), q1e_ts);
 
     let root = QuestionNode {
         question_template: "The error in {function} is in:".to_string(),
@@ -474,6 +537,7 @@ fn build_typescript_type_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "function body logic".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "return type / value".to_string(), confidence_hint: 0.2 },
             Choice { id: ChoiceId::new("D"), label: "an imported module / type".to_string(), confidence_hint: 0.15 },
+            Choice { id: ChoiceId::new("E"), label: "test expectations (wrong assertion or type in test)".to_string(), confidence_hint: 0.05 },
         ],
         children: root_children,
         terminal: Some(FixTemplate {
