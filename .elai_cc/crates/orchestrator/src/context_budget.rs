@@ -155,16 +155,8 @@ impl SlotWeights {
 // Model capability types (A-10: token-efficiency-design.txt section 13)
 // ---------------------------------------------------------------------------
 
-/// VRAM tier classification for hardware-specific model configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum VramTier {
-    Vram8Gb,
-    Vram12Gb,
-    Vram16Gb,
-    Vram24Gb,
-    Vram48Gb,
-    Cloud,
-}
+// VramTier moved to elai-core in A-37. Re-export for backwards compatibility.
+pub use elai_core::VramTier;
 
 /// Model quality tier — determines baby step sizing and decomposition depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

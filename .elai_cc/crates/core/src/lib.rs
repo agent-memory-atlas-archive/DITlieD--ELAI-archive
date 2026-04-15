@@ -9,6 +9,7 @@ pub mod json;
 pub mod project_profile;
 pub mod sandbox;
 mod usage;
+pub mod vram_tier;
 
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
 pub use config::{
@@ -55,6 +56,11 @@ pub use interrogation_tree::{
     Choice, ChoiceId, FixTemplate, InterrogationTree, QuestionNode, TraversalOutcome,
     TraversalState, MAX_CHOICES, MAX_TRAVERSAL_TOKENS, MAX_TREE_DEPTH, MIN_CHOICES,
     TOKENS_PER_QUESTION, TREE_SCHEMA_VERSION,
+};
+
+pub use vram_tier::{
+    CloudImportance, ReasoningLayer, SwapStrategy, VramTier, VramTierConfig,
+    ALL_LAYERS, MAX_MCTS_BRANCHES_8GB, MAX_MCTS_BRANCHES_12GB, MAX_MCTS_BRANCHES_16GB_PLUS,
 };
 
 // --- Entropy quarantine: all raw time/entropy access goes through these ---

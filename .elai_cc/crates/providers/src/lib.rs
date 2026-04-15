@@ -12,6 +12,7 @@ pub mod telemetry_types;
 mod types;
 #[cfg(feature = "turboquant")]
 pub mod turboquant;
+pub mod vram_tier;
 #[cfg(feature = "vllm")]
 pub mod vllm_client;
 
@@ -40,6 +41,7 @@ pub use vllm_client::{
     InferenceBackend, VllmConfig, VllmHealthStatus, VllmModelPool, VllmProvider,
 };
 pub use sse::{parse_frame, SseParser};
+pub use vram_tier::{detect_vram_tier, VramDetectionError};
 pub use types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
     InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
