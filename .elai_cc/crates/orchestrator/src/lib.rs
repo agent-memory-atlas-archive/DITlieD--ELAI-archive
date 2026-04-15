@@ -20,6 +20,7 @@ pub mod evidence;
 pub mod fsm;
 pub mod gate;
 mod hooks;
+pub mod indexing_service;
 pub mod ipc;
 pub mod tool_filter;
 mod lane_events;

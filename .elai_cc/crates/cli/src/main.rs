@@ -77,6 +77,7 @@ use elai_knowledge::degradation::DegradationCascade;
 use elai_knowledge::reranker::{CrossEncoderReranker, RerankerConfig};
 use elai_knowledge::splade::{SpladeExpander, SpladeConfig};
 use elai_knowledge::index_version::{check_and_upgrade, LogNotifier};
+use elai_orchestrator::indexing_service::{IndexingService, INDEXES_DIR_NAME};
 use elai_rules::stubs::EmptyDkgQuerier;
 use elai_tools::{GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput, mvp_tool_specs};
 
@@ -2711,6 +2712,8 @@ struct LiveCli {
     last_snap_id: Option<String>,
     last_fsm_state: String,
     knowledge_pipeline: Option<QueryPipeline>,
+    /// A-44: IndexingService for coordinated DKG+BM25 build and incremental updates.
+    indexing_service: Option<IndexingService>,
     /// A-38: baby step counter for incremental profile refresh (every N=50 turns).
     baby_step_counter: u32,
     /// A-38: cached project profile for incremental updates.
@@ -3257,6 +3260,7 @@ impl LiveCli {
             last_snap_id: None,
             last_fsm_state: String::new(),
             knowledge_pipeline: None,
+            indexing_service: None,
             baby_step_counter: 0,
             cached_profile: None,
             last_profiled_at: 0,
@@ -3470,6 +3474,57 @@ impl LiveCli {
                 }
             }
         };
+        // A-44: IndexingService — coordinated DKG+BM25 build on first run,
+        // or schema-version check + rebuild on subsequent runs.
+        let indexing_service = {
+            use elai_orchestrator::indexing_service::ELAI_DATA_DIR_NAME;
+            let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let indexes_dir = project_root.join(ELAI_DATA_DIR_NAME).join(INDEXES_DIR_NAME);
+            let mut svc = IndexingService::new(project_root, indexes_dir);
+            if !svc.indexes_exist() {
+                match svc.run_full_index() {
+                    Ok(summary) => {
+                        tracing::info!(
+                            dkg_files = summary.dkg_files_parsed,
+                            dkg_nodes = summary.dkg_nodes,
+                            bm25_files = summary.bm25_files,
+                            bm25_chunks = summary.bm25_chunks,
+                            "IndexingService: full index complete"
+                        );
+                    }
+                    Err(e) => {
+                        // Degraded-mode: log warning, continue without IndexingService indexes.
+                        tracing::warn!("IndexingService: full index failed, continuing in degraded mode: {e}");
+                    }
+                }
+            } else {
+                // Indexes exist — check schema version and rebuild if needed.
+                match svc.needs_rebuild(&LogNotifier) {
+                    Ok(elai_knowledge::index_version::UpgradeAction::Reuse) => {
+                        // Schema is current, nothing to do.
+                    }
+                    Ok(action) => {
+                        tracing::info!(?action, "IndexingService: schema version changed, rebuilding");
+                        match svc.run_full_index() {
+                            Ok(summary) => {
+                                tracing::info!(
+                                    dkg_files = summary.dkg_files_parsed,
+                                    bm25_files = summary.bm25_files,
+                                    "IndexingService: rebuild complete"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("IndexingService: rebuild failed, continuing with stale indexes: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("IndexingService: schema version check failed: {e}");
+                    }
+                }
+            }
+            Some(svc)
+        };
         let cli = Self {
             model,
             allowed_tools: None,
@@ -3486,6 +3541,7 @@ impl LiveCli {
             last_snap_id: None,
             last_fsm_state: String::new(),
             knowledge_pipeline,
+            indexing_service,
             baby_step_counter: 0,
             cached_profile: None,
             last_profiled_at: 0,
@@ -3522,13 +3578,20 @@ impl LiveCli {
         };
         let index_status_owned;
         let index_status = if let Some(ref pipeline) = self.knowledge_pipeline {
+            let dkg_tag = if self.indexing_service.as_ref().map_or(false, |s| s.indexes_exist()) {
+                " + DKG"
+            } else {
+                ""
+            };
             if let (Some(_), Some(ref indexer)) = (&pipeline.vector_module, &pipeline.vector_indexer) {
-                index_status_owned = format!("BM25 + vector ({} chunks)", indexer.len());
+                index_status_owned = format!("BM25 + vector ({} chunks){dkg_tag}", indexer.len());
                 &index_status_owned
             } else if pipeline.vector_module.is_some() {
-                "BM25 + vector (no index)"
+                index_status_owned = format!("BM25 + vector (no index){dkg_tag}");
+                &index_status_owned
             } else {
-                "BM25 active (vector degraded)"
+                index_status_owned = format!("BM25 active (vector degraded){dkg_tag}");
+                &index_status_owned
             }
         } else {
             "no index"
@@ -3946,6 +4009,12 @@ impl LiveCli {
                 if let Err(e) = indexer.index_file(path, vm.as_ref(), None) {
                     eprintln!("warn: vector index_file failed for {}: {e}", path.display());
                 }
+            }
+        }
+        // A-44: incremental DKG+BM25 reindex via IndexingService.
+        if let Some(ref mut svc) = self.indexing_service {
+            if let Err(e) = svc.reindex_file(path) {
+                tracing::warn!(path = %path.display(), "IndexingService reindex_file failed: {e}");
             }
         }
     }
