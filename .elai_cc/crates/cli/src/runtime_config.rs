@@ -17,6 +17,8 @@
 //! |                      |        | allow_override_prefix respected at runtime          |
 //! | [tools.safety_filter]| WIRED  | init_safety_config() called at startup;            |
 //! |                      |        | check_bash_safety() short-circuits when disabled   |
+//! | [inference]          | PARSED | A-39: safety defaults deserialized; sidecar launch  |
+//! |                      |        | wiring pending (BLOCK-3, future phase)             |
 
 use std::path::Path;
 
@@ -62,6 +64,35 @@ pub struct ToolsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// InferenceConfig (A-39: during-generation safety defaults)
+// ---------------------------------------------------------------------------
+
+/// Runtime configuration for during-generation features.
+///
+/// All features ship DISABLED by default — calibration/testing must confirm
+/// they help before enabling. See anti-staleness-enforcement.txt sections 2.1/2.2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InferenceConfig {
+    /// Steering vector (ActAdd) toggle. Measured NEUTRAL on Qwen2.5-Coder-7B.
+    pub steering_enabled: bool,
+    /// DoLa + ETC incompatibility guard. When true, DoLa auto-disables on <32B models.
+    pub dola_on_32b_only: bool,
+    /// Model that calibration results are valid for.
+    pub calibration_target_model: String,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            steering_enabled: false,
+            dola_on_32b_only: true,
+            calibration_target_model: String::from("Qwen2.5-Coder-7B"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ElaiRuntimeConfig
 // ---------------------------------------------------------------------------
 
@@ -78,6 +109,8 @@ pub struct ElaiRuntimeConfig {
     pub output: OutputConfig,
     /// `[actions]` section — action classifier policy.
     pub actions: ActionPolicy,
+    /// `[inference]` section — during-generation feature safety defaults (A-39).
+    pub inference: InferenceConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +243,35 @@ max_response_tokens = 512
             let cfg = load_elai_config(root);
             assert!(cfg.output.strip_emoji);
             assert_eq!(cfg.output.max_response_tokens, 0);
+        });
+    }
+
+    #[test]
+    fn inference_section_parsed() {
+        with_toml_file(
+            r#"
+[inference]
+steering_enabled = true
+dola_on_32b_only = false
+calibration_target_model = "Qwen2.5-Coder-14B"
+"#,
+            |root| {
+                let cfg = load_elai_config(root);
+                assert!(cfg.inference.steering_enabled);
+                assert!(!cfg.inference.dola_on_32b_only);
+                assert_eq!(cfg.inference.calibration_target_model, "Qwen2.5-Coder-14B");
+            },
+        );
+    }
+
+    #[test]
+    fn inference_defaults_when_absent() {
+        with_toml_file("[output]\nstrip_emoji = false\n", |root| {
+            let cfg = load_elai_config(root);
+            // Inference should have safe defaults even when section is absent.
+            assert!(!cfg.inference.steering_enabled);
+            assert!(cfg.inference.dola_on_32b_only);
+            assert_eq!(cfg.inference.calibration_target_model, "Qwen2.5-Coder-7B");
         });
     }
 }

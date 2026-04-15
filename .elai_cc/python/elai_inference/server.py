@@ -1110,6 +1110,7 @@ class InferenceEngine:
         except ImportError:
             _attn_impl = "sdpa"
 
+        self.model_name = model_name  # A-39: expose for /v1/models
         logger.info("loading_model", model=model_name, load_in_4bit=load_in_4bit, attn=_attn_impl)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -1681,8 +1682,9 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    model_id = _engine.model_name if _engine is not None else "elai-composed"
     return OrjsonResponse({
-        "data": [{"id": "elai-composed", "object": "model"}]
+        "data": [{"id": model_id, "object": "model"}]
     })
 
 

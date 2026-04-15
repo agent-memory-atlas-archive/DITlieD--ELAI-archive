@@ -16,3 +16,25 @@
 
 [actions]
 # mode = "Interactive"  # "Interactive" | "Autonomous"
+
+[inference]
+# During-generation feature safety defaults (A-39).
+# All features ship DISABLED until calibration/testing confirms they help.
+
+# Steering vector (ActAdd) — measured NEUTRAL on Qwen2.5-Coder-7B (A-8 baseline).
+# Enable only after domain-specific contrast pair testing shows measurable improvement.
+steering_enabled = false
+
+# ETC entropy threshold — UNCALIBRATED.
+# Run metrics/calibrate_etc_threshold.py to compute a calibrated value.
+# Until calibrated, server.py uses float("inf") which disables ETC entirely.
+# etc_threshold = <run calibration to populate>
+
+# DoLa + ETC incompatibility guard (server.py L1182-1190).
+# DoLa is HARMFUL on models <32B (-15% code quality, -6% factuality, 4.7x slower).
+# Guard auto-disables DoLa when ETC is active on models with <64 layers.
+dola_on_32b_only = true
+
+# Calibration target model — thresholds are architecture-specific.
+# Do not apply calibrated values across different model families.
+calibration_target_model = "Qwen2.5-Coder-7B"

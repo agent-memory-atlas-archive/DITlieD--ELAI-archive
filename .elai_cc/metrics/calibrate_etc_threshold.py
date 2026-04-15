@@ -1,8 +1,11 @@
-"""ETC threshold calibration script (A-9).
+"""ETC threshold calibration script (A-9, A-39 safety defaults).
 
 Runs N code-completion prompts against the sidecar with ETC in calibration
 mode (threshold=0), collects d2H values at every token, then computes the
 p95 of non-import d2H as the production threshold.
+
+Target model: Qwen2.5-Coder-7B (A-39 spec constraint — calibration results
+are model-specific and must not be applied to other architectures).
 
 Usage:
     # Start sidecar with ETC calibration mode:
@@ -64,6 +67,33 @@ CALIBRATION_PROMPTS = [
 
 SIDECAR_MAX_TOKENS = 256
 SIDECAR_TEMPERATURE = 0.0
+# A-39: calibration targets Qwen2.5-Coder-7B only — thresholds are model-specific
+CALIBRATION_TARGET_MODEL = "Qwen2.5-Coder-7B"
+
+
+def _verify_target_model(url: str, *, strict: bool = True) -> None:
+    """Check the sidecar is running the expected model (A-39 constraint).
+
+    When strict=True (default), exit non-zero on model mismatch to prevent
+    writing thresholds calibrated against the wrong architecture.
+    """
+    try:
+        resp = httpx.get(f"{url}/v1/models", timeout=10.0)
+        resp.raise_for_status()
+        models = resp.json().get("data", [])
+        if models:
+            model_id = models[0].get("id", "")
+            if CALIBRATION_TARGET_MODEL.lower() not in model_id.lower():
+                msg = (
+                    f"sidecar model '{model_id}' does not match "
+                    f"target '{CALIBRATION_TARGET_MODEL}'. "
+                    f"Calibrated thresholds are model-specific."
+                )
+                if strict:
+                    sys.exit(f"ERROR: {msg} Use --no-strict to override.")
+                print(f"WARNING: {msg}")
+    except (httpx.HTTPError, httpx.TimeoutException):
+        print("WARNING: could not verify sidecar model — /v1/models unreachable")
 
 
 def run_calibration(url: str, n_samples: int) -> dict:
@@ -150,7 +180,7 @@ def run_calibration(url: str, n_samples: int) -> dict:
         "errors": errors,
     }
 
-    print(f"\n--- ETC Calibration Results ---")
+    print("\n--- ETC Calibration Results ---")
     print(f"Samples:           {n_samples} ({errors} errors)")
     print(f"Total tokens:      {total_tokens}")
     print(f"Import tokens:     {len(all_d2h_import)}")
@@ -169,10 +199,28 @@ def main():
     parser.add_argument("--url", default="http://localhost:8100", help="Sidecar URL")
     parser.add_argument("--samples", type=int, default=100, help="Number of calibration samples")
     parser.add_argument("--output", default="metrics/etc_calibration.json", help="Output JSON path")
+    parser.add_argument(
+        "--target-model",
+        default=CALIBRATION_TARGET_MODEL,
+        help=f"Expected model (default: {CALIBRATION_TARGET_MODEL})",
+    )
+    parser.add_argument(
+        "--no-strict",
+        action="store_true",
+        default=False,
+        help="Allow calibration even if sidecar model does not match target",
+    )
     args = parser.parse_args()
 
+    # Allow CLI override of target model constant
+    global CALIBRATION_TARGET_MODEL  # noqa: PLW0603
+    CALIBRATION_TARGET_MODEL = args.target_model
+
     print(f"ETC calibration: {args.samples} samples against {args.url}")
-    print(f"Sidecar must be running with --etc-threshold 0 (calibration mode)\n")
+    print(f"Target model: {CALIBRATION_TARGET_MODEL}")
+    print("Sidecar must be running with --etc-threshold 0 (calibration mode)\n")
+
+    _verify_target_model(args.url, strict=not args.no_strict)
 
     result = run_calibration(args.url, args.samples)
 
