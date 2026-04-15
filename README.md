@@ -48,8 +48,28 @@ and it gets more efficient the longer you use it
 
 <br>
 
-most tools burn tokens like they're free<br>
-elai doesn't
+most tools write rules in markdown and hope the model follows them<br>
+elai enforces rules as code - violations are physically impossible
+
+<br>
+
+most tools ask the model to reason through errors<br>
+elai solves 60-70% of them without touching the model at all
+
+<br>
+
+most tools dump everything into context and watch quality degrade<br>
+elai assembles fresh, focused context every step - step 80 is as sharp as step 1
+
+<br>
+
+most tools need you to explain your project<br>
+elai opens any directory and knows your language, framework, conventions, and build system in seconds
+
+<br>
+
+most tools charge you to babysit<br>
+elai hands you code that was tested and audited before you ever see it
 
 <br>
 
@@ -57,20 +77,8 @@ elai doesn't
 
 <br>
 
-context loaded per-state, not dumped whole<br>
-retrieval budget-fitted, not "hope it fits"<br>
-rules enforced as code, not as prompt tokens<br>
-binary internals, zero json bloat<br>
-~330 tokens overhead per turn — others use 1600-2600
-
-<br>
-
-local gpu first, cloud when necessary<br>
-each task routed to the cheapest model that handles it<br>
-$20/mo doing the work of $200/mo
-
-<br>
-
+local gpu first, cloud only when necessary<br>
+$20/mo doing the work of $200/mo<br>
 and it gets more efficient the longer you use it
 
 <br>
