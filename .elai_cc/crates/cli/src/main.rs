@@ -2711,6 +2711,12 @@ struct LiveCli {
     last_snap_id: Option<String>,
     last_fsm_state: String,
     knowledge_pipeline: Option<QueryPipeline>,
+    /// A-38: baby step counter for incremental profile refresh (every N=50 turns).
+    baby_step_counter: u32,
+    /// A-38: cached project profile for incremental updates.
+    cached_profile: Option<elai_core::ProjectProfile>,
+    /// A-38: unix timestamp (seconds) of last successful profile refresh. 0 = never.
+    last_profiled_at: u64,
 }
 
 struct RuntimePluginState {
@@ -3251,6 +3257,9 @@ impl LiveCli {
             last_snap_id: None,
             last_fsm_state: String::new(),
             knowledge_pipeline: None,
+            baby_step_counter: 0,
+            cached_profile: None,
+            last_profiled_at: 0,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3477,6 +3486,9 @@ impl LiveCli {
             last_snap_id: None,
             last_fsm_state: String::new(),
             knowledge_pipeline,
+            baby_step_counter: 0,
+            cached_profile: None,
+            last_profiled_at: 0,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -3725,6 +3737,58 @@ impl LiveCli {
         }
     }
 
+    /// A-38: attempt incremental profile refresh if baby step counter triggers.
+    /// Errors are logged, never propagated — REPL must not crash on profile refresh failures.
+    fn try_incremental_profile_refresh(&mut self) {
+        use elai_knowledge::incremental_profile::{
+            ProfileChangeDetector, incremental_tier1_refresh,
+        };
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        // Determine last_profiled_at from cached profile or 0 for first run.
+        let last_profiled_at = self.last_profiled_at;
+
+        let mut detector = ProfileChangeDetector::new(project_root.clone(), last_profiled_at);
+
+        if !detector.should_refresh_tier1(self.baby_step_counter) {
+            return;
+        }
+
+        // Get or create the profile to refresh.
+        if self.cached_profile.is_none() {
+            match elai_knowledge::incremental_profile::load_or_detect_profile(&project_root) {
+                Ok(p) => {
+                    self.cached_profile = Some(p);
+                }
+                Err(e) => {
+                    eprintln!("warn: incremental profile load failed: {e}");
+                    return;
+                }
+            }
+        }
+
+        let profile = match self.cached_profile.as_mut() {
+            Some(p) => p,
+            None => return,
+        };
+
+        match incremental_tier1_refresh(&project_root, &mut detector, profile) {
+            Ok(true) => {
+                // Reset counter and update timestamp after successful refresh.
+                self.baby_step_counter = 0;
+                self.last_profiled_at = detector.last_profiled_at;
+            }
+            Ok(false) => {
+                // No changes detected — do NOT reset counter. The next check
+                // triggers at the next multiple of BABY_STEP_REFRESH_N.
+                self.baby_step_counter = 0;
+            }
+            Err(e) => {
+                eprintln!("warn: incremental profile refresh failed: {e}");
+            }
+        }
+    }
+
     /// Drive the FSM through a single transition. Builds a one-shot tokio runtime
     /// to call the async `Fsm::transition`. Mirrors the pattern used by
     /// `try_save_snapshot`. Errors are logged as warnings; the REPL must not crash
@@ -3810,6 +3874,9 @@ impl LiveCli {
                 }
                 self.persist_session()?;
                 self.try_save_snapshot();
+                // A-38: increment baby step counter, trigger Tier 1 refresh if due.
+                self.baby_step_counter = self.baby_step_counter.saturating_add(1);
+                self.try_incremental_profile_refresh();
                 Ok(())
             }
             Err(error) => {
