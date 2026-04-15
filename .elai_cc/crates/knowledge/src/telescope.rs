@@ -14,6 +14,7 @@ use std::fmt::Write;
 use elai_core::project_profile::{
     ArchitecturePattern, Convention, Language, ProjectProfile,
 };
+use crate::DkgNodeInfo;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -22,6 +23,9 @@ use elai_core::project_profile::{
 /// Maximum tokens for the telescope injection into PhaseSpec (rough char estimate).
 /// Keeps the telescope compact to avoid blowing Slot 3 budget.
 const TELESCOPE_MAX_CHARS: usize = 1200;
+
+/// Default k for few-shot DKG similarity search.
+pub const FEW_SHOT_K: usize = 3;
 
 // ---------------------------------------------------------------------------
 // TelescopeContext: assembled context data for prompt injection
@@ -44,6 +48,10 @@ pub struct TelescopeContext {
     pub convention_summary: Option<String>,
     /// Primary language identifier.
     pub language: String,
+    /// Convention-aware function template (spec section 8: TEMPLATE GENERATION).
+    pub function_template: Option<String>,
+    /// Language-specific import template.
+    pub import_template: Option<String>,
 }
 
 impl TelescopeContext {
@@ -76,9 +84,27 @@ impl TelescopeContext {
             let _ = writeln!(out, "Test: {test}");
         }
 
-        // Enforce size limit.
+        // Template generation (spec section 8).
+        let has_templates = self.function_template.is_some() || self.import_template.is_some();
+        if has_templates {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(ref ft) = self.function_template {
+                parts.push(format!("fn: {ft}"));
+            }
+            if let Some(ref it) = self.import_template {
+                parts.push(format!("import: {it}"));
+            }
+            let _ = writeln!(out, "Templates: {}", parts.join("; "));
+        }
+
+        // Enforce size limit (safe for multibyte UTF-8).
         if out.len() > TELESCOPE_MAX_CHARS {
-            out.truncate(TELESCOPE_MAX_CHARS);
+            // Walk backward to find a valid char boundary at or before the limit.
+            let mut boundary = TELESCOPE_MAX_CHARS;
+            while boundary > 0 && !out.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            out.truncate(boundary);
             if let Some(last_nl) = out.rfind('\n') {
                 out.truncate(last_nl + 1);
             }
@@ -98,6 +124,16 @@ impl TelescopeContext {
     /// Estimated token count (chars / 4 is a rough English approximation).
     pub fn estimated_tokens(&self) -> usize {
         self.format_for_phase_spec().len() / 4
+    }
+
+    /// Format a crate-scoped verification instruction for baby step prompts.
+    /// Returns "After writing this code, verify: {test_cmd} -p {crate_name}"
+    /// when test_cmd is Some, or empty string when None.
+    pub fn format_verification_with_crate(&self, crate_name: &str) -> String {
+        match self.test_cmd.as_ref() {
+            Some(cmd) => format!("After writing this code, verify: {cmd} -p {crate_name}"),
+            None => String::new(),
+        }
     }
 }
 
@@ -132,6 +168,11 @@ pub fn assemble_telescope(profile: &ProjectProfile) -> TelescopeContext {
 
     let language = profile.languages.primary.id_str().to_owned();
 
+    // Template generation (spec section 8).
+    let function_template = Some(convention_function_template(profile));
+    let import_tpl = import_template(profile);
+    let import_template_str = Some(import_tpl.to_owned());
+
     TelescopeContext {
         project_vision,
         domain_labels,
@@ -140,6 +181,8 @@ pub fn assemble_telescope(profile: &ProjectProfile) -> TelescopeContext {
         test_cmd,
         convention_summary,
         language,
+        function_template,
+        import_template: import_template_str,
     }
 }
 
@@ -215,6 +258,21 @@ pub fn import_template(profile: &ProjectProfile) -> &'static str {
         Language::CSharp => "using {namespace};",
         _ => "import {module}",
     }
+}
+
+// ---------------------------------------------------------------------------
+// Few-shot formatting (spec section 8: FEW-SHOT EXAMPLES)
+// ---------------------------------------------------------------------------
+
+/// Format a DKG node as a few-shot example string for prompt injection.
+/// Output: "Here's how this codebase implements a similar function: {name} ({file_path}:{start_line})"
+pub fn format_few_shot_example(node: &DkgNodeInfo) -> String {
+    format!(
+        "Here's how this codebase implements a similar function: {} ({}:{})",
+        node.symbol_name,
+        node.file_path.display(),
+        node.start_line,
+    )
 }
 
 // ---------------------------------------------------------------------------

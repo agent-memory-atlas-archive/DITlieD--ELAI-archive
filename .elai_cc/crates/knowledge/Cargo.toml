@@ -37,6 +37,7 @@ usearch = { version = "2", default-features = false, optional = true }
 default = []
 usearch-hnsw = ["usearch"]
 splade = []
+test-helpers = []
 
 [dev-dependencies]
 proptest = "1"

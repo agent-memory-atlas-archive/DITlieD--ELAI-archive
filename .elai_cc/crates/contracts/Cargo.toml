@@ -13,7 +13,7 @@ elai-rules = { path = "../rules" }
 elai-providers = { path = "../providers" }
 elai-tools = { path = "../tools" }
 elai-plugins = { path = "../plugins" }
-elai-knowledge = { path = "../knowledge" }
+elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
 elai-orchestrator = { path = "../orchestrator" }
 serde_json = { workspace = true }

@@ -492,6 +492,120 @@ impl DkgEngine {
             Err(_) => DkgReadiness::Unavailable,
         }
     }
+
+    /// Find functions/methods with symbol names similar to `query` by token overlap.
+    ///
+    /// Algorithm: tokenize `query` and each symbol_name by splitting on `_` and
+    /// lowercasing. Score = |intersection(query_tokens, name_tokens)|. Return
+    /// nodes with score >= 1, sorted descending by score, limited to `k`.
+    /// Returns empty vec (not error) when DB is empty or no matches found.
+    pub fn find_similar_functions(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<DkgNodeInfo>, KnowledgeError> {
+        if query.is_empty() || k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query_tokens: Vec<String> = tokenize_symbol(query);
+        if query_tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, file_path, signature, kind, start_line, end_line \
+             FROM dkg_nodes WHERE kind IN ('function', 'method')",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DkgNodeInfo {
+                node_id: row.get(0)?,
+                symbol_name: row.get(1)?,
+                file_path: {
+                    let p: String = row.get(2)?;
+                    PathBuf::from(p)
+                },
+                signature: row.get(3)?,
+                kind: parse_symbol_kind(&row.get::<_, String>(4)?),
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+
+        let mut scored: Vec<(usize, DkgNodeInfo)> = Vec::new();
+        for row_result in rows {
+            let node = row_result?;
+            let name_tokens = tokenize_symbol(&node.symbol_name);
+            let score = query_tokens
+                .iter()
+                .filter(|qt| name_tokens.iter().any(|nt| nt == *qt))
+                .count();
+            if score >= SIMILARITY_MIN_TOKENS {
+                scored.push((score, node));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.truncate(k);
+        Ok(scored.into_iter().map(|(_, node)| node).collect())
+    }
+
+    /// Insert a test node directly (test-only helper, not for production use).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn insert_test_node(
+        &self,
+        name: &str,
+        kind: &str,
+        signature: &str,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        self.conn
+            .execute(
+                "INSERT INTO dkg_nodes (file_path, name, kind, signature, start_line, end_line) \
+                 VALUES ('test.rs', ?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![name, kind, signature, start_line, end_line],
+            )
+            .expect("insert_test_node is test-only");
+    }
+}
+
+/// Minimum token overlap for similarity match inclusion.
+const SIMILARITY_MIN_TOKENS: usize = 1;
+
+/// Tokenize a symbol name by splitting on `_`, `-`, and camelCase boundaries,
+/// then lowercasing. Handles snake_case, camelCase, PascalCase, kebab-case,
+/// and SCREAMING_SNAKE_CASE (consecutive uppercase stays as one token).
+fn tokenize_symbol(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut prev_was_lower = false;
+
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            prev_was_lower = false;
+        } else if ch.is_uppercase() && prev_was_lower {
+            // True camelCase boundary: lowercase followed by uppercase.
+            tokens.push(std::mem::take(&mut current));
+            current.push(ch);
+            prev_was_lower = false;
+        } else {
+            current.push(ch);
+            prev_was_lower = ch.is_lowercase();
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+        .into_iter()
+        .map(|t| t.to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

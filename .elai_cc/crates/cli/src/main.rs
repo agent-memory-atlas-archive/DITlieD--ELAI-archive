@@ -4816,7 +4816,19 @@ fn build_constraints_block() -> elai_orchestrator::context_budget::ConstraintsBl
 fn build_telescope_block() -> Option<String> {
     let project_root = std::env::current_dir().ok()?;
     let mut profile = detect_project_profile(&project_root).ok()?;
-    populate_tier3(&mut profile, &[]);
+
+    // Wire DKG nodes for architecture inference (A-36).
+    // Graceful degradation: if DB absent or engine fails, continue with empty nodes.
+    let dkg_db_path = project_root.join(".elai").join("dkg.db");
+    let dkg_nodes = if dkg_db_path.exists() {
+        DkgEngine::new(&dkg_db_path, None, 0)
+            .and_then(|engine| engine.nodes())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    populate_tier3(&mut profile, &dkg_nodes);
     let telescope_ctx = assemble_telescope(&profile);
     let formatted = telescope_ctx.format_for_phase_spec();
     if formatted.is_empty() {
