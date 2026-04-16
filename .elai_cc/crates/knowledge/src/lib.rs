@@ -28,6 +28,7 @@ pub mod telescope;
 pub mod tier3;
 pub mod benchmark;
 pub mod vector;
+pub mod web_arag;
 
 // ---------------------------------------------------------------------------
 // Core enums
