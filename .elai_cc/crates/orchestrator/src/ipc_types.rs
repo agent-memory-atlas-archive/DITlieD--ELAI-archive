@@ -88,17 +88,28 @@ pub enum IpcMessageType {
 }
 
 // Compile-time assertion: exactly 15 variants.
-// This uses a match exhaustiveness check — if variants are added or removed,
-// this function will fail to compile.
-const _: () = {
-    const fn _assert_15_variants() {
-        // The discriminant range for a 15-variant enum is 0..=14.
-        // We verify by constructing a lookup table of size 15.
-        // If the enum gains or loses a variant, the tests below will catch it
-        // at test time, and the VARIANT_COUNT constant documents the contract.
+// Uses a discriminant-to-unit match. Adding or removing a variant causes a
+// compile error (non-exhaustive match or unreachable arm).
+#[doc(hidden)]
+pub const fn _ipc_variant_tag(msg: &IpcMessageType) -> u8 {
+    match msg {
+        IpcMessageType::AgentRequest { .. } => 0,
+        IpcMessageType::AgentResponse { .. } => 1,
+        IpcMessageType::InferRequest { .. } => 2,
+        IpcMessageType::InferResponse { .. } => 3,
+        IpcMessageType::ToolRequest { .. } => 4,
+        IpcMessageType::ToolResult { .. } => 5,
+        IpcMessageType::BashRequest { .. } => 6,
+        IpcMessageType::BashResult { .. } => 7,
+        IpcMessageType::GroundingRequest { .. } => 8,
+        IpcMessageType::GroundingResult { .. } => 9,
+        IpcMessageType::ThinkStep { .. } => 10,
+        IpcMessageType::CheckpointSync { .. } => 11,
+        IpcMessageType::AgentHeartbeat { .. } => 12,
+        IpcMessageType::AgentKill { .. } => 13,
+        IpcMessageType::ReplanRequest { .. } => 14,
     }
-    _assert_15_variants();
-};
+}
 
 /// Number of IpcMessageType variants. Used in round-trip tests.
 pub const IPC_MESSAGE_TYPE_VARIANT_COUNT: usize = 15;
@@ -137,6 +148,36 @@ impl IpcFrame {
     pub fn decode(payload: &[u8]) -> Result<IpcMessageType, IpcFrameError> {
         postcard::from_bytes(payload)
             .map_err(|e| IpcFrameError::DeserializationFailed(e.to_string()))
+    }
+
+    /// Parse wire bytes back into an IpcFrame.
+    /// Validates version byte and length prefix before allocating payload.
+    pub fn from_wire_bytes(data: &[u8]) -> Result<Self, IpcFrameError> {
+        if data.len() < FRAME_HEADER_SIZE {
+            return Err(IpcFrameError::FrameTooShort);
+        }
+        let version = data[0];
+        if version != IPC_PROTOCOL_VERSION {
+            return Err(IpcFrameError::VersionMismatch {
+                expected: IPC_PROTOCOL_VERSION,
+                actual: version,
+            });
+        }
+        let len = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+        if len > MAX_FRAME_SIZE {
+            return Err(IpcFrameError::PayloadTooLarge {
+                size: len,
+                limit: MAX_FRAME_SIZE,
+            });
+        }
+        let total = FRAME_HEADER_SIZE + len;
+        if data.len() < total {
+            return Err(IpcFrameError::FrameTooShort);
+        }
+        Ok(Self {
+            version,
+            payload: data[FRAME_HEADER_SIZE..total].to_vec(),
+        })
     }
 
     /// Produce the wire bytes: [version][4-byte LE length][payload].
@@ -409,5 +450,43 @@ mod tests {
         };
         assert!(filter.allows(&ToolId::new("read_file")));
         assert!(!filter.allows(&ToolId::new("write_file")));
+    }
+
+    #[test]
+    fn wire_round_trip_via_from_wire_bytes() {
+        let msg = IpcMessageType::AgentHeartbeat {
+            agent_id: Uuid::nil(),
+            uptime_secs: 42,
+        };
+        let frame = IpcFrame::encode(&msg).unwrap_or_else(|e| panic!("encode: {e}"));
+        let wire = frame.to_wire_bytes().unwrap_or_else(|e| panic!("to_wire: {e}"));
+        let parsed = IpcFrame::from_wire_bytes(&wire)
+            .unwrap_or_else(|e| panic!("from_wire: {e}"));
+        let decoded = IpcFrame::decode(&parsed.payload)
+            .unwrap_or_else(|e| panic!("decode: {e}"));
+        assert_eq!(msg, decoded);
+        assert_eq!(parsed.version, IPC_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn version_mismatch_rejected() {
+        let msg = IpcMessageType::AgentKill { reason: "test".into() };
+        let frame = IpcFrame::encode(&msg).unwrap_or_else(|e| panic!("encode: {e}"));
+        let mut wire = frame.to_wire_bytes().unwrap_or_else(|e| panic!("to_wire: {e}"));
+        wire[0] = IPC_PROTOCOL_VERSION + 1; // corrupt version
+        let result = IpcFrame::from_wire_bytes(&wire);
+        assert!(
+            matches!(result, Err(IpcFrameError::VersionMismatch { .. })),
+            "expected VersionMismatch error"
+        );
+    }
+
+    #[test]
+    fn frame_too_short_rejected() {
+        let result = IpcFrame::from_wire_bytes(&[1, 2]);
+        assert!(
+            matches!(result, Err(IpcFrameError::FrameTooShort)),
+            "expected FrameTooShort error"
+        );
     }
 }
