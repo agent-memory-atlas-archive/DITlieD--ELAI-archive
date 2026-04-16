@@ -6,6 +6,10 @@ use elai_web_search::{
     DEFAULT_SEARCH_TIMEOUT_SECS, HEALTH_CHECK_TIMEOUT_SECS,
     DEFAULT_MAX_RESULTS, DEFAULT_RATE_LIMIT_INTERVAL_MS,
 };
+use elai_web_search::source_quality::{
+    SourceQualityTable,
+    SCORE_TIER1, SCORE_TIER2, SCORE_TIER3, SCORE_TIER4, SCORE_UNKNOWN,
+};
 use elai_web_search::extractor::{BasicExtractor, ContentExtractor, ExtractedContent, PageType};
 use elai_web_search::fetcher::{FetchedPage, FETCH_TIMEOUT_SECS, MAX_BODY_BYTES, MAX_REDIRECTS, USER_AGENT, RATE_LIMIT_INTERVAL_MS};
 
@@ -221,4 +225,95 @@ async fn web_fetcher_constructs() {
     let clock = Arc::new(SeededClock::new());
     let fetcher = WebFetcher::new(clock);
     assert!(fetcher.is_ok());
+}
+
+// --- 4D.13 SourceQualityTable contract tests ---
+
+fn contract_test_config() -> elai_core::source_tier::SourceTierConfig {
+    let toml = r#"
+[tier1]
+domains = ["arxiv.org", "doi.org", "ietf.org"]
+patterns = ['\.gov$', '\.edu$']
+
+[tier2]
+domains = ["docs.rs", "crates.io", "stackoverflow.com"]
+min_so_score = 20
+
+[tier4_blocklist]
+domains = ["w3schools.com", "medium.com"]
+patterns = []
+"#;
+    elai_core::source_tier::parse_source_tier_config(toml).expect("contract test config")
+}
+
+#[test]
+fn source_quality_lookup_t1_domain() {
+    let table = SourceQualityTable::new_from_config(contract_test_config());
+    assert_eq!(
+        table.lookup("arxiv.org"),
+        elai_core::source_tier::SourceTier::T1Authoritative,
+    );
+}
+
+#[test]
+fn source_quality_lookup_t4_domain() {
+    let table = SourceQualityTable::new_from_config(contract_test_config());
+    assert_eq!(
+        table.lookup("w3schools.com"),
+        elai_core::source_tier::SourceTier::T4Rejected,
+    );
+}
+
+#[test]
+fn source_quality_lookup_unknown_defaults_t3weak() {
+    let table = SourceQualityTable::new_from_config(contract_test_config());
+    assert_eq!(
+        table.lookup("some-random-site.com"),
+        elai_core::source_tier::SourceTier::T3Weak,
+    );
+}
+
+#[test]
+fn source_quality_score_consistency() {
+    let table = SourceQualityTable::new_from_config(contract_test_config());
+    assert_eq!(table.score("arxiv.org"), SCORE_TIER1);
+    assert_eq!(table.score("docs.rs"), SCORE_TIER2);
+    assert_eq!(table.score("some-random.com"), SCORE_TIER3);
+    assert_eq!(table.score("w3schools.com"), SCORE_TIER4);
+}
+
+#[test]
+fn source_quality_subdomain_glob_gov() {
+    let table = SourceQualityTable::new_from_config(contract_test_config());
+    assert_eq!(
+        table.lookup("cdc.gov"),
+        elai_core::source_tier::SourceTier::T1Authoritative,
+    );
+    assert_eq!(
+        table.lookup("nih.gov"),
+        elai_core::source_tier::SourceTier::T1Authoritative,
+    );
+}
+
+#[test]
+fn source_quality_new_from_config_roundtrip() {
+    let config = contract_test_config();
+    let table = SourceQualityTable::new_from_config(config);
+    // T1 exact
+    assert_eq!(table.score("doi.org"), SCORE_TIER1);
+    // T2 exact
+    assert_eq!(table.score("crates.io"), SCORE_TIER2);
+    // T4 exact
+    assert_eq!(table.score("medium.com"), SCORE_TIER4);
+    // Unknown -> T3Weak
+    assert_eq!(table.score("nope.org"), SCORE_TIER3);
+}
+
+#[test]
+fn source_quality_named_constants_values() {
+    assert_eq!(SCORE_TIER1, 1.0);
+    assert_eq!(SCORE_TIER2, 0.8);
+    assert_eq!(SCORE_TIER3, 0.6);
+    assert_eq!(SCORE_TIER4, 0.4);
+    assert_eq!(SCORE_UNKNOWN, 0.2);
 }

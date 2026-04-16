@@ -5,6 +5,7 @@ pub mod extractor;
 pub mod fetcher;
 pub mod rate_limiter;
 pub mod robots;
+pub mod source_quality;
 
 use serde::Deserialize;
 
