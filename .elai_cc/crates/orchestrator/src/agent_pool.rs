@@ -566,6 +566,22 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
         },
         AgentRole::Researcher => AgentGrcConfig {
             role: "researcher".into(),
+            budget: GrcBudget {
+                max_calls: 10,
+                max_chars: 1200,
+                calls_used: 0,
+                chars_used: 0,
+            },
+            required_steps: vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::PlanAction,
+                GrcState::Verify,
+                GrcState::Converge,
+            ],
+            grounding_level: GroundingLevel::High,
+            csq_required: true,
+            require_scope_enumeration: false,
             ..AgentGrcConfig::default()
         },
         AgentRole::MediaValidator => AgentGrcConfig {

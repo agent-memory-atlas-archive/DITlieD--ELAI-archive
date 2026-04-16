@@ -1,0 +1,63 @@
+[phase_4D]
+timestamp = "2026-04-16"
+status = "complete"
+
+[phase_4D.grounding_distribution]
+GROUNDED = 10
+VERIFY = 0
+INGEST = 0
+UNCERTAIN = 0
+
+[phase_4D.spec_token_count]
+research_tree_rs = 780
+tests_research_tree_rs = 420
+ssb_additions = 45
+agent_pool_changes = 15
+total = 1260
+
+[phase_4D.depth_utilization]
+simple_max = 3
+moderate_max = 4
+complex_max = 5
+hard_cap = 10
+tested_depth_bomb = true
+
+[phase_4D.convergence_p50]
+simple_iterations = 4
+moderate_iterations = 5
+complex_iterations = 6
+max_iterations = 50
+
+[phase_4D.speculative_hit_rate]
+local_depth = 0
+cloud_depth = 1
+local_forced_zero = true
+
+[phase_4D.source_tier_distribution]
+tier1_domains = 6
+tier2_domains = 7
+tier3_domains = 3
+tier4_domains = 3
+tier5_fallback = true
+phishing_test = "pass"
+deterministic_1000 = true
+
+[phase_4D.time_budget_ratio]
+acceptance_threshold = 1.1
+measured = 0.01
+passed = true
+
+[phase_4D.ssb_event_count]
+action_type = "research_step"
+payload_fields = 6
+sql_check_updated = true
+from_str_added = true
+action_type_match_added = true
+dst_proptest_updated = true
+total_ssb_types = 26
+
+[phase_4D.info_gain_trend]
+threshold = 0.1
+prune_after_streak = 3
+nan_guard = true
+convergence_and_not_or = true

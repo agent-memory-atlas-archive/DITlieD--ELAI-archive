@@ -39,6 +39,7 @@ mod prompt;
 pub mod recovery;
 pub mod recovery_recipes;
 pub mod research_pipeline;
+pub mod research_tree;
 mod remote;
 mod session;
 #[cfg(test)]

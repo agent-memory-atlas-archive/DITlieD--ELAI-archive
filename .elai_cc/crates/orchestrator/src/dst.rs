@@ -414,6 +414,7 @@ mod tests {
                     SsbActionType::Finding,
                     SsbActionType::PhaseTransition,
                     SsbActionType::ReasoningTrace,
+                    SsbActionType::ResearchStep,
                 ])
                 .prop_map(|action_type| FsmEvent::SsbWrite { action_type })
                 .boxed(),
