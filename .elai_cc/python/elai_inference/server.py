@@ -1881,6 +1881,222 @@ async def handle_completions(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Web search endpoint (SearXNG proxy + auto-start + Brave fallback)
+# ---------------------------------------------------------------------------
+
+SEARCH_MAX_RESULTS = 20
+SEARXNG_INTERNAL_URL = "http://127.0.0.1:8888"
+SEARXNG_CONTAINER_NAME = "searxng"
+SEARXNG_IMAGE = "searxng/searxng:latest"
+SEARXNG_SETTINGS_MOUNT = "/etc/searxng/settings.yml"
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+_searxng_available: bool | None = None  # None = not checked yet.
+_searxng_lock = Lock()
+
+
+def _ensure_searxng_sync() -> bool:
+    """Check if SearXNG is running; auto-start Docker container if not.
+
+    Returns True if SearXNG is reachable, False otherwise.
+    Thread-safe (called from executor).
+    """
+    global _searxng_available
+    import subprocess
+
+    with _searxng_lock:
+        # Quick health check.
+        try:
+            import httpx
+            resp = httpx.get(f"{SEARXNG_INTERNAL_URL}/search",
+                            params={"q": "test", "format": "json"},
+                            timeout=3)
+            if resp.status_code == 200:
+                _searxng_available = True
+                return True
+        except Exception:
+            pass
+
+        if _searxng_available is False:
+            return False  # Already tried and failed.
+
+        # Try to start SearXNG via Docker.
+        logger.info("searxng_auto_start", msg="attempting Docker auto-start")
+        try:
+            # Check if Docker is available.
+            subprocess.run(
+                ["docker", "info"],
+                capture_output=True, timeout=5, check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            logger.warning("searxng_no_docker", msg="Docker not available")
+            _searxng_available = False
+            return False
+
+        # Remove stale container if exists.
+        subprocess.run(
+            ["docker", "rm", "-f", SEARXNG_CONTAINER_NAME],
+            capture_output=True, timeout=10,
+        )
+
+        # Find settings file relative to this script.
+        import pathlib
+        script_dir = pathlib.Path(__file__).resolve().parent
+        settings_path = script_dir.parent / "searxng-settings" / "settings.yml"
+        mount_arg = (
+            f"{settings_path}:{SEARXNG_SETTINGS_MOUNT}:ro"
+            if settings_path.exists()
+            else ""
+        )
+
+        cmd = [
+            "docker", "run", "-d",
+            "--name", SEARXNG_CONTAINER_NAME,
+            "-p", "8888:8080",
+        ]
+        if mount_arg:
+            cmd.extend(["-v", mount_arg])
+        cmd.append(SEARXNG_IMAGE)
+
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            logger.warning("searxng_start_failed", error=str(exc))
+            _searxng_available = False
+            return False
+
+        # Wait for SearXNG to become ready (up to 10s).
+        import httpx as _httpx
+        for _ in range(20):
+            time.sleep(0.5)
+            try:
+                resp = _httpx.get(f"{SEARXNG_INTERNAL_URL}/search",
+                                 params={"q": "test", "format": "json"},
+                                 timeout=2)
+                if resp.status_code == 200:
+                    logger.info("searxng_ready")
+                    _searxng_available = True
+                    return True
+            except Exception:
+                continue
+
+        logger.warning("searxng_timeout", msg="SearXNG did not become ready in 10s")
+        _searxng_available = False
+        return False
+
+
+async def _proxy_searxng(query: str, max_results: int) -> list:
+    """Proxy search request to local SearXNG instance."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{SEARXNG_INTERNAL_URL}/search",
+                params={"q": query, "format": "json", "pageno": "1"},
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            results = data.get("results", [])[:max_results]
+            # Normalize to SearXNG contract (already in correct format).
+            return results
+    except Exception:
+        logger.exception("searxng_proxy_error")
+        return []
+
+
+async def _search_brave(query: str, max_results: int, api_key: str) -> list:
+    """Search Brave Search API (requires API key). Free tier: 2000 queries/month."""
+    import httpx
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                BRAVE_SEARCH_URL,
+                params={"q": query, "count": min(max_results, 20)},
+                headers={
+                    "X-Subscription-Token": api_key,
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning("brave_search_failed", status=resp.status_code)
+                return results
+
+            data = resp.json()
+            web_results = data.get("web", {}).get("results", [])
+            for i, item in enumerate(web_results[:max_results]):
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "content": item.get("description", ""),
+                    "engine": "brave",
+                    "score": 1.0 / (i + 1),
+                })
+    except Exception:
+        logger.exception("brave_search_error")
+    return results
+
+
+@app.get("/search")
+async def handle_search(request: Request):
+    """SearXNG-compatible search endpoint. Drop-in replacement.
+
+    Strategy (in order):
+    1. Proxy to local SearXNG (auto-starts Docker container if available)
+    2. Fall back to Brave Search API (if BRAVE_SEARCH_API_KEY env set)
+    3. Return empty results with error message
+
+    Query params: q (query string), format (ignored, always json), pageno (ignored).
+    Returns: {"query": "...", "results": [...], "number_of_results": N}
+    """
+    query = request.query_params.get("q", "").strip()
+    if not query:
+        return OrjsonResponse({"query": "", "results": [], "number_of_results": 0})
+
+    max_results = SEARCH_MAX_RESULTS
+
+    # Strategy 1: SearXNG (auto-start Docker if needed).
+    loop = asyncio.get_running_loop()
+    searxng_ok = await loop.run_in_executor(None, _ensure_searxng_sync)
+
+    if searxng_ok:
+        results = await _proxy_searxng(query, max_results)
+        if results:
+            logger.info("search_completed", query=query, source="searxng",
+                        result_count=len(results))
+            return OrjsonResponse({
+                "query": query,
+                "number_of_results": len(results),
+                "results": results,
+            })
+
+    # Strategy 2: Brave Search API fallback.
+    import os
+    brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+    if brave_key:
+        results = await _search_brave(query, max_results, brave_key)
+        if results:
+            logger.info("search_completed", query=query, source="brave",
+                        result_count=len(results))
+            return OrjsonResponse({
+                "query": query,
+                "number_of_results": len(results),
+                "results": results,
+            })
+
+    # Strategy 3: No search available.
+    logger.warning("search_unavailable", query=query,
+                   msg="No search backend available. Install Docker or set BRAVE_SEARCH_API_KEY.")
+    return OrjsonResponse({
+        "query": query,
+        "number_of_results": 0,
+        "results": [],
+        "error": "No search backend available. Install Docker for SearXNG or set BRAVE_SEARCH_API_KEY env var.",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Streaming helpers
 # ---------------------------------------------------------------------------
 
