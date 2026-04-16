@@ -18,7 +18,7 @@ use crate::error::RulesDbError;
 // ---------------------------------------------------------------------------
 
 /// Current schema version. Bump when any CREATE/ALTER statement changes.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 // ---------------------------------------------------------------------------
 // DDL statements
@@ -199,6 +199,19 @@ const DEPRECATED_PATTERNS_SEED: &[(&str, &str, &str, &str, Option<&str>, &str, &
      None, "BLOCK", "dtype= is silently ignored by from_pretrained; use torch_dtype="),
     ("dp-pip-float16-compute", "pip", "float16 compute", "bfloat16 compute",
      None, "WARN", "bfloat16 is preferred compute dtype for NF4 on Ampere+ GPUs"),
+    // JavaScript / npm — WEB.2 additions (WARN-severity; no npm BLOCKs yet).
+    ("dp-npm-moment", "npm", "moment", "date-fns",
+     Some("2020-09-15"), "WARN", "moment is in maintenance mode; prefer date-fns for tree-shakeable date utilities"),
+    ("dp-npm-request", "npm", "request", "undici",
+     Some("2020-02-11"), "WARN", "request is deprecated; prefer undici for modern HTTP client"),
+    ("dp-npm-create-react-app", "npm", "create-react-app", "vite",
+     Some("2023-01-01"), "WARN", "create-react-app is unmaintained; prefer Vite for React scaffolding"),
+    ("dp-npm-enzyme", "npm", "enzyme", "@testing-library/react",
+     Some("2020-01-01"), "WARN", "enzyme is unmaintained for React 17+; prefer @testing-library/react"),
+    ("dp-npm-webpack", "npm", "webpack", "vite",
+     None, "WARN", "webpack config complexity exceeds Vite for most greenfield projects; evaluate migration"),
+    ("dp-npm-jquery", "npm", "jquery", "vanilla-dom",
+     None, "WARN", "jQuery rarely needed in modern browsers; prefer vanilla DOM APIs"),
 ];
 
 /// Return BLOCK-severity entries from the static seed data.
@@ -476,6 +489,25 @@ pub fn run_migration(conn: &Connection, clock: &impl ClockProvider) -> Result<()
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
             rusqlite::params![5_i64, now_epoch],
+        )?;
+    }
+
+    // Version 5 → 6: WEB.2 — backfill npm deprecated_patterns on pre-existing DBs.
+    // No DDL change; re-running seed_deprecated_patterns is idempotent (INSERT OR IGNORE)
+    // so fresh DBs (which already seeded in the 2→3 step) pay only the duplicate-check cost,
+    // while upgraded DBs receive the 6 new npm rows added to DEPRECATED_PATTERNS_SEED.
+    if current < 6 {
+        seed_deprecated_patterns(conn)?;
+
+        let now_epoch = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![6_i64, now_epoch],
         )?;
     }
 

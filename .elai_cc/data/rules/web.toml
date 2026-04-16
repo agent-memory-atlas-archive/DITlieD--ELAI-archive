@@ -1,0 +1,279 @@
+# Seed web-domain rules for ELAI rule engine (WEB.2).
+# Each [[rules]] entry maps to a Rule struct. predicate_json holds the
+# Predicate enum serialized as JSON (parsed via from_json at load time).
+# phase_mask bits: 0=PLANNING 1=FEASIBILITY 2=TESTING_FIRST 3=EXECUTING
+#                  4=AUDITING 5=MEMORIZING 6=CONFIGURING.
+# phase_mask 24 = (1<<3) | (1<<4) = EXECUTING + AUDITING.
+#
+# Grounding references per tier (for documentation only — not loaded):
+#   Tier 1 (regex):     eslint, eslint-plugin-jsx-a11y, stylelint canonical rules.
+#   Tier 2 (AST fall):  eslint-plugin-react, svelte-eslint-parser, axe-core heuristics.
+#   Tier 3 (semantic):  WCAG 2.2, web.dev Core Web Vitals, axe-core semantic audits.
+#
+# TIER_2_FALLBACK: all 11 Tier-2 rules are authored as GrepPattern regex stand-ins
+# because HTML/CSS/Svelte/Astro tree-sitter grammars are not yet in the DKG registry.
+# Upgrade to ast_pattern predicates when the grammars land.
+#
+# FileContext scoping note: Predicate::GrepPattern only supports Production/Test
+# file context; there is no file_globs filter. Rule regexes therefore self-scope
+# by being specific enough that they only fire on the intended markup/style
+# contexts (e.g. <img> tags, @font-face blocks, CSS property declarations).
+
+# ---------------------------------------------------------------------------
+# Tier 1 — regex (12 rules)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+rule_id = "WEB-001"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "Avoid inline style attribute on HTML/JSX elements"
+predicate_json = '{"type":"grep_pattern","pattern":"\\bstyle\\s*=\\s*\\{\\{|\\bstyle\\s*=\\s*\"[^\"]+\"","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-002"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "Avoid !important in CSS declarations"
+predicate_json = '{"type":"grep_pattern","pattern":"!important\\b","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-003"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "img element missing alt attribute (broad — any <img> without literal alt= text)"
+predicate_json = '{"type":"grep_pattern","pattern":"<img\\b[^>]*>","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-004"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "anchor with target=_blank — review for rel=noopener"
+predicate_json = '{"type":"grep_pattern","pattern":"<a[^>]*target\\s*=\\s*\"_blank\"[^>]*>","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-005"
+domain = "web"
+tier = 1
+severity = "BLOCK"
+title = "Block document.write() — replaces DOM wholesale, breaks async loading"
+predicate_json = '{"type":"grep_pattern","pattern":"\\bdocument\\.write\\s*\\(","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-006"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "Use let/const instead of var"
+predicate_json = '{"type":"grep_pattern","pattern":"(^|[^a-zA-Z0-9_$])var\\s+[a-zA-Z_$]","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-007"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "console.log left in production code"
+predicate_json = '{"type":"grep_pattern","pattern":"\\bconsole\\.log\\s*\\(","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-008"
+domain = "web"
+tier = 1
+severity = "INFO"
+title = "Hardcoded hex color in color/background declaration"
+predicate_json = '{"type":"grep_pattern","pattern":"(?:^|[^a-zA-Z])(?:color|background|background-color|border-color|fill|stroke)\\s*:\\s*#[0-9a-fA-F]{3,8}\\b","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-009"
+domain = "web"
+tier = 1
+severity = "BLOCK"
+title = "Block eval() / new Function() — arbitrary-code execution risk"
+predicate_json = '{"type":"grep_pattern","pattern":"\\beval\\s*\\(|\\bnew\\s+Function\\s*\\(","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-010"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "Assignment to .innerHTML bypasses sanitization"
+predicate_json = '{"type":"grep_pattern","pattern":"\\.innerHTML\\s*=[^=]","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-011"
+domain = "web"
+tier = 1
+severity = "INFO"
+title = "Raw rgb/rgba color literal — prefer theme token via var(--...)"
+predicate_json = '{"type":"grep_pattern","pattern":":\\s*rgba?\\s*\\(\\s*\\d","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-012"
+domain = "web"
+tier = 1
+severity = "WARN"
+title = "@font-face block present — verify font-display is declared"
+predicate_json = '{"type":"grep_pattern","pattern":"@font-face\\s*\\{","scope":null,"context_lines":2}'
+phase_mask = 24
+
+# ---------------------------------------------------------------------------
+# Tier 2 — AST-intent rules, authored as GrepPattern fallback (11 rules)
+# TIER_2_FALLBACK: regex stand-in until HTML/CSS/Svelte/Astro tree-sitter
+# grammars land in DKG. Patterns self-scope by matching distinctive markup.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+rule_id = "WEB-013"
+domain = "web"
+tier = 2
+severity = "WARN"
+title = "Form input element — verify associated <label> / aria-label"
+predicate_json = '{"type":"grep_pattern","pattern":"<input\\b[^>]*>","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-014"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Non-semantic div with role=button — prefer <button>"
+predicate_json = '{"type":"grep_pattern","pattern":"<div[^>]*\\brole\\s*=\\s*\"button\"","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-015"
+domain = "web"
+tier = 2
+severity = "WARN"
+title = "Deep CSS nesting (5+ descendant combinators)"
+predicate_json = '{"type":"grep_pattern","pattern":"(?m)^[^{\\n]*\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+[^{\\n]*\\{","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-016"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Component file with default export plus additional named exports"
+predicate_json = '{"type":"grep_pattern","pattern":"(?s)export\\s+default\\s+.+?\\bexport\\s+(?:function|const|class)\\s+\\w","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-017"
+domain = "web"
+tier = 2
+severity = "WARN"
+title = "<button> opening tag — verify explicit type attribute"
+predicate_json = '{"type":"grep_pattern","pattern":"<button\\b[^>]*>","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-018"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Multiple <h1> headings in a single document"
+predicate_json = '{"type":"grep_pattern","pattern":"(?s)<h1\\b[^>]*>.+?<h1\\b","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-019"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "List item closes into non-list container — probable orphan"
+predicate_json = '{"type":"grep_pattern","pattern":"</li>\\s*</(?:div|section|main|article|body)\\b","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-020"
+domain = "web"
+tier = 2
+severity = "WARN"
+title = "<html> opening tag with no attributes (likely missing lang)"
+predicate_json = '{"type":"grep_pattern","pattern":"<html\\s*>","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-021"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Oversized <script> block (>4000 chars) — split component"
+predicate_json = '{"type":"grep_pattern","pattern":"(?s)<script\\b[^>]*>[\\s\\S]{4000,}?</script>","scope":null,"context_lines":0}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-022"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Cross-section import traverses 3+ parent directories"
+predicate_json = '{"type":"grep_pattern","pattern":"\\bfrom\\s+\"(?:\\.\\./){3,}","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-023"
+domain = "web"
+tier = 2
+severity = "INFO"
+title = "Full-viewport fixed-position container blocks scroll"
+predicate_json = '{"type":"grep_pattern","pattern":"(?s)position\\s*:\\s*fixed[^}]*(?:width|height)\\s*:\\s*100(?:vw|vh|%)","scope":null,"context_lines":2}'
+phase_mask = 24
+
+# ---------------------------------------------------------------------------
+# Tier 3 — semantic intent, authored as GrepPattern heuristics (4 rules)
+# Full semantic evaluation (e.g. contrast ratio math, layout reflow analysis)
+# is deferred; regex heuristics flag the most-common offenders.
+# ---------------------------------------------------------------------------
+
+[[rules]]
+rule_id = "WEB-024"
+domain = "web"
+tier = 3
+severity = "INFO"
+title = "Non-responsive fixed width (>=1000px) on layout element"
+predicate_json = '{"type":"grep_pattern","pattern":"(?:^|[^a-zA-Z-])(?:min-width|max-width|width)\\s*:\\s*[1-9]\\d{3,}px","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-025"
+domain = "web"
+tier = 3
+severity = "INFO"
+title = "Low-contrast candidate — light foreground on light background"
+predicate_json = '{"type":"grep_pattern","pattern":"(?s)background(?:-color)?\\s*:\\s*(?:#f[0-9a-fA-F]{2,5}|white|#fff(?:fff)?)[^;}]*;[^}]*color\\s*:\\s*(?:#f[0-9a-fA-F]{2,5}|white|#fff(?:fff)?)","scope":null,"context_lines":2}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-026"
+domain = "web"
+tier = 3
+severity = "WARN"
+title = "Focus-visible suppressed via outline:none / outline:0"
+predicate_json = '{"type":"grep_pattern","pattern":"\\boutline\\s*:\\s*(?:none|0)\\b","scope":null,"context_lines":1}'
+phase_mask = 24
+
+[[rules]]
+rule_id = "WEB-027"
+domain = "web"
+tier = 3
+severity = "WARN"
+title = "<head> opens directly into <title> — verify <meta name=viewport> precedes"
+predicate_json = '{"type":"grep_pattern","pattern":"<head\\b[^>]*>\\s*<title\\b","scope":null,"context_lines":2}'
+phase_mask = 24

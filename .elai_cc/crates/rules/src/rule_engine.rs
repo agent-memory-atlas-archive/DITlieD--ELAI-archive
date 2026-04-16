@@ -197,6 +197,8 @@ const DOMAIN_KEYWORDS: &[(&str, &[&str])] = &[
     ("application", &["payment", "billing", "tenant", "saas"]),
     ("game", &["game", "mod", "entity", "spawn"]),
     ("re", &["ida", "ghidra", "disasm", "hook"]),
+    // WEB.2: frontend file extensions and markup/style entry points.
+    ("web", &[".html", ".css", ".svelte", ".astro", ".jsx", ".tsx", ".vue"]),
 ];
 
 /// Detect applicable domains for a file path by keyword matching.
@@ -215,6 +217,32 @@ pub fn detect_domains(file_path: &str) -> Vec<String> {
     for &(domain, keywords) in DOMAIN_KEYWORDS {
         if keywords.iter().any(|kw| lower.contains(kw)) {
             domains.push(domain.to_owned());
+        }
+    }
+    domains
+}
+
+// ---------------------------------------------------------------------------
+// Framework-driven domain detection (WEB.2)
+// ---------------------------------------------------------------------------
+
+/// Derive active rule domains from a project's detected frameworks.
+///
+/// Complements [`detect_domains`] (which inspects a single file path) by
+/// activating domains at the project level — e.g. a project using Yew or
+/// Leptos activates the "web" domain even before any `.svelte`/`.astro`
+/// file is edited. Pure function; deduplicates within a single invocation.
+pub fn detect_domains_from_frameworks(
+    frameworks: &[elai_core::project_profile::FrameworkDetection],
+) -> Vec<String> {
+    use elai_core::project_profile::FrameworkCategory;
+    let mut domains: Vec<String> = Vec::new();
+    for fw in frameworks {
+        if fw.category == FrameworkCategory::Web {
+            let web = "web".to_owned();
+            if !domains.contains(&web) {
+                domains.push(web);
+            }
         }
     }
     domains
