@@ -1,5 +1,6 @@
 mod hooks;
 pub mod import_extractor;
+pub mod ipc_hooks;
 pub mod tiered_analysis;
 
 #[cfg(feature = "mcp")]
@@ -19,6 +20,10 @@ use serde_json::{Map, Value};
 
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
 pub use tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisResult, TieredAnalysisError};
+pub use ipc_hooks::{
+    IpcHookTrait, IpcHookDispatcher, IpcHookError, HookContext, IpcHookEvent, HookResult,
+    SsbFindingWriter, NoopSsbWriter, CrossSessionLockChecker, NoopLockChecker,
+};
 
 #[cfg(feature = "mcp")]
 pub use mcp_bridge::{McpBridge, McpConnection, McpError, McpTransport, McpToolSpec, DefaultMcpBridge};

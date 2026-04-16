@@ -1,0 +1,43 @@
+[phase]
+id = "4C"
+title = "Tool-result processing pipeline — IPC hook interception layer"
+status = "complete"
+
+[files]
+new = [
+    "crates/plugins/src/ipc_hooks.rs",
+    "crates/contracts/tests/plugins_hooks.rs",
+    "crates/contracts/tests/plugins_adversarial.rs",
+]
+modified = [
+    "crates/plugins/src/lib.rs",
+    "crates/plugins/Cargo.toml",
+    "crates/orchestrator/src/ipc_gateway.rs",
+]
+
+[tests]
+contract_pass = 30
+contract_fail = 0
+adversarial_pass = 10
+adversarial_fail = 0
+unit_pass = 7
+unit_fail = 0
+total_pass = 47
+total_fail = 0
+
+[build]
+cargo_check_workspace = "pass"
+clippy_new_code_warnings = 0
+
+[contracts_satisfied]
+hook_trait_interface = "IpcHookTrait with 4 methods (pre_tool_use, post_tool_use, stop, pre_compact)"
+verdict_propagation = "TieredAnalysis -> HookVerdict -> HookResult with sanitized agent message"
+error_sanitization = "Block/Warn produce generic messages, no rule_id/pattern/tier leakage"
+cross_session_lock = "CrossSessionLockChecker blocks files locked by other sessions"
+ssb_write_on_block = "SsbFindingWriter called on BLOCK, non-blocking on failure"
+stop_fsm_enforcement = "Stop blocks all non-idle FSM states"
+
+[notes]
+code_simplify = "not implemented (function does not exist in tools crate yet)"
+schema_required = "in rules/predicate.rs, not tiered_analysis.rs — no patch needed"
+thiserror = "made non-optional in plugins Cargo.toml (was gated behind mcp feature)"

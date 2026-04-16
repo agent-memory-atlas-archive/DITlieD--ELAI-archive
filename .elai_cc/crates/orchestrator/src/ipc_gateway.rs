@@ -492,6 +492,99 @@ impl IpcGateway {
     pub fn cap_infer_tokens(requested: u32) -> u32 {
         requested.min(MAX_INFER_TOKENS_CAP)
     }
+
+    /// Run pre_tool_use hook on a ToolRequest/BashRequest before dispatch.
+    ///
+    /// Returns Ok(None) if allowed, Ok(Some(error_msg)) if blocked (sanitized),
+    /// or Err on hook infrastructure failure.
+    ///
+    /// Called between `route_frame()` return and executor dispatch.
+    /// BLOCK verdicts produce a generic error (no rule_id/pattern/tier detail).
+    pub fn run_pre_tool_use_hook(
+        hook: &dyn elai_plugins::IpcHookTrait,
+        agent_id: &Uuid,
+        agent_role: &str,
+        session_id: &str,
+        fsm_state: &str,
+        tool_id: &str,
+        arguments: &[u8],
+        source_content: Option<&str>,
+        file_path: Option<&str>,
+    ) -> Result<Option<String>, elai_plugins::IpcHookError> {
+        let ctx = elai_plugins::HookContext {
+            agent_id: agent_id.to_string(),
+            agent_role: agent_role.to_string(),
+            session_id: session_id.to_string(),
+            fsm_state: fsm_state.to_string(),
+            tool_id: Some(tool_id.to_string()),
+            tool_arguments: Some(arguments.to_vec()),
+            source_content: source_content.map(String::from),
+            file_path: file_path.map(String::from),
+            active_rules_count: 0,
+        };
+
+        let result = hook.pre_tool_use(&ctx)?;
+
+        if result.verdict.is_block() {
+            tracing::info!(
+                agent_id = %agent_id,
+                tool_id = tool_id,
+                latency_us = result.latency_us,
+                finding_written = result.finding_written,
+                "pre_tool_use BLOCK"
+            );
+            Ok(Some(result.sanitized_agent_message()))
+        } else {
+            if result.verdict.is_warn() {
+                tracing::info!(
+                    agent_id = %agent_id,
+                    tool_id = tool_id,
+                    latency_us = result.latency_us,
+                    "pre_tool_use WARN"
+                );
+            }
+            Ok(None)
+        }
+    }
+
+    /// Run post_tool_use hook after tool execution completes.
+    ///
+    /// Returns the hook result for logging/metrics. Does not block the response
+    /// from being returned to the agent.
+    pub fn run_post_tool_use_hook(
+        hook: &dyn elai_plugins::IpcHookTrait,
+        agent_id: &Uuid,
+        agent_role: &str,
+        session_id: &str,
+        fsm_state: &str,
+        tool_id: &str,
+        tool_output: &str,
+        file_path: Option<&str>,
+    ) -> Result<elai_plugins::HookResult, elai_plugins::IpcHookError> {
+        let ctx = elai_plugins::HookContext {
+            agent_id: agent_id.to_string(),
+            agent_role: agent_role.to_string(),
+            session_id: session_id.to_string(),
+            fsm_state: fsm_state.to_string(),
+            tool_id: Some(tool_id.to_string()),
+            tool_arguments: None,
+            source_content: None,
+            file_path: file_path.map(String::from),
+            active_rules_count: 0,
+        };
+
+        hook.post_tool_use(&ctx, tool_output)
+    }
+
+    /// Normalize a finding to a blake3 pattern_hash.
+    /// Called by the orchestrator when writing findings from hook verdicts.
+    pub fn normalize_pattern_hash(rule_id: &str, evidence: &str) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(rule_id.as_bytes());
+        hasher.update(b":");
+        hasher.update(evidence.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
