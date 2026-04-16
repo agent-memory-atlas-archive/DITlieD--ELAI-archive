@@ -967,6 +967,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "elai-web-search"
+version = "0.1.0"
+dependencies = [
+ "elai-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "elai_cc_agent"
 version = "0.1.0"
 dependencies = [
@@ -989,6 +1002,7 @@ dependencies = [
  "elai-reasoning",
  "elai-rules",
  "elai-tools",
+ "elai-web-search",
  "rmp-serde",
  "rusqlite",
  "serde_json",
