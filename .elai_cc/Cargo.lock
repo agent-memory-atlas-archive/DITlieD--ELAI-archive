@@ -795,6 +795,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elai-ipc-types"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "elai-knowledge"
 version = "0.1.0"
 dependencies = [
@@ -836,6 +846,7 @@ dependencies = [
  "blake3",
  "deadpool",
  "elai-core",
+ "elai-ipc-types",
  "elai-knowledge",
  "elai-plugins",
  "elai-providers",
@@ -956,6 +967,7 @@ dependencies = [
 name = "elai_cc_agent"
 version = "0.1.0"
 dependencies = [
+ "elai-ipc-types",
  "postcard",
  "serde",
  "tracing",

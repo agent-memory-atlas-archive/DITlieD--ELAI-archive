@@ -22,6 +22,7 @@ pub mod gate;
 mod hooks;
 pub mod indexing_service;
 pub mod ipc;
+pub mod ipc_gateway;
 pub mod ipc_types;
 pub mod tool_filter;
 mod lane_events;
@@ -230,6 +231,10 @@ pub use sandbox::{
 pub use sandbox::{WindowsAppContainerSandbox, WindowsSandboxHandle};
 #[cfg(target_os = "linux")]
 pub use sandbox::{LinuxSandbox, LinuxSandboxHandle};
+pub use ipc_gateway::{
+    AgentConnection, FrameRouteResult, GroundingMethod, IpcGateway, IpcGatewayError,
+    allowed_grounding_methods, create_session_socket_dir,
+};
 pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,

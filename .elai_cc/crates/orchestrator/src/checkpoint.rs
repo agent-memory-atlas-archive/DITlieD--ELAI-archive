@@ -359,6 +359,8 @@ mod tests {
             grc_config,
             scratch_dir: tmp_dir.to_path_buf(),
             sandbox_handle: None,
+            child_process: None,
+            socket_path: None,
         }
     }
 
@@ -609,6 +611,8 @@ mod tests {
             grc_config,
             scratch_dir: PathBuf::from("/nonexistent/path/that/does/not/exist"),
             sandbox_handle: None,
+            child_process: None,
+            socket_path: None,
         };
 
         let result = CheckpointManager::<SeededClock>::read_latest(&handle)
@@ -732,6 +736,8 @@ mod tests {
             grc_config,
             scratch_dir: dir_with_spaces,
             sandbox_handle: None,
+            child_process: None,
+            socket_path: None,
         };
 
         let clock = SeededClock::new();

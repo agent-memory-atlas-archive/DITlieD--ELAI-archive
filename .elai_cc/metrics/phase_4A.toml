@@ -1,0 +1,57 @@
+# Phase 4A Metrics — Agent Process Isolation
+# Date: 2026-04-16
+# Steps completed: 4A.1-4A.6
+
+[model]
+test_model = "n/a (infrastructure phase, no LLM inference)"
+
+[compilation]
+workspace_check_passes = true
+agent_binary_compiles = true
+agent_binary_zero_reqwest_deps = true
+shared_ipc_types_crate = "elai-ipc-types"
+
+[tests]
+agent_isolation_passed = 27
+agent_isolation_failed = 0
+adversarial_ipc_passed = 22
+adversarial_ipc_failed = 0
+orchestrator_lib_passed = 911
+orchestrator_lib_failed = 0
+orchestrator_lib_regressions = 0
+
+[metrics]
+# IPC frame encode+decode round-trip latency (in-process, no socket overhead)
+# Measured via unit test: encode -> to_wire_bytes -> from_wire_bytes -> decode
+ipc_latency_p99_ms = "< 0.1"
+ipc_latency_measurement_method = "in-process postcard round-trip (no socket I/O)"
+
+# Agent spawn time: time to create AgentHandle + sandbox handle
+# Measured via InProcessAgentPool::spawn() timing in tests
+agent_spawn_ms = "< 1.0"
+agent_spawn_measurement_method = "InProcessAgentPool::spawn() wall clock (no OS process launch)"
+
+# Memory per agent: AgentHandle struct size + GRC engine + sandbox handle
+# Estimated from struct layout (no runtime measurement yet)
+memory_per_agent_mb = "< 1.0"
+memory_per_agent_measurement_method = "estimated from struct sizes (handle + grc_engine + sandbox_handle)"
+
+# Overhead vs in-process: IPC adds frame encode/decode overhead
+# Baseline: in-process direct function call. Measured: IPC frame round-trip.
+overhead_vs_inprocess_pct = "< 5.0"
+overhead_vs_inprocess_measurement_method = "encode+decode overhead vs direct struct access"
+
+# Isolation escape test: no escape detected in adversarial IPC test battery
+isolation_escape_test = 1.0
+isolation_escape_test_measurement_method = "22 adversarial IPC tests + 27 isolation tests all pass"
+
+[architecture]
+shared_crate = "elai-ipc-types (breaks circular dep, both agent and orchestrator depend on it)"
+ipc_gateway = "crates/orchestrator/src/ipc_gateway.rs (frame routing, GRC budget, grounding matrix)"
+agent_client_loop = "crates/agent/src/main.rs (IPC client, heartbeat, message dispatch)"
+seccomp_profiles = "IPC_BASELINE (all roles) + NETWORK_EXTRA (researcher, AF_INET/AF_INET6 SOCK_STREAM)"
+grc_enforcement = "advisory (logged warning on over-budget, not hard-drop)"
+replan_budget = "3 per agent per session, same-reason dedup"
+grounding_matrix = "Executor=FILE_CHECK, Researcher=FILE_CHECK+WEB_CHECK, Auditor=all"
+self_mod_locks = "realpath comparison, agent binary + workflow dirs locked"
+windows_isolation = "AppContainer + Job Object + RestrictedToken (documented-weaker)"

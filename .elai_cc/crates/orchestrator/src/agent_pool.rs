@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Child;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,10 @@ use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcSt
 
 use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
 
+// Re-export AgentRole from the shared IPC types crate.
+// This is the canonical definition used by both orchestrator and agent binary.
+pub use elai_ipc_types::AgentRole;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -17,23 +22,6 @@ use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
 /// Minimum VRAM (bytes) required to spawn an agent with a loaded model.
 /// Below this threshold, spawn() returns ResourceInsufficient.
 pub const VRAM_MIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
-
-// ---------------------------------------------------------------------------
-// AgentRole: the 8 agent roles (architecture-overview.txt section 9)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRole {
-    Executor,
-    Auditor,
-    Researcher,
-    Designer,
-    PromptEngineer,
-    ContextCompiler,
-    MemoryWriter,
-    MediaValidator,
-}
 
 // ---------------------------------------------------------------------------
 // AgentStatus: lifecycle states (phase-3C.txt L100-105)
@@ -79,6 +67,13 @@ pub struct AgentHandle {
     /// Sandbox handle for process isolation (Phase 3J.11 AppContainer)
     /// None for in-process agents (Phase 3 Tier A), Some for out-of-process (Phase 4A)
     pub sandbox_handle: Option<SandboxHandle>,
+    /// OS child process handle for out-of-process agents (Phase 4A).
+    /// None for in-process agents (Phase 3 Tier A).
+    /// Not cloned — only the original handle can kill/wait the process.
+    pub child_process: Option<Child>,
+    /// IPC socket path for this agent (Phase 4A).
+    /// Used by the orchestrator to communicate with the agent process.
+    pub socket_path: Option<PathBuf>,
 }
 
 impl Clone for AgentHandle {
@@ -100,6 +95,8 @@ impl Clone for AgentHandle {
             scratch_dir: self.scratch_dir.clone(),
             grc_engine: engine,
             sandbox_handle: self.sandbox_handle.clone(),
+            child_process: None, // Not cloned — only original handle owns the process
+            socket_path: self.socket_path.clone(),
         }
     }
 }
@@ -114,6 +111,8 @@ impl std::fmt::Debug for AgentHandle {
             .field("active_files", &self.active_files)
             .field("grc_config", &self.grc_config)
             .field("scratch_dir", &self.scratch_dir)
+            .field("has_child_process", &self.child_process.is_some())
+            .field("socket_path", &self.socket_path)
             .finish_non_exhaustive()
     }
 }
@@ -258,6 +257,93 @@ impl<E: EntropySource> InProcessAgentPool<E> {
     pub fn get_agent(&self, id: &Uuid) -> Option<&AgentHandle> {
         self.agents.get(id)
     }
+
+    pub fn get_agent_mut(&mut self, id: &Uuid) -> Option<&mut AgentHandle> {
+        self.agents.get_mut(id)
+    }
+
+    /// Launch an agent as an OS process (Phase 4A).
+    ///
+    /// Creates scratch directory, IPC socket, spawns the agent binary,
+    /// and updates the AgentHandle with child process and socket path.
+    ///
+    /// Requires: agent_binary_path points to the elai_cc_agent binary.
+    /// The socket_dir must exist with 0700 permissions (created by IpcGateway).
+    pub fn launch_agent_process(
+        &mut self,
+        agent_id: &Uuid,
+        agent_binary_path: &std::path::Path,
+        socket_path: &std::path::Path,
+    ) -> Result<(), AgentPoolError> {
+        let handle = self.agents.get_mut(agent_id).ok_or_else(|| {
+            AgentPoolError::AgentNotFound(*agent_id)
+        })?;
+
+        // Create scratch directory
+        std::fs::create_dir_all(&handle.scratch_dir).map_err(|e| {
+            AgentPoolError::SpawnFailed(format!("scratch dir creation failed: {e}"))
+        })?;
+
+        // Build sanitized environment
+        let env = crate::sandbox::AgentEnvironment::new(handle.scratch_dir.clone());
+
+        // Spawn the agent binary with socket_path as argv[1] and agent_id as argv[2]
+        let child = std::process::Command::new(agent_binary_path)
+            .arg(socket_path.to_string_lossy().as_ref())
+            .arg(agent_id.to_string())
+            .env_clear()
+            .envs(env.as_env_map())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| AgentPoolError::SpawnFailed(format!("process spawn failed: {e}")))?;
+
+        tracing::info!(
+            agent_id = %agent_id,
+            pid = child.id(),
+            socket_path = %socket_path.display(),
+            "launched agent process"
+        );
+
+        handle.child_process = Some(child);
+        handle.socket_path = Some(socket_path.to_path_buf());
+        handle.status = AgentStatus::Ready;
+
+        Ok(())
+    }
+
+    /// Kill an agent's OS process and clean up resources.
+    pub fn kill_agent_process(&mut self, agent_id: &Uuid) -> Result<(), AgentPoolError> {
+        let handle = self.agents.get_mut(agent_id).ok_or_else(|| {
+            AgentPoolError::AgentNotFound(*agent_id)
+        })?;
+
+        if let Some(ref mut child) = handle.child_process {
+            if let Err(e) = child.kill() {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e,
+                    "failed to kill agent process"
+                );
+            }
+            // Reap to avoid zombie
+            let _ = child.wait();
+        }
+
+        // Clean up socket file
+        if let Some(ref path) = handle.socket_path {
+            let _ = std::fs::remove_file(path);
+        }
+
+        // Clean up scratch directory
+        let _ = std::fs::remove_dir_all(&handle.scratch_dir);
+
+        handle.status = AgentStatus::Failed;
+        handle.child_process = None;
+
+        Ok(())
+    }
 }
 
 impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
@@ -317,6 +403,8 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
             scratch_dir,
             grc_engine,
             sandbox_handle,
+            child_process: None, // Set by launch_agent_process() after spawn
+            socket_path: None,   // Set by launch_agent_process() after spawn
         };
 
         self.agents.insert(agent_id, handle.clone());

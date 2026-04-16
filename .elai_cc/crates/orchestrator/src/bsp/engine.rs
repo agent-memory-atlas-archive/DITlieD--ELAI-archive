@@ -479,6 +479,8 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         grc_config,
                         scratch_dir: PathBuf::new(),
                         sandbox_handle: None,
+                        child_process: None,
+                        socket_path: None,
                     }));
                 }
             }

@@ -184,6 +184,8 @@ impl<C: ClockProvider> RecoveryManager<C> {
             grc_config: dead_handle.grc_config.clone(),
             scratch_dir: dead_handle.scratch_dir.clone(),
             sandbox_handle: dead_handle.sandbox_handle.clone(),
+            child_process: None,
+            socket_path: dead_handle.socket_path.clone(),
         };
 
         let context = AgentRecoveryContext {
@@ -249,6 +251,8 @@ mod tests {
             grc_config,
             scratch_dir: scratch_dir.to_path_buf(),
             sandbox_handle: None,
+            child_process: None,
+            socket_path: None,
         }
     }
 

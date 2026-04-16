@@ -12,6 +12,7 @@ members = [
     "crates/cli",
     "crates/contracts",
     "crates/agent",
+    "crates/ipc-types",
 ]
 
 [workspace.package]
@@ -34,4 +35,5 @@ jsonschema = { version = "0.45", default-features = false }
 anyhow = "1"
 blake3 = "1.8"
 postcard = { version = "1.1", features = ["alloc"] }
+elai-ipc-types = { path = "crates/ipc-types" }
 tracing-log = "0.2"
