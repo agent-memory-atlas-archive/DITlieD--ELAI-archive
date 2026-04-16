@@ -15,6 +15,7 @@ members = [
     "crates/ipc-types",
     "crates/web_search",
     "crates/scaffold",
+    "crates/web_validator",
 ]
 
 [workspace.package]

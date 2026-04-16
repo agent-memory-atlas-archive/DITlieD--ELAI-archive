@@ -1,0 +1,24 @@
+[package]
+name = "elai-web-validator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# WEB.3: runtime verification of generated websites.
+# Self-contained — does NOT depend on orchestrator (circular dep prevention).
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
+tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

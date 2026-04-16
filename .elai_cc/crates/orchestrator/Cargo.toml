@@ -14,6 +14,7 @@ elai-providers = { path = "../providers" }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
 elai-web-search = { path = "../web_search" }
+elai-web-validator = { path = "../web_validator" }
 indexmap = { version = "2", features = ["serde"] }
 toml.workspace = true
 regex = "1"

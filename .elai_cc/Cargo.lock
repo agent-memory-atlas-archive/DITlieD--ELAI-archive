@@ -853,6 +853,7 @@ dependencies = [
  "elai-reasoning",
  "elai-rules",
  "elai-web-search",
+ "elai-web-validator",
  "indexmap",
  "libc",
  "postcard",
@@ -984,6 +985,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "elai-web-validator"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "elai_cc_agent"
 version = "0.1.0"
 dependencies = [
@@ -1007,6 +1021,7 @@ dependencies = [
  "elai-rules",
  "elai-tools",
  "elai-web-search",
+ "elai-web-validator",
  "rmp-serde",
  "rusqlite",
  "serde_json",

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'supervision_exhausted', 'spiral_detected',
         'context_reduction', 'branch_merge',
         'mistake_entry', 'research_step',
-        'research_decompose_level', 'web_research_step'
+        'research_decompose_level', 'web_research_step',
+        'preview_available'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -70,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 28 action types recorded in SSB entries.
+/// All 29 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -102,6 +103,7 @@ pub enum SsbActionType {
     ResearchStep,
     ResearchDecomposeLevel,
     WebResearchStep,
+    PreviewAvailable,
 }
 
 impl SsbActionType {
@@ -136,6 +138,7 @@ impl SsbActionType {
             Self::ResearchStep => "research_step",
             Self::ResearchDecomposeLevel => "research_decompose_level",
             Self::WebResearchStep => "web_research_step",
+            Self::PreviewAvailable => "preview_available",
         }
     }
 }
@@ -170,6 +173,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "research_step" => Ok(SsbActionType::ResearchStep),
         "research_decompose_level" => Ok(SsbActionType::ResearchDecomposeLevel),
         "web_research_step" => Ok(SsbActionType::WebResearchStep),
+        "preview_available" => Ok(SsbActionType::PreviewAvailable),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -460,6 +464,21 @@ pub struct WebResearchStepPayload {
     pub sources_used: u32,
 }
 
+/// WEB.3: emitted when a dev-server check passes and a preview is available.
+/// Matches the spec contract from mvp-implementation-order.txt WEB.3:
+///   payload = { url: "http://localhost:{port}", step_id, slot: "live" }
+/// Additional fields (`agent_id`, `build_success`, `dev_server_ok`) carry
+/// orchestrator/observability context for SSB consumers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreviewAvailablePayload {
+    pub url: String,
+    pub step_id: String,
+    pub slot: String,
+    pub agent_id: String,
+    pub build_success: bool,
+    pub dev_server_ok: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchDecomposeLevelPayload {
     pub agent_id: String,
@@ -472,7 +491,7 @@ pub struct ResearchDecomposeLevelPayload {
 // SsbPayload enum (typed wrapper over all 25 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (28 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (29 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -504,6 +523,7 @@ pub enum SsbPayload {
     ResearchStep(ResearchStepPayload),
     ResearchDecomposeLevel(ResearchDecomposeLevelPayload),
     WebResearchStep(WebResearchStepPayload),
+    PreviewAvailable(PreviewAvailablePayload),
 }
 
 impl SsbPayload {
@@ -539,6 +559,7 @@ impl SsbPayload {
             Self::ResearchStep(_) => SsbActionType::ResearchStep,
             Self::ResearchDecomposeLevel(_) => SsbActionType::ResearchDecomposeLevel,
             Self::WebResearchStep(_) => SsbActionType::WebResearchStep,
+            Self::PreviewAvailable(_) => SsbActionType::PreviewAvailable,
         }
     }
 }
@@ -1432,6 +1453,11 @@ mod tests {
                 agent_id: "a".into(), node_id: 0, action: "search".into(),
                 phi: 0.5, psi: 0.4, iteration: 1, sources_fetched: 3, sources_used: 2,
             }),
+            SsbActionType::PreviewAvailable => SsbPayload::PreviewAvailable(PreviewAvailablePayload {
+                url: "http://localhost:5173".into(), step_id: "step-1".into(),
+                slot: "live".into(), agent_id: "a".into(),
+                build_success: true, dev_server_ok: true,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -1817,6 +1843,7 @@ mod tests {
             SsbActionType::ResearchStep,
             SsbActionType::ResearchDecomposeLevel,
             SsbActionType::WebResearchStep,
+            SsbActionType::PreviewAvailable,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1836,7 +1863,7 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 28, "must have inserted all 28 types");
+        assert_eq!(count, 29, "must have inserted all 29 types");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2383,6 +2410,14 @@ mod tests {
                 sources_fetched: 5,
                 sources_used: 3,
             }),
+            SsbPayload::PreviewAvailable(PreviewAvailablePayload {
+                url: "http://localhost:5173".into(),
+                step_id: "step-WEB-3".into(),
+                slot: "live".into(),
+                agent_id: "previewer-0".into(),
+                build_success: true,
+                dev_server_ok: true,
+            }),
         ]
     }
 
@@ -2392,7 +2427,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 28, "must cover all 28 action types");
+        assert_eq!(payloads.len(), 29, "must cover all 29 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2625,6 +2660,14 @@ mod tests {
                     .prop_map(|(agent_id, node_id, action, phi, psi, iteration, sources_fetched, sources_used)|
                         SsbPayload::WebResearchStep(WebResearchStepPayload {
                             agent_id, node_id, action, phi, psi, iteration, sources_fetched, sources_used,
+                        })
+                    ),
+                ("http://localhost:[1-9][0-9]{3,4}", "[a-z0-9-]{1,20}",
+                 "(live|draft|previous)", "[a-z0-9-]{1,20}",
+                 any::<bool>(), any::<bool>())
+                    .prop_map(|(url, step_id, slot, agent_id, build_success, dev_server_ok)|
+                        SsbPayload::PreviewAvailable(PreviewAvailablePayload {
+                            url, step_id, slot, agent_id, build_success, dev_server_ok,
                         })
                     ),
             ]

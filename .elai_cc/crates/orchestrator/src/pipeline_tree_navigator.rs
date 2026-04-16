@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use elai_web_validator::WebValidationTier;
 use serde::{Deserialize, Serialize};
 
 use crate::research_tree::{
@@ -33,6 +34,35 @@ pub const MAX_BABY_STEP_LINES_MODIFIED: usize = 400;
 pub const INTEGRATION_CRITERION_TIMEOUT_SECS: u64 = 30;
 /// Sentinel BabyStepId used in IntegrationCheckpoint records at non-BabyStep levels.
 pub const NO_BABY_STEP: BabyStepId = BabyStepId(0);
+
+// ---------------------------------------------------------------------------
+// WEB.3 — Web validation tier policy by decomposition level.
+//
+// Returns the deterministic set of [`WebValidationTier`]s the orchestrator
+// must evaluate at each level when the active concept has a web template
+// scaffolded. Order matters: cheaper checks first.
+// ---------------------------------------------------------------------------
+
+/// Returns the ordered tiers to run at `level` for a web-template node.
+///
+/// - BabyStep: WebBuild only (cheapest gate, catches compile/transpile errors).
+/// - Step:     WebBuild + WebLint (advisory lint after build success).
+/// - Phase:    WebBuild + WebDevServer (runtime probe after build).
+/// - Concept:  WebBuild + WebDevServer + WebLint (full preview-promotion check).
+pub fn web_validation_tiers_for_level(level: DecompositionLevel) -> Vec<WebValidationTier> {
+    match level {
+        DecompositionLevel::BabyStep => vec![WebValidationTier::WebBuild],
+        DecompositionLevel::Step => vec![WebValidationTier::WebBuild, WebValidationTier::WebLint],
+        DecompositionLevel::Phase => {
+            vec![WebValidationTier::WebBuild, WebValidationTier::WebDevServer]
+        }
+        DecompositionLevel::Concept => vec![
+            WebValidationTier::WebBuild,
+            WebValidationTier::WebDevServer,
+            WebValidationTier::WebLint,
+        ],
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 4E.7 — Skeleton types
@@ -2416,5 +2446,46 @@ mod tests {
         assert!(nav.step_is_terminal(StepId(1), &state, &tree));
         assert!(nav.phase_is_terminal(PhaseId(1), &state, &tree));
         assert!(nav.concept_is_terminal(ConceptId(1), &state, &tree));
+    }
+
+    // -----------------------------------------------------------------------
+    // WEB.3 — web validation tier policy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_web_validation_tiers_baby_step_only_build() {
+        let tiers = web_validation_tiers_for_level(DecompositionLevel::BabyStep);
+        assert_eq!(tiers, vec![WebValidationTier::WebBuild]);
+    }
+
+    #[test]
+    fn test_web_validation_tiers_step_build_then_lint() {
+        let tiers = web_validation_tiers_for_level(DecompositionLevel::Step);
+        assert_eq!(
+            tiers,
+            vec![WebValidationTier::WebBuild, WebValidationTier::WebLint]
+        );
+    }
+
+    #[test]
+    fn test_web_validation_tiers_phase_build_then_dev_server() {
+        let tiers = web_validation_tiers_for_level(DecompositionLevel::Phase);
+        assert_eq!(
+            tiers,
+            vec![WebValidationTier::WebBuild, WebValidationTier::WebDevServer]
+        );
+    }
+
+    #[test]
+    fn test_web_validation_tiers_concept_full_pipeline() {
+        let tiers = web_validation_tiers_for_level(DecompositionLevel::Concept);
+        assert_eq!(
+            tiers,
+            vec![
+                WebValidationTier::WebBuild,
+                WebValidationTier::WebDevServer,
+                WebValidationTier::WebLint,
+            ]
+        );
     }
 }
