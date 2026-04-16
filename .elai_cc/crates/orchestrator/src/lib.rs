@@ -43,6 +43,7 @@ pub mod research_pipeline;
 pub mod research_tier;
 pub mod research_tree;
 pub mod pipeline_builder;
+pub mod pipeline_tree_navigator;
 #[cfg(test)]
 mod pipeline_builder_bench;
 #[cfg(test)]
