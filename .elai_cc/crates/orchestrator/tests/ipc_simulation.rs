@@ -1,12 +1,18 @@
 //! IPC fault simulation tests — green phase (3I.8).
 //!
-//! Validates IpcGateway behavior under fault injection via SimulatorRuntime.
+//! Validates DST IpcGateway behavior under fault injection via SimulatorRuntime.
+//! These use the DST-specific types (DstIpc*), not the real IPC wire types.
 
 use std::time::Duration;
 
 use elai_orchestrator::agent_pool::AgentRole;
 use elai_orchestrator::dst::{SimFault, SimulatorRuntime};
-use elai_orchestrator::ipc::{IpcError, IpcGateway, IpcMessage};
+use elai_orchestrator::ipc::dst_ipc::{DstIpcError, DstIpcGateway, DstIpcMessage};
+
+// Type aliases to minimize diff noise in test bodies.
+type IpcMessage = DstIpcMessage;
+type IpcGateway = DstIpcGateway;
+type IpcError = DstIpcError;
 
 /// Inject a broadcast NetworkPartition fault, then assert that send returns
 /// a fault-specific error (ConnectionLost, not NotImplemented).

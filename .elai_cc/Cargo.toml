@@ -11,6 +11,7 @@ members = [
     "crates/orchestrator",
     "crates/cli",
     "crates/contracts",
+    "crates/agent",
 ]
 
 [workspace.package]
@@ -32,4 +33,5 @@ regex = "1"
 jsonschema = { version = "0.45", default-features = false }
 anyhow = "1"
 blake3 = "1.8"
+postcard = { version = "1.1", features = ["alloc"] }
 tracing-log = "0.2"

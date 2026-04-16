@@ -22,6 +22,7 @@ pub mod gate;
 mod hooks;
 pub mod indexing_service;
 pub mod ipc;
+pub mod ipc_types;
 pub mod tool_filter;
 mod lane_events;
 mod mcp;
