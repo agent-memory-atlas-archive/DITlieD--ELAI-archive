@@ -272,3 +272,145 @@ pub enum IpcFrameError {
     #[error("frame too short: need at least {FRAME_HEADER_SIZE} bytes")]
     FrameTooShort,
 }
+
+// ---------------------------------------------------------------------------
+// FsmState — mirrors orchestrator FSM states for tool filtering
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsmState {
+    Idle,
+    Planning,
+    TestingFirst,
+    Executing,
+    Auditing,
+    Memorizing,
+    Complete,
+    Configuring,
+}
+
+// ---------------------------------------------------------------------------
+// Typed tool argument structs (postcard-serialized in ToolRequest.arguments)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitRequest {
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitUndoRequest {
+    pub commit_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchRequest {
+    pub branch_name: String,
+    pub from_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateRequest {
+    pub file_path: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceRequest {
+    pub target_function: String,
+    pub file_path: String,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditRequest {
+    pub file_path: String,
+    pub old_text: String,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplifyRequest {
+    pub file_path: String,
+    pub target_function: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifyRequest {
+    pub error_output: String,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileReadRequest {
+    pub file_path: String,
+    pub offset: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompileCheckRequest {
+    pub file_path: String,
+    pub language: String,
+    pub retry_round: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgCallersRequest {
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgDependentsRequest {
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgDataFlowRequest {
+    pub variable: String,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgSubgraphRequest {
+    pub entry_point: String,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationCheckRequest {
+    pub target_symbol: String,
+    pub project_root: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tool result payload (generic success/error envelope)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultPayload {
+    pub output: String,
+    pub diagnostics: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Well-known tool IDs (constants to avoid string typos)
+// ---------------------------------------------------------------------------
+
+pub const TOOL_GIT_COMMIT: &str = "git_commit";
+pub const TOOL_GIT_UNDO: &str = "git_undo";
+pub const TOOL_GIT_BRANCH: &str = "git_branch";
+pub const TOOL_VALIDATE: &str = "validate";
+pub const TOOL_TRACE: &str = "trace";
+pub const TOOL_EDIT: &str = "edit";
+pub const TOOL_SIMPLIFY: &str = "simplify";
+pub const TOOL_CLASSIFY: &str = "classify";
+pub const TOOL_FILE_READ: &str = "file_read";
+pub const TOOL_COMPILE_CHECK: &str = "compile_check";
+pub const TOOL_DKG_CALLERS: &str = "dkg_callers";
+pub const TOOL_DKG_DEPENDENTS: &str = "dkg_dependents";
+pub const TOOL_DKG_DATA_FLOW: &str = "dkg_data_flow";
+pub const TOOL_DKG_SUBGRAPH: &str = "dkg_subgraph";
+pub const TOOL_INTEGRATION_CHECK: &str = "integration_check";

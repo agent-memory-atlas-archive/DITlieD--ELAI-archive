@@ -1,0 +1,159 @@
+#![deny(dead_code, unused_imports)]
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use elai_ipc_types::{FsmState, ToolId, ToolResultPayload};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Target IPC dispatch overhead (p95) in milliseconds.
+pub const IPC_OVERHEAD_TARGET_MS: u64 = 2;
+
+// ---------------------------------------------------------------------------
+// ToolError — typed errors for all tool operations
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("tool not found: {tool_id}")]
+    NotFound { tool_id: String },
+
+    #[error("tool not allowed in FSM state {state:?}: {tool_id}")]
+    NotAllowedInState { tool_id: String, state: FsmState },
+
+    #[error("deserialization failed for {tool_id}: {reason}")]
+    DeserializationFailed { tool_id: String, reason: String },
+
+    #[error("execution failed for {tool_id}: {reason}")]
+    ExecutionFailed { tool_id: String, reason: String },
+
+    #[error("SSB write lock denied for {tool_id}: {path}")]
+    SsbWriteLockDenied { tool_id: String, path: String },
+
+    #[error("subprocess spawn failed for {tool_id}: {reason}")]
+    SubprocessFailed { tool_id: String, reason: String },
+
+    #[error("io error in {tool_id}: {source}")]
+    Io {
+        tool_id: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("DKG query failed for {tool_id}: {reason}")]
+    DkgQueryFailed { tool_id: String, reason: String },
+}
+
+// ---------------------------------------------------------------------------
+// ToolHandler — individual tool execution
+// ---------------------------------------------------------------------------
+
+/// Async handler for a single tool. Implementations live in tool module files.
+/// Uses boxed future return for dyn-compatibility (native async fn in traits
+/// is not object-safe; this avoids the async-trait crate per project rules).
+pub trait ToolHandler: Send + Sync {
+    /// Execute the tool with postcard-deserialized arguments.
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<ToolResultPayload, ToolError>> + Send + 'a>>;
+
+    /// Tool ID string (must match TOOL_* constants in ipc-types).
+    fn tool_id(&self) -> &str;
+
+    /// Whether this tool performs write operations (used for FSM filtering).
+    fn is_write_tool(&self) -> bool;
+}
+
+// ---------------------------------------------------------------------------
+// IpcToolRegistry — dispatch hub for all agent-accessible tools
+// ---------------------------------------------------------------------------
+
+pub struct IpcToolRegistry {
+    handlers: HashMap<String, Arc<dyn ToolHandler>>,
+}
+
+impl IpcToolRegistry {
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    /// Register a tool handler.
+    pub fn register(&mut self, handler: Arc<dyn ToolHandler>) {
+        self.handlers.insert(handler.tool_id().to_string(), handler);
+    }
+
+    /// Dispatch a tool request. Checks FSM state filtering before execution.
+    pub async fn dispatch(
+        &self,
+        tool_id: &str,
+        arguments: &[u8],
+        fsm_state: FsmState,
+    ) -> Result<ToolResultPayload, ToolError> {
+        let handler = self.handlers.get(tool_id).ok_or_else(|| ToolError::NotFound {
+            tool_id: tool_id.to_string(),
+        })?;
+
+        // Phase-aware filtering: block write tools in read-only states
+        if handler.is_write_tool() && !Self::write_tools_allowed(fsm_state) {
+            return Err(ToolError::NotAllowedInState {
+                tool_id: tool_id.to_string(),
+                state: fsm_state,
+            });
+        }
+
+        // Block compile_check in TestingFirst
+        if tool_id == elai_ipc_types::TOOL_COMPILE_CHECK && fsm_state == FsmState::TestingFirst {
+            return Err(ToolError::NotAllowedInState {
+                tool_id: tool_id.to_string(),
+                state: fsm_state,
+            });
+        }
+
+        handler.execute(arguments).await
+    }
+
+    /// Return tool IDs available in the given FSM state.
+    pub fn available_tools(&self, fsm_state: FsmState) -> Vec<ToolId> {
+        let write_allowed = Self::write_tools_allowed(fsm_state);
+        self.handlers
+            .values()
+            .filter(|h| {
+                if h.is_write_tool() && !write_allowed {
+                    return false;
+                }
+                // compile_check blocked in TestingFirst
+                if h.tool_id() == elai_ipc_types::TOOL_COMPILE_CHECK
+                    && fsm_state == FsmState::TestingFirst
+                {
+                    return false;
+                }
+                true
+            })
+            .map(|h| ToolId::new(h.tool_id()))
+            .collect()
+    }
+
+    /// Whether write tools are allowed in this FSM state.
+    fn write_tools_allowed(state: FsmState) -> bool {
+        matches!(state, FsmState::Executing | FsmState::Auditing)
+    }
+
+    /// Number of registered handlers.
+    pub fn handler_count(&self) -> usize {
+        self.handlers.len()
+    }
+}
+
+impl Default for IpcToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -952,13 +952,16 @@ name = "elai-tools"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "elai-ipc-types",
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "postcard",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]

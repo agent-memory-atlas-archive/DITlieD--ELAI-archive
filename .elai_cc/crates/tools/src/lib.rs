@@ -1,3 +1,15 @@
+// Phase 4B: IPC tool modules (real implementations, not facade re-exports)
+pub mod ipc_registry;
+pub mod git_tool;
+pub mod validation;
+pub mod trace;
+pub mod edit_matching;
+pub mod file_read;
+pub mod compile_check;
+pub mod failure_taxonomy;
+pub mod dkg_tools;
+pub mod integration_check;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
