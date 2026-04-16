@@ -13,6 +13,7 @@ elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers" }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
+elai-web-search = { path = "../web_search" }
 indexmap = { version = "2", features = ["serde"] }
 toml.workspace = true
 regex = "1"

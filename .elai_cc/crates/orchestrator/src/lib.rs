@@ -42,6 +42,7 @@ pub mod research_budget;
 pub mod research_pipeline;
 pub mod research_tier;
 pub mod research_tree;
+pub mod web_research_orchestrator;
 mod remote;
 mod session;
 #[cfg(test)]
@@ -276,6 +277,7 @@ pub use worker_boot::{
 pub use ssb::{
     Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
     SsbPayload, SsbReader, SsbWriteRequest, MistakeEntryPayload,
+    WebResearchStepPayload,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

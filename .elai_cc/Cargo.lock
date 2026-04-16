@@ -852,6 +852,7 @@ dependencies = [
  "elai-providers",
  "elai-reasoning",
  "elai-rules",
+ "elai-web-search",
  "indexmap",
  "libc",
  "postcard",

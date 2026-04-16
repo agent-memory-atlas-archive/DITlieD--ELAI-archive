@@ -414,3 +414,30 @@ pub const TOOL_DKG_DEPENDENTS: &str = "dkg_dependents";
 pub const TOOL_DKG_DATA_FLOW: &str = "dkg_data_flow";
 pub const TOOL_DKG_SUBGRAPH: &str = "dkg_subgraph";
 pub const TOOL_INTEGRATION_CHECK: &str = "integration_check";
+
+// Web research tool IDs (4D.17 — for future Tier C agent IPC proxy).
+pub const TOOL_SEARCH_REQUEST: &str = "search_request";
+pub const TOOL_FETCH_REQUEST: &str = "fetch_request";
+pub const TOOL_EMBED_REQUEST: &str = "embed_request";
+
+// ---------------------------------------------------------------------------
+// Web research typed request structs (postcard-serialized in ToolRequest.arguments)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchRequest {
+    pub query: String,
+    pub max_results: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebFetchRequest {
+    pub url: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbedRequest {
+    pub texts: Vec<String>,
+    pub model: String,
+}

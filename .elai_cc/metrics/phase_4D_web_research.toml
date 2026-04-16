@@ -1,0 +1,181 @@
+# 4D.18 Web Research Pipeline Benchmark
+# Generated: 2026-04-16T14:21:32.480840+00:00
+# Hardware: RTX 3060 12GB (VRAM tier: 12GB)
+# SearXNG: http://127.0.0.1:8888
+# Runs per query: 3
+# MEASURED: research_time_seconds, total_sources_fetched, total_sources_used,
+#           source_tier_distribution, token_budget_utilization, report_grounding_level
+# SIMULATED: tree_depth_used, tree_breadth_used, convergence_iterations_*,
+#            evidence_items_pruned (estimated until Rust orchestrator is callable)
+
+[benchmark]
+timestamp = "2026-04-16T14:21:32.480856+00:00"
+total_queries = 10
+runs_per_query = 3
+
+[queries.simple_1]
+complexity = "simple"
+query = "What is the current stable version of the tokio async runtime?"
+research_time_seconds = 0.9020
+total_sources_fetched = 10
+total_sources_used = 6
+source_tier_distribution = { "T2" = 3, "T3" = 3, "T5" = 4 }
+tree_depth_used = 2
+tree_breadth_used = 2
+convergence_iterations_mean = 1.33
+convergence_iterations_p50 = 1.0
+convergence_iterations_p95 = 2.0
+token_budget_utilization = 0.1000
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.simple_2]
+complexity = "simple"
+query = "What is the default timeout for reqwest HTTP client?"
+research_time_seconds = 0.7218
+total_sources_fetched = 9
+total_sources_used = 4
+source_tier_distribution = { "T2" = 2, "T3" = 2, "T4" = 1, "T5" = 5 }
+tree_depth_used = 2
+tree_breadth_used = 2
+convergence_iterations_mean = 1.33
+convergence_iterations_p50 = 1.0
+convergence_iterations_p95 = 2.0
+token_budget_utilization = 0.0667
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.simple_3]
+complexity = "simple"
+query = "What Rust edition does the serde crate require?"
+research_time_seconds = 0.8785
+total_sources_fetched = 10
+total_sources_used = 3
+source_tier_distribution = { "T2" = 2, "T3" = 1, "T5" = 7 }
+tree_depth_used = 2
+tree_breadth_used = 2
+convergence_iterations_mean = 1.33
+convergence_iterations_p50 = 1.0
+convergence_iterations_p95 = 2.0
+token_budget_utilization = 0.0500
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.moderate_1]
+complexity = "moderate"
+query = "Compare blake3 vs sha256 performance for non-cryptographic hashing in Rust"
+research_time_seconds = 0.5959
+total_sources_fetched = 10
+total_sources_used = 1
+source_tier_distribution = { "T5" = 10 }
+tree_depth_used = 3
+tree_breadth_used = 3
+convergence_iterations_mean = 3.00
+convergence_iterations_p50 = 3.0
+convergence_iterations_p95 = 4.0
+token_budget_utilization = 0.0167
+evidence_items_pruned = 0
+report_grounding_level = "low"
+
+[queries.moderate_2]
+complexity = "moderate"
+query = "What are the tradeoffs between deadpool and bb8 for async connection pooling?"
+research_time_seconds = 1.0063
+total_sources_fetched = 10
+total_sources_used = 3
+source_tier_distribution = { "T2" = 1, "T3" = 2, "T5" = 7 }
+tree_depth_used = 3
+tree_breadth_used = 3
+convergence_iterations_mean = 3.00
+convergence_iterations_p50 = 3.0
+convergence_iterations_p95 = 4.0
+token_budget_utilization = 0.0500
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.moderate_3]
+complexity = "moderate"
+query = "When should tokio::sync::Mutex be preferred over std::sync::Mutex in Rust?"
+research_time_seconds = 0.8922
+total_sources_fetched = 10
+total_sources_used = 3
+source_tier_distribution = { "T2" = 1, "T3" = 2, "T4" = 1, "T5" = 6 }
+tree_depth_used = 3
+tree_breadth_used = 3
+convergence_iterations_mean = 3.00
+convergence_iterations_p50 = 3.0
+convergence_iterations_p95 = 4.0
+token_budget_utilization = 0.0500
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.moderate_4]
+complexity = "moderate"
+query = "What is the difference between postcard and bincode for embedded serialization?"
+research_time_seconds = 0.9021
+total_sources_fetched = 9
+total_sources_used = 1
+source_tier_distribution = { "T3" = 1, "T5" = 8 }
+tree_depth_used = 3
+tree_breadth_used = 3
+convergence_iterations_mean = 3.00
+convergence_iterations_p50 = 3.0
+convergence_iterations_p95 = 4.0
+token_budget_utilization = 0.0167
+evidence_items_pruned = 0
+report_grounding_level = "low"
+
+[queries.complex_1]
+complexity = "complex"
+query = "Design a CRDT-based collaborative editor data structure suitable for Rust implementation"
+research_time_seconds = 0.8965
+total_sources_fetched = 10
+total_sources_used = 3
+source_tier_distribution = { "T2" = 1, "T3" = 1, "T4" = 2, "T5" = 6 }
+tree_depth_used = 4
+tree_breadth_used = 4
+convergence_iterations_mean = 4.80
+convergence_iterations_p50 = 5.0
+convergence_iterations_p95 = 6.0
+token_budget_utilization = 0.0500
+evidence_items_pruned = 0
+report_grounding_level = "medium"
+
+[queries.complex_2]
+complexity = "complex"
+query = "What are the architectural patterns for building a research agent with web search and LLM grounding?"
+research_time_seconds = 0.6951
+total_sources_fetched = 10
+total_sources_used = 3
+source_tier_distribution = { "T1" = 1, "T4" = 2, "T5" = 7 }
+tree_depth_used = 4
+tree_breadth_used = 4
+convergence_iterations_mean = 4.80
+convergence_iterations_p50 = 5.0
+convergence_iterations_p95 = 6.0
+token_budget_utilization = 0.0500
+evidence_items_pruned = 0
+report_grounding_level = "high"
+
+[queries.complex_3]
+complexity = "complex"
+query = "How does the FlashResearch algorithm achieve 5x speedup over sequential deep research?"
+research_time_seconds = 0.8761
+total_sources_fetched = 10
+total_sources_used = 2
+source_tier_distribution = { "T1" = 2, "T5" = 8 }
+tree_depth_used = 4
+tree_breadth_used = 4
+convergence_iterations_mean = 4.80
+convergence_iterations_p50 = 5.0
+convergence_iterations_p95 = 6.0
+token_budget_utilization = 0.0333
+evidence_items_pruned = 0
+report_grounding_level = "high"
+
+[summary]
+total_research_time_seconds = 24.3655
+mean_time_per_query = 0.8122
+max_token_budget_utilization = 0.1000
+queries_completed = 30
+queries_failed = 0
