@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::research_tree::{
-    BabyStepId, BabyStepSpec, ConceptDecomposition, ConceptId, ConceptNode, IntegrationSpec,
-    PhaseId, PhaseNode, StepId, StepNode,
+    BabyStepId, BabyStepSpec, ConceptDecomposition, ConceptId, ConceptNode, ExitCriterion,
+    IntegrationSpec, PhaseId, PhaseNode, StepId, StepNode,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,12 +29,18 @@ pub const DEFAULT_MAX_RETRIES_CONCEPT: u32 = 1;
 /// Max lines modified per baby step before triggering RedecomposeStep.
 pub const MAX_BABY_STEP_LINES_MODIFIED: usize = 400;
 
+/// Per-criterion command timeout for IntegrationRunner (seconds).
+pub const INTEGRATION_CRITERION_TIMEOUT_SECS: u64 = 30;
+/// Sentinel BabyStepId used in IntegrationCheckpoint records at non-BabyStep levels.
+pub const NO_BABY_STEP: BabyStepId = BabyStepId(0);
+
 // ---------------------------------------------------------------------------
 // 4E.7 — Skeleton types
 // ---------------------------------------------------------------------------
 
-/// Decomposition level for bubble-up tracking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Decomposition level for bubble-up tracking. `Ord` derive is load-bearing:
+/// `NavigatorTree::integration_specs` keys on `(DecompositionLevel, u64)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DecompositionLevel {
     BabyStep,
     Step,
@@ -121,7 +127,11 @@ pub struct BubbleUpEvent {
     pub threshold: u32,
 }
 
-/// Integration checkpoint recorded when a baby step with IntegrationSpec completes.
+/// Integration checkpoint recorded when a node with IntegrationSpec completes.
+///
+/// At `BabyStep` level, `baby_step_id` is the step's ID and `node_id == baby_step_id.0`.
+/// At `Step`/`Phase`/`Concept` levels, `baby_step_id == NO_BABY_STEP` and `node_id`
+/// carries the step/phase/concept id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegrationCheckpoint {
     pub baby_step_id: BabyStepId,
@@ -129,6 +139,10 @@ pub struct IntegrationCheckpoint {
     pub wiring_target: String,
     pub callers: Vec<String>,
     pub timestamp_epoch_ms: u64,
+    pub node_id: u64,
+    pub success: bool,
+    pub failure_reason: Option<String>,
+    pub duration_ms: u64,
 }
 
 /// Composite key for looking up parent IDs of a baby step.
@@ -141,6 +155,13 @@ pub struct BabyStepLocation {
 }
 
 /// Navigator state — all mutable execution tracking.
+///
+/// Failure counters are split by source (baby-step cascade vs. integration
+/// checkpoint) so that integration-triggered bubble-up at one level cannot
+/// silently overcount baby-step cascades at the same level. Existing baby-step
+/// cascade semantics in [`DepthFirstNavigator::handle_failure`] are preserved
+/// against `*_failure_counts`; 4E.11 integration execution adds separate
+/// `*_integration_failure_counts` and never mutates the cascade counters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNavigatorState {
     pub completed: BTreeSet<BabyStepId>,
@@ -151,10 +172,20 @@ pub struct TreeNavigatorState {
     pub bubble_up_log: Vec<BubbleUpEvent>,
     pub integration_checkpoints: Vec<IntegrationCheckpoint>,
     pub failure_records: BTreeMap<BabyStepId, FailureRecord>,
-    /// Failure counts aggregated per level for bubble-up decisions.
+    /// Baby-step cascade failure counts (4E.8 semantics — driven by
+    /// [`DepthFirstNavigator::handle_failure`]).
     pub step_failure_counts: BTreeMap<StepId, u32>,
     pub phase_failure_counts: BTreeMap<PhaseId, u32>,
     pub concept_failure_counts: BTreeMap<ConceptId, u32>,
+    /// Integration-checkpoint failure counts (4E.11 — incremented only by the
+    /// `bubble_up_on_*_integration_fail` helpers). Separate from cascade
+    /// counters so policy thresholds are never overcounted by mixed sources.
+    #[serde(default)]
+    pub step_integration_failure_counts: BTreeMap<StepId, u32>,
+    #[serde(default)]
+    pub phase_integration_failure_counts: BTreeMap<PhaseId, u32>,
+    #[serde(default)]
+    pub concept_integration_failure_counts: BTreeMap<ConceptId, u32>,
 }
 
 impl TreeNavigatorState {
@@ -177,6 +208,9 @@ impl Default for TreeNavigatorState {
             step_failure_counts: BTreeMap::new(),
             phase_failure_counts: BTreeMap::new(),
             concept_failure_counts: BTreeMap::new(),
+            step_integration_failure_counts: BTreeMap::new(),
+            phase_integration_failure_counts: BTreeMap::new(),
+            concept_integration_failure_counts: BTreeMap::new(),
         }
     }
 }
@@ -190,6 +224,12 @@ pub struct NavigatorTree {
     pub traversal_order: Vec<BabyStepId>,
     pub location_index: BTreeMap<BabyStepId, BabyStepLocation>,
     pub policy: BubbleUpPolicy,
+    /// Integration specs keyed by `(level, node_id as u64)`. Populated by callers
+    /// (L2 builder or tests) via `register_integration_spec`. Tree nodes do not
+    /// carry IntegrationSpec inline — the navigator stores them in this side table
+    /// so the same tree structure supports zero-to-many checkpoints at any level.
+    #[serde(default)]
+    pub integration_specs: BTreeMap<(DecompositionLevel, u64), IntegrationSpec>,
 }
 
 /// Object-safe trait for tree navigation.
@@ -243,7 +283,30 @@ impl NavigatorTree {
             traversal_order,
             location_index,
             policy,
+            integration_specs: BTreeMap::new(),
         }
+    }
+
+    /// Register an IntegrationSpec at the given decomposition level / node id.
+    /// Replaces any prior registration for the same `(level, node_id)` key.
+    /// `node_id` must be the raw u64 of the associated ConceptId / PhaseId /
+    /// StepId / BabyStepId.
+    pub fn register_integration_spec(
+        &mut self,
+        level: DecompositionLevel,
+        node_id: u64,
+        spec: IntegrationSpec,
+    ) {
+        self.integration_specs.insert((level, node_id), spec);
+    }
+
+    /// Look up a previously registered IntegrationSpec.
+    pub fn integration_spec(
+        &self,
+        level: DecompositionLevel,
+        node_id: u64,
+    ) -> Option<&IntegrationSpec> {
+        self.integration_specs.get(&(level, node_id))
     }
 
     /// Look up the baby step spec by ID.
@@ -683,18 +746,271 @@ impl DepthFirstNavigator {
             .iter()
             .all(|pid| self.all_steps_in_phase_resolved(*pid, state, tree))
     }
+
+    // -----------------------------------------------------------------------
+    // 4E.11 — Integration checkpoint execution / bubble-up wiring
+    // -----------------------------------------------------------------------
+
+    /// True when every baby step in `step_id` has a terminal outcome.
+    /// Thin public wrapper over the existing cascade helper so external
+    /// orchestrators (the measure binary, pipeline driver) can ask whether
+    /// a step is ready for its integration checkpoint.
+    pub fn step_is_terminal(
+        &self,
+        step_id: StepId,
+        state: &TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> bool {
+        self.all_baby_steps_in_step_resolved(step_id, state, tree)
+    }
+
+    /// True when every step in `phase_id` is terminal.
+    pub fn phase_is_terminal(
+        &self,
+        phase_id: PhaseId,
+        state: &TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> bool {
+        self.all_steps_in_phase_resolved(phase_id, state, tree)
+    }
+
+    /// True when every phase in `concept_id` is terminal.
+    pub fn concept_is_terminal(
+        &self,
+        concept_id: ConceptId,
+        state: &TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> bool {
+        self.all_phases_in_concept_resolved(concept_id, state, tree)
+    }
+
+    /// Run the step-level integration checkpoint registered on `tree` for
+    /// `step_id` (if any). On aggregate failure, increments
+    /// `step_failure_counts`, emits a Step-level BubbleUpEvent, and returns the
+    /// resulting BubbleUpAction. Returns `Ok(None, None)` if no spec is
+    /// registered (silently skipped — matches 4E.8 "no integration, no
+    /// checkpoint" semantics).
+    pub fn run_step_integration(
+        &self,
+        step_id: StepId,
+        runner: &dyn IntegrationRunner,
+        state: &mut TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> (Option<IntegrationRunResult>, Option<BubbleUpAction>) {
+        let spec = match tree.integration_spec(DecompositionLevel::Step, step_id.0) {
+            Some(s) => s.clone(),
+            None => return (None, None),
+        };
+        let result = run_integration_checkpoint(
+            DecompositionLevel::Step,
+            step_id.0,
+            &spec,
+            runner,
+            state,
+        );
+        let action = if result.success {
+            None
+        } else {
+            Some(bubble_up_on_step_integration_fail(
+                step_id,
+                result.failure_reason.clone(),
+                state,
+                tree,
+            ))
+        };
+        (Some(result), action)
+    }
+
+    /// Run the phase-level integration checkpoint registered on `tree` for
+    /// `phase_id` (if any). See [`Self::run_step_integration`] for semantics.
+    pub fn run_phase_integration(
+        &self,
+        phase_id: PhaseId,
+        runner: &dyn IntegrationRunner,
+        state: &mut TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> (Option<IntegrationRunResult>, Option<BubbleUpAction>) {
+        let spec = match tree.integration_spec(DecompositionLevel::Phase, phase_id.0) {
+            Some(s) => s.clone(),
+            None => return (None, None),
+        };
+        let result = run_integration_checkpoint(
+            DecompositionLevel::Phase,
+            phase_id.0,
+            &spec,
+            runner,
+            state,
+        );
+        let action = if result.success {
+            None
+        } else {
+            Some(bubble_up_on_phase_integration_fail(
+                phase_id,
+                result.failure_reason.clone(),
+                state,
+                tree,
+            ))
+        };
+        (Some(result), action)
+    }
+
+    /// Run the concept-level integration checkpoint registered on `tree` for
+    /// `concept_id` (if any). See [`Self::run_step_integration`] for semantics.
+    pub fn run_concept_integration(
+        &self,
+        concept_id: ConceptId,
+        runner: &dyn IntegrationRunner,
+        state: &mut TreeNavigatorState,
+        tree: &NavigatorTree,
+    ) -> (Option<IntegrationRunResult>, Option<BubbleUpAction>) {
+        let spec = match tree.integration_spec(DecompositionLevel::Concept, concept_id.0) {
+            Some(s) => s.clone(),
+            None => return (None, None),
+        };
+        let result = run_integration_checkpoint(
+            DecompositionLevel::Concept,
+            concept_id.0,
+            &spec,
+            runner,
+            state,
+        );
+        let action = if result.success {
+            None
+        } else {
+            Some(bubble_up_on_concept_integration_fail(
+                concept_id,
+                result.failure_reason.clone(),
+                state,
+                tree,
+            ))
+        };
+        (Some(result), action)
+    }
+}
+
+/// Increment the step failure counter and emit a step-level BubbleUpEvent for
+/// a failed integration check. The returned action is `RedecomposeStep` when
+/// the counter is still under the step threshold, or cascades to phase level
+/// via [`bubble_up_on_phase_integration_fail`] once the step threshold is hit.
+fn bubble_up_on_step_integration_fail(
+    step_id: StepId,
+    reason: Option<String>,
+    state: &mut TreeNavigatorState,
+    tree: &NavigatorTree,
+) -> BubbleUpAction {
+    let count = state.step_integration_failure_counts.entry(step_id).or_insert(0);
+    *count += 1;
+    let failure_count = *count;
+    state.bubble_up_log.push(BubbleUpEvent {
+        level: DecompositionLevel::Step,
+        action: BubbleUpAction::RedecomposeStep { step_id },
+        failure_count,
+        threshold: tree.policy.max_retries_step,
+    });
+
+    if failure_count >= tree.policy.max_retries_step {
+        if let Some(phase_id) = phase_for_step(step_id, tree) {
+            return bubble_up_on_phase_integration_fail(phase_id, reason, state, tree);
+        }
+    }
+    BubbleUpAction::RedecomposeStep { step_id }
+}
+
+/// Phase-level counterpart of [`bubble_up_on_step_integration_fail`].
+fn bubble_up_on_phase_integration_fail(
+    phase_id: PhaseId,
+    reason: Option<String>,
+    state: &mut TreeNavigatorState,
+    tree: &NavigatorTree,
+) -> BubbleUpAction {
+    let count = state.phase_integration_failure_counts.entry(phase_id).or_insert(0);
+    *count += 1;
+    let failure_count = *count;
+    state.bubble_up_log.push(BubbleUpEvent {
+        level: DecompositionLevel::Phase,
+        action: BubbleUpAction::ReplanPhase { phase_id },
+        failure_count,
+        threshold: tree.policy.max_retries_phase,
+    });
+
+    if failure_count >= tree.policy.max_retries_phase {
+        if let Some(concept_id) = concept_for_phase(phase_id, tree) {
+            return bubble_up_on_concept_integration_fail(concept_id, reason, state, tree);
+        }
+    }
+    BubbleUpAction::ReplanPhase { phase_id }
+}
+
+/// Concept-level counterpart of [`bubble_up_on_step_integration_fail`].
+/// Cascades to `Escalate` once the concept threshold is exceeded.
+fn bubble_up_on_concept_integration_fail(
+    concept_id: ConceptId,
+    reason: Option<String>,
+    state: &mut TreeNavigatorState,
+    tree: &NavigatorTree,
+) -> BubbleUpAction {
+    let count = state.concept_integration_failure_counts.entry(concept_id).or_insert(0);
+    *count += 1;
+    let failure_count = *count;
+
+    if failure_count >= tree.policy.max_retries_concept {
+        let context = match reason {
+            Some(r) => format!(
+                "Concept {:?} integration exhausted after {} failures: {}",
+                concept_id, failure_count, r
+            ),
+            None => format!(
+                "Concept {:?} integration exhausted after {} failures",
+                concept_id, failure_count
+            ),
+        };
+        state.bubble_up_log.push(BubbleUpEvent {
+            level: DecompositionLevel::Concept,
+            action: BubbleUpAction::Escalate {
+                context: context.clone(),
+            },
+            failure_count,
+            threshold: tree.policy.max_retries_concept,
+        });
+        return BubbleUpAction::Escalate { context };
+    }
+
+    state.bubble_up_log.push(BubbleUpEvent {
+        level: DecompositionLevel::Concept,
+        action: BubbleUpAction::ReplanConcept { concept_id },
+        failure_count,
+        threshold: tree.policy.max_retries_concept,
+    });
+    BubbleUpAction::ReplanConcept { concept_id }
+}
+
+fn phase_for_step(step_id: StepId, tree: &NavigatorTree) -> Option<PhaseId> {
+    tree.location_index
+        .values()
+        .find(|loc| loc.step_id == step_id)
+        .map(|loc| loc.phase_id)
+}
+
+fn concept_for_phase(phase_id: PhaseId, tree: &NavigatorTree) -> Option<ConceptId> {
+    tree.location_index
+        .values()
+        .find(|loc| loc.phase_id == phase_id)
+        .map(|loc| loc.concept_id)
 }
 
 /// Record an integration checkpoint for a completed baby step.
+///
+/// Preserved from 4E.8 for backward compatibility with the baby-step checkpoint
+/// contract. `success` is recorded `true` by default because this API records
+/// the checkpoint metadata only — use [`run_integration_checkpoint`] (4E.11) to
+/// actually execute an IntegrationRunner and capture pass/fail outcomes at any
+/// decomposition level.
 pub fn record_integration_checkpoint(
     baby_step_id: BabyStepId,
     spec: &IntegrationSpec,
     state: &mut TreeNavigatorState,
 ) {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+    let timestamp = current_unix_epoch_ms();
 
     state.integration_checkpoints.push(IntegrationCheckpoint {
         baby_step_id,
@@ -702,7 +1018,297 @@ pub fn record_integration_checkpoint(
         wiring_target: spec.wiring_target.clone(),
         callers: spec.callers.clone(),
         timestamp_epoch_ms: timestamp,
+        node_id: baby_step_id.0,
+        success: true,
+        failure_reason: None,
+        duration_ms: 0,
     });
+}
+
+/// Wall-clock milliseconds since the Unix epoch. Returns 0 on pre-epoch clocks
+/// and u64::MAX on clocks beyond year 584M AD — both edge cases are preserved
+/// from the 4E.8 implementation and intentionally keep this helper panic-free.
+fn current_unix_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// 4E.11 — Integration checkpoint EXECUTION (baby-step / step / phase / concept)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single exit-criterion run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionResult {
+    pub description: String,
+    pub success: bool,
+    pub reason: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// Aggregate outcome of running all exit criteria for one IntegrationSpec.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrationRunResult {
+    pub level: DecompositionLevel,
+    pub node_id: u64,
+    pub success: bool,
+    pub criterion_results: Vec<CriterionResult>,
+    pub failure_reason: Option<String>,
+    pub total_duration_ms: u64,
+}
+
+/// Object-safe runner that executes the `check_command` of each `ExitCriterion`.
+/// Implementations decide whether to shell out, mock a result, or consult an
+/// external system. The navigator never runs commands itself.
+pub trait IntegrationRunner: Send + Sync {
+    /// Run a single exit criterion. Return `success=true` if it met the bar.
+    /// Must be panic-free — any runtime error should surface as `success=false`
+    /// with a populated `reason`.
+    fn run_criterion(
+        &self,
+        level: DecompositionLevel,
+        node_id: u64,
+        criterion: &ExitCriterion,
+    ) -> CriterionResult;
+}
+
+/// No-op runner that reports every criterion as passing. Intended for pipeline
+/// dry-runs and unit tests — production callers must inject a real runner.
+#[derive(Debug, Clone, Default)]
+pub struct NoOpIntegrationRunner;
+
+impl IntegrationRunner for NoOpIntegrationRunner {
+    fn run_criterion(
+        &self,
+        _level: DecompositionLevel,
+        _node_id: u64,
+        criterion: &ExitCriterion,
+    ) -> CriterionResult {
+        CriterionResult {
+            description: criterion.description.clone(),
+            success: true,
+            reason: None,
+            duration_ms: 0,
+        }
+    }
+}
+
+/// Runner that shells out via [`std::process::Command`] with
+/// [`INTEGRATION_CRITERION_TIMEOUT_SECS`] per-criterion wall-clock budget.
+/// Criteria without a `check_command` are treated as passing (informational).
+///
+/// Uses `cmd /C` on Windows and `sh -c` elsewhere. Executes synchronously; the
+/// caller is responsible for running this off the async executor if blocking
+/// matters.
+#[derive(Debug, Clone, Default)]
+pub struct CommandIntegrationRunner {
+    working_dir: Option<std::path::PathBuf>,
+}
+
+impl CommandIntegrationRunner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_working_dir(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            working_dir: Some(dir.into()),
+        }
+    }
+}
+
+/// Polling interval used when waiting for a spawned criterion command to exit.
+/// Balances responsiveness (sub-100ms wake-ups on completion) against wasted
+/// CPU when criteria take minutes (e.g. `cargo test`).
+const INTEGRATION_CRITERION_POLL_MS: u64 = 50;
+
+impl IntegrationRunner for CommandIntegrationRunner {
+    fn run_criterion(
+        &self,
+        _level: DecompositionLevel,
+        _node_id: u64,
+        criterion: &ExitCriterion,
+    ) -> CriterionResult {
+        let command = match criterion.check_command.as_deref() {
+            Some(c) if !c.trim().is_empty() => c,
+            _ => {
+                return CriterionResult {
+                    description: criterion.description.clone(),
+                    success: true,
+                    reason: Some("no check_command — treated as informational".to_string()),
+                    duration_ms: 0,
+                };
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let mut cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/C").arg(command);
+            c
+        } else {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        };
+        if let Some(dir) = self.working_dir.as_ref() {
+            cmd.current_dir(dir);
+        }
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return CriterionResult {
+                    description: criterion.description.clone(),
+                    success: false,
+                    reason: Some(format!("spawn error: {e}")),
+                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                };
+            }
+        };
+
+        let deadline =
+            start + std::time::Duration::from_secs(INTEGRATION_CRITERION_TIMEOUT_SECS);
+        let poll = std::time::Duration::from_millis(INTEGRATION_CRITERION_POLL_MS);
+
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Ok(s),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        // Kill the runaway and collect its exit status so no
+                        // zombie process remains. `kill` is best-effort: if it
+                        // fails (e.g. process already gone), we still wait().
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return CriterionResult {
+                            description: criterion.description.clone(),
+                            success: false,
+                            reason: Some(format!(
+                                "timeout after {}s",
+                                INTEGRATION_CRITERION_TIMEOUT_SECS
+                            )),
+                            duration_ms: u64::try_from(start.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        };
+                    }
+                    std::thread::sleep(poll);
+                }
+                Err(e) => break Err(e),
+            }
+        };
+
+        let output = match status {
+            Ok(_) => match child.wait_with_output() {
+                Ok(o) => o,
+                Err(e) => {
+                    return CriterionResult {
+                        description: criterion.description.clone(),
+                        success: false,
+                        reason: Some(format!("wait_with_output: {e}")),
+                        duration_ms: u64::try_from(start.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                    };
+                }
+            },
+            Err(e) => {
+                return CriterionResult {
+                    description: criterion.description.clone(),
+                    success: false,
+                    reason: Some(format!("try_wait: {e}")),
+                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                };
+            }
+        };
+
+        let duration_ms =
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let success = output.status.success();
+        let reason = if success {
+            None
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let code = output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            Some(format!("exit={code}: {}", stderr.trim()))
+        };
+
+        CriterionResult {
+            description: criterion.description.clone(),
+            success,
+            reason,
+            duration_ms,
+        }
+    }
+}
+
+/// Execute every criterion in `spec` and append an IntegrationCheckpoint to
+/// `state.integration_checkpoints`. Short-circuits on the first failure so
+/// downstream criteria are not billed when an earlier one already fails the
+/// aggregate. All recorded state is deterministic for a given runner output.
+pub fn run_integration_checkpoint(
+    level: DecompositionLevel,
+    node_id: u64,
+    spec: &IntegrationSpec,
+    runner: &dyn IntegrationRunner,
+    state: &mut TreeNavigatorState,
+) -> IntegrationRunResult {
+    let start = std::time::Instant::now();
+    let mut criterion_results: Vec<CriterionResult> = Vec::with_capacity(spec.exit_criteria.len());
+    let mut aggregate_success = true;
+    let mut first_failure: Option<String> = None;
+
+    for criterion in &spec.exit_criteria {
+        let result = runner.run_criterion(level, node_id, criterion);
+        if !result.success && aggregate_success {
+            aggregate_success = false;
+            first_failure = Some(match &result.reason {
+                Some(r) => format!("{}: {}", criterion.description, r),
+                None => criterion.description.clone(),
+            });
+        }
+        criterion_results.push(result);
+        if !aggregate_success {
+            break;
+        }
+    }
+
+    let total_duration_ms =
+        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let timestamp_epoch_ms = current_unix_epoch_ms();
+    let baby_step_id = if matches!(level, DecompositionLevel::BabyStep) {
+        BabyStepId(node_id)
+    } else {
+        NO_BABY_STEP
+    };
+
+    state.integration_checkpoints.push(IntegrationCheckpoint {
+        baby_step_id,
+        level,
+        wiring_target: spec.wiring_target.clone(),
+        callers: spec.callers.clone(),
+        timestamp_epoch_ms,
+        node_id,
+        success: aggregate_success,
+        failure_reason: first_failure.clone(),
+        duration_ms: total_duration_ms,
+    });
+
+    IntegrationRunResult {
+        level,
+        node_id,
+        success: aggregate_success,
+        criterion_results,
+        failure_reason: first_failure,
+        total_duration_ms,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,5 +2096,325 @@ mod tests {
         assert!(!state.completed.contains(&BabyStepId(2)));
         assert!(!state.failed.contains(&BabyStepId(2)), "Single failure should not mark as failed");
         assert_eq!(state.execution_log.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4E.11 — Integration checkpoint EXECUTION tests (12 new tests)
+    // -----------------------------------------------------------------------
+
+    /// Helper: fixed runner that reports every criterion as failing with the
+    /// given reason. Used to drive bubble-up paths deterministically in tests.
+    #[derive(Debug, Clone)]
+    struct FailingRunner {
+        reason: String,
+    }
+
+    impl IntegrationRunner for FailingRunner {
+        fn run_criterion(
+            &self,
+            _level: DecompositionLevel,
+            _node_id: u64,
+            criterion: &ExitCriterion,
+        ) -> CriterionResult {
+            CriterionResult {
+                description: criterion.description.clone(),
+                success: false,
+                reason: Some(self.reason.clone()),
+                duration_ms: 1,
+            }
+        }
+    }
+
+    fn spec(wiring: &str) -> IntegrationSpec {
+        IntegrationSpec {
+            wiring_target: wiring.to_string(),
+            callers: vec!["caller_x".to_string()],
+            exit_criteria: vec![ExitCriterion {
+                description: "criterion_1".to_string(),
+                check_command: Some("echo ok".to_string()),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_register_integration_spec_step_level() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Step, 1, spec("target_step"));
+        let got = tree.integration_spec(DecompositionLevel::Step, 1);
+        assert!(got.is_some(), "Step-level spec should be retrievable");
+        assert_eq!(got.unwrap().wiring_target, "target_step");
+    }
+
+    #[test]
+    fn test_register_integration_spec_phase_level() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Phase, 1, spec("target_phase"));
+        let got = tree.integration_spec(DecompositionLevel::Phase, 1);
+        assert_eq!(got.map(|s| s.wiring_target.as_str()), Some("target_phase"));
+    }
+
+    #[test]
+    fn test_register_integration_spec_concept_level() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Concept, 1, spec("target_concept"));
+        let got = tree.integration_spec(DecompositionLevel::Concept, 1);
+        assert_eq!(got.map(|s| s.wiring_target.as_str()), Some("target_concept"));
+    }
+
+    #[test]
+    fn test_run_step_integration_pass_no_bubble_up() {
+        let mut tree = simple_tree(2);
+        tree.register_integration_spec(DecompositionLevel::Step, 1, spec("s_target"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        let (res, action) = nav.run_step_integration(StepId(1), &runner, &mut state, &tree);
+
+        let res = res.expect("spec registered -> result should be Some");
+        assert!(res.success, "NoOp runner must yield success");
+        assert_eq!(res.level, DecompositionLevel::Step);
+        assert_eq!(res.node_id, 1);
+        assert!(action.is_none(), "Passing integration must not bubble up");
+        assert_eq!(state.integration_checkpoints.len(), 1);
+        assert_eq!(
+            state.integration_checkpoints[0].level,
+            DecompositionLevel::Step
+        );
+        assert!(state.integration_checkpoints[0].success);
+        assert_eq!(state.integration_checkpoints[0].baby_step_id, NO_BABY_STEP);
+    }
+
+    #[test]
+    fn test_run_step_integration_fail_triggers_redecompose() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Step, 1, spec("s_fail"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = FailingRunner { reason: "cargo test failed".to_string() };
+
+        let (res, action) = nav.run_step_integration(StepId(1), &runner, &mut state, &tree);
+        let res = res.expect("spec registered");
+        assert!(!res.success);
+        match action {
+            Some(BubbleUpAction::RedecomposeStep { step_id }) => {
+                assert_eq!(step_id, StepId(1));
+            }
+            Some(BubbleUpAction::ReplanPhase { .. }) => {
+                // Acceptable if step threshold = 1 (cascades). Not expected at default policy.
+                panic!("First step failure should emit RedecomposeStep, not ReplanPhase");
+            }
+            other => panic!("Expected RedecomposeStep, got {:?}", other),
+        }
+        let step_events: Vec<_> = state
+            .bubble_up_log
+            .iter()
+            .filter(|e| e.level == DecompositionLevel::Step)
+            .collect();
+        assert!(
+            !step_events.is_empty(),
+            "Step-level bubble-up event must be recorded"
+        );
+        assert!(!state.integration_checkpoints[0].success);
+        assert!(state.integration_checkpoints[0].failure_reason.is_some());
+    }
+
+    #[test]
+    fn test_run_phase_integration_pass() {
+        let mut tree = simple_tree(2);
+        tree.register_integration_spec(DecompositionLevel::Phase, 1, spec("p_target"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        let (res, action) = nav.run_phase_integration(PhaseId(1), &runner, &mut state, &tree);
+        let res = res.expect("spec registered");
+        assert!(res.success);
+        assert_eq!(res.level, DecompositionLevel::Phase);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_run_phase_integration_fail_triggers_replan_phase() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Phase, 1, spec("p_fail"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = FailingRunner { reason: "phase check failed".to_string() };
+
+        let (_, action) = nav.run_phase_integration(PhaseId(1), &runner, &mut state, &tree);
+        // With default policy max_retries_phase=1, a single failure hits threshold
+        // and cascades to concept. Either ReplanPhase (pre-cascade) or the concept
+        // escalation (ReplanConcept/Escalate) is acceptable — but we must see at
+        // least a Phase-level bubble-up event regardless.
+        assert!(action.is_some(), "Phase-integration fail must return an action");
+        let phase_events: Vec<_> = state
+            .bubble_up_log
+            .iter()
+            .filter(|e| e.level == DecompositionLevel::Phase)
+            .collect();
+        assert!(
+            !phase_events.is_empty(),
+            "Phase-level bubble-up event must be recorded"
+        );
+    }
+
+    #[test]
+    fn test_run_concept_integration_pass() {
+        let mut tree = simple_tree(2);
+        tree.register_integration_spec(DecompositionLevel::Concept, 1, spec("c_target"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        let (res, action) = nav.run_concept_integration(ConceptId(1), &runner, &mut state, &tree);
+        let res = res.expect("spec registered");
+        assert!(res.success);
+        assert_eq!(res.level, DecompositionLevel::Concept);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_run_concept_integration_fail_escalates() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Concept, 1, spec("c_fail"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = FailingRunner { reason: "concept e2e failed".to_string() };
+
+        let (_, action) = nav.run_concept_integration(ConceptId(1), &runner, &mut state, &tree);
+        // Default policy max_retries_concept=1 -> first failure should escalate.
+        match action {
+            Some(BubbleUpAction::Escalate { context }) => {
+                assert!(context.contains("concept e2e failed"));
+            }
+            other => panic!("Expected Escalate at concept level, got {:?}", other),
+        }
+        let concept_events: Vec<_> = state
+            .bubble_up_log
+            .iter()
+            .filter(|e| e.level == DecompositionLevel::Concept)
+            .collect();
+        assert!(!concept_events.is_empty());
+    }
+
+    #[test]
+    fn test_run_integration_no_spec_is_noop() {
+        let tree = simple_tree(1);
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        let (res, action) = nav.run_step_integration(StepId(1), &runner, &mut state, &tree);
+        assert!(
+            res.is_none(),
+            "Unregistered step spec must return None result (no checkpoint recorded)"
+        );
+        assert!(action.is_none());
+        assert!(state.integration_checkpoints.is_empty());
+        assert!(state.bubble_up_log.is_empty());
+    }
+
+    #[test]
+    fn test_integration_checkpoint_level_stored_correctly() {
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Step, 1, spec("s1"));
+        tree.register_integration_spec(DecompositionLevel::Phase, 1, spec("p1"));
+        tree.register_integration_spec(DecompositionLevel::Concept, 1, spec("c1"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        nav.run_step_integration(StepId(1), &runner, &mut state, &tree);
+        nav.run_phase_integration(PhaseId(1), &runner, &mut state, &tree);
+        nav.run_concept_integration(ConceptId(1), &runner, &mut state, &tree);
+
+        assert_eq!(state.integration_checkpoints.len(), 3);
+        let levels: Vec<DecompositionLevel> = state
+            .integration_checkpoints
+            .iter()
+            .map(|c| c.level)
+            .collect();
+        assert_eq!(
+            levels,
+            vec![
+                DecompositionLevel::Step,
+                DecompositionLevel::Phase,
+                DecompositionLevel::Concept,
+            ]
+        );
+        assert_eq!(state.integration_checkpoints[0].wiring_target, "s1");
+        assert_eq!(state.integration_checkpoints[1].wiring_target, "p1");
+        assert_eq!(state.integration_checkpoints[2].wiring_target, "c1");
+    }
+
+    #[test]
+    fn test_integration_empty_exit_criteria_passes() {
+        let mut tree = simple_tree(1);
+        let s = IntegrationSpec {
+            wiring_target: "no_criteria".to_string(),
+            callers: vec![],
+            exit_criteria: vec![],
+        };
+        tree.register_integration_spec(DecompositionLevel::Step, 1, s);
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = FailingRunner { reason: "should not be called".to_string() };
+
+        let (res, action) = nav.run_step_integration(StepId(1), &runner, &mut state, &tree);
+        let res = res.expect("spec registered");
+        assert!(
+            res.success,
+            "Empty exit_criteria must trivially pass (no criteria to fail)"
+        );
+        assert!(action.is_none());
+        assert_eq!(res.criterion_results.len(), 0);
+    }
+
+    #[test]
+    fn test_integration_counters_separate_from_cascade_counters() {
+        // Regression guard for 4E.11 audit BLOCK: integration checkpoint
+        // failures must NOT increment `step_failure_counts` (cascade counter)
+        // and vice versa — each source owns its own counter map.
+        let mut tree = simple_tree(1);
+        tree.register_integration_spec(DecompositionLevel::Step, 1, spec("iso_step"));
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let failing = FailingRunner { reason: "intentional".to_string() };
+
+        nav.run_step_integration(StepId(1), &failing, &mut state, &tree);
+
+        assert_eq!(
+            state
+                .step_integration_failure_counts
+                .get(&StepId(1))
+                .copied()
+                .unwrap_or(0),
+            1,
+            "integration fail must increment step_integration_failure_counts"
+        );
+        assert_eq!(
+            state.step_failure_counts.get(&StepId(1)).copied().unwrap_or(0),
+            0,
+            "integration fail must NOT touch the cascade step_failure_counts"
+        );
+    }
+
+    #[test]
+    fn test_terminal_detection_baby_step_step_phase_concept() {
+        let tree = simple_tree(2);
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+
+        assert!(!nav.step_is_terminal(StepId(1), &state, &tree));
+        assert!(!nav.phase_is_terminal(PhaseId(1), &state, &tree));
+        assert!(!nav.concept_is_terminal(ConceptId(1), &state, &tree));
+
+        state.completed.insert(BabyStepId(1));
+        state.completed.insert(BabyStepId(2));
+
+        assert!(nav.step_is_terminal(StepId(1), &state, &tree));
+        assert!(nav.phase_is_terminal(PhaseId(1), &state, &tree));
+        assert!(nav.concept_is_terminal(ConceptId(1), &state, &tree));
     }
 }
