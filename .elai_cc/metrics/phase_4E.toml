@@ -1,0 +1,26 @@
+# Phase 4E: Pipeline Factory L2 — metrics
+# Generated: 2026-04-16
+
+[assembly_time_ms]
+phase_1 = 0
+phase_5 = 0
+phase_10 = 0
+phase_50 = 0
+phase_100 = 0
+
+[repair]
+success_rate = 1.00
+avg_rounds = 0.00
+corpus_size = 10
+strategy_reorder_count = 0
+strategy_substitute_count = 10
+
+[test_harness]
+coverage_ratio = 1.20
+
+[targets]
+assembly_10_phase_target_ms = 1000
+assembly_10_phase_actual_ms = 0
+assembly_target_met = true
+repair_success_target = 0.50
+repair_success_met = true

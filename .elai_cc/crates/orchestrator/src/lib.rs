@@ -42,6 +42,11 @@ pub mod research_budget;
 pub mod research_pipeline;
 pub mod research_tier;
 pub mod research_tree;
+pub mod pipeline_builder;
+#[cfg(test)]
+mod pipeline_builder_bench;
+#[cfg(test)]
+mod pipeline_builder_tests;
 pub mod web_research_orchestrator;
 mod remote;
 mod session;
@@ -211,6 +216,15 @@ pub use research_pipeline::{
     phase_d_extract_facts, phase_e_cross_verify, phase_f_synthesize, phase_g_post_verify,
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend,
+};
+pub use pipeline_builder::{
+    PipelineBuilder, PipelineBuilderError, PipelineId, NodeIndex, StateId, DataRef, RuleId,
+    ExecutablePipeline, DependencyGraph, DagNode, DagRepairLoop, PipelineFsmState,
+    AgentPhaseConfig, RuleBinding, ResourceEstimate, ResourceReq, TestHarnessSkeleton,
+    TestCase, FixtureStub, RepairAction, RepairOutcome, ValidationError, ValidationErrorKind,
+    StructuralValidator, FsmStateGenerator, TestHarnessGenerator, ResourceEstimator,
+    NoveltyDetector, AgentConfigurator, RuleInstaller, ToolLookup, PredicateCompiler,
+    PredicateRef, T_DAG, CONTRACT_OVERHEAD, SPLIT_RATIO, MAX_SPLIT_DEPTH,
 };
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
