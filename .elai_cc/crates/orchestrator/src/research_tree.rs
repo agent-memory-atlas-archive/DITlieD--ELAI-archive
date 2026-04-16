@@ -5,9 +5,9 @@
 // Produces a ResearchReport with grounded alternatives, source-quality-tiered
 // citations, and dual-threshold convergence (phi >= phi_min AND psi >= psi_min).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use elai_core::clock::{ClockProvider, LogicalInstant};
 
-use crate::ssb::{Ssb, SsbPayload, ResearchStepPayload};
+use crate::ssb::{Ssb, SsbPayload, ResearchStepPayload, ResearchDecomposeLevelPayload};
 
 // ---------------------------------------------------------------------------
 // Constants (no magic numbers — all named)
@@ -66,6 +66,25 @@ pub const MAX_TREE_DEPTH: u32 = 10;
 
 /// Maximum total nodes to prevent breadth bombs.
 pub const MAX_TOTAL_NODES: usize = 200;
+
+// ---------------------------------------------------------------------------
+// Constants — Recursive Decomposition (4D.7)
+// ---------------------------------------------------------------------------
+
+/// Maximum token estimate per baby step.
+pub const MAX_BABY_STEP_TOKENS: usize = 2048;
+
+/// Maximum token estimate for grounding summaries.
+pub const MAX_GROUNDING_TOKENS: usize = 500;
+
+/// Maximum recursive decomposition depth (concept -> phase -> step -> baby step).
+pub const MAX_DECOMPOSE_DEPTH: u32 = 2;
+
+/// Default maximum entries in the research cache (LRU eviction boundary).
+pub const DEFAULT_CACHE_MAX_ENTRIES: usize = 256;
+
+/// Default time-to-live for cached research entries (seconds).
+pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600;
 
 // ---------------------------------------------------------------------------
 // NodeId — type-safe identifier
@@ -636,6 +655,9 @@ pub enum ResearchTreeError {
 
     #[error("invalid complexity assessment: {0}")]
     InvalidComplexity(String),
+
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,6 +1120,648 @@ pub async fn record_research_step(
     ssb.write_payload(agent_id, superstep, payload, Vec::new())
         .await
         .map_err(|e| ResearchTreeError::SsbWriteFailed(e.to_string()))
+}
+
+pub async fn record_research_decompose_level(
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    level: u32,
+    concept_count: usize,
+    phase_count: usize,
+) -> Result<i64, ResearchTreeError> {
+    let payload = SsbPayload::ResearchDecomposeLevel(ResearchDecomposeLevelPayload {
+        agent_id: agent_id.to_owned(),
+        level,
+        concept_count,
+        phase_count,
+    });
+
+    ssb.write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+        .map_err(|e| ResearchTreeError::SsbWriteFailed(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Newtypes — Recursive Decomposition (4D.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ConceptId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BabyStepId(pub u64);
+
+// Local newtypes until Phase 4E defines them
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PhaseId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StepId(pub u64);
+
+// ---------------------------------------------------------------------------
+// ExecutionMode — interactive vs autonomous research (4D.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionMode {
+    Interactive,
+    Autonomous,
+}
+
+// ---------------------------------------------------------------------------
+// Recursive Decomposition types (4D.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConceptDecomposition {
+    pub idea: String,
+    pub concepts: Vec<ConceptNode>,
+    pub mode: ExecutionMode,
+    pub total_research_calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConceptNode {
+    pub id: ConceptId,
+    pub name: String,
+    pub description: String,
+    pub phases: Vec<PhaseNode>,
+    pub research: Option<ResearchReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseNode {
+    pub id: PhaseId,
+    pub name: String,
+    pub steps: Vec<StepNode>,
+    pub depends_on: Vec<ConceptId>,
+    pub research: Option<ResearchReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepNode {
+    pub id: StepId,
+    pub description: String,
+    pub baby_steps: Vec<BabyStepSpec>,
+    pub evidence_level: EvidenceLevel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BabyStepSpec {
+    pub id: BabyStepId,
+    pub task: String,
+    pub estimated_tokens: usize,
+    pub grounding: BabyStepGrounding,
+    pub tdd: Option<TddSpec>,
+    pub acceptance: Option<AcceptanceCriteria>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BabyStepGrounding {
+    pub concept_name: String,
+    pub phase_name: String,
+    pub step_name: String,
+    pub top_citations: Vec<SourceCitation>,
+    pub compressed_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreGateCondition {
+    pub description: String,
+    pub satisfied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSpec {
+    pub description: String,
+    pub pre_gates: Vec<PreGateCondition>,
+    pub output_type: OutputType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TddSpec {
+    pub test_name: String,
+    pub expected_initial_result: String,
+    pub deterministic_check: Option<DeterministicCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeterministicCheck {
+    pub command: String,
+    pub expected_pattern: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptanceCriteria {
+    pub criteria: Vec<String>,
+    pub fail_action: AcceptanceFailAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AcceptanceFailAction {
+    Retry,
+    Escalate,
+    Skip,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrationSpec {
+    pub wiring_target: String,
+    pub callers: Vec<String>,
+    pub exit_criteria: Vec<ExitCriterion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExitCriterion {
+    pub description: String,
+    pub check_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TechStackDecision {
+    pub component: String,
+    pub chosen: String,
+    pub alternatives: Vec<String>,
+    pub source: DecisionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionSource {
+    Research,
+    Constraint,
+    Default,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageRef {
+    pub name: String,
+    pub version: Option<String>,
+    pub registry: String,
+    pub verified: bool,
+}
+
+// ---------------------------------------------------------------------------
+// ResearchCache — LRU cache for research results (4D.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedResearch {
+    pub report: ResearchReport,
+    pub cached_at: u64,
+    pub last_accessed_at: u64,
+    pub hit_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCache {
+    pub entries: BTreeMap<String, CachedResearch>,
+    pub max_entries: usize,
+    pub ttl_seconds: u64,
+    #[serde(skip, default)]
+    clock: ResearchCacheClock,
+}
+
+// Wrapper to hold an optional clock that implements Debug + Clone for derive macros
+#[derive(Clone, Default)]
+struct ResearchCacheClock(Option<Arc<dyn ClockProvider>>);
+
+impl std::fmt::Debug for ResearchCacheClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "Some(clock)" } else { "None" })
+    }
+}
+
+impl serde::Serialize for ResearchCacheClock {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_none()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ResearchCacheClock {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let _ = Option::<()>::deserialize(deserializer)?;
+        Ok(Self(None))
+    }
+}
+
+impl ResearchCache {
+    pub fn new(max_entries: usize, ttl_seconds: u64) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            max_entries,
+            ttl_seconds,
+            clock: ResearchCacheClock(None),
+        }
+    }
+
+    pub fn with_clock(mut self, clock: Arc<dyn ClockProvider>) -> Self {
+        self.clock = ResearchCacheClock(Some(clock));
+        self
+    }
+
+    fn now_secs(&self) -> u64 {
+        if let Some(ref clock) = self.clock.0 {
+            let instant = clock.now();
+            clock.elapsed_since(instant).as_secs()
+        } else {
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs()
+        }
+    }
+
+    pub fn get_or_research<F>(
+        &mut self,
+        key: &str,
+        f: F,
+    ) -> Result<ResearchReport, ResearchTreeError>
+    where
+        F: FnOnce() -> Result<ResearchReport, ResearchTreeError>,
+    {
+        let now = self.now_secs();
+
+        // Check cache hit
+        if let Some(entry) = self.entries.get_mut(key) {
+            let age = now.saturating_sub(entry.cached_at);
+            if age < self.ttl_seconds {
+                entry.hit_count += 1;
+                entry.last_accessed_at = now;
+                return Ok(entry.report.clone());
+            }
+            // Expired — fall through to re-research
+        }
+
+        // Cache miss or expired: call the closure
+        let report = f()?;
+
+        // LRU eviction: remove least recently accessed entry if at capacity
+        if self.entries.len() >= self.max_entries {
+            let oldest_key = self
+                .entries
+                .iter()
+                .min_by_key(|(_, v)| v.last_accessed_at)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                self.entries.remove(&k);
+            }
+        }
+
+        self.entries.insert(
+            key.to_owned(),
+            CachedResearch {
+                report: report.clone(),
+                cached_at: now,
+                last_accessed_at: now,
+                hit_count: 0,
+            },
+        );
+
+        Ok(report)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DecompositionTree — root container for recursive decomposition (4D.7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecompositionTree {
+    pub root_idea: String,
+    pub concepts: Vec<ConceptNode>,
+    pub cache: ResearchCache,
+    pub total_research_calls: u64,
+}
+
+impl DecompositionTree {
+    pub fn new(root_idea: String) -> Self {
+        Self {
+            root_idea,
+            concepts: Vec::new(),
+            cache: ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS),
+            total_research_calls: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stub functions — Recursive Decomposition (4D.7)
+// ---------------------------------------------------------------------------
+
+pub fn research_decompose(
+    idea: &str,
+    mode: ExecutionMode,
+    cache: &mut ResearchCache,
+) -> Result<ConceptDecomposition, ResearchTreeError> {
+    if idea.trim().is_empty() {
+        return Err(ResearchTreeError::EmptyQuestion);
+    }
+
+    if mode == ExecutionMode::Interactive {
+        info!("INTERACTIVE mode: presenting alternatives");
+    }
+
+    // Level 0: get or create a research report for the idea
+    let report = cache.get_or_research(idea, || {
+        // Synthetic report for the idea (real LLM call would happen via IPC)
+        Ok(build_synthetic_report(idea))
+    })?;
+
+    // Level 1: extract concepts from the report
+    let mut concepts = extract_concepts(&report)?;
+
+    // Level 2+3: for each concept, extract phases, steps, and baby steps
+    for concept in &mut concepts {
+        let concept_report = cache.get_or_research(
+            &format!("concept:{}", concept.name),
+            || Ok(build_synthetic_report(&concept.name)),
+        )?;
+        concept.research = Some(concept_report.clone());
+
+        let mut phases = extract_phases(&concept_report)?;
+        for phase in &mut phases {
+            let phase_report = cache.get_or_research(
+                &format!("phase:{}", phase.name),
+                || Ok(build_synthetic_report(&phase.name)),
+            )?;
+            phase.research = Some(phase_report.clone());
+
+            let steps = extract_steps(&phase_report)?;
+            for mut step in steps {
+                let baby_steps =
+                    decompose_to_baby_steps(&step, &concept.name, &phase.name)?;
+                step.baby_steps = baby_steps;
+                phase.steps.push(step);
+            }
+        }
+        concept.phases = phases;
+    }
+
+    let total_research_calls = cache.entries.len() as u64;
+
+    Ok(ConceptDecomposition {
+        idea: idea.to_owned(),
+        concepts,
+        mode,
+        total_research_calls,
+    })
+}
+
+fn build_synthetic_report(topic: &str) -> ResearchReport {
+    // Deterministic synthetic report for testing / non-LLM mode.
+    // In production, this is replaced by IPC GroundingRequest.
+    ResearchReport {
+        question: topic.to_owned(),
+        answer: format!("Synthetic answer for: {topic}"),
+        alternatives: vec![
+            Alternative {
+                name: format!("{topic}-approach-a"),
+                description: format!("First approach for {topic}"),
+                citations: vec![],
+                confidence: 0.7,
+                trade_offs: vec!["complexity".into()],
+            },
+        ],
+        contradictions: Vec::new(),
+        sub_results: vec![
+            SubQuestionResult {
+                question: format!("What concept applies to {topic}?"),
+                answer: format!("concept analysis for {topic}"),
+                citations: vec![],
+                confidence: 0.8,
+                evidence_level: EvidenceLevel::MultiSource,
+            },
+        ],
+        snapshot: ResearchTreeSnapshot {
+            nodes: Vec::new(),
+            convergence: ConvergenceStatus::Converged,
+            total_iterations: 1,
+            elapsed: Duration::ZERO,
+        },
+        quality_metrics: Vec::new(),
+        convergence: ConvergenceStatus::Converged,
+    }
+}
+
+pub fn extract_concepts(
+    report: &ResearchReport,
+) -> Result<Vec<ConceptNode>, ResearchTreeError> {
+    let mut concepts = Vec::new();
+    let mut next_id: u64 = 0;
+
+    for sub in &report.sub_results {
+        let q_lower = sub.question.to_lowercase();
+        if q_lower.contains("concept") || q_lower.contains("framework") {
+            concepts.push(ConceptNode {
+                id: ConceptId(next_id),
+                name: sub.question.clone(),
+                description: sub.answer.clone(),
+                phases: Vec::new(),
+                research: None,
+            });
+            next_id += 1;
+        }
+    }
+
+    Ok(concepts)
+}
+
+pub fn extract_phases(
+    report: &ResearchReport,
+) -> Result<Vec<PhaseNode>, ResearchTreeError> {
+    let mut phases = Vec::new();
+    let mut next_id: u64 = 0;
+
+    for alt in &report.alternatives {
+        phases.push(PhaseNode {
+            id: PhaseId(next_id),
+            name: alt.name.clone(),
+            steps: Vec::new(),
+            depends_on: Vec::new(),
+            research: None,
+        });
+        next_id += 1;
+    }
+
+    // Cross-concept dependency detection: scan phase descriptions/answers for
+    // mentions of other concept names from sub_results
+    let concept_names: Vec<String> = report
+        .sub_results
+        .iter()
+        .filter(|s| {
+            let q = s.question.to_lowercase();
+            q.contains("concept") || q.contains("framework")
+        })
+        .enumerate()
+        .map(|(i, s)| (ConceptId(i as u64), s.question.clone()))
+        .map(|(_, name)| name)
+        .collect();
+
+    let concept_ids: Vec<ConceptId> = (0..concept_names.len())
+        .map(|i| ConceptId(i as u64))
+        .collect();
+
+    for phase in &mut phases {
+        for (idx, cname) in concept_names.iter().enumerate() {
+            if phase.name.contains(cname.as_str()) {
+                phase.depends_on.push(concept_ids[idx]);
+            }
+        }
+    }
+
+    Ok(phases)
+}
+
+pub fn extract_steps(
+    report: &ResearchReport,
+) -> Result<Vec<StepNode>, ResearchTreeError> {
+    let mut steps = Vec::new();
+    let mut next_id: u64 = 0;
+
+    for sub in &report.sub_results {
+        // Only include sub_results with evidence >= SingleSource
+        if sub.evidence_level >= EvidenceLevel::SingleSource {
+            steps.push(StepNode {
+                id: StepId(next_id),
+                description: sub.answer.clone(),
+                baby_steps: Vec::new(),
+                evidence_level: sub.evidence_level,
+            });
+            next_id += 1;
+        }
+    }
+
+    Ok(steps)
+}
+
+pub fn decompose_to_baby_steps(
+    step: &StepNode,
+    concept_name: &str,
+    phase_name: &str,
+) -> Result<Vec<BabyStepSpec>, ResearchTreeError> {
+    let step_name = &step.description;
+    let mut baby_steps = Vec::new();
+    let mut next_id: u64 = 0;
+
+    // Token estimate: (description_len / 4) + (grounding_summary_len / 4)
+    // Approximate tokens as bytes / 4 (common heuristic)
+    let grounding_summary = format!("{concept_name}/{phase_name}/{step_name}");
+    let base_tokens = step.description.len() / 4 + grounding_summary.len() / 4;
+
+    if base_tokens <= MAX_BABY_STEP_TOKENS {
+        // Fits in a single baby step
+        let grounding = build_grounding(concept_name, phase_name, step_name);
+        baby_steps.push(BabyStepSpec {
+            id: BabyStepId(next_id),
+            task: step.description.clone(),
+            estimated_tokens: base_tokens,
+            grounding,
+            tdd: None,
+            acceptance: None,
+        });
+    } else {
+        // Split: divide description into chunks that fit within MAX_BABY_STEP_TOKENS
+        // Max split depth = MAX_DECOMPOSE_DEPTH
+        let num_splits = ((base_tokens + MAX_BABY_STEP_TOKENS - 1) / MAX_BABY_STEP_TOKENS)
+            .min(1 << MAX_DECOMPOSE_DEPTH); // cap at 2^depth
+        let chunk_size = step.description.len() / num_splits.max(1);
+
+        for i in 0..num_splits {
+            let mut start = i * chunk_size;
+            // Walk forward to char boundary
+            while start < step.description.len() && !step.description.is_char_boundary(start) {
+                start += 1;
+            }
+            let mut end = if i == num_splits - 1 {
+                step.description.len()
+            } else {
+                (i + 1) * chunk_size
+            };
+            // Walk backward to char boundary
+            while end > start && !step.description.is_char_boundary(end) {
+                end -= 1;
+            }
+            if start >= end {
+                continue;
+            }
+            let chunk = &step.description[start..end];
+            let chunk_tokens = chunk.len() / 4 + grounding_summary.len() / 4;
+            let grounding = build_grounding(concept_name, phase_name, step_name);
+
+            baby_steps.push(BabyStepSpec {
+                id: BabyStepId(next_id),
+                task: chunk.to_owned(),
+                estimated_tokens: chunk_tokens.min(MAX_BABY_STEP_TOKENS),
+                grounding,
+                tdd: None,
+                acceptance: None,
+            });
+            next_id += 1;
+        }
+    }
+
+    Ok(baby_steps)
+}
+
+fn build_grounding(concept_name: &str, phase_name: &str, step_name: &str) -> BabyStepGrounding {
+    // Grounding compression: concatenate parent chain, truncate to MAX_GROUNDING_TOKENS * 4 bytes
+    let max_bytes = MAX_GROUNDING_TOKENS * 4;
+    let raw = format!("{concept_name} / {phase_name} / {step_name}");
+    let truncated = if raw.len() > max_bytes {
+        truncate_utf8_safe(&raw, max_bytes)
+    } else {
+        raw
+    };
+    let compressed_tokens = truncated.len() / 4;
+
+    BabyStepGrounding {
+        concept_name: concept_name.to_owned(),
+        phase_name: phase_name.to_owned(),
+        step_name: step_name.to_owned(),
+        top_citations: Vec::new(),
+        compressed_tokens,
+    }
+}
+
+fn truncate_utf8_safe(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
+}
+
+pub fn verify_packages(
+    packages: &[PackageRef],
+) -> Result<Vec<PackageRef>, ResearchTreeError> {
+    let mut result = Vec::with_capacity(packages.len());
+    for pkg in packages {
+        let verified = is_plausible_package_name(&pkg.name);
+        result.push(PackageRef {
+            name: pkg.name.clone(),
+            version: pkg.version.clone(),
+            registry: pkg.registry.clone(),
+            verified,
+        });
+    }
+    Ok(result)
+}
+
+fn is_plausible_package_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    // Valid package names: alphanumeric, hyphens, underscores. Must start with alphanumeric.
+    let first = name.as_bytes()[0];
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 // ---------------------------------------------------------------------------

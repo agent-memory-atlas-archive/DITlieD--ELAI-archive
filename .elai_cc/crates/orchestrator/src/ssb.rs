@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'death_event', 'recovery_event',
         'supervision_exhausted', 'spiral_detected',
         'context_reduction', 'branch_merge',
-        'mistake_entry', 'research_step'
+        'mistake_entry', 'research_step',
+        'research_decompose_level'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -69,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 26 action types recorded in SSB entries.
+/// All 27 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -99,6 +100,7 @@ pub enum SsbActionType {
     BranchMerge,
     MistakeEntry,
     ResearchStep,
+    ResearchDecomposeLevel,
 }
 
 impl SsbActionType {
@@ -131,6 +133,7 @@ impl SsbActionType {
             Self::BranchMerge => "branch_merge",
             Self::MistakeEntry => "mistake_entry",
             Self::ResearchStep => "research_step",
+            Self::ResearchDecomposeLevel => "research_decompose_level",
         }
     }
 }
@@ -163,6 +166,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "branch_merge" => Ok(SsbActionType::BranchMerge),
         "mistake_entry" => Ok(SsbActionType::MistakeEntry),
         "research_step" => Ok(SsbActionType::ResearchStep),
+        "research_decompose_level" => Ok(SsbActionType::ResearchDecomposeLevel),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -441,11 +445,19 @@ pub struct ResearchStepPayload {
     pub iteration: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResearchDecomposeLevelPayload {
+    pub agent_id: String,
+    pub level: u32,
+    pub concept_count: usize,
+    pub phase_count: usize,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all 25 action-type payloads)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (26 total).
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (27 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -475,6 +487,7 @@ pub enum SsbPayload {
     BranchMerge(BranchMergePayload),
     MistakeEntry(MistakeEntryPayload),
     ResearchStep(ResearchStepPayload),
+    ResearchDecomposeLevel(ResearchDecomposeLevelPayload),
 }
 
 impl SsbPayload {
@@ -508,6 +521,7 @@ impl SsbPayload {
             Self::BranchMerge(_) => SsbActionType::BranchMerge,
             Self::MistakeEntry(_) => SsbActionType::MistakeEntry,
             Self::ResearchStep(_) => SsbActionType::ResearchStep,
+            Self::ResearchDecomposeLevel(_) => SsbActionType::ResearchDecomposeLevel,
         }
     }
 }
@@ -1394,6 +1408,9 @@ mod tests {
                 agent_id: "a".into(), node_id: 0, action: "expand".into(),
                 phi: 0.5, psi: 0.5, iteration: 1,
             }),
+            SsbActionType::ResearchDecomposeLevel => SsbPayload::ResearchDecomposeLevel(ResearchDecomposeLevelPayload {
+                agent_id: "a".into(), level: 0, concept_count: 3, phase_count: 5,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -1777,6 +1794,7 @@ mod tests {
             SsbActionType::WorkloadProfile,
             SsbActionType::MistakeEntry,
             SsbActionType::ResearchStep,
+            SsbActionType::ResearchDecomposeLevel,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1796,7 +1814,7 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 26, "must have inserted all 26 types");
+        assert_eq!(count, 27, "must have inserted all 27 types");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2327,6 +2345,12 @@ mod tests {
                 psi: 0.80,
                 iteration: 3,
             }),
+            SsbPayload::ResearchDecomposeLevel(ResearchDecomposeLevelPayload {
+                agent_id: "decomposer-0".into(),
+                level: 2,
+                concept_count: 4,
+                phase_count: 8,
+            }),
         ]
     }
 
@@ -2336,7 +2360,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 26, "must cover all 26 action types");
+        assert_eq!(payloads.len(), 27, "must cover all 27 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2557,6 +2581,10 @@ mod tests {
                             },
                             cleared: false,
                         }
+                    )),
+                ("[a-z0-9-]{1,20}", 0u32..4, 0usize..100, 0usize..100)
+                    .prop_map(|(agent_id, level, concept_count, phase_count)| SsbPayload::ResearchDecomposeLevel(
+                        ResearchDecomposeLevelPayload { agent_id, level, concept_count, phase_count }
                     )),
             ]
         }

@@ -61,3 +61,26 @@ threshold = 0.1
 prune_after_streak = 3
 nan_guard = true
 convergence_and_not_or = true
+
+[phase_4D.recursive]
+decomposition_depth_avg = 3.0
+research_calls_level0 = 1
+research_calls_level1 = 1
+cache_hit_rate = 0.0 # measured in integration test
+baby_step_count_avg = 1.0
+baby_step_count_max = 1
+grounding_p50_tokens = 12
+grounding_p95_tokens = 25
+package_verification_pass_rate = 0.5
+time_level0_s = 0.0 # measured in integration test
+time_level1_s = 0.0 # measured in integration test
+time_level2_ms = 0.0 # measured in integration test
+time_level3_ms = 0.0 # measured in integration test
+status = "complete"
+test_count = 16
+test_pass = 16
+test_fail = 0
+types_added = 19
+stubs_implemented = 7
+ssb_action_type_added = "research_decompose_level"
+total_ssb_types = 27
