@@ -1,0 +1,17 @@
+<!-- FIM_PREFIX: Footer section skeleton — do not modify above this line -->
+---
+interface Props { owner?: string; year?: number; }
+const { owner = "{{author}}", year = new Date().getFullYear() } = Astro.props;
+---
+<footer class="site-footer" data-section="footer">
+  <!-- FIM_FILL_START -->
+  <div class="columns"></div>
+  <p class="copyright">&copy; {year} {owner}</p>
+  <!-- FIM_FILL_END -->
+</footer>
+<style>
+  .site-footer { padding: 3rem 1.5rem; background: hsl(var(--bg)); color: hsl(var(--fg) / 0.7); border-top: 1px solid hsl(var(--fg) / 0.1); }
+  .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; }
+  .copyright { margin-top: 2rem; text-align: center; font-size: 0.9rem; }
+</style>
+<!-- FIM_SUFFIX: Footer section skeleton — do not modify below this line -->

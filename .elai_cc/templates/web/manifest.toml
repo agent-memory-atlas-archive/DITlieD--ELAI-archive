@@ -1,0 +1,55 @@
+# ELAI web starter template manifest.
+# Versions pinned exact. Verified via `npm view` on 2026-04-17.
+# vanilla: build_command empty = no build step, static files only.
+
+[[template]]
+name = "vite-svelte"
+description = "Vite + Svelte + TypeScript starter with section taxonomy"
+languages = ["svelte", "ts", "css"]
+build_command = "npm run build"
+dev_command = "npm run dev"
+dev_port = 5173
+recommended_for = ["portfolio", "dashboard", "app", "marketing-site"]
+model_familiarity = "high"
+sections = ["Hero", "Features", "Cta", "Footer", "Gallery"]
+theme_system = "css-variables-hsl"
+validation_commands = ["npm install", "npm run build"]
+
+[[template]]
+name = "vite-react"
+description = "Vite + React (JSX) starter with section taxonomy"
+languages = ["jsx", "js", "css"]
+build_command = "npm run build"
+dev_command = "npm run dev"
+dev_port = 5174
+recommended_for = ["landing-page", "spa", "prototype"]
+model_familiarity = "high"
+sections = ["Hero", "Features", "Cta", "Footer", "Gallery"]
+theme_system = "css-variables-hsl"
+validation_commands = ["npm install", "npm run build"]
+
+[[template]]
+name = "astro"
+description = "Astro static/hybrid site starter with section taxonomy"
+languages = ["astro", "ts", "css"]
+build_command = "npm run build"
+dev_command = "npm run dev"
+dev_port = 4321
+recommended_for = ["content-site", "blog", "marketing-site"]
+model_familiarity = "high"
+sections = ["Hero", "Features", "Cta", "Footer", "Gallery"]
+theme_system = "css-variables-hsl"
+validation_commands = ["npm install", "npm run build"]
+
+[[template]]
+name = "vanilla"
+description = "Pure HTML/CSS/JS starter — no build tool, no dependencies"
+languages = ["html", "js", "css"]
+build_command = ""
+dev_command = ""
+dev_port = 8080
+recommended_for = ["static-page", "teaching", "minimal-mvp"]
+model_familiarity = "high"
+sections = ["Hero", "Features", "Cta", "Footer", "Gallery"]
+theme_system = "css-variables-hsl"
+validation_commands = []

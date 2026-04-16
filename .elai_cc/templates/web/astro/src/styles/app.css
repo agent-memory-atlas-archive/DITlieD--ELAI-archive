@@ -1,0 +1,24 @@
+:root {
+  --primary: {{primary_hsl}};
+  --bg: {{bg_hsl}};
+  --fg: {{fg_hsl}};
+  --accent: {{accent_hsl}};
+}
+
+[data-theme="dark"] {
+  --primary: {{primary_hsl}};
+  --bg: {{bg_hsl}};
+  --fg: {{fg_hsl}};
+  --accent: {{accent_hsl}};
+}
+
+[data-theme="light"] {
+  --primary: 162 68% 41%;
+  --bg: 0 0% 98%;
+  --fg: 220 13% 7%;
+  --accent: 265 89% 58%;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: hsl(var(--bg)); color: hsl(var(--fg)); font-family: system-ui, sans-serif; }
+a { color: hsl(var(--primary)); text-decoration: none; }

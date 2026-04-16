@@ -1,0 +1,29 @@
+<!-- FIM_PREFIX: Features section skeleton — do not modify above this line -->
+<script lang="ts">
+  type Feature = { title: string; body: string };
+  export let items: Feature[] = [];
+</script>
+
+<section class="features" data-section="features">
+  <!-- FIM_FILL_START -->
+  {#each items as f}
+    <article class="feature">
+      <h3>{f.title}</h3>
+      <p>{f.body}</p>
+    </article>
+  {/each}
+  <!-- FIM_FILL_END -->
+</section>
+
+<style>
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.5rem;
+    padding: 4rem 1.5rem;
+    background: hsl(var(--bg));
+  }
+  .feature { padding: 1.5rem; border: 1px solid hsl(var(--fg) / 0.15); border-radius: 0.5rem; }
+  .feature h3 { color: hsl(var(--primary)); }
+</style>
+<!-- FIM_SUFFIX: Features section skeleton — do not modify below this line -->
