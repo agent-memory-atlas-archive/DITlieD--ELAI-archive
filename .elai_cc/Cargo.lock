@@ -971,12 +971,14 @@ name = "elai-web-search"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

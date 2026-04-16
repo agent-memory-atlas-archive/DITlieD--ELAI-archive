@@ -2,10 +2,12 @@
 // Validates struct fields, error variants, and pure function contracts.
 
 use elai_web_search::{
-    SearchError, SearchResult, strip_html, parse_domain,
+    SearchError, SearchResult, WebSearchError, strip_html, parse_domain,
     DEFAULT_SEARCH_TIMEOUT_SECS, HEALTH_CHECK_TIMEOUT_SECS,
     DEFAULT_MAX_RESULTS, DEFAULT_RATE_LIMIT_INTERVAL_MS,
 };
+use elai_web_search::extractor::{BasicExtractor, ContentExtractor, ExtractedContent, PageType};
+use elai_web_search::fetcher::{FetchedPage, FETCH_TIMEOUT_SECS, MAX_BODY_BYTES, MAX_REDIRECTS, USER_AGENT, RATE_LIMIT_INTERVAL_MS};
 
 // --- SearchResult field contract ---
 
@@ -98,4 +100,125 @@ fn searx_client_constructs_with_defaults() {
     assert_eq!(client.base_url(), "http://localhost:8888");
     assert_eq!(client.timeout(), Duration::from_secs(10));
     assert_eq!(client.max_results(), 20);
+}
+
+// --- 4D.12 contract tests ---
+
+// WebSearchError variant display contracts.
+#[test]
+fn web_search_error_robots_denied_display() {
+    let err = WebSearchError::RobotsDenied {
+        url: "https://example.com/secret".to_owned(),
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("Robots.txt"));
+    assert!(msg.contains("example.com/secret"));
+}
+
+#[test]
+fn web_search_error_body_too_large_display() {
+    let err = WebSearchError::BodyTooLarge {
+        size: 3_000_000,
+        limit: MAX_BODY_BYTES,
+    };
+    let msg = format!("{err}");
+    assert!(msg.contains("3000000"));
+    assert!(msg.contains(&MAX_BODY_BYTES.to_string()));
+}
+
+#[test]
+fn web_search_error_invalid_url_display() {
+    let err = WebSearchError::InvalidUrl {
+        url: "bad".to_owned(),
+        reason: "no scheme".to_owned(),
+    };
+    assert!(format!("{err}").contains("bad"));
+}
+
+// FetchedPage field contract.
+#[test]
+fn fetched_page_has_required_fields() {
+    let page = FetchedPage {
+        url: "https://example.com/final".to_owned(),
+        status: 200,
+        content_type: "text/html".to_owned(),
+        html: "<p>test</p>".to_owned(),
+        fetch_time_ms: 100,
+    };
+    assert_eq!(page.url, "https://example.com/final");
+    assert_eq!(page.status, 200);
+    assert_eq!(page.content_type, "text/html");
+    assert_eq!(page.fetch_time_ms, 100);
+}
+
+#[test]
+fn fetched_page_serializes_to_json() {
+    let page = FetchedPage {
+        url: "u".to_owned(),
+        status: 200,
+        content_type: "ct".to_owned(),
+        html: "h".to_owned(),
+        fetch_time_ms: 1,
+    };
+    let json = serde_json::to_string(&page).expect("serialize");
+    assert!(json.contains("\"status\":200"));
+    assert!(json.contains("\"url\":\"u\""));
+}
+
+// ExtractedContent field contract.
+#[test]
+fn extracted_content_has_required_fields() {
+    let content = ExtractedContent {
+        title: "Title".to_owned(),
+        text: "Some text here".to_owned(),
+        word_count: 3,
+        page_type: PageType::Article,
+        extracted_at: 1000,
+    };
+    assert_eq!(content.title, "Title");
+    assert_eq!(content.word_count, 3);
+    assert_eq!(content.page_type, PageType::Article);
+    assert_eq!(content.extracted_at, 1000);
+}
+
+// PageType enum contract.
+#[test]
+fn page_type_enum_variants() {
+    assert_ne!(PageType::Article, PageType::Empty);
+    let json = serde_json::to_string(&PageType::Article).expect("serialize");
+    assert!(json.contains("Article"));
+}
+
+// ContentExtractor trait contract — BasicExtractor implements it.
+#[test]
+fn basic_extractor_implements_content_extractor() {
+    let extractor = BasicExtractor::new(500);
+    let html = "<html><head><title>Test</title></head><body><p>hello world</p></body></html>";
+    let result: Result<ExtractedContent, WebSearchError> =
+        extractor.extract(html, "https://example.com");
+    let content = result.expect("extract");
+    assert_eq!(content.title, "Test");
+    assert_eq!(content.page_type, PageType::Article);
+    assert!(content.word_count > 0);
+}
+
+// Named constants contract for 4D.12.
+#[test]
+fn fetch_constants_have_expected_values() {
+    assert_eq!(FETCH_TIMEOUT_SECS, 15);
+    assert_eq!(MAX_REDIRECTS, 5);
+    assert_eq!(MAX_BODY_BYTES, 2 * 1024 * 1024);
+    assert_eq!(RATE_LIMIT_INTERVAL_MS, 500);
+    assert!(!USER_AGENT.is_empty());
+}
+
+// WebFetcher construction contract.
+#[tokio::test]
+async fn web_fetcher_constructs() {
+    use elai_core::clock::SeededClock;
+    use elai_web_search::fetcher::WebFetcher;
+    use std::sync::Arc;
+    let clock = Arc::new(SeededClock::new());
+    let fetcher = WebFetcher::new(clock);
+    assert!(fetcher.is_ok());
 }

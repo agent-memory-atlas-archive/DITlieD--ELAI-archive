@@ -56,7 +56,7 @@ impl RateLimiter {
             if elapsed < self.interval {
                 let remaining = self.interval - elapsed;
                 debug!(
-                    remaining_ms = remaining.as_millis() as u64,
+                    remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX),
                     "rate limiter: sleeping"
                 );
                 (self.sleep_fn)(remaining).await;

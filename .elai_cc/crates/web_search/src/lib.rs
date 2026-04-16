@@ -1,7 +1,10 @@
 #![deny(dead_code, unused_imports)]
 
 pub mod client;
+pub mod extractor;
+pub mod fetcher;
 pub mod rate_limiter;
+pub mod robots;
 
 use serde::Deserialize;
 
@@ -76,6 +79,23 @@ pub enum SearchError {
     RateLimited,
     #[error("Service unavailable: {status}")]
     ServiceUnavailable { status: u16 },
+}
+
+/// Error type for web fetching and content extraction (4D.12+).
+#[derive(Debug, thiserror::Error)]
+pub enum WebSearchError {
+    #[error("HTTP client error: {0}")]
+    HttpClient(String),
+    #[error("Fetch failed for {url}: {reason}")]
+    FetchFailed { url: String, reason: String },
+    #[error("Invalid URL {url}: {reason}")]
+    InvalidUrl { url: String, reason: String },
+    #[error("Robots.txt denies access to {url}")]
+    RobotsDenied { url: String },
+    #[error("Response body too large: {size} bytes exceeds {limit} byte limit")]
+    BodyTooLarge { size: usize, limit: usize },
+    #[error("Content extraction failed: {0}")]
+    ExtractionFailed(String),
 }
 
 /// Strip HTML tags from a string. Simple scanner, no external crate.
