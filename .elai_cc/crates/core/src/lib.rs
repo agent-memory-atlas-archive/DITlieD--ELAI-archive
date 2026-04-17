@@ -7,6 +7,7 @@ pub mod interrogation_tree;
 pub mod micro_reflection;
 pub mod mistake_book;
 pub mod json;
+pub mod project_id;
 pub mod project_profile;
 pub mod sandbox;
 pub mod telescope;
@@ -33,6 +34,10 @@ pub use sandbox::{
 };
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
+};
+
+pub use project_id::{
+    project_id_from_cwd, project_id_from_path, PROJECT_ID_HEX_LEN, PROJECT_ID_PREFIX,
 };
 
 pub use project_profile::{

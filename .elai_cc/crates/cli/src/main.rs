@@ -6817,17 +6817,15 @@ fn build_runtime_with_plugin_state(
                 tmp.push(format!("elai-ssb-{}.db", session_id));
                 tmp
             });
-        let cwd_hash = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            std::env::current_dir().unwrap_or_default().hash(&mut h);
-            format!("proj-{:016x}", h.finish())
-        };
+        // Canonical CWD-derived project_id. Shared helper (elai_core) so
+        // the dashboard lands rows in the same bucket when launched from
+        // the same directory. See `elai_core::project_id` module docs.
+        let project_id = elai_core::project_id_from_cwd()
+            .unwrap_or_else(|| format!("{}unknown", elai_core::PROJECT_ID_PREFIX));
         let ssb_config = elai_orchestrator::SsbConfig {
             db_path: ssb_db_path,
             pool_size: None,
-            project_id: cwd_hash,
+            project_id,
             session_id: session_id.to_string(),
         };
         let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
