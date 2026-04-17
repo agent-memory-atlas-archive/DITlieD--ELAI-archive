@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -47,15 +47,18 @@ CREATE TABLE IF NOT EXISTS ssb (
         'context_reduction', 'branch_merge',
         'mistake_entry', 'research_step',
         'research_decompose_level', 'web_research_step',
-        'preview_available'
+        'preview_available',
+        'intervention_request', 'intervention_response'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ssb_project   ON ssb(project_id);
-CREATE INDEX IF NOT EXISTS idx_ssb_session   ON ssb(session_id);
-CREATE INDEX IF NOT EXISTS idx_ssb_superstep ON ssb(superstep);
-CREATE INDEX IF NOT EXISTS idx_ssb_conflict  ON ssb(project_id, superstep);
+CREATE INDEX IF NOT EXISTS idx_ssb_project     ON ssb(project_id);
+CREATE INDEX IF NOT EXISTS idx_ssb_session     ON ssb(session_id);
+CREATE INDEX IF NOT EXISTS idx_ssb_superstep   ON ssb(superstep);
+CREATE INDEX IF NOT EXISTS idx_ssb_conflict    ON ssb(project_id, superstep);
+CREATE INDEX IF NOT EXISTS idx_ssb_action_type ON ssb(action_type);
+CREATE INDEX IF NOT EXISTS idx_ssb_agent_id    ON ssb(agent_id);
 ";
 
 const CREATE_SSB_FILES_TABLE: &str = "\
@@ -71,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 29 action types recorded in SSB entries.
+/// All 31 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -104,6 +107,8 @@ pub enum SsbActionType {
     ResearchDecomposeLevel,
     WebResearchStep,
     PreviewAvailable,
+    InterventionRequest,
+    InterventionResponse,
 }
 
 impl SsbActionType {
@@ -139,8 +144,16 @@ impl SsbActionType {
             Self::ResearchDecomposeLevel => "research_decompose_level",
             Self::WebResearchStep => "web_research_step",
             Self::PreviewAvailable => "preview_available",
+            Self::InterventionRequest => "intervention_request",
+            Self::InterventionResponse => "intervention_response",
         }
     }
+}
+
+/// Public wrapper around the internal string-to-enum map.
+/// Used by read-side consumers (e.g. [`crate::ssb_viewer::SsbViewer`]).
+pub fn ssb_action_type_from_str_public(s: &str) -> Result<SsbActionType, SsbError> {
+    ssb_action_type_from_str(s)
 }
 
 fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
@@ -174,6 +187,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "research_decompose_level" => Ok(SsbActionType::ResearchDecomposeLevel),
         "web_research_step" => Ok(SsbActionType::WebResearchStep),
         "preview_available" => Ok(SsbActionType::PreviewAvailable),
+        "intervention_request" => Ok(SsbActionType::InterventionRequest),
+        "intervention_response" => Ok(SsbActionType::InterventionResponse),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -488,10 +503,78 @@ pub struct ResearchDecomposeLevelPayload {
 }
 
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 25 action-type payloads)
+// Intervention payloads (4K.1 — dashboard human-in-the-loop gates)
 // ---------------------------------------------------------------------------
 
-/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (29 total).
+/// Category of human intervention being requested (4K.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionType {
+    ApproveChange,
+    ReplanApproval,
+    ErrorRecovery,
+}
+
+/// One option presented to the user when an intervention is raised.
+///
+/// The `Retry(String)` variant carries a freeform message; all others are unit.
+/// `#[serde(untagged)]` renders enum-less JSON: `"accept"`, `"decline"`, `"skip"`,
+/// or `{"retry": "message"}` — matching what the dashboard frontend emits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InterventionOption {
+    Retry(InterventionRetry),
+    Keyword(InterventionKeyword),
+}
+
+/// Keyword-form intervention option (`"accept"`, `"decline"`, `"skip"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionKeyword {
+    Accept,
+    Decline,
+    Skip,
+}
+
+/// Structured form of the `retry` option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionRetry {
+    pub retry: String,
+}
+
+/// Short diff summary attached to an intervention request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffSummary {
+    pub files_changed: u32,
+    pub lines_added: u32,
+    pub lines_removed: u32,
+}
+
+/// Payload for `intervention_request` actions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterventionRequestPayload {
+    pub step_id: String,
+    pub intervention_type: InterventionType,
+    pub description: String,
+    pub diff_summary: Option<DiffSummary>,
+    pub options: Vec<InterventionOption>,
+}
+
+/// Payload for `intervention_response` actions.
+///
+/// `request_id` references the `seq` of the original `intervention_request` row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterventionResponsePayload {
+    pub request_id: i64,
+    pub chosen: InterventionOption,
+    pub user_note: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// SsbPayload enum (typed wrapper over all 31 action-type payloads)
+// ---------------------------------------------------------------------------
+
+/// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (31 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
@@ -524,6 +607,8 @@ pub enum SsbPayload {
     ResearchDecomposeLevel(ResearchDecomposeLevelPayload),
     WebResearchStep(WebResearchStepPayload),
     PreviewAvailable(PreviewAvailablePayload),
+    InterventionRequest(InterventionRequestPayload),
+    InterventionResponse(InterventionResponsePayload),
 }
 
 impl SsbPayload {
@@ -560,6 +645,8 @@ impl SsbPayload {
             Self::ResearchDecomposeLevel(_) => SsbActionType::ResearchDecomposeLevel,
             Self::WebResearchStep(_) => SsbActionType::WebResearchStep,
             Self::PreviewAvailable(_) => SsbActionType::PreviewAvailable,
+            Self::InterventionRequest(_) => SsbActionType::InterventionRequest,
+            Self::InterventionResponse(_) => SsbActionType::InterventionResponse,
         }
     }
 }
@@ -1458,6 +1545,21 @@ mod tests {
                 slot: "live".into(), agent_id: "a".into(),
                 build_success: true, dev_server_ok: true,
             }),
+            SsbActionType::InterventionRequest => SsbPayload::InterventionRequest(InterventionRequestPayload {
+                step_id: "step-1".into(),
+                intervention_type: InterventionType::ApproveChange,
+                description: "approve?".into(),
+                diff_summary: None,
+                options: vec![
+                    InterventionOption::Keyword(InterventionKeyword::Accept),
+                    InterventionOption::Keyword(InterventionKeyword::Decline),
+                ],
+            }),
+            SsbActionType::InterventionResponse => SsbPayload::InterventionResponse(InterventionResponsePayload {
+                request_id: 1,
+                chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
+                user_note: None,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -1844,6 +1946,8 @@ mod tests {
             SsbActionType::ResearchDecomposeLevel,
             SsbActionType::WebResearchStep,
             SsbActionType::PreviewAvailable,
+            SsbActionType::InterventionRequest,
+            SsbActionType::InterventionResponse,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1863,7 +1967,7 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 29, "must have inserted all 29 types");
+        assert_eq!(count, 31, "must have inserted all 31 types");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2418,6 +2522,28 @@ mod tests {
                 build_success: true,
                 dev_server_ok: true,
             }),
+            SsbPayload::InterventionRequest(InterventionRequestPayload {
+                step_id: "step-4K-1".into(),
+                intervention_type: InterventionType::ApproveChange,
+                description: "approve change?".into(),
+                diff_summary: Some(DiffSummary {
+                    files_changed: 2,
+                    lines_added: 42,
+                    lines_removed: 7,
+                }),
+                options: vec![
+                    InterventionOption::Keyword(InterventionKeyword::Accept),
+                    InterventionOption::Keyword(InterventionKeyword::Decline),
+                    InterventionOption::Retry(InterventionRetry {
+                        retry: "more evidence".into(),
+                    }),
+                ],
+            }),
+            SsbPayload::InterventionResponse(InterventionResponsePayload {
+                request_id: 42,
+                chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
+                user_note: Some("looks good".into()),
+            }),
         ]
     }
 
@@ -2427,7 +2553,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 29, "must cover all 29 action types");
+        assert_eq!(payloads.len(), 31, "must cover all 31 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2670,6 +2796,24 @@ mod tests {
                             url, step_id, slot, agent_id, build_success, dev_server_ok,
                         })
                     ),
+                ("[a-z0-9-]{1,20}", "[a-z ]{1,20}")
+                    .prop_map(|(step_id, description)| SsbPayload::InterventionRequest(
+                        InterventionRequestPayload {
+                            step_id,
+                            intervention_type: InterventionType::ApproveChange,
+                            description,
+                            diff_summary: None,
+                            options: vec![InterventionOption::Keyword(InterventionKeyword::Accept)],
+                        }
+                    )),
+                (0i64..10_000, any::<Option<String>>())
+                    .prop_map(|(request_id, user_note)| SsbPayload::InterventionResponse(
+                        InterventionResponsePayload {
+                            request_id,
+                            chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
+                            user_note,
+                        }
+                    )),
             ]
         }
 

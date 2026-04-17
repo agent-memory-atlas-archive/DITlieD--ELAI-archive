@@ -67,6 +67,7 @@ pub use session_dag::{
 pub mod mistake_book;
 pub mod output_postprocessor;
 pub mod ssb;
+pub mod ssb_viewer;
 pub mod supervision;
 pub mod validated_ssb;
 pub mod stale_branch;
@@ -290,9 +291,14 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbPayload, SsbReader, SsbWriteRequest, MistakeEntryPayload,
-    WebResearchStepPayload,
+    DiffSummary, InterventionKeyword, InterventionOption, InterventionRequestPayload,
+    InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
+    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPayload, SsbReader,
+    SsbWriteRequest, WebResearchStepPayload,
+};
+pub use ssb_viewer::{
+    FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
+    SsbActionSummary, SsbViewer, SsbViewerError, ThinkStepSummary, validate_request_id,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

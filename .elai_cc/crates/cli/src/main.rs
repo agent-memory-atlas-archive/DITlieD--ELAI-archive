@@ -332,6 +332,7 @@ fn run() -> Result<(), anyhow::Error> {
             output_format,
         } => run_dep_audit_command(&project_dir, output_format)?,
         CliAction::Local { port } => run_local_repl(port)?,
+        CliAction::Dashboard => run_dashboard()?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
     }
@@ -410,6 +411,7 @@ enum CliAction {
     Local {
         port: u16,
     },
+    Dashboard,
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
     Help {
@@ -506,6 +508,9 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     .and_then(|s| s.parse::<u16>().ok())
                     .unwrap_or(8100);
                 return Ok(CliAction::Local { port });
+            }
+            "--dashboard" => {
+                return Ok(CliAction::Dashboard);
             }
             "-p" => {
                 // Compat: -p "prompt" = one-shot prompt
@@ -2599,6 +2604,49 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, anyhow::Error
     println!();
     println!("Sidecar ready.");
     Ok(Some(proc))
+}
+
+/// Binary name of the Tauri dashboard produced by `elai-dashboard` crate.
+const DASHBOARD_BINARY_NAME: &str = "elai-dashboard";
+
+/// Launch the Tauri dashboard as a detached child process so the CLI never
+/// links the Tauri/WebView runtime into its own binary (phase-4K.2 design
+/// decision: separate process to keep CLI lean).
+fn run_dashboard() -> Result<(), anyhow::Error> {
+    let candidate = locate_dashboard_binary()?;
+    tracing::info!(path = %candidate.display(), "launching ELAI dashboard");
+    std::process::Command::new(&candidate)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to launch dashboard at {}: {e}", candidate.display()))?;
+    Ok(())
+}
+
+fn locate_dashboard_binary() -> Result<PathBuf, anyhow::Error> {
+    if let Ok(override_path) = std::env::var("ELAI_DASHBOARD_BINARY") {
+        let p = PathBuf::from(&override_path);
+        if p.exists() {
+            return Ok(p);
+        }
+        tracing::warn!(
+            override = %override_path,
+            "ELAI_DASHBOARD_BINARY points at a missing file, falling back to auto-discovery"
+        );
+    }
+    let exe_name = if cfg!(windows) {
+        format!("{DASHBOARD_BINARY_NAME}.exe")
+    } else {
+        DASHBOARD_BINARY_NAME.to_string()
+    };
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(dir) = current.parent() {
+            let sibling = dir.join(&exe_name);
+            if sibling.exists() {
+                return Ok(sibling);
+            }
+        }
+    }
+    // Fallback: rely on PATH.
+    Ok(PathBuf::from(exe_name))
 }
 
 fn run_local_repl(port: u16) -> Result<(), anyhow::Error> {
@@ -8877,6 +8925,14 @@ mod tests {
                 date: "2026-04-01".to_string(),
                 output_format: CliOutputFormat::Text,
             }
+        );
+    }
+
+    #[test]
+    fn parses_dashboard_flag() {
+        assert_eq!(
+            parse_args(&["--dashboard".to_string()]).expect("--dashboard should parse"),
+            CliAction::Dashboard,
         );
     }
 

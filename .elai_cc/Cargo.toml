@@ -16,6 +16,7 @@ members = [
     "crates/web_search",
     "crates/scaffold",
     "crates/web_validator",
+    "crates/dashboard",
 ]
 
 [workspace.package]
