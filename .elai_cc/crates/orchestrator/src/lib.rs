@@ -41,6 +41,7 @@ pub mod recovery_recipes;
 pub mod grounding_client;
 pub mod research_budget;
 pub mod research_pipeline;
+pub mod searx_search_backend;
 pub mod research_tier;
 pub mod research_tree;
 pub mod pipeline_builder;
@@ -221,6 +222,7 @@ pub use research_pipeline::{
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend,
 };
+pub use searx_search_backend::{SearxSearchBackend, DEFAULT_SIDECAR_SEARCH_URL};
 pub use pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PipelineId, NodeIndex, StateId, DataRef, RuleId,
     ExecutablePipeline, DependencyGraph, DagNode, DagRepairLoop, PipelineFsmState,
