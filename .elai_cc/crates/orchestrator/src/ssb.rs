@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'mistake_entry', 'research_step',
         'research_decompose_level', 'web_research_step',
         'preview_available',
-        'intervention_request', 'intervention_response'
+        'intervention_request', 'intervention_response',
+        'task_submitted'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -74,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 31 action types recorded in SSB entries.
+/// All 32 action types recorded in SSB entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -109,6 +110,7 @@ pub enum SsbActionType {
     PreviewAvailable,
     InterventionRequest,
     InterventionResponse,
+    TaskSubmitted,
 }
 
 impl SsbActionType {
@@ -146,6 +148,7 @@ impl SsbActionType {
             Self::PreviewAvailable => "preview_available",
             Self::InterventionRequest => "intervention_request",
             Self::InterventionResponse => "intervention_response",
+            Self::TaskSubmitted => "task_submitted",
         }
     }
 }
@@ -189,6 +192,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "preview_available" => Ok(SsbActionType::PreviewAvailable),
         "intervention_request" => Ok(SsbActionType::InterventionRequest),
         "intervention_response" => Ok(SsbActionType::InterventionResponse),
+        "task_submitted" => Ok(SsbActionType::TaskSubmitted),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -570,6 +574,19 @@ pub struct InterventionResponsePayload {
     pub user_note: Option<String>,
 }
 
+/// Payload for `task_submitted` actions (4K.3 — dashboard MVP).
+///
+/// Written by the dashboard process when the user submits a task. Pickup by
+/// the orchestrator is deferred (see DASHBOARD_TASK_SUBMITTED_PICKUP_DEFERRED
+/// gotcha). The action is recorded in the SSB so that future orchestrator
+/// versions can consume it without schema churn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSubmittedPayload {
+    pub task: String,
+    pub project_id: String,
+    pub submitted_at_ms: i64,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all 31 action-type payloads)
 // ---------------------------------------------------------------------------
@@ -609,6 +626,7 @@ pub enum SsbPayload {
     PreviewAvailable(PreviewAvailablePayload),
     InterventionRequest(InterventionRequestPayload),
     InterventionResponse(InterventionResponsePayload),
+    TaskSubmitted(TaskSubmittedPayload),
 }
 
 impl SsbPayload {
@@ -647,7 +665,31 @@ impl SsbPayload {
             Self::PreviewAvailable(_) => SsbActionType::PreviewAvailable,
             Self::InterventionRequest(_) => SsbActionType::InterventionRequest,
             Self::InterventionResponse(_) => SsbActionType::InterventionResponse,
+            Self::TaskSubmitted(_) => SsbActionType::TaskSubmitted,
         }
+    }
+}
+
+impl Ssb {
+    /// Current wall-clock time in milliseconds since UNIX_EPOCH, sourced from
+    /// the injected [`ClockProvider`]. Used by callers (e.g. the dashboard
+    /// process) that must avoid raw `std::time::SystemTime` per the entropy
+    /// quarantine rule.
+    ///
+    /// Saturation semantics (intentional, not silent error swallowing):
+    /// * `duration_since(UNIX_EPOCH)` only fails on a system clock set before
+    ///   1970-01-01; we treat that as t=0 since SSB timestamps are advisory
+    ///   and we do not want a panic at the IPC boundary.
+    /// * `i64::try_from(u128)` only fails past year 292278994; we saturate
+    ///   to `i64::MAX` because no caller in 2026 should ever see overflow,
+    ///   and a saturated max is harmless for monotonic comparisons.
+    pub fn now_ms_via_clock(clock: &Arc<dyn ClockProvider>) -> i64 {
+        let ms_u128 = clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis();
+        i64::try_from(ms_u128).unwrap_or(i64::MAX)
     }
 }
 
@@ -1555,6 +1597,11 @@ mod tests {
                     InterventionOption::Keyword(InterventionKeyword::Decline),
                 ],
             }),
+            SsbActionType::TaskSubmitted => SsbPayload::TaskSubmitted(TaskSubmittedPayload {
+                task: "do the thing".into(),
+                project_id: "p".into(),
+                submitted_at_ms: 0,
+            }),
             SsbActionType::InterventionResponse => SsbPayload::InterventionResponse(InterventionResponsePayload {
                 request_id: 1,
                 chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
@@ -1948,6 +1995,7 @@ mod tests {
             SsbActionType::PreviewAvailable,
             SsbActionType::InterventionRequest,
             SsbActionType::InterventionResponse,
+            SsbActionType::TaskSubmitted,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -1967,7 +2015,7 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 31, "must have inserted all 31 types");
+        assert_eq!(count, 32, "must have inserted all 32 types");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2544,6 +2592,11 @@ mod tests {
                 chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
                 user_note: Some("looks good".into()),
             }),
+            SsbPayload::TaskSubmitted(TaskSubmittedPayload {
+                task: "ship the dashboard MVP".into(),
+                project_id: "dash-mvp".into(),
+                submitted_at_ms: 1_713_300_000_000,
+            }),
         ]
     }
 
@@ -2553,7 +2606,7 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 31, "must cover all 31 action types");
+        assert_eq!(payloads.len(), 32, "must cover all 32 action types");
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -2813,6 +2866,10 @@ mod tests {
                             chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
                             user_note,
                         }
+                    )),
+                ("[a-z ]{1,40}", "[a-z0-9-]{1,20}", 0i64..1_000_000_000_000)
+                    .prop_map(|(task, project_id, submitted_at_ms)| SsbPayload::TaskSubmitted(
+                        TaskSubmittedPayload { task, project_id, submitted_at_ms }
                     )),
             ]
         }

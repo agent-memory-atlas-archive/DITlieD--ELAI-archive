@@ -1247,11 +1247,16 @@ name = "elai-dashboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "elai-core",
  "elai-orchestrator",
+ "scaffold",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

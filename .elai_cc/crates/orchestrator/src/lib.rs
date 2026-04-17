@@ -293,12 +293,14 @@ pub use worker_boot::{
 pub use ssb::{
     DiffSummary, InterventionKeyword, InterventionOption, InterventionRequestPayload,
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
+    PhaseCompletePayload, PreviewAvailablePayload,
     Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPayload, SsbReader,
-    SsbWriteRequest, WebResearchStepPayload,
+    SsbWriteRequest, TaskSubmittedPayload, WebResearchStepPayload,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
-    SsbActionSummary, SsbViewer, SsbViewerError, ThinkStepSummary, validate_request_id,
+    SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError, StepStatus,
+    ThinkStepSummary, validate_request_id,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

@@ -20,6 +20,9 @@ use crate::ssb::{
     InterventionType, SsbActionType, SsbPayload,
 };
 
+/// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
+const PHASE_ID_MAX_LEN: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -53,6 +56,9 @@ pub enum SsbViewerError {
 
     #[error("value out of range: {0}")]
     OutOfRange(String),
+
+    #[error("validation: {0}")]
+    Validation(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +133,34 @@ pub struct ThinkStepSummary {
     pub content: String,
     pub grounding: String,
     pub confidence: f64,
+}
+
+/// Per-step status row returned by [`SsbViewer::step_progress`] (4K.4).
+///
+/// Aggregates `phase_transition`, `phase_complete`, and `reasoning_trace`
+/// entries by `step_id` (extracted from the typed payload via msgpack decode,
+/// not JSON path).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepStatus {
+    pub step_id: String,
+    pub status: String,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub agent_id: Option<String>,
+}
+
+/// Full row detail returned by [`SsbViewer::get_action_detail`] (4K.5).
+///
+/// `payload_json` is the typed [`SsbPayload`] re-serialized as JSON for
+/// frontend consumption (msgpack on the wire, JSON at the IPC boundary).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SsbActionDetail {
+    pub seq: i64,
+    pub ts: i64,
+    pub action_type: String,
+    pub agent_id: String,
+    pub payload_json: serde_json::Value,
+    pub files: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +446,195 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// Per-step progress for a given `phase_id` prefix (4K.4).
+    ///
+    /// Scans `phase_complete`, `phase_transition`, and `reasoning_trace`
+    /// rows; groups by the `step_id`/`phase_id` extracted from the typed
+    /// payload (msgpack decode, NOT JSON path on the raw bytes); orders the
+    /// result by `step_id` ascending. `status` priority is
+    /// `complete > transition > trace`.
+    pub fn step_progress(&self, phase_id: &str) -> Result<Vec<StepStatus>, SsbViewerError> {
+        validate_phase_id(phase_id)?;
+
+        use std::collections::BTreeMap;
+
+        struct Acc {
+            status: u8,
+            status_str: String,
+            started_at: Option<i64>,
+            completed_at: Option<i64>,
+            agent_id: Option<String>,
+        }
+        impl Acc {
+            fn empty() -> Self {
+                Self {
+                    status: 0,
+                    status_str: String::new(),
+                    started_at: None,
+                    completed_at: None,
+                    agent_id: None,
+                }
+            }
+            fn observe(
+                &mut self,
+                rank: u8,
+                status_str: &str,
+                ts: i64,
+                agent_id: Option<&str>,
+                completed: bool,
+            ) {
+                if rank > self.status {
+                    self.status = rank;
+                    self.status_str = status_str.to_owned();
+                }
+                self.started_at = Some(self.started_at.map_or(ts, |s| s.min(ts)));
+                if completed {
+                    self.completed_at = Some(self.completed_at.map_or(ts, |c| c.max(ts)));
+                }
+                if let Some(a) = agent_id {
+                    if self.agent_id.as_deref().map(|x| x < a).unwrap_or(true) {
+                        self.agent_id = Some(a.to_owned());
+                    }
+                }
+            }
+        }
+
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT created_at, action_type, agent_id, payload \
+             FROM ssb \
+             WHERE action_type IN (?1, ?2, ?3) \
+             ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::PhaseComplete.as_sql_str(),
+                SsbActionType::PhaseTransition.as_sql_str(),
+                SsbActionType::ReasoningTrace.as_sql_str(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )?;
+
+        let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+        for row in rows {
+            let (ts, at_str, agent_id, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            match payload {
+                SsbPayload::PhaseComplete(inner) => {
+                    if !step_matches(&inner.phase_id, phase_id) {
+                        continue;
+                    }
+                    let entry = acc
+                        .entry(inner.phase_id.clone())
+                        .or_insert_with(Acc::empty);
+                    entry.observe(3, &inner.fsm_state, ts, Some(&inner.agent_id), true);
+                }
+                SsbPayload::PhaseTransition(inner) => {
+                    if at_str.as_str() != SsbActionType::PhaseTransition.as_sql_str() {
+                        continue;
+                    }
+                    let key = inner.evidence_summary.clone();
+                    if !step_matches(&key, phase_id) {
+                        continue;
+                    }
+                    let entry = acc.entry(key).or_insert_with(Acc::empty);
+                    entry.observe(2, &inner.to_state, ts, Some(&agent_id), false);
+                }
+                SsbPayload::ReasoningTrace(inner) => {
+                    let key = inner.topic.clone();
+                    if !step_matches(&key, phase_id) {
+                        continue;
+                    }
+                    let entry = acc.entry(key).or_insert_with(Acc::empty);
+                    entry.observe(1, &inner.step_type, ts, Some(&inner.agent_id), false);
+                }
+                _ => {}
+            }
+        }
+
+        let out: Vec<StepStatus> = acc
+            .into_iter()
+            .map(|(step_id, a)| StepStatus {
+                step_id,
+                status: a.status_str,
+                started_at: a.started_at,
+                completed_at: a.completed_at,
+                agent_id: a.agent_id,
+            })
+            .collect();
+        Ok(out)
+    }
+
+    /// Full row detail for one SSB seq (4K.5). Decodes the msgpack payload
+    /// to typed [`SsbPayload`] then re-encodes as JSON for frontend
+    /// consumption. Returns `OutOfRange` for negative seq or unknown row.
+    pub fn get_action_detail(&self, seq: i64) -> Result<SsbActionDetail, SsbViewerError> {
+        if seq < 0 {
+            return Err(SsbViewerError::Validation(format!(
+                "seq must be >= 0, got {seq}"
+            )));
+        }
+        let conn = self.lock()?;
+        let row = conn
+            .query_row(
+                "SELECT seq, created_at, action_type, agent_id, payload \
+                 FROM ssb WHERE seq = ?1",
+                params![seq],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+
+        let Some((seq, ts, action_type, agent_id, payload_bytes)) = row else {
+            return Err(SsbViewerError::Validation(format!(
+                "no SSB row for seq {seq}"
+            )));
+        };
+
+        let typed: SsbPayload = rmp_serde::from_slice(&payload_bytes)?;
+        let payload_json = serde_json::to_value(&typed)
+            .map_err(|e| SsbViewerError::Validation(format!("payload json encode: {e}")))?;
+
+        let mut files_stmt = conn.prepare(
+            "SELECT file_path FROM ssb_files WHERE seq = ?1 ORDER BY file_path",
+        )?;
+        let file_rows = files_stmt.query_map(params![seq], |row| row.get::<_, String>(0))?;
+        let mut files: Vec<String> = Vec::new();
+        for f in file_rows {
+            files.push(f?);
+        }
+
+        Ok(SsbActionDetail {
+            seq,
+            ts,
+            action_type,
+            agent_id,
+            payload_json,
+            files,
+        })
+    }
+
     /// All `reasoning_trace` rows that reference a given `step_id`, ordered
     /// by `seq` ascending. `step_id` matches `topic` in the stored payload
     /// (the orchestrator writes the plan step into `topic`).
@@ -462,6 +685,53 @@ fn summarize_payload(bytes: &[u8]) -> String {
         .filter(|c| !c.is_control())
         .take(SUMMARY_TRUNCATE_CHARS)
         .collect()
+}
+
+/// Validate `phase_id` for [`SsbViewer::step_progress`].
+///
+/// Accepts `[A-Za-z0-9._-]{1,64}`; rejects empty, dot-traversal, and
+/// over-length input. Returns [`SsbViewerError::OutOfRange`] on failure so
+/// callers can surface a single error variant.
+fn validate_phase_id(phase_id: &str) -> Result<(), SsbViewerError> {
+    if phase_id.is_empty() {
+        return Err(SsbViewerError::Validation("phase_id empty".into()));
+    }
+    if phase_id.len() > PHASE_ID_MAX_LEN {
+        return Err(SsbViewerError::Validation(format!(
+            "phase_id length {} exceeds max {}",
+            phase_id.len(),
+            PHASE_ID_MAX_LEN
+        )));
+    }
+    if phase_id == ".." || phase_id.contains("../") || phase_id.contains("..\\") {
+        return Err(SsbViewerError::Validation(
+            "phase_id path-traversal".into(),
+        ));
+    }
+    let ok = phase_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !ok {
+        return Err(SsbViewerError::Validation(format!(
+            "phase_id contains invalid chars: {phase_id}"
+        )));
+    }
+    Ok(())
+}
+
+/// True if `step_id` belongs to `phase_id` (exact match OR `phase_id.<rest>`).
+fn step_matches(step_id: &str, phase_id: &str) -> bool {
+    if step_id == phase_id {
+        return true;
+    }
+    if step_id.len() > phase_id.len() {
+        let bytes = step_id.as_bytes();
+        let plen = phase_id.len();
+        if &step_id[..plen] == phase_id && bytes[plen] == b'.' {
+            return true;
+        }
+    }
+    false
 }
 
 /// Validate that a `u64` request id fits in `i64` (the native seq width).
