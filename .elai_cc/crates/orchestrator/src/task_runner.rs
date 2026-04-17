@@ -52,14 +52,16 @@ use crate::pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef, RuleId, ToolLookup,
 };
 use crate::pipeline_tree_navigator::{
-    BabyStepOutcome, BabyStepResult, DepthFirstNavigator, NavigatorTree, TreeNavigator,
-    TreeNavigatorState,
+    run_integration_checkpoint, BabyStepLocation, BabyStepOutcome, BabyStepResult,
+    DecompositionLevel, DepthFirstNavigator, IntegrationRunResult, IntegrationRunner,
+    NavigatorTree, NoOpIntegrationRunner, TreeNavigator, TreeNavigatorState,
 };
 use crate::grounding_client::SidecarGroundingClient;
 use crate::research_tree::{
-    research_decompose, ConceptDecomposition, ExecutionMode, MediaSpec, NodeId, NodeStatus,
-    OutputType, PerfSpec, PipelineSpec, ResearchCache, ResearchNode,
-    DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
+    research_decompose, ConceptDecomposition, ConceptId, ExecutionMode, ExitCriterion,
+    IntegrationSpec, MediaSpec, NodeId, NodeStatus, OutputType, PerfSpec, PhaseId,
+    PipelineSpec, ResearchCache, ResearchNode, StepId, DEFAULT_CACHE_MAX_ENTRIES,
+    DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
     FindingPayload, PhaseCompletePayload, PreviewAvailablePayload, ReasoningTracePayload, Ssb,
@@ -114,6 +116,15 @@ pub const DEV_SERVER_FAILED_CATEGORY: &str = "dev_server_failed";
 /// Character cap applied to task text when embedding it in log/reasoning rows.
 /// Keeps SSB payloads compact without losing the first line of context.
 pub const TASK_LOG_TRUNCATE_CHARS: usize = 120;
+
+/// Finding category for integration-checkpoint failures at any decomposition
+/// level (baby step / step / phase / concept). The dashboard filter keys on
+/// this string to surface checkpoint failures in the activity feed.
+pub const INTEGRATION_CHECKPOINT_FAILED_CATEGORY: &str = "integration_checkpoint_failed";
+
+/// Finding category for integration-checkpoint bubble-up escalations raised
+/// by `run_{step,phase,concept}_integration` when an integration fails.
+pub const INTEGRATION_BUBBLE_UP_CATEGORY: &str = "integration_bubble_up";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -1307,10 +1318,24 @@ async fn drive_task(
     .await;
 
     // --- 4. Navigate baby steps ----------------------------------------
-    let tree = NavigatorTree::new(decomposition, Default::default());
+    // 4E.13: register IntegrationSpecs at all four decomposition levels so
+    // `run_integration_checkpoint` has a real spec to consult at each baby
+    // step / step / phase / concept boundary. The NoOpIntegrationRunner
+    // reports success for every criterion — baby-step exit criteria become
+    // real commands once `agent_pool::InProcessAgentPool` is wired (wire-4A).
+    // Until then the wiring is the contract; pass/fail derives from the
+    // recorded `BabyStepResult.outcome`.
+    let mut tree = NavigatorTree::new(decomposition, Default::default());
+    register_runner_integration_specs(&mut tree);
     let nav = DepthFirstNavigator::from_tree(&tree);
     let mut state = TreeNavigatorState::new();
     let mut steps_executed: usize = 0;
+    let integration_runner: NoOpIntegrationRunner = NoOpIntegrationRunner;
+    let mut last_location: Option<BabyStepLocation> = None;
+    // Per-baby-step pass/fail for the terminal PhaseComplete row. Must stay in
+    // step with the per-iteration TestOutcome rows — both are surfaced by the
+    // dashboard and downstream gate logic, so they cannot disagree.
+    let mut baby_step_outcomes: Vec<(u64, bool)> = Vec::new();
 
     loop {
         if cancel.is_cancelled() {
@@ -1338,17 +1363,16 @@ async fn drive_task(
         )
         .await;
 
-        // Emit a per-step TestOutcome so the dashboard shows passing rows.
-        // Zero-lazy note: this is the MVP execution surrogate. Real test
-        // runs land when we wire `agent_pool::InProcessAgentPool` into
-        // the runner — a separate blocker.
-        emit_test_outcome(
-            writer,
-            &format!("baby_step_{}", bs_id.0),
-            true,
-            RUNNER_SYNTHETIC_DURATION_MS,
-        )
-        .await;
+        // 4E.13: fire higher-level integration checkpoints when the traversal
+        // crosses a step / phase / concept boundary. `last_location` is the
+        // *previous* baby step's location; comparing it to the current one
+        // tells us which boundaries were just closed off. We fire the outgoing
+        // level's checkpoint BEFORE emitting the new baby step's TestOutcome
+        // so the dashboard orders rows by (old-boundary-close, new-step-open).
+        let current_location = tree.location_index.get(&bs_id).cloned();
+        if let (Some(prev), Some(cur)) = (last_location.as_ref(), current_location.as_ref()) {
+            emit_level_transitions(writer, &nav, prev, cur, &integration_runner, &mut state, &tree).await;
+        }
 
         // Blocker #6: when the project scaffold is a web app, the baby-step
         // tier set at BabyStep level is {WebBuild}, but PHASE-level includes
@@ -1368,9 +1392,19 @@ async fn drive_task(
             );
             let needs_dev_server = tiers.contains(&WebValidationTier::WebDevServer);
             if needs_dev_server {
-                // Safe unwrap: is_web_project == true implies project_dir was Some.
-                let project_dir_ref = match project_dir.as_ref() {
-                    Some(p) => p.clone(),
+                match project_dir.as_ref() {
+                    Some(project_dir_ref) => {
+                        let step_id = format!("baby_step_{}", bs_id.0);
+                        maybe_launch_preview(
+                            writer,
+                            resolved,
+                            &task.project_id,
+                            project_dir_ref.clone(),
+                            step_id,
+                        )
+                        .await;
+                        preview_launched_for_task = true;
+                    }
                     None => {
                         // Shouldn't happen given the is_web_project gate; emit
                         // a Finding rather than panic to keep the runner alive.
@@ -1382,33 +1416,17 @@ async fn drive_task(
                         )
                         .await;
                         preview_launched_for_task = true;
-                        // Fall through to result recording below.
-                        let result = BabyStepResult {
-                            baby_step_id: bs_id,
-                            outcome: BabyStepOutcome::Passed,
-                            lines_modified: 0,
-                            retry_count: 0,
-                        };
-                        let _ = nav.record_result(result, &mut state, &tree);
-                        continue;
+                        // Fall through to the shared checkpoint path below.
                     }
-                };
-                let step_id = format!("baby_step_{}", bs_id.0);
-                maybe_launch_preview(
-                    writer,
-                    resolved,
-                    &task.project_id,
-                    project_dir_ref,
-                    step_id,
-                )
-                .await;
-                preview_launched_for_task = true;
+                }
             }
         }
 
+        let outcome = BabyStepOutcome::Passed;
+        let outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
         let result = BabyStepResult {
             baby_step_id: bs_id,
-            outcome: BabyStepOutcome::Passed,
+            outcome,
             lines_modified: 0,
             retry_count: 0,
         };
@@ -1422,18 +1440,77 @@ async fn drive_task(
             )
             .await;
         }
+
+        // 4E.13: run the baby-step integration checkpoint and derive the
+        // TestOutcome from its aggregate `success`. Replaces the previous
+        // unconditional `TestOutcome { passed: true }` emission. If no spec
+        // is registered for this baby step the checkpoint is skipped and
+        // we fall back to the recorded outcome so the dashboard still sees
+        // progress (matches "no integration, no checkpoint" semantics of
+        // pipeline_tree_navigator.rs:820).
+        let passed = match tree
+            .integration_spec(DecompositionLevel::BabyStep, bs_id.0)
+            .cloned()
+        {
+            Some(spec) => {
+                let run = run_integration_checkpoint(
+                    DecompositionLevel::BabyStep,
+                    bs_id.0,
+                    &spec,
+                    &integration_runner,
+                    &mut state,
+                );
+                emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
+                run.success && outcome_passed
+            }
+            None => outcome_passed,
+        };
+        emit_test_outcome(
+            writer,
+            &format!("baby_step_{}", bs_id.0),
+            passed,
+            RUNNER_SYNTHETIC_DURATION_MS,
+        )
+        .await;
+        baby_step_outcomes.push((bs_id.0, passed));
+
+        last_location = current_location;
+    }
+
+    // 4E.13: after the last baby step we still need to close off the final
+    // step / phase / concept boundaries (no "next" baby step will trigger
+    // `emit_level_transitions`). Fire step → phase → concept so step
+    // results propagate into the navigator's phase failure counters before
+    // the phase integration runs, and phase results into concept counters
+    // before the concept integration. `run_integration_checkpoint` is append-
+    // only — each call records exactly one `IntegrationCheckpoint`. Because
+    // `emit_level_transitions` fires on the OUTGOING location and flush fires
+    // on the FINAL location, the two are disjoint for every N >= 1 — no
+    // double-recording can occur for a given (level, node_id) pair inside a
+    // single `drive_task` invocation.
+    if let Some(last) = last_location.as_ref() {
+        flush_final_integration_checkpoints(writer, &nav, last, &integration_runner, &mut state, &tree).await;
     }
 
     // --- 5. PhaseComplete terminal row ----------------------------------
+    // `test_outcomes` is derived from the per-baby-step `passed` booleans
+    // collected during the loop so the terminal row never disagrees with the
+    // individual TestOutcome SSB rows it summarises. Pre-4E.13 this was a
+    // hardcoded `:passed` string regardless of outcome.
+    let test_outcomes: Vec<String> = baby_step_outcomes
+        .iter()
+        .map(|(id, passed)| {
+            let tag = if *passed { "passed" } else { "failed" };
+            format!("baby_step_{id}:{tag}")
+        })
+        .collect();
     let complete = SsbPayload::PhaseComplete(PhaseCompletePayload {
         phase_id: format!("task_seq_{}", seq),
         agent_id: RUNNER_AGENT_ID.to_owned(),
         fsm_state: "complete".to_owned(),
         evidence_artifacts: Vec::new(),
         commit_hashes: Vec::new(),
-        test_outcomes: (0..steps_executed)
-            .map(|i| format!("baby_step_{i}:passed"))
-            .collect(),
+        test_outcomes,
     });
     // Deliberately ignore the returned seq; writer errors surface via log.
     if let Err(e) = writer
@@ -1587,6 +1664,213 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         .await
     {
         error!(error = %e, "task_runner: write Finding failed");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4E.13 — Integration checkpoint helpers
+// ---------------------------------------------------------------------------
+
+/// Walk the tree's `location_index` and register a default IntegrationSpec at
+/// every BabyStep / Step / Phase / Concept level. The criteria have no
+/// `check_command` (NoOpIntegrationRunner is what we execute them with) —
+/// registering them still drives the 4E.11 bookkeeping path: integration
+/// checkpoints are appended to `state.integration_checkpoints`, bubble-up
+/// counters increment on failure, and the per-level `run_*_integration`
+/// convenience methods have a spec to look up. When wire-4A lands we swap
+/// in a CommandIntegrationRunner and populate `check_command` with real
+/// `cargo check` / `cargo test` invocations.
+fn register_runner_integration_specs(tree: &mut NavigatorTree) {
+    use std::collections::BTreeSet;
+
+    let mut baby_step_ids: Vec<u64> = Vec::new();
+    let mut step_ids: BTreeSet<StepId> = BTreeSet::new();
+    let mut phase_ids: BTreeSet<PhaseId> = BTreeSet::new();
+    let mut concept_ids: BTreeSet<ConceptId> = BTreeSet::new();
+    for loc in tree.location_index.values() {
+        baby_step_ids.push(loc.baby_step_id.0);
+        step_ids.insert(loc.step_id);
+        phase_ids.insert(loc.phase_id);
+        concept_ids.insert(loc.concept_id);
+    }
+    for bs_u64 in &baby_step_ids {
+        tree.register_integration_spec(
+            DecompositionLevel::BabyStep,
+            *bs_u64,
+            default_integration_spec("baby_step", *bs_u64),
+        );
+    }
+    for sid in &step_ids {
+        tree.register_integration_spec(
+            DecompositionLevel::Step,
+            sid.0,
+            default_integration_spec("step", sid.0),
+        );
+    }
+    for pid in &phase_ids {
+        tree.register_integration_spec(
+            DecompositionLevel::Phase,
+            pid.0,
+            default_integration_spec("phase", pid.0),
+        );
+    }
+    for cid in &concept_ids {
+        tree.register_integration_spec(
+            DecompositionLevel::Concept,
+            cid.0,
+            default_integration_spec("concept", cid.0),
+        );
+    }
+}
+
+fn default_integration_spec(level_tag: &str, node_id: u64) -> IntegrationSpec {
+    IntegrationSpec {
+        wiring_target: format!("{level_tag}_{node_id}"),
+        callers: vec![RUNNER_AGENT_ID.to_string()],
+        exit_criteria: vec![ExitCriterion {
+            description: format!("{level_tag} {node_id} integration"),
+            check_command: None,
+        }],
+    }
+}
+
+/// Compare the previous baby step's location to the current one and fire
+/// the outgoing level's integration checkpoints. Concept-boundary crossings
+/// also imply phase- and step-boundary crossings; phase implies step.
+/// Order: step → phase → concept, so step failures propagate into phase
+/// bubble-up counters before the phase integration runs (and phase into
+/// concept). This is NOT "outer-to-inner" or "inner-to-outer" in the tree
+/// sense — it is bottom-up, matching the spec's bubble-up cascade.
+async fn emit_level_transitions(
+    writer: &Arc<Ssb>,
+    nav: &DepthFirstNavigator,
+    prev: &BabyStepLocation,
+    cur: &BabyStepLocation,
+    runner: &dyn IntegrationRunner,
+    state: &mut TreeNavigatorState,
+    tree: &NavigatorTree,
+) {
+    let concept_changed = prev.concept_id != cur.concept_id;
+    let phase_changed = concept_changed || prev.phase_id != cur.phase_id;
+    let step_changed = phase_changed || prev.step_id != cur.step_id;
+
+    if step_changed {
+        let (result, action) = nav.run_step_integration(prev.step_id, runner, state, tree);
+        if let Some(r) = result.as_ref() {
+            emit_checkpoint_outcome(writer, DecompositionLevel::Step, prev.step_id.0, r).await;
+        }
+        if let Some(a) = action.as_ref() {
+            emit_integration_bubble_up(writer, DecompositionLevel::Step, prev.step_id.0, a).await;
+        }
+    }
+    if phase_changed {
+        let (result, action) = nav.run_phase_integration(prev.phase_id, runner, state, tree);
+        if let Some(r) = result.as_ref() {
+            emit_checkpoint_outcome(writer, DecompositionLevel::Phase, prev.phase_id.0, r).await;
+        }
+        if let Some(a) = action.as_ref() {
+            emit_integration_bubble_up(writer, DecompositionLevel::Phase, prev.phase_id.0, a).await;
+        }
+    }
+    if concept_changed {
+        let (result, action) = nav.run_concept_integration(prev.concept_id, runner, state, tree);
+        if let Some(r) = result.as_ref() {
+            emit_checkpoint_outcome(writer, DecompositionLevel::Concept, prev.concept_id.0, r).await;
+        }
+        if let Some(a) = action.as_ref() {
+            emit_integration_bubble_up(writer, DecompositionLevel::Concept, prev.concept_id.0, a).await;
+        }
+    }
+}
+
+/// Fire step/phase/concept integration checkpoints for the last baby step's
+/// location. Called once after the loop so the final level boundaries close
+/// without waiting for a non-existent "next" baby step to trigger them.
+async fn flush_final_integration_checkpoints(
+    writer: &Arc<Ssb>,
+    nav: &DepthFirstNavigator,
+    last: &BabyStepLocation,
+    runner: &dyn IntegrationRunner,
+    state: &mut TreeNavigatorState,
+    tree: &NavigatorTree,
+) {
+    let (step_result, step_action) =
+        nav.run_step_integration(last.step_id, runner, state, tree);
+    if let Some(r) = step_result.as_ref() {
+        emit_checkpoint_outcome(writer, DecompositionLevel::Step, last.step_id.0, r).await;
+    }
+    if let Some(a) = step_action.as_ref() {
+        emit_integration_bubble_up(writer, DecompositionLevel::Step, last.step_id.0, a).await;
+    }
+    let (phase_result, phase_action) =
+        nav.run_phase_integration(last.phase_id, runner, state, tree);
+    if let Some(r) = phase_result.as_ref() {
+        emit_checkpoint_outcome(writer, DecompositionLevel::Phase, last.phase_id.0, r).await;
+    }
+    if let Some(a) = phase_action.as_ref() {
+        emit_integration_bubble_up(writer, DecompositionLevel::Phase, last.phase_id.0, a).await;
+    }
+    let (concept_result, concept_action) =
+        nav.run_concept_integration(last.concept_id, runner, state, tree);
+    if let Some(r) = concept_result.as_ref() {
+        emit_checkpoint_outcome(writer, DecompositionLevel::Concept, last.concept_id.0, r).await;
+    }
+    if let Some(a) = concept_action.as_ref() {
+        emit_integration_bubble_up(writer, DecompositionLevel::Concept, last.concept_id.0, a).await;
+    }
+}
+
+/// Emit a TestOutcome row for an integration-checkpoint run so the dashboard
+/// activity feed shows per-level progress. On failure, additionally emit a
+/// Finding so the category filter surfaces it outside the test-outcome pane.
+async fn emit_checkpoint_outcome(
+    writer: &Arc<Ssb>,
+    level: DecompositionLevel,
+    node_id: u64,
+    run: &IntegrationRunResult,
+) {
+    let level_tag = checkpoint_level_tag(level);
+    let test_name = format!("{level_tag}_{node_id}_integration");
+    emit_test_outcome(writer, &test_name, run.success, run.total_duration_ms).await;
+    if !run.success {
+        let reason = run
+            .failure_reason
+            .as_deref()
+            .unwrap_or("integration checkpoint failed");
+        emit_finding(
+            writer,
+            "error",
+            INTEGRATION_CHECKPOINT_FAILED_CATEGORY,
+            &format!("{level_tag} {node_id}: {reason}"),
+        )
+        .await;
+    }
+}
+
+/// Emit a Finding describing an integration-triggered bubble-up action so the
+/// dashboard filter can distinguish it from baby-step cascade bubble-ups.
+async fn emit_integration_bubble_up(
+    writer: &Arc<Ssb>,
+    level: DecompositionLevel,
+    node_id: u64,
+    action: &crate::pipeline_tree_navigator::BubbleUpAction,
+) {
+    let level_tag = checkpoint_level_tag(level);
+    emit_finding(
+        writer,
+        "warning",
+        INTEGRATION_BUBBLE_UP_CATEGORY,
+        &format!("{level_tag} {node_id}: {:?}", action),
+    )
+    .await;
+}
+
+fn checkpoint_level_tag(level: DecompositionLevel) -> &'static str {
+    match level {
+        DecompositionLevel::BabyStep => "baby_step",
+        DecompositionLevel::Step => "step",
+        DecompositionLevel::Phase => "phase",
+        DecompositionLevel::Concept => "concept",
     }
 }
 
@@ -2297,5 +2581,284 @@ mod tests {
 
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    // -----------------------------------------------------------------
+    // 4E.13 — Integration checkpoint wiring
+    // -----------------------------------------------------------------
+
+    use crate::research_tree::{
+        BabyStepGrounding, ConceptNode, EvidenceLevel, PhaseNode, SourceCitation, SourceQuality,
+        StepNode,
+    };
+
+    fn make_citation() -> SourceCitation {
+        SourceCitation {
+            url: "https://example.com".to_string(),
+            title: "test".to_string(),
+            quality: SourceQuality::Tier1,
+            evidence_level: EvidenceLevel::Anecdotal,
+            excerpt: "test excerpt".to_string(),
+        }
+    }
+
+    fn make_grounding() -> BabyStepGrounding {
+        BabyStepGrounding {
+            concept_name: "c".to_string(),
+            phase_name: "p".to_string(),
+            step_name: "s".to_string(),
+            top_citations: vec![make_citation()],
+            compressed_tokens: 10,
+        }
+    }
+
+    fn make_baby_step(id: u64) -> crate::research_tree::BabyStepSpec {
+        crate::research_tree::BabyStepSpec {
+            id: crate::research_tree::BabyStepId(id),
+            task: format!("bs {id}"),
+            estimated_tokens: 100,
+            grounding: make_grounding(),
+            tdd: None,
+            acceptance: None,
+        }
+    }
+
+    /// Build a tree with 1 concept, 2 phases, 2 steps per phase, 2 baby steps
+    /// per step → 8 baby steps spanning 4 steps / 2 phases / 1 concept.
+    fn synthetic_tree() -> NavigatorTree {
+        let concept = ConceptNode {
+            id: ConceptId(1),
+            name: "root".to_string(),
+            description: "synthetic".to_string(),
+            phases: (1..=2u64)
+                .map(|pid| PhaseNode {
+                    id: PhaseId(pid),
+                    name: format!("phase {pid}"),
+                    steps: (1..=2u64)
+                        .map(|sidx| StepNode {
+                            id: StepId(pid * 10 + sidx),
+                            description: format!("step p{pid}s{sidx}"),
+                            baby_steps: vec![
+                                make_baby_step(pid * 100 + sidx * 10 + 1),
+                                make_baby_step(pid * 100 + sidx * 10 + 2),
+                            ],
+                            evidence_level: EvidenceLevel::Anecdotal,
+                        })
+                        .collect(),
+                    depends_on: Vec::new(),
+                    research: None,
+                })
+                .collect(),
+            research: None,
+        };
+        let decomp = ConceptDecomposition {
+            idea: "synthetic".to_string(),
+            concepts: vec![concept],
+            mode: ExecutionMode::Autonomous,
+            total_research_calls: 0,
+        };
+        NavigatorTree::new(decomp, Default::default())
+    }
+
+    #[test]
+    fn register_runner_integration_specs_populates_all_four_levels() {
+        let mut tree = synthetic_tree();
+        assert!(
+            tree.integration_specs.is_empty(),
+            "fresh tree must have no specs registered"
+        );
+
+        register_runner_integration_specs(&mut tree);
+
+        // 8 baby steps + 4 steps + 2 phases + 1 concept = 15 specs
+        assert_eq!(tree.integration_specs.len(), 15);
+
+        assert!(tree
+            .integration_spec(DecompositionLevel::Concept, 1)
+            .is_some());
+        for pid in [1u64, 2] {
+            assert!(tree
+                .integration_spec(DecompositionLevel::Phase, pid)
+                .is_some());
+        }
+        for sid in [11u64, 12, 21, 22] {
+            assert!(tree
+                .integration_spec(DecompositionLevel::Step, sid)
+                .is_some());
+        }
+
+        let bs_spec = tree
+            .integration_spec(DecompositionLevel::BabyStep, 111)
+            .expect("baby step 111 spec");
+        assert_eq!(bs_spec.wiring_target, "baby_step_111");
+        assert_eq!(bs_spec.callers, vec![RUNNER_AGENT_ID.to_string()]);
+        assert_eq!(bs_spec.exit_criteria.len(), 1);
+        assert!(bs_spec.exit_criteria[0].check_command.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emit_level_transitions_fires_step_phase_concept_on_crossings() {
+        let _guard = crate::test_env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: tmp.path().join("ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "dashboard".into(),
+                    session_id: "4e13".into(),
+                },
+                clock,
+            )
+            .expect("ssb"),
+        );
+
+        let mut tree = synthetic_tree();
+        register_runner_integration_specs(&mut tree);
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        // Cross step only (phase/concept same).
+        let prev = BabyStepLocation {
+            concept_id: ConceptId(1),
+            phase_id: PhaseId(1),
+            step_id: StepId(11),
+            baby_step_id: crate::research_tree::BabyStepId(111),
+        };
+        let cur_same_phase = BabyStepLocation {
+            step_id: StepId(12),
+            ..prev
+        };
+        emit_level_transitions(&ssb, &nav, &prev, &cur_same_phase, &runner, &mut state, &tree)
+            .await;
+
+        // Cross phase (implies step).
+        let cur_new_phase = BabyStepLocation {
+            phase_id: PhaseId(2),
+            step_id: StepId(21),
+            ..prev
+        };
+        emit_level_transitions(&ssb, &nav, &prev, &cur_new_phase, &runner, &mut state, &tree)
+            .await;
+
+        assert!(state
+            .integration_checkpoints
+            .iter()
+            .any(|c| c.level == DecompositionLevel::Step));
+        assert!(state
+            .integration_checkpoints
+            .iter()
+            .any(|c| c.level == DecompositionLevel::Phase));
+
+        let outcomes = ssb
+            .query_by_type(SsbActionType::TestOutcome)
+            .unwrap_or_default();
+        assert!(
+            outcomes.len() >= 2,
+            "expected >=2 TestOutcome rows from checkpoints, got {}",
+            outcomes.len()
+        );
+
+        let mut saw_step = false;
+        for row in &outcomes {
+            if let Ok(SsbPayload::TestOutcome(p)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                if p.test_name.starts_with("step_") && p.test_name.ends_with("_integration") {
+                    saw_step = true;
+                }
+            }
+        }
+        assert!(saw_step, "expected a step_{{id}}_integration TestOutcome row");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_final_integration_checkpoints_covers_all_three_levels() {
+        let _guard = crate::test_env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: tmp.path().join("ssb.db"),
+                    pool_size: Some(2),
+                    project_id: "dashboard".into(),
+                    session_id: "4e13-flush".into(),
+                },
+                clock,
+            )
+            .expect("ssb"),
+        );
+
+        let mut tree = synthetic_tree();
+        register_runner_integration_specs(&mut tree);
+        let nav = DepthFirstNavigator::from_tree(&tree);
+        let mut state = TreeNavigatorState::new();
+        let runner = NoOpIntegrationRunner;
+
+        let last = BabyStepLocation {
+            concept_id: ConceptId(1),
+            phase_id: PhaseId(2),
+            step_id: StepId(22),
+            baby_step_id: crate::research_tree::BabyStepId(222),
+        };
+        flush_final_integration_checkpoints(&ssb, &nav, &last, &runner, &mut state, &tree).await;
+
+        let step_count = state
+            .integration_checkpoints
+            .iter()
+            .filter(|c| c.level == DecompositionLevel::Step)
+            .count();
+        let phase_count = state
+            .integration_checkpoints
+            .iter()
+            .filter(|c| c.level == DecompositionLevel::Phase)
+            .count();
+        let concept_count = state
+            .integration_checkpoints
+            .iter()
+            .filter(|c| c.level == DecompositionLevel::Concept)
+            .count();
+        assert_eq!(step_count, 1);
+        assert_eq!(phase_count, 1);
+        assert_eq!(concept_count, 1);
+
+        let outcomes = ssb
+            .query_by_type(SsbActionType::TestOutcome)
+            .unwrap_or_default();
+        let mut names: Vec<String> = Vec::new();
+        for row in &outcomes {
+            if let Ok(SsbPayload::TestOutcome(p)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                names.push(p.test_name.clone());
+            }
+        }
+        assert!(names.iter().any(|n| n == "step_22_integration"));
+        assert!(names.iter().any(|n| n == "phase_2_integration"));
+        assert!(names.iter().any(|n| n == "concept_1_integration"));
+    }
+
+    #[test]
+    fn default_integration_spec_has_expected_shape() {
+        let spec = default_integration_spec("phase", 42);
+        assert_eq!(spec.wiring_target, "phase_42");
+        assert_eq!(spec.callers, vec![RUNNER_AGENT_ID.to_string()]);
+        assert_eq!(spec.exit_criteria.len(), 1);
+        assert_eq!(
+            spec.exit_criteria[0].description,
+            "phase 42 integration"
+        );
+        assert!(spec.exit_criteria[0].check_command.is_none());
+    }
+
+    #[test]
+    fn checkpoint_level_tag_maps_each_variant() {
+        assert_eq!(checkpoint_level_tag(DecompositionLevel::BabyStep), "baby_step");
+        assert_eq!(checkpoint_level_tag(DecompositionLevel::Step), "step");
+        assert_eq!(checkpoint_level_tag(DecompositionLevel::Phase), "phase");
+        assert_eq!(checkpoint_level_tag(DecompositionLevel::Concept), "concept");
     }
 }
