@@ -55,6 +55,7 @@ use crate::pipeline_tree_navigator::{
     BabyStepOutcome, BabyStepResult, DepthFirstNavigator, NavigatorTree, TreeNavigator,
     TreeNavigatorState,
 };
+use crate::grounding_client::SidecarGroundingClient;
 use crate::research_tree::{
     research_decompose, ConceptDecomposition, ExecutionMode, MediaSpec, OutputType, PerfSpec,
     PipelineSpec, ResearchCache, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
@@ -641,7 +642,14 @@ async fn drive_task(
     .await;
 
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-    let decomposition = research_decompose(&task.task, ExecutionMode::Autonomous, &mut cache)?;
+    let grounding_client = SidecarGroundingClient::default();
+    let decomposition = research_decompose(
+        &task.task,
+        ExecutionMode::Autonomous,
+        &mut cache,
+        &grounding_client,
+    )
+    .await?;
     if decomposition.concepts.is_empty() {
         return Err(TaskRunnerError::EmptyDecomposition);
     }
@@ -1184,11 +1192,19 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), handle2).await;
     }
 
-    #[test]
-    fn spec_from_decomposition_nonempty_for_default_task() {
+    #[tokio::test]
+    async fn spec_from_decomposition_nonempty_for_default_task() {
+        use crate::grounding_client::SyntheticGroundingClient;
         let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-        let d = research_decompose("make a thing", ExecutionMode::Autonomous, &mut cache)
-            .expect("decompose");
+        let client = SyntheticGroundingClient::new();
+        let d = research_decompose(
+            "make a thing",
+            ExecutionMode::Autonomous,
+            &mut cache,
+            &client,
+        )
+        .await
+        .expect("decompose");
         let spec = spec_from_decomposition(&d);
         assert!(!spec.steps.is_empty(), "spec must have >=1 step");
         assert_eq!(spec.name, "dashboard_task");

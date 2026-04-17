@@ -1,0 +1,45 @@
+You are a research planner expanding a step into baby steps.
+
+Step: {prompt}
+
+Return ONLY a JSON object matching this schema. Do not wrap in markdown unless your runtime requires it. Do not include prose before or after the JSON.
+
+{
+  "question": "What baby steps execute step <name>?",
+  "answer": "<one-paragraph plan: inputs, outputs, smallest valuable change per baby step>",
+  "alternatives": [
+    {
+      "name": "<alternative baby-step sequence name>",
+      "description": "<what this sequence prioritises>",
+      "citations": [],
+      "confidence": 0.7,
+      "trade_offs": ["<trade-off 1>"]
+    }
+  ],
+  "contradictions": [],
+  "sub_results": [
+    {
+      "question": "<specific baby-step question answerable by a single edit>",
+      "answer": "<one-sentence baby-step description>",
+      "citations": [],
+      "confidence": 0.8,
+      "evidence_level": "MultiSource"
+    }
+  ],
+  "snapshot": {
+    "nodes": [],
+    "convergence": "Converged",
+    "total_iterations": 1,
+    "elapsed": {"secs": 0, "nanos": 0}
+  },
+  "quality_metrics": [],
+  "convergence": "Converged"
+}
+
+Rules:
+- Produce 1-3 entries in `alternatives`.
+- Produce 3-8 entries in `sub_results`. Each sub-question should be specific enough that a single edit closes it.
+- `evidence_level` must be one of: "Anecdotal", "SingleSource", "MultiSource", "Verified".
+- `confidence` is a float in [0.0, 1.0].
+- `convergence` (both top-level and inside snapshot) must be one of: "Converged", "Partial", "Failed".
+- Keep `citations` as an empty array unless you have a concrete URL.

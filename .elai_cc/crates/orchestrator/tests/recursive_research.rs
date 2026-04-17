@@ -3,6 +3,7 @@
 // 4D.8: all tests call stubs and expect Err(NotImplemented).
 // 4D.9: stubs implemented, tests pass.
 
+use elai_orchestrator::grounding_client::SyntheticGroundingClient;
 use elai_orchestrator::research_tree::*;
 use std::time::Duration;
 
@@ -70,11 +71,13 @@ fn stub_report() -> ResearchReport {
 // 1. Level 0: concept decomposition
 // ---------------------------------------------------------------------------
 
-#[test]
-fn recursive_research_level0_concept_decomposition() {
+#[tokio::test]
+async fn recursive_research_level0_concept_decomposition() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-    let result = research_decompose("build a web server", ExecutionMode::Autonomous, &mut cache);
-    // 4D.8: stub returns Err(NotImplemented); 4D.9: returns Ok with concepts
+    let client = SyntheticGroundingClient::new();
+    let result =
+        research_decompose("build a web server", ExecutionMode::Autonomous, &mut cache, &client)
+            .await;
     assert!(
         result.is_ok(),
         "research_decompose should succeed: {result:?}"
@@ -255,10 +258,13 @@ fn recursive_research_grounding_under_500_tokens() {
 // 10. Interactive mode presents alternatives
 // ---------------------------------------------------------------------------
 
-#[test]
-fn recursive_research_interactive_mode_presents_alternatives() {
+#[tokio::test]
+async fn recursive_research_interactive_mode_presents_alternatives() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-    let result = research_decompose("build a CLI tool", ExecutionMode::Interactive, &mut cache);
+    let client = SyntheticGroundingClient::new();
+    let result =
+        research_decompose("build a CLI tool", ExecutionMode::Interactive, &mut cache, &client)
+            .await;
     assert!(result.is_ok(), "interactive mode should succeed");
     let decomp = result.unwrap();
     assert_eq!(decomp.mode, ExecutionMode::Interactive);
@@ -268,10 +274,13 @@ fn recursive_research_interactive_mode_presents_alternatives() {
 // 11. Autonomous mode auto-selects
 // ---------------------------------------------------------------------------
 
-#[test]
-fn recursive_research_autonomous_mode_auto_selects() {
+#[tokio::test]
+async fn recursive_research_autonomous_mode_auto_selects() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-    let result = research_decompose("build a REST API", ExecutionMode::Autonomous, &mut cache);
+    let client = SyntheticGroundingClient::new();
+    let result =
+        research_decompose("build a REST API", ExecutionMode::Autonomous, &mut cache, &client)
+            .await;
     assert!(result.is_ok(), "autonomous mode should succeed");
     let decomp = result.unwrap();
     assert_eq!(decomp.mode, ExecutionMode::Autonomous);
@@ -301,9 +310,8 @@ fn recursive_research_cross_concept_dependency_detected() {
 // 13. Proptest: random idea, research_decompose never panics
 // ---------------------------------------------------------------------------
 
-#[test]
-fn recursive_research_proptest_no_panic() {
-    // Deterministic loop with varied inputs (proptest-style without proptest crate for integration test)
+#[tokio::test]
+async fn recursive_research_proptest_no_panic() {
     let long_input = "x".repeat(10000);
     let test_ideas: Vec<&str> = vec![
         "build a web server with authentication",
@@ -315,10 +323,11 @@ fn recursive_research_proptest_no_panic() {
         "special chars: !@#$%^&*()",
     ];
 
+    let client = SyntheticGroundingClient::new();
     for idea in &test_ideas {
         let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
         // Must not panic — Err is acceptable, panic is not
-        let _ = research_decompose(idea, ExecutionMode::Autonomous, &mut cache);
+        let _ = research_decompose(idea, ExecutionMode::Autonomous, &mut cache, &client).await;
     }
 }
 

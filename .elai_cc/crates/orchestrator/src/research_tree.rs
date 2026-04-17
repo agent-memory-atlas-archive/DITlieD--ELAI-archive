@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 
 use elai_core::clock::{ClockProvider, LogicalInstant};
 
+use crate::grounding_client::{GroundingClient, GroundingError, ResearchLevel};
 use crate::ssb::{Ssb, SsbPayload, ResearchStepPayload, ResearchDecomposeLevelPayload};
 
 // ---------------------------------------------------------------------------
@@ -267,15 +268,20 @@ fn domain_matches(host: &str, domains: &[&str]) -> bool {
 // EvidenceLevel — ranked evidence strength
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub enum EvidenceLevel {
     /// Anecdotal or unverified.
+    #[default]
+    #[serde(alias = "anecdotal")]
     Anecdotal,
     /// From a single credible source.
+    #[serde(alias = "single_source", alias = "singlesource")]
     SingleSource,
     /// Corroborated by multiple sources.
+    #[serde(alias = "multi_source", alias = "multisource")]
     MultiSource,
     /// Formally verified or peer-reviewed.
+    #[serde(alias = "verified")]
     Verified,
 }
 
@@ -311,8 +317,11 @@ pub struct SourceCitation {
 pub struct Alternative {
     pub name: String,
     pub description: String,
+    #[serde(default)]
     pub citations: Vec<SourceCitation>,
+    #[serde(default = "default_confidence")]
     pub confidence: f64,
+    #[serde(default)]
     pub trade_offs: Vec<String>,
 }
 
@@ -337,9 +346,16 @@ pub struct Contradiction {
 pub struct SubQuestionResult {
     pub question: String,
     pub answer: String,
+    #[serde(default)]
     pub citations: Vec<SourceCitation>,
+    #[serde(default = "default_confidence")]
     pub confidence: f64,
+    #[serde(default)]
     pub evidence_level: EvidenceLevel,
+}
+
+fn default_confidence() -> f64 {
+    0.5
 }
 
 // ---------------------------------------------------------------------------
@@ -516,13 +532,16 @@ impl Default for SharedResearchState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConvergenceStatus {
     /// All nodes converged (phi >= phi_min AND psi >= psi_min).
+    #[serde(alias = "converged", alias = "CONVERGED")]
     Converged,
     /// Partial convergence — some nodes converged, some did not.
+    #[serde(alias = "partial", alias = "PARTIAL")]
     Partial {
         converged_count: usize,
         total_count: usize,
     },
     /// Failed to converge within budget.
+    #[serde(alias = "failed", alias = "FAILED")]
     Failed { reason: String },
 }
 
@@ -532,10 +551,53 @@ pub enum ConvergenceStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchTreeSnapshot {
+    #[serde(default)]
     pub nodes: Vec<ResearchNode>,
+    #[serde(default = "default_convergence")]
     pub convergence: ConvergenceStatus,
+    #[serde(default = "default_iterations")]
     pub total_iterations: u32,
+    #[serde(default, with = "duration_opt_or_default")]
     pub elapsed: Duration,
+}
+
+fn default_convergence() -> ConvergenceStatus {
+    ConvergenceStatus::Converged
+}
+
+fn default_iterations() -> u32 {
+    1
+}
+
+/// Accept `elapsed` missing, a plain number-of-seconds, or the default
+/// `{"secs", "nanos"}` shape. LLM-generated JSON rarely matches the struct form.
+mod duration_opt_or_default {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        d.serialize(s)
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        Struct {
+            secs: u64,
+            #[serde(default)]
+            nanos: u32,
+        },
+        Seconds(u64),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        match Option::<Shape>::deserialize(d)? {
+            None => Ok(Duration::ZERO),
+            Some(Shape::Struct { secs, nanos }) => Ok(Duration::new(secs, nanos)),
+            Some(Shape::Seconds(s)) => Ok(Duration::from_secs(s)),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +720,13 @@ pub enum ResearchTreeError {
 
     #[error("not implemented: {0}")]
     NotImplemented(String),
+
+    #[error("grounding failed at {level:?}: {source}")]
+    GroundingFailed {
+        level: ResearchLevel,
+        #[source]
+        source: GroundingError,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1379,23 +1448,32 @@ impl ResearchCache {
     where
         F: FnOnce() -> Result<ResearchReport, ResearchTreeError>,
     {
-        let now = self.now_secs();
-
-        // Check cache hit
-        if let Some(entry) = self.entries.get_mut(key) {
-            let age = now.saturating_sub(entry.cached_at);
-            if age < self.ttl_seconds {
-                entry.hit_count += 1;
-                entry.last_accessed_at = now;
-                return Ok(entry.report.clone());
-            }
-            // Expired — fall through to re-research
+        if let Some(cached) = self.peek(key) {
+            return Ok(cached);
         }
-
-        // Cache miss or expired: call the closure
         let report = f()?;
+        self.put(key, report.clone());
+        Ok(report)
+    }
 
-        // LRU eviction: remove least recently accessed entry if at capacity
+    /// Look up a cache entry, honouring TTL and updating LRU metadata.
+    /// Async callers use this to check the cache without holding a closure.
+    pub fn peek(&mut self, key: &str) -> Option<ResearchReport> {
+        let now = self.now_secs();
+        let entry = self.entries.get_mut(key)?;
+        let age = now.saturating_sub(entry.cached_at);
+        if age >= self.ttl_seconds {
+            return None;
+        }
+        entry.hit_count += 1;
+        entry.last_accessed_at = now;
+        Some(entry.report.clone())
+    }
+
+    /// Insert a freshly-fetched report into the cache, evicting the least
+    /// recently accessed entry if at capacity.
+    pub fn put(&mut self, key: &str, report: ResearchReport) {
+        let now = self.now_secs();
         if self.entries.len() >= self.max_entries {
             let oldest_key = self
                 .entries
@@ -1406,18 +1484,15 @@ impl ResearchCache {
                 self.entries.remove(&k);
             }
         }
-
         self.entries.insert(
             key.to_owned(),
             CachedResearch {
-                report: report.clone(),
+                report,
                 cached_at: now,
                 last_accessed_at: now,
                 hit_count: 0,
             },
         );
-
-        Ok(report)
     }
 }
 
@@ -1448,10 +1523,11 @@ impl DecompositionTree {
 // Stub functions — Recursive Decomposition (4D.7)
 // ---------------------------------------------------------------------------
 
-pub fn research_decompose(
+pub async fn research_decompose<C: GroundingClient>(
     idea: &str,
     mode: ExecutionMode,
     cache: &mut ResearchCache,
+    client: &C,
 ) -> Result<ConceptDecomposition, ResearchTreeError> {
     if idea.trim().is_empty() {
         return Err(ResearchTreeError::EmptyQuestion);
@@ -1461,29 +1537,22 @@ pub fn research_decompose(
         info!("INTERACTIVE mode: presenting alternatives");
     }
 
-    // Level 0: get or create a research report for the idea
-    let report = cache.get_or_research(idea, || {
-        // Synthetic report for the idea (real LLM call would happen via IPC)
-        Ok(build_synthetic_report(idea))
-    })?;
+    // Level 0: ground the top-level idea via the sidecar.
+    let report = ground_or_cached(cache, client, idea, idea, ResearchLevel::Idea).await?;
 
-    // Level 1: extract concepts from the report
     let mut concepts = extract_concepts(&report)?;
 
-    // Level 2+3: for each concept, extract phases, steps, and baby steps
     for concept in &mut concepts {
-        let concept_report = cache.get_or_research(
-            &format!("concept:{}", concept.name),
-            || Ok(build_synthetic_report(&concept.name)),
-        )?;
+        let key = format!("concept:{}", concept.name);
+        let concept_report =
+            ground_or_cached(cache, client, &key, &concept.name, ResearchLevel::Concept).await?;
         concept.research = Some(concept_report.clone());
 
         let mut phases = extract_phases(&concept_report)?;
         for phase in &mut phases {
-            let phase_report = cache.get_or_research(
-                &format!("phase:{}", phase.name),
-                || Ok(build_synthetic_report(&phase.name)),
-            )?;
+            let key = format!("phase:{}", phase.name);
+            let phase_report =
+                ground_or_cached(cache, client, &key, &phase.name, ResearchLevel::Phase).await?;
             phase.research = Some(phase_report.clone());
 
             let steps = extract_steps(&phase_report)?;
@@ -1507,40 +1576,26 @@ pub fn research_decompose(
     })
 }
 
-fn build_synthetic_report(topic: &str) -> ResearchReport {
-    // Deterministic synthetic report for testing / non-LLM mode.
-    // In production, this is replaced by IPC GroundingRequest.
-    ResearchReport {
-        question: topic.to_owned(),
-        answer: format!("Synthetic answer for: {topic}"),
-        alternatives: vec![
-            Alternative {
-                name: format!("{topic}-approach-a"),
-                description: format!("First approach for {topic}"),
-                citations: vec![],
-                confidence: 0.7,
-                trade_offs: vec!["complexity".into()],
-            },
-        ],
-        contradictions: Vec::new(),
-        sub_results: vec![
-            SubQuestionResult {
-                question: format!("What concept applies to {topic}?"),
-                answer: format!("concept analysis for {topic}"),
-                citations: vec![],
-                confidence: 0.8,
-                evidence_level: EvidenceLevel::MultiSource,
-            },
-        ],
-        snapshot: ResearchTreeSnapshot {
-            nodes: Vec::new(),
-            convergence: ConvergenceStatus::Converged,
-            total_iterations: 1,
-            elapsed: Duration::ZERO,
-        },
-        quality_metrics: Vec::new(),
-        convergence: ConvergenceStatus::Converged,
+/// Return a cached ResearchReport for `key`, or invoke the GroundingClient
+/// and cache the result. GroundingError is wrapped as
+/// `ResearchTreeError::GroundingFailed { level, source }` so upstream callers
+/// (task_runner, SSB Finding emitter) see a typed, level-tagged failure.
+async fn ground_or_cached<C: GroundingClient>(
+    cache: &mut ResearchCache,
+    client: &C,
+    cache_key: &str,
+    prompt: &str,
+    level: ResearchLevel,
+) -> Result<ResearchReport, ResearchTreeError> {
+    if let Some(cached) = cache.peek(cache_key) {
+        return Ok(cached);
     }
+    let report = client
+        .ground(prompt, level)
+        .await
+        .map_err(|source| ResearchTreeError::GroundingFailed { level, source })?;
+    cache.put(cache_key, report.clone());
+    Ok(report)
 }
 
 pub fn extract_concepts(

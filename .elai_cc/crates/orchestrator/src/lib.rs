@@ -38,6 +38,7 @@ mod preload;
 mod prompt;
 pub mod recovery;
 pub mod recovery_recipes;
+pub mod grounding_client;
 pub mod research_budget;
 pub mod research_pipeline;
 pub mod research_tier;
