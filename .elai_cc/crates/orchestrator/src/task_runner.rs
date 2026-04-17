@@ -642,6 +642,232 @@ impl WebResearchStepEmitter for SsbWebResearchStepEmitter {
 }
 
 // ---------------------------------------------------------------------------
+// Web-scaffold routing (Session 4E.15)
+// ---------------------------------------------------------------------------
+
+/// Category used on `Finding` rows emitted when a web-scaffold task fails
+/// or cannot be served (no applier configured).
+pub const WEB_SCAFFOLD_FAILED_CATEGORY: &str = "web_scaffold_failed";
+
+/// Built-in template names the detector recognises. Kept in one place so the
+/// applier, detector, and tests agree.
+pub const WEB_SCAFFOLD_TEMPLATE_REACT: &str = "vite-react";
+pub const WEB_SCAFFOLD_TEMPLATE_SVELTE: &str = "vite-svelte";
+pub const WEB_SCAFFOLD_TEMPLATE_ASTRO: &str = "astro";
+pub const WEB_SCAFFOLD_TEMPLATE_VANILLA: &str = "vanilla";
+
+/// Default template used when the task text contains a web keyword but does
+/// not name a specific framework. `vanilla` has no build step so it is the
+/// safest fallback across environments.
+pub const DEFAULT_SCAFFOLD_TEMPLATE: &str = WEB_SCAFFOLD_TEMPLATE_VANILLA;
+
+/// Lowercase prefixes that trigger the scaffold path. The list is narrow on
+/// purpose: "scaffold a ..." is deliberately excluded because existing
+/// integration tasks like "Scaffold a Vite hello-world SPA and serve it"
+/// expect the dev-server pipeline, not a pure scaffold call. Users who want
+/// the scaffold branch say "make me / create / build me / bootstrap / new".
+const WEB_SCAFFOLD_PREFIXES: &[&str] = &[
+    "make me a ",
+    "make me an ",
+    "create a ",
+    "create an ",
+    "build me a ",
+    "build me an ",
+    "bootstrap a ",
+    "bootstrap an ",
+    "new ",
+];
+
+/// Lowercase keywords that confirm the intent is a WEB scaffold (as opposed
+/// to a generic "make me a function" request). The detector requires BOTH a
+/// prefix match AND one of these keywords to classify the task.
+const WEB_SCAFFOLD_KEYWORDS: &[&str] = &[
+    "react",
+    "svelte",
+    "astro",
+    "vue",
+    "vanilla",
+    "web app",
+    "webapp",
+    "website",
+    "frontend",
+    "landing page",
+    "static site",
+    "spa",
+];
+
+/// Heuristic: return true when the task text looks like a request to produce
+/// a fresh web-scaffold project that should route through
+/// [`ScaffoldApplier`] instead of the default decomposition-plus-navigator
+/// pipeline.
+///
+/// This is the MVP "baby step with tool = scaffold_apply" detector called for
+/// by `docs/mvp-wiring-gaps.md` Session 4E.15.
+pub fn is_web_scaffold_task(task: &str) -> bool {
+    let t = task.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    let has_prefix = WEB_SCAFFOLD_PREFIXES.iter().any(|p| t.starts_with(p));
+    if !has_prefix {
+        return false;
+    }
+    WEB_SCAFFOLD_KEYWORDS.iter().any(|k| t.contains(k))
+}
+
+/// Map task text to one of the built-in template names. First match wins so
+/// the ordering is significant — framework names are checked before the
+/// generic `vanilla` fallback.
+pub fn detect_scaffold_template(task: &str) -> &'static str {
+    let t = task.trim().to_ascii_lowercase();
+    if t.contains("react") {
+        return WEB_SCAFFOLD_TEMPLATE_REACT;
+    }
+    if t.contains("svelte") {
+        return WEB_SCAFFOLD_TEMPLATE_SVELTE;
+    }
+    if t.contains("astro") {
+        return WEB_SCAFFOLD_TEMPLATE_ASTRO;
+    }
+    DEFAULT_SCAFFOLD_TEMPLATE
+}
+
+/// Pluggable applier that realises a template onto disk. Injected as a trait
+/// so the `orchestrator` crate does not gain a direct dep on the `scaffold`
+/// crate; the dashboard (which already depends on `scaffold`) supplies the
+/// production impl at setup time.
+///
+/// The impl owns variable generation (project_name / colours / author) so the
+/// task runner stays ignorant of template-specific substitution keys.
+pub trait ScaffoldApplier: Send + Sync {
+    fn apply(
+        &self,
+        template_name: &str,
+        target_dir: &Path,
+        task_text: &str,
+    ) -> Result<(), String>;
+}
+
+/// Drive a task classified as a web-scaffold via [`is_web_scaffold_task`].
+/// Resolves the project directory, picks a template, and hands off to the
+/// injected [`ScaffoldApplier`]. Emits `PhaseComplete` on success, a
+/// `Finding` with category [`WEB_SCAFFOLD_FAILED_CATEGORY`] on failure.
+///
+/// Failure modes (all non-fatal — the runner stays alive):
+/// - `resolved.scaffold_applier` is `None`: emit an informational Finding.
+/// - `resolver.resolve(project_id)` is `None`: emit an error Finding.
+/// - `ScaffoldApplier::apply` returns `Err`: emit an error Finding with the
+///   error message verbatim.
+async fn drive_web_scaffold_task(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    task: &TaskSubmittedPayload,
+    resolved: &ResolvedConfig,
+    cancel: &CancelHandle,
+) -> Result<(), TaskRunnerError> {
+    emit_reasoning(
+        writer,
+        0,
+        "observe",
+        &format!(
+            "web-scaffold task seq={} text={:?}",
+            seq,
+            truncate_for_log(&task.task, TASK_LOG_TRUNCATE_CHARS)
+        ),
+    )
+    .await;
+
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
+    let Some(applier) = resolved.scaffold_applier.as_ref() else {
+        warn!(seq, "task_runner: web-scaffold task but no applier configured");
+        emit_finding(
+            writer,
+            "warning",
+            WEB_SCAFFOLD_FAILED_CATEGORY,
+            "web-scaffold task detected but no ScaffoldApplier configured on the runner",
+        )
+        .await;
+        return Ok(());
+    };
+
+    let Some(project_dir) = resolved.resolver.resolve(&task.project_id) else {
+        warn!(
+            seq,
+            project_id = %task.project_id,
+            "task_runner: web-scaffold could not resolve project_id to a directory"
+        );
+        emit_finding(
+            writer,
+            "error",
+            WEB_SCAFFOLD_FAILED_CATEGORY,
+            &format!(
+                "web-scaffold failed for task seq={seq}: project_id={:?} did not resolve",
+                task.project_id
+            ),
+        )
+        .await;
+        return Ok(());
+    };
+
+    let template = detect_scaffold_template(&task.task);
+
+    emit_reasoning(
+        writer,
+        1,
+        "plan_action",
+        &format!(
+            "scaffold target={:?} template={}",
+            project_dir.display(),
+            template
+        ),
+    )
+    .await;
+
+    match applier.apply(template, &project_dir, &task.task) {
+        Ok(()) => {
+            emit_reasoning(
+                writer,
+                2,
+                "verify",
+                &format!("scaffold complete template={} dir={:?}", template, project_dir.display()),
+            )
+            .await;
+            let complete = SsbPayload::PhaseComplete(PhaseCompletePayload {
+                phase_id: format!("task_seq_{}", seq),
+                agent_id: RUNNER_AGENT_ID.to_owned(),
+                fsm_state: "complete".to_owned(),
+                evidence_artifacts: Vec::new(),
+                commit_hashes: Vec::new(),
+                test_outcomes: vec![format!("web_scaffold:{}:ok", template)],
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, complete, Vec::new())
+                .await
+            {
+                error!(seq, error = %e, "task_runner: write PhaseComplete (web-scaffold) failed");
+            }
+            info!(seq, template, "task_runner: web-scaffold task complete");
+        }
+        Err(msg) => {
+            error!(seq, template, error = %msg, "task_runner: scaffold applier failed");
+            emit_finding(
+                writer,
+                "error",
+                WEB_SCAFFOLD_FAILED_CATEGORY,
+                &format!(
+                    "web-scaffold failed for task seq={seq} template={template}: {msg}"
+                ),
+            )
+            .await;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Start API
 // ---------------------------------------------------------------------------
 
@@ -666,6 +892,10 @@ pub struct TaskRunnerConfig {
     /// web-research-classified tasks fall back to the default pipeline and an
     /// informational Finding is emitted.
     pub web_research_runner: Option<Arc<dyn WebResearchRunner>>,
+    /// Optional applier that realises a scaffold template onto disk when
+    /// `is_web_scaffold_task` matches. When `None`, scaffold-classified tasks
+    /// emit an informational Finding instead of scaffolding.
+    pub scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
 }
 
 impl TaskRunnerConfig {
@@ -678,6 +908,7 @@ impl TaskRunnerConfig {
             project_dir_resolver: None,
             dev_server_registry: None,
             web_research_runner: None,
+            scaffold_applier: None,
         }
     }
 }
@@ -690,6 +921,7 @@ struct ResolvedConfig {
     resolver: Arc<dyn ProjectDirResolver>,
     registry: DevServerRegistry,
     web_research: Option<Arc<dyn WebResearchRunner>>,
+    scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
 }
 
 impl ResolvedConfig {
@@ -702,6 +934,7 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| Arc::new(CwdProjectDirResolver)),
             registry: cfg.dev_server_registry.unwrap_or_else(new_dev_server_registry),
             web_research: cfg.web_research_runner,
+            scaffold_applier: cfg.scaffold_applier,
         }
     }
 }
@@ -991,6 +1224,15 @@ async fn drive_task(
     resolved: &ResolvedConfig,
     cancel: &CancelHandle,
 ) -> Result<(), TaskRunnerError> {
+    // Web-scaffold branch (Session 4E.15): route detected scaffold tasks
+    // through the scaffold crate's apply_template via the injected
+    // [`ScaffoldApplier`]. Checked before web-research so a phrase like
+    // "make me a React app that compares blake3 vs sha3" falls on the
+    // scaffold side (prefix + framework keyword), not the research side.
+    if is_web_scaffold_task(&task.task) {
+        return drive_web_scaffold_task(writer, seq, task, resolved, cancel).await;
+    }
+
     // Web-research branch (Session 4D.12): route detected research tasks
     // through the orchestrator instead of the default pipeline so the
     // WebResearchOrchestrator wiring has a production call site.
@@ -1739,6 +1981,7 @@ mod tests {
                 project_dir_resolver: Some(resolver),
                 dev_server_registry: Some(registry.clone()),
                 web_research_runner: None,
+                scaffold_applier: None,
             },
         );
 
@@ -1834,6 +2077,7 @@ mod tests {
                 project_dir_resolver: Some(resolver),
                 dev_server_registry: None,
                 web_research_runner: None,
+                scaffold_applier: None,
             },
         );
 
@@ -1883,5 +2127,175 @@ mod tests {
         assert!(!project_dir_is_web(tmp.path()));
         std::fs::write(tmp.path().join("package.json"), "{}").expect("write");
         assert!(project_dir_is_web(tmp.path()));
+    }
+
+    // Session 4E.15: scaffold detector + template picker.
+    #[test]
+    fn is_web_scaffold_task_matches_documented_triggers() {
+        assert!(is_web_scaffold_task("Make me a React app"));
+        assert!(is_web_scaffold_task("make me an svelte landing page"));
+        assert!(is_web_scaffold_task("create a vanilla website"));
+        assert!(is_web_scaffold_task("create an astro frontend"));
+        assert!(is_web_scaffold_task("build me a simple React SPA"));
+        assert!(is_web_scaffold_task("bootstrap a new webapp"));
+        assert!(is_web_scaffold_task("new React landing page"));
+        assert!(is_web_scaffold_task("   Make me an Astro website   "));
+
+        // Must NOT match — prefix OK, but no web keyword.
+        assert!(!is_web_scaffold_task("make me a function"));
+        assert!(!is_web_scaffold_task("build me a cli tool"));
+        assert!(!is_web_scaffold_task("create a rust crate"));
+
+        // Must NOT match — keyword alone without scaffold prefix.
+        assert!(!is_web_scaffold_task("research react apps"));
+        assert!(!is_web_scaffold_task("Refactor the frontend"));
+
+        // Must NOT match — existing dev-server integration task stays on the
+        // default pipeline because "scaffold a" was deliberately excluded
+        // from the prefix list.
+        assert!(!is_web_scaffold_task(
+            "Scaffold a Vite hello-world SPA and serve it"
+        ));
+
+        // Edge cases.
+        assert!(!is_web_scaffold_task(""));
+        assert!(!is_web_scaffold_task("   "));
+    }
+
+    #[test]
+    fn detect_scaffold_template_picks_framework_or_vanilla() {
+        assert_eq!(
+            detect_scaffold_template("Make me a React app"),
+            WEB_SCAFFOLD_TEMPLATE_REACT
+        );
+        assert_eq!(
+            detect_scaffold_template("Create a Svelte frontend"),
+            WEB_SCAFFOLD_TEMPLATE_SVELTE
+        );
+        assert_eq!(
+            detect_scaffold_template("bootstrap an astro site"),
+            WEB_SCAFFOLD_TEMPLATE_ASTRO
+        );
+        assert_eq!(
+            detect_scaffold_template("make me a website"),
+            DEFAULT_SCAFFOLD_TEMPLATE
+        );
+        // First match wins: react appears before svelte in the task text.
+        assert_eq!(
+            detect_scaffold_template("a react app with a svelte sidecar"),
+            WEB_SCAFFOLD_TEMPLATE_REACT
+        );
+    }
+
+    // Fake applier that records its arguments so the integration test can
+    // assert the task runner routed scaffold tasks correctly without
+    // touching the real scaffold crate. Uses `std::sync::Mutex` — the
+    // trait's `apply` is sync and `tokio::sync::Mutex::blocking_lock`
+    // panics when called from an async runtime.
+    struct RecordingScaffoldApplier {
+        calls: Arc<std::sync::Mutex<Vec<(String, PathBuf, String)>>>,
+    }
+
+    impl ScaffoldApplier for RecordingScaffoldApplier {
+        fn apply(
+            &self,
+            template_name: &str,
+            target_dir: &Path,
+            task_text: &str,
+        ) -> Result<(), String> {
+            let key = (
+                template_name.to_owned(),
+                target_dir.to_path_buf(),
+                task_text.to_owned(),
+            );
+            self.calls
+                .lock()
+                .map_err(|e| format!("recorder mutex poisoned: {e}"))?
+                .push(key);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn task_runner_routes_web_scaffold_task_through_applier() {
+        let _guard = crate::test_env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+        let cursor_path = tmp.path().join("cursor.json");
+        let project_dir = tmp.path().join("new-react-app");
+
+        let clock: Arc<dyn elai_core::clock::ClockProvider> =
+            Arc::new(elai_core::clock::OsClock);
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: Some(2),
+            project_id: "dashboard".into(),
+            session_id: "test-4e15".into(),
+        };
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb"));
+
+        let resolver: Arc<dyn ProjectDirResolver> = Arc::new(StaticWebProjectDirResolver {
+            dir: project_dir.clone(),
+        });
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<(String, PathBuf, String)>::new()));
+        let applier: Arc<dyn ScaffoldApplier> = Arc::new(RecordingScaffoldApplier {
+            calls: calls.clone(),
+        });
+
+        let (handle, cancel) = start_task_runner(
+            ssb.clone(),
+            TaskRunnerConfig {
+                cursor_path,
+                dev_server_launcher: None,
+                project_dir_resolver: Some(resolver),
+                dev_server_registry: None,
+                web_research_runner: None,
+                scaffold_applier: Some(applier),
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let payload = SsbPayload::TaskSubmitted(TaskSubmittedPayload {
+            task: "Make me a React app".into(),
+            project_id: "web-scaffold-proj-1".into(),
+            submitted_at_ms: 0,
+        });
+        ssb.write_payload("dashboard", 0, payload, Vec::new())
+            .await
+            .expect("write TaskSubmitted");
+
+        let got = wait_for_action(
+            &ssb,
+            SsbActionType::PhaseComplete,
+            1,
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(got, "expected PhaseComplete row for scaffold task");
+
+        let recorded = calls.lock().expect("calls mutex").clone();
+        assert_eq!(recorded.len(), 1, "applier must be invoked exactly once");
+        assert_eq!(recorded[0].0, WEB_SCAFFOLD_TEMPLATE_REACT);
+        assert_eq!(recorded[0].1, project_dir);
+        assert_eq!(recorded[0].2, "Make me a React app");
+
+        // No Finding with scaffold-failed category on the happy path.
+        let findings = ssb
+            .query_by_type(SsbActionType::Finding)
+            .unwrap_or_default();
+        for row in findings {
+            if let Ok(SsbPayload::Finding(f)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                assert_ne!(
+                    f.category, WEB_SCAFFOLD_FAILED_CATEGORY,
+                    "scaffold happy path must not emit scaffold-failed Finding"
+                );
+            }
+        }
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 }

@@ -308,13 +308,16 @@ pub use ssb_viewer::{
     ThinkStepSummary, validate_request_id,
 };
 pub use task_runner::{
-    is_web_research_task, new_dev_server_registry, project_dir_is_web, start_task_runner,
-    CancelHandle, CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher,
-    DevServerRegistry, LaunchedPreview, ProjectDirResolver, SsbWebResearchStepEmitter,
+    detect_scaffold_template, is_web_research_task, is_web_scaffold_task,
+    new_dev_server_registry, project_dir_is_web, start_task_runner, CancelHandle,
+    CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher, DevServerRegistry,
+    LaunchedPreview, ProjectDirResolver, ScaffoldApplier, SsbWebResearchStepEmitter,
     TaskRunnerConfig, TaskRunnerError, WebResearchRunner, WebResearchSummary,
     WebValidatorLauncher, DEFAULT_DEV_SERVER_COMMAND, DEFAULT_DEV_SERVER_PORT,
-    DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SOURCE_TIERS_TOML, DEV_SERVER_FAILED_CATEGORY,
-    MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE, RUNNER_AGENT_ID, WEB_RESEARCH_FAILED_CATEGORY,
+    DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE, DEFAULT_SOURCE_TIERS_TOML,
+    DEV_SERVER_FAILED_CATEGORY, MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE, RUNNER_AGENT_ID,
+    WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY, WEB_SCAFFOLD_TEMPLATE_ASTRO,
+    WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE, WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,
