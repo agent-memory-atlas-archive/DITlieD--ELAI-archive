@@ -1,10 +1,15 @@
 @echo off
-REM ELAI Local Mode — runs the full CLI against local Gemma4 E2B with DoLa + TurboQuant.
-REM Routes through ConversationRuntime with FSM tool filtering + ContextBudget.
+REM ELAI entrypoint — default launches Tauri dashboard (MVP golden path).
+REM Use "elai.bat repl" to enter the local REPL (DoLa + TurboQuant on Gemma4 E2B).
 
 if not defined HOME set HOME=%USERPROFILE%
 
-"%~dp0target\release\elai.exe" --local %* 2> "%~dp0elai-crash.log"
+IF /I "%~1"=="repl" (
+    SHIFT
+    "%~dp0target\release\elai.exe" --local %* 2> "%~dp0elai-crash.log"
+) ELSE (
+    "%~dp0target\release\elai.exe" --dashboard %* 2> "%~dp0elai-crash.log"
+)
 if %ERRORLEVEL% neq 0 (
     echo.
     echo === CRASH LOG ===

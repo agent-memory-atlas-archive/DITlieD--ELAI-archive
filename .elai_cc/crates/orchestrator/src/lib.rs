@@ -68,6 +68,7 @@ pub mod mistake_book;
 pub mod output_postprocessor;
 pub mod ssb;
 pub mod ssb_viewer;
+pub mod task_runner;
 pub mod supervision;
 pub mod validated_ssb;
 pub mod stale_branch;
@@ -291,16 +292,24 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    DiffSummary, InterventionKeyword, InterventionOption, InterventionRequestPayload,
-    InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
-    PhaseCompletePayload, PreviewAvailablePayload,
-    Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPayload, SsbReader,
-    SsbWriteRequest, TaskSubmittedPayload, WebResearchStepPayload,
+    default_ssb_path, default_ssb_path_for_base, DiffSummary, InterventionKeyword,
+    InterventionOption, InterventionRequestPayload, InterventionResponsePayload,
+    InterventionRetry, InterventionType, MistakeEntryPayload, PhaseCompletePayload,
+    PreviewAvailablePayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
+    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, WebResearchStepPayload,
+    SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
     SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError, StepStatus,
     ThinkStepSummary, validate_request_id,
+};
+pub use task_runner::{
+    new_dev_server_registry, project_dir_is_web, start_task_runner, CancelHandle,
+    CwdProjectDirResolver, DevServerLauncher, DevServerRegistry, LaunchedPreview,
+    ProjectDirResolver, TaskRunnerConfig, TaskRunnerError, WebValidatorLauncher,
+    DEFAULT_DEV_SERVER_COMMAND, DEFAULT_DEV_SERVER_PORT, DEV_SERVER_FAILED_CATEGORY,
+    MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE, RUNNER_AGENT_ID,
 };
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

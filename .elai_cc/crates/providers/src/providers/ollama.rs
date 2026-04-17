@@ -409,21 +409,188 @@ impl OllamaProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// LlmProvider impls
+//
+// token_count returns the same heuristic as token_count_estimate (len/4 + 1)
+// because the providers crate has no tokenizer dependency available; adding
+// tiktoken-rs or tokenizers would be a new dep (requires human approval).
+// Callers needing exact counts should use the sidecar tokenizer endpoint.
+// This matches VllmProvider's token_count behavior for cross-provider parity.
+// ---------------------------------------------------------------------------
+
+/// Default HTTP timeout for ollama generate / embed requests.
+///
+/// Cold-start ollama loads can exceed 60s on larger quantized models;
+/// 120s matches the probe timeout budget and is safe for gemma4:e2b.
+const OLLAMA_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Shape of POST /api/embeddings (stream is always false).
+///
+/// Grounded: ollama docs (https://github.com/ollama/ollama/blob/main/docs/api.md)
+/// and docs.ollama.com/capabilities/embeddings — request is {"model","prompt"},
+/// response is {"embedding": [f32..]}. Verified via WebSearch 2026-04.
+#[derive(Debug, Deserialize)]
+struct OllamaEmbeddingResponse {
+    #[serde(default)]
+    embedding: Vec<f32>,
+}
+
+/// Internal helper: POST /api/generate with stream=false and return the
+/// concatenated response text split into a Vec<String> token stream.
+///
+/// Ollama (non-streaming) returns a single JSON object with a `response`
+/// field; we surface it as a one-element Vec<String> so callers get the
+/// same shape as the streaming SSE flow used by other providers.
+async fn ollama_complete(
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    config: &OllamaConfig,
+) -> Result<Vec<String>, ApiError> {
+    let client = reqwest::Client::builder()
+        .timeout(OLLAMA_REQUEST_TIMEOUT)
+        .build()?;
+
+    let mut options = serde_json::Map::new();
+    options.insert(
+        "temperature".to_string(),
+        serde_json::json!(config.temperature),
+    );
+    options.insert("top_p".to_string(), serde_json::json!(config.top_p));
+    if config.speculative.speculative_decoding {
+        if let Some(draft) = &config.speculative.draft_model {
+            options.insert("draft_model".to_string(), serde_json::json!(draft));
+            options.insert(
+                "num_draft".to_string(),
+                serde_json::json!(config.speculative.num_draft_tokens),
+            );
+        }
+    }
+
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "options": serde_json::Value::Object(options),
+    });
+
+    let url = format!("{base_url}/api/generate");
+    let response = client.post(&url).json(&body).send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        tracing::error!(
+            target: "providers::ollama",
+            %status,
+            %body,
+            "ollama /api/generate returned non-success"
+        );
+        return Err(ApiError::Api {
+            status,
+            error_type: None,
+            message: None,
+            body,
+            retryable: status.is_server_error(),
+        });
+    }
+
+    let parsed: OllamaGenerateResponse = response.json().await?;
+    Ok(vec![parsed.response])
+}
+
+/// Internal helper: POST /api/embeddings and return the embedding vector.
+async fn ollama_embed(
+    base_url: &str,
+    model: &str,
+    text: &str,
+) -> Result<Vec<f32>, ApiError> {
+    let client = reqwest::Client::builder()
+        .timeout(OLLAMA_REQUEST_TIMEOUT)
+        .build()?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": text,
+    });
+
+    let url = format!("{base_url}/api/embeddings");
+    let response = client.post(&url).json(&body).send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        tracing::error!(
+            target: "providers::ollama",
+            %status,
+            %body,
+            "ollama /api/embeddings returned non-success"
+        );
+        return Err(ApiError::Api {
+            status,
+            error_type: None,
+            message: None,
+            body,
+            retryable: status.is_server_error(),
+        });
+    }
+
+    let parsed: OllamaEmbeddingResponse = response.json().await?;
+    if parsed.embedding.is_empty() {
+        tracing::warn!(
+            target: "providers::ollama",
+            %model,
+            "ollama returned empty embedding vector — model may not support embeddings"
+        );
+        return Err(ApiError::Api {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            error_type: Some("empty_embedding".to_string()),
+            message: Some(format!(
+                "model {model} returned empty embedding vector"
+            )),
+            body: String::new(),
+            retryable: false,
+        });
+    }
+    Ok(parsed.embedding)
+}
+
+/// Rough token estimate: ~4 chars per token (GPT-style heuristic).
+///
+/// Accurate counting requires a tokenizer — see comment at top of impl block.
+#[inline]
+fn ollama_token_estimate(text: &str) -> usize {
+    text.len() / 4 + 1
+}
+
 impl LlmProvider for OllamaProvider {
-    fn complete<'a>(&'a self, _prompt: &'a str, _config: &'a OllamaConfig) -> LlmFuture<'a, Vec<String>> {
-        todo!()
+    fn complete<'a>(
+        &'a self,
+        prompt: &'a str,
+        config: &'a OllamaConfig,
+    ) -> LlmFuture<'a, Vec<String>> {
+        Box::pin(
+            async move { ollama_complete(&self.base_url, &self.model, prompt, config).await },
+        )
     }
 
-    fn embed<'a>(&'a self, _text: &'a str) -> LlmFuture<'a, Vec<f32>> {
-        todo!()
+    fn embed<'a>(&'a self, text: &'a str) -> LlmFuture<'a, Vec<f32>> {
+        Box::pin(async move { ollama_embed(&self.base_url, &self.model, text).await })
     }
 
-    fn token_count(&self, _text: &str) -> Result<usize, ApiError> {
-        todo!()
+    fn token_count(&self, text: &str) -> Result<usize, ApiError> {
+        Ok(ollama_token_estimate(text))
     }
 
-    fn token_count_estimate(&self, _text: &str) -> usize {
-        todo!()
+    fn token_count_estimate(&self, text: &str) -> usize {
+        ollama_token_estimate(text)
     }
 }
 
@@ -481,20 +648,37 @@ impl OllamaEmbedder {
 }
 
 impl LlmProvider for OllamaEmbedder {
-    fn complete<'a>(&'a self, _prompt: &'a str, _config: &'a OllamaConfig) -> LlmFuture<'a, Vec<String>> {
-        todo!()
+    /// OllamaEmbedder is embedding-only. `complete` is intentionally unsupported
+    /// and returns a structured error rather than panicking.
+    fn complete<'a>(
+        &'a self,
+        _prompt: &'a str,
+        _config: &'a OllamaConfig,
+    ) -> LlmFuture<'a, Vec<String>> {
+        Box::pin(async move {
+            Err(ApiError::Api {
+                status: reqwest::StatusCode::METHOD_NOT_ALLOWED,
+                error_type: Some("unsupported_operation".to_string()),
+                message: Some(
+                    "OllamaEmbedder does not implement complete; use OllamaProvider"
+                        .to_string(),
+                ),
+                body: String::new(),
+                retryable: false,
+            })
+        })
     }
 
-    fn embed<'a>(&'a self, _text: &'a str) -> LlmFuture<'a, Vec<f32>> {
-        todo!()
+    fn embed<'a>(&'a self, text: &'a str) -> LlmFuture<'a, Vec<f32>> {
+        Box::pin(async move { ollama_embed(&self.base_url, &self.model, text).await })
     }
 
-    fn token_count(&self, _text: &str) -> Result<usize, ApiError> {
-        todo!()
+    fn token_count(&self, text: &str) -> Result<usize, ApiError> {
+        Ok(ollama_token_estimate(text))
     }
 
-    fn token_count_estimate(&self, _text: &str) -> usize {
-        todo!()
+    fn token_count_estimate(&self, text: &str) -> usize {
+        ollama_token_estimate(text)
     }
 }
 

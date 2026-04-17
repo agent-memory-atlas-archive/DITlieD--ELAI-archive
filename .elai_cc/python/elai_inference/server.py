@@ -8,7 +8,9 @@ vectors are integrated via model forward hooks + a custom LogitsProcessor,
 allowing model.generate() to drive the decode loop in optimized C++/CUDA.
 
 Usage:
-    python -m elai_inference.server --model google/gemma-4-E2B-it --port 8100
+    python -m elai_inference.server \
+        --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct-abliterated \
+        --port 8100 --no-dola --turboquant-bits 8 --no-steering
 """
 
 import argparse
@@ -2335,11 +2337,15 @@ def _sse_bytes(event_type: str, data: dict) -> bytes:
 
 def main():
     parser = argparse.ArgumentParser(description="ELAI Inference Sidecar")
-    parser.add_argument("--model", default="google/gemma-4-E2B-it")
+    parser.add_argument(
+        "--model",
+        default="D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct-abliterated",
+    )
     parser.add_argument("--port", type=int, default=SIDECAR_PORT_DEFAULT)
     parser.add_argument("--host", default=SIDECAR_HOST_DEFAULT)
     parser.add_argument(
-        "--dola", action="store_true", default=True, help="Enable DoLa decoding"
+        "--dola", action="store_true", default=False,
+        help="Enable DoLa decoding (HARMFUL on <32B dense per baseline Part 7)",
     )
     parser.add_argument("--no-dola", dest="dola", action="store_false")
     parser.add_argument("--dola-alpha", type=float, default=ALPHA_DEFAULT)

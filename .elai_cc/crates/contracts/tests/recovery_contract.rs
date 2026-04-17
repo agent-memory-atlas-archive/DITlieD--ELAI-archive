@@ -46,6 +46,8 @@ fn test_handle(scratch_dir: &std::path::Path) -> AgentHandle {
         scratch_dir: scratch_dir.to_path_buf(),
         grc_engine: BasicGrcEngine::default(),
         sandbox_handle: None,
+        child_process: None,
+        socket_path: None,
     }
 }
 

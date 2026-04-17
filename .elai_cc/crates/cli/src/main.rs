@@ -2555,8 +2555,8 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, anyhow::Error
             &format!(
                 "source ~/vllm-env/bin/activate && cd '{wsl_path}' && \
                  PYTHONPATH=python python -m elai_inference.server \
-                 --model google/gemma-4-E2B-it \
-                 --port {port} --dola --turboquant-bits 4 \
+                 --model /mnt/d/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct-abliterated \
+                 --port {port} --no-dola --no-steering --turboquant-bits 8 \
                  --log-level INFO"
             ),
         ])
@@ -6807,7 +6807,11 @@ fn build_runtime_with_plugin_state(
         let _guard = tokio_runtime.enter();
         let ssb_db_path = session
             .persistence_path()
-            .map(|p| p.parent().unwrap_or(p).join("ssb.db"))
+            .map(|p| {
+                p.parent()
+                    .unwrap_or(p)
+                    .join(elai_orchestrator::SSB_DB_FILE_NAME)
+            })
             .unwrap_or_else(|| {
                 let mut tmp = std::env::temp_dir();
                 tmp.push(format!("elai-ssb-{}.db", session_id));

@@ -1446,6 +1446,44 @@ impl SsbReader for Ssb {
 }
 
 // ---------------------------------------------------------------------------
+// Canonical SSB path helpers
+// ---------------------------------------------------------------------------
+
+/// Subdirectory (relative to a project/base directory) that holds the
+/// managed sessions state, including the single SSB SQLite database.
+pub const SSB_SESSIONS_SUBDIR: &str = ".elai/sessions";
+
+/// File name of the canonical SSB SQLite database inside
+/// [`SSB_SESSIONS_SUBDIR`].
+pub const SSB_DB_FILE_NAME: &str = "ssb.db";
+
+/// Canonical SSB database path for the given project/base directory.
+///
+/// The CLI's sidecar bootstrap uses `<session-persistence-dir>/ssb.db`, and
+/// managed session persistence files live under `<base>/.elai/sessions/`
+/// (see `session_control::managed_sessions_dir_for`). The dashboard must
+/// open the SSB at the **same** path so it and a running CLI REPL share
+/// telemetry instead of silently creating a second, empty database.
+///
+/// Returns `<base_dir>/.elai/sessions/ssb.db` as a pure path computation
+/// (no filesystem side effects — callers choose whether to create the
+/// parent directory or let `Ssb::new`/`SsbViewer::open` do it).
+pub fn default_ssb_path_for_base(base_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    base_dir
+        .as_ref()
+        .join(SSB_SESSIONS_SUBDIR)
+        .join(SSB_DB_FILE_NAME)
+}
+
+/// Canonical SSB database path rooted at the current working directory.
+///
+/// Convenience wrapper for callers (dashboard binary, CLI) that treat CWD
+/// as the project root. Returns `Err` only if `std::env::current_dir` fails.
+pub fn default_ssb_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(default_ssb_path_for_base(std::env::current_dir()?))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
