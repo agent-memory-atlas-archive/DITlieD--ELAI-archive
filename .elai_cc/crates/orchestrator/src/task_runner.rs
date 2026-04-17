@@ -57,12 +57,17 @@ use crate::pipeline_tree_navigator::{
 };
 use crate::grounding_client::SidecarGroundingClient;
 use crate::research_tree::{
-    research_decompose, ConceptDecomposition, ExecutionMode, MediaSpec, OutputType, PerfSpec,
-    PipelineSpec, ResearchCache, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
+    research_decompose, ConceptDecomposition, ExecutionMode, MediaSpec, NodeId, NodeStatus,
+    OutputType, PerfSpec, PipelineSpec, ResearchCache, ResearchNode,
+    DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
     FindingPayload, PhaseCompletePayload, PreviewAvailablePayload, ReasoningTracePayload, Ssb,
     SsbActionType, SsbEntry, SsbPayload, SsbReader, TaskSubmittedPayload, TestOutcomePayload,
+    WebResearchStepPayload,
+};
+use crate::web_research_orchestrator::{
+    WebResearchOrchestrator, WebResearchStepEmitter, WebResearchStepEvent,
 };
 
 // ---------------------------------------------------------------------------
@@ -105,6 +110,10 @@ pub const PREVIEW_SLOT_LIVE: &str = "live";
 /// Finding category for dev-server launch failures. Kept as a const so the
 /// dashboard filter can match exactly.
 pub const DEV_SERVER_FAILED_CATEGORY: &str = "dev_server_failed";
+
+/// Character cap applied to task text when embedding it in log/reasoning rows.
+/// Keeps SSB payloads compact without losing the first line of context.
+pub const TASK_LOG_TRUNCATE_CHARS: usize = 120;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -389,6 +398,250 @@ impl ModelPool for RuntimeModelPool {
 }
 
 // ---------------------------------------------------------------------------
+// Web-research routing (Session 4D.12)
+// ---------------------------------------------------------------------------
+
+/// Category used on `Finding` rows emitted when web-research fails.
+pub const WEB_RESEARCH_FAILED_CATEGORY: &str = "web_research_failed";
+
+/// Lowercase case-insensitive prefixes that trigger the web-research path. The
+/// list is intentionally conservative so tasks like "Build a hello-world CLI"
+/// continue to flow through the default pipeline unchanged.
+const WEB_RESEARCH_PREFIXES: &[&str] = &[
+    "research:",
+    "research ",
+    "find out ",
+    "look up ",
+    "investigate ",
+    "what is ",
+    "what are ",
+    "who is ",
+    "who are ",
+    "when is ",
+    "when was ",
+    "where is ",
+    "how does ",
+];
+
+/// Substrings (lowercase) that additionally classify a task as web-research.
+const WEB_RESEARCH_SUBSTRINGS: &[&str] = &["web search", "web research"];
+
+/// Heuristic: return true when the task text looks like a web-research task
+/// that should route through [`WebResearchRunner`] instead of the default
+/// decomposition-plus-navigator pipeline.
+///
+/// This is the MVP "tool = WebSearch or research-tier tag" detector called
+/// for by `docs/mvp-wiring-gaps.md` Session 4D.12.
+pub fn is_web_research_task(task: &str) -> bool {
+    let t = task.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    if WEB_RESEARCH_PREFIXES.iter().any(|p| t.starts_with(p)) {
+        return true;
+    }
+    if WEB_RESEARCH_SUBSTRINGS.iter().any(|s| t.contains(s)) {
+        return true;
+    }
+    false
+}
+
+/// Summary of one web-research run for terminal-row construction.
+#[derive(Debug, Clone)]
+pub struct WebResearchSummary {
+    pub iterations: u32,
+    pub status: String,
+    pub sources_used: u32,
+}
+
+/// Pluggable runner that drives [`WebResearchOrchestrator`] for one task. The
+/// default impl ([`DefaultWebResearchRunner`]) builds a fresh orchestrator per
+/// call so `WebContentIndex` state does not leak across tasks. Tests inject a
+/// fake runner that emits canned `WebResearchStep` rows without touching the
+/// network.
+pub trait WebResearchRunner: Send + Sync {
+    fn run(
+        &self,
+        task: String,
+        emitter: Arc<dyn WebResearchStepEmitter>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<WebResearchSummary, String>>
+                + Send
+                + '_,
+        >,
+    >;
+}
+
+/// Default [`WebResearchRunner`] that instantiates a fresh
+/// [`WebResearchOrchestrator`] for every task so `WebContentIndex` state stays
+/// scoped to a single run. `SearxClient` / `WebFetcher` are rebuilt as well,
+/// which is fine — they are cheap to construct and rate-limiter state is not
+/// meant to cross task boundaries.
+///
+/// Construction relies on three process-level inputs supplied at CLI boot:
+/// the VRAM-derived [`crate::research_tier::ResearchTierConfig`], the SearXNG
+/// base URL (defaults to the sidecar proxy), and a shared
+/// [`elai_core::clock::ClockProvider`]. The `SourceQualityTable` is built
+/// from a TOML config string provided at construction time (a file path is
+/// left to the caller so this crate stays I/O-free here).
+pub struct DefaultWebResearchRunner {
+    tier_config: crate::research_tier::ResearchTierConfig,
+    searx_base_url: String,
+    clock: Arc<dyn elai_core::clock::ClockProvider>,
+    tier_config_toml: String,
+    root_question_max_chars: usize,
+}
+
+/// TOML config driving [`DefaultWebResearchRunner`]'s `SourceQualityTable`.
+/// Intentionally empty by default — the production caller passes the full
+/// `source-tiers.toml` contents; the empty fallback parses to a zero-entry
+/// table so callers without a config still get a working runner.
+pub const DEFAULT_SOURCE_TIERS_TOML: &str = "";
+
+/// Default per-task cap on root-question length. Research questions longer
+/// than this are truncated before being fed to the orchestrator — SearXNG
+/// rejects overly long queries and the LLM context cost grows linearly.
+pub const DEFAULT_ROOT_QUESTION_MAX_CHARS: usize = 512;
+
+impl DefaultWebResearchRunner {
+    pub fn new(
+        tier_config: crate::research_tier::ResearchTierConfig,
+        searx_base_url: impl Into<String>,
+        clock: Arc<dyn elai_core::clock::ClockProvider>,
+    ) -> Self {
+        Self {
+            tier_config,
+            searx_base_url: searx_base_url.into(),
+            clock,
+            tier_config_toml: DEFAULT_SOURCE_TIERS_TOML.to_owned(),
+            root_question_max_chars: DEFAULT_ROOT_QUESTION_MAX_CHARS,
+        }
+    }
+
+    /// Override the `source-tiers.toml` contents used to build the
+    /// `SourceQualityTable`. Pass `""` for the empty default.
+    pub fn with_tier_config_toml(mut self, toml: impl Into<String>) -> Self {
+        self.tier_config_toml = toml.into();
+        self
+    }
+
+    fn build_orchestrator(
+        &self,
+    ) -> Result<WebResearchOrchestrator, String> {
+        use elai_core::source_tier::parse_source_tier_config;
+        use elai_knowledge::web_arag::{WebAragConfig, WebContentIndex};
+        use elai_web_search::client::SearxClient;
+        use elai_web_search::extractor::BasicExtractor;
+        use elai_web_search::fetcher::WebFetcher;
+        use elai_web_search::source_quality::SourceQualityTable;
+
+        let searx = SearxClient::new(&self.searx_base_url, self.clock.clone())
+            .map_err(|e| format!("searx client: {e}"))?;
+        let fetcher = WebFetcher::new(self.clock.clone())
+            .map_err(|e| format!("web fetcher: {e}"))?;
+        let extractor = BasicExtractor::new(0);
+        let tier_cfg = parse_source_tier_config(&self.tier_config_toml)
+            .map_err(|e| format!("source tier config: {e}"))?;
+        let quality = SourceQualityTable::new_from_config(tier_cfg);
+        let content_index = WebContentIndex::new(WebAragConfig::default());
+        let budget = crate::research_budget::ResearchBudgetManager::new(self.tier_config.clone());
+        Ok(WebResearchOrchestrator::new(
+            searx,
+            fetcher,
+            extractor,
+            quality,
+            content_index,
+            budget,
+            self.tier_config.clone(),
+            self.clock.clone(),
+        ))
+    }
+
+    fn truncate_question(&self, raw: &str) -> String {
+        let trimmed = raw.trim();
+        if trimmed.chars().count() <= self.root_question_max_chars {
+            return trimmed.to_owned();
+        }
+        trimmed
+            .chars()
+            .take(self.root_question_max_chars)
+            .collect()
+    }
+}
+
+impl WebResearchRunner for DefaultWebResearchRunner {
+    fn run(
+        &self,
+        task: String,
+        emitter: Arc<dyn WebResearchStepEmitter>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WebResearchSummary, String>> + Send + '_>,
+    > {
+        let question = self.truncate_question(&task);
+        let build = self.build_orchestrator();
+        Box::pin(async move {
+            let mut orch = build?.with_step_emitter(emitter);
+            let mut node = ResearchNode::new(NodeId(1), question, None, 0);
+            let iterations = orch
+                .run_node_loop(&mut node)
+                .await
+                .map_err(|e| format!("run_node_loop: {e}"))?;
+            let status = match node.status {
+                NodeStatus::Converged => "Converged",
+                NodeStatus::Pruned => "Pruned",
+                NodeStatus::Active => "MaxIterations",
+                NodeStatus::Pending => "Pending",
+            };
+            Ok(WebResearchSummary {
+                iterations,
+                status: status.to_owned(),
+                sources_used: node.citations.len() as u32,
+            })
+        })
+    }
+}
+
+/// SSB-backed step emitter used by the task runner to surface per-iteration
+/// progress rows (`SsbPayload::WebResearchStep`) to the dashboard.
+pub struct SsbWebResearchStepEmitter {
+    writer: Arc<Ssb>,
+}
+
+impl SsbWebResearchStepEmitter {
+    pub fn new(writer: Arc<Ssb>) -> Self {
+        Self { writer }
+    }
+}
+
+impl WebResearchStepEmitter for SsbWebResearchStepEmitter {
+    fn emit(
+        &self,
+        event: WebResearchStepEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let writer = self.writer.clone();
+        Box::pin(async move {
+            let payload = SsbPayload::WebResearchStep(WebResearchStepPayload {
+                agent_id: RUNNER_AGENT_ID.to_owned(),
+                node_id: event.node_id,
+                action: event.action,
+                phi: event.phi,
+                psi: event.psi,
+                iteration: event.iteration,
+                sources_fetched: event.sources_fetched,
+                sources_used: event.sources_used,
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write WebResearchStep failed");
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Start API
 // ---------------------------------------------------------------------------
 
@@ -408,6 +661,11 @@ pub struct TaskRunnerConfig {
     /// `None`, a fresh per-runner registry is allocated (handles are kept
     /// alive for the lifetime of the runner).
     pub dev_server_registry: Option<DevServerRegistry>,
+    /// Optional runner that drives the web-research orchestrator when
+    /// `is_web_research_task` matches the incoming task text. When `None`,
+    /// web-research-classified tasks fall back to the default pipeline and an
+    /// informational Finding is emitted.
+    pub web_research_runner: Option<Arc<dyn WebResearchRunner>>,
 }
 
 impl TaskRunnerConfig {
@@ -419,6 +677,7 @@ impl TaskRunnerConfig {
             dev_server_launcher: None,
             project_dir_resolver: None,
             dev_server_registry: None,
+            web_research_runner: None,
         }
     }
 }
@@ -430,6 +689,7 @@ struct ResolvedConfig {
     launcher: Option<Arc<dyn DevServerLauncher>>,
     resolver: Arc<dyn ProjectDirResolver>,
     registry: DevServerRegistry,
+    web_research: Option<Arc<dyn WebResearchRunner>>,
 }
 
 impl ResolvedConfig {
@@ -441,6 +701,7 @@ impl ResolvedConfig {
                 .project_dir_resolver
                 .unwrap_or_else(|| Arc::new(CwdProjectDirResolver)),
             registry: cfg.dev_server_registry.unwrap_or_else(new_dev_server_registry),
+            web_research: cfg.web_research_runner,
         }
     }
 }
@@ -617,6 +878,112 @@ async fn handle_task_entry(
     }
 }
 
+/// Drive a task classified as web-research via
+/// [`is_web_research_task`]. Builds an SSB-backed
+/// [`WebResearchStepEmitter`], delegates to the injected
+/// [`WebResearchRunner`], then emits the terminal `PhaseComplete` row.
+///
+/// Failure modes:
+/// - `resolved.web_research` is `None`: emit an informational Finding with
+///   category [`WEB_RESEARCH_FAILED_CATEGORY`] and return `Ok(())` so the
+///   runner stays alive for the next task.
+/// - `runner.run(..)` returns `Err(msg)`: emit an error Finding with the same
+///   category and return `Ok(())`.
+async fn drive_web_research_task(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    task: &TaskSubmittedPayload,
+    resolved: &ResolvedConfig,
+    cancel: &CancelHandle,
+) -> Result<(), TaskRunnerError> {
+    emit_reasoning(
+        writer,
+        0,
+        "observe",
+        &format!(
+            "web-research task seq={} text={:?}",
+            seq,
+            truncate_for_log(&task.task, TASK_LOG_TRUNCATE_CHARS)
+        ),
+    )
+    .await;
+
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
+    let Some(runner) = resolved.web_research.as_ref() else {
+        warn!(seq, "task_runner: web-research task but no runner configured");
+        emit_finding(
+            writer,
+            "warning",
+            WEB_RESEARCH_FAILED_CATEGORY,
+            "web-research task detected but no WebResearchRunner configured on the runner",
+        )
+        .await;
+        return Ok(());
+    };
+
+    let emitter: Arc<dyn WebResearchStepEmitter> =
+        Arc::new(SsbWebResearchStepEmitter::new(writer.clone()));
+
+    // Race the runner future against cancellation. `runner.run` may loop for
+    // depth_limit × 10 iterations with network fetches; without this select
+    // the task keeps running until convergence/prune even after cancel fires.
+    let summary = tokio::select! {
+        biased;
+        _ = cancel.wake.notified() => {
+            info!(seq, "task_runner: web-research cancelled by wake signal");
+            return Ok(());
+        }
+        res = runner.run(task.task.clone(), emitter) => match res {
+            Ok(summary) => summary,
+            Err(msg) => {
+                error!(seq, error = %msg, "task_runner: web-research runner failed");
+                emit_finding(
+                    writer,
+                    "error",
+                    WEB_RESEARCH_FAILED_CATEGORY,
+                    &format!("web research failed for task seq={seq}: {msg}"),
+                )
+                .await;
+                return Ok(());
+            }
+        },
+    };
+
+    emit_reasoning(
+        writer,
+        1,
+        "verify",
+        &format!(
+            "web-research complete: status={} iterations={} sources_used={}",
+            summary.status, summary.iterations, summary.sources_used
+        ),
+    )
+    .await;
+
+    let complete = SsbPayload::PhaseComplete(PhaseCompletePayload {
+        phase_id: format!("task_seq_{}", seq),
+        agent_id: RUNNER_AGENT_ID.to_owned(),
+        fsm_state: "complete".to_owned(),
+        evidence_artifacts: Vec::new(),
+        commit_hashes: Vec::new(),
+        test_outcomes: vec![format!(
+            "web_research:{}:iterations={}:sources_used={}",
+            summary.status, summary.iterations, summary.sources_used
+        )],
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, complete, Vec::new())
+        .await
+    {
+        error!(seq, error = %e, "task_runner: write PhaseComplete (web-research) failed");
+    }
+    info!(seq, status = %summary.status, "task_runner: web-research task complete");
+    Ok(())
+}
+
 async fn drive_task(
     writer: &Arc<Ssb>,
     seq: i64,
@@ -624,6 +991,13 @@ async fn drive_task(
     resolved: &ResolvedConfig,
     cancel: &CancelHandle,
 ) -> Result<(), TaskRunnerError> {
+    // Web-research branch (Session 4D.12): route detected research tasks
+    // through the orchestrator instead of the default pipeline so the
+    // WebResearchOrchestrator wiring has a production call site.
+    if is_web_research_task(&task.task) {
+        return drive_web_research_task(writer, seq, task, resolved, cancel).await;
+    }
+
     // Resolve the project's working directory and detect whether the
     // project is a web scaffold (decides whether web-validation tiers apply).
     let project_dir = resolved.resolver.resolve(&task.project_id);
@@ -1364,6 +1738,7 @@ mod tests {
                 dev_server_launcher: Some(launcher),
                 project_dir_resolver: Some(resolver),
                 dev_server_registry: Some(registry.clone()),
+                web_research_runner: None,
             },
         );
 
@@ -1458,6 +1833,7 @@ mod tests {
                 dev_server_launcher: None, // <-- no launcher
                 project_dir_resolver: Some(resolver),
                 dev_server_registry: None,
+                web_research_runner: None,
             },
         );
 

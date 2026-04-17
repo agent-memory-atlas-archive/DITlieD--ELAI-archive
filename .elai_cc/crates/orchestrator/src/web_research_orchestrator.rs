@@ -71,6 +71,38 @@ pub enum WebResearchOrchestratorError {
 }
 
 // ---------------------------------------------------------------------------
+// WebResearchStepEmitter — per-iteration progress callback
+// ---------------------------------------------------------------------------
+
+/// Per-iteration progress event from [`WebResearchOrchestrator::run_node_loop`].
+///
+/// `action` is one of: `"iterate"` (standard progress), `"no_results"` (search
+/// returned empty), `"converged"`, `"pruned"`, or `"max_iterations"`.
+#[derive(Debug, Clone)]
+pub struct WebResearchStepEvent {
+    pub node_id: u64,
+    pub action: String,
+    pub phi: f64,
+    pub psi: f64,
+    pub iteration: u32,
+    pub sources_fetched: u32,
+    pub sources_used: u32,
+}
+
+/// Injectable per-step emitter. The default orchestrator uses `None` and emits
+/// nothing; the task runner plugs in an SSB-backed emitter so web-research
+/// tasks surface `web_research_step` rows in the dashboard activity feed.
+///
+/// Uses the manual boxed-future pattern (not `async-trait` crate) so the trait
+/// stays dyn-safe while permitting borrow-from-self inside emitter impls.
+pub trait WebResearchStepEmitter: Send + Sync {
+    fn emit(
+        &self,
+        event: WebResearchStepEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+// ---------------------------------------------------------------------------
 // WebResearchOrchestrator
 // ---------------------------------------------------------------------------
 
@@ -84,6 +116,7 @@ pub struct WebResearchOrchestrator {
     tier_config: ResearchTierConfig,
     clock: Arc<dyn ClockProvider>,
     chunk_counter: u64,
+    step_emitter: Option<Arc<dyn WebResearchStepEmitter>>,
 }
 
 impl WebResearchOrchestrator {
@@ -107,7 +140,15 @@ impl WebResearchOrchestrator {
             tier_config,
             clock,
             chunk_counter: 0,
+            step_emitter: None,
         }
+    }
+
+    /// Attach a per-iteration step emitter. The task runner uses this to bridge
+    /// orchestrator progress to SSB `web_research_step` rows.
+    pub fn with_step_emitter(mut self, emitter: Arc<dyn WebResearchStepEmitter>) -> Self {
+        self.step_emitter = Some(emitter);
+        self
     }
 
     /// Access the tier config (for contract tests and callers).
@@ -157,8 +198,22 @@ impl WebResearchOrchestrator {
             if ranked_results.is_empty() {
                 debug!(node_id = node.id.0, "no search results, marking for prune check");
                 node.low_gain_streak += 1;
+                self.emit_step(
+                    node,
+                    "no_results",
+                    total_sources_fetched,
+                    total_sources_used,
+                )
+                .await;
                 if node.should_prune() {
                     node.status = NodeStatus::Pruned;
+                    self.emit_step(
+                        node,
+                        "pruned",
+                        total_sources_fetched,
+                        total_sources_used,
+                    )
+                    .await;
                     break;
                 }
                 continue;
@@ -273,6 +328,13 @@ impl WebResearchOrchestrator {
                     iterations = node.iterations,
                     "node converged"
                 );
+                self.emit_step(
+                    node,
+                    "converged",
+                    total_sources_fetched,
+                    total_sources_used,
+                )
+                .await;
                 break;
             }
 
@@ -284,8 +346,24 @@ impl WebResearchOrchestrator {
                     low_gain_streak = node.low_gain_streak,
                     "node pruned due to low info gain"
                 );
+                self.emit_step(
+                    node,
+                    "pruned",
+                    total_sources_fetched,
+                    total_sources_used,
+                )
+                .await;
                 break;
             }
+
+            // Per-iteration progress (non-terminal).
+            self.emit_step(
+                node,
+                "iterate",
+                total_sources_fetched,
+                total_sources_used,
+            )
+            .await;
         }
 
         // If we hit max iterations without convergence or prune.
@@ -297,6 +375,13 @@ impl WebResearchOrchestrator {
                 psi = node.psi,
                 "max iterations reached without convergence"
             );
+            self.emit_step(
+                node,
+                "max_iterations",
+                total_sources_fetched,
+                total_sources_used,
+            )
+            .await;
         }
 
         info!(
@@ -410,6 +495,30 @@ impl WebResearchOrchestrator {
             .map(|c| c.evidence_level.score())
             .sum::<f64>() / count;
         node.psi = avg_evidence * avg_quality * coverage_factor;
+    }
+
+    /// Emit a per-iteration progress event via the injected step emitter.
+    /// No-op when no emitter is attached.
+    async fn emit_step(
+        &self,
+        node: &ResearchNode,
+        action: &str,
+        sources_fetched: u32,
+        sources_used: u32,
+    ) {
+        if let Some(emitter) = self.step_emitter.as_ref() {
+            emitter
+                .emit(WebResearchStepEvent {
+                    node_id: node.id.0,
+                    action: action.to_owned(),
+                    phi: node.phi,
+                    psi: node.psi,
+                    iteration: node.iterations,
+                    sources_fetched,
+                    sources_used,
+                })
+                .await;
+        }
     }
 
     /// Get node iteration stats for SSB reporting.
