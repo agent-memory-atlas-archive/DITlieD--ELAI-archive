@@ -47,7 +47,15 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::agent_pool::ModelPool;
+use elai_core::clock::OsClock;
+use elai_reasoning::BasicGrcEngine;
+use uuid::Uuid;
+
+use crate::agent_pool::{AgentHandle, AgentRole, AgentStatus, ModelPool};
+use crate::checkpoint::{
+    AgentCheckpointData, CheckpointManager, GrcHistoryEntry,
+};
+use crate::recovery::{AgentDeathClassification, RecoveryManager};
 use crate::pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef, RuleId, ToolLookup,
 };
@@ -1030,6 +1038,15 @@ pub struct TaskRunnerConfig {
     /// PRE_GATE and emits `Finding` rows for every Block/Warn verdict. When
     /// `None`, the PRE_GATE is a no-op (pre-4E.14 behavior).
     pub rule_evaluator: Option<Arc<RuleEvaluator>>,
+    /// Root directory under which per-task checkpoint subdirectories are
+    /// written (Session 3C.REDO). When `Some`, the runner owns a
+    /// [`CheckpointManager`] and writes a checkpoint row to both disk and the
+    /// SSB after each baby-step boundary. When `None`, checkpoint/recovery is
+    /// disabled (pre-3C.REDO behavior — task_runner does not checkpoint).
+    ///
+    /// Typical value: `.elai_cc/sessions/{session_id}/agents`. Each task seq
+    /// becomes its own `agent_id` subdirectory under this root.
+    pub checkpoint_scratch_dir: Option<PathBuf>,
 }
 
 impl TaskRunnerConfig {
@@ -1044,6 +1061,7 @@ impl TaskRunnerConfig {
             web_research_runner: None,
             scaffold_applier: None,
             rule_evaluator: None,
+            checkpoint_scratch_dir: None,
         }
     }
 }
@@ -1058,10 +1076,36 @@ struct ResolvedConfig {
     web_research: Option<Arc<dyn WebResearchRunner>>,
     scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
     rule_evaluator: Option<Arc<RuleEvaluator>>,
+    /// Session 3C.REDO. Present iff [`TaskRunnerConfig::checkpoint_scratch_dir`]
+    /// was supplied. When present, the runner owns a `CheckpointManager` and
+    /// a `RecoveryManager` bound to the same clock, and writes checkpoint rows
+    /// at each baby-step boundary. On `passed=false` it fires recovery.
+    checkpoint: Option<Arc<CheckpointContext>>,
+}
+
+/// Session 3C.REDO: bundle the two managers so a single `Option` on
+/// `ResolvedConfig` gates the whole checkpoint/recovery surface.
+///
+/// Both managers share the same `OsClock` so the `CheckpointManager::write`
+/// -> `RecoveryManager::read_latest` pair stays in sync. `OsClock` is `Copy`,
+/// so the managers do not share state — this struct exists only to keep the
+/// `Option` footprint small and make "either both or neither" the only valid
+/// runtime state.
+struct CheckpointContext {
+    checkpoint_manager: CheckpointManager<OsClock>,
+    recovery_manager: RecoveryManager<OsClock>,
+    scratch_dir: PathBuf,
 }
 
 impl ResolvedConfig {
     fn from(cfg: TaskRunnerConfig) -> Self {
+        let checkpoint = cfg.checkpoint_scratch_dir.map(|dir| {
+            Arc::new(CheckpointContext {
+                checkpoint_manager: CheckpointManager::new(OsClock),
+                recovery_manager: RecoveryManager::new(OsClock),
+                scratch_dir: dir,
+            })
+        });
         Self {
             cursor_path: cfg.cursor_path,
             launcher: cfg.dev_server_launcher,
@@ -1072,7 +1116,41 @@ impl ResolvedConfig {
             web_research: cfg.web_research_runner,
             scaffold_applier: cfg.scaffold_applier,
             rule_evaluator: cfg.rule_evaluator,
+            checkpoint,
         }
+    }
+}
+
+/// Build a deterministic [`AgentHandle`] representing the task_runner itself
+/// for a given task `seq`. The `agent_id` is derived from `seq` (UUID low 64
+/// bits = seq, high 64 bits = 0) so checkpoints are addressable by seq and
+/// the dashboard can recover them on restart.
+///
+/// Session 3C.REDO: task_runner is not yet a real agent (in-process, no GRC
+/// loop), so this handle is a wiring placeholder. Once
+/// [`crate::agent_pool::InProcessAgentPool`] has a production spawn site, the
+/// handle returned by that path replaces this one.
+fn task_runner_handle(seq: i64, scratch_dir: &Path) -> AgentHandle {
+    // UUID low 64 bits = seq (as u64 via cast — sign bit preserved). High
+    // bits zero. Deterministic and collision-free within a single runner.
+    let seq_u64 = seq as u64;
+    let mut bytes = [0u8; 16];
+    bytes[8..16].copy_from_slice(&seq_u64.to_be_bytes());
+    let agent_id = Uuid::from_bytes(bytes);
+
+    let grc_config = elai_reasoning::AgentGrcConfig::default();
+    AgentHandle {
+        agent_id,
+        role: AgentRole::Executor,
+        status: AgentStatus::Running,
+        task: format!("task_runner_seq_{seq}"),
+        active_files: Vec::new(),
+        grc_engine: BasicGrcEngine::with_config(grc_config.clone()),
+        grc_config,
+        scratch_dir: scratch_dir.to_path_buf(),
+        sandbox_handle: None,
+        child_process: None,
+        socket_path: None,
     }
 }
 
@@ -1618,6 +1696,29 @@ async fn drive_task(
         .await;
         baby_step_outcomes.push((bs_id.0, passed));
 
+        // Session 3C.REDO: per-baby-step checkpoint + recovery-on-failure.
+        //   * Always write a checkpoint at the boundary so recovery has fresh
+        //     grc_history to resume from. Failures inside `write` are logged
+        //     and surfaced as a Finding but do NOT fail the task — the runner
+        //     stays alive and the dashboard keeps animating.
+        //   * When `passed` is false AND the checkpoint write succeeded, fire
+        //     `recover_agent` with `Crash` classification. Gating on
+        //     `checkpoint_ok` avoids a misleading `recovery_event` row with
+        //     `degraded=true` when there is no on-disk checkpoint to
+        //     restore from (disk full / rename failure). Recovery emits
+        //     `death_event` + `recovery_event` rows to the SSB so the
+        //     dashboard can surface the crash/resume pair on a single baby
+        //     step. The recovered handle is discarded here: task_runner is
+        //     not yet an agent pool, so there is nothing to re-seat. Phase
+        //     4A replaces this discard with a real respawn.
+        if let Some(cp) = resolved.checkpoint.as_ref() {
+            let checkpoint_ok =
+                emit_baby_step_checkpoint(writer, cp, seq, bs_id.0, &task_summary, passed).await;
+            if !passed && checkpoint_ok {
+                emit_baby_step_recovery(writer, cp, seq, bs_id.0).await;
+            }
+        }
+
         last_location = current_location;
     }
 
@@ -1693,6 +1794,120 @@ async fn emit_reasoning(writer: &Arc<Ssb>, step_index: u32, step_type: &str, con
         .await
     {
         error!(error = %e, "task_runner: write ReasoningTrace failed");
+    }
+}
+
+/// Session 3C.REDO: write a checkpoint row for a single baby step and
+/// persist the five msgpack/txt files under the task's scratch subdirectory.
+/// Failures are logged and emitted as a Finding so the dashboard surfaces
+/// the problem; the runner stays alive.
+///
+/// Returns `true` iff the checkpoint write + SSB record both succeeded.
+/// The caller uses this to gate `emit_baby_step_recovery` — recovery with
+/// no on-disk checkpoint would produce a `recovery_event` with
+/// `degraded=true`, which misleads the dashboard into believing resumable
+/// state exists when it does not.
+async fn emit_baby_step_checkpoint(
+    writer: &Arc<Ssb>,
+    cp: &CheckpointContext,
+    seq: i64,
+    baby_step_id: u64,
+    task_summary: &str,
+    passed: bool,
+) -> bool {
+    let handle = task_runner_handle(seq, &cp.scratch_dir);
+    let status_str = if passed { "running" } else { "failed" };
+    let data = AgentCheckpointData {
+        agent_status: status_str.to_owned(),
+        grc_history: vec![GrcHistoryEntry {
+            step_type: "act".to_owned(),
+            content: format!(
+                "baby_step_{baby_step_id} {status}: {summary}",
+                status = if passed { "passed" } else { "failed" },
+                summary = task_summary,
+            ),
+            grounding: format!("task_runner:seq={seq}"),
+            topic: "task_runner".to_owned(),
+        }],
+        active_files: Vec::new(),
+        tool_results: vec![format!(
+            "baby_step_{baby_step_id}:{tag}",
+            tag = if passed { "passed" } else { "failed" }
+        )],
+        output_draft: String::new(),
+        channel_references: Vec::new(),
+    };
+    match cp
+        .checkpoint_manager
+        .write(&handle, &data, baby_step_id, writer.as_ref())
+        .await
+    {
+        Ok(()) => true,
+        Err(e) => {
+            error!(
+                seq,
+                baby_step = baby_step_id,
+                error = %e,
+                "task_runner: checkpoint write failed"
+            );
+            emit_finding(
+                writer,
+                "warning",
+                "checkpoint_write_failed",
+                &format!("checkpoint write failed for baby_step={baby_step_id}: {e}"),
+            )
+            .await;
+            false
+        }
+    }
+}
+
+/// Session 3C.REDO: fire [`RecoveryManager::recover_agent`] with a `Crash`
+/// classification when a baby step's aggregate `passed` is false. Recovery
+/// emits `death_event` and `recovery_event` rows to the SSB so the dashboard
+/// can pair the crash with its resume point on the same baby step.
+///
+/// The returned `AgentHandle` is discarded — task_runner is not an agent
+/// pool yet (Phase 3 in-process, 4A out-of-process). Once the pool becomes
+/// the production spawn site, the handle here is the one that gets re-seated.
+async fn emit_baby_step_recovery(
+    writer: &Arc<Ssb>,
+    cp: &CheckpointContext,
+    seq: i64,
+    baby_step_id: u64,
+) {
+    let handle = task_runner_handle(seq, &cp.scratch_dir);
+    // Recovery's `prior_step_index` is the step at which the crash happened.
+    // For task_runner we use the baby-step id (cast from u64 to i64). On
+    // overflow, clamp to `i64::MAX` — the same sentinel `CheckpointManager`
+    // uses (checkpoint.rs:252) so both production paths agree on the cap.
+    // `RecoveryManager::recover_agent` uses `checked_add(1)` internally and
+    // returns `InvariantViolation` on overflow; we surface that as a Finding
+    // in the error arm below rather than silently producing an off-by-one.
+    let prior = i64::try_from(baby_step_id).unwrap_or(i64::MAX);
+    if let Err(e) = cp
+        .recovery_manager
+        .recover_agent(
+            &handle,
+            AgentDeathClassification::Crash,
+            prior,
+            writer.as_ref(),
+        )
+        .await
+    {
+        error!(
+            seq,
+            baby_step = baby_step_id,
+            error = %e,
+            "task_runner: recover_agent failed"
+        );
+        emit_finding(
+            writer,
+            "warning",
+            "recovery_failed",
+            &format!("recovery failed for baby_step={baby_step_id}: {e}"),
+        )
+        .await;
     }
 }
 
@@ -2494,6 +2709,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: None,
                 rule_evaluator: None,
+                checkpoint_scratch_dir: None,
             },
         );
 
@@ -2591,6 +2807,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: None,
                 rule_evaluator: None,
+                checkpoint_scratch_dir: None,
             },
         );
 
@@ -2765,6 +2982,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: Some(applier),
                 rule_evaluator: None,
+                checkpoint_scratch_dir: None,
             },
         );
 
@@ -3090,5 +3308,176 @@ mod tests {
         assert_eq!(checkpoint_level_tag(DecompositionLevel::Step), "step");
         assert_eq!(checkpoint_level_tag(DecompositionLevel::Phase), "phase");
         assert_eq!(checkpoint_level_tag(DecompositionLevel::Concept), "concept");
+    }
+
+    // -----------------------------------------------------------------------
+    // Session 3C.REDO: checkpoint + recovery wiring
+    // -----------------------------------------------------------------------
+
+    async fn new_ssb_for_3c(tmp: &std::path::Path, session: &str) -> Arc<Ssb> {
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        Arc::new(
+            Ssb::new(
+                SsbConfig {
+                    db_path: tmp.join(format!("{session}.db")),
+                    pool_size: Some(2),
+                    project_id: "3c-redo".into(),
+                    session_id: session.into(),
+                },
+                clock,
+            )
+            .expect("ssb"),
+        )
+    }
+
+    fn new_checkpoint_context(scratch_dir: std::path::PathBuf) -> CheckpointContext {
+        CheckpointContext {
+            checkpoint_manager: CheckpointManager::new(OsClock),
+            recovery_manager: RecoveryManager::new(OsClock),
+            scratch_dir,
+        }
+    }
+
+    #[test]
+    fn task_runner_handle_uuid_is_deterministic_from_seq() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let h1 = task_runner_handle(42, tmp.path());
+        let h2 = task_runner_handle(42, tmp.path());
+        assert_eq!(h1.agent_id, h2.agent_id, "same seq must map to same uuid");
+        let h3 = task_runner_handle(43, tmp.path());
+        assert_ne!(h1.agent_id, h3.agent_id, "distinct seq must map to distinct uuid");
+        assert_eq!(h1.role, AgentRole::Executor);
+        assert_eq!(h1.status, AgentStatus::Running);
+        assert!(h1.task.contains("task_runner_seq_42"));
+    }
+
+    #[test]
+    fn resolved_config_without_scratch_dir_has_no_checkpoint() {
+        let cfg = TaskRunnerConfig::new_minimal(std::path::PathBuf::from("/tmp/cursor.json"));
+        let resolved = ResolvedConfig::from(cfg);
+        assert!(resolved.checkpoint.is_none());
+    }
+
+    #[test]
+    fn resolved_config_with_scratch_dir_owns_checkpoint_context() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = TaskRunnerConfig::new_minimal(std::path::PathBuf::from("/tmp/cursor.json"));
+        cfg.checkpoint_scratch_dir = Some(tmp.path().to_path_buf());
+        let resolved = ResolvedConfig::from(cfg);
+        let cp = resolved.checkpoint.as_ref().expect("checkpoint context present");
+        assert_eq!(cp.scratch_dir, tmp.path());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emit_baby_step_checkpoint_writes_ssb_row_and_disk_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = new_ssb_for_3c(tmp.path(), "cp-row").await;
+        let cp = new_checkpoint_context(tmp.path().to_path_buf());
+        let seq = 7_i64;
+        let bs_id = 101_u64;
+
+        emit_baby_step_checkpoint(&ssb, &cp, seq, bs_id, "task summary", true).await;
+
+        let rows = ssb
+            .query_by_type(SsbActionType::Checkpoint)
+            .expect("query checkpoint");
+        assert_eq!(rows.len(), 1, "expected exactly one Checkpoint row");
+        let payload: SsbPayload =
+            rmp_serde::from_slice(rows[0].payload.as_ref()).expect("decode payload");
+        match payload {
+            SsbPayload::Checkpoint(cp_payload) => {
+                assert_eq!(cp_payload.step_index, bs_id);
+                assert_eq!(cp_payload.file_sizes.len(), 5);
+            }
+            other => panic!("expected Checkpoint, got {:?}", other.action_type()),
+        }
+
+        // 5 files on disk under scratch/{agent_id}/
+        let handle = task_runner_handle(seq, &cp.scratch_dir);
+        let dir = cp.scratch_dir.join(handle.agent_id.to_string());
+        for name in [
+            "state.msgpack",
+            "grc_history.msgpack",
+            "tool_results.msgpack",
+            "output_draft.msgpack",
+            "checkpoint_ts",
+        ] {
+            assert!(
+                dir.join(name).exists(),
+                "expected {name} under {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emit_baby_step_recovery_writes_death_and_recovery_rows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = new_ssb_for_3c(tmp.path(), "recov-row").await;
+        let cp = new_checkpoint_context(tmp.path().to_path_buf());
+        let seq = 13_i64;
+        let bs_id = 42_u64;
+
+        emit_baby_step_recovery(&ssb, &cp, seq, bs_id).await;
+
+        let death = ssb
+            .query_by_type(SsbActionType::DeathEvent)
+            .expect("query death_event");
+        assert_eq!(death.len(), 1, "expected one death_event row");
+        let recov = ssb
+            .query_by_type(SsbActionType::RecoveryEvent)
+            .expect("query recovery_event");
+        assert_eq!(recov.len(), 1, "expected one recovery_event row");
+
+        let SsbPayload::DeathEvent(d) =
+            rmp_serde::from_slice(death[0].payload.as_ref()).expect("decode death")
+        else {
+            panic!("expected DeathEvent");
+        };
+        assert_eq!(d.classification, "crash");
+        assert_eq!(d.prior_step_index, bs_id as i64);
+
+        let SsbPayload::RecoveryEvent(r) =
+            rmp_serde::from_slice(recov[0].payload.as_ref()).expect("decode recovery")
+        else {
+            panic!("expected RecoveryEvent");
+        };
+        assert_eq!(r.classification, "crash");
+        assert_eq!(r.recovery_step_index, bs_id as i64 + 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn checkpoint_then_recovery_preserves_agent_id_and_reads_history() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = new_ssb_for_3c(tmp.path(), "cp-recov").await;
+        let cp = new_checkpoint_context(tmp.path().to_path_buf());
+        let seq = 99_i64;
+        let bs_id = 5_u64;
+
+        emit_baby_step_checkpoint(&ssb, &cp, seq, bs_id, "work", false).await;
+        emit_baby_step_recovery(&ssb, &cp, seq, bs_id).await;
+
+        // Recovery row's checkpoint_path should match the handle's agent_id
+        // derived from the same seq — proves recovery reads the SAME checkpoint
+        // the prior call wrote, so post-crash resume is not degraded.
+        let handle = task_runner_handle(seq, &cp.scratch_dir);
+        let death_rows = ssb
+            .query_by_type(SsbActionType::DeathEvent)
+            .expect("query death_event");
+        let SsbPayload::DeathEvent(d) =
+            rmp_serde::from_slice(death_rows[0].payload.as_ref()).expect("decode")
+        else {
+            panic!("expected DeathEvent");
+        };
+        assert!(
+            d.had_checkpoint,
+            "death_event should record that a checkpoint existed at crash time"
+        );
+        assert!(
+            d.checkpoint_path.contains(&handle.agent_id.to_string()),
+            "checkpoint_path should reference the same agent_id as the write (agent_id={}, path={})",
+            handle.agent_id,
+            d.checkpoint_path,
+        );
     }
 }
