@@ -51,6 +51,11 @@ use crate::agent_pool::ModelPool;
 use crate::pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef, RuleId, ToolLookup,
 };
+use elai_rules::predicate::{Verdict, VerdictResult};
+use elai_rules::rule_engine::{
+    CompiledPredicate, EvaluationContext, FsmPhaseBit, Rule, RuleEngine,
+    ALWAYS_INCLUDED_DOMAINS as RULES_ALWAYS_INCLUDED_DOMAINS,
+};
 use crate::pipeline_tree_navigator::{
     run_integration_checkpoint, BabyStepLocation, BabyStepOutcome, BabyStepResult,
     DecompositionLevel, DepthFirstNavigator, IntegrationRunResult, IntegrationRunner,
@@ -125,6 +130,17 @@ pub const INTEGRATION_CHECKPOINT_FAILED_CATEGORY: &str = "integration_checkpoint
 /// Finding category for integration-checkpoint bubble-up escalations raised
 /// by `run_{step,phase,concept}_integration` when an integration fails.
 pub const INTEGRATION_BUBBLE_UP_CATEGORY: &str = "integration_bubble_up";
+
+/// Finding category for rules-engine verdicts emitted at baby-step PRE_GATE.
+/// Dashboard filter keys on this string to surface rule violations in the
+/// activity feed. Session 4E.14.
+pub const RULE_VIOLATION_CATEGORY: &str = "rule_violation";
+
+/// Action label placed on every `EvaluationContext` built for a baby step
+/// PRE_GATE evaluation. Matches the rules-engine contract: the `action`
+/// string discriminates evaluation call sites (write/execute/modify/...).
+/// "baby_step_pre_gate" is unambiguous — no existing rule keys on it.
+pub const BABY_STEP_PRE_GATE_ACTION: &str = "baby_step_pre_gate";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -405,6 +421,108 @@ struct RuntimeModelPool;
 impl ModelPool for RuntimeModelPool {
     fn available_vram(&self) -> u64 {
         RUNNER_VRAM_UNCONSTRAINED
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime rule evaluation (Session 4E.14)
+// ---------------------------------------------------------------------------
+
+/// Bundles a [`RuleEngine`] with its compiled rule set for runtime evaluation
+/// at baby-step PRE_GATE. Separate from [`RuntimePredicates`] (which lives on
+/// the [`PipelineBuilder`] path for structural DAG validation) because the
+/// [`RuleEngine`] trait evaluates against an [`EvaluationContext`] whereas
+/// [`PredicateCompiler`] only maps phase names to rule IDs.
+///
+/// Wrapping in [`Arc`] is intentional: [`CompiledPredicate`] is not [`Clone`]
+/// (the `SchemaRequired` variant holds a `jsonschema::Validator`), so we share
+/// the rules slice by reference.
+pub struct RuleEvaluator {
+    engine: Arc<dyn RuleEngine + Send + Sync>,
+    compiled_rules: Arc<Vec<(Rule, CompiledPredicate)>>,
+}
+
+impl RuleEvaluator {
+    /// Construct a new evaluator. The caller keeps ownership of the engine
+    /// and compiled rules; both are internally [`Arc`]-wrapped so the runner
+    /// can share a single set across every task without re-compilation.
+    pub fn new(
+        engine: Arc<dyn RuleEngine + Send + Sync>,
+        compiled_rules: Arc<Vec<(Rule, CompiledPredicate)>>,
+    ) -> Self {
+        Self {
+            engine,
+            compiled_rules,
+        }
+    }
+
+    /// Number of compiled rules held by the evaluator. Used by observability
+    /// callers (tests, dashboard wiring) to assert seed rules were loaded.
+    pub fn rules_len(&self) -> usize {
+        self.compiled_rules.len()
+    }
+
+    /// Evaluate every compiled rule whose `phase_mask` includes `fsm_phase`
+    /// AND whose domain either (a) matches one of `file_domains` or
+    /// (b) is in `ALWAYS_INCLUDED_DOMAINS` (engineering/security — see
+    /// `rule_engine::get_active_rules` docs).
+    ///
+    /// Evaluation is one-rule-at-a-time via [`std::slice::from_ref`] to avoid
+    /// cloning [`CompiledPredicate`]. This preserves the engine's locked
+    /// evaluation order *within a single rule* (MetricGate → GrepPattern →
+    /// AstPattern → Composite → GraphReachability) but NOT across rules; the
+    /// runner's PRE_GATE call site does not need cross-rule ordering because
+    /// (i) baby-step rules are independent and (ii) Block short-circuit is
+    /// implemented here by breaking the outer loop on the first Block verdict.
+    pub fn evaluate_at_pre_gate(
+        &self,
+        fsm_phase: FsmPhaseBit,
+        file_domains: &[&str],
+        ctx: &EvaluationContext<'_>,
+    ) -> Vec<Verdict> {
+        let phase_bit = fsm_phase.mask();
+        let mut verdicts: Vec<Verdict> = Vec::new();
+        for pair in self.compiled_rules.iter() {
+            let (rule, _) = pair;
+            let phase_match = (rule.phase_mask & phase_bit) != 0;
+            let domain_match = file_domains.contains(&rule.domain.as_str())
+                || RULES_ALWAYS_INCLUDED_DOMAINS.contains(&rule.domain.as_str());
+            if !phase_match || !domain_match {
+                continue;
+            }
+            match self.engine.evaluate(std::slice::from_ref(pair), ctx) {
+                Ok(mut vs) => {
+                    let has_block = vs
+                        .iter()
+                        .any(|v| matches!(v.result, VerdictResult::Block));
+                    verdicts.append(&mut vs);
+                    if has_block {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    // Audit BLOCK-fix (4E.14): engine errors MUST surface as a
+                    // signal the operator can see. Emit a `Warn` verdict
+                    // (picked up by `evaluate_pre_gate_and_emit_findings` →
+                    // warning-severity Finding) AND log via `tracing::warn!`
+                    // so both the dashboard activity feed and the log
+                    // pipeline carry the evidence. Using `Warn` (not `Block`)
+                    // keeps the baby step from failing on engine-internal
+                    // bugs; the operator can still escalate if needed.
+                    tracing::warn!(
+                        rule_id = %rule.rule_id,
+                        error = %e,
+                        "rule engine error during baby-step PRE_GATE",
+                    );
+                    verdicts.push(Verdict {
+                        rule_id: rule.rule_id.clone(),
+                        result: VerdictResult::Warn,
+                        evidence: format!("rule engine error: {e}"),
+                    });
+                }
+            }
+        }
+        verdicts
     }
 }
 
@@ -907,6 +1025,11 @@ pub struct TaskRunnerConfig {
     /// `is_web_scaffold_task` matches. When `None`, scaffold-classified tasks
     /// emit an informational Finding instead of scaffolding.
     pub scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
+    /// Optional runtime rules evaluator (Session 4E.14). When `Some`, the
+    /// runner evaluates the compiled rule set against each baby step at
+    /// PRE_GATE and emits `Finding` rows for every Block/Warn verdict. When
+    /// `None`, the PRE_GATE is a no-op (pre-4E.14 behavior).
+    pub rule_evaluator: Option<Arc<RuleEvaluator>>,
 }
 
 impl TaskRunnerConfig {
@@ -920,6 +1043,7 @@ impl TaskRunnerConfig {
             dev_server_registry: None,
             web_research_runner: None,
             scaffold_applier: None,
+            rule_evaluator: None,
         }
     }
 }
@@ -933,6 +1057,7 @@ struct ResolvedConfig {
     registry: DevServerRegistry,
     web_research: Option<Arc<dyn WebResearchRunner>>,
     scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
+    rule_evaluator: Option<Arc<RuleEvaluator>>,
 }
 
 impl ResolvedConfig {
@@ -946,6 +1071,7 @@ impl ResolvedConfig {
             registry: cfg.dev_server_registry.unwrap_or_else(new_dev_server_registry),
             web_research: cfg.web_research_runner,
             scaffold_applier: cfg.scaffold_applier,
+            rule_evaluator: cfg.rule_evaluator,
         }
     }
 }
@@ -1363,6 +1489,22 @@ async fn drive_task(
         )
         .await;
 
+        // 4E.14: runtime PRE_GATE rules evaluation. Emits one Finding per
+        // Block/Warn verdict so the dashboard can surface violations. A
+        // `None` evaluator matches pre-4E.14 behavior (no-op).
+        let pre_gate_blocked = if let Some(evaluator) = resolved.rule_evaluator.as_ref() {
+            evaluate_pre_gate_and_emit_findings(
+                writer,
+                evaluator,
+                bs_id.0,
+                &task_summary,
+                is_web_project,
+            )
+            .await
+        } else {
+            false
+        };
+
         // 4E.13: fire higher-level integration checkpoints when the traversal
         // crosses a step / phase / concept boundary. `last_location` is the
         // *previous* baby step's location; comparing it to the current one
@@ -1448,6 +1590,8 @@ async fn drive_task(
         // we fall back to the recorded outcome so the dashboard still sees
         // progress (matches "no integration, no checkpoint" semantics of
         // pipeline_tree_navigator.rs:820).
+        // 4E.14: a PRE_GATE Block verdict forces `passed=false`; Warn
+        // verdicts are informational and do not flip the outcome.
         let passed = match tree
             .integration_spec(DecompositionLevel::BabyStep, bs_id.0)
             .cloned()
@@ -1461,9 +1605,9 @@ async fn drive_task(
                     &mut state,
                 );
                 emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
-                run.success && outcome_passed
+                run.success && outcome_passed && !pre_gate_blocked
             }
-            None => outcome_passed,
+            None => outcome_passed && !pre_gate_blocked,
         };
         emit_test_outcome(
             writer,
@@ -1665,6 +1809,89 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
     {
         error!(error = %e, "task_runner: write Finding failed");
     }
+}
+
+/// 4E.14: evaluate runtime rules at a baby-step PRE_GATE and emit one
+/// `Finding` row per Block/Warn verdict. Returns `true` when any Block
+/// fired so the caller can fail the baby step accordingly.
+///
+/// Contract:
+/// - `action` = [`BABY_STEP_PRE_GATE_ACTION`].
+/// - `source` = the truncated baby-step task text (what the LLM would have
+///   been asked to do). Rules that grep/ast-match rely on this string;
+///   today it is a natural-language instruction, not code, which limits
+///   what GrepPattern rules can catch. Future wiring replaces `source` with
+///   the actual code buffer once `agent_pool::InProcessAgentPool` lands
+///   (see task_runner.rs docstring).
+/// - `file_path` = derived from the project's web-ness: `web_project.md`
+///   for web projects (triggers the "web" domain in
+///   [`RuleEvaluator::evaluate_at_pre_gate`]) and an empty string otherwise
+///   (engineering/security always-included domains still fire).
+/// - `fsm_phase` = EXECUTING, matching the state the runner is in while
+///   driving baby steps.
+async fn evaluate_pre_gate_and_emit_findings(
+    writer: &Arc<Ssb>,
+    evaluator: &RuleEvaluator,
+    bs_id: u64,
+    task_summary: &str,
+    is_web_project: bool,
+) -> bool {
+    let file_path_stub = if is_web_project { "web_project.md" } else { "" };
+    let domains: Vec<&str> = if is_web_project { vec!["web"] } else { Vec::new() };
+    let ctx = EvaluationContext {
+        action: BABY_STEP_PRE_GATE_ACTION,
+        source: task_summary,
+        file_path: file_path_stub,
+        fsm_phase: FsmPhaseBit::EXECUTING,
+        metric_values: HashMap::new(),
+    };
+    let verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
+    let mut any_block = false;
+    for v in &verdicts {
+        match v.result {
+            VerdictResult::Block => {
+                any_block = true;
+                emit_finding(
+                    writer,
+                    "error",
+                    RULE_VIOLATION_CATEGORY,
+                    &format!("baby_step={bs_id} rule={} BLOCK: {}", v.rule_id, v.evidence),
+                )
+                .await;
+            }
+            VerdictResult::Warn => {
+                emit_finding(
+                    writer,
+                    "warning",
+                    RULE_VIOLATION_CATEGORY,
+                    &format!("baby_step={bs_id} rule={} WARN: {}", v.rule_id, v.evidence),
+                )
+                .await;
+            }
+            VerdictResult::Escalate(ref target) => {
+                // Audit BLOCK-fix (4E.14): Escalate at PRE_GATE MUST produce
+                // an observable signal. Spec 3F.2 defines Escalate as the
+                // "route to auditor/human" signal; without a Finding here
+                // the verdict is silently dropped. Emit a dedicated Finding
+                // with severity="escalate" so downstream consumers (dashboard
+                // activity feed, auditor agent router) can filter on it.
+                emit_finding(
+                    writer,
+                    "escalate",
+                    RULE_VIOLATION_CATEGORY,
+                    &format!(
+                        "baby_step={bs_id} rule={} ESCALATE(target={:?}): {}",
+                        v.rule_id, target, v.evidence,
+                    ),
+                )
+                .await;
+            }
+            VerdictResult::Allow => {
+                // Allow is the default non-event; no Finding is emitted.
+            }
+        }
+    }
+    any_block
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,6 +2493,7 @@ mod tests {
                 dev_server_registry: Some(registry.clone()),
                 web_research_runner: None,
                 scaffold_applier: None,
+                rule_evaluator: None,
             },
         );
 
@@ -2362,6 +2590,7 @@ mod tests {
                 dev_server_registry: None,
                 web_research_runner: None,
                 scaffold_applier: None,
+                rule_evaluator: None,
             },
         );
 
@@ -2535,6 +2764,7 @@ mod tests {
                 dev_server_registry: None,
                 web_research_runner: None,
                 scaffold_applier: Some(applier),
+                rule_evaluator: None,
             },
         );
 

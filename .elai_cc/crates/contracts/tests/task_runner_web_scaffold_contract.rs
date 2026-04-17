@@ -216,6 +216,7 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             dev_server_registry: None,
             web_research_runner: None,
             scaffold_applier: None,
+            rule_evaluator: None,
         },
     );
 
@@ -287,6 +288,7 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             dev_server_registry: None,
             web_research_runner: None,
             scaffold_applier: Some(applier),
+            rule_evaluator: None,
         },
     );
 
@@ -354,6 +356,7 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             dev_server_registry: None,
             web_research_runner: None,
             scaffold_applier: Some(applier),
+            rule_evaluator: None,
         },
     );
 

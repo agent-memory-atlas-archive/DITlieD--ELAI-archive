@@ -180,7 +180,11 @@ pub enum RuleEngineError {
 // ---------------------------------------------------------------------------
 
 /// Domains that are always included in active rules regardless of file context.
-const ALWAYS_INCLUDED_DOMAINS: &[&str] = &["engineering", "security"];
+///
+/// Exported so downstream wrappers (e.g. `elai_orchestrator::RuleEvaluator`)
+/// can pre-filter by phase_mask + domain without duplicating the list —
+/// auditor 4E.14 WARN required this single source of truth.
+pub const ALWAYS_INCLUDED_DOMAINS: &[&str] = &["engineering", "security"];
 
 // ---------------------------------------------------------------------------
 // Domain detection from file paths

@@ -154,6 +154,8 @@ async fn web_research_task_emits_web_research_step_rows() {
             project_dir_resolver: None,
             dev_server_registry: None,
             web_research_runner: Some(runner),
+            scaffold_applier: None,
+            rule_evaluator: None,
         },
     );
 
@@ -226,6 +228,8 @@ async fn web_research_task_without_runner_emits_finding() {
             project_dir_resolver: None,
             dev_server_registry: None,
             web_research_runner: None,
+            scaffold_applier: None,
+            rule_evaluator: None,
         },
     );
 
@@ -303,6 +307,8 @@ async fn web_research_runner_invoked_once_per_task() {
             project_dir_resolver: None,
             dev_server_registry: None,
             web_research_runner: Some(runner),
+            scaffold_applier: None,
+            rule_evaluator: None,
         },
     );
 

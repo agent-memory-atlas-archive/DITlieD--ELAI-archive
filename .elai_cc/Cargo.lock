@@ -1248,7 +1248,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "elai-core",
+ "elai-knowledge",
  "elai-orchestrator",
+ "elai-rules",
  "scaffold",
  "serde",
  "serde_json",
