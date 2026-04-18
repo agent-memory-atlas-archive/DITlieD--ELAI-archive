@@ -14,6 +14,7 @@ pub mod telescope;
 mod usage;
 pub mod research_types;
 pub mod source_tier;
+pub mod tool_dispatcher;
 pub mod vram_tier;
 
 pub use bootstrap::{BootstrapPhase, BootstrapPlan};
@@ -82,6 +83,14 @@ pub use research_types::{
 pub use vram_tier::{
     CloudImportance, ReasoningLayer, SwapStrategy, VramTier, VramTierConfig,
     ALL_LAYERS, MAX_MCTS_BRANCHES_8GB, MAX_MCTS_BRANCHES_12GB, MAX_MCTS_BRANCHES_16GB_PLUS,
+};
+
+// Batch 2B — ToolDispatcher trait and value types.
+pub use tool_dispatcher::{
+    ClassifiedFailure, CommitOutcome, EditMatchTier, EditOutcome, EditRequest, FailureInput,
+    FileView, GitBranchPolicy, GitCommitRequest, IncrementalOutcome, IncrementalRequest,
+    ToolDispatchError, ToolDispatcher, ToolFailureCategory, ValidateRequest, ValidationTier,
+    ValidationTierResult,
 };
 
 // --- Entropy quarantine: all raw time/entropy access goes through these ---

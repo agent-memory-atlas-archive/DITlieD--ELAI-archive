@@ -21,6 +21,7 @@
 //!      preservation for `hook_dispatcher` + `signal_reader`).
 
 use std::path::PathBuf;
+use elai_core::GitBranchPolicy;
 use std::sync::Arc;
 
 use elai_knowledge::DkgQuerierAdapter;
@@ -80,6 +81,8 @@ fn task_runner_config_accepts_indexing_service_arc() {
         indexing_service: Some(Arc::new(AsyncMutex::new(svc))),
         hook_dispatcher: None,
         signal_reader: None,
+        tool_dispatcher: None,
+        git_branch_policy: GitBranchPolicy::default(),
     };
 
     assert!(

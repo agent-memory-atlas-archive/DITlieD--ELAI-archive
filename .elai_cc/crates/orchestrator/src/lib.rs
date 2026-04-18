@@ -146,6 +146,18 @@ pub use dispatcher::{
     LOCAL_MODEL_MAX_CONTEXT, LOCAL_BUDGET_FRACTION,
 };
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
+// Batch 2B: re-export ToolDispatcher trait + value types so downstream
+// callers (dashboard, contracts) program against `elai_orchestrator::{...}`
+// without a direct `elai_core::tool_dispatcher::` path. The concrete
+// `InProcessToolDispatcher` impl lives in `elai-tools` and is imported
+// there directly (elai-tools depends on elai-orchestrator for facade
+// re-exports, so the dep direction blocks a tools re-export here).
+pub use elai_core::tool_dispatcher::{
+    ClassifiedFailure as ToolClassifiedFailure, CommitOutcome, EditMatchTier, EditOutcome,
+    EditRequest, FailureInput, FileView, GitBranchPolicy, GitCommitRequest, IncrementalOutcome,
+    IncrementalRequest, ToolDispatchError, ToolDispatcher, ToolFailureCategory, ValidateRequest,
+    ValidationTier, ValidationTierResult,
+};
 pub use branch_lock::{detect_branch_lock_collisions, BranchLockCollision, BranchLockIntent};
 pub use compact::{
     compact_session, estimate_session_tokens, format_compact_summary,
@@ -322,13 +334,15 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    default_ssb_path, default_ssb_path_for_base, DiffSummary, DkgReadyPayload, HookEventPayload,
-    IndexingProgressPayload, InterventionKeyword, InterventionOption, InterventionRequestPayload,
+    default_ssb_path, default_ssb_path_for_base, DairaTracePayload, DiffSummary, DkgReadyPayload,
+    FailureClassifiedPayload, GitCommitPayload, HookEventPayload, IndexingProgressPayload,
+    InterventionKeyword, InterventionOption, InterventionRequestPayload,
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
     PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, VramTierDetectedPayload,
-    WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
+    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, ToolDispatchPayload,
+    ValidationTierPayload, VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME,
+    SSB_SESSIONS_SUBDIR,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,

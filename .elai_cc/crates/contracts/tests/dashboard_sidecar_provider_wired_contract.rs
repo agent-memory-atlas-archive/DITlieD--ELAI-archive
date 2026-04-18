@@ -17,6 +17,7 @@
 // provider-plumbing surface, not on the decomposition call sites.
 
 use std::collections::HashMap;
+use elai_core::GitBranchPolicy;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -128,6 +129,8 @@ async fn contract_task_runner_accepts_llm_provider() {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         },
     );
 

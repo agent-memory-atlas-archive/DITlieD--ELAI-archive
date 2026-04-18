@@ -20,8 +20,12 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 tempfile = "3"
 rusqlite.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 rmp-serde = "1.3"
 uuid = { workspace = true }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
+# Batch 2B contract tests: needed only to initialise a throwaway repo in
+# the git_commit happy-path test. Same default-features=false treatment
+# as the production pin in crates/tools.
+git2 = { version = "0.20.4", default-features = false }

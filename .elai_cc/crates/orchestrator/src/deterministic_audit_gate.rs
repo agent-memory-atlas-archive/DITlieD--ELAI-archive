@@ -166,6 +166,7 @@ async fn emit_findings(writer: &Ssb, findings: &[DeterministicFinding]) {
             message: format!("[{}] {}", f.check, f.message),
             file_path,
             line: f.line,
+            failure_category: None,
         });
         if let Err(e) = writer
             .write_payload(GATE_AGENT_ID, GATE_SUPERSTEP, payload, Vec::new())

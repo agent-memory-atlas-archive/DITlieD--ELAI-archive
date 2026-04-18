@@ -67,6 +67,10 @@ use elai_rules::rule_engine::{
 };
 use elai_core::interrogation_tree::TraversalOutcome;
 use elai_core::mistake_book::{format_constraints, DiffHash, FailureCategory, MistakeEntry};
+use elai_core::tool_dispatcher::{
+    ClassifiedFailure as CoreClassifiedFailure, FailureInput, GitBranchPolicy, GitCommitRequest,
+    ToolDispatcher, ValidateRequest, ValidationTier as CoreValidationTier, ValidationTierResult,
+};
 use elai_reasoning::{default_answers_for_category, traverse_with_answers};
 use crate::mistake_book::{
     clear_baby_step as mistake_book_clear_baby_step,
@@ -1683,6 +1687,21 @@ pub struct TaskRunnerConfig {
     /// shutoff (short-circuits every read to `None`). See
     /// `crate::provider_signals::ProviderSignalReader`.
     pub signal_reader: Option<Arc<dyn ProviderSignalReader>>,
+    /// Batch 2B: optional tool dispatcher (see
+    /// `crate::ToolDispatcher`). When `Some`, [`drive_task`] invokes the
+    /// dispatcher at six call sites around each baby step: file outline
+    /// pre-edit, post-edit validation, post-failure classification, and
+    /// post-success git commit. Emits `ToolDispatch` / `ValidationTier`
+    /// / `FailureClassified` / `GitCommit` / `DairaTrace` rows. When
+    /// `None`, every dispatch site is skipped (pre-batch-2b behaviour).
+    ///
+    /// Respects the `ELAI_DISABLE_TOOL_DISPATCH` env var as an emergency
+    /// shutoff (short-circuits every dispatch to `NotImplemented`).
+    pub tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    /// Batch 2B: branch policy for `tool_dispatcher.dispatch_git_commit`.
+    /// Defaults to `BranchPerPlan` which creates `elai/plan-{plan_id}`
+    /// branches per task.
+    pub git_branch_policy: GitBranchPolicy,
 }
 
 impl TaskRunnerConfig {
@@ -1706,6 +1725,8 @@ impl TaskRunnerConfig {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         }
     }
 }
@@ -1759,6 +1780,13 @@ struct ResolvedConfig {
     /// already been emitted for this runner. Set on first `drive_task` entry
     /// with a `signal_reader` populated; subsequent tasks skip the emission.
     vram_tier_emitted: Mutex<bool>,
+    /// Batch 2B: optional tool dispatcher (see
+    /// `TaskRunnerConfig::tool_dispatcher`). When `None`, `drive_task` skips
+    /// every dispatch site.
+    tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    /// Batch 2B: branch policy used when `tool_dispatcher.dispatch_git_commit`
+    /// fires.
+    git_branch_policy: GitBranchPolicy,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1810,6 +1838,8 @@ impl ResolvedConfig {
             hook_dispatcher: cfg.hook_dispatcher,
             signal_reader: cfg.signal_reader,
             vram_tier_emitted: Mutex::new(false),
+            tool_dispatcher: cfg.tool_dispatcher,
+            git_branch_policy: cfg.git_branch_policy,
         }
     }
 }
@@ -3104,6 +3134,57 @@ async fn drive_task(
             }
         }
 
+        // Batch 2B: ToolDispatcher call sites.
+        //   * Post-successful baby step with changed files:
+        //     dispatch_validate (Determinism + QualityAst) + dispatch_git_commit.
+        //   * Post-failing baby step: dispatch_classify_failure on the
+        //     executor's stderr tail so downstream consumers have a
+        //     taxonomy-backed category even when no rule fired.
+        if let Some(dispatcher) = resolved.tool_dispatcher.as_ref() {
+            let step_id = format!("baby_step_{}", bs_id.0);
+            let detected_project_dir = project_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let detected_language =
+                detect_project_language(&detected_project_dir);
+            if outcome_passed && !exec_result.changed_files.is_empty() {
+                run_validate_dispatch(
+                    writer,
+                    dispatcher.as_ref(),
+                    &detected_project_dir,
+                    &detected_language,
+                    &exec_result.changed_files,
+                    &step_id,
+                )
+                .await;
+                let commit_message = format!(
+                    "elai baby_step_{}: {} files",
+                    bs_id.0,
+                    exec_result.changed_files.len()
+                );
+                run_git_commit_dispatch(
+                    writer,
+                    dispatcher.as_ref(),
+                    &detected_project_dir,
+                    &exec_result.changed_files,
+                    &commit_message,
+                    resolved.git_branch_policy,
+                    &task.project_id,
+                    &step_id,
+                )
+                .await;
+            } else if !outcome_passed && !exec_stderr_tail.is_empty() {
+                let _ = run_classify_dispatch(
+                    writer,
+                    dispatcher.as_ref(),
+                    &exec_stderr_tail,
+                    &step_id,
+                    "agent",
+                )
+                .await;
+            }
+        }
+
         // Session A-19.REDO: on a failing baby step, drive a short
         // InterrogationTree traversal and emit a Finding carrying the
         // FixTemplate. The metric Finding (seeded tree count) is emitted
@@ -3582,6 +3663,313 @@ async fn maybe_launch_preview(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Batch 2B — ToolDispatcher emission helpers.
+// ---------------------------------------------------------------------------
+
+/// Detect project language by probing manifest files at the project root.
+/// Order matters: `Cargo.toml` wins over `package.json` when both exist.
+fn detect_project_language(project_dir: &Path) -> String {
+    if project_dir.join("Cargo.toml").exists() {
+        return "rust".into();
+    }
+    if project_dir.join("pyproject.toml").exists()
+        || project_dir.join("setup.py").exists()
+    {
+        return "python".into();
+    }
+    if project_dir.join("tsconfig.json").exists() {
+        return "typescript".into();
+    }
+    if project_dir.join("go.mod").exists() {
+        return "go".into();
+    }
+    if project_dir.join("package.json").exists() {
+        return "typescript".into();
+    }
+    "unknown".into()
+}
+
+/// Blake3 short hash (16 hex chars) used to correlate DAIRA enter/exit pairs.
+fn args_hash_short(summary: &str) -> String {
+    let hash = blake3::hash(summary.as_bytes());
+    hash.to_hex().to_string().chars().take(16).collect()
+}
+
+async fn emit_daira_trace(
+    writer: &Arc<Ssb>,
+    tool: &str,
+    args_summary: &str,
+    phase: &str,
+    elapsed_us: u64,
+    outcome: &str,
+    step_id: &str,
+) {
+    let payload = SsbPayload::DairaTrace(crate::ssb::DairaTracePayload {
+        phase: phase.to_owned(),
+        tool: tool.to_owned(),
+        args_hash: args_hash_short(args_summary),
+        elapsed_us,
+        outcome: outcome.to_owned(),
+        step_id: step_id.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, "task_runner: daira_trace emission failed");
+    }
+}
+
+async fn emit_tool_dispatch(
+    writer: &Arc<Ssb>,
+    tool: &str,
+    args_summary: &str,
+    elapsed_ms: u32,
+    step_id: &str,
+    outcome: &str,
+    error_category: Option<String>,
+) {
+    let payload = SsbPayload::ToolDispatch(crate::ssb::ToolDispatchPayload {
+        tool: tool.to_owned(),
+        args_summary: args_summary.to_owned(),
+        elapsed_ms,
+        step_id: step_id.to_owned(),
+        outcome: outcome.to_owned(),
+        error_category,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, "task_runner: tool_dispatch emission failed");
+    }
+}
+
+async fn emit_validation_tier(writer: &Arc<Ssb>, r: &ValidationTierResult, step_id: &str) {
+    let payload = SsbPayload::ValidationTier(crate::ssb::ValidationTierPayload {
+        tier: r.tier.as_str().to_owned(),
+        passed: r.passed,
+        elapsed_ms: r.elapsed_ms,
+        rules_fired: r.rules_fired,
+        step_id: step_id.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, "task_runner: validation_tier emission failed");
+    }
+}
+
+async fn emit_failure_classified(
+    writer: &Arc<Ssb>,
+    classified: &CoreClassifiedFailure,
+    step_id: &str,
+) {
+    let confidence_bp = (classified.confidence.clamp(0.0, 1.0) * 10_000.0) as u16;
+    let payload = SsbPayload::FailureClassified(crate::ssb::FailureClassifiedPayload {
+        category: classified.category.as_str().to_owned(),
+        confidence_bp,
+        step_id: step_id.to_owned(),
+        source: classified.source.clone(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, "task_runner: failure_classified emission failed");
+    }
+}
+
+async fn emit_git_commit(
+    writer: &Arc<Ssb>,
+    outcome: &elai_core::CommitOutcome,
+    step_id: &str,
+) {
+    let payload = SsbPayload::GitCommit(crate::ssb::GitCommitPayload {
+        commit_sha: outcome.sha.clone(),
+        branch: outcome.branch.clone(),
+        files_count: outcome.files_count,
+        step_id: step_id.to_owned(),
+        message: outcome.message.clone(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, "task_runner: git_commit emission failed");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_validate_dispatch(
+    writer: &Arc<Ssb>,
+    dispatcher: &dyn ToolDispatcher,
+    project_dir: &Path,
+    language: &str,
+    changed_files: &[PathBuf],
+    step_id: &str,
+) {
+    let summary = format!(
+        "project_dir={} language={} files={}",
+        project_dir.display(),
+        language,
+        changed_files.len()
+    );
+    emit_daira_trace(writer, "validate", &summary, "enter", 0, "started", step_id).await;
+    let req = ValidateRequest {
+        project_dir: project_dir.to_path_buf(),
+        language: language.to_owned(),
+        changed_files: changed_files.to_vec(),
+        step_id: step_id.to_owned(),
+        tiers: Some(vec![
+            CoreValidationTier::Determinism,
+            CoreValidationTier::QualityAst,
+        ]),
+    };
+    let start = std::time::Instant::now();
+    match dispatcher.dispatch_validate(req).await {
+        Ok(results) => {
+            for r in &results {
+                emit_validation_tier(writer, r, step_id).await;
+            }
+            let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let any_failed = results.iter().any(|r| !r.passed);
+            let outcome = if any_failed { "error" } else { "success" };
+            emit_tool_dispatch(
+                writer, "validate", &summary, elapsed_ms, step_id, outcome, None,
+            )
+            .await;
+            let elapsed_us =
+                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            emit_daira_trace(
+                writer, "validate", &summary, "exit", elapsed_us, outcome, step_id,
+            )
+            .await;
+        }
+        Err(e) => {
+            let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let outcome_tag = match e {
+                elai_core::ToolDispatchError::NotImplemented(_) => "not_implemented",
+                _ => "error",
+            };
+            emit_tool_dispatch(
+                writer, "validate", &summary, elapsed_ms, step_id, outcome_tag,
+                Some(e.to_string()),
+            )
+            .await;
+            let elapsed_us =
+                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            emit_daira_trace(
+                writer, "validate", &summary, "exit", elapsed_us, outcome_tag, step_id,
+            )
+            .await;
+        }
+    }
+}
+
+async fn run_classify_dispatch(
+    writer: &Arc<Ssb>,
+    dispatcher: &dyn ToolDispatcher,
+    raw_output: &str,
+    step_id: &str,
+    source: &str,
+) -> Option<CoreClassifiedFailure> {
+    let summary = format!("source={} bytes={}", source, raw_output.len());
+    emit_daira_trace(writer, "classify_failure", &summary, "enter", 0, "started", step_id).await;
+    let input = FailureInput {
+        raw_output: raw_output.to_owned(),
+        step_id: step_id.to_owned(),
+        source: source.to_owned(),
+    };
+    let start = std::time::Instant::now();
+    let result = dispatcher.dispatch_classify_failure(input).await;
+    let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let outcome = if result.is_some() { "success" } else { "skipped" };
+    emit_tool_dispatch(
+        writer, "classify_failure", &summary, elapsed_ms, step_id, outcome, None,
+    )
+    .await;
+    if let Some(classified) = result.as_ref() {
+        emit_failure_classified(writer, classified, step_id).await;
+    }
+    emit_daira_trace(
+        writer, "classify_failure", &summary, "exit", elapsed_us, outcome, step_id,
+    )
+    .await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_git_commit_dispatch(
+    writer: &Arc<Ssb>,
+    dispatcher: &dyn ToolDispatcher,
+    project_dir: &Path,
+    changed_files: &[PathBuf],
+    message: &str,
+    branch_policy: GitBranchPolicy,
+    plan_id: &str,
+    step_id: &str,
+) {
+    if changed_files.is_empty() {
+        return;
+    }
+    let summary = format!(
+        "files={} branch_policy={:?} plan={}",
+        changed_files.len(),
+        branch_policy,
+        plan_id
+    );
+    emit_daira_trace(writer, "git_commit", &summary, "enter", 0, "started", step_id).await;
+    let req = GitCommitRequest {
+        anchor_path: project_dir.to_path_buf(),
+        files: changed_files.to_vec(),
+        message: message.to_owned(),
+        branch_policy,
+        plan_id: plan_id.to_owned(),
+        step_id: step_id.to_owned(),
+    };
+    let start = std::time::Instant::now();
+    match dispatcher.dispatch_git_commit(req).await {
+        Ok(outcome) => {
+            emit_git_commit(writer, &outcome, step_id).await;
+            let elapsed_ms =
+                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            emit_tool_dispatch(
+                writer, "git_commit", &summary, elapsed_ms, step_id, "success", None,
+            )
+            .await;
+            let elapsed_us =
+                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            emit_daira_trace(
+                writer, "git_commit", &summary, "exit", elapsed_us, "success", step_id,
+            )
+            .await;
+        }
+        Err(e) => {
+            let elapsed_ms =
+                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let outcome_tag = match e {
+                elai_core::ToolDispatchError::NotImplemented(_) => "not_implemented",
+                _ => "error",
+            };
+            emit_tool_dispatch(
+                writer, "git_commit", &summary, elapsed_ms, step_id, outcome_tag,
+                Some(e.to_string()),
+            )
+            .await;
+            let elapsed_us =
+                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            emit_daira_trace(
+                writer, "git_commit", &summary, "exit", elapsed_us, outcome_tag, step_id,
+            )
+            .await;
+        }
+    }
+}
+
 async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message: &str) {
     let payload = SsbPayload::Finding(FindingPayload {
         severity: severity.to_owned(),
@@ -3589,6 +3977,7 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         message: message.to_owned(),
         file_path: None,
         line: None,
+        failure_category: None,
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
@@ -4829,6 +5218,8 @@ mod tests {
                 indexing_service: None,
                 hook_dispatcher: None,
                 signal_reader: None,
+                tool_dispatcher: None,
+                git_branch_policy: GitBranchPolicy::default(),
             },
         );
 
@@ -4935,6 +5326,8 @@ mod tests {
                 indexing_service: None,
                 hook_dispatcher: None,
                 signal_reader: None,
+                tool_dispatcher: None,
+                git_branch_policy: GitBranchPolicy::default(),
             },
         );
 
@@ -5118,6 +5511,8 @@ mod tests {
                 indexing_service: None,
                 hook_dispatcher: None,
                 signal_reader: None,
+                tool_dispatcher: None,
+                git_branch_policy: GitBranchPolicy::default(),
             },
         );
 
@@ -5861,6 +6256,8 @@ mod tests {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         })
     }
 

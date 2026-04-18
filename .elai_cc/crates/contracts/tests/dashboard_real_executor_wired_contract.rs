@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use elai_core::SeededRng;
+use elai_core::GitBranchPolicy;
 use elai_orchestrator::agent_pool::{
     AgentPoolConfig, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
@@ -109,6 +110,8 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         indexing_service: None,
         hook_dispatcher: None,
         signal_reader: None,
+        tool_dispatcher: None,
+        git_branch_policy: GitBranchPolicy::default(),
     };
 
     assert!(
@@ -148,6 +151,8 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         indexing_service: None,
         hook_dispatcher: None,
         signal_reader: None,
+        tool_dispatcher: None,
+        git_branch_policy: GitBranchPolicy::default(),
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

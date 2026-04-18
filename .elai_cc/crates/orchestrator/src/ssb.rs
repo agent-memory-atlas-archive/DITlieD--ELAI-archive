@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         'hook_event',
         'provider_signals', 'search_trigger_fired', 'vram_tier_detected',
         'indexing_progress', 'dkg_ready',
-        'tiered_analysis', 'shortcoder_compression'
+        'tiered_analysis', 'shortcoder_compression',
+        'tool_dispatch', 'validation_tier', 'failure_classified',
+        'git_commit', 'daira_trace'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -151,6 +153,24 @@ pub enum SsbActionType {
     /// so the dashboard can render "ShortCoder · 1200→320 tokens (73%)".
     /// Carries a [`ShortCoderCompressionPayload`].
     ShortCoderCompression,
+    /// Batch 2B: per-dispatch summary for every `InProcessToolDispatcher`
+    /// call (edit / validate / classify / git_commit / file_read / incremental).
+    /// Carries a [`ToolDispatchPayload`].
+    ToolDispatch,
+    /// Batch 2B: per-tier validation verdict row emitted once per
+    /// [`elai_core::ValidationTier`] execution. Carries a
+    /// [`ValidationTierPayload`].
+    ValidationTier,
+    /// Batch 2B: failure taxonomy classification row emitted by
+    /// `dispatch_classify_failure`. Carries a [`FailureClassifiedPayload`].
+    FailureClassified,
+    /// Batch 2B: git2-backed commit boundary. Carries a
+    /// [`GitCommitPayload`].
+    GitCommit,
+    /// Batch 2B: DAIRA call-graph breadcrumb. Emitted on entry/exit of
+    /// every dispatch method so the activity feed can render call graphs.
+    /// Carries a [`DairaTracePayload`].
+    DairaTrace,
 }
 
 impl SsbActionType {
@@ -197,6 +217,11 @@ impl SsbActionType {
             Self::DkgReady => "dkg_ready",
             Self::TieredAnalysis => "tiered_analysis",
             Self::ShortCoderCompression => "shortcoder_compression",
+            Self::ToolDispatch => "tool_dispatch",
+            Self::ValidationTier => "validation_tier",
+            Self::FailureClassified => "failure_classified",
+            Self::GitCommit => "git_commit",
+            Self::DairaTrace => "daira_trace",
         }
     }
 }
@@ -249,6 +274,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "dkg_ready" => Ok(SsbActionType::DkgReady),
         "tiered_analysis" => Ok(SsbActionType::TieredAnalysis),
         "shortcoder_compression" => Ok(SsbActionType::ShortCoderCompression),
+        "tool_dispatch" => Ok(SsbActionType::ToolDispatch),
+        "validation_tier" => Ok(SsbActionType::ValidationTier),
+        "failure_classified" => Ok(SsbActionType::FailureClassified),
+        "git_commit" => Ok(SsbActionType::GitCommit),
+        "daira_trace" => Ok(SsbActionType::DairaTrace),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -331,6 +361,13 @@ pub struct FindingPayload {
     pub message: String,
     pub file_path: Option<String>,
     pub line: Option<u32>,
+    /// Batch 2B: taxonomy label attached by `dispatch_classify_failure`.
+    /// Backward-compatible: unset → behaves exactly like pre-2B findings.
+    /// The dashboard reads this via the new `FailureClassified` SSB row —
+    /// this field is an in-Finding convenience so a single row carries
+    /// both the pipeline emit-site AND the classification when we have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -816,6 +853,82 @@ pub struct ShortCoderCompressionPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Batch 2B — ToolDispatcher payloads
+// ---------------------------------------------------------------------------
+
+/// Batch 2B — per-dispatch summary row. Emitted once per call to each of
+/// the six `ToolDispatcher` methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDispatchPayload {
+    /// One of `"edit" | "validate" | "classify_failure" | "git_commit"
+    /// | "file_read_outline" | "incremental_compile"`.
+    pub tool: String,
+    /// Short ASCII summary of the arguments (no binary bytes). E.g.
+    /// `"path=src/lib.rs tier=exact"` for an edit row.
+    pub args_summary: String,
+    pub elapsed_ms: u32,
+    pub step_id: String,
+    /// `"success"` / `"error"` / `"skipped"` / `"not_implemented"`.
+    pub outcome: String,
+    /// Populated when `outcome == "error"` AND the classifier recognised
+    /// the failure category.
+    pub error_category: Option<String>,
+}
+
+/// Batch 2B — per-tier validation verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationTierPayload {
+    /// One of `"determinism" | "quality_ast" | "unit" | "integration" | "stress"`.
+    pub tier: String,
+    pub passed: bool,
+    pub elapsed_ms: u32,
+    pub rules_fired: u32,
+    pub step_id: String,
+}
+
+/// Batch 2B — failure classification emitted by `dispatch_classify_failure`.
+/// Confidence is stored as u16 in basis points (0..=10000) to keep the
+/// payload `Eq` for msgpack-serialised equality tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureClassifiedPayload {
+    pub category: String,
+    /// Confidence × 10000 (basis points). 10000 = 1.0, 7000 = 0.7.
+    pub confidence_bp: u16,
+    pub step_id: String,
+    /// One of `"agent" | "validator" | "deterministic_audit"`.
+    pub source: String,
+}
+
+/// Batch 2B — real git2 commit boundary row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitPayload {
+    pub commit_sha: String,
+    pub branch: String,
+    pub files_count: u32,
+    pub step_id: String,
+    pub message: String,
+}
+
+/// Batch 2B — DAIRA call-graph breadcrumb. Emitted on entry AND exit of
+/// every dispatch method so the frontend can assemble a call graph keyed
+/// on `(phase, tool)` without having to deserialise the per-dispatch row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DairaTracePayload {
+    /// `"enter"` / `"exit"`.
+    pub phase: String,
+    /// Tool name — same tag set as [`ToolDispatchPayload::tool`].
+    pub tool: String,
+    /// Blake3 short hash (8 bytes hex) of the args summary. Lets the
+    /// frontend correlate enter/exit pairs without needing stable IDs.
+    pub args_hash: String,
+    pub elapsed_us: u64,
+    /// On `exit`: `"success" | "error" | "skipped" | "not_implemented"`.
+    /// On `enter`: `"started"`.
+    pub outcome: String,
+    pub step_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all 31 action-type payloads)
 // ---------------------------------------------------------------------------
 
@@ -872,6 +985,11 @@ pub enum SsbPayload {
     DkgReady(DkgReadyPayload),
     TieredAnalysis(TieredAnalysisPayload),
     ShortCoderCompression(ShortCoderCompressionPayload),
+    ToolDispatch(ToolDispatchPayload),
+    ValidationTier(ValidationTierPayload),
+    FailureClassified(FailureClassifiedPayload),
+    GitCommit(GitCommitPayload),
+    DairaTrace(DairaTracePayload),
 }
 
 impl SsbPayload {
@@ -919,6 +1037,11 @@ impl SsbPayload {
             Self::DkgReady(_) => SsbActionType::DkgReady,
             Self::TieredAnalysis(_) => SsbActionType::TieredAnalysis,
             Self::ShortCoderCompression(_) => SsbActionType::ShortCoderCompression,
+            Self::ToolDispatch(_) => SsbActionType::ToolDispatch,
+            Self::ValidationTier(_) => SsbActionType::ValidationTier,
+            Self::FailureClassified(_) => SsbActionType::FailureClassified,
+            Self::GitCommit(_) => SsbActionType::GitCommit,
+            Self::DairaTrace(_) => SsbActionType::DairaTrace,
         }
     }
 }
@@ -1779,7 +1902,7 @@ mod tests {
             }),
             SsbActionType::Finding => SsbPayload::Finding(FindingPayload {
                 severity: "INFO".into(), category: "c".into(), message: "m".into(),
-                file_path: None, line: None,
+                file_path: None, line: None, failure_category: None,
             }),
             SsbActionType::Claim => SsbPayload::Claim(ClaimPayload {
                 claim_text: "c".into(), grounding_source: "s".into(), verified: false,
@@ -1958,6 +2081,46 @@ mod tests {
                     rules_applied: vec![],
                 })
             }
+            SsbActionType::ToolDispatch => SsbPayload::ToolDispatch(ToolDispatchPayload {
+                tool: "edit".into(),
+                args_summary: "path=src/foo.rs tier=exact".into(),
+                elapsed_ms: 3,
+                step_id: "step-1".into(),
+                outcome: "success".into(),
+                error_category: None,
+            }),
+            SsbActionType::ValidationTier => {
+                SsbPayload::ValidationTier(ValidationTierPayload {
+                    tier: "determinism".into(),
+                    passed: true,
+                    elapsed_ms: 1200,
+                    rules_fired: 1,
+                    step_id: "step-1".into(),
+                })
+            }
+            SsbActionType::FailureClassified => {
+                SsbPayload::FailureClassified(FailureClassifiedPayload {
+                    category: "COMPILATION_ERROR".into(),
+                    confidence_bp: 10000,
+                    step_id: "step-1".into(),
+                    source: "validator".into(),
+                })
+            }
+            SsbActionType::GitCommit => SsbPayload::GitCommit(GitCommitPayload {
+                commit_sha: "abc123def456".into(),
+                branch: "elai/plan-demo".into(),
+                files_count: 2,
+                step_id: "step-1".into(),
+                message: "batch-2b: test commit".into(),
+            }),
+            SsbActionType::DairaTrace => SsbPayload::DairaTrace(DairaTracePayload {
+                phase: "enter".into(),
+                tool: "edit".into(),
+                args_hash: "deadbeef".into(),
+                elapsed_us: 0,
+                outcome: "started".into(),
+                step_id: "step-1".into(),
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -2748,6 +2911,7 @@ mod tests {
                 message: "SQL injection".into(),
                 file_path: Some("src/db.rs".into()),
                 line: Some(99),
+                failure_category: None,
             }),
             SsbPayload::Claim(ClaimPayload {
                 claim_text: "blake3 is faster".into(),
@@ -3092,7 +3256,7 @@ mod tests {
                     )),
                 ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,30}", any::<Option<String>>(), any::<Option<u32>>())
                     .prop_map(|(severity, category, message, file_path, line)| SsbPayload::Finding(
-                        FindingPayload { severity, category, message, file_path, line }
+                        FindingPayload { severity, category, message, file_path, line, failure_category: None }
                     )),
                 ("[a-z ]{1,30}", "[a-z]{1,10}", any::<bool>())
                     .prop_map(|(claim_text, grounding_source, verified)| SsbPayload::Claim(

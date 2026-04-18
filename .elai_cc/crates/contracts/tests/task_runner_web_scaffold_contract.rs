@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use elai_core::clock::OsClock;
+use elai_core::GitBranchPolicy;
 use elai_orchestrator::ssb::{
     Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader, TaskSubmittedPayload,
 };
@@ -226,6 +227,8 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         },
     );
 
@@ -307,6 +310,8 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         },
     );
 
@@ -384,6 +389,8 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             indexing_service: None,
             hook_dispatcher: None,
             signal_reader: None,
+            tool_dispatcher: None,
+            git_branch_policy: GitBranchPolicy::default(),
         },
     );
 

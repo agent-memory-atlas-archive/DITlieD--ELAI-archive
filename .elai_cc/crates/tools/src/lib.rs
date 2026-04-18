@@ -9,6 +9,13 @@ pub mod compile_check;
 pub mod failure_taxonomy;
 pub mod dkg_tools;
 pub mod integration_check;
+// Batch 2B: 5-tier validation pipeline. Consumes
+// `elai_core::tool_dispatcher::{ValidateRequest,ValidationTier,...}`.
+pub mod tiered_validation;
+// Batch 2B: production `InProcessToolDispatcher` — single entry point that
+// wires every existing tool handler to the ToolDispatcher trait in
+// `elai_core`.
+pub mod dispatcher;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

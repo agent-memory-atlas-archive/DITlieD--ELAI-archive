@@ -11,6 +11,11 @@ elai-ipc-types.workspace = true
 elai-orchestrator = { path = "../orchestrator" }
 elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers" }
+# Batch 2B: real git2 commits. default-features=false to avoid libgit2-sys
+# pulling OpenSSL + libssh2 native deps on Windows — we only need local
+# staging/committing, no network pushes. Verified via WebSearch on
+# 2026-04-18 (git2 crate docs; default features include "ssh","https","openssl-sys").
+git2 = { version = "0.20.4", default-features = false }
 postcard.workspace = true
 regex = { version = "1", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
@@ -19,6 +24,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
