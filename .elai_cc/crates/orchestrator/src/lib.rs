@@ -22,6 +22,7 @@ pub mod fsm;
 pub mod gate;
 mod hooks;
 pub mod hook_dispatcher;
+pub mod provider_signals;
 pub mod indexing_service;
 pub mod ipc;
 pub mod ipc_gateway;
@@ -175,6 +176,14 @@ pub use hook_dispatcher::{
     HookInvocation, HookPoint, HookTier, HookVerdictKind, InProcessHookDispatcher,
     ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
 };
+pub use provider_signals::{
+    provider_signals_disabled_via_env, EtcState, GgSignals, NoveltySignal,
+    NullProviderSignalReader, ProviderSignalReader, SearchTrigger, SteeringVectorStatus,
+    VramDetectionSource, VramTierConfig as ProviderVramTierConfig,
+    ELAI_DISABLE_PROVIDER_SIGNALS_ENV,
+};
+#[cfg(feature = "sidecar")]
+pub use provider_signals::SidecarProviderSignalReader;
 pub use lane_events::{
     dedupe_superseded_commit_events, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
     LaneEventName, LaneEventStatus, LaneFailureClass,
@@ -309,9 +318,10 @@ pub use ssb::{
     default_ssb_path, default_ssb_path_for_base, DiffSummary, HookEventPayload,
     InterventionKeyword, InterventionOption, InterventionRequestPayload, InterventionResponsePayload,
     InterventionRetry, InterventionType, MistakeEntryPayload, PhaseCompletePayload,
-    PreviewAvailablePayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, WebResearchStepPayload,
-    SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
+    PreviewAvailablePayload, ProviderSignalsPayload, SearchTriggerFiredPayload, Ssb, SsbActionType,
+    SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPayload, SsbReader, SsbWriteRequest,
+    TaskSubmittedPayload, VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME,
+    SSB_SESSIONS_SUBDIR,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,

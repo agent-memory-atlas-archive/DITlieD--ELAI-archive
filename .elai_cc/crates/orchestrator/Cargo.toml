@@ -54,5 +54,12 @@ proptest-state-machine = "0.8"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
+[features]
+default = []
+# Batch 1B: pass-through to providers crate's sidecar feature so the
+# concrete `SidecarProviderSignalReader` compiles. The trait surface in
+# `provider_signals` is unconditional; only the concrete impl is gated.
+sidecar = ["elai-providers/sidecar"]
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }

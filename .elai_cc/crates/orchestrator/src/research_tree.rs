@@ -1265,6 +1265,11 @@ pub struct PhaseNode {
     pub steps: Vec<StepNode>,
     pub depends_on: Vec<ConceptId>,
     pub research: Option<ResearchReport>,
+    /// Session 3D.REDO: when `true`, the task_runner routes this phase through
+    /// `BspEngine` for superstep-level parallelism. Defaults to `false` so the
+    /// sequential navigator loop handles it unchanged.
+    #[serde(default)]
+    pub is_parallel: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1634,6 +1639,7 @@ pub fn extract_phases(
             steps: Vec::new(),
             depends_on: Vec::new(),
             research: None,
+            is_parallel: false,
         });
         next_id += 1;
     }

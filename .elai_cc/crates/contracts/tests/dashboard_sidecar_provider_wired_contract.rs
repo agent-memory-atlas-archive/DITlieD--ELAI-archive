@@ -127,6 +127,7 @@ async fn contract_task_runner_accepts_llm_provider() {
             backend_config,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 

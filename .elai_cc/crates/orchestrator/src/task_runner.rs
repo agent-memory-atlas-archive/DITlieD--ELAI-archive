@@ -82,6 +82,7 @@ use crate::grounding_client::SidecarGroundingClient;
 use crate::hook_dispatcher::{
     emit_hook_events_to_ssb, HookFinding, HookInvocation, HookPoint,
 };
+use crate::provider_signals::ProviderSignalReader;
 use elai_providers::LlmProvider;
 use crate::research_tree::{
     research_decompose, ConceptDecomposition, ConceptId, ExecutionMode, ExitCriterion,
@@ -90,8 +91,9 @@ use crate::research_tree::{
     DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
-    FindingPayload, PhaseCompletePayload, PreviewAvailablePayload, ReasoningTracePayload, Ssb,
-    SsbActionType, SsbEntry, SsbPayload, SsbReader, TaskSubmittedPayload, TestOutcomePayload,
+    FindingPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
+    ReasoningTracePayload, SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload,
+    SsbReader, TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload,
     WebResearchStepPayload,
 };
 use crate::web_research_orchestrator::{
@@ -1671,6 +1673,16 @@ pub struct TaskRunnerConfig {
     /// Dispatcher respects the `ELAI_HOOKS_DISABLED` env var as an emergency
     /// shutoff; see `hook_dispatcher::InProcessHookDispatcher::new`.
     pub hook_dispatcher: Option<Arc<dyn crate::hook_dispatcher::HookDispatcher>>,
+    /// Batch 1B: reader over the sidecar extended-signal surface
+    /// (A-8 / A-9 / A-17 / A-25 / A-37). When `Some`, `drive_task` emits
+    /// `ProviderSignals` / `SearchTriggerFired` SSB rows after each baby step
+    /// and a `VramTierDetected` row once at task startup. When `None`, all
+    /// emission is suppressed (pre-batch-1b behavior).
+    ///
+    /// Respects the `ELAI_DISABLE_PROVIDER_SIGNALS` env var as an emergency
+    /// shutoff (short-circuits every read to `None`). See
+    /// `crate::provider_signals::ProviderSignalReader`.
+    pub signal_reader: Option<Arc<dyn ProviderSignalReader>>,
 }
 
 impl TaskRunnerConfig {
@@ -1693,6 +1705,7 @@ impl TaskRunnerConfig {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         }
     }
 }
@@ -1738,6 +1751,14 @@ struct ResolvedConfig {
     /// Batch 1A: optional hook dispatcher (see `TaskRunnerConfig::hook_dispatcher`).
     /// When `None`, `drive_task` skips every dispatch call site.
     hook_dispatcher: Option<Arc<dyn crate::hook_dispatcher::HookDispatcher>>,
+    /// Batch 1B: optional provider signal reader (see
+    /// `TaskRunnerConfig::signal_reader`). When `None`, `drive_task` skips every
+    /// provider-signals emission site.
+    signal_reader: Option<Arc<dyn ProviderSignalReader>>,
+    /// Batch 1B: flag tracking whether the one-shot `VramTierDetected` row has
+    /// already been emitted for this runner. Set on first `drive_task` entry
+    /// with a `signal_reader` populated; subsequent tasks skip the emission.
+    vram_tier_emitted: Mutex<bool>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1787,6 +1808,8 @@ impl ResolvedConfig {
             indexing_service: cfg.indexing_service,
             indexed_projects: Mutex::new(HashMap::new()),
             hook_dispatcher: cfg.hook_dispatcher,
+            signal_reader: cfg.signal_reader,
+            vram_tier_emitted: Mutex::new(false),
         }
     }
 }
@@ -2370,6 +2393,12 @@ async fn drive_task(
     resolved: &ResolvedConfig,
     cancel: &CancelHandle,
 ) -> Result<(), TaskRunnerError> {
+    // Batch 1B: emit the one-shot `VramTierDetected` row at the first task
+    // start. No-op on subsequent tasks (flag on ResolvedConfig). Safe to run
+    // before web-scaffold / web-research routing because the dashboard
+    // activity feed wants the tier row regardless of task flavour.
+    emit_vram_tier_once(writer, resolved).await;
+
     // Gap #6 (MVP audit 2026-04-18 section 4 item 6): on the first task for
     // this project_id, run the `IndexingService::run_full_index` pipeline so
     // downstream rule evaluation (Gap #9) and the `DkgQuerierAdapter` path on
@@ -2472,6 +2501,20 @@ async fn drive_task(
     .await?;
     if decomposition.concepts.is_empty() {
         return Err(TaskRunnerError::EmptyDecomposition);
+    }
+
+    // Batch 1B: research_decompose is the first sidecar-backed dispatch for
+    // non-scaffold / non-web-research tasks. Snapshot the provider signals
+    // here so the dashboard activity feed shows the decomposition-time GG /
+    // novelty state alongside the "decomposed N concepts" reasoning row.
+    // Search-trigger emission is skipped at this site because the
+    // narrow `SidecarGroundingClient` used above is a separate reqwest
+    // client from `SidecarProvider` — it does not populate the
+    // last_search_trigger mutex we read via the reader. A future batch
+    // (patch-1.3X) can switch decomposition to the shared `LlmProvider`
+    // path, at which point search triggers become observable here too.
+    if let Some(reader) = resolved.signal_reader.as_ref() {
+        emit_provider_signals_snapshot(writer, reader, &format!("decompose_seq_{}", seq)).await;
     }
     emit_reasoning(
         writer,
@@ -2813,6 +2856,19 @@ async fn drive_task(
             }
             None => outcome_passed && !pre_gate_blocked && !hook_pre_blocked,
         };
+
+        // Batch 1B: per-baby-step provider-signals snapshot. Emitted once per
+        // step AFTER the integration checkpoint so the ProviderSignals row
+        // lands adjacent to the TestOutcome in the feed. The search-trigger
+        // emission rides the same reader — when ETC fired, the dashboard
+        // shows both the amber `search_trigger_fired` row AND the normal
+        // ProviderSignals row. Pre-batch-1b behaviour is preserved when
+        // `signal_reader` is `None`.
+        if let Some(reader) = resolved.signal_reader.as_ref() {
+            let step_id = format!("baby_step_{}", bs_id.0);
+            emit_provider_signals_snapshot(writer, reader, &step_id).await;
+            emit_search_trigger_if_fired(writer, reader, &step_id).await;
+        }
 
         // Batch 1A: PostToolUse hook dispatch. Fires T1/T2/T3 against every
         // changed file the executor reported. Per Batch 1A spec, only runs
@@ -3406,6 +3462,113 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         .await
     {
         error!(error = %e, "task_runner: write Finding failed");
+    }
+}
+
+/// Batch 1B: read every signal the reader exposes and emit a single
+/// `ProviderSignals` SSB row carrying the snapshot. No-op when every reader
+/// method returns `None` so the dashboard feed is not flooded with empty
+/// rows on runners without a live sidecar.
+///
+/// Invariant: this helper does NOT emit a `SearchTriggerFired` row on its
+/// own — that emission is driven by `emit_search_trigger_if_fired` so the
+/// two concerns (per-step snapshot vs ETC trigger) stay independently
+/// testable.
+async fn emit_provider_signals_snapshot(
+    writer: &Arc<Ssb>,
+    reader: &Arc<dyn ProviderSignalReader>,
+    step_id: &str,
+) {
+    let gg = reader.read_last_gg_signals();
+    let novelty = reader.read_last_novelty_signal();
+    let steering = reader.read_steering_vector_status();
+    let etc = reader.read_etc_state();
+
+    // Suppress the row entirely when every signal is absent. Callers would
+    // otherwise see a zeroed row on every baby step for runners without a
+    // live sidecar, crowding the feed.
+    if gg.is_none() && novelty.is_none() && steering.is_none() && etc.is_none() {
+        return;
+    }
+
+    let payload = SsbPayload::ProviderSignals(ProviderSignalsPayload {
+        gg_mean_logprob: gg.as_ref().and_then(|g| g.mean_logprob),
+        gg_min_logprob: gg.as_ref().and_then(|g| g.min_logprob),
+        entropy_mean: gg.as_ref().and_then(|g| g.entropy_mean),
+        entropy_max: gg.as_ref().and_then(|g| g.entropy_max),
+        novelty_cosine: novelty.as_ref().and_then(|n| n.cosine_distance),
+        steering_vector_active: steering.as_ref().map(|s| s.active).unwrap_or(false),
+        etc_disabled: etc.as_ref().map(|e| e.disabled).unwrap_or(true),
+        step_id: step_id.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write ProviderSignals failed");
+    }
+}
+
+/// Batch 1B: emit a `SearchTriggerFired` SSB row only when the reader reports
+/// that ETC fired on the most recent sidecar completion.
+async fn emit_search_trigger_if_fired(
+    writer: &Arc<Ssb>,
+    reader: &Arc<dyn ProviderSignalReader>,
+    step_id: &str,
+) {
+    let Some(trigger) = reader.read_last_search_trigger() else {
+        return;
+    };
+    let payload = SsbPayload::SearchTriggerFired(SearchTriggerFiredPayload {
+        reason: trigger.reason.clone(),
+        threshold_hit: trigger.threshold_hit.clone(),
+        step_id: step_id.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write SearchTriggerFired failed");
+    }
+}
+
+/// Batch 1B: emit the one-shot `VramTierDetected` SSB row at task_runner
+/// startup. Gated by the `vram_tier_emitted` flag on `ResolvedConfig` so
+/// subsequent tasks do not re-emit. No-op when the reader has no VRAM
+/// config (e.g. env var disabled).
+async fn emit_vram_tier_once(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+) {
+    let Some(reader) = resolved.signal_reader.as_ref() else {
+        return;
+    };
+    // Fast path: emit exactly once per runner lifetime. Guarded by a sync
+    // mutex because the check + set is trivial; acquiring it is cheaper than
+    // routing through the async SSB write path.
+    {
+        let mut guard = match resolved.vram_tier_emitted.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if *guard {
+            return;
+        }
+        *guard = true;
+    }
+    let Some(cfg) = reader.read_vram_tier_config() else {
+        return;
+    };
+    let payload = SsbPayload::VramTierDetected(VramTierDetectedPayload {
+        tier: cfg.tier_label().to_owned(),
+        detected_via: cfg.source.as_str().to_owned(),
+        free_mb: cfg.free_mb,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write VramTierDetected failed");
     }
 }
 
@@ -4532,6 +4695,7 @@ mod tests {
                 backend_config: None,
                 indexing_service: None,
                 hook_dispatcher: None,
+                signal_reader: None,
             },
         );
 
@@ -4637,6 +4801,7 @@ mod tests {
                 backend_config: None,
                 indexing_service: None,
                 hook_dispatcher: None,
+                signal_reader: None,
             },
         );
 
@@ -4819,6 +4984,7 @@ mod tests {
                 backend_config: None,
                 indexing_service: None,
                 hook_dispatcher: None,
+                signal_reader: None,
             },
         );
 
@@ -5561,6 +5727,7 @@ mod tests {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         })
     }
 

@@ -10,12 +10,12 @@ publish.workspace = true
 [dev-dependencies]
 elai-core = { path = "../core" }
 elai-rules = { path = "../rules" }
-elai-providers = { path = "../providers" }
+elai-providers = { path = "../providers", features = ["sidecar"] }
 elai-tools = { path = "../tools" }
 elai-plugins = { path = "../plugins" }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
-elai-orchestrator = { path = "../orchestrator" }
+elai-orchestrator = { path = "../orchestrator", features = ["sidecar"] }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tempfile = "3"

@@ -1403,6 +1403,7 @@ mod tests {
             steps,
             depends_on,
             research: None,
+            is_parallel: false,
         }
     }
 

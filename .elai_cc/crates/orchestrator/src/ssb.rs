@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'preview_available',
         'intervention_request', 'intervention_response',
         'task_submitted',
-        'hook_event'
+        'hook_event',
+        'provider_signals', 'search_trigger_fired', 'vram_tier_detected'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -116,6 +117,16 @@ pub enum SsbActionType {
     /// Carries a [`HookEventPayload`]. Dashboard filters on the `hook_event`
     /// discriminant to render "hook · T1 BLOCK" style rows.
     HookEvent,
+    /// Batch 1B: per-baby-step snapshot of sidecar extended signals
+    /// (A-17 GG logprob/entropy + A-25 novelty + A-8 steering + A-9 ETC state).
+    /// Carries a [`ProviderSignalsPayload`].
+    ProviderSignals,
+    /// Batch 1B: ETC search-trigger fired on the most recent sidecar
+    /// completion (A-9). Carries a [`SearchTriggerFiredPayload`].
+    SearchTriggerFired,
+    /// Batch 1B: VRAM tier detected at task_runner startup (A-37). Emitted
+    /// once per run. Carries a [`VramTierDetectedPayload`].
+    VramTierDetected,
 }
 
 impl SsbActionType {
@@ -155,6 +166,9 @@ impl SsbActionType {
             Self::InterventionResponse => "intervention_response",
             Self::TaskSubmitted => "task_submitted",
             Self::HookEvent => "hook_event",
+            Self::ProviderSignals => "provider_signals",
+            Self::SearchTriggerFired => "search_trigger_fired",
+            Self::VramTierDetected => "vram_tier_detected",
         }
     }
 }
@@ -200,6 +214,9 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "intervention_response" => Ok(SsbActionType::InterventionResponse),
         "task_submitted" => Ok(SsbActionType::TaskSubmitted),
         "hook_event" => Ok(SsbActionType::HookEvent),
+        "provider_signals" => Ok(SsbActionType::ProviderSignals),
+        "search_trigger_fired" => Ok(SsbActionType::SearchTriggerFired),
+        "vram_tier_detected" => Ok(SsbActionType::VramTierDetected),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -594,6 +611,53 @@ pub struct TaskSubmittedPayload {
     pub submitted_at_ms: i64,
 }
 
+/// Batch 1B — per-baby-step snapshot of sidecar extended signals.
+///
+/// Written by the task_runner after every sidecar-backed dispatch (see
+/// `provider_signals::ProviderSignalReader`). Fields map 1:1 to the reader's
+/// trait methods; all are `Option` so rows are emitted even for partially-
+/// populated providers (e.g. a sidecar that emits GG but no novelty yet).
+///
+/// The dashboard filters the activity feed on `provider_signals` action_type
+/// and renders "GG · entropy 2.4" style rows. High-entropy thresholds (>3.5
+/// warn, <1.0 confident) are resolved on the frontend (ActivityEntry.svelte).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderSignalsPayload {
+    pub gg_mean_logprob: Option<f64>,
+    pub gg_min_logprob: Option<f64>,
+    pub entropy_mean: Option<f64>,
+    pub entropy_max: Option<f64>,
+    pub novelty_cosine: Option<f64>,
+    pub steering_vector_active: bool,
+    pub etc_disabled: bool,
+    pub step_id: String,
+}
+
+/// Batch 1B — payload for the A-9 search-trigger SSB row.
+///
+/// Emitted only when [`provider_signals::ProviderSignalReader::read_last_search_trigger`]
+/// returned `Some` on the last sidecar completion — NOT per-dispatch. Carries
+/// the `reason` reported by the sidecar ETC monitor plus a threshold label so
+/// the dashboard can render "search trigger · low_confidence" style rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchTriggerFiredPayload {
+    pub reason: String,
+    pub threshold_hit: String,
+    pub step_id: String,
+}
+
+/// Batch 1B — payload for the A-37 VRAM-tier-detected SSB row.
+///
+/// Emitted exactly once at task_runner startup per `drive_task` host.
+/// `tier` is one of `"8GB"` / `"12GB"` / `"16GB"` / `"24GB"` / `"48GB"` /
+/// `"cloud"`. `detected_via` is one of `"nvml"` / `"env"` / `"default"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VramTierDetectedPayload {
+    pub tier: String,
+    pub detected_via: String,
+    pub free_mb: Option<u32>,
+}
+
 /// Batch 1A — payload for the hook dispatcher's SSB emissions.
 ///
 /// Written by `crate::hook_dispatcher::emit_hook_events_to_ssb` on every
@@ -672,6 +736,9 @@ pub enum SsbPayload {
     InterventionResponse(InterventionResponsePayload),
     TaskSubmitted(TaskSubmittedPayload),
     HookEvent(HookEventPayload),
+    ProviderSignals(ProviderSignalsPayload),
+    SearchTriggerFired(SearchTriggerFiredPayload),
+    VramTierDetected(VramTierDetectedPayload),
 }
 
 impl SsbPayload {
@@ -712,6 +779,9 @@ impl SsbPayload {
             Self::InterventionResponse(_) => SsbActionType::InterventionResponse,
             Self::TaskSubmitted(_) => SsbActionType::TaskSubmitted,
             Self::HookEvent(_) => SsbActionType::HookEvent,
+            Self::ProviderSignals(_) => SsbActionType::ProviderSignals,
+            Self::SearchTriggerFired(_) => SsbActionType::SearchTriggerFired,
+            Self::VramTierDetected(_) => SsbActionType::VramTierDetected,
         }
     }
 }
@@ -1699,6 +1769,26 @@ mod tests {
                 message: "allow".into(),
                 step_id: "step-1".into(),
                 hook_point: "PreToolUse".into(),
+            }),
+            SsbActionType::ProviderSignals => SsbPayload::ProviderSignals(ProviderSignalsPayload {
+                gg_mean_logprob: Some(-1.2),
+                gg_min_logprob: Some(-3.5),
+                entropy_mean: Some(2.1),
+                entropy_max: Some(4.8),
+                novelty_cosine: Some(0.72),
+                steering_vector_active: false,
+                etc_disabled: true,
+                step_id: "step-1".into(),
+            }),
+            SsbActionType::SearchTriggerFired => SsbPayload::SearchTriggerFired(SearchTriggerFiredPayload {
+                reason: "import".into(),
+                threshold_hit: "trigger_token_idx=42".into(),
+                step_id: "step-1".into(),
+            }),
+            SsbActionType::VramTierDetected => SsbPayload::VramTierDetected(VramTierDetectedPayload {
+                tier: "12GB".into(),
+                detected_via: "nvml".into(),
+                free_mb: Some(1800),
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

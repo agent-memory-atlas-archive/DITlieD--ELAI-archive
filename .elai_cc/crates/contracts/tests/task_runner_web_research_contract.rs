@@ -164,6 +164,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 
@@ -246,6 +247,7 @@ async fn web_research_task_without_runner_emits_finding() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 
@@ -333,6 +335,7 @@ async fn web_research_runner_invoked_once_per_task() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 

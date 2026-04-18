@@ -69,6 +69,7 @@ fn task_runner_config_accepts_indexing_service_arc() {
         backend_config: None,
         indexing_service: Some(Arc::new(AsyncMutex::new(svc))),
         hook_dispatcher: None,
+        signal_reader: None,
     };
 
     assert!(

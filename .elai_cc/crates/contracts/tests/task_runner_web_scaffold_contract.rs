@@ -225,6 +225,7 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 
@@ -305,6 +306,7 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 
@@ -381,6 +383,7 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             backend_config: None,
             indexing_service: None,
             hook_dispatcher: None,
+            signal_reader: None,
         },
     );
 
