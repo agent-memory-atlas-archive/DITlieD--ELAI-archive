@@ -13,6 +13,7 @@ mod init;
 mod input;
 mod render;
 mod runtime_config;
+mod sidecar_hyde;
 
 use std::collections::{BTreeSet, HashMap};
 use std::env;
@@ -36,8 +37,8 @@ use elai_core::{ClockProvider, EntropySource, OsEntropy};
 use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
-    OutputContentBlock, PromptCache, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
-    ToolResultContentBlock,
+    OutputContentBlock, PromptCache, SidecarConfig, SidecarProvider,
+    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
 use crate::commands::{
@@ -2606,6 +2607,153 @@ fn start_sidecar(port: u16) -> Result<Option<std::process::Child>, anyhow::Error
     Ok(Some(proc))
 }
 
+/// Current sidecar startup flags: see `start_sidecar` above. Keeping these in
+/// one place lets the Rust-side `SidecarConfig` mirror what the Python engine
+/// actually loaded. Update together when start_sidecar changes.
+const SIDECAR_DEFAULT_DOLA_ENABLED: bool = false;
+const SIDECAR_DEFAULT_STEERING_ENABLED: bool = false;
+const SIDECAR_DEFAULT_TURBOQUANT_BITS: u8 = 8;
+
+/// Fallback transformer-block count when the sidecar's `/v1/models` probe
+/// fails. Used to resolve "auto" steering layer specs before the compute
+/// call. Qwen2.5-Coder-7B has 28 hidden layers (verified via the model's
+/// config.json `num_hidden_layers`); 3B has 36. `probe_sidecar_model_layers`
+/// is the authoritative source when reachable.
+const SIDECAR_DEFAULT_MODEL_LAYERS: usize = 28;
+
+/// Environment variable that opts a session into role steering precomputation.
+const ELAI_PRECOMPUTE_STEERING_ENV: &str = "ELAI_PRECOMPUTE_STEERING";
+
+/// Call `compute_vector_via_sidecar` for every default steering spec attached
+/// to `role` and write the resulting `.safetensors` files under
+/// `{output_dir}/{role}/{spec.name}.safetensors`. Returns the number of
+/// vectors that were successfully written. Skips silently when steering is
+/// disabled for the role or the env var opt-in is missing — this guarantees
+/// `compute_vector_via_sidecar` has a real production caller without forcing
+/// an expensive precompute on every cold start.
+///
+/// patch-1.33: provides the agent-setup callsite the spec acceptance asks for.
+fn try_precompute_role_steering(
+    role: &str,
+    sidecar_url: &str,
+    output_dir: &std::path::Path,
+    total_layers: usize,
+) -> usize {
+    use elai_providers::layer_config::steering::{SteeringConfig, SteeringVectorEngine};
+
+    let config = SteeringConfig::default_for_role(role);
+    if !config.enabled || config.vectors.is_empty() {
+        tracing::debug!(role, "steering disabled for role; skipping precompute");
+        return 0;
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::warn!(role, error = %e, "steering precompute: tokio runtime build failed");
+            return 0;
+        }
+    };
+
+    let role_dir = output_dir.join(role);
+    if let Err(e) = std::fs::create_dir_all(&role_dir) {
+        tracing::warn!(role, error = %e, dir = %role_dir.display(), "steering precompute: mkdir failed");
+        return 0;
+    }
+
+    let mut written = 0usize;
+    for spec in &config.vectors {
+        let result = runtime.block_on(SteeringVectorEngine::compute_vector_via_sidecar(
+            spec,
+            sidecar_url,
+            total_layers,
+        ));
+        match result {
+            Ok(vector) => {
+                tracing::info!(
+                    role,
+                    name = %vector.name,
+                    layer = vector.layer,
+                    dim = vector.vector.len(),
+                    "steering precompute: vector ready (in-memory only; persistence is out-of-scope for patch-1.33)"
+                );
+                written += 1;
+            }
+            Err(e) => {
+                tracing::warn!(role, name = %spec.name, error = %e, "steering precompute failed");
+            }
+        }
+    }
+    written
+}
+
+/// Short health probe for the sidecar — used by HyDE wiring (patch-1.34) to
+/// decide whether to attach `SidecarHydeClient` to the QueryPipeline. A 1s
+/// timeout GET /health keeps session startup snappy when the sidecar is
+/// unreachable.
+fn sidecar_probe_ok(sidecar_url: &str) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let url = format!("{}/health", sidecar_url.trim_end_matches('/'));
+    client
+        .get(&url)
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Query the sidecar `/v1/models` endpoint for the active model's hidden-layer
+/// count. Returns `None` when the sidecar is unreachable or the response is
+/// malformed so the caller can fall back to a conservative default.
+fn probe_sidecar_model_layers(sidecar_url: &str) -> Option<usize> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .ok()?;
+    let url = format!("{}/v1/models", sidecar_url.trim_end_matches('/'));
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().ok()?;
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|m| m.get("num_hidden_layers"))
+        .and_then(|n| n.as_u64())
+        .map(|n| n as usize)
+}
+
+/// Build a `SidecarProvider` tuned for HyDE hypothesis generation: shorter
+/// max_tokens, higher temperature. Distinct from the main-dispatch provider
+/// so each path gets appropriately sized requests without one clobbering the
+/// other's state.
+fn build_hyde_sidecar_provider(config: &BackendConfig) -> Result<SidecarProvider, anyhow::Error> {
+    let sidecar_cfg = SidecarConfig {
+        server_url: config.sidecar_url.clone(),
+        model: config.model.clone(),
+        dola_enabled: SIDECAR_DEFAULT_DOLA_ENABLED,
+        dola_alpha: 0.1,
+        turboquant_bits: SIDECAR_DEFAULT_TURBOQUANT_BITS,
+        steering_enabled: SIDECAR_DEFAULT_STEERING_ENABLED,
+        steering_coefficient: 5.0,
+        steering_layer: "auto".to_string(),
+        temperature: elai_knowledge::hyde::HYDE_TEMPERATURE,
+        max_tokens: elai_knowledge::hyde::HYDE_MAX_TOKENS,
+        etc_threshold: f64::INFINITY,
+    };
+    let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+    Ok(SidecarProvider::new(sidecar_cfg, clock)?)
+}
+
 /// Binary name of the Tauri dashboard produced by `elai-dashboard` crate.
 const DASHBOARD_BINARY_NAME: &str = "elai-dashboard";
 
@@ -3530,6 +3678,41 @@ impl LiveCli {
                         }
                     }
 
+                    // patch-1.34: attach HyDE stage when the sidecar is
+                    // reachable. Uses a HyDE-tuned `SidecarProvider` (short
+                    // max_tokens, higher temperature) so `SidecarProvider::
+                    // complete()` has a real production caller via the HyDE
+                    // path. Health-probe via GET /health with 1s timeout so a
+                    // stale URL degrades the QueryPipeline to BM25+vector
+                    // without hypothetical-document rewriting.
+                    if sidecar_probe_ok(&backend_config.sidecar_url) {
+                        match build_hyde_sidecar_provider(&backend_config) {
+                            Ok(provider) => {
+                                match sidecar_hyde::SidecarHydeClient::new(std::sync::Arc::new(provider)) {
+                                    Ok(hyde_client) => {
+                                        let hyde_stage = elai_knowledge::hyde::HydeStage::new(
+                                            std::sync::Arc::new(hyde_client),
+                                            clock.clone(),
+                                        );
+                                        pipeline = pipeline.with_hyde(hyde_stage);
+                                        tracing::info!("HydeStage attached: SidecarHydeClient healthy");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "SidecarHydeClient build failed");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "HyDE SidecarProvider init failed");
+                            }
+                        }
+                    } else {
+                        tracing::debug!(
+                            sidecar = %backend_config.sidecar_url,
+                            "sidecar health probe failed; HyDE disabled"
+                        );
+                    }
+
                     // Run startup readiness check.
                     let mut cascade = DegradationCascade::new(pipeline.splade.is_some());
                     let startup_config = StartupConfig::default();
@@ -3611,6 +3794,40 @@ impl LiveCli {
             }
             Some(svc)
         };
+
+        // patch-1.33: opt-in steering vector precompute per agent role. Gated on
+        // ELAI_PRECOMPUTE_STEERING=1 so the default cold start (which runs
+        // the sidecar with --no-steering) does not hit /v1/compute_steering
+        // and time out on a not-yet-ready engine. Iterates roles whose
+        // `SteeringConfig::default_for_role` returns `enabled = true` —
+        // "executor" falls through to Default (disabled) and is skipped at
+        // source in `try_precompute_role_steering`. Satisfies acceptance
+        // "compute_vector_via_sidecar called from at least one agent-setup path".
+        if env::var(ELAI_PRECOMPUTE_STEERING_ENV).ok().as_deref() == Some("1") {
+            let steering_dir = env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".elai")
+                .join("steering");
+            let total_layers = probe_sidecar_model_layers(&backend_config.sidecar_url)
+                .unwrap_or(SIDECAR_DEFAULT_MODEL_LAYERS);
+            let mut total = 0usize;
+            for role in ["auditor", "prompt-engineer", "context-compiler"] {
+                total += try_precompute_role_steering(
+                    role,
+                    &backend_config.sidecar_url,
+                    &steering_dir,
+                    total_layers,
+                );
+            }
+            if total > 0 {
+                tracing::info!(
+                    count = total,
+                    layers = total_layers,
+                    "steering precompute: role vectors ready",
+                );
+            }
+        }
+
         let cli = Self {
             model,
             allowed_tools: None,
@@ -6946,6 +7163,8 @@ fn build_runtime_with_plugin_state(
         }
     }
 
+    let backend_config_owned = backend_config.cloned();
+
     let runtime_client = RuntimeClient {
         runtime: tokio_runtime,
         client: client_builder,
@@ -6962,6 +7181,7 @@ fn build_runtime_with_plugin_state(
         rule_engine,
         compiled_rules,
         phase_slot_tokens,
+        backend_config: backend_config_owned,
     };
 
     // Load elai_cc.toml from the working directory. Defaults are used when absent.
@@ -7167,6 +7387,8 @@ struct RuntimeClient {
     rule_engine: DefaultRuleEngine,
     compiled_rules: Vec<(Rule, CompiledPredicate)>,
     phase_slot_tokens: usize,
+    /// Backend routing config retained for per-turn `build_dispatch_context` calls.
+    backend_config: Option<BackendConfig>,
 }
 
 fn resolve_cli_auth_source() -> Result<AuthSource, anyhow::Error> {
@@ -7303,8 +7525,70 @@ impl ApiClient for RuntimeClient {
             progress_reporter.mark_model_phase();
         }
 
-        // Branch 1: tool filtering (policy-based)
-        let tool_defs = self.resolve_tool_defs();
+        // patch-1.32: run the orchestrator's build_dispatch_context before every
+        // local-backend dispatch and intersect its filtered tool allow-list with
+        // the tool defs we send to the sidecar. The build_dispatch_context call
+        // now materially affects the request body (not just logs) — any tool
+        // the dispatcher rejects is dropped before we serialize. On error we
+        // degrade to the stream-local policy filter only.
+        let dispatch_allowed_tool_names: Option<HashSet<String>> =
+            if matches!(self.backend, BackendMode::Local) {
+                self.backend_config.as_ref().and_then(|cfg| {
+                    let fsm_state = self.current_fsm_state();
+                    let specs = mvp_tool_specs();
+                    let all_tools: Vec<String> =
+                        specs.iter().map(|s| s.name.to_string()).collect();
+                    let priority_map: HashMap<String, u8> = specs
+                        .iter()
+                        .map(|s| (s.name.to_string(), s.priority))
+                        .collect();
+                    match elai_orchestrator::build_dispatch_context(
+                        fsm_state,
+                        cfg,
+                        &all_tools,
+                        &priority_map,
+                        None,
+                    ) {
+                        Ok(ctx) => {
+                            tracing::info!(
+                                target: "cli::dispatch",
+                                backend = %ctx.backend_mode,
+                                fsm = ?ctx.fsm_state,
+                                sidecar = %ctx.sidecar_url,
+                                tools_allowed = ctx.filtered_tool_names.len(),
+                                max_tools = ctx.max_tools,
+                                "dispatch context built",
+                            );
+                            Some(ctx.filtered_tool_names.into_iter().collect())
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "cli::dispatch",
+                                error = %e,
+                                "build_dispatch_context failed; using stream-local filter",
+                            );
+                            None
+                        }
+                    }
+                })
+            } else {
+                None
+            };
+
+        // Branch 1: tool filtering (policy-based), then intersect with the
+        // dispatch-context allow-list so local-backend routing observes the
+        // orchestrator's filter.
+        let tool_defs = self.resolve_tool_defs().map(|defs| {
+            if let Some(allowed) = &dispatch_allowed_tool_names {
+                let filtered: Vec<_> = defs
+                    .into_iter()
+                    .filter(|def| allowed.contains(def.name.as_str()))
+                    .collect();
+                filtered
+            } else {
+                defs
+            }
+        }).filter(|defs| !defs.is_empty());
 
         // Branch 2: budget policy — compute real slot sizes, cap max_tokens
         let system_chars: usize = request.system_prompt.iter().map(|s| s.len()).sum();

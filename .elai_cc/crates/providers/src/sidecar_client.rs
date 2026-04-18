@@ -224,6 +224,34 @@ impl SidecarProvider {
         }
     }
 
+    /// Build the JSON body for a `/v1/completions` request.
+    ///
+    /// patch-1.33: forwards `dola_enabled`, `dola_alpha`, `turboquant_bits`,
+    /// `steering_enabled`, `steering_coefficient`, `steering_layer`, and
+    /// `etc_threshold` from `SidecarConfig` into the request body so the
+    /// sidecar can report (and future patches can honour) per-request layer
+    /// overrides. `etc_threshold` serializes `f64::INFINITY` as `null` to
+    /// preserve the disabled-until-calibration contract.
+    pub(crate) fn build_completion_body(config: &SidecarConfig, prompt: &str) -> serde_json::Value {
+        let etc_threshold_json: serde_json::Value = if config.etc_threshold.is_infinite() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(config.etc_threshold)
+        };
+        serde_json::json!({
+            "prompt": prompt,
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "dola_enabled": config.dola_enabled,
+            "dola_alpha": config.dola_alpha,
+            "turboquant_bits": config.turboquant_bits,
+            "steering_enabled": config.steering_enabled,
+            "steering_coefficient": config.steering_coefficient,
+            "steering_layer": config.steering_layer,
+            "etc_threshold": etc_threshold_json,
+        })
+    }
+
     /// Send a completion request to /v1/completions.
     ///
     /// Returns (completions, optional ETC search trigger, GG signals).
@@ -232,11 +260,7 @@ impl SidecarProvider {
         prompt: &str,
     ) -> Result<(Vec<String>, Option<SearchTriggerPayload>, GGSignals), ApiError> {
         let url = format!("{}/v1/completions", self.config.server_url);
-        let body = serde_json::json!({
-            "prompt": prompt,
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
-        });
+        let body = Self::build_completion_body(&self.config, prompt);
 
         let response = self.client
             .post(&url)
@@ -426,6 +450,44 @@ mod tests {
         assert!(json2.contains("\"etc_threshold\":null"));
         let back2: SidecarConfig = serde_json::from_str(&json2).expect("deserialize default");
         assert!(back2.etc_threshold.is_infinite());
+    }
+
+    #[test]
+    fn completion_body_includes_all_layer_config_fields() {
+        // patch-1.33 contract: the request body must carry the seven per-
+        // request layer/TQ/ETC knobs so the sidecar engine can honour them
+        // (or at least log them) instead of falling back to startup defaults.
+        let config = SidecarConfig {
+            server_url: "http://localhost:8100".into(),
+            model: "qwen-coder-7b".into(),
+            dola_enabled: true,
+            dola_alpha: 0.05,
+            turboquant_bits: 4,
+            steering_enabled: true,
+            steering_coefficient: 7.5,
+            steering_layer: "12".into(),
+            temperature: 0.3,
+            max_tokens: 64,
+            etc_threshold: 1.25,
+        };
+        let body = SidecarProvider::build_completion_body(&config, "hello");
+        assert_eq!(body["prompt"], "hello");
+        assert_eq!(body["max_tokens"], 64);
+        assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+        assert_eq!(body["dola_enabled"], true);
+        assert!((body["dola_alpha"].as_f64().unwrap() - 0.05).abs() < 1e-9);
+        assert_eq!(body["turboquant_bits"], 4);
+        assert_eq!(body["steering_enabled"], true);
+        assert!((body["steering_coefficient"].as_f64().unwrap() - 7.5).abs() < 1e-9);
+        assert_eq!(body["steering_layer"], "12");
+        assert!((body["etc_threshold"].as_f64().unwrap() - 1.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn completion_body_etc_threshold_infinity_serializes_as_null() {
+        let config = SidecarConfig::default();
+        let body = SidecarProvider::build_completion_body(&config, "x");
+        assert!(body["etc_threshold"].is_null());
     }
 
     #[test]

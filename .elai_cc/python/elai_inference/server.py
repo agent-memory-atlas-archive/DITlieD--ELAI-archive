@@ -1684,10 +1684,19 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
-    model_id = _engine.model_name if _engine is not None else "elai-composed"
-    return OrjsonResponse({
-        "data": [{"id": model_id, "object": "model"}]
-    })
+    # patch-1.33/1.34: expose num_hidden_layers + hidden_dim so the Rust CLI
+    # can resolve "auto" steering-layer specs and right-size layer-scoped
+    # buffers without hardcoding per-model constants.
+    if _engine is not None:
+        entry = {
+            "id": _engine.model_name,
+            "object": "model",
+            "num_hidden_layers": _engine.n_layers,
+            "hidden_dim": _engine.hidden_dim,
+        }
+    else:
+        entry = {"id": "elai-composed", "object": "model"}
+    return OrjsonResponse({"data": [entry]})
 
 
 @app.post("/shutdown")
