@@ -307,7 +307,7 @@ pub struct TieredAnalysisResult {
 /// Fires on EVERY SSB write. Performance target: <1ms.
 /// Rules are loaded from rules.db at construction time and cached in memory.
 pub struct T1Hook {
-    rule_engine: Box<dyn RuleEngine>,
+    rule_engine: Box<dyn RuleEngine + Send + Sync>,
     fsm_phase: FsmPhaseBit,
     /// Pre-loaded and compiled rules from rules.db, cached for fast evaluation.
     loaded_rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
@@ -317,7 +317,7 @@ pub struct T1Hook {
 
 impl T1Hook {
     /// Create a T1 hook with no pre-loaded rules (empty evaluation).
-    pub fn new(rule_engine: Box<dyn RuleEngine>, fsm_phase: FsmPhaseBit) -> Self {
+    pub fn new(rule_engine: Box<dyn RuleEngine + Send + Sync>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             rule_engine,
             fsm_phase,
@@ -328,7 +328,7 @@ impl T1Hook {
 
     /// Create a T1 hook with pre-loaded rules from rules.db.
     pub fn with_rules(
-        rule_engine: Box<dyn RuleEngine>,
+        rule_engine: Box<dyn RuleEngine + Send + Sync>,
         fsm_phase: FsmPhaseBit,
         rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
     ) -> Self {
@@ -1642,7 +1642,7 @@ impl TieredAnalysis {
     ///
     /// Prefer [`with_rules`] or call [`set_t1_rules`] after construction
     /// to populate T1 with active rules from rules.db.
-    pub fn new(rule_engine: Box<dyn RuleEngine>, fsm_phase: FsmPhaseBit) -> Self {
+    pub fn new(rule_engine: Box<dyn RuleEngine + Send + Sync>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             t1: T1Hook::new(rule_engine, fsm_phase),
             t2: T2Hook::new(5000),
@@ -1676,7 +1676,7 @@ impl TieredAnalysis {
 
     /// Create with pre-loaded rules for T1 evaluation.
     pub fn with_rules(
-        rule_engine: Box<dyn RuleEngine>,
+        rule_engine: Box<dyn RuleEngine + Send + Sync>,
         fsm_phase: FsmPhaseBit,
         rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
     ) -> Self {
@@ -1689,7 +1689,7 @@ impl TieredAnalysis {
 
     /// Create with pre-loaded T1 rules and T2 deprecated import patterns.
     pub fn with_rules_and_deprecated_imports(
-        rule_engine: Box<dyn RuleEngine>,
+        rule_engine: Box<dyn RuleEngine + Send + Sync>,
         fsm_phase: FsmPhaseBit,
         rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
         deprecated_imports: Vec<DeprecatedImport>,

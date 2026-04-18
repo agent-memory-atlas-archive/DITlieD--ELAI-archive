@@ -21,6 +21,7 @@ pub mod evidence;
 pub mod fsm;
 pub mod gate;
 mod hooks;
+pub mod hook_dispatcher;
 pub mod indexing_service;
 pub mod ipc;
 pub mod ipc_gateway;
@@ -169,6 +170,11 @@ pub use file_ops::{
 pub use hooks::{
     HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
 };
+pub use hook_dispatcher::{
+    emit_hook_events_to_ssb, HookDispatcher, HookError as HookDispatcherError, HookFinding,
+    HookInvocation, HookPoint, HookTier, HookVerdictKind, InProcessHookDispatcher,
+    ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
+};
 pub use lane_events::{
     dedupe_superseded_commit_events, LaneCommitProvenance, LaneEvent, LaneEventBlocker,
     LaneEventName, LaneEventStatus, LaneFailureClass,
@@ -300,8 +306,8 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    default_ssb_path, default_ssb_path_for_base, DiffSummary, InterventionKeyword,
-    InterventionOption, InterventionRequestPayload, InterventionResponsePayload,
+    default_ssb_path, default_ssb_path_for_base, DiffSummary, HookEventPayload,
+    InterventionKeyword, InterventionOption, InterventionRequestPayload, InterventionResponsePayload,
     InterventionRetry, InterventionType, MistakeEntryPayload, PhaseCompletePayload,
     PreviewAvailablePayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
     SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, WebResearchStepPayload,
@@ -322,10 +328,12 @@ pub use task_runner::{
     WebResearchRunner, WebResearchSummary, WebValidatorLauncher, AGENT_FAILED_CATEGORY,
     BABY_STEP_PRE_GATE_ACTION, DEFAULT_BABY_STEP_TIMEOUT_MS, DEFAULT_DEV_SERVER_COMMAND,
     DEFAULT_DEV_SERVER_PORT, DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE,
-    DEFAULT_SOURCE_TIERS_TOML, DEV_SERVER_FAILED_CATEGORY, MAX_BABY_STEPS_PER_TASK,
-    PREVIEW_SLOT_LIVE, RULE_VIOLATION_CATEGORY, RUNNER_AGENT_ID, SPIRAL_HARDSTOP_CATEGORY,
-    WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY, WEB_SCAFFOLD_TEMPLATE_ASTRO,
-    WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE, WEB_SCAFFOLD_TEMPLATE_VANILLA,
+    DEFAULT_SOURCE_TIERS_TOML, DETERMINISTIC_AUDIT_CATEGORY, DEV_SERVER_FAILED_CATEGORY,
+    INDEXING_SUMMARY_CATEGORY, MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE,
+    RULE_VIOLATION_CATEGORY, RULE_VIOLATION_POST_CATEGORY, RUNNER_AGENT_ID,
+    SPIRAL_HARDSTOP_CATEGORY, WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY,
+    WEB_SCAFFOLD_TEMPLATE_ASTRO, WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE,
+    WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };
 pub use rule_loader::load_seed_rules_from_dir;
 pub use supervision::{

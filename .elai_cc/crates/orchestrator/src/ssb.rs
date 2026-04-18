@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'research_decompose_level', 'web_research_step',
         'preview_available',
         'intervention_request', 'intervention_response',
-        'task_submitted'
+        'task_submitted',
+        'hook_event'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -111,6 +112,10 @@ pub enum SsbActionType {
     InterventionRequest,
     InterventionResponse,
     TaskSubmitted,
+    /// Batch 1A: hook dispatcher verdict emission (T1/T2/T3 tiered analysis).
+    /// Carries a [`HookEventPayload`]. Dashboard filters on the `hook_event`
+    /// discriminant to render "hook · T1 BLOCK" style rows.
+    HookEvent,
 }
 
 impl SsbActionType {
@@ -149,6 +154,7 @@ impl SsbActionType {
             Self::InterventionRequest => "intervention_request",
             Self::InterventionResponse => "intervention_response",
             Self::TaskSubmitted => "task_submitted",
+            Self::HookEvent => "hook_event",
         }
     }
 }
@@ -193,6 +199,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "intervention_request" => Ok(SsbActionType::InterventionRequest),
         "intervention_response" => Ok(SsbActionType::InterventionResponse),
         "task_submitted" => Ok(SsbActionType::TaskSubmitted),
+        "hook_event" => Ok(SsbActionType::HookEvent),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -587,6 +594,34 @@ pub struct TaskSubmittedPayload {
     pub submitted_at_ms: i64,
 }
 
+/// Batch 1A — payload for the hook dispatcher's SSB emissions.
+///
+/// Written by `crate::hook_dispatcher::emit_hook_events_to_ssb` on every
+/// non-Allow verdict produced by the T1/T2/T3 tiered analysis (plus a
+/// Composite Allow breadcrumb per run). The dashboard filters the activity
+/// feed by `hook_event` action_type and renders "hook · T1 BLOCK" style
+/// rows keyed on `tier` + `verdict`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookEventPayload {
+    /// `"T1"` / `"T2"` / `"T3"` / `"Composite"` — matches `HookTier::as_str`.
+    pub tier: String,
+    /// `"Allow"` / `"Warn"` / `"Block"` — matches `HookVerdictKind::as_str`.
+    pub verdict: String,
+    /// Originating rule identifier (or predicate hash for pattern hooks).
+    /// `None` for Allow breadcrumbs and dispatcher-internal messages.
+    pub rule_id: Option<String>,
+    /// Stable category tag; set to `HOOK_EVENT_CATEGORY` for every emission
+    /// so downstream filters do not need to introspect `rule_id`.
+    pub category: String,
+    pub message: String,
+    /// Baby-step identifier (typically `"baby_step_<N>"`) or `"task_<seq>"`
+    /// for Stop / PreCompact events. Lets the dashboard correlate a hook
+    /// verdict with the step it gated.
+    pub step_id: String,
+    /// `"PreToolUse"` / `"PostToolUse"` / `"Stop"` / `"PreCompact"`.
+    pub hook_point: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all 31 action-type payloads)
 // ---------------------------------------------------------------------------
@@ -636,6 +671,7 @@ pub enum SsbPayload {
     InterventionRequest(InterventionRequestPayload),
     InterventionResponse(InterventionResponsePayload),
     TaskSubmitted(TaskSubmittedPayload),
+    HookEvent(HookEventPayload),
 }
 
 impl SsbPayload {
@@ -675,6 +711,7 @@ impl SsbPayload {
             Self::InterventionRequest(_) => SsbActionType::InterventionRequest,
             Self::InterventionResponse(_) => SsbActionType::InterventionResponse,
             Self::TaskSubmitted(_) => SsbActionType::TaskSubmitted,
+            Self::HookEvent(_) => SsbActionType::HookEvent,
         }
     }
 }
@@ -1653,6 +1690,15 @@ mod tests {
                 request_id: 1,
                 chosen: InterventionOption::Keyword(InterventionKeyword::Accept),
                 user_note: None,
+            }),
+            SsbActionType::HookEvent => SsbPayload::HookEvent(HookEventPayload {
+                tier: "T1".into(),
+                verdict: "Allow".into(),
+                rule_id: None,
+                category: "hook_event".into(),
+                message: "allow".into(),
+                step_id: "step-1".into(),
+                hook_point: "PreToolUse".into(),
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

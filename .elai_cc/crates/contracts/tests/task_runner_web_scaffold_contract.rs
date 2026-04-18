@@ -221,6 +221,10 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 
@@ -297,6 +301,10 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 
@@ -369,6 +377,10 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 

@@ -79,6 +79,10 @@ use crate::pipeline_tree_navigator::{
     NavigatorTree, NoOpIntegrationRunner, TreeNavigator, TreeNavigatorState,
 };
 use crate::grounding_client::SidecarGroundingClient;
+use crate::hook_dispatcher::{
+    emit_hook_events_to_ssb, HookFinding, HookInvocation, HookPoint,
+};
+use elai_providers::LlmProvider;
 use crate::research_tree::{
     research_decompose, ConceptDecomposition, ConceptId, ExecutionMode, ExitCriterion,
     IntegrationSpec, MediaSpec, NodeId, NodeStatus, OutputType, PerfSpec, PhaseId,
@@ -184,6 +188,59 @@ pub const MISTAKE_BOOK_CONSTRAINTS_CATEGORY: &str = "mistake_book_constraints";
 /// by the task_runner on a failed baby step. Structured code per Code-A1
 /// anti-episodic guidance (no variable names, no code snippets).
 pub const MISTAKE_ACTION_PENDING_RETRY: &str = "pending_retry";
+
+/// Session patch-1.32: SSB Finding category for per-task dispatch-context
+/// exercise logs. Dashboard filters on this string to surface the
+/// FSM-state-filtered tool count + chosen backend per task.
+pub const DISPATCH_CONTEXT_CATEGORY: &str = "dispatch_context";
+
+/// Gap #6 (MVP audit 2026-04-18 section 4 item 6 / A-44): SSB Finding category
+/// for project-indexing summaries emitted by [`drive_task`] the first time a
+/// given `project_id` is dispatched. Dashboard activity feeds key on this
+/// string to surface DKG / BM25 build progress.
+pub const INDEXING_SUMMARY_CATEGORY: &str = "indexing_summary";
+
+/// Gap #4 (MVP audit 2026-04-18 section 4 item 4): SSB Finding category for
+/// Block verdicts emitted by the [`crate::deterministic_auditor::DeterministicAuditor`]
+/// post-baby-step. Matches the string already used by
+/// [`crate::deterministic_audit_gate::GATE_FINDING_CATEGORY`] so the dashboard
+/// filter unifies the two surfaces.
+pub const DETERMINISTIC_AUDIT_CATEGORY: &str = "deterministic_audit";
+
+/// Gap #9 (MVP audit 2026-04-18 section 4 item 9): SSB Finding category for
+/// rule-engine verdicts produced AFTER the real agent executor returns. The
+/// pre-gate path keeps using [`RULE_VIOLATION_CATEGORY`]; this distinct tag
+/// lets the frontend distinguish pre-execution natural-language evaluations
+/// (source = task text) from post-execution real-source-text evaluations
+/// (source = file content on disk).
+pub const RULE_VIOLATION_POST_CATEGORY: &str = "rule_violation_post";
+
+/// Batch 1A: finding category used when a PreToolUse Block verdict aborts a
+/// baby step. Matches the string category the dashboard already filters on
+/// for the rule-evaluator path, keeping the two streams unified in the feed
+/// while the typed `hook_event` action_type carries the structured detail.
+pub const HOOK_PRE_TOOL_USE_BLOCK_CATEGORY: &str = "hook_pre_block";
+
+/// Batch 1A: finding category used when a PostToolUse Block verdict flips
+/// `TestOutcome.passed = false` after the agent returns.
+pub const HOOK_POST_TOOL_USE_BLOCK_CATEGORY: &str = "hook_post_block";
+
+/// Session patch-1.32: baseline tool list fed to `build_dispatch_context` on
+/// the dashboard path. Kept inline to avoid pulling `elai-tools` into
+/// orchestrator deps (the production tool catalogue lives CLI-side).
+/// The FSM-state filter at `dispatcher::build_dispatch_context` is the
+/// load-bearing contract; list contents only affect the `tools_allowed`
+/// count observed in SSB.
+const DISPATCH_CONTEXT_BASELINE_TOOLS: &[&str] = &[
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob_search",
+    "grep_search",
+    "web_fetch",
+    "web_search",
+];
 
 // ---------------------------------------------------------------------------
 // Error
@@ -611,6 +668,16 @@ pub struct BabyStepExecutionResult {
     /// Tail of stderr (truncated) — surfaced into the failure Finding so the
     /// dashboard can point the user at the first-line error. Empty on success.
     pub stderr_tail: String,
+    /// Gap #9 (MVP audit 2026-04-18 section 4 item 9): absolute paths of files
+    /// the executor's agent claims to have created/modified during this baby
+    /// step. Drives the post-execution rule re-evaluation and feeds the
+    /// deterministic auditor's `changed_files` argument (Gap #4). Empty on the
+    /// synthetic executor — that path has no real diff — so legacy tests keep
+    /// working with their existing expectations. Real agent executors populate
+    /// this from their on-disk diff once wire-4A's per-step diff reporter
+    /// lands; until then the post-execution rule evaluator is a no-op for
+    /// baby steps that did not touch files.
+    pub changed_files: Vec<PathBuf>,
 }
 
 impl BabyStepExecutionResult {
@@ -622,6 +689,7 @@ impl BabyStepExecutionResult {
             duration_ms: RUNNER_SYNTHETIC_DURATION_MS,
             exit_code: None,
             stderr_tail: String::new(),
+            changed_files: Vec::new(),
         }
     }
 }
@@ -767,6 +835,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                         duration_ms: start.elapsed().as_millis() as u64,
                         exit_code: None,
                         stderr_tail: reason,
+                        changed_files: Vec::new(),
                     };
                 }
             };
@@ -779,6 +848,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     duration_ms: start.elapsed().as_millis() as u64,
                     exit_code: None,
                     stderr_tail: reason,
+                    changed_files: Vec::new(),
                 };
             }
             let socket_path = self
@@ -801,6 +871,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     duration_ms: start.elapsed().as_millis() as u64,
                     exit_code: None,
                     stderr_tail: reason,
+                    changed_files: Vec::new(),
                 };
             }
 
@@ -819,6 +890,11 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 duration_ms: start.elapsed().as_millis() as u64,
                 exit_code: outcome.exit_code,
                 stderr_tail: outcome.stderr_tail,
+                // Gap #9: real agents will populate this via an out-of-band
+                // diff reporter once wire-4A's changed-files protocol lands.
+                // Until then we default to empty so the post-execution rule
+                // re-eval is a no-op (documented in the trait doc-comment).
+                changed_files: Vec::new(),
             }
         })
     }
@@ -1548,6 +1624,53 @@ pub struct TaskRunnerConfig {
     /// emission works even with the synthetic executor (so the contract can
     /// be exercised without a real agent binary).
     pub anti_spiral_enabled: bool,
+    /// Session patch-1.32: shared LLM provider used for research decomposition
+    /// and (future) baby-step agent dispatch on the dashboard path. When
+    /// `Some`, `drive_task` runs `build_dispatch_context` once per task and
+    /// the provider becomes available to the decomposition call site. When
+    /// `None`, the runner falls back to [`SidecarGroundingClient`] (the
+    /// pre-patch-1.32 narrow reqwest client) so every existing test and the
+    /// CLI-driven path keep working. This is the single-instance plumb that
+    /// unblocks phase 3J (DoLa/TurboQuant/steering/HyDE/MCP) on the
+    /// dashboard path — see `docs/mvp-wiring-audit-2026-04-18.md` section
+    /// 4 item #3 ("patch-1.32 dashboard LLM backend wiring").
+    pub llm_provider: Option<Arc<dyn LlmProvider>>,
+    /// Session patch-1.32: optional backend routing config for
+    /// `build_dispatch_context`. When `Some` together with `llm_provider`,
+    /// the dashboard path invokes `build_dispatch_context` on each dispatch
+    /// to exercise the FSM-state tool filter + context budget adapter. When
+    /// `None`, the default `BackendConfig` is used (equivalent to API
+    /// backend, which build_dispatch_context still accepts).
+    pub backend_config: Option<crate::dispatcher::BackendConfig>,
+    /// Gap #6 (MVP audit 2026-04-18 section 4 item 6, A-44): optional
+    /// project-indexing service. When `Some`, `drive_task` invokes
+    /// [`crate::indexing_service::IndexingService::run_full_index`] the first
+    /// time a given `project_id` is dispatched and emits an `SsbPayload::Finding`
+    /// summarising `files_indexed` / `dkg_nodes` / `bm25_chunks`. Subsequent
+    /// tasks for the same project skip re-indexing (tracked via the runner's
+    /// internal indexed-project cache). When `None`, no indexing runs and the
+    /// rule evaluator keeps using whatever [`DkgQuerier`] was supplied at
+    /// `rule_evaluator` construction (i.e. `EmptyDkgQuerier` on the dashboard
+    /// path pre-Gap #6). The service is wrapped in an async mutex because
+    /// `run_full_index` takes `&mut self` and may be invoked concurrently from
+    /// multiple baby-step scheduling points; the mutex serialises the initial
+    /// build without blocking the runner's tokio runtime.
+    pub indexing_service: Option<Arc<AsyncMutex<crate::indexing_service::IndexingService>>>,
+    /// Batch 1A (MVP audit 2026-04-18 section 3): optional hook dispatcher
+    /// that runs the T1/T2/T3 tiered analysis around each baby step. When
+    /// `Some`, [`drive_task`] calls `dispatch_pre_tool_use` before
+    /// `baby_step_executor.execute`, `dispatch_post_tool_use` after the
+    /// baby-step checkpoint when the step passed AND produced at least one
+    /// changed file, `dispatch_stop` on task completion, and
+    /// `dispatch_pre_compact` as a reserved MVP no-op. Block verdicts abort
+    /// the step / flip `TestOutcome.passed=false`; Warn verdicts emit
+    /// `SsbPayload::HookEvent` rows without flipping the outcome. When
+    /// `None`, the current no-hook behavior is preserved (pre-batch-1a
+    /// semantics).
+    ///
+    /// Dispatcher respects the `ELAI_HOOKS_DISABLED` env var as an emergency
+    /// shutoff; see `hook_dispatcher::InProcessHookDispatcher::new`.
+    pub hook_dispatcher: Option<Arc<dyn crate::hook_dispatcher::HookDispatcher>>,
 }
 
 impl TaskRunnerConfig {
@@ -1566,6 +1689,10 @@ impl TaskRunnerConfig {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         }
     }
 }
@@ -1595,6 +1722,22 @@ struct ResolvedConfig {
     baby_step_executor: Arc<dyn BabyStepExecutor>,
     /// Session wire-antispiral: enable detector in drive_task loop.
     anti_spiral_enabled: bool,
+    /// Session patch-1.32: shared LLM provider (see `TaskRunnerConfig::llm_provider`).
+    llm_provider: Option<Arc<dyn LlmProvider>>,
+    /// Session patch-1.32: resolved backend config used by `build_dispatch_context`.
+    /// Always populated — when the caller does not supply one, we fall back to
+    /// `BackendConfig::default()`.
+    backend_config: crate::dispatcher::BackendConfig,
+    /// Gap #6: shared indexing service (see `TaskRunnerConfig::indexing_service`).
+    indexing_service: Option<Arc<AsyncMutex<crate::indexing_service::IndexingService>>>,
+    /// Gap #6: per-project "first-task indexed" cache. Key = `project_id` as it
+    /// appears on `TaskSubmittedPayload`; value = unix-epoch millis at which
+    /// the full index was built. Guarded by a sync `Mutex` because the check is
+    /// cheap and each `drive_task` invocation only touches it once per task.
+    indexed_projects: Mutex<HashMap<String, i64>>,
+    /// Batch 1A: optional hook dispatcher (see `TaskRunnerConfig::hook_dispatcher`).
+    /// When `None`, `drive_task` skips every dispatch call site.
+    hook_dispatcher: Option<Arc<dyn crate::hook_dispatcher::HookDispatcher>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1637,6 +1780,13 @@ impl ResolvedConfig {
                 .baby_step_executor
                 .unwrap_or_else(|| Arc::new(SyntheticBabyStepExecutor)),
             anti_spiral_enabled: cfg.anti_spiral_enabled,
+            llm_provider: cfg.llm_provider,
+            backend_config: cfg
+                .backend_config
+                .unwrap_or_else(crate::dispatcher::BackendConfig::default),
+            indexing_service: cfg.indexing_service,
+            indexed_projects: Mutex::new(HashMap::new()),
+            hook_dispatcher: cfg.hook_dispatcher,
         }
     }
 }
@@ -2116,6 +2266,103 @@ async fn run_parallel_phases_via_bsp(
     }
 }
 
+/// Gap #6: ensure the project's DKG+BM25 indexes have been built at least once
+/// for the given `project_id`. Runs `IndexingService::run_full_index` on the
+/// very first task for that project, emits an `SsbPayload::Finding` summarising
+/// `files_indexed=N dkg_nodes=M bm25_chunks=K`, and caches the build timestamp
+/// in `resolved.indexed_projects` so subsequent tasks skip the build. When the
+/// service is `None` this is a no-op (dashboard runs pre-Gap-#6 with
+/// `EmptyDkgQuerier`, which is the documented fallback).
+async fn maybe_build_project_index(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    project_id: &str,
+) {
+    let Some(svc) = resolved.indexing_service.as_ref() else {
+        return;
+    };
+
+    // Fast path: already indexed for this project_id.
+    if let Ok(cache) = resolved.indexed_projects.lock() {
+        if cache.contains_key(project_id) {
+            return;
+        }
+    }
+
+    // Slow path: acquire the service mutex and run the full index. We hold the
+    // sync cache lock only for the cheap contains_key check, then drop it —
+    // the indexing build holds only the async service mutex.
+    let mut guard = svc.lock().await;
+    // Re-check under the async lock to avoid racing two baby-step schedulers
+    // both hitting the gap between the fast-path probe and the build.
+    if let Ok(cache) = resolved.indexed_projects.lock() {
+        if cache.contains_key(project_id) {
+            return;
+        }
+    }
+
+    if guard.indexes_exist() {
+        // Already on disk: record the cache entry without a rebuild. Keeps the
+        // Finding emission consistent (one per project per runner lifetime).
+        let now = now_unix_ms();
+        if let Ok(mut cache) = resolved.indexed_projects.lock() {
+            cache.insert(project_id.to_owned(), now);
+        }
+        emit_finding(
+            writer,
+            "info",
+            INDEXING_SUMMARY_CATEGORY,
+            &format!(
+                "project_id={project_id} indexes_present=true skipped_rebuild=true"
+            ),
+        )
+        .await;
+        return;
+    }
+
+    match guard.run_full_index() {
+        Ok(summary) => {
+            let now = now_unix_ms();
+            if let Ok(mut cache) = resolved.indexed_projects.lock() {
+                cache.insert(project_id.to_owned(), now);
+            }
+            emit_finding(
+                writer,
+                "info",
+                INDEXING_SUMMARY_CATEGORY,
+                &format!(
+                    "project_id={project_id} files_indexed={} dkg_nodes={} bm25_chunks={}",
+                    summary.bm25_files, summary.dkg_nodes, summary.bm25_chunks,
+                ),
+            )
+            .await;
+        }
+        Err(e) => {
+            // Degraded-mode matches the CLI behaviour at main.rs:3852: log +
+            // continue without indexes. Emit a Finding so the dashboard
+            // surfaces the failure without aborting the task.
+            warn!(project_id = %project_id, error = %e, "task_runner: indexing failed");
+            emit_finding(
+                writer,
+                "warning",
+                INDEXING_SUMMARY_CATEGORY,
+                &format!("project_id={project_id} indexing failed: {e}"),
+            )
+            .await;
+        }
+    }
+}
+
+/// Return the current time in milliseconds since the Unix epoch. Mirrors the
+/// "best-effort timestamp" pattern used by [`CheckpointManager`] and
+/// `IndexingService::run_full_index` so the two surfaces stay consistent.
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 async fn drive_task(
     writer: &Arc<Ssb>,
     seq: i64,
@@ -2123,6 +2370,13 @@ async fn drive_task(
     resolved: &ResolvedConfig,
     cancel: &CancelHandle,
 ) -> Result<(), TaskRunnerError> {
+    // Gap #6 (MVP audit 2026-04-18 section 4 item 6): on the first task for
+    // this project_id, run the `IndexingService::run_full_index` pipeline so
+    // downstream rule evaluation (Gap #9) and the `DkgQuerierAdapter` path on
+    // the dashboard have a live index to query. No-op when no indexing_service
+    // was plumbed or the project is already cached.
+    maybe_build_project_index(writer, resolved, &task.project_id).await;
+
     // Web-scaffold branch (Session 4E.15): route detected scaffold tasks
     // through the scaffold crate's apply_template via the injected
     // [`ScaffoldApplier`]. Checked before web-research so a phrase like
@@ -2154,6 +2408,58 @@ async fn drive_task(
         truncate_for_log(&task.task, 120)
     );
     emit_reasoning(writer, 0, "observe", &observe_content).await;
+
+    // patch-1.32: when the caller plumbed an LlmProvider (dashboard path),
+    // build the per-dispatch context so the FSM-state tool filter + context
+    // budget adapter are exercised on every task. The returned struct is not
+    // threaded into the synthetic decomposition call below — but merely
+    // running build_dispatch_context exercises phase 3J's plumbing contract
+    // (and the `tools_allowed` count lands in SSB as an info finding so the
+    // dashboard can confirm the filter fired). See
+    // `docs/mvp-wiring-audit-2026-04-18.md` section 4 item #3 and the CLI
+    // parallel caller at `crates/cli/src/main.rs:~7632`.
+    if resolved.llm_provider.is_some() {
+        // Baseline orchestrator-visible tool list. Kept intentionally small
+        // and stable — the elai-tools `mvp_tool_specs` catalogue lives on the
+        // CLI side and would drag a workspace dependency cycle if imported
+        // here. The FSM-state tool filter below is the load-bearing contract:
+        // adding or removing items from this list only changes the `tools_allowed`
+        // count emitted below.
+        let specs: Vec<String> = DISPATCH_CONTEXT_BASELINE_TOOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let priority_map: HashMap<String, u8> = specs
+            .iter()
+            .map(|name| (name.clone(), 0u8))
+            .collect();
+        match crate::dispatcher::build_dispatch_context(
+            crate::fsm::FsmState::Planning,
+            &resolved.backend_config,
+            &specs,
+            &priority_map,
+            None,
+        ) {
+            Ok(ctx) => {
+                emit_finding(
+                    writer,
+                    "info",
+                    DISPATCH_CONTEXT_CATEGORY,
+                    &format!(
+                        "dispatch_context: backend={} fsm={:?} tools_allowed={} max_tools={}",
+                        ctx.backend_mode,
+                        ctx.fsm_state,
+                        ctx.filtered_tool_names.len(),
+                        ctx.max_tools
+                    ),
+                )
+                .await;
+            }
+            Err(e) => {
+                warn!(seq, error = %e, "task_runner: build_dispatch_context failed");
+            }
+        }
+    }
 
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let grounding_client = SidecarGroundingClient::default();
@@ -2372,6 +2678,50 @@ async fn drive_task(
             }
         }
 
+        // Batch 1A: PreToolUse hook dispatch. Fires the tiered-analysis T1/T2/T3
+        // pipeline against the current baby-step task text before the executor
+        // runs. A `Block` verdict short-circuits the step — we emit an
+        // `AGENT_FAILED_CATEGORY` Finding with a dedicated hook_pre_block tag,
+        // skip the executor, and fall through so the bubble-up / checkpoint /
+        // TestOutcome path still renders the row with passed=false.
+        //
+        // Warn verdicts emit `HookEvent` rows but do NOT abort — the dashboard
+        // shows them as `hook · T1 WARN` alongside the step.
+        let mut hook_pre_blocked = false;
+        if let Some(dispatcher) = resolved.hook_dispatcher.as_ref() {
+            let invocation = HookInvocation::for_pre_tool_use(
+                BABY_STEP_PRE_GATE_ACTION,
+                &task_summary,
+                format!("baby_step_{}", bs_id.0),
+            );
+            match dispatcher.dispatch_pre_tool_use(invocation).await {
+                Ok(findings) => {
+                    emit_hook_events_to_ssb(
+                        writer,
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        HookPoint::PreToolUse,
+                        &format!("baby_step_{}", bs_id.0),
+                        &findings,
+                    )
+                    .await;
+                    if findings.iter().any(HookFinding::is_block) {
+                        hook_pre_blocked = true;
+                        let msg = build_hook_block_summary(&findings, "PreToolUse");
+                        emit_finding(writer, "error", HOOK_PRE_TOOL_USE_BLOCK_CATEGORY, &msg)
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        baby_step = bs_id.0,
+                        error = %e,
+                        "task_runner: PreToolUse hook dispatch failed"
+                    );
+                }
+            }
+        }
+
         // Session wire-4A: dispatch this baby step through the pluggable
         // [`BabyStepExecutor`]. Drains the escalation message stashed by the
         // anti-spiral detector (wire-antispiral) so the injected message lands
@@ -2384,7 +2734,24 @@ async fn drive_task(
             task_summary: task_summary.clone(),
             escalation_message,
         };
-        let exec_result = resolved.baby_step_executor.execute(exec_ctx).await;
+        // Batch 1A: if PreToolUse blocked, skip the executor entirely with a
+        // synthetic Failed result — the rest of the loop (integration
+        // checkpoint, TestOutcome emission, MistakeBook, bubble-up) runs as if
+        // the executor returned Failed. This mirrors the `pre_gate_blocked`
+        // path for the existing rule evaluator.
+        let exec_result = if hook_pre_blocked {
+            BabyStepExecutionResult {
+                outcome: BabyStepOutcome::Failed {
+                    reason: "PreToolUse hook blocked baby step".to_string(),
+                },
+                duration_ms: 0,
+                exit_code: None,
+                stderr_tail: String::new(),
+                changed_files: Vec::new(),
+            }
+        } else {
+            resolved.baby_step_executor.execute(exec_ctx).await
+        };
         let outcome = exec_result.outcome;
         let outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
         let execution_duration_ms = exec_result.duration_ms;
@@ -2428,7 +2795,7 @@ async fn drive_task(
         // integration-checkpoint failure. Default `true` when no spec is
         // registered (matches the pre-A-19 `None` branch).
         let mut integration_succeeded = true;
-        let passed = match tree
+        let mut passed = match tree
             .integration_spec(DecompositionLevel::BabyStep, bs_id.0)
             .cloned()
         {
@@ -2442,10 +2809,111 @@ async fn drive_task(
                 );
                 emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
                 integration_succeeded = run.success;
-                run.success && outcome_passed && !pre_gate_blocked
+                run.success && outcome_passed && !pre_gate_blocked && !hook_pre_blocked
             }
-            None => outcome_passed && !pre_gate_blocked,
+            None => outcome_passed && !pre_gate_blocked && !hook_pre_blocked,
         };
+
+        // Batch 1A: PostToolUse hook dispatch. Fires T1/T2/T3 against every
+        // changed file the executor reported. Per Batch 1A spec, only runs
+        // when the baby step Passed AND produced at least one changed file.
+        // - Warn verdicts emit HookEvent rows; passed stays as-is.
+        // - Block verdicts flip `passed = false` and emit a typed Finding so
+        //   the dashboard surfaces the flip alongside the existing
+        //   rule_violation_post stream.
+        if outcome_passed && !exec_result.changed_files.is_empty() {
+            if let Some(dispatcher) = resolved.hook_dispatcher.as_ref() {
+                for changed in &exec_result.changed_files {
+                    let source = match tokio::fs::read_to_string(changed).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(
+                                path = %changed.display(),
+                                error = %e,
+                                "task_runner: PostToolUse hook could not read changed file"
+                            );
+                            continue;
+                        }
+                    };
+                    let changed_str = changed.to_string_lossy();
+                    let invocation = HookInvocation::for_post_tool_use(
+                        "file_write",
+                        &source,
+                        changed_str.as_ref(),
+                        format!("baby_step_{}", bs_id.0),
+                    );
+                    match dispatcher.dispatch_post_tool_use(invocation).await {
+                        Ok(findings) => {
+                            emit_hook_events_to_ssb(
+                                writer,
+                                RUNNER_AGENT_ID,
+                                RUNNER_SUPERSTEP,
+                                HookPoint::PostToolUse,
+                                &format!("baby_step_{}", bs_id.0),
+                                &findings,
+                            )
+                            .await;
+                            if findings.iter().any(HookFinding::is_block) {
+                                let msg =
+                                    build_hook_block_summary(&findings, "PostToolUse");
+                                emit_finding(
+                                    writer,
+                                    "error",
+                                    HOOK_POST_TOOL_USE_BLOCK_CATEGORY,
+                                    &msg,
+                                )
+                                .await;
+                                passed = false;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                baby_step = bs_id.0,
+                                error = %e,
+                                "task_runner: PostToolUse hook dispatch failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Gap #4 (MVP audit 2026-04-18 section 4 item 4): invoke the
+        // DeterministicAuditor after the baby-step checkpoint has been
+        // emitted. Runs only when the baby step Passed AND the agent
+        // produced at least one changed file (no diff → nothing to audit,
+        // and the build-check path would spuriously gate on a clean tree).
+        // Block verdicts become typed Findings; they do NOT mutate `passed`
+        // — the bubble-up pass keeps its existing inputs (acceptance
+        // criterion: "Do NOT change the bubble-up logic itself").
+        if outcome_passed && !exec_result.changed_files.is_empty() {
+            run_post_step_deterministic_audit(
+                writer,
+                project_dir.as_deref(),
+                bs_id.0,
+                &exec_result.changed_files,
+            )
+            .await;
+        }
+
+        // Gap #9 (MVP audit 2026-04-18 section 4 item 9): post-execution
+        // rule re-evaluation against each changed file's on-disk content.
+        // The pre-gate path above runs against `task_summary` (natural
+        // language) so Grep/AST rules never match. This pass feeds the
+        // actual source buffer into the same evaluator, tagged with a
+        // distinct category so the frontend can distinguish the two.
+        if let Some(evaluator) = resolved.rule_evaluator.as_ref() {
+            if !exec_result.changed_files.is_empty() {
+                evaluate_post_execution_rules_and_emit_findings(
+                    writer,
+                    evaluator,
+                    bs_id.0,
+                    &exec_result.changed_files,
+                    is_web_project,
+                )
+                .await;
+            }
+        }
 
         // Session A-19.REDO: on a failing baby step, drive a short
         // InterrogationTree traversal and emit a Finding carrying the
@@ -2542,6 +3010,52 @@ async fn drive_task(
     // single `drive_task` invocation.
     if let Some(last) = last_location.as_ref() {
         flush_final_integration_checkpoints(writer, &nav, last, &integration_runner, &mut state, &tree).await;
+    }
+
+    // Batch 1A: Stop hook dispatch. Fires exactly once per task, regardless of
+    // success or hard-fail cascade past the root concept. No file / source
+    // context — Stop is task-level — so T1 is the only tier that will
+    // meaningfully fire; T2/T3 stay gated on file_write in `TieredAnalysis`.
+    if let Some(dispatcher) = resolved.hook_dispatcher.as_ref() {
+        let step_id = format!("task_{}", seq);
+        let invocation = HookInvocation::for_task_level("task_stop", step_id.clone());
+        match dispatcher.dispatch_stop(invocation).await {
+            Ok(findings) => {
+                emit_hook_events_to_ssb(
+                    writer,
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    HookPoint::Stop,
+                    &step_id,
+                    &findings,
+                )
+                .await;
+            }
+            Err(e) => {
+                warn!(seq, error = %e, "task_runner: Stop hook dispatch failed");
+            }
+        }
+
+        // PreCompact: reserved MVP wiring surface. The dashboard path has no
+        // compaction threshold yet, so we invoke the no-op path to keep the
+        // contract exercised (a real threshold lands in a later batch).
+        let pre_compact = HookInvocation::for_task_level("pre_compact", step_id.clone());
+        match dispatcher.dispatch_pre_compact(pre_compact).await {
+            Ok(findings) => {
+                emit_hook_events_to_ssb(
+                    writer,
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    HookPoint::PreCompact,
+                    &step_id,
+                    &findings,
+                )
+                .await;
+            }
+            Err(e) => {
+                warn!(seq, error = %e, "task_runner: PreCompact hook dispatch failed");
+            }
+        }
     }
 
     // --- 5. PhaseComplete terminal row ----------------------------------
@@ -2743,6 +3257,31 @@ async fn emit_spiral_hard_stop(writer: &Arc<Ssb>, agent_id: Uuid, seq: i64) {
         ),
     )
     .await;
+}
+
+/// Batch 1A: human-readable summary of one or more hook-dispatcher findings
+/// that contained a Block verdict. Used for the `hook_pre_block` /
+/// `hook_post_block` Finding messages so the dashboard activity feed shows a
+/// concise, deterministic reason. Only Block findings are included — Warn
+/// findings ride on the structured `HookEvent` row.
+fn build_hook_block_summary(findings: &[HookFinding], hook_point: &str) -> String {
+    let blockers: Vec<&HookFinding> =
+        findings.iter().filter(|f| f.is_block()).collect();
+    if blockers.is_empty() {
+        return format!("{hook_point} hook Block (no findings)");
+    }
+    let mut pieces: Vec<String> = Vec::with_capacity(blockers.len());
+    for f in blockers {
+        let rule = f.rule_id.as_deref().unwrap_or("<unknown>");
+        pieces.push(format!(
+            "{} {} rule={} msg={}",
+            f.tier.as_str(),
+            f.verdict.as_str(),
+            rule,
+            f.message
+        ));
+    }
+    format!("{hook_point} hook Block: {}", pieces.join("; "))
 }
 
 /// Session wire-antispiral: build a deterministic synthetic agent id keyed on
@@ -3189,6 +3728,200 @@ async fn evaluate_pre_gate_and_emit_findings(
         }
     }
     any_block
+}
+
+// ---------------------------------------------------------------------------
+// Gap #4 — DeterministicAuditor post-baby-step hook
+// ---------------------------------------------------------------------------
+
+/// Gap #4 (MVP audit 2026-04-18 section 4 item 4): after a baby step's
+/// integration checkpoint emits its TestOutcome row, run the
+/// [`crate::deterministic_auditor::DeterministicAuditor`] against the agent's
+/// reported `changed_files`. Block verdicts are mapped to typed
+/// `SsbPayload::Finding` rows with `severity = "block"` +
+/// `category = "deterministic_audit"` so the dashboard's activity feed +
+/// (post-MVP) A-41 auditor-sourced rule proposal loop can consume them.
+///
+/// Preconditions (no-op early-exit when any fails):
+///   * `project_dir` is known — we need a real filesystem root to resolve
+///     `ProjectProfile` and the changed-file set.
+///   * `detect_project_profile` succeeded — without a profile the auditor has
+///     no build commands, no language, and no exempt-path list.
+///
+/// Error handling: the auditor itself is infallible (`run_all` returns a
+/// [`crate::deterministic_auditor::DeterministicAuditResult`] — no `Result`),
+/// but profile detection can fail on directories that aren't recognised as a
+/// project. Detection failures are logged at `warn!` and the function returns
+/// without emitting Findings; they do NOT abort `drive_task`.
+async fn run_post_step_deterministic_audit(
+    writer: &Arc<Ssb>,
+    project_dir: Option<&Path>,
+    bs_id: u64,
+    changed_files: &[PathBuf],
+) {
+    let Some(root) = project_dir else {
+        return;
+    };
+    let profile = match elai_knowledge::detect_project_profile(root) {
+        Ok(p) => p,
+        Err(e) => {
+            // Internal-error branch per acceptance criterion: warn + continue.
+            warn!(
+                baby_step = bs_id,
+                error = %e,
+                "task_runner: deterministic auditor skipped (project profile detection failed)",
+            );
+            return;
+        }
+    };
+    let config = crate::deterministic_auditor::DeterministicAuditorConfig::from_profile(
+        &profile,
+        Vec::new(),
+    );
+    let auditor = crate::deterministic_auditor::DeterministicAuditor::new(config);
+    let result = auditor.run_all(changed_files);
+
+    tracing::debug!(
+        baby_step = bs_id,
+        checks_run = result.checks_run,
+        findings = result.findings.len(),
+        block_count = result.block_count(),
+        "task_runner: deterministic auditor result",
+    );
+
+    for finding in &result.findings {
+        if !matches!(
+            finding.severity,
+            crate::deterministic_auditor::DeterministicSeverity::Block,
+        ) {
+            // Acceptance criterion: only Block verdicts become Findings on
+            // this hook. Warn verdicts are surfaced via the existing
+            // `deterministic_audit_gate::DefaultDeterministicAuditGate` path
+            // which is invoked at the FSM boundary (not at each baby step).
+            continue;
+        }
+        let file_str = finding
+            .file
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let line_str = finding
+            .line
+            .map(|l| format!(" line={l}"))
+            .unwrap_or_default();
+        emit_finding(
+            writer,
+            "block",
+            DETERMINISTIC_AUDIT_CATEGORY,
+            &format!(
+                "baby_step={bs_id} check={} file={:?}{}: {}",
+                finding.check, file_str, line_str, finding.message,
+            ),
+        )
+        .await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gap #9 — Post-execution rule evaluation (real source text)
+// ---------------------------------------------------------------------------
+
+/// Gap #9 (MVP audit 2026-04-18 section 4 item 9): after the real executor
+/// returns, re-run the rule engine against each changed file's on-disk
+/// content. Emits one `SsbPayload::Finding` per Block/Warn verdict with
+/// `category = "rule_violation_post"` so the frontend can distinguish these
+/// from the pre-gate findings (which evaluate against the natural-language
+/// task text and use `category = "rule_violation"`).
+///
+/// Missing files (e.g. deletes) are skipped silently per acceptance
+/// criterion — they represent the "file no longer exists" case, not a rule
+/// violation. I/O errors while reading a changed file fall in the same
+/// bucket: we log `warn!` and skip, matching the task runner's general
+/// "one bad file does not abort the loop" policy.
+async fn evaluate_post_execution_rules_and_emit_findings(
+    writer: &Arc<Ssb>,
+    evaluator: &RuleEvaluator,
+    bs_id: u64,
+    changed_files: &[PathBuf],
+    is_web_project: bool,
+) {
+    let domains: Vec<&str> = if is_web_project { vec!["web"] } else { Vec::new() };
+    for path in changed_files {
+        if !path.exists() {
+            // Acceptance criterion: delete case → skip, not a violation.
+            continue;
+        }
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    baby_step = bs_id,
+                    path = %path.display(),
+                    error = %e,
+                    "task_runner: post-exec rule eval skipped (read failed)",
+                );
+                continue;
+            }
+        };
+        let file_path_str = path.to_string_lossy();
+        let ctx = EvaluationContext {
+            action: BABY_STEP_PRE_GATE_ACTION,
+            source: &source,
+            file_path: &file_path_str,
+            fsm_phase: FsmPhaseBit::EXECUTING,
+            metric_values: HashMap::new(),
+        };
+        let verdicts =
+            evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
+        for v in &verdicts {
+            match v.result {
+                VerdictResult::Block => {
+                    emit_finding(
+                        writer,
+                        "error",
+                        RULE_VIOLATION_POST_CATEGORY,
+                        &format!(
+                            "baby_step={bs_id} file={} rule={} BLOCK: {}",
+                            path.display(),
+                            v.rule_id,
+                            v.evidence,
+                        ),
+                    )
+                    .await;
+                }
+                VerdictResult::Warn => {
+                    emit_finding(
+                        writer,
+                        "warning",
+                        RULE_VIOLATION_POST_CATEGORY,
+                        &format!(
+                            "baby_step={bs_id} file={} rule={} WARN: {}",
+                            path.display(),
+                            v.rule_id,
+                            v.evidence,
+                        ),
+                    )
+                    .await;
+                }
+                VerdictResult::Escalate(ref target) => {
+                    emit_finding(
+                        writer,
+                        "escalate",
+                        RULE_VIOLATION_POST_CATEGORY,
+                        &format!(
+                            "baby_step={bs_id} file={} rule={} ESCALATE(target={:?}): {}",
+                            path.display(),
+                            v.rule_id,
+                            target,
+                            v.evidence,
+                        ),
+                    )
+                    .await;
+                }
+                VerdictResult::Allow => {}
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3795,6 +4528,10 @@ mod tests {
                 checkpoint_scratch_dir: None,
                 baby_step_executor: None,
                 anti_spiral_enabled: false,
+                llm_provider: None,
+                backend_config: None,
+                indexing_service: None,
+                hook_dispatcher: None,
             },
         );
 
@@ -3896,6 +4633,10 @@ mod tests {
                 checkpoint_scratch_dir: None,
                 baby_step_executor: None,
                 anti_spiral_enabled: false,
+                llm_provider: None,
+                backend_config: None,
+                indexing_service: None,
+                hook_dispatcher: None,
             },
         );
 
@@ -4074,6 +4815,10 @@ mod tests {
                 checkpoint_scratch_dir: None,
                 baby_step_executor: None,
                 anti_spiral_enabled: false,
+                llm_provider: None,
+                backend_config: None,
+                indexing_service: None,
+                hook_dispatcher: None,
             },
         );
 
@@ -4812,6 +5557,10 @@ mod tests {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         })
     }
 

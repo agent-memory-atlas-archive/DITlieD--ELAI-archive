@@ -160,6 +160,10 @@ async fn web_research_task_emits_web_research_step_rows() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 
@@ -238,6 +242,10 @@ async fn web_research_task_without_runner_emits_finding() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 
@@ -321,6 +329,10 @@ async fn web_research_runner_invoked_once_per_task() {
             checkpoint_scratch_dir: None,
             baby_step_executor: None,
             anti_spiral_enabled: false,
+            llm_provider: None,
+            backend_config: None,
+            indexing_service: None,
+            hook_dispatcher: None,
         },
     );
 
