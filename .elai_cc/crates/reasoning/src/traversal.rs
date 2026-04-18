@@ -7,6 +7,61 @@ use elai_core::interrogation_tree::{
     ChoiceId, InterrogationTree, QuestionNode, TraversalOutcome, TraversalState,
     TOKENS_PER_QUESTION,
 };
+use elai_core::mistake_book::FailureCategory;
+
+// ---------------------------------------------------------------------------
+// Heuristic answer path for a FailureCategory (Session A-19.REDO)
+// ---------------------------------------------------------------------------
+//
+// Two seed-tree shapes exist today and both can appear at runtime:
+//
+// (1) elai_core::interrogation_tree::seed_tree_general — dense 5-child root
+//     (A=signature, B=body, C=return, D=dependency, E=test) with Q2/Q3
+//     children at every branch. This is the general-language shape.
+//
+// (2) elai_rules::interrogation_store::build_rust_lifetime_tree (and its
+//     python/go/typescript siblings) — specialised shape with children only
+//     at root B (body logic -> borrow/lifetime/trait) and root E (test
+//     expectations). Other root choices land on the root's fallback
+//     FixTemplate (category=general_fix). This is the shape actually seeded
+//     into rules.db by schema migration v3 -> v4.
+//
+// The heuristic below is tuned so that every FailureCategory reaches a
+// semantically plausible FixTemplate on BOTH shapes — verified by the unit
+// tests `default_answers_for_all_categories_reach_fix_on_general_tree` and
+// `default_answers_for_all_categories_reach_fix_on_rules_seeded_tree`.
+//
+// Rationale per category (fix_category on the rules-seeded Rust tree):
+//   - TestFailure -> E                    (test_fix)
+//   - BorrowCheck -> B,A                  (borrow_fix)
+//   - LifetimeError -> B,B                (lifetime_fix)
+//   - CompileError/TypeMismatch -> B,C    (trait_fix — closest match)
+//   - everything else -> A                (root fallback = general_fix)
+//
+// On the dense core seed tree the same paths still land on a Fix leaf.
+
+/// Deterministic default answer path for a [`FailureCategory`]. Used by the
+/// orchestrator when no live LLM loop is available to answer each question.
+/// Tuned to reach a `FixTemplate` on every seed-tree shape currently in use.
+pub fn default_answers_for_category(category: FailureCategory) -> Vec<ChoiceId> {
+    let c = |s: &str| ChoiceId::new(s);
+    match category {
+        FailureCategory::TestFailure => vec![c("E")],
+        FailureCategory::BorrowCheck => vec![c("B"), c("A"), c("A")],
+        FailureCategory::LifetimeError => vec![c("B"), c("B"), c("A")],
+        FailureCategory::CompileError
+        | FailureCategory::TypeMismatch => vec![c("B"), c("C"), c("A")],
+        FailureCategory::MissingImport
+        | FailureCategory::UndefinedSymbol
+        | FailureCategory::LazyCode
+        | FailureCategory::EmptyBody
+        | FailureCategory::FileSizeExceeded
+        | FailureCategory::RuntimePanic
+        | FailureCategory::LogicError
+        | FailureCategory::Timeout
+        | FailureCategory::Unknown => vec![c("A")],
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TreeTraverser: stateful traversal of an interrogation tree
@@ -316,5 +371,177 @@ mod tests {
         assert_eq!(traverser.state().token_cost, TOKENS_PER_QUESTION);
         traverser.answer(ChoiceId::new("A"));
         assert_eq!(traverser.state().token_cost, TOKENS_PER_QUESTION * 2);
+    }
+
+    const ALL_CATEGORIES: [FailureCategory; 14] = [
+        FailureCategory::CompileError,
+        FailureCategory::TestFailure,
+        FailureCategory::TypeMismatch,
+        FailureCategory::MissingImport,
+        FailureCategory::UndefinedSymbol,
+        FailureCategory::BorrowCheck,
+        FailureCategory::LifetimeError,
+        FailureCategory::LazyCode,
+        FailureCategory::EmptyBody,
+        FailureCategory::FileSizeExceeded,
+        FailureCategory::RuntimePanic,
+        FailureCategory::LogicError,
+        FailureCategory::Timeout,
+        FailureCategory::Unknown,
+    ];
+
+    #[test]
+    fn default_answers_for_all_categories_reach_fix_on_general_tree() {
+        use elai_core::interrogation_tree::seed_trees;
+        let trees = seed_trees();
+        let rust_tree = trees
+            .iter()
+            .find(|t| t.language == "rust")
+            .expect("rust general seed tree exists");
+
+        for cat in ALL_CATEGORIES {
+            let answers = default_answers_for_category(cat);
+            let outcome = traverse_with_answers(rust_tree, &answers);
+            assert!(
+                matches!(outcome, TraversalOutcome::Fix(_)),
+                "category {:?} must reach a FixTemplate on the general tree, got {:?}",
+                cat,
+                outcome,
+            );
+        }
+    }
+
+    #[test]
+    fn default_answers_produce_expected_fix_category_on_rules_seeded_tree() {
+        // Grounded against the actual rules.db v4 seed for Rust
+        // (elai_rules::interrogation_store::build_rust_lifetime_tree).
+        // Inlined here to avoid a reasoning -> rules dependency loop.
+        use elai_core::interrogation_tree::{Choice, FixTemplate, QuestionNode, TREE_SCHEMA_VERSION};
+        use std::collections::HashMap;
+
+        let q3_borrow = QuestionNode {
+            question_template: "borrow".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "clone".into(), confidence_hint: 0.3 },
+                Choice { id: ChoiceId::new("B"), label: "restructure".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("C"), label: "ref".into(), confidence_hint: 0.2 },
+            ],
+            children: HashMap::new(),
+            terminal: Some(FixTemplate {
+                instruction: "borrow_instr".into(),
+                category: "borrow_fix".into(),
+            }),
+        };
+        let q3_lifetime = QuestionNode {
+            question_template: "lifetime".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "annotate".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("B"), label: "owned".into(), confidence_hint: 0.3 },
+                Choice { id: ChoiceId::new("C"), label: "static".into(), confidence_hint: 0.1 },
+            ],
+            children: HashMap::new(),
+            terminal: Some(FixTemplate {
+                instruction: "lifetime_instr".into(),
+                category: "lifetime_fix".into(),
+            }),
+        };
+        let q3_trait = QuestionNode {
+            question_template: "trait".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "impl".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("B"), label: "bound".into(), confidence_hint: 0.3 },
+                Choice { id: ChoiceId::new("C"), label: "concrete".into(), confidence_hint: 0.2 },
+            ],
+            children: HashMap::new(),
+            terminal: Some(FixTemplate {
+                instruction: "trait_instr".into(),
+                category: "trait_fix".into(),
+            }),
+        };
+        let mut q2_children = HashMap::new();
+        q2_children.insert(ChoiceId::new("A"), q3_borrow);
+        q2_children.insert(ChoiceId::new("B"), q3_lifetime);
+        q2_children.insert(ChoiceId::new("C"), q3_trait);
+        let q2 = QuestionNode {
+            question_template: "q2".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "borrow".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("B"), label: "lifetime".into(), confidence_hint: 0.3 },
+                Choice { id: ChoiceId::new("C"), label: "trait".into(), confidence_hint: 0.2 },
+            ],
+            children: q2_children,
+            terminal: None,
+        };
+        let q1e = QuestionNode {
+            question_template: "test".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "assert".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("B"), label: "setup".into(), confidence_hint: 0.35 },
+                Choice { id: ChoiceId::new("C"), label: "expected".into(), confidence_hint: 0.2 },
+            ],
+            children: HashMap::new(),
+            terminal: Some(FixTemplate {
+                instruction: "test_instr".into(),
+                category: "test_fix".into(),
+            }),
+        };
+        let mut root_children = HashMap::new();
+        root_children.insert(ChoiceId::new("B"), q2);
+        root_children.insert(ChoiceId::new("E"), q1e);
+        let root = QuestionNode {
+            question_template: "root".into(),
+            choices: vec![
+                Choice { id: ChoiceId::new("A"), label: "sig".into(), confidence_hint: 0.2 },
+                Choice { id: ChoiceId::new("B"), label: "body".into(), confidence_hint: 0.4 },
+                Choice { id: ChoiceId::new("C"), label: "return".into(), confidence_hint: 0.2 },
+                Choice { id: ChoiceId::new("D"), label: "dep".into(), confidence_hint: 0.1 },
+                Choice { id: ChoiceId::new("E"), label: "test".into(), confidence_hint: 0.1 },
+            ],
+            children: root_children,
+            terminal: Some(FixTemplate {
+                instruction: "general_instr".into(),
+                category: "general_fix".into(),
+            }),
+        };
+        let tree = InterrogationTree {
+            tree_id: "rust-ownership".into(),
+            root,
+            language: "rust".into(),
+            domain: None,
+            description: "audit-scoped copy of the rules.db seed shape".into(),
+            version: TREE_SCHEMA_VERSION,
+        };
+
+        let cases = [
+            (FailureCategory::TestFailure, "test_fix"),
+            (FailureCategory::BorrowCheck, "borrow_fix"),
+            (FailureCategory::LifetimeError, "lifetime_fix"),
+            (FailureCategory::CompileError, "trait_fix"),
+            (FailureCategory::TypeMismatch, "trait_fix"),
+            (FailureCategory::MissingImport, "general_fix"),
+            (FailureCategory::UndefinedSymbol, "general_fix"),
+            (FailureCategory::LazyCode, "general_fix"),
+            (FailureCategory::EmptyBody, "general_fix"),
+            (FailureCategory::FileSizeExceeded, "general_fix"),
+            (FailureCategory::RuntimePanic, "general_fix"),
+            (FailureCategory::LogicError, "general_fix"),
+            (FailureCategory::Timeout, "general_fix"),
+            (FailureCategory::Unknown, "general_fix"),
+        ];
+        for (cat, expected_fix_category) in cases {
+            let answers = default_answers_for_category(cat);
+            let outcome = traverse_with_answers(&tree, &answers);
+            match outcome {
+                TraversalOutcome::Fix(fix) => assert_eq!(
+                    fix.category, expected_fix_category,
+                    "category {:?} reached unexpected fix_category on rules-seeded tree",
+                    cat,
+                ),
+                other => panic!(
+                    "category {:?} did not reach Fix on rules-seeded tree: {:?}",
+                    cat, other,
+                ),
+            }
+        }
     }
 }

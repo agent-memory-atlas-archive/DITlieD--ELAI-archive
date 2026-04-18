@@ -156,6 +156,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             web_research_runner: Some(runner),
             scaffold_applier: None,
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );
@@ -231,6 +232,7 @@ async fn web_research_task_without_runner_emits_finding() {
             web_research_runner: None,
             scaffold_applier: None,
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );
@@ -311,6 +313,7 @@ async fn web_research_runner_invoked_once_per_task() {
             web_research_runner: Some(runner),
             scaffold_applier: None,
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );

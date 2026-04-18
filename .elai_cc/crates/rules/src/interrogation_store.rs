@@ -3,11 +3,105 @@
 // Trees stored as JSON blobs in the `interrogation_trees` table, indexed by
 // (language, domain). Migration handled in schema.rs (v3 -> v4).
 
+use std::sync::{Arc, Mutex};
+
 use rusqlite::Connection;
 
 use elai_core::interrogation_tree::{InterrogationTree, TREE_SCHEMA_VERSION};
 
 use crate::error::RulesDbError;
+
+// ---------------------------------------------------------------------------
+// InterrogationStore trait — consumer-facing handle for the orchestrator
+// (Session A-19.REDO)
+// ---------------------------------------------------------------------------
+
+/// Send+Sync handle used by the orchestrator to resolve interrogation trees at
+/// runtime without taking a direct rusqlite `Connection` dependency.
+///
+/// Implementations own their own synchronization (the seed tables are read-
+/// mostly at runtime, so a `Mutex<Connection>` is adequate). Methods are
+/// infallible from the caller's POV: a DB error or a missing tree both
+/// collapse to `None` / `0` so callers can treat the store as an optional
+/// best-effort source. Implementations SHOULD log the underlying error via
+/// `tracing` before returning the fallback so operators still see a signal.
+pub trait InterrogationStore: Send + Sync {
+    /// Return the tree whose `language` matches and whose `domain` is either
+    /// exactly `domain` OR NULL (universal). The first matching row by
+    /// `query_trees` ordering is returned. `None` when no match (or on error).
+    fn lookup_tree(&self, language: &str, domain: Option<&str>) -> Option<InterrogationTree>;
+
+    /// Return the total number of trees currently stored. `0` on error.
+    /// Used by the task_runner to emit the "seed-tree count" metric Finding
+    /// (acceptance criterion 3 of Session A-19.REDO).
+    fn tree_count(&self) -> usize;
+}
+
+/// Default SQLite-backed implementation of [`InterrogationStore`] that wraps
+/// a shared `Connection` under a `Mutex`. Constructed by the CLI/dashboard
+/// wiring once the rules DB is open.
+pub struct SqliteInterrogationStore {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl SqliteInterrogationStore {
+    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+        Self { conn }
+    }
+}
+
+impl InterrogationStore for SqliteInterrogationStore {
+    fn lookup_tree(&self, language: &str, domain: Option<&str>) -> Option<InterrogationTree> {
+        let guard = match self.conn.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(error = %e, "interrogation_store: mutex poisoned");
+                return None;
+            }
+        };
+        match query_trees(&guard, language, domain) {
+            Ok(mut v) => {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.remove(0))
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    language,
+                    domain = domain.unwrap_or(""),
+                    error = %e,
+                    "interrogation_store: query_trees failed",
+                );
+                None
+            }
+        }
+    }
+
+    fn tree_count(&self) -> usize {
+        let guard = match self.conn.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(error = %e, "interrogation_store: mutex poisoned on count");
+                return 0;
+            }
+        };
+        let result: Result<i64, _> = guard.query_row(
+            "SELECT COUNT(*) FROM interrogation_trees",
+            [],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(n) if n >= 0 => n as usize,
+            Ok(_) => 0,
+            Err(e) => {
+                tracing::warn!(error = %e, "interrogation_store: count query failed");
+                0
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Query: retrieve trees by language + optional domain
@@ -566,9 +660,25 @@ mod tests {
     use elai_core::clock::SeededClock;
     use crate::schema::open_rules_db;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     fn mem_db() -> Connection {
         open_rules_db(Path::new(":memory:"), &SeededClock::new()).expect("in-memory DB")
+    }
+
+    #[test]
+    fn sqlite_store_lookup_and_count() {
+        let conn = mem_db();
+        let store = SqliteInterrogationStore::new(Arc::new(Mutex::new(conn)));
+        assert_eq!(store.tree_count(), 4, "seed trees should be present");
+
+        let tree = store
+            .lookup_tree("rust", None)
+            .expect("rust tree must resolve");
+        assert_eq!(tree.language, "rust");
+
+        let none = store.lookup_tree("nonexistent-lang", None);
+        assert!(none.is_none(), "unknown language yields None");
     }
 
     #[test]

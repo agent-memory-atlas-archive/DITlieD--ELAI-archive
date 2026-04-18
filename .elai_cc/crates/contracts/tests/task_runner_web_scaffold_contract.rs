@@ -217,6 +217,7 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             web_research_runner: None,
             scaffold_applier: None,
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );
@@ -290,6 +291,7 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             web_research_runner: None,
             scaffold_applier: Some(applier),
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );
@@ -359,6 +361,7 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             web_research_runner: None,
             scaffold_applier: Some(applier),
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         },
     );

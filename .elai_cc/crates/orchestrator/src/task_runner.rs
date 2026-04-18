@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use elai_ipc_types::ToolId;
 use elai_web_validator::{
@@ -59,11 +59,15 @@ use crate::recovery::{AgentDeathClassification, RecoveryManager};
 use crate::pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef, RuleId, ToolLookup,
 };
+use elai_rules::interrogation_store::InterrogationStore;
 use elai_rules::predicate::{Verdict, VerdictResult};
 use elai_rules::rule_engine::{
     CompiledPredicate, EvaluationContext, FsmPhaseBit, Rule, RuleEngine,
     ALWAYS_INCLUDED_DOMAINS as RULES_ALWAYS_INCLUDED_DOMAINS,
 };
+use elai_core::interrogation_tree::TraversalOutcome;
+use elai_core::mistake_book::FailureCategory;
+use elai_reasoning::{default_answers_for_category, traverse_with_answers};
 use crate::pipeline_tree_navigator::{
     run_integration_checkpoint, BabyStepLocation, BabyStepOutcome, BabyStepResult,
     DecompositionLevel, DepthFirstNavigator, IntegrationRunResult, IntegrationRunner,
@@ -149,6 +153,21 @@ pub const RULE_VIOLATION_CATEGORY: &str = "rule_violation";
 /// string discriminates evaluation call sites (write/execute/modify/...).
 /// "baby_step_pre_gate" is unambiguous — no existing rule keys on it.
 pub const BABY_STEP_PRE_GATE_ACTION: &str = "baby_step_pre_gate";
+
+/// Finding category for InterrogationTree fix suggestions produced on a
+/// failing baby step (Session A-19.REDO). The dashboard activity-feed filter
+/// keys on this exact string to surface Layer-3 reasoning outputs.
+pub const INTERROGATION_FIX_CATEGORY: &str = "interrogation_fix_suggestion";
+
+/// Finding category for the startup metric row reporting the seeded
+/// interrogation-tree count (Session A-19.REDO acceptance criterion 3).
+pub const INTERROGATION_TREE_METRIC_CATEGORY: &str = "interrogation_tree_metric";
+
+/// Default language used to resolve an InterrogationTree at baby-step failure
+/// time. Task_runner does not yet read `ProjectProfile`, so we fall back to
+/// "rust" — the host project's language. A follow-up (post-A-19.REDO) will
+/// plumb the real `ProjectProfile.language` through `TaskSubmittedPayload`.
+pub const DEFAULT_INTERROGATION_LANGUAGE: &str = "rust";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -1038,6 +1057,14 @@ pub struct TaskRunnerConfig {
     /// PRE_GATE and emits `Finding` rows for every Block/Warn verdict. When
     /// `None`, the PRE_GATE is a no-op (pre-4E.14 behavior).
     pub rule_evaluator: Option<Arc<RuleEvaluator>>,
+    /// Optional Layer-3 InterrogationTree store (Session A-19.REDO). When
+    /// `Some`, the runner looks up a matching tree on each failing baby step,
+    /// drives a short traversal with [`default_answers_for_category`], and
+    /// emits a `Finding` carrying the resulting `FixTemplate` instruction so
+    /// the dashboard can surface Layer-3 fix suggestions. Also emits a
+    /// one-shot `interrogation_tree_metric` Finding at first use reporting
+    /// the seeded tree count. When `None`, Layer-3 wiring is a no-op.
+    pub interrogation_store: Option<Arc<dyn InterrogationStore>>,
     /// Root directory under which per-task checkpoint subdirectories are
     /// written (Session 3C.REDO). When `Some`, the runner owns a
     /// [`CheckpointManager`] and writes a checkpoint row to both disk and the
@@ -1061,6 +1088,7 @@ impl TaskRunnerConfig {
             web_research_runner: None,
             scaffold_applier: None,
             rule_evaluator: None,
+            interrogation_store: None,
             checkpoint_scratch_dir: None,
         }
     }
@@ -1076,6 +1104,11 @@ struct ResolvedConfig {
     web_research: Option<Arc<dyn WebResearchRunner>>,
     scaffold_applier: Option<Arc<dyn ScaffoldApplier>>,
     rule_evaluator: Option<Arc<RuleEvaluator>>,
+    interrogation_store: Option<Arc<dyn InterrogationStore>>,
+    /// Session A-19.REDO: flipped once we have emitted the startup tree-count
+    /// metric Finding so we don't emit it on every task. Wrapped in `Mutex` so
+    /// `ResolvedConfig` stays shareable across await points.
+    interrogation_metric_emitted: Mutex<bool>,
     /// Session 3C.REDO. Present iff [`TaskRunnerConfig::checkpoint_scratch_dir`]
     /// was supplied. When present, the runner owns a `CheckpointManager` and
     /// a `RecoveryManager` bound to the same clock, and writes checkpoint rows
@@ -1116,6 +1149,8 @@ impl ResolvedConfig {
             web_research: cfg.web_research_runner,
             scaffold_applier: cfg.scaffold_applier,
             rule_evaluator: cfg.rule_evaluator,
+            interrogation_store: cfg.interrogation_store,
+            interrogation_metric_emitted: Mutex::new(false),
             checkpoint,
         }
     }
@@ -1432,6 +1467,170 @@ async fn drive_web_research_task(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// BSP parallel-phase routing (Session 3D.REDO)
+// ---------------------------------------------------------------------------
+
+/// Finding category emitted when a parallel phase routed through
+/// [`BspEngine`] fails (channel error, max-attempts exceeded, etc.).
+pub const BSP_PHASE_FAILED_CATEGORY: &str = "bsp_phase_failed";
+
+/// Finding category emitted when a parallel phase skipped BSP routing
+/// because the phase has zero executable steps.
+pub const BSP_PHASE_EMPTY_CATEGORY: &str = "bsp_phase_empty";
+
+/// Checkpoint subdirectory under the task-runner scratch dir where BSP
+/// per-phase checkpoints are written. Kept separate from the agent-level
+/// checkpoints the baby-step loop writes so the two do not collide.
+pub const BSP_CHECKPOINT_SUBDIR: &str = "bsp";
+
+/// Route every phase with `is_parallel = true` through [`BspEngine`], one
+/// engine instance per phase. Each step in the phase becomes a [`NodeSpec`]
+/// (role = Executor, no dependencies, non-deferred) so the engine executes
+/// them concurrently via `execute_tasks_with_timeout`.
+///
+/// Failures are non-fatal: an SSB `Finding` is emitted and the caller
+/// continues with the sequential navigator path for the remaining work.
+/// The engine writes its own `Checkpoint`, `DeathEvent`, and
+/// `MemoryMonitoring` rows — this function only adds a surrounding
+/// `ReasoningTrace` row so the dashboard can see that a parallel phase was
+/// dispatched.
+///
+/// Checkpoint layout: `{scratch}/bsp/task_{seq}/phase_{phase_id}`.
+/// `scratch` is `resolved.checkpoint.scratch_dir` when `CheckpointContext`
+/// is configured, else the runner's current working directory.
+/// Return a copy of `d` with every `is_parallel = true` phase removed from
+/// each concept. Concepts whose phase list becomes empty are retained so the
+/// concept-level integration checkpoint still fires; `spec_from_decomposition`
+/// supplies a synthetic overview step for empty-phase concepts. Session
+/// 3D.REDO: prevents the sequential navigator from re-executing phases that
+/// [`run_parallel_phases_via_bsp`] already dispatched.
+fn strip_parallel_phases(mut d: ConceptDecomposition) -> ConceptDecomposition {
+    for concept in &mut d.concepts {
+        concept.phases.retain(|p| !p.is_parallel);
+    }
+    d
+}
+
+async fn run_parallel_phases_via_bsp(
+    writer: &Arc<Ssb>,
+    seq: i64,
+    decomposition: &ConceptDecomposition,
+    resolved: &ResolvedConfig,
+) {
+    use elai_core::clock::OsClock;
+    use elai_core::OsEntropy;
+
+    let scratch_root = resolved
+        .checkpoint
+        .as_ref()
+        .map(|cp| cp.scratch_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    for concept in &decomposition.concepts {
+        for phase in &concept.phases {
+            if !phase.is_parallel {
+                continue;
+            }
+
+            if phase.steps.is_empty() {
+                emit_finding(
+                    writer,
+                    "info",
+                    BSP_PHASE_EMPTY_CATEGORY,
+                    &format!(
+                        "parallel phase id={} name={:?} has no steps; skipping BSP dispatch",
+                        phase.id.0, phase.name,
+                    ),
+                )
+                .await;
+                continue;
+            }
+
+            let node_specs: Vec<crate::bsp::NodeSpec> = phase
+                .steps
+                .iter()
+                .map(|step| crate::bsp::NodeSpec {
+                    id: format!("step_{}", step.id.0),
+                    role: AgentRole::Executor,
+                    task: step.description.clone(),
+                    depends_on: Vec::new(),
+                    is_deferred: false,
+                })
+                .collect();
+
+            let session_id = format!("task_seq_{}_phase_{}", seq, phase.id.0);
+            let project_id = format!("task_runner:{}", seq);
+            let checkpoint_dir = scratch_root
+                .join(BSP_CHECKPOINT_SUBDIR)
+                .join(format!("task_{}", seq))
+                .join(format!("phase_{}", phase.id.0));
+
+            let config = crate::bsp::BspConfig {
+                max_superstep_attempts: crate::bsp::MAX_SUPERSTEP_ATTEMPTS,
+                max_supersteps: crate::bsp::MAX_SUPERSTEPS,
+                straggler_timeout: std::time::Duration::from_secs(
+                    crate::bsp::DEFAULT_STRAGGLER_TIMEOUT_SECS,
+                ),
+                checkpoint_dir,
+                session_id,
+                project_id,
+                simulated_agent_work: std::time::Duration::ZERO,
+            };
+
+            let pool_config = crate::agent_pool::AgentPoolConfig {
+                scratch_base: scratch_root.join(BSP_CHECKPOINT_SUBDIR).join("agents"),
+                vram_required_bytes: crate::agent_pool::VRAM_MIN_BYTES,
+                project_path: scratch_root.clone(),
+                enable_sandbox: false,
+            };
+            let pool = crate::agent_pool::InProcessAgentPool::new(
+                pool_config,
+                OsEntropy,
+                Arc::new(RuntimeModelPool),
+            );
+            let mut engine = crate::bsp::BspEngine::new(config, pool, OsClock);
+            let mut channels = crate::bsp::InMemoryChannelRegistry::new();
+
+            emit_reasoning(
+                writer,
+                0,
+                "plan_action",
+                &format!(
+                    "bsp dispatch: phase_id={} nodes={} (parallel)",
+                    phase.id.0,
+                    node_specs.len(),
+                ),
+            )
+            .await;
+
+            match engine.run(node_specs, &mut channels, writer.as_ref()).await {
+                Ok(result) => {
+                    emit_reasoning(
+                        writer,
+                        0,
+                        "verify",
+                        &format!(
+                            "bsp complete: phase_id={} supersteps={}",
+                            phase.id.0, result.supersteps_completed,
+                        ),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    emit_finding(
+                        writer,
+                        "error",
+                        BSP_PHASE_FAILED_CATEGORY,
+                        &format!("bsp phase_id={} failed: {}", phase.id.0, e),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
 async fn drive_task(
     writer: &Arc<Ssb>,
     seq: i64,
@@ -1499,6 +1698,19 @@ async fn drive_task(
         ),
     )
     .await;
+
+    // Session 3D.REDO: route phases with `is_parallel = true` through
+    // `BspEngine` for superstep-level parallelism. Phases with the flag
+    // unset (the decomposer default) continue through the sequential
+    // navigator loop below, unchanged.
+    run_parallel_phases_via_bsp(writer, seq, &decomposition, resolved).await;
+
+    // Strip parallel phases from the decomposition handed to the sequential
+    // navigator so the same phase is not executed twice (once by BSP above,
+    // once by the baby-step loop below). `spec_from_decomposition` tolerates
+    // concepts whose `phases` end up empty — it falls back to a single
+    // concept-level overview step.
+    let decomposition = strip_parallel_phases(decomposition);
 
     // --- 2. PipelineSpec from decomposition -----------------------------
     let spec = spec_from_decomposition(&decomposition);
@@ -1670,6 +1882,11 @@ async fn drive_task(
         // pipeline_tree_navigator.rs:820).
         // 4E.14: a PRE_GATE Block verdict forces `passed=false`; Warn
         // verdicts are informational and do not flip the outcome.
+        // Session A-19.REDO: track integration success separately so
+        // failure classification can distinguish a PRE_GATE block from an
+        // integration-checkpoint failure. Default `true` when no spec is
+        // registered (matches the pre-A-19 `None` branch).
+        let mut integration_succeeded = true;
         let passed = match tree
             .integration_spec(DecompositionLevel::BabyStep, bs_id.0)
             .cloned()
@@ -1683,10 +1900,23 @@ async fn drive_task(
                     &mut state,
                 );
                 emit_checkpoint_outcome(writer, DecompositionLevel::BabyStep, bs_id.0, &run).await;
+                integration_succeeded = run.success;
                 run.success && outcome_passed && !pre_gate_blocked
             }
             None => outcome_passed && !pre_gate_blocked,
         };
+
+        // Session A-19.REDO: on a failing baby step, drive a short
+        // InterrogationTree traversal and emit a Finding carrying the
+        // FixTemplate. The metric Finding (seeded tree count) is emitted
+        // one-shot on first invocation so the dashboard can surface Layer-3
+        // availability without repeating the row per task.
+        if !passed {
+            maybe_emit_interrogation_metric(writer, resolved).await;
+            let category =
+                classify_baby_step_failure(pre_gate_blocked, !integration_succeeded);
+            emit_interrogation_fix_suggestion(writer, resolved, bs_id.0, category).await;
+        }
         emit_test_outcome(
             writer,
             &format!("baby_step_{}", bs_id.0),
@@ -2023,6 +2253,131 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         .await
     {
         error!(error = %e, "task_runner: write Finding failed");
+    }
+}
+
+/// Session A-19.REDO: emit a one-shot informational Finding reporting the
+/// number of seeded interrogation trees available to the Layer-3 consumer.
+///
+/// Satisfies acceptance criterion 3 ("seed-tree count > 0 contributes to a
+/// metric visible in dashboard"). The emission is guarded by a `Mutex<bool>`
+/// on `ResolvedConfig` so the metric fires exactly once per runner lifetime
+/// regardless of how many tasks flow through.
+async fn maybe_emit_interrogation_metric(writer: &Arc<Ssb>, resolved: &ResolvedConfig) {
+    let Some(store) = resolved.interrogation_store.as_ref() else {
+        return;
+    };
+    {
+        let Ok(mut guard) = resolved.interrogation_metric_emitted.lock() else {
+            tracing::warn!("task_runner: interrogation_metric_emitted mutex poisoned");
+            return;
+        };
+        if *guard {
+            return;
+        }
+        *guard = true;
+    }
+    let count = store.tree_count();
+    emit_finding(
+        writer,
+        "info",
+        INTERROGATION_TREE_METRIC_CATEGORY,
+        &format!("interrogation_trees_loaded={count}"),
+    )
+    .await;
+}
+
+/// Session A-19.REDO: classify a baby-step failure into a [`FailureCategory`]
+/// so `default_answers_for_category` can pick the appropriate path through
+/// the interrogation tree. Today the task_runner knows only:
+///   * `pre_gate_blocked` — a runtime rule fired Block at PRE_GATE
+///   * `integration_failed` — an IntegrationCheckpoint returned success=false
+///   * `outcome_passed` — the `BabyStepOutcome` recorded by the navigator
+/// Any combination degrades to `Unknown` rather than fabricating a category.
+fn classify_baby_step_failure(
+    pre_gate_blocked: bool,
+    integration_failed: bool,
+) -> FailureCategory {
+    if pre_gate_blocked {
+        FailureCategory::LogicError
+    } else if integration_failed {
+        FailureCategory::TestFailure
+    } else {
+        FailureCategory::Unknown
+    }
+}
+
+/// Session A-19.REDO: resolve the matching InterrogationTree, drive a short
+/// traversal with heuristic answers for `category`, and emit a
+/// [`INTERROGATION_FIX_CATEGORY`] Finding carrying the resulting FixTemplate
+/// instruction. No-op when `resolved.interrogation_store` is `None` or when
+/// the lookup/traversal does not yield a Fix (Exhausted / NoMatch fall back
+/// to a warning Finding so the dashboard still sees Layer-3 activity).
+async fn emit_interrogation_fix_suggestion(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    bs_id: u64,
+    category: FailureCategory,
+) {
+    let Some(store) = resolved.interrogation_store.as_ref() else {
+        return;
+    };
+    let Some(tree) = store.lookup_tree(DEFAULT_INTERROGATION_LANGUAGE, None) else {
+        emit_finding(
+            writer,
+            "warning",
+            INTERROGATION_FIX_CATEGORY,
+            &format!(
+                "baby_step={bs_id} no interrogation tree for language={}",
+                DEFAULT_INTERROGATION_LANGUAGE
+            ),
+        )
+        .await;
+        return;
+    };
+    let answers = default_answers_for_category(category);
+    let outcome = traverse_with_answers(&tree, &answers);
+    match outcome {
+        TraversalOutcome::Fix(fix) => {
+            emit_finding(
+                writer,
+                "info",
+                INTERROGATION_FIX_CATEGORY,
+                &format!(
+                    "baby_step={bs_id} tree={} category={} fix_category={} instruction={}",
+                    tree.tree_id,
+                    category.as_str(),
+                    fix.category,
+                    fix.instruction,
+                ),
+            )
+            .await;
+        }
+        TraversalOutcome::Exhausted { reason, .. } => {
+            emit_finding(
+                writer,
+                "warning",
+                INTERROGATION_FIX_CATEGORY,
+                &format!(
+                    "baby_step={bs_id} tree={} traversal exhausted: {}",
+                    tree.tree_id, reason,
+                ),
+            )
+            .await;
+        }
+        TraversalOutcome::NoMatch { attempted_choice, .. } => {
+            emit_finding(
+                writer,
+                "warning",
+                INTERROGATION_FIX_CATEGORY,
+                &format!(
+                    "baby_step={bs_id} tree={} no match for choice={}",
+                    tree.tree_id,
+                    attempted_choice.as_str(),
+                ),
+            )
+            .await;
+        }
     }
 }
 
@@ -2709,6 +3064,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: None,
                 rule_evaluator: None,
+                interrogation_store: None,
                 checkpoint_scratch_dir: None,
             },
         );
@@ -2807,6 +3163,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: None,
                 rule_evaluator: None,
+                interrogation_store: None,
                 checkpoint_scratch_dir: None,
             },
         );
@@ -2982,6 +3339,7 @@ mod tests {
                 web_research_runner: None,
                 scaffold_applier: Some(applier),
                 rule_evaluator: None,
+                interrogation_store: None,
                 checkpoint_scratch_dir: None,
             },
         );
@@ -3095,6 +3453,7 @@ mod tests {
                         .collect(),
                     depends_on: Vec::new(),
                     research: None,
+                    is_parallel: false,
                 })
                 .collect(),
             research: None,
@@ -3478,6 +3837,408 @@ mod tests {
             "checkpoint_path should reference the same agent_id as the write (agent_id={}, path={})",
             handle.agent_id,
             d.checkpoint_path,
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // 3D.REDO — BspEngine wiring for parallel phases
+    // -----------------------------------------------------------------
+
+    /// Build a ConceptDecomposition containing one concept with one phase
+    /// flagged `is_parallel = true` and two steps. Used by the 3D.REDO
+    /// test to assert the BSP dispatch helper runs an engine for that phase.
+    fn synthetic_parallel_decomposition() -> ConceptDecomposition {
+        let steps = (1..=2u64)
+            .map(|sidx| StepNode {
+                id: StepId(sidx),
+                description: format!("parallel step {sidx}"),
+                baby_steps: vec![make_baby_step(sidx * 10)],
+                evidence_level: EvidenceLevel::Anecdotal,
+            })
+            .collect();
+        let phase = PhaseNode {
+            id: PhaseId(42),
+            name: "parallel phase".to_string(),
+            steps,
+            depends_on: Vec::new(),
+            research: None,
+            is_parallel: true,
+        };
+        let concept = ConceptNode {
+            id: ConceptId(1),
+            name: "parallel concept".to_string(),
+            description: "3D.REDO wiring test".to_string(),
+            phases: vec![phase],
+            research: None,
+        };
+        ConceptDecomposition {
+            idea: "3D.REDO test".to_string(),
+            concepts: vec![concept],
+            mode: ExecutionMode::Autonomous,
+            total_research_calls: 0,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parallel_phase_routes_through_bsp_engine() {
+        let _guard = crate::test_env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: Some(2),
+            project_id: "dashboard".into(),
+            session_id: "bsp-wiring-test".into(),
+        };
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb"));
+
+        let runner_cfg = TaskRunnerConfig::new_minimal(tmp.path().join("cursor.json"));
+        let resolved = ResolvedConfig::from(TaskRunnerConfig {
+            checkpoint_scratch_dir: Some(tmp.path().to_path_buf()),
+            ..runner_cfg
+        });
+
+        let decomp = synthetic_parallel_decomposition();
+        run_parallel_phases_via_bsp(&ssb, 7, &decomp, &resolved).await;
+
+        // Engine emits a msgpack checkpoint per superstep. Success implies
+        // at least one superstep ran, so the phase-specific directory must
+        // exist and contain at least one file.
+        let phase_dir = tmp
+            .path()
+            .join(BSP_CHECKPOINT_SUBDIR)
+            .join("task_7")
+            .join("phase_42");
+        assert!(
+            phase_dir.is_dir(),
+            "expected BSP checkpoint dir at {}",
+            phase_dir.display()
+        );
+        let entries: Vec<_> = std::fs::read_dir(&phase_dir)
+            .expect("read_dir checkpoint")
+            .flatten()
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "expected at least one checkpoint file under {}",
+            phase_dir.display()
+        );
+
+        // BSP completion emits a `verify` ReasoningTrace row whose content
+        // references the phase id — the dashboard uses this to confirm the
+        // parallel branch fired.
+        let traces = ssb
+            .query_by_type(SsbActionType::ReasoningTrace)
+            .expect("query ReasoningTrace");
+        let mut saw_dispatch = false;
+        let mut saw_complete = false;
+        for row in traces {
+            if let Ok(SsbPayload::ReasoningTrace(t)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                if t.content_summary.contains("bsp dispatch: phase_id=42") {
+                    saw_dispatch = true;
+                }
+                if t.content_summary.contains("bsp complete: phase_id=42") {
+                    saw_complete = true;
+                }
+            }
+        }
+        assert!(saw_dispatch, "expected ReasoningTrace for bsp dispatch");
+        assert!(saw_complete, "expected ReasoningTrace for bsp complete");
+
+        // No BSP-failure Finding on the happy path.
+        let findings = ssb.query_by_type(SsbActionType::Finding).unwrap_or_default();
+        for row in findings {
+            if let Ok(SsbPayload::Finding(f)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                assert_ne!(
+                    f.category, BSP_PHASE_FAILED_CATEGORY,
+                    "happy-path run must not emit bsp_phase_failed Finding"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn strip_parallel_phases_removes_only_parallel_ones() {
+        let mut decomp = synthetic_parallel_decomposition();
+        // Add one sequential phase alongside the parallel one so we can prove
+        // only the parallel one is filtered.
+        decomp.concepts[0].phases.push(PhaseNode {
+            id: PhaseId(99),
+            name: "sequential phase".into(),
+            steps: vec![StepNode {
+                id: StepId(900),
+                description: "seq".into(),
+                baby_steps: vec![make_baby_step(9000)],
+                evidence_level: EvidenceLevel::Anecdotal,
+            }],
+            depends_on: Vec::new(),
+            research: None,
+            is_parallel: false,
+        });
+
+        let stripped = strip_parallel_phases(decomp);
+        let phases = &stripped.concepts[0].phases;
+        assert_eq!(phases.len(), 1, "parallel phase must be removed");
+        assert_eq!(phases[0].id.0, 99);
+        assert!(!phases[0].is_parallel);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sequential_phase_skips_bsp_dispatch() {
+        let _guard = crate::test_env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ssb.db");
+
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let cfg = SsbConfig {
+            db_path,
+            pool_size: Some(2),
+            project_id: "dashboard".into(),
+            session_id: "bsp-skip-test".into(),
+        };
+        let ssb = Arc::new(Ssb::new(cfg, clock).expect("ssb"));
+
+        let runner_cfg = TaskRunnerConfig::new_minimal(tmp.path().join("cursor.json"));
+        let resolved = ResolvedConfig::from(TaskRunnerConfig {
+            checkpoint_scratch_dir: Some(tmp.path().to_path_buf()),
+            ..runner_cfg
+        });
+
+        // Sequential phase (default) — dispatcher must not fire.
+        let mut decomp = synthetic_parallel_decomposition();
+        decomp.concepts[0].phases[0].is_parallel = false;
+
+        run_parallel_phases_via_bsp(&ssb, 8, &decomp, &resolved).await;
+
+        let bsp_root = tmp.path().join(BSP_CHECKPOINT_SUBDIR);
+        assert!(
+            !bsp_root.exists(),
+            "sequential-only phases must not create a BSP checkpoint tree"
+        );
+
+        let traces = ssb
+            .query_by_type(SsbActionType::ReasoningTrace)
+            .unwrap_or_default();
+        for row in traces {
+            if let Ok(SsbPayload::ReasoningTrace(t)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                assert!(
+                    !t.content_summary.starts_with("bsp "),
+                    "no BSP trace should fire when is_parallel=false"
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Session A-19.REDO: InterrogationTree consumer tests
+    // ---------------------------------------------------------------------
+
+    fn build_interrogation_store() -> Arc<dyn InterrogationStore> {
+        use elai_core::clock::SeededClock;
+        use elai_rules::interrogation_store::SqliteInterrogationStore;
+        use elai_rules::schema::open_rules_db;
+        use std::path::Path;
+        let conn = open_rules_db(Path::new(":memory:"), &SeededClock::new())
+            .expect("in-memory rules.db");
+        let shared = Arc::new(std::sync::Mutex::new(conn));
+        Arc::new(SqliteInterrogationStore::new(shared))
+    }
+
+    fn ssb_for_test(tmp: &tempfile::TempDir, session: &str) -> Arc<Ssb> {
+        let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+        let cfg = SsbConfig {
+            db_path: tmp.path().join("ssb.db"),
+            pool_size: Some(2),
+            project_id: "dashboard".into(),
+            session_id: session.into(),
+        };
+        Arc::new(Ssb::new(cfg, clock).expect("ssb"))
+    }
+
+    fn resolved_with_store(
+        cursor_path: PathBuf,
+        store: Option<Arc<dyn InterrogationStore>>,
+    ) -> ResolvedConfig {
+        ResolvedConfig::from(TaskRunnerConfig {
+            cursor_path,
+            dev_server_launcher: None,
+            project_dir_resolver: None,
+            dev_server_registry: None,
+            web_research_runner: None,
+            scaffold_applier: None,
+            rule_evaluator: None,
+            interrogation_store: store,
+            checkpoint_scratch_dir: None,
+        })
+    }
+
+    fn find_finding_with_category(ssb: &Arc<Ssb>, category: &str) -> Option<FindingPayload> {
+        for row in ssb
+            .query_by_type(SsbActionType::Finding)
+            .unwrap_or_default()
+        {
+            if let Ok(SsbPayload::Finding(f)) =
+                rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref())
+            {
+                if f.category == category {
+                    return Some(f);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn classify_baby_step_failure_matrix() {
+        assert!(matches!(
+            classify_baby_step_failure(true, false),
+            FailureCategory::LogicError
+        ));
+        assert!(matches!(
+            classify_baby_step_failure(true, true),
+            FailureCategory::LogicError
+        ));
+        assert!(matches!(
+            classify_baby_step_failure(false, true),
+            FailureCategory::TestFailure
+        ));
+        assert!(matches!(
+            classify_baby_step_failure(false, false),
+            FailureCategory::Unknown
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrogation_fix_suggestion_emits_finding_on_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "a19-emit");
+        let resolved = resolved_with_store(
+            tmp.path().join("cursor.json"),
+            Some(build_interrogation_store()),
+        );
+
+        emit_interrogation_fix_suggestion(&ssb, &resolved, 7, FailureCategory::TestFailure).await;
+
+        let finding = find_finding_with_category(&ssb, INTERROGATION_FIX_CATEGORY)
+            .expect("interrogation_fix_suggestion Finding must be emitted");
+        assert_eq!(finding.severity, "info");
+        assert!(
+            finding.message.contains("baby_step=7"),
+            "Finding message must identify baby_step: got {:?}",
+            finding.message,
+        );
+        assert!(
+            finding.message.contains("category=test_failure"),
+            "Finding must echo failure category: got {:?}",
+            finding.message,
+        );
+        assert!(
+            finding.message.contains("fix_category="),
+            "Finding must carry the resolved fix_category: got {:?}",
+            finding.message,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrogation_fix_suggestion_matrix_covers_specific_categories() {
+        let cases = [
+            (FailureCategory::TestFailure, "test_fix"),
+            (FailureCategory::BorrowCheck, "borrow_fix"),
+            (FailureCategory::LifetimeError, "lifetime_fix"),
+            (FailureCategory::CompileError, "trait_fix"),
+            (FailureCategory::TypeMismatch, "trait_fix"),
+            (FailureCategory::LogicError, "general_fix"),
+            (FailureCategory::Unknown, "general_fix"),
+        ];
+        for (i, (cat, expected_fix_cat)) in cases.iter().enumerate() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let session = format!("a19-matrix-{i}");
+            let ssb = ssb_for_test(&tmp, &session);
+            let resolved = resolved_with_store(
+                tmp.path().join("cursor.json"),
+                Some(build_interrogation_store()),
+            );
+
+            emit_interrogation_fix_suggestion(&ssb, &resolved, i as u64, *cat).await;
+
+            let finding = find_finding_with_category(&ssb, INTERROGATION_FIX_CATEGORY)
+                .unwrap_or_else(|| panic!("Finding missing for category {:?}", cat));
+            let needle = format!("fix_category={expected_fix_cat}");
+            assert!(
+                finding.message.contains(&needle),
+                "category {:?} expected fix_category={}, got {:?}",
+                cat,
+                expected_fix_cat,
+                finding.message,
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrogation_metric_is_one_shot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "a19-metric");
+        let resolved = resolved_with_store(
+            tmp.path().join("cursor.json"),
+            Some(build_interrogation_store()),
+        );
+
+        maybe_emit_interrogation_metric(&ssb, &resolved).await;
+        maybe_emit_interrogation_metric(&ssb, &resolved).await;
+        maybe_emit_interrogation_metric(&ssb, &resolved).await;
+
+        let metric_findings: Vec<_> = ssb
+            .query_by_type(SsbActionType::Finding)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|row| rmp_serde::from_slice::<SsbPayload>(row.payload.as_ref()).ok())
+            .filter_map(|p| match p {
+                SsbPayload::Finding(f)
+                    if f.category == INTERROGATION_TREE_METRIC_CATEGORY =>
+                {
+                    Some(f)
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            metric_findings.len(),
+            1,
+            "metric Finding must fire exactly once across repeated calls",
+        );
+        assert!(
+            metric_findings[0]
+                .message
+                .contains("interrogation_trees_loaded="),
+            "metric Finding must report loaded tree count",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrogation_wiring_noop_when_store_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "a19-noop");
+        let resolved = resolved_with_store(tmp.path().join("cursor.json"), None);
+
+        maybe_emit_interrogation_metric(&ssb, &resolved).await;
+        emit_interrogation_fix_suggestion(&ssb, &resolved, 1, FailureCategory::Unknown).await;
+
+        assert!(
+            find_finding_with_category(&ssb, INTERROGATION_TREE_METRIC_CATEGORY).is_none(),
+            "no metric Finding without a store",
+        );
+        assert!(
+            find_finding_with_category(&ssb, INTERROGATION_FIX_CATEGORY).is_none(),
+            "no fix Finding without a store",
         );
     }
 }
