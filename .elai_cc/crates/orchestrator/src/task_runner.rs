@@ -91,10 +91,10 @@ use crate::research_tree::{
     DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
-    FindingPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
-    ReasoningTracePayload, SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload,
-    SsbReader, TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload,
-    WebResearchStepPayload,
+    DkgReadyPayload, FindingPayload, IndexingProgressPayload, PhaseCompletePayload,
+    PreviewAvailablePayload, ProviderSignalsPayload, ReasoningTracePayload,
+    SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload, SsbReader,
+    TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload, WebResearchStepPayload,
 };
 use crate::web_research_orchestrator::{
     WebResearchOrchestrator, WebResearchStepEmitter, WebResearchStepEvent,
@@ -2289,13 +2289,88 @@ async fn run_parallel_phases_via_bsp(
     }
 }
 
-/// Gap #6: ensure the project's DKG+BM25 indexes have been built at least once
+// Batch 1C: stable stage labels for `IndexingProgressPayload.stage`.
+// Kept as const strings so the frontend's substring matcher stays in sync
+// via the `task_runner_indexing_service_contract::indexing_stage_labels_are_stable`
+// contract. The `dkg_parsing` / `bm25_indexing` stages are reserved for the
+// future streaming build and are NOT currently emitted by
+// `maybe_build_project_index`; we only emit `start` + (`complete` |
+// `failed`). They are still declared here so adding them later is a single-
+// site change.
+const INDEXING_STAGE_START: &str = "start";
+#[allow(dead_code)] // reserved for streaming build; exercised via contract test
+const INDEXING_STAGE_DKG_PARSING: &str = "dkg_parsing";
+#[allow(dead_code)] // reserved for streaming build; exercised via contract test
+const INDEXING_STAGE_BM25_INDEXING: &str = "bm25_indexing";
+const INDEXING_STAGE_COMPLETE: &str = "complete";
+const INDEXING_STAGE_FAILED: &str = "failed";
+
+/// Batch 1C helper — emit a single `IndexingProgress` SSB row. All fields are
+/// forwarded to `IndexingProgressPayload` verbatim.
+async fn emit_indexing_progress(
+    writer: &Arc<Ssb>,
+    stage: &str,
+    project_id: &str,
+    files_processed: u32,
+    files_total: u32,
+    elapsed_ms: u64,
+    message: Option<String>,
+) {
+    let payload = SsbPayload::IndexingProgress(IndexingProgressPayload {
+        stage: stage.to_owned(),
+        project_id: project_id.to_owned(),
+        files_processed,
+        files_total,
+        elapsed_ms,
+        message,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(
+            project_id = %project_id,
+            stage = %stage,
+            error = %e,
+            "task_runner: write IndexingProgress failed",
+        );
+    }
+}
+
+/// Batch 1C helper — emit the one-shot `DkgReady` SSB row.
+async fn emit_dkg_ready(
+    writer: &Arc<Ssb>,
+    project_id: &str,
+    node_count: u32,
+    edge_count: u32,
+    languages: Vec<String>,
+) {
+    let payload = SsbPayload::DkgReady(DkgReadyPayload {
+        project_id: project_id.to_owned(),
+        node_count,
+        edge_count,
+        languages,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(
+            project_id = %project_id,
+            error = %e,
+            "task_runner: write DkgReady failed",
+        );
+    }
+}
+
+/// Gap #6 / Batch 1C: ensure the project's DKG+BM25 indexes have been built
 /// for the given `project_id`. Runs `IndexingService::run_full_index` on the
-/// very first task for that project, emits an `SsbPayload::Finding` summarising
-/// `files_indexed=N dkg_nodes=M bm25_chunks=K`, and caches the build timestamp
-/// in `resolved.indexed_projects` so subsequent tasks skip the build. When the
-/// service is `None` this is a no-op (dashboard runs pre-Gap-#6 with
-/// `EmptyDkgQuerier`, which is the documented fallback).
+/// first task for that project (or when the cached `indexed_at` is stale per
+/// [`crate::indexing_service::INDEX_FRESHNESS_SECS`]); emits structured
+/// `IndexingProgress` + `DkgReady` SSB rows (Batch 1C) AND the legacy
+/// `INDEXING_SUMMARY_CATEGORY` Finding so pre-Batch-1C dashboard filters still
+/// work. Respects the `ELAI_DISABLE_INDEXING` emergency shutoff. No-op when
+/// `indexing_service` is `None`.
 async fn maybe_build_project_index(
     writer: &Arc<Ssb>,
     resolved: &ResolvedConfig,
@@ -2305,28 +2380,39 @@ async fn maybe_build_project_index(
         return;
     };
 
-    // Fast path: already indexed for this project_id.
+    // Emergency shutoff: skip every write/read when disabled via env.
+    if crate::indexing_service::indexing_disabled_via_env() {
+        tracing::debug!(
+            project_id = %project_id,
+            "task_runner: indexing disabled via ELAI_DISABLE_INDEXING",
+        );
+        return;
+    }
+
+    // Fast path: already indexed for this project_id AND still fresh.
+    let now_ms = now_unix_ms();
+    let freshness_ms: i64 = crate::indexing_service::INDEX_FRESHNESS_SECS.saturating_mul(1_000);
     if let Ok(cache) = resolved.indexed_projects.lock() {
-        if cache.contains_key(project_id) {
-            return;
+        if let Some(indexed_at) = cache.get(project_id) {
+            if now_ms.saturating_sub(*indexed_at) < freshness_ms {
+                return;
+            }
         }
     }
 
-    // Slow path: acquire the service mutex and run the full index. We hold the
-    // sync cache lock only for the cheap contains_key check, then drop it —
-    // the indexing build holds only the async service mutex.
+    // Slow path: acquire the service mutex and (maybe) run the full index.
     let mut guard = svc.lock().await;
-    // Re-check under the async lock to avoid racing two baby-step schedulers
-    // both hitting the gap between the fast-path probe and the build.
+    // Re-check under the async lock to avoid racing two schedulers.
     if let Ok(cache) = resolved.indexed_projects.lock() {
-        if cache.contains_key(project_id) {
-            return;
+        if let Some(indexed_at) = cache.get(project_id) {
+            if now_ms.saturating_sub(*indexed_at) < freshness_ms {
+                return;
+            }
         }
     }
 
     if guard.indexes_exist() {
-        // Already on disk: record the cache entry without a rebuild. Keeps the
-        // Finding emission consistent (one per project per runner lifetime).
+        // Already on disk: record the cache entry without a rebuild.
         let now = now_unix_ms();
         if let Ok(mut cache) = resolved.indexed_projects.lock() {
             cache.insert(project_id.to_owned(), now);
@@ -2335,19 +2421,56 @@ async fn maybe_build_project_index(
             writer,
             "info",
             INDEXING_SUMMARY_CATEGORY,
-            &format!(
-                "project_id={project_id} indexes_present=true skipped_rebuild=true"
-            ),
+            &format!("project_id={project_id} indexes_present=true skipped_rebuild=true"),
         )
         .await;
         return;
     }
 
+    // Structured emission: Start row BEFORE the (blocking) build call.
+    let start_ms = now_unix_ms();
+    emit_indexing_progress(
+        writer,
+        INDEXING_STAGE_START,
+        project_id,
+        0,
+        0,
+        0,
+        None,
+    )
+    .await;
+
     match guard.run_full_index() {
         Ok(summary) => {
-            let now = now_unix_ms();
+            let done_ms = now_unix_ms();
+            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64;
+            let files_processed: u32 = summary
+                .bm25_files
+                .try_into()
+                .unwrap_or(u32::MAX);
+            let node_count: u32 = summary.dkg_nodes.try_into().unwrap_or(u32::MAX);
+            let edge_count: u32 = summary.dkg_edges.try_into().unwrap_or(u32::MAX);
+
+            // Complete row.
+            emit_indexing_progress(
+                writer,
+                INDEXING_STAGE_COMPLETE,
+                project_id,
+                files_processed,
+                files_processed,
+                elapsed_ms,
+                None,
+            )
+            .await;
+
+            // One-shot DkgReady row. languages is empty for MVP — the DKG
+            // engine does not yet expose per-language stats; adding that is
+            // A-35 scope (multi-lang DKG grammars).
+            emit_dkg_ready(writer, project_id, node_count, edge_count, Vec::new()).await;
+
+            // Legacy Finding (pre-Batch-1C dashboards filter on this).
             if let Ok(mut cache) = resolved.indexed_projects.lock() {
-                cache.insert(project_id.to_owned(), now);
+                cache.insert(project_id.to_owned(), done_ms);
             }
             emit_finding(
                 writer,
@@ -2361,15 +2484,25 @@ async fn maybe_build_project_index(
             .await;
         }
         Err(e) => {
-            // Degraded-mode matches the CLI behaviour at main.rs:3852: log +
-            // continue without indexes. Emit a Finding so the dashboard
-            // surfaces the failure without aborting the task.
+            let done_ms = now_unix_ms();
+            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64;
+            let err_s = e.to_string();
+            emit_indexing_progress(
+                writer,
+                INDEXING_STAGE_FAILED,
+                project_id,
+                0,
+                0,
+                elapsed_ms,
+                Some(err_s.clone()),
+            )
+            .await;
             warn!(project_id = %project_id, error = %e, "task_runner: indexing failed");
             emit_finding(
                 writer,
                 "warning",
                 INDEXING_SUMMARY_CATEGORY,
-                &format!("project_id={project_id} indexing failed: {e}"),
+                &format!("project_id={project_id} indexing failed: {err_s}"),
             )
             .await;
         }

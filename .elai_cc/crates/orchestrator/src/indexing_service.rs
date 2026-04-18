@@ -56,6 +56,34 @@ const DEFAULT_EXCLUDED_PREFIXES: &[&str] = &[
     "secrets.",
 ];
 
+/// Batch 1C (A-44): emergency shutoff for the per-project first-task
+/// indexing call site. When set to a non-zero truthy value (`1` / `true` /
+/// `yes` / `on`), `indexing_disabled_via_env` returns `true` and
+/// `task_runner::maybe_build_project_index` short-circuits before acquiring
+/// the service mutex. Mirrors the `ELAI_HOOKS_DISABLED` / `ELAI_DISABLE_
+/// PROVIDER_SIGNALS` pattern from Batch 1A/1B.
+pub const ELAI_DISABLE_INDEXING_ENV: &str = "ELAI_DISABLE_INDEXING";
+
+/// Batch 1C (A-44): freshness window for the per-project indexing marker.
+/// When a project's cached `indexed_at` is older than this many seconds, the
+/// runner re-runs `run_full_index` (or skips into the on-disk-already path).
+/// 24 hours is a conservative default that matches the "daily developer
+/// cadence" assumption baked into `mvp-wiring-audit-2026-04-18.md` section
+/// 3 A-13 (RAG freshness).
+pub const INDEX_FRESHNESS_SECS: i64 = 86_400;
+
+/// Returns `true` when the operator has disabled indexing via the
+/// [`ELAI_DISABLE_INDEXING_ENV`] env var. Truthy values: `"1"`, `"true"`,
+/// `"yes"`, `"on"` (case-insensitive).
+pub fn indexing_disabled_via_env() -> bool {
+    std::env::var(ELAI_DISABLE_INDEXING_ENV)
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------

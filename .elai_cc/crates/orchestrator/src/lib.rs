@@ -315,13 +315,13 @@ pub use worker_boot::{
     WorkerPromptTarget, WorkerReadySnapshot, WorkerRegistry, WorkerStatus, WorkerTrustResolution,
 };
 pub use ssb::{
-    default_ssb_path, default_ssb_path_for_base, DiffSummary, HookEventPayload,
-    InterventionKeyword, InterventionOption, InterventionRequestPayload, InterventionResponsePayload,
-    InterventionRetry, InterventionType, MistakeEntryPayload, PhaseCompletePayload,
-    PreviewAvailablePayload, ProviderSignalsPayload, SearchTriggerFiredPayload, Ssb, SsbActionType,
-    SsbConfig, SsbEntry, SsbError, SsbFileEntry, SsbPayload, SsbReader, SsbWriteRequest,
-    TaskSubmittedPayload, VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME,
-    SSB_SESSIONS_SUBDIR,
+    default_ssb_path, default_ssb_path_for_base, DiffSummary, DkgReadyPayload, HookEventPayload,
+    IndexingProgressPayload, InterventionKeyword, InterventionOption, InterventionRequestPayload,
+    InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
+    PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
+    SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
+    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, VramTierDetectedPayload,
+    WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,

@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'intervention_request', 'intervention_response',
         'task_submitted',
         'hook_event',
-        'provider_signals', 'search_trigger_fired', 'vram_tier_detected'
+        'provider_signals', 'search_trigger_fired', 'vram_tier_detected',
+        'indexing_progress', 'dkg_ready'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -127,6 +128,17 @@ pub enum SsbActionType {
     /// Batch 1B: VRAM tier detected at task_runner startup (A-37). Emitted
     /// once per run. Carries a [`VramTierDetectedPayload`].
     VramTierDetected,
+    /// Batch 1C (MVP audit 2026-04-18 section 4 item 6 / A-44): project
+    /// indexing stage transition. Emitted by the task_runner's
+    /// `maybe_build_project_index` wrapper at (Start, Complete, Failed)
+    /// boundaries — intermediate `dkg_parsing` / `bm25_indexing` stages are
+    /// reserved for the future incremental/streaming build. Carries an
+    /// [`IndexingProgressPayload`].
+    IndexingProgress,
+    /// Batch 1C: one-shot DKG summary emitted once per project per runner
+    /// lifetime, immediately after the first successful
+    /// `IndexingService::run_full_index`. Carries a [`DkgReadyPayload`].
+    DkgReady,
 }
 
 impl SsbActionType {
@@ -169,6 +181,8 @@ impl SsbActionType {
             Self::ProviderSignals => "provider_signals",
             Self::SearchTriggerFired => "search_trigger_fired",
             Self::VramTierDetected => "vram_tier_detected",
+            Self::IndexingProgress => "indexing_progress",
+            Self::DkgReady => "dkg_ready",
         }
     }
 }
@@ -217,6 +231,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "provider_signals" => Ok(SsbActionType::ProviderSignals),
         "search_trigger_fired" => Ok(SsbActionType::SearchTriggerFired),
         "vram_tier_detected" => Ok(SsbActionType::VramTierDetected),
+        "indexing_progress" => Ok(SsbActionType::IndexingProgress),
+        "dkg_ready" => Ok(SsbActionType::DkgReady),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -658,6 +674,58 @@ pub struct VramTierDetectedPayload {
     pub free_mb: Option<u32>,
 }
 
+/// Batch 1C — payload for the project-indexing stage transitions.
+///
+/// Emitted by the task_runner's `maybe_build_project_index` wrapper at
+/// boundaries of the `IndexingService::run_full_index` call. Currently two
+/// stages materialise per successful run (`start`, `complete`) plus one on
+/// failure (`failed`); the `dkg_parsing` and `bm25_indexing` stages are
+/// reserved for the future incremental/streaming build surface that the
+/// indexing service will expose once tree-sitter and tantivy publish
+/// per-file callbacks.
+///
+/// The `files_total` field is advisory — it may be zero when the runner
+/// cannot cheaply enumerate the project (e.g. very large repos). The
+/// frontend renders "42/150 files" only when `files_total > 0`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexingProgressPayload {
+    /// One of `"start"` / `"dkg_parsing"` / `"bm25_indexing"` / `"complete"`
+    /// / `"failed"`. Stable set; see contract
+    /// `task_runner_indexing_service_contract::indexing_stage_labels_are_stable`.
+    pub stage: String,
+    /// Project identifier — matches the `project_id` on `TaskSubmittedPayload`.
+    pub project_id: String,
+    /// Number of files processed so far. Zero at `start`.
+    pub files_processed: u32,
+    /// Estimated total file count. Zero when unknown.
+    pub files_total: u32,
+    /// Milliseconds elapsed since the `start` emission. Zero at `start`.
+    pub elapsed_ms: u64,
+    /// Optional human-readable status message (e.g. the error string on
+    /// `failed`). Typically `None` on success stages.
+    pub message: Option<String>,
+}
+
+/// Batch 1C — payload for the one-shot DKG-ready announcement.
+///
+/// Emitted once per project per runner lifetime, immediately after the
+/// first successful `IndexingService::run_full_index`. The dashboard's rule
+/// engine may use this row as a signal to hot-swap the `EmptyDkgQuerier`
+/// stub for a real `DkgQuerierAdapter`; see
+/// `docs/mvp-wiring-audit-2026-04-18.md` section 3 A-48.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgReadyPayload {
+    /// Project identifier — matches the `project_id` on `TaskSubmittedPayload`.
+    pub project_id: String,
+    /// DKG node count after the build completes.
+    pub node_count: u32,
+    /// DKG edge count after the build completes.
+    pub edge_count: u32,
+    /// Languages detected during the build (e.g. `["rust", "ts"]`). May be
+    /// empty when the DKG engine does not expose per-language stats.
+    pub languages: Vec<String>,
+}
+
 /// Batch 1A — payload for the hook dispatcher's SSB emissions.
 ///
 /// Written by `crate::hook_dispatcher::emit_hook_events_to_ssb` on every
@@ -739,6 +807,8 @@ pub enum SsbPayload {
     ProviderSignals(ProviderSignalsPayload),
     SearchTriggerFired(SearchTriggerFiredPayload),
     VramTierDetected(VramTierDetectedPayload),
+    IndexingProgress(IndexingProgressPayload),
+    DkgReady(DkgReadyPayload),
 }
 
 impl SsbPayload {
@@ -782,6 +852,8 @@ impl SsbPayload {
             Self::ProviderSignals(_) => SsbActionType::ProviderSignals,
             Self::SearchTriggerFired(_) => SsbActionType::SearchTriggerFired,
             Self::VramTierDetected(_) => SsbActionType::VramTierDetected,
+            Self::IndexingProgress(_) => SsbActionType::IndexingProgress,
+            Self::DkgReady(_) => SsbActionType::DkgReady,
         }
     }
 }
@@ -1789,6 +1861,20 @@ mod tests {
                 tier: "12GB".into(),
                 detected_via: "nvml".into(),
                 free_mb: Some(1800),
+            }),
+            SsbActionType::IndexingProgress => SsbPayload::IndexingProgress(IndexingProgressPayload {
+                stage: "start".into(),
+                project_id: "p".into(),
+                files_processed: 0,
+                files_total: 0,
+                elapsed_ms: 0,
+                message: None,
+            }),
+            SsbActionType::DkgReady => SsbPayload::DkgReady(DkgReadyPayload {
+                project_id: "p".into(),
+                node_count: 0,
+                edge_count: 0,
+                languages: vec![],
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
