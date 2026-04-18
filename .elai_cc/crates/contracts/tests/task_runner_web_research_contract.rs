@@ -158,6 +158,8 @@ async fn web_research_task_emits_web_research_step_rows() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 
@@ -234,6 +236,8 @@ async fn web_research_task_without_runner_emits_finding() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 
@@ -315,6 +319,8 @@ async fn web_research_runner_invoked_once_per_task() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 

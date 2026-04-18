@@ -1,5 +1,6 @@
 pub mod agent_pool;
 pub mod agent_template;
+pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
@@ -73,7 +74,6 @@ pub mod ssb;
 pub mod ssb_viewer;
 pub mod task_runner;
 pub mod supervision;
-pub mod validated_ssb;
 pub mod stale_branch;
 pub mod task_packet;
 pub mod task_registry;
@@ -277,6 +277,10 @@ pub use elai_providers::telemetry_types::{
     DEFAULT_ANTHROPIC_VERSION,
 };
 pub use anti_spiral::{AntiSpiralDetector, SpiralResult, ESCALATION_DEPTH, ESCALATION_MESSAGE, HARD_STOP_DEPTH, RING_SIZE, SPIRAL_THRESHOLD};
+pub use deterministic_audit_gate::{
+    ChangedFilesSupplier, DefaultDeterministicAuditGate, DeterministicAuditGate,
+    ProjectProfileSupplier, GATE_AGENT_ID, GATE_FINDING_CATEGORY, GATE_SUPERSTEP,
+};
 pub use deterministic_auditor::{
     CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
@@ -310,14 +314,16 @@ pub use ssb_viewer::{
 };
 pub use task_runner::{
     detect_scaffold_template, is_web_research_task, is_web_scaffold_task,
-    new_dev_server_registry, project_dir_is_web, start_task_runner, CancelHandle,
+    new_dev_server_registry, project_dir_is_web, start_task_runner, AgentPoolBabyStepExecutor,
+    BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor, CancelHandle,
     CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher, DevServerRegistry,
     LaunchedPreview, ProjectDirResolver, RuleEvaluator, ScaffoldApplier,
-    SsbWebResearchStepEmitter, TaskRunnerConfig, TaskRunnerError, WebResearchRunner,
-    WebResearchSummary, WebValidatorLauncher, BABY_STEP_PRE_GATE_ACTION,
-    DEFAULT_DEV_SERVER_COMMAND, DEFAULT_DEV_SERVER_PORT, DEFAULT_ROOT_QUESTION_MAX_CHARS,
-    DEFAULT_SCAFFOLD_TEMPLATE, DEFAULT_SOURCE_TIERS_TOML, DEV_SERVER_FAILED_CATEGORY,
-    MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE, RULE_VIOLATION_CATEGORY, RUNNER_AGENT_ID,
+    SsbWebResearchStepEmitter, SyntheticBabyStepExecutor, TaskRunnerConfig, TaskRunnerError,
+    WebResearchRunner, WebResearchSummary, WebValidatorLauncher, AGENT_FAILED_CATEGORY,
+    BABY_STEP_PRE_GATE_ACTION, DEFAULT_BABY_STEP_TIMEOUT_MS, DEFAULT_DEV_SERVER_COMMAND,
+    DEFAULT_DEV_SERVER_PORT, DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE,
+    DEFAULT_SOURCE_TIERS_TOML, DEV_SERVER_FAILED_CATEGORY, MAX_BABY_STEPS_PER_TASK,
+    PREVIEW_SLOT_LIVE, RULE_VIOLATION_CATEGORY, RUNNER_AGENT_ID, SPIRAL_HARDSTOP_CATEGORY,
     WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY, WEB_SCAFFOLD_TEMPLATE_ASTRO,
     WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE, WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };

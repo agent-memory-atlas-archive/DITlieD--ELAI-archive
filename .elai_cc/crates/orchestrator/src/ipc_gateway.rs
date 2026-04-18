@@ -11,6 +11,14 @@
 // - Self-modification lock enforcement on ToolRequest/BashRequest
 //
 // Source: phase-4A.txt, orchestrator.txt S12.
+//
+// Production wiring scheduled in Session wire-4A per phase-4A.txt L259-L280
+// ("IMPLEMENT — agent binary + orchestrator IPC gateway"). Present callers
+// are in tests/ directories (agent_isolation.rs, ipc_simulation.rs,
+// adversarial_ipc.rs) validating the spec contract as TDD red-phase. Do not
+// remove: deletion would require re-implementing from scratch when wire-4A
+// lands. This module consumes IpcHookTrait/IpcHookError/HookResult from
+// elai_plugins::ipc_hooks — that module is retained for the same reason.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};

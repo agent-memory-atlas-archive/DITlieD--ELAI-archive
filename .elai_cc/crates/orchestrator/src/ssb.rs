@@ -576,10 +576,10 @@ pub struct InterventionResponsePayload {
 
 /// Payload for `task_submitted` actions (4K.3 — dashboard MVP).
 ///
-/// Written by the dashboard process when the user submits a task. Pickup by
-/// the orchestrator is deferred (see DASHBOARD_TASK_SUBMITTED_PICKUP_DEFERRED
-/// gotcha). The action is recorded in the SSB so that future orchestrator
-/// versions can consume it without schema churn.
+/// Written by the dashboard process when the user submits a task and consumed
+/// by the orchestrator's task_runner (patch-1.30 commit 8ce26a0). The action
+/// is recorded in the SSB so downstream consumers (dashboard activity feed,
+/// replay tools) can observe the full task lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSubmittedPayload {
     pub task: String,
@@ -593,6 +593,15 @@ pub struct TaskSubmittedPayload {
 
 /// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (31 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
+///
+/// All 31 variants are schema-committed. Variants without a current production
+/// emitter — `Claim`, `ModelSwap`, `KnowledgeDegradation`, `IsolationMetric`,
+/// `BranchMerge`, `SpiralDetected`, `SupervisionExhausted`, `InterventionRequest`
+/// — are forward-compat for phases 3F / 4G / 4H / wire-antispiral /
+/// newphase-4G. Do not remove: on-disk SSB files and the dashboard
+/// `payload_json` pipeline depend on the discriminant set staying stable.
+/// `SpiralDetected` has a scheduled emitter in Session wire-antispiral;
+/// `InterventionRequest` in Session newphase-4G (AutonomousGate).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
     FileWrite(FileWritePayload),

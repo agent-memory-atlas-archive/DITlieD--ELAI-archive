@@ -219,6 +219,8 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 
@@ -293,6 +295,8 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 
@@ -363,6 +367,8 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         },
     );
 

@@ -12,6 +12,16 @@
 //!   5. COMPLETENESS + MODULE_COHERENCE — AST checks for non-trivial fn bodies
 //!
 //! Only after all checks pass (zero BLOCKs) does the LLM auditor run.
+//!
+//! Production wiring scheduled in Session wire-a12: invoked from the FSM
+//! AUDITING state transition handler before LLM auditor dispatch. Any
+//! Block verdict maps to `SsbPayload::Finding { severity: "error" }` and
+//! prevents the AUDITING → MEMORIZING transition until the agent re-attempts.
+//! Prerequisites A-4 (ProjectProfile) and A-6 (VERSION_GATE) have both
+//! landed per patch-1.26 and the A-series commit history; A-12 itself is
+//! the scheduled wiring step. Test callers
+//! (contracts/tests/deterministic_auditor_a41_contract.rs) are the A-41
+//! acceptance surface.
 
 use std::path::{Path, PathBuf};
 

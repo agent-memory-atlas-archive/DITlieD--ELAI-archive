@@ -1,6 +1,14 @@
 // Supervision tree: policy layer above RecoveryManager.
 // Tracks per-agent restart counts within phase windows and escalates when
 // the configured limit is hit. Prevents infinite restart loops.
+//
+// Production wiring follow-up: RecoveryManager is wired in 3C.REDO (commit
+// 893e69f), but the supervision layer on top of it is not yet plugged into
+// task_runner. Test callers (contracts/tests/supervision_contract.rs and
+// in-file `#[cfg(test)]` modules) validate the escalation-policy contract.
+// Follow-up session will wire `SupervisionManager::record_restart` into the
+// RecoveryManager failure path and emit `SsbPayload::SupervisionExhausted`
+// on Terminate escalation.
 
 use std::collections::HashMap;
 use std::time::Duration;

@@ -41,7 +41,7 @@ fn sparse_snapshot() -> DkgSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// (a) compute_overlay on dense graph panics (todo!())
+// (a) compute_overlay on dense graph (implemented — src/catrag.rs:253)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -53,7 +53,7 @@ fn a_compute_overlay_dense_graph_hits_todo() {
 }
 
 // ---------------------------------------------------------------------------
-// (b) compute_overlay returns CatRagOverlay with non-empty fields (todo!())
+// (b) compute_overlay returns CatRagOverlay with non-empty fields
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -67,7 +67,7 @@ fn b_compute_overlay_returns_overlay_structure() {
 }
 
 // ---------------------------------------------------------------------------
-// (c) compute_overlay past density guard with custom config (todo!())
+// (c) compute_overlay past density guard with custom config
 // ---------------------------------------------------------------------------
 
 #[test]

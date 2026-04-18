@@ -2,6 +2,15 @@
 // Monitors repeated (step_type, topic, content_hash) tuples per agent.
 // Triggers escalation after SPIRAL_THRESHOLD identical steps, then HardStop
 // if the agent ignores the escalation and repeats again.
+//
+// Production wiring scheduled in Session wire-antispiral:
+// task_runner owns an `AntiSpiralDetector` per task, feeds every GRC step
+// into `check_step`, injects `ESCALATION_MESSAGE` on EscalationSignalNeeded,
+// and emits `SsbPayload::SpiralDetected` + a `spiral_hardstop` Finding on
+// HardStop. Depends on Session wire-4A (real agent execution; anti-spiral
+// on synthetic baby steps is meaningless). Claude-Code-layer mcp_think
+// anti-spiral is a separate concern — this module is defense-in-depth at
+// the orchestrator layer.
 
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;

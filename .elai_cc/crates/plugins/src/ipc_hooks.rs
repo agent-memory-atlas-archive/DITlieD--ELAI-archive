@@ -8,6 +8,13 @@
 //!
 //! SSB finding writes are abstracted via `SsbFindingWriter` trait to avoid
 //! a circular dependency (plugins must not import orchestrator).
+//!
+//! Consumed by `orchestrator::ipc_gateway::IpcGateway::run_pre_tool` /
+//! `run_post_tool` (see ipc_gateway.rs:504-563) via `IpcHookTrait`/
+//! `IpcHookError`/`HookResult`. Production wiring is scheduled in Session
+//! wire-4A per phase-4A.txt L259-L280; present callers
+//! (contracts/tests/plugins_hooks.rs and plugins_adversarial.rs) validate
+//! the spec contract as TDD red-phase. Do not remove.
 
 use std::collections::HashMap;
 use std::time::Instant;

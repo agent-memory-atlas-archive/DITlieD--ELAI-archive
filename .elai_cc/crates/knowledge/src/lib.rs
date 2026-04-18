@@ -240,7 +240,15 @@ pub trait LanguageGrammar {
 }
 
 /// Top-level knowledge engine trait. Implementations aggregate DKG, vector,
-/// and BM25 sub-engines. Full impl deferred to Phase 1I.
+/// and BM25 sub-engines.
+///
+/// Scheduled facade for Phase 1I. In MVP, sub-engines (`DkgEngine`,
+/// `ShortCoder`, `populate_tier3`, `TelescopeContext`) are wired directly by
+/// the CLI and task_runner rather than via this trait — so the trait itself
+/// has zero implementors today. It is referenced as an architectural template
+/// by `orchestrator::evidence::EvidenceGate` and `orchestrator::gate::GrcEngine`
+/// sibling traits ("consistent with KnowledgeEngine/GrcEngine trait pattern").
+/// Keep the trait until Phase 1I lands a concrete aggregator.
 pub trait KnowledgeEngine {
     fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph, KnowledgeError>;
     fn query(&self, query: &str, strategy: QueryStrategy) -> Result<Vec<CodeChunk>, KnowledgeError>;

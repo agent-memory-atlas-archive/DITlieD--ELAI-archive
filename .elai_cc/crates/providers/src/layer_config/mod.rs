@@ -2,10 +2,15 @@
 //!
 //! This module defines the `LayerAccessProvider` trait that abstracts how
 //! intermediate transformer layer logits are obtained from an inference backend
-//! (vLLM plugin, HuggingFace Transformers, etc.). Concrete decoding strategies
-//! like DoLa consume layer logits through this trait.
+//! (vLLM plugin, HuggingFace Transformers, etc.). The `steering` submodule
+//! provides the Rust-side steering-vector API consumed by the CLI's
+//! `try_precompute_role_steering` path.
+//!
+//! Rust-side DoLa was removed in patch-1.35: the production path is the
+//! Python sidecar's `DoLaSteeringProcessor` (server.py), which handles
+//! layer contrastive decoding internally; the Rust `DolaDecoder` had zero
+//! non-test callers.
 
-pub mod dola;
 pub mod steering;
 
 use std::fmt;

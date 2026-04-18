@@ -51,7 +51,7 @@ use elai_core::clock::OsClock;
 use elai_reasoning::BasicGrcEngine;
 use uuid::Uuid;
 
-use crate::agent_pool::{AgentHandle, AgentRole, AgentStatus, ModelPool};
+use crate::agent_pool::{AgentHandle, AgentPool, AgentRole, AgentStatus, ModelPool};
 use crate::checkpoint::{
     AgentCheckpointData, CheckpointManager, GrcHistoryEntry,
 };
@@ -566,6 +566,446 @@ impl RuleEvaluator {
             }
         }
         verdicts
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Baby-step execution (Session wire-4A)
+// ---------------------------------------------------------------------------
+
+/// Finding category emitted by the agent-backed [`BabyStepExecutor`] when the
+/// underlying agent process fails (non-zero exit, spawn failure, timeout).
+/// Dashboard activity feed keys on this exact string.
+pub const AGENT_FAILED_CATEGORY: &str = "agent_failed";
+
+/// Finding category emitted on anti-spiral HARD_STOP (Session wire-antispiral).
+/// Matches the wording in `docs/mvp-wiring-gaps.md` acceptance criterion.
+pub const SPIRAL_HARDSTOP_CATEGORY: &str = "spiral_hardstop";
+
+/// Context for one baby-step execution dispatch. Carries the escalation
+/// message stashed by [`crate::anti_spiral::AntiSpiralDetector`] so the
+/// executor can inject it into the agent turn that is about to run (wire-antispiral
+/// acceptance criterion 2).
+#[derive(Debug, Clone)]
+pub struct BabyStepExecutionCtx {
+    pub baby_step_id: u64,
+    pub task_summary: String,
+    /// When `Some`, the caller (anti-spiral detector) requests this message be
+    /// prepended to the agent's next turn input. `None` on the first execution
+    /// of any baby step.
+    pub escalation_message: Option<String>,
+}
+
+/// Result of one baby-step execution dispatch.
+///
+/// `duration_ms` replaces the old [`RUNNER_SYNTHETIC_DURATION_MS`] constant at
+/// the `emit_test_outcome` call site — the real-agent path reports the
+/// measured wall-clock duration instead.
+#[derive(Debug, Clone)]
+pub struct BabyStepExecutionResult {
+    pub outcome: BabyStepOutcome,
+    pub duration_ms: u64,
+    /// Process exit code when the executor spawns an OS process. `None` for
+    /// the synthetic path (no process was spawned).
+    pub exit_code: Option<i32>,
+    /// Tail of stderr (truncated) — surfaced into the failure Finding so the
+    /// dashboard can point the user at the first-line error. Empty on success.
+    pub stderr_tail: String,
+}
+
+impl BabyStepExecutionResult {
+    /// Synthetic "pass in 1 ms" result — matches the pre-wire-4A behavior used
+    /// by [`SyntheticBabyStepExecutor`] and covered by every existing test.
+    pub fn synthetic_passed() -> Self {
+        Self {
+            outcome: BabyStepOutcome::Passed,
+            duration_ms: RUNNER_SYNTHETIC_DURATION_MS,
+            exit_code: None,
+            stderr_tail: String::new(),
+        }
+    }
+}
+
+/// Session wire-4A: pluggable executor that runs one baby step and returns a
+/// real [`BabyStepOutcome`] + duration. The old `drive_task` hard-coded
+/// `BabyStepOutcome::Passed` + [`RUNNER_SYNTHETIC_DURATION_MS`] — this trait is
+/// that surrogate's production replacement.
+///
+/// The default [`SyntheticBabyStepExecutor`] preserves legacy behavior (pass
+/// with 1 ms duration) so existing tests and non-agent runners keep working
+/// while the agent binary is still being stood up. Real production deployments
+/// install [`AgentPoolBabyStepExecutor`] via [`TaskRunnerConfig::baby_step_executor`].
+pub trait BabyStepExecutor: Send + Sync {
+    fn execute<'a>(
+        &'a self,
+        ctx: BabyStepExecutionCtx,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = BabyStepExecutionResult> + Send + 'a>,
+    >;
+}
+
+/// Default [`BabyStepExecutor`] — keeps the legacy synthetic `passed: true` +
+/// 1 ms behavior so call sites that don't install a real executor stay
+/// unchanged.
+#[derive(Debug, Default)]
+pub struct SyntheticBabyStepExecutor;
+
+impl BabyStepExecutor for SyntheticBabyStepExecutor {
+    fn execute<'a>(
+        &'a self,
+        _ctx: BabyStepExecutionCtx,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = BabyStepExecutionResult> + Send + 'a>,
+    > {
+        Box::pin(async move { BabyStepExecutionResult::synthetic_passed() })
+    }
+}
+
+/// Production [`BabyStepExecutor`] that drives
+/// [`crate::agent_pool::InProcessAgentPool::launch_agent_process`] (Session
+/// wire-4A acceptance criterion 1-4).
+///
+/// The executor:
+///   1. Calls `pool.spawn(role, task_summary)` to allocate an `AgentHandle`.
+///   2. Calls `pool.launch_agent_process(&id, &binary, &socket)` to fork the
+///      agent binary. `socket_path_fn` maps `agent_id -> PathBuf` so the
+///      caller controls uniqueness (dashboard uses
+///      `socket_dir/agent-{uuid}.sock`).
+///   3. Waits on the child process (with `timeout_ms`) and maps:
+///      * exit code 0  -> `BabyStepOutcome::Passed`
+///      * non-zero     -> `BabyStepOutcome::Failed`
+///      * spawn error  -> `BabyStepOutcome::Failed` + stderr_tail carries the
+///        error message
+///
+/// Concurrency: wraps the pool in an `AsyncMutex` so `launch_agent_process`
+/// can run serialized (the pool's internal map is not `Send`-shared). The
+/// trait itself is `Send + Sync`.
+///
+/// Note on the agent binary:
+///   The MVP spec warns the `elai_cc_agent` binary may not be built yet. In
+///   that case `Command::spawn` returns `NotFound`, and we surface the
+///   spawn error as a `Failed` outcome with the error text in `stderr_tail`.
+///   This is deliberate — the wiring is the contract; the binary landing is
+///   a separate cargo-build step.
+pub struct AgentPoolBabyStepExecutor<E: elai_core::EntropySource + Send + 'static> {
+    pool: Arc<AsyncMutex<crate::agent_pool::InProcessAgentPool<E>>>,
+    agent_binary_path: PathBuf,
+    socket_dir: PathBuf,
+    /// Upper bound on a single baby-step execution. Kills the child process
+    /// when exceeded. Default 120s matches the DeterministicAuditor
+    /// BUILD_CMD_TIMEOUT_S constant.
+    timeout_ms: u64,
+    /// Role passed to `pool.spawn`. Default `Executor`.
+    role: crate::agent_pool::AgentRole,
+}
+
+/// Default timeout for a single baby-step agent execution (matches
+/// `deterministic_auditor::BUILD_CMD_TIMEOUT_S`).
+pub const DEFAULT_BABY_STEP_TIMEOUT_MS: u64 = 120_000;
+
+impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> {
+    pub fn new(
+        pool: Arc<AsyncMutex<crate::agent_pool::InProcessAgentPool<E>>>,
+        agent_binary_path: PathBuf,
+        socket_dir: PathBuf,
+    ) -> Self {
+        Self {
+            pool,
+            agent_binary_path,
+            socket_dir,
+            timeout_ms: DEFAULT_BABY_STEP_TIMEOUT_MS,
+            role: crate::agent_pool::AgentRole::Executor,
+        }
+    }
+
+    pub fn with_timeout_ms(mut self, ms: u64) -> Self {
+        self.timeout_ms = ms;
+        self
+    }
+
+    pub fn with_role(mut self, role: crate::agent_pool::AgentRole) -> Self {
+        self.role = role;
+        self
+    }
+}
+
+impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
+    for AgentPoolBabyStepExecutor<E>
+{
+    fn execute<'a>(
+        &'a self,
+        ctx: BabyStepExecutionCtx,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = BabyStepExecutionResult> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let start = std::time::Instant::now();
+
+            // Build the task string delivered to the agent. The escalation
+            // message (from the anti-spiral detector) is prepended so it is
+            // the first thing the agent sees on the next turn.
+            let task_text = match ctx.escalation_message {
+                Some(msg) => format!("{msg}\n\n{}", ctx.task_summary),
+                None => ctx.task_summary.clone(),
+            };
+
+            // Spawn an agent handle on the pool.
+            let (agent_id, spawn_err) = {
+                let mut pool = self.pool.lock().await;
+                match pool.spawn(self.role, task_text) {
+                    Ok(handle) => (Some(handle.agent_id), None),
+                    Err(e) => (None, Some(format!("pool.spawn failed: {e}"))),
+                }
+            };
+
+            let agent_id = match agent_id {
+                Some(id) => id,
+                None => {
+                    let reason = spawn_err.unwrap_or_default();
+                    return BabyStepExecutionResult {
+                        outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        exit_code: None,
+                        stderr_tail: reason,
+                    };
+                }
+            };
+
+            // Ensure socket directory exists; launch the agent process.
+            if let Err(e) = std::fs::create_dir_all(&self.socket_dir) {
+                let reason = format!("socket_dir create failed: {e}");
+                return BabyStepExecutionResult {
+                    outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    exit_code: None,
+                    stderr_tail: reason,
+                };
+            }
+            let socket_path = self
+                .socket_dir
+                .join(format!("agent-{}.sock", agent_id));
+
+            let launch_err = {
+                let mut pool = self.pool.lock().await;
+                pool.launch_agent_process(
+                    &agent_id,
+                    &self.agent_binary_path,
+                    &socket_path,
+                )
+                .err()
+            };
+            if let Some(e) = launch_err {
+                let reason = format!("launch_agent_process failed: {e}");
+                return BabyStepExecutionResult {
+                    outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    exit_code: None,
+                    stderr_tail: reason,
+                };
+            }
+
+            // Wait on the child process with timeout. `wait_for_agent_exit`
+            // reads stdout/stderr to completion to avoid the child blocking
+            // on a full pipe buffer.
+            let outcome = wait_for_agent_exit(
+                Arc::clone(&self.pool),
+                agent_id,
+                std::time::Duration::from_millis(self.timeout_ms),
+            )
+            .await;
+
+            BabyStepExecutionResult {
+                outcome: outcome.outcome,
+                duration_ms: start.elapsed().as_millis() as u64,
+                exit_code: outcome.exit_code,
+                stderr_tail: outcome.stderr_tail,
+            }
+        })
+    }
+}
+
+struct ProcessWaitOutcome {
+    outcome: BabyStepOutcome,
+    exit_code: Option<i32>,
+    stderr_tail: String,
+}
+
+/// Wait on the agent process owned by `pool[agent_id]`. Drives the child to
+/// completion within `timeout`; on timeout, calls `pool.kill_agent_process`
+/// and returns `Failed`. Reads stderr to a bounded tail (last 2 KiB).
+async fn wait_for_agent_exit<E: elai_core::EntropySource + Send + 'static>(
+    pool: Arc<AsyncMutex<crate::agent_pool::InProcessAgentPool<E>>>,
+    agent_id: Uuid,
+    timeout: std::time::Duration,
+) -> ProcessWaitOutcome {
+    const STDERR_TAIL_MAX: usize = 2 * 1024;
+
+    // Take ownership of the child out of the pool so we don't hold the pool
+    // lock during the entire wait (other baby steps could queue up).
+    let mut child = {
+        let mut pool = pool.lock().await;
+        match pool
+            .get_agent_mut(&agent_id)
+            .and_then(|h| h.child_process.take())
+        {
+            Some(child) => child,
+            None => {
+                let reason = "child_process handle missing after launch".to_string();
+                return ProcessWaitOutcome {
+                    outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                    exit_code: None,
+                    stderr_tail: reason,
+                };
+            }
+        }
+    };
+
+    let pool_for_kill = Arc::clone(&pool);
+    let wait_result = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut stderr_buf = Vec::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_end(&mut stderr_buf);
+        }
+        // drain stdout so the child doesn't block on a full pipe
+        if let Some(mut stdout) = child.stdout.take() {
+            let mut sink = Vec::new();
+            let _ = stdout.read_to_end(&mut sink);
+        }
+        let status = child.wait();
+        (status, stderr_buf)
+    });
+
+    match tokio::time::timeout(timeout, wait_result).await {
+        Ok(Ok((Ok(status), stderr))) => {
+            let exit_code = status.code();
+            let tail = tail_lossy(&stderr, STDERR_TAIL_MAX);
+            let outcome = if status.success() {
+                BabyStepOutcome::Passed
+            } else {
+                BabyStepOutcome::Failed {
+                    reason: format!(
+                        "agent exit_code={:?} stderr_tail={}",
+                        exit_code, tail
+                    ),
+                }
+            };
+            ProcessWaitOutcome {
+                outcome,
+                exit_code,
+                stderr_tail: tail,
+            }
+        }
+        Ok(Ok((Err(e), stderr))) => {
+            let tail = tail_lossy(&stderr, STDERR_TAIL_MAX);
+            let reason = format!("child.wait() error: {e} | stderr_tail={}", tail);
+            ProcessWaitOutcome {
+                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                exit_code: None,
+                stderr_tail: reason,
+            }
+        }
+        Ok(Err(join_err)) => {
+            let reason = format!("agent wait join error: {join_err}");
+            ProcessWaitOutcome {
+                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                exit_code: None,
+                stderr_tail: reason,
+            }
+        }
+        Err(_elapsed) => {
+            let _ = pool_for_kill.lock().await.kill_agent_process(&agent_id);
+            let reason = "agent process timed out".to_string();
+            ProcessWaitOutcome {
+                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                exit_code: None,
+                stderr_tail: reason,
+            }
+        }
+    }
+}
+
+fn tail_lossy(buf: &[u8], max: usize) -> String {
+    let start = buf.len().saturating_sub(max);
+    String::from_utf8_lossy(&buf[start..]).into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Spiral tracker (Session wire-antispiral)
+// ---------------------------------------------------------------------------
+
+/// Scoped per-`drive_task` anti-spiral state: holds the detector, the
+/// synthetic agent id used to key the detector's internal map, the pending
+/// escalation message (if any), and a `hard_stop` flag that causes the
+/// baby-step loop to bail.
+///
+/// The runner feeds every `emit_reasoning`-level step through the detector.
+/// Because task_runner currently emits synthetic, step-varying content, the
+/// detector rarely fires in the synthetic path — the wiring is the contract,
+/// and real agent GRC steams will hit it when wire-4A is fully online.
+pub(crate) struct SpiralTracker {
+    detector: crate::anti_spiral::AntiSpiralDetector<elai_core::clock::OsClock>,
+    agent_id: Uuid,
+    pending_escalation: Option<String>,
+    hard_stop: bool,
+    /// Monotonic superstep counter handed to `detector.record_step`. Matches
+    /// the spec's "superstep" field semantics (grows with every step).
+    superstep: i64,
+}
+
+impl SpiralTracker {
+    pub(crate) fn new(agent_id: Uuid) -> Self {
+        Self {
+            detector: crate::anti_spiral::AntiSpiralDetector::new(),
+            agent_id,
+            pending_escalation: None,
+            hard_stop: false,
+            superstep: 0,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn hard_stop(&self) -> bool {
+        self.hard_stop
+    }
+
+    /// Take the current escalation message (if any). Returns `None` after the
+    /// first call until the next `EscalationSignalNeeded` fires.
+    pub(crate) fn take_escalation_message(&mut self) -> Option<String> {
+        self.pending_escalation.take()
+    }
+
+    /// Record a reasoning step. Returns the [`crate::anti_spiral::SpiralResult`]
+    /// so the caller can decide whether to emit the paired SSB rows.
+    pub(crate) fn record(
+        &mut self,
+        step_type: &str,
+        topic: &str,
+        content: &str,
+    ) -> crate::anti_spiral::SpiralResult {
+        let ss = self.superstep;
+        self.superstep = self.superstep.saturating_add(1);
+        let result = self.detector.record_step(
+            self.agent_id,
+            step_type,
+            topic,
+            content,
+            ss,
+        );
+        match &result {
+            crate::anti_spiral::SpiralResult::EscalationSignalNeeded { message, .. } => {
+                self.pending_escalation = Some(message.clone());
+            }
+            crate::anti_spiral::SpiralResult::HardStop { .. } => {
+                self.hard_stop = true;
+            }
+            crate::anti_spiral::SpiralResult::Clean => {}
+        }
+        result
+    }
+
+    pub(crate) fn agent_id(&self) -> Uuid {
+        self.agent_id
     }
 }
 
@@ -1090,6 +1530,24 @@ pub struct TaskRunnerConfig {
     /// Typical value: `.elai_cc/sessions/{session_id}/agents`. Each task seq
     /// becomes its own `agent_id` subdirectory under this root.
     pub checkpoint_scratch_dir: Option<PathBuf>,
+    /// Session wire-4A: per-baby-step executor. When `Some`, replaces the
+    /// synthetic `BabyStepOutcome::Passed` surrogate with a real dispatch.
+    /// When `None`, the runner falls back to [`SyntheticBabyStepExecutor`]
+    /// (pre-wire-4A behavior — all tests keep working with their legacy
+    /// expectations of `passed: true` baby-step outcomes).
+    pub baby_step_executor: Option<Arc<dyn BabyStepExecutor>>,
+    /// Session wire-antispiral: enable the [`crate::anti_spiral::AntiSpiralDetector`]
+    /// hook in `drive_task`. When `true`, each reasoning emission is fed into
+    /// the detector; EscalationSignalNeeded is injected into the next baby
+    /// step's execution context; HardStop emits `SsbPayload::SpiralDetected`
+    /// + a `spiral_hardstop` Finding and terminates the task. When `false`,
+    /// the detector is not constructed (pre-wire-antispiral behavior).
+    ///
+    /// Depends on wire-4A: the escalation injection path runs through the
+    /// [`BabyStepExecutor::execute`] API surface, but the HardStop + Finding
+    /// emission works even with the synthetic executor (so the contract can
+    /// be exercised without a real agent binary).
+    pub anti_spiral_enabled: bool,
 }
 
 impl TaskRunnerConfig {
@@ -1106,6 +1564,8 @@ impl TaskRunnerConfig {
             rule_evaluator: None,
             interrogation_store: None,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         }
     }
 }
@@ -1130,6 +1590,11 @@ struct ResolvedConfig {
     /// a `RecoveryManager` bound to the same clock, and writes checkpoint rows
     /// at each baby-step boundary. On `passed=false` it fires recovery.
     checkpoint: Option<Arc<CheckpointContext>>,
+    /// Session wire-4A: baby-step executor. Always populated — when the caller
+    /// does not supply one, we fall back to [`SyntheticBabyStepExecutor`].
+    baby_step_executor: Arc<dyn BabyStepExecutor>,
+    /// Session wire-antispiral: enable detector in drive_task loop.
+    anti_spiral_enabled: bool,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1168,6 +1633,10 @@ impl ResolvedConfig {
             interrogation_store: cfg.interrogation_store,
             interrogation_metric_emitted: Mutex::new(false),
             checkpoint,
+            baby_step_executor: cfg
+                .baby_step_executor
+                .unwrap_or_else(|| Arc::new(SyntheticBabyStepExecutor)),
+            anti_spiral_enabled: cfg.anti_spiral_enabled,
         }
     }
 }
@@ -1679,13 +2148,12 @@ async fn drive_task(
         .unwrap_or(false);
     let mut preview_launched_for_task = false;
     // --- 1. Decomposition (L1 "designer" surrogate) ---------------------
-    emit_reasoning(
-        writer,
-        0,
-        "observe",
-        &format!("task seq={} text={:?}", seq, truncate_for_log(&task.task, 120)),
-    )
-    .await;
+    let observe_content = format!(
+        "task seq={} text={:?}",
+        seq,
+        truncate_for_log(&task.task, 120)
+    );
+    emit_reasoning(writer, 0, "observe", &observe_content).await;
 
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let grounding_client = SidecarGroundingClient::default();
@@ -1754,9 +2222,10 @@ async fn drive_task(
     // `run_integration_checkpoint` has a real spec to consult at each baby
     // step / step / phase / concept boundary. The NoOpIntegrationRunner
     // reports success for every criterion — baby-step exit criteria become
-    // real commands once `agent_pool::InProcessAgentPool` is wired (wire-4A).
-    // Until then the wiring is the contract; pass/fail derives from the
-    // recorded `BabyStepResult.outcome`.
+    // real commands when a `CommandIntegrationRunner` is plugged post-wire-4A.
+    // Baby-step pass/fail now derives from the [`BabyStepExecutor`] dispatch
+    // (Session wire-4A) instead of the legacy `BabyStepOutcome::Passed`
+    // surrogate.
     let mut tree = NavigatorTree::new(decomposition, Default::default());
     register_runner_integration_specs(&mut tree);
     let nav = DepthFirstNavigator::from_tree(&tree);
@@ -1768,6 +2237,15 @@ async fn drive_task(
     // step with the per-iteration TestOutcome rows — both are surfaced by the
     // dashboard and downstream gate logic, so they cannot disagree.
     let mut baby_step_outcomes: Vec<(u64, bool)> = Vec::new();
+
+    // Session wire-antispiral: per-task detector + escalation pipe. `None`
+    // when the feature is disabled (pre-wire-antispiral behavior).
+    let mut spiral_tracker: Option<SpiralTracker> = if resolved.anti_spiral_enabled {
+        let agent_id = synthetic_agent_id_for_seq(seq);
+        Some(SpiralTracker::new(agent_id))
+    } else {
+        None
+    };
 
     loop {
         if cancel.is_cancelled() {
@@ -1787,13 +2265,27 @@ async fn drive_task(
             .map(|bs| truncate_for_log(&bs.task, 120))
             .unwrap_or_else(|| "<missing>".to_owned());
 
+        let baby_step_reasoning_content =
+            format!("baby_step id={} task={:?}", bs_id.0, task_summary);
         emit_reasoning(
             writer,
             2 + steps_executed as u32,
             "act",
-            &format!("baby_step id={} task={:?}", bs_id.0, task_summary),
+            &baby_step_reasoning_content,
         )
         .await;
+
+        // Session wire-antispiral: record this reasoning step with the
+        // detector. On HardStop we emit the SSB rows and break immediately;
+        // on EscalationSignalNeeded the message is stashed in the tracker
+        // and drained below before executor dispatch.
+        if let Some(tracker) = spiral_tracker.as_mut() {
+            let result = tracker.record("act", "task_runner", &baby_step_reasoning_content);
+            if matches!(result, crate::anti_spiral::SpiralResult::HardStop { .. }) {
+                emit_spiral_hard_stop(writer, tracker.agent_id(), seq).await;
+                break;
+            }
+        }
 
         // 3F.REDO: read MistakeBook entries for this baby step and inject the
         // formatted CONSTRAINTS block into the agent's context via an
@@ -1880,8 +2372,31 @@ async fn drive_task(
             }
         }
 
-        let outcome = BabyStepOutcome::Passed;
+        // Session wire-4A: dispatch this baby step through the pluggable
+        // [`BabyStepExecutor`]. Drains the escalation message stashed by the
+        // anti-spiral detector (wire-antispiral) so the injected message lands
+        // in the agent turn that runs next.
+        let escalation_message = spiral_tracker
+            .as_mut()
+            .and_then(|t| t.take_escalation_message());
+        let exec_ctx = BabyStepExecutionCtx {
+            baby_step_id: bs_id.0,
+            task_summary: task_summary.clone(),
+            escalation_message,
+        };
+        let exec_result = resolved.baby_step_executor.execute(exec_ctx).await;
+        let outcome = exec_result.outcome;
         let outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
+        let execution_duration_ms = exec_result.duration_ms;
+        let exec_stderr_tail = exec_result.stderr_tail.clone();
+        let exec_exit_code = exec_result.exit_code;
+        if !outcome_passed {
+            let msg = format!(
+                "baby_step id={} agent exit_code={:?} stderr_tail={:?}",
+                bs_id.0, exec_exit_code, exec_stderr_tail
+            );
+            emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
+        }
         let result = BabyStepResult {
             baby_step_id: bs_id,
             outcome,
@@ -1954,11 +2469,15 @@ async fn drive_task(
             maybe_emit_interrogation_metric(writer, resolved).await;
             emit_interrogation_fix_suggestion(writer, resolved, bs_id.0, category).await;
         }
+        // Session wire-4A: duration comes from the executor dispatch instead
+        // of [`RUNNER_SYNTHETIC_DURATION_MS`]. The synthetic executor keeps
+        // reporting 1 ms so legacy tests stay stable; the real agent-pool
+        // executor reports measured wall-clock.
         emit_test_outcome(
             writer,
             &format!("baby_step_{}", bs_id.0),
             passed,
-            RUNNER_SYNTHETIC_DURATION_MS,
+            execution_duration_ms,
         )
         .await;
         baby_step_outcomes.push((bs_id.0, passed));
@@ -2197,6 +2716,43 @@ async fn emit_baby_step_recovery(
         )
         .await;
     }
+}
+
+/// Session wire-antispiral: emit `SpiralDetected` + `Finding(spiral_hardstop)`
+/// when the anti-spiral detector returns HARD_STOP. The caller is expected to
+/// break its baby-step loop immediately afterwards.
+async fn emit_spiral_hard_stop(writer: &Arc<Ssb>, agent_id: Uuid, seq: i64) {
+    let payload = SsbPayload::SpiralDetected(crate::ssb::SpiralDetectedPayload {
+        agent_id: agent_id.to_string(),
+        phase_id: format!("task_seq_{seq}"),
+        spiral_depth: crate::anti_spiral::HARD_STOP_DEPTH,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write SpiralDetected failed");
+    }
+    emit_finding(
+        writer,
+        "error",
+        SPIRAL_HARDSTOP_CATEGORY,
+        &format!(
+            "anti-spiral HARD_STOP: agent {} in task_seq {} repeated step after escalation",
+            agent_id, seq
+        ),
+    )
+    .await;
+}
+
+/// Session wire-antispiral: build a deterministic synthetic agent id keyed on
+/// the task seq so the per-task detector state is addressable for audit. Mirrors
+/// [`task_runner_handle`]'s UUID layout (low 64 bits = seq, high bits zero).
+fn synthetic_agent_id_for_seq(seq: i64) -> Uuid {
+    let seq_u64 = seq as u64;
+    let mut bytes = [0u8; 16];
+    bytes[8..16].copy_from_slice(&seq_u64.to_be_bytes());
+    Uuid::from_bytes(bytes)
 }
 
 async fn emit_test_outcome(writer: &Arc<Ssb>, test_name: &str, passed: bool, duration_ms: u64) {
@@ -3237,6 +3793,8 @@ mod tests {
                 rule_evaluator: None,
                 interrogation_store: None,
                 checkpoint_scratch_dir: None,
+                baby_step_executor: None,
+                anti_spiral_enabled: false,
             },
         );
 
@@ -3336,6 +3894,8 @@ mod tests {
                 rule_evaluator: None,
                 interrogation_store: None,
                 checkpoint_scratch_dir: None,
+                baby_step_executor: None,
+                anti_spiral_enabled: false,
             },
         );
 
@@ -3512,6 +4072,8 @@ mod tests {
                 rule_evaluator: None,
                 interrogation_store: None,
                 checkpoint_scratch_dir: None,
+                baby_step_executor: None,
+                anti_spiral_enabled: false,
             },
         );
 
@@ -4248,6 +4810,8 @@ mod tests {
             rule_evaluator: None,
             interrogation_store: store,
             checkpoint_scratch_dir: None,
+            baby_step_executor: None,
+            anti_spiral_enabled: false,
         })
     }
 

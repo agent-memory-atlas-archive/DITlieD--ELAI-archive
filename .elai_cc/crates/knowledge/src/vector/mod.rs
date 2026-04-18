@@ -89,9 +89,10 @@ pub trait VectorModule {
 /// Production embedding module using two ONNX sessions: one for code
 /// (GraphCodeBERT, 768-dim) and one for text (Granite, 384-dim).
 ///
-/// Gracefully degrades: if either session's embed() returns Err (including the
-/// current stub), callers get VectorError::OrtError and the pipeline falls back
-/// to BM25-only via the degradation cascade.
+/// Gracefully degrades: if either session's embed() returns Err, callers
+/// get VectorError::OrtError and the pipeline falls back to BM25-only via
+/// the degradation cascade. embed() is fully wired against ORT sessions
+/// (see ort_session.rs:128).
 pub struct OrtVectorModule {
     code_session: ort_session::OrtSession,
     text_session: ort_session::OrtSession,

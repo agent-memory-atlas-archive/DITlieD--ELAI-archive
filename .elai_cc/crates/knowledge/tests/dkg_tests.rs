@@ -59,7 +59,7 @@ fn parse_rust_file_extracts_nodes() {
     )
     .unwrap();
 
-    // build_graph is a todo!() stub — this will panic (TDD red)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok(), "build_graph should succeed");
     let nodes = engine.nodes().unwrap();
@@ -106,7 +106,7 @@ fn incremental_update_changes_hash_and_stale() {
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("lib.rs"), "pub fn v1() {}\n").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let _r1 = engine.build_graph(dir.path());
     assert!(_r1.is_ok(), "first build should succeed");
 
@@ -142,7 +142,7 @@ fn file_hash_round_trip_matches_blake3() {
     let content = b"fn deterministic() {}";
     std::fs::write(src_dir.join("lib.rs"), content).unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok());
 
@@ -321,7 +321,7 @@ fn empty_file_zero_nodes_no_panic() {
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("empty.rs"), "").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok(), "empty file should not cause panic");
     let nodes = engine.nodes().unwrap();
@@ -341,7 +341,7 @@ fn syntax_error_partial_no_crash_failed_status() {
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("bad.rs"), "fn broken( { struct Incomplete\n").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok(), "syntax error should not crash build_graph");
     let failed = engine.failed_files().unwrap();
@@ -364,7 +364,7 @@ fn binary_file_zero_nodes_graceful_failed_status() {
     )
     .unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok(), "binary file should not crash");
 }
@@ -397,7 +397,7 @@ fn dkg_readiness_empty_after_empty_directory_build() {
     let src_dir = dir.path().join("empty_project");
     std::fs::create_dir_all(&src_dir).unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(&src_dir);
     assert!(result.is_ok());
     assert_eq!(engine.dkg_readiness(), DkgReadiness::Empty);
@@ -417,7 +417,7 @@ fn build_graph_multi_file_populates_all() {
     std::fs::write(src_dir.join("a.rs"), "pub fn a_fn() {}\n").unwrap();
     std::fs::write(src_dir.join("b.rs"), "pub struct B;\n").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok());
     let graph = result.unwrap();
@@ -434,7 +434,7 @@ fn build_graph_records_file_hash_in_dkg_files() {
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("lib.rs"), "pub fn tracked() {}\n").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok());
 
@@ -454,7 +454,7 @@ fn build_graph_sets_parse_status_ok_for_valid_files() {
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("valid.rs"), "pub fn valid() { 1 + 1; }\n").unwrap();
 
-    // build_graph is todo!() — TDD red (panics)
+    // build_graph is implemented (src/dkg/mod.rs:148) — TDD green
     let result = engine.build_graph(dir.path());
     assert!(result.is_ok());
 

@@ -222,6 +222,14 @@ pub enum FsmError {
         state: FsmState,
         category: crate::tool_filter::ToolCategory,
     },
+    /// Session wire-a12: the `AUDITING -> MEMORIZING` transition is rejected
+    /// because the cached [`crate::deterministic_audit_gate::DeterministicAuditGate`]
+    /// result from the most recent `_ -> Auditing` evaluation carries at least
+    /// one BLOCK-severity finding. The agent must resolve the BLOCK findings
+    /// and re-enter AUDITING before MEMORIZING can be reached.
+    AuditingBlocked {
+        block_count: usize,
+    },
 }
 
 impl std::fmt::Display for FsmError {
@@ -256,6 +264,12 @@ impl std::fmt::Display for FsmError {
                 write!(
                     f,
                     "tool {tool_name} ({category:?}) blocked in state {state}"
+                )
+            }
+            FsmError::AuditingBlocked { block_count } => {
+                write!(
+                    f,
+                    "AUDITING -> MEMORIZING rejected: deterministic auditor reported {block_count} BLOCK finding(s); resolve and re-enter AUDITING"
                 )
             }
         }
@@ -319,6 +333,12 @@ pub struct Fsm {
     inner: Mutex<FsmInner>,
     workload_emitter: Option<WorkloadEmitter>,
     model_pool: Option<Arc<dyn crate::agent_pool::ModelPool>>,
+    /// Session wire-a12: when `Some`, the gate is consulted on every
+    /// `_ -> Auditing` transition (result cached in `FsmInner.last_audit_result`)
+    /// and the `Auditing -> Memorizing` transition rejects with
+    /// `FsmError::AuditingBlocked` if the cached result has any BLOCK findings.
+    deterministic_audit_gate:
+        Option<Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>>,
 }
 
 impl std::fmt::Debug for Fsm {
@@ -335,6 +355,10 @@ struct FsmInner {
     transition_history: Vec<TransitionRecord>,
     persist_path: Option<PathBuf>,
     preload_manager: crate::preload::PreloadManager,
+    /// Session wire-a12: cached result of the most recent `_ -> Auditing`
+    /// gate evaluation. Consumed by the AUDITING -> MEMORIZING transition
+    /// guard. Cleared when AUDITING is re-entered (a new run overwrites).
+    last_audit_result: Option<crate::deterministic_auditor::DeterministicAuditResult>,
 }
 
 fn now_ms() -> u64 {
@@ -356,9 +380,11 @@ impl Fsm {
                 transition_history: Vec::new(),
                 persist_path,
                 preload_manager: crate::preload::PreloadManager::new(),
+                last_audit_result: None,
             }),
             workload_emitter: None,
             model_pool: None,
+            deterministic_audit_gate: None,
         }
     }
 
@@ -366,6 +392,33 @@ impl Fsm {
     pub fn with_model_pool(mut self, pool: Arc<dyn crate::agent_pool::ModelPool>) -> Self {
         self.model_pool = Some(pool);
         self
+    }
+
+    /// Session wire-a12: install a [`crate::deterministic_audit_gate::DeterministicAuditGate`].
+    ///
+    /// After this is set, the FSM:
+    ///   * calls `gate.evaluate(source, target)` on every `_ -> Auditing`
+    ///     transition and caches the [`crate::deterministic_auditor::DeterministicAuditResult`];
+    ///   * rejects `Auditing -> Memorizing` with [`FsmError::AuditingBlocked`]
+    ///     whenever the cached result has any BLOCK-severity findings.
+    ///
+    /// Builder-style consumer; returns `self` so the setter can be chained with
+    /// `Fsm::new(...).with_model_pool(...).with_deterministic_audit_gate(...)`.
+    pub fn with_deterministic_audit_gate(
+        mut self,
+        gate: Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>,
+    ) -> Self {
+        self.deterministic_audit_gate = Some(gate);
+        self
+    }
+
+    /// Mutable setter companion to [`Self::with_deterministic_audit_gate`].
+    /// Useful when the FSM is already owned by a struct field.
+    pub fn set_deterministic_audit_gate(
+        &mut self,
+        gate: Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>,
+    ) {
+        self.deterministic_audit_gate = Some(gate);
     }
 
     /// Set a callback to emit WorkloadProfilePayload to SSB on phase transitions.
@@ -402,9 +455,11 @@ impl Fsm {
                 transition_history: persisted.transition_history,
                 persist_path: Some(path.to_path_buf()),
                 preload_manager: crate::preload::PreloadManager::new(),
+                last_audit_result: None,
             }),
             workload_emitter: None,
             model_pool: None,
+            deterministic_audit_gate: None,
         })
     }
 
@@ -444,6 +499,15 @@ impl Fsm {
         self.inner.lock().await.transition_history.clone()
     }
 
+    /// Session wire-a12: inspect the cached deterministic audit result from
+    /// the most recent `_ -> Auditing` transition. Returns `None` if no gate
+    /// was installed or AUDITING has not been entered yet.
+    pub async fn last_audit_result(
+        &self,
+    ) -> Option<crate::deterministic_auditor::DeterministicAuditResult> {
+        self.inner.lock().await.last_audit_result.clone()
+    }
+
     /// Attempt a state transition. Validates against the transition matrix.
     /// On success, persists to disk (if persist_path set) and records the transition.
     /// If `metrics` is provided and a workload emitter is set, emits a
@@ -476,6 +540,30 @@ impl Fsm {
         let source = guard.state;
         if !source.can_transition_to(target) {
             return Err(FsmError::InvalidTransition { source, target });
+        }
+
+        // Session wire-a12: gate AUDITING -> MEMORIZING on any BLOCK finding
+        // from the most recent `_ -> Auditing` evaluation. This is consulted
+        // BEFORE state mutation so the FSM stays in AUDITING on rejection.
+        if source == FsmState::Auditing && target == FsmState::Memorizing {
+            if let Some(ref result) = guard.last_audit_result {
+                let block_count = result.block_count();
+                if block_count > 0 {
+                    return Err(FsmError::AuditingBlocked { block_count });
+                }
+            }
+        }
+
+        // Session wire-a12: on entering AUDITING, evaluate the deterministic
+        // gate and cache the result. Findings are emitted by the gate impl
+        // (fire-and-forget — see `DefaultDeterministicAuditGate`).
+        if target == FsmState::Auditing {
+            if let Some(ref gate) = self.deterministic_audit_gate {
+                let result = gate.evaluate(source, target);
+                guard.last_audit_result = Some(result);
+            } else {
+                guard.last_audit_result = None;
+            }
         }
 
         let record = TransitionRecord {

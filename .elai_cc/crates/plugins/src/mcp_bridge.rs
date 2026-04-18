@@ -1,5 +1,14 @@
 // MCP Bridge - connects orchestrator to external MCP servers for tool access
 // Based on spec from plugins.txt S4 and phase-3J.txt step 9
+//
+// Behind the `mcp` feature (default = off; see Cargo.toml `[features]`).
+// In MVP, every `mcp_*` tool call the workflow makes (`mcp_think`,
+// `mcp_fsm_*`, `mcp_search_context`, …) is served by the Claude-Code-hosted
+// Python MCP server, not by this Rust bridge. `DefaultMcpBridge` +
+// `McpConnectionManager` + `HeartbeatMonitor` are scaffolding for a future
+// in-process MCP host (e.g. dashboard Tauri → Rust tool invocation without
+// crossing the Python boundary). Do not remove without confirming the
+// dashboard roadmap does not require in-process MCP.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
