@@ -22,6 +22,7 @@ pub mod fsm;
 pub mod gate;
 mod hooks;
 pub mod hook_dispatcher;
+pub mod shortcoder_hook;
 pub mod provider_signals;
 pub mod indexing_service;
 pub mod ipc;
@@ -172,9 +173,15 @@ pub use hooks::{
     HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
 };
 pub use hook_dispatcher::{
-    emit_hook_events_to_ssb, HookDispatcher, HookError as HookDispatcherError, HookFinding,
-    HookInvocation, HookPoint, HookTier, HookVerdictKind, InProcessHookDispatcher,
-    ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
+    emit_hook_events_to_ssb, emit_shortcoder_compression_to_ssb,
+    emit_tiered_analysis_summary_to_ssb, sanitized_block_message, HookDispatcher,
+    HookError as HookDispatcherError, HookFinding, HookInvocation, HookPoint, HookTier,
+    HookVerdictKind, InProcessHookDispatcher, ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
+    SANITIZED_BLOCK_MESSAGE,
+};
+pub use shortcoder_hook::{
+    ShortCoderHook, ShortCoderHookError, ShortCoderOutcome, ELAI_DISABLE_SHORTCODER_ENV,
+    SHORTCODER_MAX_RULES_EMITTED,
 };
 pub use provider_signals::{
     provider_signals_disabled_via_env, EtcState, GgSignals, NoveltySignal,

@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'task_submitted',
         'hook_event',
         'provider_signals', 'search_trigger_fired', 'vram_tier_detected',
-        'indexing_progress', 'dkg_ready'
+        'indexing_progress', 'dkg_ready',
+        'tiered_analysis', 'shortcoder_compression'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -139,6 +140,17 @@ pub enum SsbActionType {
     /// lifetime, immediately after the first successful
     /// `IndexingService::run_full_index`. Carries a [`DkgReadyPayload`].
     DkgReady,
+    /// Batch 2A: per-hook-invocation summary complementing the per-verdict
+    /// `HookEvent` rows. Emitted once per T1/T2/T3 dispatch with timings and
+    /// rule counts so the dashboard can surface "T1 · 3 rules / 0.4ms"
+    /// without having to aggregate individual HookEvent rows. Carries a
+    /// [`TieredAnalysisPayload`].
+    TieredAnalysis,
+    /// Batch 2A: one row per ShortCoder compression at the PostToolUse
+    /// boundary. Records the byte count before/after and which rules fired
+    /// so the dashboard can render "ShortCoder · 1200→320 tokens (73%)".
+    /// Carries a [`ShortCoderCompressionPayload`].
+    ShortCoderCompression,
 }
 
 impl SsbActionType {
@@ -183,6 +195,8 @@ impl SsbActionType {
             Self::VramTierDetected => "vram_tier_detected",
             Self::IndexingProgress => "indexing_progress",
             Self::DkgReady => "dkg_ready",
+            Self::TieredAnalysis => "tiered_analysis",
+            Self::ShortCoderCompression => "shortcoder_compression",
         }
     }
 }
@@ -233,6 +247,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "vram_tier_detected" => Ok(SsbActionType::VramTierDetected),
         "indexing_progress" => Ok(SsbActionType::IndexingProgress),
         "dkg_ready" => Ok(SsbActionType::DkgReady),
+        "tiered_analysis" => Ok(SsbActionType::TieredAnalysis),
+        "shortcoder_compression" => Ok(SsbActionType::ShortCoderCompression),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -754,6 +770,51 @@ pub struct HookEventPayload {
     pub hook_point: String,
 }
 
+/// Batch 2A — payload for a per-invocation tiered-analysis summary row.
+///
+/// Written once per T1/T2/T3 dispatch in addition to the per-verdict
+/// [`HookEventPayload`] rows. Lets the dashboard render "T1 · 3 rules /
+/// 0.4ms" without having to aggregate the individual hook_event rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TieredAnalysisPayload {
+    /// `"T1"` / `"T2"` / `"T3"` — matches `elai_orchestrator::hook_dispatcher::HookTier::as_str`.
+    pub tier: String,
+    /// `"Allow"` / `"Warn"` / `"Block"` — matches `HookVerdictKind::as_str`.
+    pub verdict: String,
+    /// Number of rules / AST checks / patterns that produced a non-Allow
+    /// verdict during this invocation.
+    pub rule_count_fired: u32,
+    /// Wall-clock elapsed time for this tier only, in microseconds.
+    pub elapsed_us: u64,
+    /// Baby-step identifier (typically `"baby_step_<N>"`).
+    pub step_id: String,
+    /// High-level category string (e.g. `"structural"`, `"accessibility_hint"`,
+    /// `"naming_convention"`, `"todo_public_api"` for T3 advisories;
+    /// `"hook_event"` for T1/T2 composite rows).
+    pub category: String,
+}
+
+/// Batch 2A — payload for a ShortCoder compression row.
+///
+/// Emitted once per PostToolUse invocation when the ShortCoder simplifies
+/// an [`AgentResponse`] before the auditor reads it. Approximate token
+/// counts use the 4-chars-per-token heuristic that matches the rest of
+/// the codebase (see `output_postprocessor::CHARS_PER_TOKEN`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortCoderCompressionPayload {
+    /// Approximate input token count (bytes / 4).
+    pub tokens_in: u32,
+    /// Approximate output token count (bytes / 4).
+    pub tokens_out: u32,
+    /// Percent reduction in [0, 100]. `0` means no reduction (or expansion).
+    pub reduction_pct: u32,
+    /// Baby-step identifier.
+    pub step_id: String,
+    /// Stable rule labels that fired (e.g. `["collapse_bodies",
+    /// "strip_line_comments"]`). Max 10 — capped to prevent runaway size.
+    pub rules_applied: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all 31 action-type payloads)
 // ---------------------------------------------------------------------------
@@ -809,6 +870,8 @@ pub enum SsbPayload {
     VramTierDetected(VramTierDetectedPayload),
     IndexingProgress(IndexingProgressPayload),
     DkgReady(DkgReadyPayload),
+    TieredAnalysis(TieredAnalysisPayload),
+    ShortCoderCompression(ShortCoderCompressionPayload),
 }
 
 impl SsbPayload {
@@ -854,6 +917,8 @@ impl SsbPayload {
             Self::VramTierDetected(_) => SsbActionType::VramTierDetected,
             Self::IndexingProgress(_) => SsbActionType::IndexingProgress,
             Self::DkgReady(_) => SsbActionType::DkgReady,
+            Self::TieredAnalysis(_) => SsbActionType::TieredAnalysis,
+            Self::ShortCoderCompression(_) => SsbActionType::ShortCoderCompression,
         }
     }
 }
@@ -1876,6 +1941,23 @@ mod tests {
                 edge_count: 0,
                 languages: vec![],
             }),
+            SsbActionType::TieredAnalysis => SsbPayload::TieredAnalysis(TieredAnalysisPayload {
+                tier: "T1".into(),
+                verdict: "Allow".into(),
+                rule_count_fired: 0,
+                elapsed_us: 0,
+                step_id: "step-1".into(),
+                category: "hook_event".into(),
+            }),
+            SsbActionType::ShortCoderCompression => {
+                SsbPayload::ShortCoderCompression(ShortCoderCompressionPayload {
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    reduction_pct: 0,
+                    step_id: "step-1".into(),
+                    rules_applied: vec![],
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }

@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub use hooks::{HookEvent, HookRunResult, HookRunner};
-pub use tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisResult, TieredAnalysisError};
+pub use tiered_analysis::{
+    HookVerdict, T3Category, TieredAnalysis, TieredAnalysisError, TieredAnalysisResult,
+    ELAI_DISABLE_T2_ENV, ELAI_DISABLE_T3_ENV,
+};
 pub use ipc_hooks::{
     IpcHookTrait, IpcHookDispatcher, IpcHookError, HookContext, IpcHookEvent, HookResult,
     SsbFindingWriter, NoopSsbWriter, CrossSessionLockChecker, NoopLockChecker,

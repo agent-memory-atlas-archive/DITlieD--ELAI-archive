@@ -27,7 +27,10 @@ use tracing::{debug, trace, warn};
 
 use elai_plugins::tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisError};
 
-use crate::ssb::{HookEventPayload, Ssb, SsbPayload};
+use crate::shortcoder_hook::{ShortCoderHook, ShortCoderOutcome};
+use crate::ssb::{
+    HookEventPayload, ShortCoderCompressionPayload, Ssb, SsbPayload, TieredAnalysisPayload,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,6 +49,26 @@ pub const HOOK_EVENT_CATEGORY: &str = "hook_event";
 ///
 /// Matches the env-var escape-hatch pattern used by other dashboard toggles.
 pub const ELAI_HOOKS_DISABLED_ENV: &str = "ELAI_HOOKS_DISABLED";
+
+/// Batch 2A — sanitized user-facing message for Block verdicts surfaced on
+/// the IPC surface. The agent MUST only ever see this string plus the
+/// finding's category tag; the detailed `rule_id` / pattern hash lives
+/// exclusively on the SSB row for the dashboard.
+pub const SANITIZED_BLOCK_MESSAGE: &str = "tool call rejected by policy";
+
+/// Produce the agent-facing sanitized message for a BLOCK finding.
+///
+/// Format: `"tool call rejected by policy (<category>)"`. The rule_id
+/// and original message are intentionally dropped so an adversarial
+/// agent can't probe the rule set by triggering BLOCKs.
+#[must_use]
+pub fn sanitized_block_message(category: &str) -> String {
+    if category.is_empty() {
+        SANITIZED_BLOCK_MESSAGE.to_string()
+    } else {
+        format!("{SANITIZED_BLOCK_MESSAGE} ({category})")
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Value types
@@ -316,8 +339,15 @@ pub trait HookDispatcher: Send + Sync {
 /// hook point. Stop and PreCompact currently evaluate T1 only — T2/T3 are
 /// gated on `action_type == "file_write"` inside `TieredAnalysis::analyze`,
 /// and neither task-lifecycle event carries a file.
+///
+/// Batch 2A: also holds an optional [`ShortCoderHook`] that fires from
+/// `dispatch_post_tool_use` BEFORE the tiered pass — the sanitized
+/// compressed output is what the auditor reads while the executor's
+/// `invocation.source` stays untouched (this struct is stateless on the
+/// input string — it only takes `&HookInvocation` by reference).
 pub struct InProcessHookDispatcher {
     tiered: Option<Arc<TieredAnalysis>>,
+    shortcoder: Option<Arc<ShortCoderHook>>,
     disabled: bool,
 }
 
@@ -337,7 +367,31 @@ impl InProcessHookDispatcher {
                 "hook dispatcher disabled via env — baby steps run without T1/T2/T3",
             );
         }
-        Self { tiered, disabled }
+        Self {
+            tiered,
+            shortcoder: None,
+            disabled,
+        }
+    }
+
+    /// Batch 2A — construct with a ShortCoder PostToolUse hook installed.
+    /// Equivalent to `Self::new(tiered).with_shortcoder(shortcoder)`.
+    #[must_use]
+    pub fn with_tiered_and_shortcoder(
+        tiered: Option<Arc<TieredAnalysis>>,
+        shortcoder: Option<Arc<ShortCoderHook>>,
+    ) -> Self {
+        let mut this = Self::new(tiered);
+        this.shortcoder = shortcoder;
+        this
+    }
+
+    /// Attach a [`ShortCoderHook`] after construction. Overwrites any
+    /// previously installed hook; builder-style for tests.
+    #[must_use]
+    pub fn with_shortcoder(mut self, shortcoder: Arc<ShortCoderHook>) -> Self {
+        self.shortcoder = Some(shortcoder);
+        self
     }
 
     /// Returns true if the env-var escape hatch is engaged.
@@ -350,6 +404,29 @@ impl InProcessHookDispatcher {
     #[must_use]
     pub fn has_tiered(&self) -> bool {
         self.tiered.is_some()
+    }
+
+    /// Returns true when a ShortCoder hook is installed.
+    #[must_use]
+    pub fn has_shortcoder(&self) -> bool {
+        self.shortcoder.is_some()
+    }
+
+    /// Run the configured ShortCoder (if any) on the PostToolUse payload.
+    /// Returns `None` when the dispatcher is disabled globally, no hook is
+    /// installed, or the input can't be compressed.
+    #[must_use]
+    pub fn shortcode(
+        &self,
+        source: &str,
+        file_path: Option<&str>,
+    ) -> Option<ShortCoderOutcome> {
+        if self.disabled {
+            return None;
+        }
+        self.shortcoder
+            .as_ref()
+            .map(|sc| sc.compress(source, file_path))
     }
 
     fn analyze(&self, invocation: &HookInvocation<'_>) -> Result<Vec<HookFinding>, HookError> {
@@ -392,25 +469,61 @@ fn push_finding(out: &mut Vec<HookFinding>, tier: HookTier, verdict: &HookVerdic
     if matches!(kind, HookVerdictKind::Allow) && !matches!(tier, HookTier::Composite) {
         return;
     }
-    let (message, rule_id) = match verdict {
-        HookVerdict::Allow => ("allow".to_string(), None),
+    let (rule_id, category, detailed_message) = match verdict {
+        HookVerdict::Allow => (None, HOOK_EVENT_CATEGORY.to_string(), "allow".to_string()),
         HookVerdict::Warn {
             message,
             pattern_hash,
-        } => (message.clone(), Some(pattern_hash.clone())),
+        } => (
+            Some(pattern_hash.clone()),
+            extract_category(message).unwrap_or_else(|| HOOK_EVENT_CATEGORY.to_string()),
+            message.clone(),
+        ),
         HookVerdict::Block {
             message,
             pattern_hash,
-        } => (message.clone(), Some(pattern_hash.clone())),
+        } => (
+            Some(pattern_hash.clone()),
+            extract_category(message).unwrap_or_else(|| HOOK_EVENT_CATEGORY.to_string()),
+            message.clone(),
+        ),
+    };
+    // Batch 2A: Block messages at the IPC surface are sanitized so the
+    // agent never sees rule_ids or internal details. The detailed_message
+    // travels to the SSB via emit_hook_events_to_ssb (which reads the
+    // original verdict payload via the TieredAnalysisPayload row).
+    let message = match kind {
+        HookVerdictKind::Block => sanitized_block_message(&category),
+        _ => detailed_message,
     };
     out.push(HookFinding {
         tier,
         verdict: kind,
         rule_id,
-        category: HOOK_EVENT_CATEGORY.to_string(),
+        category,
         message,
         fix_template: None,
     });
+}
+
+/// Extract a category tag from a T3 advisory message of the form
+/// `"[category_name] ...details..."`. Returns `None` for messages that
+/// don't start with a bracketed tag (T1/T2 verdicts, Allow breadcrumbs).
+fn extract_category(message: &str) -> Option<String> {
+    let rest = message.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let tag = &rest[..close];
+    // Guard against ridiculous or empty tags. A sensible category is
+    // lowercase ASCII + underscores, bounded to 64 chars.
+    if tag.is_empty()
+        || tag.len() > 64
+        || !tag
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(tag.to_string())
 }
 
 impl HookDispatcher for InProcessHookDispatcher {
@@ -500,6 +613,85 @@ pub async fn emit_hook_events_to_ssb(
         }
     }
     count
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2A — per-invocation summary + ShortCoder SSB emission helpers
+// ---------------------------------------------------------------------------
+
+/// Write a per-invocation [`TieredAnalysisPayload`] row summarising one
+/// tier's dispatch. Complementary to `emit_hook_events_to_ssb` which
+/// emits one row per verdict; this helper emits ONE row per tier per
+/// invocation with timing + counts the dashboard can trend.
+///
+/// Returns `true` when the write succeeded, `false` on any SSB error
+/// (logged via tracing::warn at the call site — we never panic).
+pub async fn emit_tiered_analysis_summary_to_ssb(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    tier: HookTier,
+    verdict: HookVerdictKind,
+    rule_count_fired: u32,
+    elapsed_us: u64,
+    step_id: &str,
+    category: &str,
+) -> bool {
+    let payload = SsbPayload::TieredAnalysis(TieredAnalysisPayload {
+        tier: tier.as_str().to_string(),
+        verdict: verdict.as_str().to_string(),
+        rule_count_fired,
+        elapsed_us,
+        step_id: step_id.to_string(),
+        category: category.to_string(),
+    });
+    match writer
+        .write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                error = %e,
+                tier = tier.as_str(),
+                "hook_dispatcher: failed to emit TieredAnalysis summary"
+            );
+            false
+        }
+    }
+}
+
+/// Write a [`ShortCoderCompressionPayload`] row for a single PostToolUse
+/// compression. Safe to call with `ShortCoderOutcome::Skipped` — in that
+/// case the row records zeros so the dashboard can see the hook fired
+/// and chose to skip (reason lands in a future payload field extension).
+pub async fn emit_shortcoder_compression_to_ssb(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    outcome: &ShortCoderOutcome,
+    step_id: &str,
+) -> bool {
+    let payload = SsbPayload::ShortCoderCompression(ShortCoderCompressionPayload {
+        tokens_in: outcome.tokens_in(),
+        tokens_out: outcome.tokens_out(),
+        reduction_pct: outcome.reduction_pct(),
+        step_id: step_id.to_string(),
+        rules_applied: outcome.rules_applied_labels(),
+    });
+    match writer
+        .write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "hook_dispatcher: failed to emit ShortCoderCompression row"
+            );
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

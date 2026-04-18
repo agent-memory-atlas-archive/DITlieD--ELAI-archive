@@ -121,6 +121,28 @@ const DEFAULT_HARD_BLOCK: usize = 600;
 const APPROACHING_LIMIT_RATIO: f64 = 0.8;
 
 // ---------------------------------------------------------------------------
+// Batch 2A — per-tier env kill switches
+// ---------------------------------------------------------------------------
+
+/// Env var that disables the T2 tier only. When `1`/`true`/`on`, the T2
+/// AST checks are skipped (T1 still runs; T3 cannot fire because T3 needs
+/// either T1 or T2 to emit WARN). Useful for debugging tree-sitter crashes
+/// on a suspect file without losing T1 rule coverage.
+pub const ELAI_DISABLE_T2_ENV: &str = "ELAI_DISABLE_T2";
+
+/// Env var that disables the T3 advisory layer only. When `1`/`true`/`on`,
+/// T3 pattern matching is skipped; T1/T2 verdicts still fire.
+pub const ELAI_DISABLE_T3_ENV: &str = "ELAI_DISABLE_T3";
+
+/// Returns true when the given env var is set to `1`/`true`/`TRUE`/`on`/`ON`.
+/// Centralised so every kill switch uses the same truthy set.
+pub(crate) fn env_flag_true(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
 // Language detection + test file heuristics (shared by T1 + T2)
 // ---------------------------------------------------------------------------
 
@@ -1536,12 +1558,40 @@ impl std::fmt::Display for T2Error {
 impl std::error::Error for T2Error {}
 
 // ---------------------------------------------------------------------------
-// T3: PATTERN MATCH hook (<5ms target)
+// T3: PATTERN MATCH hook (<5ms target) — advisory layer
 // ---------------------------------------------------------------------------
+
+/// Pattern category for T3 advisories. The finding carries this so the
+/// dashboard can group rows (accessibility / naming / todo / structural).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum T3Category {
+    /// Structural advisory (exception swallowing, long function, etc.).
+    Structural,
+    /// Accessibility hint (web domain — A-24 accessibility_hint).
+    AccessibilityHint,
+    /// Naming convention hint (A-32/A-33 conventions).
+    NamingConvention,
+    /// TODO/FIXME reminder in public API surface.
+    TodoPublicApi,
+}
+
+impl T3Category {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Structural => "structural",
+            Self::AccessibilityHint => "accessibility_hint",
+            Self::NamingConvention => "naming_convention",
+            Self::TodoPublicApi => "todo_public_api",
+        }
+    }
+}
 
 /// T3 hook matches known-ambiguous patterns when WARN exists and no BLOCK from T1/T2.
 ///
-/// Fires ONLY when (WARN exists) AND (no BLOCK from T1/T2).
+/// Batch 2A: T3 is the ADVISORY layer. It never emits BLOCK verdicts —
+/// every finding is a Warn carrying a human-readable advisory message and
+/// a [`T3Category`] tag. Fires ONLY when (WARN exists) AND (no BLOCK).
 /// Pattern-match library of known-ambiguous patterns. NO LLM.
 /// Performance target: <5ms.
 pub struct T3Hook {
@@ -1558,6 +1608,7 @@ impl T3Hook {
     /// Match against known-ambiguous patterns.
     ///
     /// Returns None if no patterns match or if should not fire (BLOCK from T1/T2).
+    /// All findings are advisory (Warn) per Batch 2A spec.
     /// Performance target: <5ms.
     pub fn evaluate(&self, source: &str, file_path: &str) -> Option<HookVerdict> {
         let start = Instant::now();
@@ -1569,8 +1620,8 @@ impl T3Hook {
                     tracing::warn!("T3 hook exceeded 5ms target: {:?}", duration);
                 }
 
-                return Some(HookVerdict::Block {
-                    message: pattern.message.clone(),
+                return Some(HookVerdict::Warn {
+                    message: format!("[{}] {}", pattern.category.as_str(), pattern.message),
                     pattern_hash: Self::hash_pattern(&pattern.id),
                 });
             }
@@ -1587,17 +1638,67 @@ impl T3Hook {
         static LONG_FN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r"(?m)^\s*def\s+\w+.*:(?:\n\s+.*){200,}").unwrap()
         });
+        // A-24 accessibility hint: <img> tag missing alt attribute.
+        // Rust regex has no look-around so we do a two-step check in
+        // [`AmbiguousPattern::matches`] below: match any <img ...>, then
+        // verify "alt=" is absent inside the matched span.
+        static IMG_TAG_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(?is)<img\b[^>]*>").unwrap()
+        });
+        static IMG_ALT_ATTR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(?i)\balt\s*=").unwrap()
+        });
+        // Naming convention hint: camelCase identifier at fn declaration in
+        // Rust/Go (both prefer snake_case for functions). Intentionally
+        // narrow — matches `fn camelCase(` / `func camelCase(`.
+        static CAMEL_FN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"\b(?:fn|func)\s+[a-z]+[A-Z][A-Za-z0-9]*\s*\(").unwrap()
+        });
+        // TODO/FIXME in public API surface: matches a TODO/FIXME comment on
+        // the line immediately preceding a `pub fn` / `pub struct`
+        // declaration. Low-priority advisory.
+        static TODO_PUB_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(
+                r"(?m)^\s*(?://|#)\s*(?:TODO|FIXME)\b.*\n\s*pub\s+(?:fn|struct|enum|trait|mod)\b",
+            )
+            .unwrap()
+        });
 
         vec![
             AmbiguousPattern {
                 id: "swallow_exception".to_string(),
                 regex: SWALLOW_RE.clone(),
                 message: "Exception swallowing detected".to_string(),
+                category: T3Category::Structural,
+                secondary_absent: None,
             },
             AmbiguousPattern {
                 id: "long_function".to_string(),
                 regex: LONG_FN_RE.clone(),
                 message: "Function exceeds 200 lines".to_string(),
+                category: T3Category::Structural,
+                secondary_absent: None,
+            },
+            AmbiguousPattern {
+                id: "a11y_img_missing_alt".to_string(),
+                regex: IMG_TAG_RE.clone(),
+                message: "Image tag missing alt attribute".to_string(),
+                category: T3Category::AccessibilityHint,
+                secondary_absent: Some(IMG_ALT_ATTR_RE.clone()),
+            },
+            AmbiguousPattern {
+                id: "naming_fn_camelcase".to_string(),
+                regex: CAMEL_FN_RE.clone(),
+                message: "Function name uses camelCase (prefer snake_case)".to_string(),
+                category: T3Category::NamingConvention,
+                secondary_absent: None,
+            },
+            AmbiguousPattern {
+                id: "todo_on_public_api".to_string(),
+                regex: TODO_PUB_RE.clone(),
+                message: "TODO/FIXME comment on public API declaration".to_string(),
+                category: T3Category::TodoPublicApi,
+                secondary_absent: None,
             },
         ]
     }
@@ -1605,19 +1706,44 @@ impl T3Hook {
     fn hash_pattern(pattern_id: &str) -> String {
         blake3::hash(pattern_id.as_bytes()).to_hex().to_string()
     }
+
+    /// Number of configured patterns (for telemetry / testing).
+    #[must_use]
+    pub fn pattern_count(&self) -> usize {
+        self.patterns.len()
+    }
 }
 
 /// A known-ambiguous pattern to match.
+///
+/// `secondary_absent` is a compile-time workaround for look-around: a match
+/// on the primary `regex` counts only when the secondary regex does NOT
+/// match inside the matched span. Used by `a11y_img_missing_alt` to catch
+/// `<img>` tags that lack an `alt=` attribute (rust-regex has no
+/// look-ahead; we can't `(?!alt=)` directly).
 #[derive(Debug, Clone)]
 struct AmbiguousPattern {
     id: String,
     regex: regex::Regex,
     message: String,
+    category: T3Category,
+    secondary_absent: Option<regex::Regex>,
 }
 
 impl AmbiguousPattern {
     fn matches(&self, source: &str, _file_path: &str) -> bool {
-        self.regex.is_match(source)
+        match &self.secondary_absent {
+            None => self.regex.is_match(source),
+            Some(must_absent) => {
+                // Primary match must exist AND the secondary pattern must
+                // NOT appear inside the matched substring. Walk all
+                // matches to make the predicate meaningful on repeated
+                // occurrences.
+                self.regex.find_iter(source).any(|m| {
+                    !must_absent.is_match(m.as_str())
+                })
+            }
+        }
     }
 }
 
@@ -1704,6 +1830,10 @@ impl TieredAnalysis {
     /// Run tiered analysis on an SSB write.
     ///
     /// Returns the final verdict and timing information.
+    ///
+    /// Batch 2A: per-tier env kill switches honored:
+    /// - `ELAI_DISABLE_T2=1` skips the T2 AST pass entirely (T1 still runs).
+    /// - `ELAI_DISABLE_T3=1` skips the T3 advisory pass entirely.
     pub fn analyze(
         &self,
         action_type: &str,
@@ -1718,20 +1848,31 @@ impl TieredAnalysis {
         let t1_file_path = file_path.unwrap_or("");
         let t1_verdict = self.t1.evaluate(action_type, t1_source, t1_file_path, metric_values)?;
 
-        // T2: Only fires on file_write
-        let t2_verdict = if let (true, Some(src)) = (action_type == "file_write", source) {
-            self.t2.evaluate(src, file_path.unwrap_or(""))?
+        let t2_disabled = env_flag_true(ELAI_DISABLE_T2_ENV);
+        let t3_disabled = env_flag_true(ELAI_DISABLE_T3_ENV);
+
+        // T2: Only fires on file_write (unless killed by env var)
+        let t2_verdict = if !t2_disabled {
+            if let (true, Some(src)) = (action_type == "file_write", source) {
+                self.t2.evaluate(src, file_path.unwrap_or(""))?
+            } else {
+                None
+            }
         } else {
             None
         };
 
-        // T3: Only fires when WARN exists AND no BLOCK from T1/T2
+        // T3: Only fires when WARN exists AND no BLOCK from T1/T2 (unless killed)
         let t2_has_warn = matches!(t2_verdict, Some(HookVerdict::Warn { .. }));
         let t2_has_block = matches!(t2_verdict, Some(HookVerdict::Block { .. }));
         let has_warn = t1_verdict.is_warn() || t2_has_warn;
         let has_block = t1_verdict.is_block() || t2_has_block;
-        let t3_verdict = if let (true, false, Some(src)) = (has_warn, has_block, source) {
-            self.t3.evaluate(src, file_path.unwrap_or(""))
+        let t3_verdict = if !t3_disabled {
+            if let (true, false, Some(src)) = (has_warn, has_block, source) {
+                self.t3.evaluate(src, file_path.unwrap_or(""))
+            } else {
+                None
+            }
         } else {
             None
         };
