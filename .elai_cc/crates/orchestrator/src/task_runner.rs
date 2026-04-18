@@ -66,8 +66,13 @@ use elai_rules::rule_engine::{
     ALWAYS_INCLUDED_DOMAINS as RULES_ALWAYS_INCLUDED_DOMAINS,
 };
 use elai_core::interrogation_tree::TraversalOutcome;
-use elai_core::mistake_book::FailureCategory;
+use elai_core::mistake_book::{DiffHash, FailureCategory, MistakeEntry};
 use elai_reasoning::{default_answers_for_category, traverse_with_answers};
+use crate::mistake_book::{
+    clear_baby_step as mistake_book_clear_baby_step, format_baby_step_constraints,
+    query_by_baby_step as mistake_book_query_by_baby_step,
+    write_mistake as mistake_book_write_mistake,
+};
 use crate::pipeline_tree_navigator::{
     run_integration_checkpoint, BabyStepLocation, BabyStepOutcome, BabyStepResult,
     DecompositionLevel, DepthFirstNavigator, IntegrationRunResult, IntegrationRunner,
@@ -168,6 +173,17 @@ pub const INTERROGATION_TREE_METRIC_CATEGORY: &str = "interrogation_tree_metric"
 /// "rust" — the host project's language. A follow-up (post-A-19.REDO) will
 /// plumb the real `ProjectProfile.language` through `TaskSubmittedPayload`.
 pub const DEFAULT_INTERROGATION_LANGUAGE: &str = "rust";
+
+/// Finding category for MistakeBook constraints injected into the per-baby-step
+/// context slot (Session 3F.REDO). Occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK
+/// reserved in `context_budget.rs:132`. Dashboard filter keys on this string to
+/// surface prior-attempt constraints alongside the retry's reasoning.
+pub const MISTAKE_BOOK_CONSTRAINTS_CATEGORY: &str = "mistake_book_constraints";
+
+/// Action label written into `MistakeEntry::action_taken` for entries emitted
+/// by the task_runner on a failed baby step. Structured code per Code-A1
+/// anti-episodic guidance (no variable names, no code snippets).
+pub const MISTAKE_ACTION_PENDING_RETRY: &str = "pending_retry";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -1779,6 +1795,16 @@ async fn drive_task(
         )
         .await;
 
+        // 3F.REDO: read MistakeBook entries for this baby step and inject the
+        // formatted CONSTRAINTS block into the agent's context via an
+        // `info` Finding. Occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK
+        // slot reserved in context_budget.rs:132. `prior_attempts` carries
+        // into the failure path so the MistakeEntry::attempt_number is
+        // correctly 1-indexed across pipeline invocations.
+        let mistake_book_step_id = format!("baby_step_{}", bs_id.0);
+        let prior_attempts =
+            emit_mistake_book_constraints(writer, &mistake_book_step_id).await;
+
         // 4E.14: runtime PRE_GATE rules evaluation. Emits one Finding per
         // Block/Warn verdict so the dashboard can surface violations. A
         // `None` evaluator matches pre-4E.14 behavior (no-op).
@@ -1925,6 +1951,29 @@ async fn drive_task(
         )
         .await;
         baby_step_outcomes.push((bs_id.0, passed));
+
+        // 3F.REDO: persist / tombstone MistakeBook state for this baby step.
+        //   * On failure: write a new MistakeEntry so the next pipeline
+        //     invocation picks it up via `query_by_baby_step` at PRE_GATE.
+        //     `attempt_number` is `prior_attempts + 1` (1-indexed).
+        //   * On success with prior entries: append a tombstone so the
+        //     constraints block empties and ForbiddenDiffs no longer apply.
+        //   * On success without prior entries: no-op (avoid spurious
+        //     tombstones and the audit-trail churn they would cause).
+        if !passed {
+            let category =
+                classify_baby_step_failure(pre_gate_blocked, !integration_succeeded);
+            record_mistake_on_failure(
+                writer,
+                &mistake_book_step_id,
+                prior_attempts,
+                category,
+                &task_summary,
+            )
+            .await;
+        } else if prior_attempts > 0 {
+            clear_mistakes_on_success(writer, &mistake_book_step_id).await;
+        }
 
         // Session 3C.REDO: per-baby-step checkpoint + recovery-on-failure.
         //   * Always write a checkpoint at the boundary so recovery has fresh
@@ -2253,6 +2302,126 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         .await
     {
         error!(error = %e, "task_runner: write Finding failed");
+    }
+}
+
+/// 3F.REDO: read MistakeBook entries for `baby_step_id` from SSB and, if the
+/// formatted CONSTRAINTS block is non-empty, emit an `info` Finding carrying
+/// it. The payload occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK slot
+/// reserved in `context_budget.rs`. Returns the count of prior entries so the
+/// failure path can assign a 1-indexed `attempt_number`.
+///
+/// A read error is surfaced as a Finding (category remains
+/// [`MISTAKE_BOOK_CONSTRAINTS_CATEGORY`]) and the function returns `0`; the
+/// runner stays alive because this slot is informational.
+async fn emit_mistake_book_constraints(writer: &Arc<Ssb>, baby_step_id: &str) -> u32 {
+    let ssb = writer.as_ref();
+    let prior_entries = match mistake_book_query_by_baby_step(ssb, baby_step_id) {
+        Ok(entries) => entries,
+        Err(e) => {
+            error!(
+                baby_step_id = %baby_step_id,
+                error = %e,
+                "task_runner: MistakeBook query failed"
+            );
+            return 0;
+        }
+    };
+    let prior_attempts = u32::try_from(prior_entries.len()).unwrap_or(u32::MAX);
+    if prior_entries.is_empty() {
+        return 0;
+    }
+    let constraints = match format_baby_step_constraints(ssb, baby_step_id) {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                baby_step_id = %baby_step_id,
+                error = %e,
+                "task_runner: MistakeBook format failed"
+            );
+            return prior_attempts;
+        }
+    };
+    if constraints.is_empty() {
+        return prior_attempts;
+    }
+    emit_finding(
+        writer,
+        "info",
+        MISTAKE_BOOK_CONSTRAINTS_CATEGORY,
+        &constraints,
+    )
+    .await;
+    prior_attempts
+}
+
+/// 3F.REDO: append a [`MistakeEntry`] to SSB for the failed baby step.
+///
+/// `attempt_number` is 1-indexed, derived from the count of prior entries
+/// captured at iteration start. `diff_hash` is blake3 over a structured
+/// "{baby_step_id}|{category}|{task_summary}" seed so repeated failures
+/// against the same task deduplicate across invocations (per `write_mistake`
+/// dedup-by-hash). `root_cause_json` stores the category code only — no
+/// variable names, no code snippets (Code-A1 anti-episodic guidance).
+///
+/// Errors are logged; the runner stays alive so the dashboard keeps
+/// animating. SSB is append-only so a partial write leaves no corruption.
+async fn record_mistake_on_failure(
+    writer: &Arc<Ssb>,
+    baby_step_id: &str,
+    prior_attempts: u32,
+    category: FailureCategory,
+    task_summary: &str,
+) {
+    let seed = format!("{baby_step_id}|{}|{task_summary}", category.as_str());
+    let diff_hash = DiffHash::from_diff(&seed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let entry = MistakeEntry {
+        attempt_number: prior_attempts.saturating_add(1),
+        diff_hash,
+        failure_category: category,
+        faulty_line: None,
+        root_cause_json: Some(format!("{{\"action\":\"{}\"}}", category.as_str())),
+        action_taken: MISTAKE_ACTION_PENDING_RETRY.to_owned(),
+        timestamp,
+    };
+    if let Err(e) = mistake_book_write_mistake(
+        writer.as_ref(),
+        RUNNER_AGENT_ID,
+        RUNNER_SUPERSTEP,
+        baby_step_id,
+        entry,
+    )
+    .await
+    {
+        error!(
+            baby_step_id = %baby_step_id,
+            error = %e,
+            "task_runner: MistakeBook write failed"
+        );
+    }
+}
+
+/// 3F.REDO: write a tombstone clearing all MistakeBook entries for a baby
+/// step that has just succeeded. Called only when prior entries exist so the
+/// tombstone is never spurious.
+async fn clear_mistakes_on_success(writer: &Arc<Ssb>, baby_step_id: &str) {
+    if let Err(e) = mistake_book_clear_baby_step(
+        writer.as_ref(),
+        RUNNER_AGENT_ID,
+        RUNNER_SUPERSTEP,
+        baby_step_id,
+    )
+    .await
+    {
+        error!(
+            baby_step_id = %baby_step_id,
+            error = %e,
+            "task_runner: MistakeBook clear failed"
+        );
     }
 }
 
@@ -4239,6 +4408,107 @@ mod tests {
         assert!(
             find_finding_with_category(&ssb, INTERROGATION_FIX_CATEGORY).is_none(),
             "no fix Finding without a store",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 3F.REDO — MistakeBook task_runner wiring
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mistake_book_constraints_noop_when_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "3f-redo-empty");
+
+        let count = emit_mistake_book_constraints(&ssb, "baby_step_42").await;
+        assert_eq!(count, 0, "empty MistakeBook returns zero prior attempts");
+        assert!(
+            find_finding_with_category(&ssb, MISTAKE_BOOK_CONSTRAINTS_CATEGORY).is_none(),
+            "no constraints Finding when no prior entries exist",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn record_mistake_persists_entry_via_ssb() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "3f-redo-write");
+        let step_id = "baby_step_7";
+
+        record_mistake_on_failure(
+            &ssb,
+            step_id,
+            0,
+            FailureCategory::TestFailure,
+            "task summary",
+        )
+        .await;
+
+        let entries =
+            crate::mistake_book::query_by_baby_step(ssb.as_ref(), step_id).expect("query");
+        assert_eq!(entries.len(), 1, "one MistakeEntry persisted");
+        assert_eq!(entries[0].attempt_number, 1);
+        assert_eq!(entries[0].failure_category, FailureCategory::TestFailure);
+        assert_eq!(entries[0].action_taken, MISTAKE_ACTION_PENDING_RETRY);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constraints_finding_emitted_when_prior_attempts_exist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "3f-redo-inject");
+        let step_id = "baby_step_11";
+
+        record_mistake_on_failure(
+            &ssb,
+            step_id,
+            0,
+            FailureCategory::CompileError,
+            "failing task",
+        )
+        .await;
+
+        let count = emit_mistake_book_constraints(&ssb, step_id).await;
+        assert_eq!(count, 1, "one prior attempt visible at PRE_GATE");
+        let finding = find_finding_with_category(&ssb, MISTAKE_BOOK_CONSTRAINTS_CATEGORY)
+            .expect("constraints Finding emitted");
+        assert!(
+            finding.message.contains("CONSTRAINTS"),
+            "Finding carries the CONSTRAINTS block",
+        );
+        assert!(
+            finding.message.contains("compile_error"),
+            "Finding records prior category",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clear_mistakes_on_success_tombstones_prior_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ssb = ssb_for_test(&tmp, "3f-redo-clear");
+        let step_id = "baby_step_13";
+
+        record_mistake_on_failure(
+            &ssb,
+            step_id,
+            0,
+            FailureCategory::LogicError,
+            "buggy task",
+        )
+        .await;
+        assert_eq!(
+            crate::mistake_book::query_by_baby_step(ssb.as_ref(), step_id)
+                .expect("query")
+                .len(),
+            1,
+        );
+
+        clear_mistakes_on_success(&ssb, step_id).await;
+
+        assert_eq!(
+            crate::mistake_book::query_by_baby_step(ssb.as_ref(), step_id)
+                .expect("query")
+                .len(),
+            0,
+            "tombstone clears the CONSTRAINTS view",
         );
     }
 }
