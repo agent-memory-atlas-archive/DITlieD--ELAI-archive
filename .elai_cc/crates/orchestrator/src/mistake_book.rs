@@ -9,8 +9,8 @@
 //! any `baby_step_id` that has a tombstone, preserving append-only semantics.
 
 use elai_core::mistake_book::{
-    format_constraints, insert_with_eviction, DiffHash, FailureCategory, MistakeEntry,
-    MAX_ENTRIES_PER_STEP,
+    contains_diff, format_constraints, insert_with_eviction, DiffHash, FailureCategory,
+    MistakeEntry, MAX_ENTRIES_PER_STEP,
 };
 
 use crate::ssb::{MistakeEntryPayload, Ssb, SsbActionType, SsbError, SsbPayload, SsbReader};
@@ -64,17 +64,24 @@ pub async fn write_mistake(
     baby_step_id: &str,
     entry: MistakeEntry,
 ) -> Result<i64, SsbError> {
-    // Check existing entries for this baby step
+    // Read the current constraint view and early-return if this diff_hash is
+    // already represented. Dedup check must happen BEFORE `insert_with_eviction`
+    // because that function is idempotent on duplicates: in the duplicate case
+    // the hash is already in `entries` from the prior write, so a post-insert
+    // `any()` check cannot distinguish insert-from-dedup (both leave the hash
+    // present). Using `contains_diff` on the freshly-queried set is the only
+    // way to preserve append-once semantics against a deterministic seed.
     let existing = query_by_baby_step(ssb, baby_step_id)?;
+    if contains_diff(&existing, &entry.diff_hash) {
+        return Ok(0); // already recorded for this baby step, no-op
+    }
 
-    // Verify we haven't exceeded capacity (dedup check)
+    // Apply eviction locally to enforce the MAX_ENTRIES_PER_STEP cap for the
+    // SSB write decision. `insert_with_eviction` either appends or discards
+    // the oldest; here we only need it to reason about overflow, the SSB row
+    // is always the caller-supplied entry.
     let mut entries = existing;
     let _evicted = insert_with_eviction(&mut entries, entry.clone());
-
-    // If the entry was deduplicated (already exists), skip write
-    if !entries.iter().any(|e| e.diff_hash == entry.diff_hash) {
-        return Ok(0); // already exists, no-op
-    }
 
     let payload = SsbPayload::MistakeEntry(MistakeEntryPayload {
         baby_step_id: baby_step_id.to_owned(),
@@ -260,6 +267,28 @@ mod tests {
         // Constraints block for cleared step must be empty.
         let constraints = format_baby_step_constraints(&ssb, "step-1").unwrap();
         assert_eq!(constraints, "", "constraints must be empty after clear");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_mistake_dedupes_identical_diff_hash() {
+        let dir = TempDir::new().unwrap();
+        let ssb = Ssb::new(test_config(&dir), test_clock()).unwrap();
+
+        // First write appends a row and returns a non-zero seq.
+        let seq1 = write_mistake(&ssb, "a", 0, "step-1", make_entry(1, "same-diff", 10))
+            .await
+            .unwrap();
+        assert!(seq1 > 0, "first write must append");
+
+        // Second write with the same diff_hash must return 0 (dedup no-op) and
+        // must NOT append a second SSB row.
+        let seq2 = write_mistake(&ssb, "a", 0, "step-1", make_entry(2, "same-diff", 20))
+            .await
+            .unwrap();
+        assert_eq!(seq2, 0, "duplicate diff_hash must no-op");
+
+        let entries = query_by_baby_step(&ssb, "step-1").unwrap();
+        assert_eq!(entries.len(), 1, "SSB must hold exactly one row for the step");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

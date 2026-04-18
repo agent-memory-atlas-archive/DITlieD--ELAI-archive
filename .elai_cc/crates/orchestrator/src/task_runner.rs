@@ -66,10 +66,10 @@ use elai_rules::rule_engine::{
     ALWAYS_INCLUDED_DOMAINS as RULES_ALWAYS_INCLUDED_DOMAINS,
 };
 use elai_core::interrogation_tree::TraversalOutcome;
-use elai_core::mistake_book::{DiffHash, FailureCategory, MistakeEntry};
+use elai_core::mistake_book::{format_constraints, DiffHash, FailureCategory, MistakeEntry};
 use elai_reasoning::{default_answers_for_category, traverse_with_answers};
 use crate::mistake_book::{
-    clear_baby_step as mistake_book_clear_baby_step, format_baby_step_constraints,
+    clear_baby_step as mistake_book_clear_baby_step,
     query_by_baby_step as mistake_book_query_by_baby_step,
     write_mistake as mistake_book_write_mistake,
 };
@@ -1937,10 +1937,21 @@ async fn drive_task(
         // FixTemplate. The metric Finding (seeded tree count) is emitted
         // one-shot on first invocation so the dashboard can surface Layer-3
         // availability without repeating the row per task.
-        if !passed {
+        // Bind the failure category once and reuse. `classify_baby_step_failure`
+        // is pure, but computing it twice per failing baby step is wasted work
+        // and — more importantly — risks the two call sites drifting out of
+        // sync if the classification rule later depends on more inputs.
+        let failure_category = if passed {
+            None
+        } else {
+            Some(classify_baby_step_failure(
+                pre_gate_blocked,
+                !integration_succeeded,
+            ))
+        };
+
+        if let Some(category) = failure_category {
             maybe_emit_interrogation_metric(writer, resolved).await;
-            let category =
-                classify_baby_step_failure(pre_gate_blocked, !integration_succeeded);
             emit_interrogation_fix_suggestion(writer, resolved, bs_id.0, category).await;
         }
         emit_test_outcome(
@@ -1960,9 +1971,7 @@ async fn drive_task(
         //     constraints block empties and ForbiddenDiffs no longer apply.
         //   * On success without prior entries: no-op (avoid spurious
         //     tombstones and the audit-trail churn they would cause).
-        if !passed {
-            let category =
-                classify_baby_step_failure(pre_gate_blocked, !integration_succeeded);
+        if let Some(category) = failure_category {
             record_mistake_on_failure(
                 writer,
                 &mistake_book_step_id,
@@ -2305,14 +2314,17 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
     }
 }
 
-/// 3F.REDO: read MistakeBook entries for `baby_step_id` from SSB and, if the
-/// formatted CONSTRAINTS block is non-empty, emit an `info` Finding carrying
-/// it. The payload occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK slot
-/// reserved in `context_budget.rs`. Returns the count of prior entries so the
-/// failure path can assign a 1-indexed `attempt_number`.
+/// 3F.REDO: read MistakeBook entries for `baby_step_id` from SSB once and,
+/// if the formatted CONSTRAINTS block is non-empty, emit an `info` Finding
+/// carrying it. The payload occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK
+/// slot reserved in `context_budget.rs`. Returns the count of prior entries
+/// so the failure path can assign a 1-indexed `attempt_number`.
 ///
-/// A read error is surfaced as a Finding (category remains
-/// [`MISTAKE_BOOK_CONSTRAINTS_CATEGORY`]) and the function returns `0`; the
+/// The fetched entries feed [`format_constraints`] directly rather than
+/// re-querying the SSB via `format_baby_step_constraints`, so the read load
+/// is exactly one SSB scan per baby step per invocation.
+///
+/// A read error is surfaced as a log row and the function returns `0`; the
 /// runner stays alive because this slot is informational.
 async fn emit_mistake_book_constraints(writer: &Arc<Ssb>, baby_step_id: &str) -> u32 {
     let ssb = writer.as_ref();
@@ -2327,21 +2339,11 @@ async fn emit_mistake_book_constraints(writer: &Arc<Ssb>, baby_step_id: &str) ->
             return 0;
         }
     };
-    let prior_attempts = u32::try_from(prior_entries.len()).unwrap_or(u32::MAX);
     if prior_entries.is_empty() {
         return 0;
     }
-    let constraints = match format_baby_step_constraints(ssb, baby_step_id) {
-        Ok(s) => s,
-        Err(e) => {
-            error!(
-                baby_step_id = %baby_step_id,
-                error = %e,
-                "task_runner: MistakeBook format failed"
-            );
-            return prior_attempts;
-        }
-    };
+    let prior_attempts = u32::try_from(prior_entries.len()).unwrap_or(u32::MAX);
+    let constraints = format_constraints(&prior_entries);
     if constraints.is_empty() {
         return prior_attempts;
     }
