@@ -15,12 +15,15 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import re
 import signal
+import struct
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 from threading import Lock
 from typing import AsyncIterator
 
@@ -202,6 +205,66 @@ class SteeringEngine:
             logger.info("loaded_steering_vector", layer=layer_idx, path=filepath)
         except Exception:
             logger.exception("steering_vector_load_failed", filepath=filepath)
+
+    def compute_vector_multi(
+        self,
+        model: AutoModelForCausalLM,
+        tokenizer: AutoTokenizer,
+        positive_prompts: list[str],
+        negative_prompts: list[str],
+        layer_idx: int,
+    ) -> np.ndarray | None:
+        """Batch-ful-c (A-8) — mean-embedding contrast.
+
+        Computes `mean(embed(positives)) - mean(embed(negatives))` at
+        `layer_idx` using `torch.inference_mode()` per the CLAUDE.md
+        anti-stale-training rule. Each prompt's last-token hidden state at
+        the chosen layer contributes equally to the mean so the vector is
+        direction-stable regardless of prompt length.
+
+        Returns the difference as a CPU float32 numpy array, or None on
+        zero-magnitude (invalid contrast set) / exception. Does NOT call
+        `add_vector` — the caller decides when to install the vector.
+        """
+        if not positive_prompts or not negative_prompts:
+            return None
+        try:
+            def _mean_last_hidden(prompts: list[str]) -> torch.Tensor:
+                acc = None
+                count = 0
+                for prompt in prompts:
+                    enc = tokenizer(prompt, return_tensors="pt").to(model.device)
+                    with torch.inference_mode():
+                        out = model(
+                            input_ids=enc.input_ids,
+                            output_hidden_states=True,
+                            return_dict=True,
+                        )
+                    last = out.hidden_states[layer_idx][:, -1, :].squeeze(0).cpu()
+                    acc = last if acc is None else acc + last
+                    count += 1
+                return acc / float(count) if acc is not None else acc
+
+            pos_mean = _mean_last_hidden(positive_prompts)
+            neg_mean = _mean_last_hidden(negative_prompts)
+            if pos_mean is None or neg_mean is None:
+                return None
+            steering_vector = pos_mean - neg_mean
+            magnitude = torch.norm(steering_vector).item()
+            if magnitude < 1e-6:
+                logger.warning("steering_vector_too_small", magnitude=magnitude)
+                return None
+            logger.info(
+                "computed_steering_vector_multi",
+                layer=layer_idx,
+                n_pos=len(positive_prompts),
+                n_neg=len(negative_prompts),
+                magnitude=round(magnitude, 4),
+            )
+            return steering_vector.float().numpy()
+        except Exception:
+            logger.exception("steering_vector_compute_multi_failed")
+            return None
 
     def compute_vector(
         self,
@@ -1766,6 +1829,234 @@ async def compute_steering(request: Request):
         )
 
     return OrjsonResponse({"vector": vector.tolist()})
+
+
+# ---------------------------------------------------------------------------
+# Batch-ful-c (A-8) — freshness steering vector endpoints.
+#
+# `/v1/steering/compute` takes a `ContrastPairs`-style batch of prompts per
+# role and returns the mean-embedding difference as a JSON array of floats
+# plus metadata (vector_dim, layer, norm, model, persisted_path). The Rust
+# helper `compute_vector_via_sidecar_role` consumes this shape; the
+# frontend never touches it directly.
+#
+# `/v1/steering/status` is a purely filesystem-backed scan. No GPU work.
+# Matches the Rust `scan_steering_cache_dir` helper layout.
+#
+# Cache root resolution order (first hit wins):
+#   1. `$ELAI_STEERING_CACHE_DIR` (explicit override — used by tests).
+#   2. `$(cwd)/.elai_cc/steering/` (matches `steering_cache_path()` in
+#      crates/providers/src/sidecar_client.rs for the canonical layout).
+# ---------------------------------------------------------------------------
+
+
+def _steering_cache_root() -> Path:
+    """Resolve the base directory for per-project steering vector caches.
+
+    Tests set `ELAI_STEERING_CACHE_DIR` to point at a tempdir. Production
+    callers rely on the cwd-relative layout that the Rust `steering_cache_path`
+    helper produces.
+    """
+    override = os.environ.get("ELAI_STEERING_CACHE_DIR")
+    if override:
+        return Path(override)
+    return Path.cwd() / ".elai_cc" / "steering"
+
+
+def _steering_cache_path(project_id: str, role: str) -> Path:
+    """Canonical cache file for `(project_id, role)`. Matches
+    `crates/providers/src/sidecar_client.rs::steering_cache_path`."""
+    safe_project = project_id if project_id else "global"
+    safe_role = role if role else "executor"
+    return _steering_cache_root() / safe_project / f"{safe_role}.bin"
+
+
+def _persist_vector_bytes(path: Path, vector: np.ndarray) -> None:
+    """Write `vector` as raw little-endian f32 bytes to `path`.
+
+    Creates parent dirs as needed. No header — the Rust `load_cached_vector_bytes`
+    helper reads the same format. Uses `struct.pack` + file write rather than
+    `numpy.tofile` so the byte layout is explicit and platform-independent.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flat = vector.astype(np.float32).reshape(-1)
+    # Pack as little-endian f32 so cross-platform readers agree on byte order.
+    payload = struct.pack(f"<{flat.size}f", *flat.tolist())
+    path.write_bytes(payload)
+
+
+@app.post("/v1/steering/compute")
+async def steering_compute(request: Request):
+    """Batch-ful-c (A-8) — compute a freshness steering vector from a
+    `ContrastPairs`-style prompt batch.
+
+    Request body (JSON):
+        {
+          "role": str,                  # e.g. "executor", "auditor"
+          "positive_pairs": [str, ...], # modern API examples
+          "negative_pairs": [str, ...], # deprecated API examples
+          "layer": int | null,          # default: n_layers // 3
+          "project_id": str             # used to place the cache file
+        }
+
+    Response (JSON):
+        {
+          "vector": [float, ...],       # raw f32 list, vector_dim entries
+          "vector_dim": int,
+          "layer": int,
+          "norm": float,
+          "model": str,
+          "persisted_path": str         # absolute cache file path
+        }
+    """
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+
+    body = await request.body()
+    try:
+        data = orjson.loads(body)
+    except orjson.JSONDecodeError:
+        return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
+
+    role = data.get("role", "executor")
+    positive = data.get("positive_pairs", [])
+    negative = data.get("negative_pairs", [])
+    layer = data.get("layer")
+    project_id = data.get("project_id", "global")
+
+    if not isinstance(positive, list) or not isinstance(negative, list):
+        return OrjsonResponse(
+            {"error": "positive_pairs and negative_pairs must be arrays"},
+            status_code=400,
+        )
+    positive = [p for p in positive if isinstance(p, str) and p.strip()]
+    negative = [p for p in negative if isinstance(p, str) and p.strip()]
+    if not positive or not negative:
+        return OrjsonResponse(
+            {"error": "positive_pairs and negative_pairs must be non-empty"},
+            status_code=400,
+        )
+
+    if layer is None:
+        layer_idx = _engine.n_layers // 3
+    elif isinstance(layer, int):
+        layer_idx = layer
+    else:
+        return OrjsonResponse({"error": "layer must be int or null"}, status_code=400)
+
+    if layer_idx < 0 or layer_idx >= _engine.n_layers:
+        return OrjsonResponse(
+            {"error": f"layer must be in [0, {_engine.n_layers})"},
+            status_code=400,
+        )
+
+    def _compute():
+        with _engine.lock:
+            if _engine.steering_engine is None:
+                _engine.steering_engine = SteeringEngine(
+                    _engine.n_layers, _engine.hidden_dim,
+                )
+            return _engine.steering_engine.compute_vector_multi(
+                _engine.model,
+                _engine.tokenizer,
+                positive,
+                negative,
+                layer_idx,
+            )
+
+    started = time.perf_counter()
+    loop = asyncio.get_running_loop()
+    vector = await loop.run_in_executor(_thread_pool, _compute)
+
+    if vector is None:
+        return OrjsonResponse(
+            {"error": "failed to compute steering vector (zero magnitude or exception)"},
+            status_code=500,
+        )
+
+    cache_path = _steering_cache_path(str(project_id), str(role))
+    try:
+        _persist_vector_bytes(cache_path, vector)
+    except OSError as exc:
+        logger.exception("steering_cache_write_failed", path=str(cache_path))
+        return OrjsonResponse(
+            {"error": f"cache_write_failed: {exc}"},
+            status_code=500,
+        )
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000.0)
+    norm = float(np.linalg.norm(vector))
+    vector_dim = int(vector.size)
+
+    logger.info(
+        "steering_compute_ok",
+        role=role,
+        project_id=project_id,
+        layer=layer_idx,
+        vector_dim=vector_dim,
+        norm=round(norm, 4),
+        elapsed_ms=elapsed_ms,
+        cache_path=str(cache_path),
+    )
+
+    return OrjsonResponse({
+        "vector": vector.tolist(),
+        "vector_dim": vector_dim,
+        "layer": layer_idx,
+        "norm": norm,
+        "model": _engine.model_name,
+        "persisted_path": str(cache_path),
+        "elapsed_ms": elapsed_ms,
+    })
+
+
+@app.get("/v1/steering/status")
+async def steering_status(request: Request):
+    """Batch-ful-c (A-8) — filesystem-backed scan of the per-project steering
+    cache directory.
+
+    Query params:
+        role (optional): filter to a single role's cache file.
+        project_id (optional): which project's cache to scan. Defaults to "global".
+
+    Response:
+        {
+          "available": bool,
+          "roles_with_vectors": [str, ...],  # sorted
+          "vector_count": int,
+          "last_computed_ms": int,           # newest mtime in ms since epoch
+          "vector_dir": str,
+        }
+    """
+    params = request.query_params
+    role = params.get("role") or None
+    project_id = params.get("project_id") or "global"
+
+    base = _steering_cache_root() / project_id
+    roles: list[str] = []
+    last_mtime_ms = 0
+
+    if base.is_dir():
+        for entry in sorted(base.iterdir()):
+            if not entry.is_file() or entry.suffix != ".bin":
+                continue
+            if entry.stat().st_size == 0:
+                continue
+            role_name = entry.stem
+            if role is not None and role_name != role:
+                continue
+            roles.append(role_name)
+            m_ms = int(entry.stat().st_mtime * 1000)
+            if m_ms > last_mtime_ms:
+                last_mtime_ms = m_ms
+
+    return OrjsonResponse({
+        "available": len(roles) > 0,
+        "roles_with_vectors": roles,
+        "vector_count": len(roles),
+        "last_computed_ms": last_mtime_ms,
+        "vector_dir": str(base),
+    })
 
 
 @app.post("/v1/messages")

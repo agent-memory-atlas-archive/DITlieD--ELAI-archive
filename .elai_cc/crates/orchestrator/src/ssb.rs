@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         'msi_update', 'config_archived',
         'profile_selected', 'fsm_transition', 'micro_reflection',
         'telescope_collapse', 'config_warning',
-        'constraints_injected', 'intervention_resolved'
+        'constraints_injected', 'intervention_resolved',
+        'dkg_querier_swapped',
+        'steering_computed', 'steering_compute_failed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -251,6 +253,14 @@ pub enum SsbActionType {
     /// + `DkgReady` rows. Lets the dashboard activity feed render "DKG querier
     /// upgraded · empty → adapter" without polling the rule engine.
     DkgQuerierSwapped,
+    /// Batch-ful-c (FUL-C / A-8) — freshness steering vector computed for a
+    /// role. Emitted on successful `/v1/steering/compute` round-trip +
+    /// cache-file write. Carries a [`SteeringComputedPayload`].
+    SteeringComputed,
+    /// Batch-ful-c (FUL-C / A-8) — freshness steering vector compute failed
+    /// for a role (sidecar unreachable, HTTP error, validation rejected, or
+    /// cache write failed). Carries a [`SteeringComputeFailedPayload`].
+    SteeringComputeFailed,
 }
 
 impl SsbActionType {
@@ -323,6 +333,8 @@ impl SsbActionType {
             Self::ConstraintsInjected => "constraints_injected",
             Self::InterventionResolved => "intervention_resolved",
             Self::DkgQuerierSwapped => "dkg_querier_swapped",
+            Self::SteeringComputed => "steering_computed",
+            Self::SteeringComputeFailed => "steering_compute_failed",
         }
     }
 }
@@ -401,6 +413,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "constraints_injected" => Ok(SsbActionType::ConstraintsInjected),
         "intervention_resolved" => Ok(SsbActionType::InterventionResolved),
         "dkg_querier_swapped" => Ok(SsbActionType::DkgQuerierSwapped),
+        "steering_computed" => Ok(SsbActionType::SteeringComputed),
+        "steering_compute_failed" => Ok(SsbActionType::SteeringComputeFailed),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1363,6 +1377,43 @@ pub struct DkgQuerierSwappedPayload {
     pub to: String,
 }
 
+/// Batch-ful-c (FUL-C / A-8) — steering vector computed payload.
+///
+/// Emitted by `SteeringVectorEngine::compute_vector_via_sidecar_role` after
+/// a successful sidecar round-trip AND cache-file write. Carries the role
+/// label, final vector dim, L2 norm, elapsed wall-clock time in ms, and the
+/// cache path (stringified for JSON round-trip friendliness).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SteeringComputedPayload {
+    /// Role label the vector was computed for (e.g. `"executor"`).
+    pub role: String,
+    /// Dimension of the resulting vector (typically = model hidden_dim).
+    pub vector_dim: u32,
+    /// L2 norm of the vector. Zero norm implies the contrast pair produced
+    /// no difference; the helper rejects these before emitting this row so
+    /// callers can treat `norm > 0` as an invariant.
+    pub norm: f32,
+    /// Wall-clock time elapsed in milliseconds from request send to cache
+    /// write completion.
+    pub elapsed_ms: u32,
+    /// Absolute filesystem path of the persisted cache bin. Stringified so
+    /// the msgpack payload stays platform-portable.
+    pub cache_path: String,
+}
+
+/// Batch-ful-c (FUL-C / A-8) — steering vector compute failure payload.
+///
+/// Emitted on every non-success path: sidecar connection refused, HTTP error,
+/// empty pairs rejected by the Python side, cache write failure, etc. The
+/// `reason` string is a short classifier token (`"sidecar_unreachable"`,
+/// `"http_error"`, `"zero_magnitude"`, `"cache_write_failed"`) suffixed with
+/// the human detail where available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteeringComputeFailedPayload {
+    pub role: String,
+    pub reason: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1450,6 +1501,9 @@ pub enum SsbPayload {
     InterventionResolved(InterventionResolvedPayload),
     // Batch-ful-a — DkgQuerierAdapter hot-swap notification.
     DkgQuerierSwapped(DkgQuerierSwappedPayload),
+    // Batch-ful-c — A-8 freshness steering vector lifecycle.
+    SteeringComputed(SteeringComputedPayload),
+    SteeringComputeFailed(SteeringComputeFailedPayload),
 }
 
 impl SsbPayload {
@@ -1523,6 +1577,8 @@ impl SsbPayload {
             Self::ConstraintsInjected(_) => SsbActionType::ConstraintsInjected,
             Self::InterventionResolved(_) => SsbActionType::InterventionResolved,
             Self::DkgQuerierSwapped(_) => SsbActionType::DkgQuerierSwapped,
+            Self::SteeringComputed(_) => SsbActionType::SteeringComputed,
+            Self::SteeringComputeFailed(_) => SsbActionType::SteeringComputeFailed,
         }
     }
 }
@@ -2741,6 +2797,21 @@ mod tests {
                     project_id: "p".into(),
                     from: "empty".into(),
                     to: "adapter".into(),
+                })
+            }
+            SsbActionType::SteeringComputed => {
+                SsbPayload::SteeringComputed(SteeringComputedPayload {
+                    role: "executor".into(),
+                    vector_dim: 2048,
+                    norm: 12.34,
+                    elapsed_ms: 150,
+                    cache_path: "/tmp/.elai_cc/steering/p/executor.bin".into(),
+                })
+            }
+            SsbActionType::SteeringComputeFailed => {
+                SsbPayload::SteeringComputeFailed(SteeringComputeFailedPayload {
+                    role: "executor".into(),
+                    reason: "sidecar_unreachable".into(),
                 })
             }
         };

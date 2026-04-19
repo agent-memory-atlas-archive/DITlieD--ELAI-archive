@@ -13,7 +13,7 @@
 //! - Requires intermediate activation access (local models only, no API models)
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -563,7 +563,354 @@ impl SteeringVectorEngine {
             reason: "Use compute_vector_via_sidecar() for async HTTP computation".to_string(),
         })
     }
+
+    // ---------------------------------------------------------------------
+    // Batch-ful-c (A-8) — role-scoped sidecar compute with on-disk cache.
+    //
+    // Additive sibling of the legacy `compute_vector_via_sidecar` — takes a
+    // `ContrastPairs` bundle, a role label, and an absolute cache path (see
+    // `crate::steering_cache_path` for the canonical layout). On success
+    // writes the raw little-endian f32 bytes to the cache path AND returns
+    // the fully-populated `SteeringVector`. Callers emit an
+    // `SteeringComputed` SSB row; on any failure path they emit
+    // `SteeringComputeFailed` with a classifier reason.
+    //
+    // Wire format (matches the new `/v1/steering/compute` Python endpoint):
+    //   Request:  { "role": str, "positive_pairs": [str], "negative_pairs":
+    //               [str], "layer": int | null, "project_id": str }
+    //   Response: { "vector": [f32], "vector_dim": int, "layer": int,
+    //               "norm": float, "model": str, "persisted_path": str }
+    //
+    // We decode the JSON array directly — no base64 path — because
+    // `orjson`/serde_json already stream f32 natively and bringing in a
+    // base64 crate would violate the no-new-deps rule in the batch brief.
+    // ---------------------------------------------------------------------
+
+    /// Canonical request body for the new `/v1/steering/compute` endpoint.
+    /// Kept private so callers can't drift from the wire format.
+    fn build_compute_request_body(
+        role: &str,
+        pairs: &ContrastPairs,
+        layer: Option<u32>,
+        project_id: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "role": role,
+            "positive_pairs": pairs.positive,
+            "negative_pairs": pairs.negative,
+            "layer": layer,
+            "project_id": project_id,
+        })
+    }
+
+    /// Batch-ful-c — async sibling of `compute_vector_via_sidecar` that
+    /// accepts a `ContrastPairs` bundle and persists the result to `cache_path`.
+    ///
+    /// Contract highlights (see `fulc_steering_vector_contract.rs`):
+    /// * Connection refused → `Err(SteeringError::StorageError { reason })`.
+    ///   No partial cache file is written.
+    /// * HTTP != 200 → `Err` with the upstream status + body.
+    /// * Zero-magnitude vector → `Err(SteeringError::ZeroMagnitude)`.
+    /// * Successful write → the file at `cache_path` is exactly
+    ///   `len * 4` bytes, little-endian f32, no header.
+    ///
+    /// `total_layers` is the model's hidden-layer count; used only for
+    /// validation. The sidecar picks the actual layer index (default =
+    /// `n_layers / 3`) and returns it in the response so we can store it
+    /// alongside the vector.
+    pub async fn compute_vector_via_sidecar_role(
+        sidecar_url: &str,
+        role: &str,
+        pairs: &ContrastPairs,
+        total_layers: usize,
+        cache_path: &Path,
+    ) -> Result<SteeringVector, SteeringError> {
+        if pairs.positive.is_empty() || pairs.negative.is_empty() {
+            return Err(SteeringError::StorageError {
+                reason: "empty_pairs: positive and negative pair lists must be non-empty"
+                    .to_owned(),
+            });
+        }
+
+        // Derive a project_id from the cache path — the canonical layout is
+        // `<project_root>/.elai_cc/steering/<project_id>/<role>.bin`, so the
+        // parent-of-parent gives us the project_id component. Falls back to
+        // "global" when the path doesn't follow the layout (e.g. in tests
+        // that pass a tempdir directly).
+        let project_id = cache_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|s| s.to_str())
+            .unwrap_or("global")
+            .to_owned();
+
+        let url = format!("{}/v1/steering/compute", sidecar_url.trim_end_matches('/'));
+        let body = Self::build_compute_request_body(role, pairs, None, &project_id);
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| SteeringError::StorageError {
+                reason: format!("reqwest client build failed: {e}"),
+            })?;
+
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SteeringError::StorageError {
+                reason: format!("sidecar_unreachable: {e}"),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SteeringError::StorageError {
+                reason: format!("http_error: {status}: {text}"),
+            });
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ComputeResponse {
+            vector: Vec<f32>,
+            #[serde(default)]
+            vector_dim: Option<u32>,
+            #[serde(default)]
+            layer: Option<u32>,
+            /// Optional server-side norm — used only as a consistency check
+            /// against the locally-computed magnitude so we notice drift
+            /// between the sidecar's and the Rust side's f32 summation.
+            #[serde(default)]
+            norm: Option<f32>,
+            #[serde(default)]
+            model: Option<String>,
+        }
+
+        let parsed: ComputeResponse = resp.json().await.map_err(|e| SteeringError::StorageError {
+            reason: format!("http_error: failed to parse compute response: {e}"),
+        })?;
+
+        let layer = parsed.layer.map(|l| l as usize).unwrap_or_else(|| {
+            // Fall back to the same default the sidecar uses so the cached
+            // metadata stays consistent when the response omits the layer.
+            (total_layers as f64 * LAYER_DEFAULT_FRACTION) as usize
+        });
+
+        let dim = parsed.vector_dim.map(|d| d as usize).unwrap_or(parsed.vector.len());
+        if dim != parsed.vector.len() {
+            return Err(SteeringError::StorageError {
+                reason: format!(
+                    "http_error: vector length {} mismatches declared dim {}",
+                    parsed.vector.len(),
+                    dim
+                ),
+            });
+        }
+
+        // Zero-magnitude rejection — consistent with the pre-existing
+        // `SteeringVector::validate` path.
+        let magnitude_sq: f32 = parsed.vector.iter().map(|&x| x * x).sum();
+        if magnitude_sq < 1e-6 {
+            return Err(SteeringError::ZeroMagnitude {
+                name: role.to_owned(),
+            });
+        }
+
+        // Persist the raw little-endian f32 bytes. Create the parent dir
+        // eagerly — the canonical layout nests under a per-project subdir
+        // that may not exist yet.
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| SteeringError::StorageError {
+                reason: format!("cache_write_failed: mkdir {}: {e}", parent.display()),
+            })?;
+        }
+        let mut bytes: Vec<u8> = Vec::with_capacity(parsed.vector.len() * 4);
+        for &x in &parsed.vector {
+            bytes.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(cache_path, &bytes).map_err(|e| SteeringError::StorageError {
+            reason: format!("cache_write_failed: {} — {e}", cache_path.display()),
+        })?;
+
+        let sv = SteeringVector {
+            name: role.to_owned(),
+            layer,
+            coefficient: COEFFICIENT_DEFAULT,
+            vector: parsed.vector,
+            positive_prompt: pairs.positive.join("\n---\n"),
+            negative_prompt: pairs.negative.join("\n---\n"),
+        };
+
+        let local_norm = sv.magnitude();
+        if let Some(server_norm) = parsed.norm {
+            // Warn when the sidecar's and the Rust side's f32 summation
+            // disagree beyond a loose absolute tolerance — different f32
+            // accumulation orders will not produce identical bits, but a
+            // large delta hints at payload corruption.
+            if (server_norm - local_norm).abs() > 0.05 {
+                tracing::warn!(
+                    role,
+                    server_norm,
+                    local_norm,
+                    "steering vector norm mismatch between sidecar and client"
+                );
+            }
+        }
+        tracing::info!(
+            role,
+            dim = sv.vector.len(),
+            layer = sv.layer,
+            norm = local_norm,
+            model = parsed.model.as_deref().unwrap_or("(unknown)"),
+            cache_path = %cache_path.display(),
+            "steering vector computed and cached"
+        );
+        Ok(sv)
+    }
+
+    /// Read the cache bin at `path` back into `Vec<f32>`. Returns an error
+    /// when the file is missing, empty, or not a multiple of 4 bytes.
+    pub fn load_cached_vector_bytes(path: &Path) -> Result<Vec<f32>, SteeringError> {
+        let raw = std::fs::read(path).map_err(|e| SteeringError::StorageError {
+            reason: format!("cache_read_failed: {} — {e}", path.display()),
+        })?;
+        if raw.is_empty() {
+            return Err(SteeringError::StorageError {
+                reason: format!("cache_read_failed: {} is empty", path.display()),
+            });
+        }
+        if raw.len() % 4 != 0 {
+            return Err(SteeringError::StorageError {
+                reason: format!(
+                    "cache_read_failed: {} length {} not aligned to f32 (4 bytes)",
+                    path.display(),
+                    raw.len()
+                ),
+            });
+        }
+        let vector: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        Ok(vector)
+    }
+
+    /// Scan the per-project steering cache directory and return a status
+    /// describing whether any per-role vector is currently cached.
+    ///
+    /// The directory layout (from `crate::steering_cache_path`) is
+    /// `<project_root>/.elai_cc/steering/<project_id>/<role>.bin`. Files
+    /// with a zero-byte payload are ignored — the writer never produces
+    /// empty files, so a zero-byte file indicates an interrupted write.
+    pub fn scan_steering_cache_dir(
+        project_root: &Path,
+        project_id: &str,
+    ) -> Result<ScannedSteeringStatus, SteeringError> {
+        let dir = project_root
+            .join(".elai_cc")
+            .join("steering")
+            .join(project_id);
+
+        if !dir.exists() {
+            return Ok(ScannedSteeringStatus {
+                active: false,
+                reason: "modern_api_preference_vector_unavailable".to_owned(),
+                roles: Vec::new(),
+                vector_dir: dir.to_string_lossy().into_owned(),
+            });
+        }
+
+        let mut roles: Vec<String> = Vec::new();
+        let read = std::fs::read_dir(&dir).map_err(|e| SteeringError::StorageError {
+            reason: format!("cache_read_failed: {} — {e}", dir.display()),
+        })?;
+        for entry in read.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.len() == 0 {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if path.extension().and_then(|s| s.to_str()) == Some("bin") {
+                    roles.push(stem.to_owned());
+                }
+            }
+        }
+        roles.sort();
+
+        let vector_dir = dir.to_string_lossy().into_owned();
+        if roles.is_empty() {
+            Ok(ScannedSteeringStatus {
+                active: false,
+                reason: "modern_api_preference_vector_unavailable (empty directory)".to_owned(),
+                roles,
+                vector_dir,
+            })
+        } else {
+            let reason = format!("cached roles: {}", roles.join(","));
+            Ok(ScannedSteeringStatus {
+                active: true,
+                reason,
+                roles,
+                vector_dir,
+            })
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// ContrastPairs (batch-ful-c)
+// ---------------------------------------------------------------------------
+
+/// Bundle of positive + negative example prompts used to compute a freshness
+/// steering vector via the `/v1/steering/compute` sidecar endpoint.
+///
+/// The vector is computed as `mean(embed(positive)) - mean(embed(negative))`
+/// at the chosen layer. A batch of examples (N=3-5) yields a more stable
+/// direction than a single contrast pair.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContrastPairs {
+    /// Examples of the "modern / preferred" API style.
+    pub positive: Vec<String>,
+    /// Examples of the "deprecated / avoided" API style.
+    pub negative: Vec<String>,
+}
+
+impl ContrastPairs {
+    /// Construct a new pair set. Either side is allowed to be empty at
+    /// construction time; the helper itself rejects empty pairs before
+    /// hitting the sidecar.
+    pub fn new(positive: Vec<String>, negative: Vec<String>) -> Self {
+        Self { positive, negative }
+    }
+}
+
+/// Result of [`SteeringVectorEngine::scan_steering_cache_dir`]. Mirrors the
+/// shape the dashboard / SSB reader expect so they can both call the scan
+/// helper without a second translation layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedSteeringStatus {
+    /// `true` when at least one role has a non-empty cache file.
+    pub active: bool,
+    /// Human-readable reason for the status, suitable for SSB emission.
+    pub reason: String,
+    /// Sorted list of roles with a cached vector. Empty when `active=false`.
+    pub roles: Vec<String>,
+    /// Directory scanned, stringified so callers can log it without a second
+    /// `PathBuf` allocation.
+    pub vector_dir: String,
+}
+
+/// Convenience alias so callers can reach `PathBuf` without importing from
+/// `std::path` — matches the pattern used by `SidecarProvider::steering_vector_cached`.
+pub type SteeringCachePath = PathBuf;
 
 impl fmt::Display for SteeringVectorEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

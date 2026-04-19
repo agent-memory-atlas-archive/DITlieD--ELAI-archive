@@ -99,6 +99,9 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::InterventionResolved,
     // Batch-ful-a — DkgQuerierAdapter hot-swap signal.
     SsbActionType::DkgQuerierSwapped,
+    // Batch-ful-c — A-8 freshness steering vector lifecycle.
+    SsbActionType::SteeringComputed,
+    SsbActionType::SteeringComputeFailed,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -346,9 +349,11 @@ fn contract_variant_count_matches_enum_doc() {
     // micro_reflection, telescope_collapse, config_warning) bumping the
     // floor to 62. Batch-fu: +2 variants (constraints_injected,
     // intervention_resolved) bumping the floor to 64. Batch-ful-a: +1
-    // variant (dkg_querier_swapped) bumping the floor to 65.
+    // variant (dkg_querier_swapped) bumping the floor to 65. Batch-ful-c
+    // (A-8): +2 variants (steering_computed, steering_compute_failed)
+    // bumping the floor to 67.
     assert!(
-        ALL_VARIANTS.len() >= 65,
-        "ALL_VARIANTS shrank below 65 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 67,
+        "ALL_VARIANTS shrank below 67 — review SsbActionType enum"
     );
 }

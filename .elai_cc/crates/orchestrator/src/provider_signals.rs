@@ -329,6 +329,44 @@ impl SidecarProviderSignalReader {
     pub fn set_steering_status(&mut self, status: SteeringVectorStatus) {
         self.steering_status = status;
     }
+
+    /// Batch-ful-c (A-8) — refresh `steering_status` from the on-disk cache
+    /// at `<project_root>/.elai_cc/steering/<project_id>/`.
+    ///
+    /// Uses `SteeringVectorEngine::scan_steering_cache_dir` so the status
+    /// semantics match everything else in the batch. Returns the new status
+    /// (for logging / dashboard push) alongside updating the internal field.
+    /// Never panics: on scan errors falls back to a stubbed inactive status.
+    pub fn refresh_steering_status_from_cache(
+        &mut self,
+        project_root: &std::path::Path,
+        project_id: &str,
+    ) -> SteeringVectorStatus {
+        match elai_providers::layer_config::steering::SteeringVectorEngine::scan_steering_cache_dir(
+            project_root,
+            project_id,
+        ) {
+            Ok(scanned) => {
+                let status = SteeringVectorStatus {
+                    active: scanned.active,
+                    reason: scanned.reason,
+                };
+                self.steering_status = status.clone();
+                status
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, project_id, "steering cache scan failed");
+                let status = SteeringVectorStatus {
+                    active: false,
+                    reason: format!(
+                        "modern_api_preference_vector_unavailable (scan_error: {e})"
+                    ),
+                };
+                self.steering_status = status.clone();
+                status
+            }
+        }
+    }
 }
 
 #[cfg(feature = "sidecar")]

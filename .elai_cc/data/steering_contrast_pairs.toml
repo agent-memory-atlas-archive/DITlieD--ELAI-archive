@@ -1,0 +1,65 @@
+# Batch-ful-c — seed contrast pairs for A-8 freshness steering vector.
+#
+# These pairs drive the `modern_api_preference` steering vector computed via
+# the Python sidecar's `/v1/steering/compute` endpoint. Each language defines
+# `positive` examples (modern / current-year API usage) and `negative`
+# examples (deprecated / outdated API usage).
+#
+# The resulting vector (mean(embed(pos)) - mean(embed(neg))) nudges the
+# model toward modern API choices during generation. See
+# `crates/providers/src/layer_config/steering.rs::compute_vector_via_sidecar_role`
+# for the compute path and `CLAUDE.md` Anti-Stale-Training rules for the
+# source of the deprecated/modern distinction.
+#
+# Format:
+#   [languages.<lang>]
+#   positive = ["...", "...", ...]
+#   negative = ["...", "...", ...]
+
+[languages.rust]
+positive = [
+    "use blake3::hash;",
+    "let rng = rand::rng(); // rand 0.9+",
+    "#[tokio::main(flavor = \"current_thread\")] async fn main() { ... }",
+    "use tracing::info; info!(field = value, \"...\");",
+    "#[derive(thiserror::Error, Debug)] enum MyError { ... }",
+]
+negative = [
+    "use blake2::Blake2b; // deprecated for non-RFC uses",
+    "let mut rng = rand::thread_rng(); // rand 0.8 API",
+    "#[tokio::main] async fn main() { ... } // default flavor",
+    "use log::info; info!(\"...\"); // pre-tracing",
+    "fn foo() -> Result<(), Box<dyn std::error::Error>> { ... }",
+]
+
+[languages.python]
+positive = [
+    "import orjson; data = orjson.loads(body)",
+    "from fastapi import FastAPI; app = FastAPI()",
+    "with torch.inference_mode(): ...",
+    "model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16)",
+    "class Item(BaseModel): ...  # pydantic v2",
+]
+negative = [
+    "import json; data = json.loads(body)",
+    "from http.server import HTTPServer, BaseHTTPRequestHandler",
+    "with torch.no_grad(): ...",
+    "model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16)",
+    "class Item: def __init__(self, ...): ...  # manual dataclass",
+]
+
+[languages.typescript]
+positive = [
+    "const resp = await fetch(url); const data = await resp.json();",
+    "import { z } from \"zod\"; const Schema = z.object({ ... });",
+    "async function run(): Promise<void> { ... }",
+    "const value = $state(initial); // Svelte 5 runes",
+    "const { data, error } = useQuery({ queryKey: [...], queryFn: ... });",
+]
+negative = [
+    "const xhr = new XMLHttpRequest(); xhr.open(\"GET\", url); xhr.send();",
+    "type Schema = { ... };  // ad-hoc, no runtime validation",
+    "function run(cb: (err: any) => void): void { ... }",
+    "export let value = initial; // Svelte 4 export let prop",
+    "$.ajax({ url: ..., success: ... }); // jQuery",
+]
