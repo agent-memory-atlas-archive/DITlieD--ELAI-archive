@@ -217,6 +217,21 @@ pub enum SsbActionType {
     /// Batch 3C (Phase 4H) — archive capping event. Carries a
     /// [`ConfigArchivedPayload`].
     ConfigArchived,
+    /// Batch 4C (A-18) — per-dispatch GenerationProfile selection. Carries a
+    /// [`ProfileSelectedPayload`].
+    ProfileSelected,
+    /// Batch 4C (A-22) — FSM transition emitted on RESEARCHING entry/exit.
+    /// Carries an [`FsmTransitionPayload`].
+    FsmTransition,
+    /// Batch 4C (A-23) — micro-reflection diagnosis on baby-step failure.
+    /// Carries a [`MicroReflectionPayload`].
+    MicroReflection,
+    /// Batch 4C (A-46) — context telescope collapse event. Carries a
+    /// [`TelescopeCollapsePayload`].
+    TelescopeCollapse,
+    /// Batch 4C (A-45) — config-load warning (e.g. source-tiers.toml missing).
+    /// Carries a [`ConfigWarningPayload`].
+    ConfigWarning,
 }
 
 impl SsbActionType {
@@ -281,6 +296,11 @@ impl SsbActionType {
             Self::ProposalRejected => "proposal_rejected",
             Self::MsiUpdate => "msi_update",
             Self::ConfigArchived => "config_archived",
+            Self::ProfileSelected => "profile_selected",
+            Self::FsmTransition => "fsm_transition",
+            Self::MicroReflection => "micro_reflection",
+            Self::TelescopeCollapse => "telescope_collapse",
+            Self::ConfigWarning => "config_warning",
         }
     }
 }
@@ -351,6 +371,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "proposal_rejected" => Ok(SsbActionType::ProposalRejected),
         "msi_update" => Ok(SsbActionType::MsiUpdate),
         "config_archived" => Ok(SsbActionType::ConfigArchived),
+        "profile_selected" => Ok(SsbActionType::ProfileSelected),
+        "fsm_transition" => Ok(SsbActionType::FsmTransition),
+        "micro_reflection" => Ok(SsbActionType::MicroReflection),
+        "telescope_collapse" => Ok(SsbActionType::TelescopeCollapse),
+        "config_warning" => Ok(SsbActionType::ConfigWarning),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1173,6 +1198,73 @@ pub struct ConfigArchivedPayload {
     pub dropped_id: Option<String>,
 }
 
+/// Batch 4C (A-18) — per-dispatch GenerationProfile selection.
+///
+/// Emitted by [`crate::profile_selector::GenerationProfileSelector`]
+/// implementations whenever the task runner chooses a generation profile for
+/// the next sidecar dispatch. `profile` is the [`elai_orchestrator::context_budget::GenerationProfile`]
+/// `as_str` form (e.g. `"FirstAttempt"`, `"RepairRetry"`). `role` is a free-form
+/// string label for the dispatch role (`"executor"`, `"auditor"`, etc.).
+/// `fsm_state` is the [`crate::fsm::FsmState`] rendered via its `Display` impl.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileSelectedPayload {
+    pub profile: String,
+    pub role: String,
+    pub fsm_state: String,
+    pub step_id: String,
+}
+
+/// Batch 4C (A-22) — FSM transition emitted on RESEARCHING entry/exit.
+///
+/// Emitted by `drive_web_research_task` (and any future RESEARCHING caller) at
+/// state boundary. Both `from` and `to` are the `Display`-rendered FSM state
+/// names (e.g. `"IDLE"`, `"RESEARCHING"`, `"EXECUTING"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsmTransitionPayload {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
+/// Batch 4C (A-23) — micro-reflection diagnosis row.
+///
+/// Emitted after a baby-step failure once the sidecar-backed 500-token
+/// reflection returns. `root_cause` is truncated to 100 chars by the frontend
+/// for the activity feed; full text remains in the SSB for detail view.
+/// `confidence` is the reflection's self-reported 0.0..=1.0 score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MicroReflectionPayload {
+    pub step_id: String,
+    pub root_cause: String,
+    pub proposed_fix: String,
+    pub confidence: f32,
+}
+
+/// Batch 4C (A-46) — ContextTelescope collapse event.
+///
+/// Emitted by [`crate::telescope_caller::invoke_telescope`] each time a
+/// repair-context build trims layers to fit under a token budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelescopeCollapsePayload {
+    pub from_tokens: u32,
+    pub to_tokens: u32,
+    pub layers_collapsed: u32,
+    pub step_id: String,
+}
+
+/// Batch 4C (A-45) — config-load warning.
+///
+/// Emitted when a non-fatal config file lookup fails (e.g. missing
+/// `source-tiers.toml` at dashboard startup) and the runtime falls back to a
+/// safe default. `config` is a short identifier (e.g. `"source-tiers.toml"`);
+/// `reason` is a short classifier (e.g. `"file_not_found"`, `"parse_error"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigWarningPayload {
+    pub config: String,
+    pub reason: String,
+    pub detail: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1249,6 +1341,12 @@ pub enum SsbPayload {
     ProposalRejected(ProposalRejectedPayload),
     MsiUpdate(MsiUpdatePayload),
     ConfigArchived(ConfigArchivedPayload),
+    // Batch 4C — scattered A-step wiring.
+    ProfileSelected(ProfileSelectedPayload),
+    FsmTransition(FsmTransitionPayload),
+    MicroReflection(MicroReflectionPayload),
+    TelescopeCollapse(TelescopeCollapsePayload),
+    ConfigWarning(ConfigWarningPayload),
 }
 
 impl SsbPayload {
@@ -1314,6 +1412,11 @@ impl SsbPayload {
             Self::ProposalRejected(_) => SsbActionType::ProposalRejected,
             Self::MsiUpdate(_) => SsbActionType::MsiUpdate,
             Self::ConfigArchived(_) => SsbActionType::ConfigArchived,
+            Self::ProfileSelected(_) => SsbActionType::ProfileSelected,
+            Self::FsmTransition(_) => SsbActionType::FsmTransition,
+            Self::MicroReflection(_) => SsbActionType::MicroReflection,
+            Self::TelescopeCollapse(_) => SsbActionType::TelescopeCollapse,
+            Self::ConfigWarning(_) => SsbActionType::ConfigWarning,
         }
     }
 }
@@ -2477,6 +2580,37 @@ mod tests {
                 pipeline_mode: "surgical".into(),
                 archived_count: 1,
                 dropped_id: None,
+            }),
+            // Batch 4C.
+            SsbActionType::ProfileSelected => SsbPayload::ProfileSelected(ProfileSelectedPayload {
+                profile: "FirstAttempt".into(),
+                role: "executor".into(),
+                fsm_state: "EXECUTING".into(),
+                step_id: "step-1".into(),
+            }),
+            SsbActionType::FsmTransition => SsbPayload::FsmTransition(FsmTransitionPayload {
+                from: "IDLE".into(),
+                to: "RESEARCHING".into(),
+                reason: "web_research_task".into(),
+            }),
+            SsbActionType::MicroReflection => SsbPayload::MicroReflection(MicroReflectionPayload {
+                step_id: "step-1".into(),
+                root_cause: "missing import".into(),
+                proposed_fix: "add use crate::foo".into(),
+                confidence: 0.8,
+            }),
+            SsbActionType::TelescopeCollapse => {
+                SsbPayload::TelescopeCollapse(TelescopeCollapsePayload {
+                    from_tokens: 1800,
+                    to_tokens: 1400,
+                    layers_collapsed: 1,
+                    step_id: "step-1".into(),
+                })
+            }
+            SsbActionType::ConfigWarning => SsbPayload::ConfigWarning(ConfigWarningPayload {
+                config: "source-tiers.toml".into(),
+                reason: "file_not_found".into(),
+                detail: "path=/missing".into(),
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

@@ -2138,6 +2138,12 @@ async fn drive_web_research_task(
     resolved: &ResolvedConfig,
     cancel: &CancelHandle,
 ) -> Result<(), TaskRunnerError> {
+    // Batch 4C (A-22): emit a RESEARCHING-entry FsmTransition row so the
+    // dashboard can surface the web-research window in the StatusBar even
+    // though the task_runner does not own a live Fsm. The matching exit
+    // row is emitted at every early-return below.
+    emit_fsm_transition(writer, "IDLE", "RESEARCHING", "web_research_task_entry").await;
+
     emit_reasoning(
         writer,
         0,
@@ -2151,6 +2157,7 @@ async fn drive_web_research_task(
     .await;
 
     if cancel.is_cancelled() {
+        emit_fsm_transition(writer, "RESEARCHING", "IDLE", "cancelled_before_run").await;
         return Ok(());
     }
 
@@ -2163,6 +2170,7 @@ async fn drive_web_research_task(
             "web-research task detected but no WebResearchRunner configured on the runner",
         )
         .await;
+        emit_fsm_transition(writer, "RESEARCHING", "IDLE", "no_runner_configured").await;
         return Ok(());
     };
 
@@ -2176,6 +2184,7 @@ async fn drive_web_research_task(
         biased;
         _ = cancel.wake.notified() => {
             info!(seq, "task_runner: web-research cancelled by wake signal");
+            emit_fsm_transition(writer, "RESEARCHING", "IDLE", "cancelled_mid_run").await;
             return Ok(());
         }
         res = runner.run(task.task.clone(), emitter) => match res {
@@ -2189,6 +2198,7 @@ async fn drive_web_research_task(
                     &format!("web research failed for task seq={seq}: {msg}"),
                 )
                 .await;
+                emit_fsm_transition(writer, "RESEARCHING", "IDLE", "runner_error").await;
                 return Ok(());
             }
         },
@@ -2223,7 +2233,33 @@ async fn drive_web_research_task(
         error!(seq, error = %e, "task_runner: write PhaseComplete (web-research) failed");
     }
     info!(seq, status = %summary.status, "task_runner: web-research task complete");
+    // Batch 4C (A-22): exit transition back to EXECUTING so downstream
+    // callers see the research window close cleanly.
+    emit_fsm_transition(writer, "RESEARCHING", "EXECUTING", "web_research_task_exit").await;
     Ok(())
+}
+
+/// Batch 4C (A-22) — emit a single `FsmTransition` SSB row.
+///
+/// Kept as a helper so every call site in `drive_web_research_task`
+/// (entry, every early-return, exit) renders a consistent 3-tuple. The
+/// error path only logs — the runner must stay alive because an SSB write
+/// failure during research is non-fatal.
+async fn emit_fsm_transition(writer: &Arc<Ssb>, from: &str, to: &str, reason: &str) {
+    let payload = SsbPayload::FsmTransition(crate::ssb::FsmTransitionPayload {
+        from: from.to_string(),
+        to: to.to_string(),
+        reason: reason.to_string(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(
+            from = %from, to = %to, error = %e,
+            "task_runner: FsmTransition write failed"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

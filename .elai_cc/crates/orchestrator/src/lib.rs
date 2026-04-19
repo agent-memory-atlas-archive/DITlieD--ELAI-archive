@@ -71,13 +71,16 @@ pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
     BranchRef, DagMessageRole, MergeResult, Stub,
 };
+pub mod micro_reflection_emitter;
 pub mod mistake_book;
 pub mod output_postprocessor;
+pub mod profile_selector;
 pub mod rule_loader;
 pub mod self_mod_layer1a;
 pub mod ssb;
 pub mod ssb_viewer;
 pub mod system_probe;
+pub mod telescope_caller;
 pub mod feasibility_probe;
 pub mod task_runner;
 pub mod supervision;
@@ -358,6 +361,18 @@ pub use ssb::{
     // Batch 3C (Phase 4H) — Layer 1A.
     ConfigArchivedPayload, MsiUpdatePayload, ProposalAppliedPayload, ProposalGeneratedPayload,
     ProposalRejectedPayload,
+    // Batch 4C — scattered A-step wiring.
+    ConfigWarningPayload, FsmTransitionPayload, MicroReflectionPayload,
+    ProfileSelectedPayload, TelescopeCollapsePayload,
+};
+// Batch 4C — public surfaces for the new modules.
+pub use profile_selector::{
+    emit_profile_selected, profile_name, DefaultGenerationProfileSelector, DispatchRole,
+    GenerationProfileSelector,
+};
+pub use telescope_caller::{invoke_telescope, TelescopeResult, TelescopeStats};
+pub use micro_reflection_emitter::{
+    emit_micro_reflection, parse_reflection_json, ReflectionClient, ReflectionClientError,
 };
 // Batch 3C (Phase 4H): Self-Modification Layer 1A surface.
 pub use self_mod_layer1a::{

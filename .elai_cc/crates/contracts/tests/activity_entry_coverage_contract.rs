@@ -88,6 +88,12 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::ProposalRejected,
     SsbActionType::MsiUpdate,
     SsbActionType::ConfigArchived,
+    // Batch 4C — scattered A-step wiring.
+    SsbActionType::ProfileSelected,
+    SsbActionType::FsmTransition,
+    SsbActionType::MicroReflection,
+    SsbActionType::TelescopeCollapse,
+    SsbActionType::ConfigWarning,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -331,8 +337,11 @@ fn contract_variant_count_matches_enum_doc() {
     // proposal_generated + proposal_applied + proposal_rejected + msi_update
     // + config_archived so the floor is now 57. Growth is fine; shrinkage
     // flags a breaking change for review.
+    // Batch 4C: +5 variants (profile_selected, fsm_transition,
+    // micro_reflection, telescope_collapse, config_warning) bumping the
+    // floor to 62.
     assert!(
-        ALL_VARIANTS.len() >= 57,
-        "ALL_VARIANTS shrank below 57 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 62,
+        "ALL_VARIANTS shrank below 62 — review SsbActionType enum"
     );
 }
