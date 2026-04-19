@@ -56,6 +56,15 @@ pub struct ProjectProfile {
     #[serde(default)]
     pub fix_template_keys: Vec<String>,
 
+    /// Batch 4B (A-7): constitutional constraints the auditor should re-read
+    /// at each baby step — typically anti-staleness rules (blake3 not
+    /// blake2, rand>=0.9, no `.unwrap()` in production, etc.) detected by
+    /// A-6's `deprecated_patterns` pass and promoted into the phase
+    /// context. Empty on pre-4B profiles (`#[serde(default)]` round-trips).
+    /// Dashboard `get_constitutional_constraints` reads this list.
+    #[serde(default)]
+    pub constraints: Vec<String>,
+
     // Commands
     pub commands: BuildCommandRegistry,
 

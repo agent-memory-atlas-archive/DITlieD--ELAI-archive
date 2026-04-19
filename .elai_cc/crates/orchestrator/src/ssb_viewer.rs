@@ -163,6 +163,25 @@ pub struct SsbActionDetail {
     pub files: Vec<String>,
 }
 
+/// Batch 4B: compact Finding row used by the "Rule violations" strip at the
+/// top of the dashboard ACTIVITY panel. Derived from Finding SSB rows whose
+/// `audit_step` is `"post_execution_rules"`. The strip aggregates by
+/// severity (BLOCK / WARN) so the frontend can show a one-line count with a
+/// click-to-expand filtered list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuleViolationSummary {
+    pub seq: i64,
+    pub ts: i64,
+    /// `"error"` (BLOCK), `"warning"` (WARN), `"escalate"` (Escalate).
+    pub severity: String,
+    pub category: String,
+    pub message: String,
+    /// Always [`POST_EXECUTION_RULES_AUDIT_STEP`] for rows returned by
+    /// [`SsbViewer::rule_violations`]. The field is retained verbatim so
+    /// future audit_step tags can reuse the same command.
+    pub audit_step: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbViewer
 // ---------------------------------------------------------------------------
@@ -317,6 +336,80 @@ impl SsbViewer {
                 agent_id,
                 summary: summarize_payload(&payload),
             });
+        }
+        Ok(out)
+    }
+
+    /// Batch 4B: Finding rows whose `audit_step` is
+    /// [`crate::POST_EXECUTION_RULES_AUDIT_STEP`], optionally narrowed to a
+    /// single baby-step via the `step_id` prefix the task_runner writes
+    /// into the Finding message (`baby_step={N} ...`). Results are ordered
+    /// newest-first and hard-capped at 200 rows so a long-running session
+    /// can't balloon the payload.
+    pub fn rule_violations(
+        &self,
+        step_id: Option<&str>,
+    ) -> Result<Vec<RuleViolationSummary>, SsbViewerError> {
+        const MAX_ROWS: usize = 200;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::Finding.as_sql_str(),
+                i64::try_from(MAX_ROWS.saturating_mul(4)).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<RuleViolationSummary> = Vec::new();
+        for row in rows {
+            let (seq, created_at, payload) = row?;
+            // Decode as typed SsbPayload so we can read the audit_step tag —
+            // the summary-truncation path used by `recent_actions` throws
+            // away the fields we need.
+            let typed: SsbPayload = match rmp_serde::from_slice(&payload) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let SsbPayload::Finding(f) = typed else { continue };
+            let audit_step = match f.audit_step.as_deref() {
+                Some(s) => s,
+                None => continue,
+            };
+            if audit_step != crate::POST_EXECUTION_RULES_AUDIT_STEP {
+                continue;
+            }
+            if let Some(sid) = step_id {
+                // The task_runner embeds `baby_step={N} ...` in the message.
+                // `baby_step_7` from the dashboard maps to `baby_step=7`
+                // in the payload — strip the prefix and match the number.
+                let needle = sid
+                    .strip_prefix("baby_step_")
+                    .map(|n| format!("baby_step={n} "))
+                    .unwrap_or_else(|| format!("{sid} "));
+                if !f.message.contains(&needle) {
+                    continue;
+                }
+            }
+            out.push(RuleViolationSummary {
+                seq,
+                ts: created_at,
+                severity: f.severity,
+                category: f.category,
+                message: f.message,
+                audit_step: audit_step.to_owned(),
+            });
+            if out.len() >= MAX_ROWS {
+                break;
+            }
         }
         Ok(out)
     }

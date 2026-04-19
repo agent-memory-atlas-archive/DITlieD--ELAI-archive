@@ -84,7 +84,8 @@ use crate::pipeline_tree_navigator::{
 };
 use crate::grounding_client::SidecarGroundingClient;
 use crate::hook_dispatcher::{
-    emit_hook_events_to_ssb, HookFinding, HookInvocation, HookPoint,
+    emit_hook_events_to_ssb, emit_shortcoder_compression_to_ssb, HookFinding, HookInvocation,
+    HookPoint,
 };
 use crate::provider_signals::ProviderSignalReader;
 use elai_providers::LlmProvider;
@@ -220,6 +221,23 @@ pub const DETERMINISTIC_AUDIT_CATEGORY: &str = "deterministic_audit";
 /// (source = task text) from post-execution real-source-text evaluations
 /// (source = file content on disk).
 pub const RULE_VIOLATION_POST_CATEGORY: &str = "rule_violation_post";
+
+/// Batch 4B (audit 2026-04-18 item 9 completion): `audit_step` tag stamped
+/// on every Finding produced by the post-execution rule-engine pass. The
+/// dashboard `get_rule_violations` command filters on this literal and the
+/// ActivityEntry renderer shows `post-exec · {rule_id}` when it matches.
+/// Distinct from the Batch 4A deterministic-auditor tags (`build`,
+/// `version_gate`, `file_size`, `lazy_code`, `completeness`).
+pub const POST_EXECUTION_RULES_AUDIT_STEP: &str = "post_execution_rules";
+
+/// Batch 4B: env var that bypasses the PostToolUse ShortCoder invocation
+/// without disabling ShortCoder globally. When set to `1`/`true`/`on`, the
+/// task_runner hands the raw agent response to the auditor and skips the
+/// `ShortCoderCompression` SSB row. The global kill switch
+/// [`ELAI_DISABLE_SHORTCODER_ENV`] takes precedence — if that is on, this
+/// flag is redundant.
+pub const ELAI_DISABLE_SHORTCODER_POSTOOLUSE_ENV: &str =
+    "ELAI_DISABLE_SHORTCODER_POSTOOLUSE";
 
 /// Batch 1A: finding category used when a PreToolUse Block verdict aborts a
 /// baby step. Matches the string category the dashboard already filters on
@@ -3195,6 +3213,37 @@ async fn drive_task(
                             );
                         }
                     }
+
+                    // Batch 4B: run the dispatcher's ShortCoder hook (if
+                    // installed) against the PostToolUse payload so the
+                    // auditor can read an AST-preserving compressed version
+                    // instead of the raw executor output. The raw `source`
+                    // string is retained for SSB record keeping — the
+                    // compressed output is stored via
+                    // [`SsbPayload::ShortCoderCompression`] and flows into
+                    // the auditor's context slot on the following pass.
+                    // `ELAI_DISABLE_SHORTCODER_POSTOOLUSE` bypasses this
+                    // call site exclusively; the global kill switch
+                    // (`ELAI_DISABLE_SHORTCODER`) takes precedence.
+                    let shortcoder_bypassed = std::env::var(
+                        ELAI_DISABLE_SHORTCODER_POSTOOLUSE_ENV,
+                    )
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
+                    .unwrap_or(false);
+                    if !shortcoder_bypassed {
+                        if let Some(outcome) =
+                            dispatcher.shortcode(&source, Some(changed_str.as_ref()))
+                        {
+                            emit_shortcoder_compression_to_ssb(
+                                writer,
+                                RUNNER_AGENT_ID,
+                                RUNNER_SUPERSTEP,
+                                &outcome,
+                                &format!("baby_step_{}", bs_id.0),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
         }
@@ -3225,7 +3274,11 @@ async fn drive_task(
         // distinct category so the frontend can distinguish the two.
         if let Some(evaluator) = resolved.rule_evaluator.as_ref() {
             if !exec_result.changed_files.is_empty() {
-                evaluate_post_execution_rules_and_emit_findings(
+                // Batch 4B: a Block verdict on the real source flips the
+                // baby-step outcome alongside the existing PreGate Block
+                // and hook_post_block flips. Warn verdicts emit Findings
+                // but leave `passed` as-is (same semantics as 4E.14).
+                let post_block = evaluate_post_execution_rules_and_emit_findings(
                     writer,
                     evaluator,
                     bs_id.0,
@@ -3233,6 +3286,9 @@ async fn drive_task(
                     is_web_project,
                 )
                 .await;
+                if post_block {
+                    passed = false;
+                }
             }
         }
 
@@ -4103,6 +4159,20 @@ async fn run_git_commit_dispatch(
 }
 
 async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message: &str) {
+    emit_finding_with_audit_step(writer, severity, category, message, None).await;
+}
+
+/// Batch 4B: like [`emit_finding`] but stamps the Finding with the provided
+/// `audit_step` tag so the dashboard can route it to the correct surface
+/// (post-execution rule violations, deterministic audit findings, etc.).
+/// `None` preserves the pre-4B behaviour of `emit_finding` exactly.
+async fn emit_finding_with_audit_step(
+    writer: &Arc<Ssb>,
+    severity: &str,
+    category: &str,
+    message: &str,
+    audit_step: Option<&str>,
+) {
     let payload = SsbPayload::Finding(FindingPayload {
         severity: severity.to_owned(),
         category: category.to_owned(),
@@ -4110,7 +4180,7 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         file_path: None,
         line: None,
         failure_category: None,
-        audit_step: None,
+        audit_step: audit_step.map(|s| s.to_owned()),
         few_shot_examples: None,
     });
     if let Err(e) = writer
@@ -4945,14 +5015,20 @@ async fn run_post_step_deterministic_audit(
 /// violation. I/O errors while reading a changed file fall in the same
 /// bucket: we log `warn!` and skip, matching the task runner's general
 /// "one bad file does not abort the loop" policy.
+/// Batch 4B: returns `true` when at least one Block verdict fired, so the
+/// task_runner baby-step loop can flip `passed = false` alongside the
+/// existing PreGate Block and hook_post_block paths. Findings are stamped
+/// with [`POST_EXECUTION_RULES_AUDIT_STEP`] so the dashboard can route
+/// them to the Rule-violations strip.
 async fn evaluate_post_execution_rules_and_emit_findings(
     writer: &Arc<Ssb>,
     evaluator: &RuleEvaluator,
     bs_id: u64,
     changed_files: &[PathBuf],
     is_web_project: bool,
-) {
+) -> bool {
     let domains: Vec<&str> = if is_web_project { vec!["web"] } else { Vec::new() };
+    let mut block_found = false;
     for path in changed_files {
         if !path.exists() {
             // Acceptance criterion: delete case → skip, not a violation.
@@ -4983,7 +5059,8 @@ async fn evaluate_post_execution_rules_and_emit_findings(
         for v in &verdicts {
             match v.result {
                 VerdictResult::Block => {
-                    emit_finding(
+                    block_found = true;
+                    emit_finding_with_audit_step(
                         writer,
                         "error",
                         RULE_VIOLATION_POST_CATEGORY,
@@ -4993,11 +5070,12 @@ async fn evaluate_post_execution_rules_and_emit_findings(
                             v.rule_id,
                             v.evidence,
                         ),
+                        Some(POST_EXECUTION_RULES_AUDIT_STEP),
                     )
                     .await;
                 }
                 VerdictResult::Warn => {
-                    emit_finding(
+                    emit_finding_with_audit_step(
                         writer,
                         "warning",
                         RULE_VIOLATION_POST_CATEGORY,
@@ -5007,11 +5085,12 @@ async fn evaluate_post_execution_rules_and_emit_findings(
                             v.rule_id,
                             v.evidence,
                         ),
+                        Some(POST_EXECUTION_RULES_AUDIT_STEP),
                     )
                     .await;
                 }
                 VerdictResult::Escalate(ref target) => {
-                    emit_finding(
+                    emit_finding_with_audit_step(
                         writer,
                         "escalate",
                         RULE_VIOLATION_POST_CATEGORY,
@@ -5022,6 +5101,7 @@ async fn evaluate_post_execution_rules_and_emit_findings(
                             target,
                             v.evidence,
                         ),
+                        Some(POST_EXECUTION_RULES_AUDIT_STEP),
                     )
                     .await;
                 }
@@ -5029,6 +5109,47 @@ async fn evaluate_post_execution_rules_and_emit_findings(
             }
         }
     }
+    block_found
+}
+
+/// Batch 4B: pure-evaluation variant exposed for contract tests. Runs the
+/// same per-file loop as [`evaluate_post_execution_rules_and_emit_findings`]
+/// but does NOT emit SSB rows — returns `true` iff at least one Block
+/// verdict fired across `changed_files`. The task_runner's real call site
+/// still uses the emitting variant; this accessor lets contracts assert
+/// the Block-flips-passed semantics without needing a live SSB writer.
+pub fn evaluate_post_execution_block_found(
+    evaluator: &RuleEvaluator,
+    changed_files: &[PathBuf],
+    is_web_project: bool,
+) -> bool {
+    let domains: Vec<&str> = if is_web_project { vec!["web"] } else { Vec::new() };
+    for path in changed_files {
+        if !path.exists() {
+            continue;
+        }
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let file_path_str = path.to_string_lossy();
+        let ctx = EvaluationContext {
+            action: BABY_STEP_PRE_GATE_ACTION,
+            source: &source,
+            file_path: &file_path_str,
+            fsm_phase: FsmPhaseBit::EXECUTING,
+            metric_values: HashMap::new(),
+        };
+        let verdicts =
+            evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
+        if verdicts
+            .iter()
+            .any(|v| matches!(v.result, VerdictResult::Block))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

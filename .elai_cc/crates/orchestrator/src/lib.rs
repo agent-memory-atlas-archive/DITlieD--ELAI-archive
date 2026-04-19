@@ -383,25 +383,25 @@ pub use feasibility_probe::{
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
-    SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError, StepStatus,
-    ThinkStepSummary, validate_request_id,
+    RuleViolationSummary, SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError,
+    StepStatus, ThinkStepSummary, validate_request_id,
 };
 pub use task_runner::{
-    detect_scaffold_template, is_web_research_task, is_web_scaffold_task,
-    new_dev_server_registry, project_dir_is_web, start_task_runner, AgentPoolBabyStepExecutor,
-    BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor, CancelHandle,
-    CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher, DevServerRegistry,
-    LaunchedPreview, ProjectDirResolver, RuleEvaluator, ScaffoldApplier,
+    detect_scaffold_template, evaluate_post_execution_block_found, is_web_research_task,
+    is_web_scaffold_task, new_dev_server_registry, project_dir_is_web, start_task_runner,
+    AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor,
+    CancelHandle, CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher,
+    DevServerRegistry, LaunchedPreview, ProjectDirResolver, RuleEvaluator, ScaffoldApplier,
     SsbWebResearchStepEmitter, SyntheticBabyStepExecutor, TaskRunnerConfig, TaskRunnerError,
     WebResearchRunner, WebResearchSummary, WebValidatorLauncher, AGENT_FAILED_CATEGORY,
     BABY_STEP_PRE_GATE_ACTION, DEFAULT_BABY_STEP_TIMEOUT_MS, DEFAULT_DEV_SERVER_COMMAND,
     DEFAULT_DEV_SERVER_PORT, DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE,
     DEFAULT_SOURCE_TIERS_TOML, DETERMINISTIC_AUDIT_CATEGORY, DEV_SERVER_FAILED_CATEGORY,
-    INDEXING_SUMMARY_CATEGORY, MAX_BABY_STEPS_PER_TASK, PREVIEW_SLOT_LIVE,
-    RULE_VIOLATION_CATEGORY, RULE_VIOLATION_POST_CATEGORY, RUNNER_AGENT_ID,
-    SPIRAL_HARDSTOP_CATEGORY, WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY,
-    WEB_SCAFFOLD_TEMPLATE_ASTRO, WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE,
-    WEB_SCAFFOLD_TEMPLATE_VANILLA,
+    ELAI_DISABLE_SHORTCODER_POSTOOLUSE_ENV, INDEXING_SUMMARY_CATEGORY, MAX_BABY_STEPS_PER_TASK,
+    POST_EXECUTION_RULES_AUDIT_STEP, PREVIEW_SLOT_LIVE, RULE_VIOLATION_CATEGORY,
+    RULE_VIOLATION_POST_CATEGORY, RUNNER_AGENT_ID, SPIRAL_HARDSTOP_CATEGORY,
+    WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY, WEB_SCAFFOLD_TEMPLATE_ASTRO,
+    WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE, WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };
 pub use rule_loader::load_seed_rules_from_dir;
 pub use supervision::{

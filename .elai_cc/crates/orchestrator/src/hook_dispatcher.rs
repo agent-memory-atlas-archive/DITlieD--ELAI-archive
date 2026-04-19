@@ -328,6 +328,20 @@ pub trait HookDispatcher: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     >;
+
+    /// Batch 4B: run the dispatcher's optional ShortCoder compression hook
+    /// on a PostToolUse payload. Default returns `None` so every existing
+    /// implementor stays backward-compatible without edits. The task_runner
+    /// feeds the compressed output to the auditor when this returns Some —
+    /// the raw `invocation.source` remains the executor's record of truth.
+    #[allow(unused_variables)]
+    fn shortcode(
+        &self,
+        source: &str,
+        file_path: Option<&str>,
+    ) -> Option<ShortCoderOutcome> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +557,19 @@ impl HookDispatcher for InProcessHookDispatcher {
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
         Box::pin(async move { self.analyze(&invocation) })
+    }
+
+    /// Batch 4B: expose the inherent ShortCoder method via the trait so
+    /// callers holding an `Arc<dyn HookDispatcher>` can invoke it without
+    /// downcasting. Behaviour matches the inherent method — env-off returns
+    /// None, no-hook returns None, compressed Outcome otherwise.
+    fn shortcode(
+        &self,
+        source: &str,
+        file_path: Option<&str>,
+    ) -> Option<ShortCoderOutcome> {
+        // Forward to the inherent method defined on `InProcessHookDispatcher`.
+        InProcessHookDispatcher::shortcode(self, source, file_path)
     }
 
     fn dispatch_stop<'a>(

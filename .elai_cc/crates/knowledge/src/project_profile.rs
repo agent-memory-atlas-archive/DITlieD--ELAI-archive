@@ -461,6 +461,7 @@ pub fn detect_project_profile(project_root: &Path) -> Result<ProjectProfile, Pro
         domains: Vec::new(),
         commands,
         fix_template_keys: Vec::new(),
+        constraints: Vec::new(),
         overrides_applied: false,
     };
 
@@ -1112,6 +1113,18 @@ fn merge_overrides(profile: &mut ProjectProfile, overrides: &toml::Table) {
     // project_vision override
     if let Some(vision) = overrides.get("project_vision").and_then(|v| v.as_str()) {
         profile.project_vision = Some(vision.to_string());
+    }
+
+    // Batch 4B (A-7): constitutional constraints override. Accepts a TOML
+    // array of strings; non-string entries are silently skipped rather than
+    // aborting the override merge for a typo. Replaces the list wholesale
+    // (not a merge) so operators can explicitly pin the set they trust.
+    if let Some(list) = overrides.get("constraints").and_then(|v| v.as_array()) {
+        let filtered: Vec<String> = list
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        profile.constraints = filtered;
     }
 
     profile.overrides_applied = true;

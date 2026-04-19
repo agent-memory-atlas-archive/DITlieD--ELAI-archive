@@ -237,6 +237,7 @@ fn scaffold_profile() -> elai_core::project_profile::ProjectProfile {
         domains: Vec::new(),
         commands: BuildCommandRegistry::default(),
         fix_template_keys: Vec::new(),
+        constraints: Vec::new(),
         overrides_applied: false,
     }
 }
