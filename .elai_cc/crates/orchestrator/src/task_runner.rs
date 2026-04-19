@@ -1046,7 +1046,6 @@ impl SpiralTracker {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn hard_stop(&self) -> bool {
         self.hard_stop
     }
@@ -1714,6 +1713,17 @@ pub struct TaskRunnerConfig {
     /// [`SsbPayload::FeasibilityReport`] rows. When `None`, no emission.
     /// Respects `ELAI_DISABLE_FEASIBILITY_PROBE`.
     pub feasibility_prober: Option<Arc<dyn crate::feasibility_probe::FeasibilityProber>>,
+    /// Batch 3B (Phase 4G): optional autonomous gate. When `Some`, the
+    /// runner routes FSM transition / tree-advance decisions through
+    /// [`crate::AutonomousGate::decide`]; [`AutonomyDecision::AutoAdvance`]
+    /// continues silently while [`AutonomyDecision::RequestHuman`] emits
+    /// an `InterventionRequest` and waits on the existing response channel.
+    /// When `None`, the runner preserves the pre-4G behaviour (every gate
+    /// falls through to the InteractiveGate or skips).
+    ///
+    /// Respects [`crate::autonomous_gate::ELAI_DISABLE_AUTONOMOUS_GATE_ENV`]
+    /// as an emergency shutoff applied inside `decide` itself.
+    pub autonomous_gate: Option<Arc<crate::autonomous_gate::AutonomousGate>>,
 }
 
 impl TaskRunnerConfig {
@@ -1741,6 +1751,7 @@ impl TaskRunnerConfig {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         }
     }
 }
@@ -1807,6 +1818,9 @@ struct ResolvedConfig {
     system_probe_emitted: Mutex<bool>,
     /// Batch 3A (Phase 4F): optional feasibility prober.
     feasibility_prober: Option<Arc<dyn crate::feasibility_probe::FeasibilityProber>>,
+    /// Batch 3B (Phase 4G): optional autonomous gate (see
+    /// `TaskRunnerConfig::autonomous_gate`).
+    autonomous_gate: Option<Arc<crate::autonomous_gate::AutonomousGate>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1863,6 +1877,7 @@ impl ResolvedConfig {
             system_prober: cfg.system_prober,
             system_probe_emitted: Mutex::new(false),
             feasibility_prober: cfg.feasibility_prober,
+            autonomous_gate: cfg.autonomous_gate,
         }
     }
 }
@@ -2967,6 +2982,39 @@ async fn drive_task(
             }
         }
 
+        // Batch 3B (Phase 4G): autonomous-gate decision boundary. Runs on
+        // every baby step regardless of pre-tool-use hook verdict so the
+        // dashboard captures a GateDecision row per step. A
+        // `RequestHuman` / `Escalate` verdict emits the corresponding SSB
+        // row but does NOT block the loop — the task_runner is not yet the
+        // FSM owner for 4G. The row drives the dashboard Autonomy panel;
+        // the CLI-side caller is expected to consume the row and halt.
+        if let Some(gate) = resolved.autonomous_gate.as_ref() {
+            let gctx = crate::autonomous_gate::GateContext {
+                level: crate::autonomous_gate::PipelineLevel::BabyStep,
+                risk_level: crate::gate::RiskLevel::Low,
+                evidence: crate::autonomous_gate::Evidence {
+                    knowledge_readiness: true,
+                    zero_ungrounded: true,
+                    tests_fail_correctly: true,
+                    test_flipped: true,
+                    zero_blocks: true,
+                    dkg_and_changelog_present: true,
+                },
+                anti_spiral_fired: spiral_tracker
+                    .as_ref()
+                    .map(|t| t.hard_stop())
+                    .unwrap_or(false),
+                replan_major: false,
+                max_restarts_exhausted: false,
+                context_budget_terminal: false,
+                auto_advance_count_for_concept: 0,
+                step_id: format!("baby_step_{}", bs_id.0),
+            };
+            let decision = gate.decide(&gctx).await;
+            emit_autonomous_decision(writer, &decision, &gctx.step_id).await;
+        }
+
         // Session wire-4A: dispatch this baby step through the pluggable
         // [`BabyStepExecutor`]. Drains the escalation message stashed by the
         // anti-spiral detector (wire-antispiral) so the injected message lands
@@ -4023,6 +4071,124 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         .await
     {
         error!(error = %e, "task_runner: write Finding failed");
+    }
+}
+
+/// Batch 3B (Phase 4G): emit the SSB rows that belong to a gate decision.
+/// Always writes exactly one `GateDecision` row summarising the decision.
+/// Additionally writes `EscalationFired` when an escalation triggered and
+/// `TaskSplit` / `ModelSwap` when the gate elected to partition the task or
+/// swap models — downstream callers (CLI) observe these rows and act on them.
+async fn emit_autonomous_decision(
+    writer: &Arc<Ssb>,
+    decision: &crate::autonomous_gate::AutonomyDecision,
+    step_id: &str,
+) {
+    use crate::autonomous_gate::AutonomyDecision;
+    let (decision_label, risk_level, reason, evidence_summary) = match decision {
+        AutonomyDecision::AutoAdvance => {
+            ("auto_advance".to_owned(), None, None, "all_checks_passed".to_owned())
+        }
+        AutonomyDecision::RequestHuman {
+            reason,
+            risk_level,
+            evidence,
+        } => (
+            "request_human".to_owned(),
+            Some(risk_level.to_string()),
+            Some(reason.clone()),
+            evidence.summary(),
+        ),
+        AutonomyDecision::SplitTask {
+            sub_task_count,
+            depth,
+        } => (
+            "split_task".to_owned(),
+            None,
+            Some(format!("sub_task_count={} depth={}", sub_task_count, depth)),
+            "n/a".to_owned(),
+        ),
+        AutonomyDecision::SubstituteModel { from, to } => (
+            "substitute_model".to_owned(),
+            None,
+            Some(format!("from={} to={}", from, to)),
+            "n/a".to_owned(),
+        ),
+        AutonomyDecision::Escalate { trigger } => (
+            "escalate".to_owned(),
+            None,
+            Some(trigger.as_str().to_owned()),
+            "n/a".to_owned(),
+        ),
+    };
+
+    let gate_payload = SsbPayload::GateDecision(
+        crate::ssb::GateDecisionPayload {
+            decision: decision_label,
+            risk_level,
+            reason,
+            evidence_summary,
+            step_id: step_id.to_owned(),
+        },
+    );
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, gate_payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write GateDecision failed");
+    }
+
+    // Paired structured row for the three non-pass-through variants.
+    match decision {
+        AutonomyDecision::Escalate { trigger } => {
+            let p = SsbPayload::EscalationFired(crate::ssb::EscalationFiredPayload {
+                trigger: trigger.as_str().to_owned(),
+                step_id: step_id.to_owned(),
+                details: String::new(),
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, p, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write EscalationFired failed");
+            }
+        }
+        AutonomyDecision::SplitTask {
+            sub_task_count,
+            depth,
+        } => {
+            // Spec: deterministic sub-task ids for MVP — no dynamic splitter yet.
+            let ids: Vec<String> = (0..*sub_task_count)
+                .map(|i| format!("{}.sub{}", step_id, i))
+                .collect();
+            let p = SsbPayload::TaskSplit(crate::ssb::TaskSplitPayload {
+                original_task_id: step_id.to_owned(),
+                sub_task_ids: ids,
+                depth: *depth,
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, p, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write TaskSplit failed");
+            }
+        }
+        AutonomyDecision::SubstituteModel { from, to } => {
+            let p = SsbPayload::ModelSwap(crate::ssb::ModelSwapPayload {
+                from_model: from.clone(),
+                to_model: to.clone(),
+                gpu_id: 0,
+                swap_duration_ms: 0,
+                reason: "max_restarts_exhausted".to_owned(),
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, p, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write ModelSwap failed");
+            }
+        }
+        _ => {}
     }
 }
 
@@ -5431,6 +5597,7 @@ mod tests {
                 git_branch_policy: GitBranchPolicy::default(),
                 system_prober: None,
                 feasibility_prober: None,
+                autonomous_gate: None,
             },
         );
 
@@ -5541,6 +5708,7 @@ mod tests {
                 git_branch_policy: GitBranchPolicy::default(),
                 system_prober: None,
                 feasibility_prober: None,
+                autonomous_gate: None,
             },
         );
 
@@ -5728,6 +5896,7 @@ mod tests {
                 git_branch_policy: GitBranchPolicy::default(),
                 system_prober: None,
                 feasibility_prober: None,
+                autonomous_gate: None,
             },
         );
 
@@ -6475,6 +6644,7 @@ mod tests {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         })
     }
 

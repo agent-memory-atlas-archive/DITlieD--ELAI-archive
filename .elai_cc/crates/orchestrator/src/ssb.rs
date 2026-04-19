@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'tiered_analysis', 'shortcoder_compression',
         'tool_dispatch', 'validation_tier', 'failure_classified',
         'git_commit', 'daira_trace',
-        'system_probe', 'feasibility_report', 'novel_step_detected', 'stub_run'
+        'system_probe', 'feasibility_report', 'novel_step_detected', 'stub_run',
+        'gate_decision', 'task_split', 'escalation_fired', 'mode_changed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -185,6 +186,20 @@ pub enum SsbActionType {
     /// Batch 3A (Phase 4F): one row per stub execution inside the
     /// feasibility probe. Carries a [`StubRunPayload`].
     StubRun,
+    /// Batch 3B (Phase 4G): autonomous-gate decision row. Emitted on every
+    /// call to [`crate::autonomous_gate::AutonomousGate::decide`]. Carries a
+    /// [`GateDecisionPayload`].
+    GateDecision,
+    /// Batch 3B (Phase 4G): task-split announcement emitted when the
+    /// autonomous gate decides to partition a task under context pressure.
+    /// Carries a [`TaskSplitPayload`].
+    TaskSplit,
+    /// Batch 3B (Phase 4G): escalation-fired row. Carries an
+    /// [`EscalationFiredPayload`] with the trigger + step_id.
+    EscalationFired,
+    /// Batch 3B (Phase 4G): gate-mode transition (Interactive ↔ Autonomous).
+    /// Carries a [`ModeChangedPayload`].
+    ModeChanged,
 }
 
 impl SsbActionType {
@@ -240,6 +255,10 @@ impl SsbActionType {
             Self::FeasibilityReport => "feasibility_report",
             Self::NovelStepDetected => "novel_step_detected",
             Self::StubRun => "stub_run",
+            Self::GateDecision => "gate_decision",
+            Self::TaskSplit => "task_split",
+            Self::EscalationFired => "escalation_fired",
+            Self::ModeChanged => "mode_changed",
         }
     }
 }
@@ -301,6 +320,10 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "feasibility_report" => Ok(SsbActionType::FeasibilityReport),
         "novel_step_detected" => Ok(SsbActionType::NovelStepDetected),
         "stub_run" => Ok(SsbActionType::StubRun),
+        "gate_decision" => Ok(SsbActionType::GateDecision),
+        "task_split" => Ok(SsbActionType::TaskSplit),
+        "escalation_fired" => Ok(SsbActionType::EscalationFired),
+        "mode_changed" => Ok(SsbActionType::ModeChanged),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1008,6 +1031,47 @@ pub struct StubRunPayload {
     pub elapsed_ms: u32,
 }
 
+/// Batch 3B (Phase 4G) — one row per [`crate::autonomous_gate::AutonomousGate::decide`]
+/// call. `decision` is the [`crate::autonomous_gate::AutonomyDecision`]
+/// variant name (`"auto_advance"` / `"request_human"` / `"split_task"` /
+/// `"substitute_model"` / `"escalate"`). `risk_level` is populated on
+/// RequestHuman; `reason` on RequestHuman / Escalate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateDecisionPayload {
+    pub decision: String,
+    pub risk_level: Option<String>,
+    pub reason: Option<String>,
+    pub evidence_summary: String,
+    pub step_id: String,
+}
+
+/// Batch 3B (Phase 4G) — task-split announcement. Emitted when the gate
+/// decides the current task must be split under context pressure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSplitPayload {
+    pub original_task_id: String,
+    pub sub_task_ids: Vec<String>,
+    pub depth: u8,
+}
+
+/// Batch 3B (Phase 4G) — escalation trigger row. `trigger` is the
+/// [`crate::autonomous_gate::EscalationTrigger::as_str`] label. `details` is
+/// free-form (e.g. the AntiSpiralDetector depth).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EscalationFiredPayload {
+    pub trigger: String,
+    pub step_id: String,
+    pub details: String,
+}
+
+/// Batch 3B (Phase 4G) — gate-mode change. Lower-cased (`"interactive"` /
+/// `"autonomous"`) to match the `/mode` slash-command syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeChangedPayload {
+    pub from: String,
+    pub to: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1074,6 +1138,10 @@ pub enum SsbPayload {
     FeasibilityReport(FeasibilityReportPayload),
     NovelStepDetected(NovelStepDetectedPayload),
     StubRun(StubRunPayload),
+    GateDecision(GateDecisionPayload),
+    TaskSplit(TaskSplitPayload),
+    EscalationFired(EscalationFiredPayload),
+    ModeChanged(ModeChangedPayload),
 }
 
 impl SsbPayload {
@@ -1130,6 +1198,10 @@ impl SsbPayload {
             Self::FeasibilityReport(_) => SsbActionType::FeasibilityReport,
             Self::NovelStepDetected(_) => SsbActionType::NovelStepDetected,
             Self::StubRun(_) => SsbActionType::StubRun,
+            Self::GateDecision(_) => SsbActionType::GateDecision,
+            Self::TaskSplit(_) => SsbActionType::TaskSplit,
+            Self::EscalationFired(_) => SsbActionType::EscalationFired,
+            Self::ModeChanged(_) => SsbActionType::ModeChanged,
         }
     }
 }
@@ -2242,6 +2314,27 @@ mod tests {
                 step_id: "step-1".into(),
                 passed: true,
                 elapsed_ms: 12,
+            }),
+            SsbActionType::GateDecision => SsbPayload::GateDecision(GateDecisionPayload {
+                decision: "auto_advance".into(),
+                risk_level: Some("LOW".into()),
+                reason: None,
+                evidence_summary: "kr=1 zu=1 tfc=1 tf=1 zb=1 dcg=1".into(),
+                step_id: "step-1".into(),
+            }),
+            SsbActionType::TaskSplit => SsbPayload::TaskSplit(TaskSplitPayload {
+                original_task_id: "task-1".into(),
+                sub_task_ids: vec!["task-1.1".into(), "task-1.2".into()],
+                depth: 1,
+            }),
+            SsbActionType::EscalationFired => SsbPayload::EscalationFired(EscalationFiredPayload {
+                trigger: "anti_spiral".into(),
+                step_id: "step-1".into(),
+                details: "spiral_depth=2".into(),
+            }),
+            SsbActionType::ModeChanged => SsbPayload::ModeChanged(ModeChangedPayload {
+                from: "interactive".into(),
+                to: "autonomous".into(),
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

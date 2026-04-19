@@ -4,6 +4,7 @@ pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
+pub mod autonomous_gate;
 pub mod sandbox;
 pub mod bsp;
 mod bash;
@@ -142,6 +143,12 @@ pub use gate::{
 };
 #[cfg(test)]
 pub use gate::MockInteractiveGate;
+// Batch 3B (Phase 4G) — AutonomousGate surface.
+pub use autonomous_gate::{
+    autonomous_gate_disabled_via_env, AutonomousGate, AutonomousGateConfig, AutonomyDecision,
+    EscalationTrigger, Evidence as AutonomousEvidence, GateContext as AutonomousGateContext,
+    GateMode, PipelineLevel, TreeAutoAdvancePolicy, ELAI_DISABLE_AUTONOMOUS_GATE_ENV,
+};
 pub use tool_filter::{RuleCategory, ToolCategory};
 pub use dispatcher::{
     BackendConfig, BackendMode, DispatchContext, DispatchError, build_dispatch_context,
@@ -342,9 +349,11 @@ pub use ssb::{
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
     NovelStepDetectedPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbPayload, SsbReader, SsbWriteRequest, StubRunPayload, SystemProbePayload,
-    TaskSubmittedPayload, ToolDispatchPayload, ValidationTierPayload, VramTierDetectedPayload,
-    WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
+    FindingPayload, SsbPayload, SsbReader, SsbWriteRequest, StubRunPayload,
+    SystemProbePayload, TaskSubmittedPayload, ToolDispatchPayload, ValidationTierPayload,
+    VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
+    // Batch 3B (Phase 4G).
+    EscalationFiredPayload, GateDecisionPayload, ModeChangedPayload, TaskSplitPayload,
 };
 pub use system_probe::{
     classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,

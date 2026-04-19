@@ -133,6 +133,7 @@ async fn contract_task_runner_accepts_llm_provider() {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         },
     );
 

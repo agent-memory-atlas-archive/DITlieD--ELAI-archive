@@ -114,6 +114,7 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         git_branch_policy: GitBranchPolicy::default(),
         system_prober: None,
         feasibility_prober: None,
+        autonomous_gate: None,
     };
 
     assert!(
@@ -157,6 +158,7 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         git_branch_policy: GitBranchPolicy::default(),
         system_prober: None,
         feasibility_prober: None,
+        autonomous_gate: None,
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

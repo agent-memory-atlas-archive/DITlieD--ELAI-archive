@@ -170,6 +170,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         },
     );
 
@@ -257,6 +258,7 @@ async fn web_research_task_without_runner_emits_finding() {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         },
     );
 
@@ -349,6 +351,7 @@ async fn web_research_runner_invoked_once_per_task() {
             git_branch_policy: GitBranchPolicy::default(),
             system_prober: None,
             feasibility_prober: None,
+            autonomous_gate: None,
         },
     );
 
