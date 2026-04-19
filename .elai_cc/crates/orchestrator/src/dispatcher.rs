@@ -4,11 +4,57 @@
 // enum), and build_dispatch_context() which assembles a context from FSM state,
 // budget breakdown, and backend config.
 
-use crate::context_budget::{BudgetError, ContextBudget, ModelCapabilityProfile};
+use crate::context_budget::{BudgetError, ContextBudget, GenerationProfile, ModelCapabilityProfile};
 use crate::fsm::FsmState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
+
+// ---------------------------------------------------------------------------
+// PhaseSlot — batch-fu (FU.1)
+// ---------------------------------------------------------------------------
+
+/// Per-dispatch phase-content payload threaded into [`build_dispatch_context`].
+///
+/// Carries four pieces of context a dispatch site may know about that
+/// `build_dispatch_context` alone cannot synthesize:
+///
+/// - `goal`: the natural-language goal of the current phase.
+/// - `constraints`: constitutional CONSTRAINTS (A-7). When non-empty,
+///   [`build_dispatch_context`] prepends a `CONSTRAINTS:` block to the
+///   assembled `PhaseSpec` slot before budgeting.
+/// - `profile_hint`: the [`GenerationProfile`] the caller wants applied
+///   (A-18). When set to [`GenerationProfile::RepairRetry`], downstream
+///   callers may also invoke the context-telescope (A-46) on the repair
+///   snippet via the separate `telescope_caller` surface — this struct is
+///   the pure input carrier; side-effects (SSB emission, telescope calls)
+///   belong to the call site, not `build_dispatch_context`.
+/// - `repair_snippet`: optional prior failure context that the telescope
+///   caller collapses into the Slot-3 budget (A-46 input side). `None`
+///   when the dispatch is not a repair retry.
+///
+/// `Default` yields an empty slot — behaviour-equivalent to `None` on
+/// [`build_dispatch_context`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PhaseSlot {
+    /// Natural-language phase goal (may be empty on non-phase dispatches).
+    pub goal: String,
+    /// Batch-fu (A-7): constitutional CONSTRAINTS list sourced from
+    /// [`crate::dispatcher`]'s caller's `ProjectProfile.constraints`.
+    pub constraints: Vec<String>,
+    /// Batch-fu (A-18): per-dispatch generation-profile hint. When set and
+    /// non-default, downstream code emits a `ProfileSelected` SSB row.
+    pub profile_hint: Option<GenerationProfile>,
+    /// Batch-fu (A-46): optional snippet-of-prior-failure carried into the
+    /// repair context assembly. Consumed by `telescope_caller::invoke_telescope`
+    /// outside this pure assembly function.
+    pub repair_snippet: Option<String>,
+}
+
+/// Header used to prefix the CONSTRAINTS block in the assembled PhaseSpec
+/// slot. Exposed so tests / dashboard can scan assembled output without
+/// duplicating the literal.
+pub const CONSTRAINTS_BLOCK_HEADER: &str = "CONSTRAINTS:";
 
 // ---------------------------------------------------------------------------
 // BackendMode
@@ -122,6 +168,17 @@ pub struct DispatchContext {
     pub filtered_tool_names: Vec<String>,
     pub max_tools: usize,
     pub budget: Option<ContextBudget>,
+    /// Batch-fu (FU.1): assembled phase-content slot body. Carries the
+    /// CONSTRAINTS block (A-7) when `phase_slot.constraints` is non-empty,
+    /// followed by the phase goal (when set). `None` when no phase slot was
+    /// provided to [`build_dispatch_context`] — preserves pre-batch-fu
+    /// behaviour for every current caller that passes `None`.
+    pub phase_content: Option<String>,
+    /// Batch-fu (FU.1 / A-18): generation profile applied to this dispatch.
+    /// Defaults to [`GenerationProfile::FirstAttempt`] when no hint is
+    /// supplied. Carried into the context so the LLM-provider layer can
+    /// apply the profile's temperature/top_p without a second lookup.
+    pub profile: GenerationProfile,
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +195,7 @@ pub fn build_dispatch_context(
     all_tool_names: &[String],
     priority_map: &HashMap<String, u8>,
     profile: Option<&ModelCapabilityProfile>,
+    phase_slot: Option<&PhaseSlot>,
 ) -> Result<DispatchContext, DispatchError> {
     // Pre-filter tools by FSM state.
     let filtered: Vec<String> = all_tool_names
@@ -164,6 +222,24 @@ pub fn build_dispatch_context(
         None => ContextBudget::compute(raw_max, [0, 0, 0], 4096).ok(),
     };
 
+    // Batch-fu (FU.1 + A-7): assemble the phase-content slot when a phase
+    // slot was supplied. The order is fixed:
+    //   1. `CONSTRAINTS:` block (one bullet per entry) when
+    //      `phase_slot.constraints` is non-empty.
+    //   2. A blank-line separator.
+    //   3. The phase goal (when non-empty).
+    //
+    // Empty phase_slot OR `None` → `phase_content = None`, preserving
+    // pre-batch-fu behaviour for every caller that passes `None`.
+    let phase_content = phase_slot.and_then(assemble_phase_content);
+
+    // Batch-fu (FU.1 / A-18): pick the applied profile. Caller-supplied hint
+    // wins; absent hint falls through to `FirstAttempt` (the pre-batch-fu
+    // implicit behaviour).
+    let applied_profile = phase_slot
+        .and_then(|s| s.profile_hint)
+        .unwrap_or(GenerationProfile::FirstAttempt);
+
     Ok(DispatchContext {
         fsm_state,
         backend_mode: config.mode,
@@ -172,7 +248,37 @@ pub fn build_dispatch_context(
         filtered_tool_names: capped,
         max_tools,
         budget,
+        phase_content,
+        profile: applied_profile,
     })
+}
+
+/// Render a [`PhaseSlot`] into the assembled PhaseSpec body. Returns `None`
+/// when every field is empty so a populated-but-useless slot does not
+/// produce a stray empty string on the `DispatchContext`.
+fn assemble_phase_content(slot: &PhaseSlot) -> Option<String> {
+    let has_constraints = !slot.constraints.is_empty();
+    let has_goal = !slot.goal.is_empty();
+    if !has_constraints && !has_goal {
+        return None;
+    }
+    let mut out = String::new();
+    if has_constraints {
+        out.push_str(CONSTRAINTS_BLOCK_HEADER);
+        out.push('\n');
+        for c in &slot.constraints {
+            out.push_str("- ");
+            out.push_str(c);
+            out.push('\n');
+        }
+    }
+    if has_goal {
+        if has_constraints {
+            out.push('\n');
+        }
+        out.push_str(&slot.goal);
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +325,7 @@ mod tests {
 
         let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Executing, &config, &tools, &prio, None).expect("should succeed");
+            build_dispatch_context(FsmState::Executing, &config, &tools, &prio, None, None).expect("should succeed");
 
         assert_eq!(ctx.fsm_state, FsmState::Executing);
         assert_eq!(ctx.backend_mode, BackendMode::Api);
@@ -244,7 +350,7 @@ mod tests {
 
         let prio = HashMap::new();
         let ctx =
-            build_dispatch_context(FsmState::Planning, &config, &tools, &prio, None).expect("should succeed");
+            build_dispatch_context(FsmState::Planning, &config, &tools, &prio, None, None).expect("should succeed");
 
         // Planning blocks: bash, edit_file, write_file
         assert!(!ctx.filtered_tool_names.contains(&"bash".to_string()));
@@ -270,7 +376,7 @@ mod tests {
         let prio: HashMap<String, u8> = (0..10u8).map(|i| (format!("read_file_{i}"), i)).collect();
 
         let ctx =
-            build_dispatch_context(FsmState::Idle, &config, &tools, &prio, None).expect("should succeed");
+            build_dispatch_context(FsmState::Idle, &config, &tools, &prio, None, None).expect("should succeed");
 
         // Idle allows everything, but capped at 3. Priority sort keeps 0, 1, 2.
         assert!(ctx.filtered_tool_names.len() <= 3);

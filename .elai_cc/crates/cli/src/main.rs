@@ -7554,6 +7554,7 @@ impl ApiClient for RuntimeClient {
                         &all_tools,
                         &priority_map,
                         None,
+                        None,
                     ) {
                         Ok(ctx) => {
                             tracing::info!(

@@ -71,8 +71,10 @@ pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
     BranchRef, DagMessageRole, MergeResult, Stub,
 };
+pub mod irreversible_classifier;
 pub mod micro_reflection_emitter;
 pub mod mistake_book;
+pub mod sidecar_reflection_adapter;
 pub mod output_postprocessor;
 pub mod profile_selector;
 pub mod rule_loader;
@@ -155,8 +157,9 @@ pub use autonomous_gate::{
 };
 pub use tool_filter::{RuleCategory, ToolCategory};
 pub use dispatcher::{
-    BackendConfig, BackendMode, DispatchContext, DispatchError, build_dispatch_context,
-    LOCAL_MODEL_MAX_CONTEXT, LOCAL_BUDGET_FRACTION,
+    BackendConfig, BackendMode, DispatchContext, DispatchError, PhaseSlot,
+    build_dispatch_context, CONSTRAINTS_BLOCK_HEADER, LOCAL_MODEL_MAX_CONTEXT,
+    LOCAL_BUDGET_FRACTION,
 };
 pub use elai_core::{BootstrapPhase, BootstrapPlan};
 // Batch 2B: re-export ToolDispatcher trait + value types so downstream
@@ -364,6 +367,8 @@ pub use ssb::{
     // Batch 4C — scattered A-step wiring.
     ConfigWarningPayload, FsmTransitionPayload, MicroReflectionPayload,
     ProfileSelectedPayload, TelescopeCollapsePayload,
+    // Batch-fu — cross-cutting follow-up wiring.
+    ConstraintsInjectedPayload, InterventionResolvedPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -372,7 +377,17 @@ pub use profile_selector::{
 };
 pub use telescope_caller::{invoke_telescope, TelescopeResult, TelescopeStats};
 pub use micro_reflection_emitter::{
-    emit_micro_reflection, parse_reflection_json, ReflectionClient, ReflectionClientError,
+    emit_micro_reflection, parse_reflection_json, DynReflectionAdapter, DynReflectionClient,
+    ReflectionClient, ReflectionClientError,
+};
+pub use sidecar_reflection_adapter::{
+    micro_reflection_disabled_via_env, SidecarReflectionAdapter,
+    ELAI_DISABLE_MICRO_REFLECTION_ENV,
+};
+pub use irreversible_classifier::{
+    irreversible_classifier_disabled_via_env, IrreversibleActionClassifier, IrreversibleVerdict,
+    SharedIrreversibleClassifier, CONFIRM_IRREVERSIBLE_ACTION_KIND,
+    ELAI_DISABLE_IRREVERSIBLE_CLASSIFIER_ENV,
 };
 // Batch 3C (Phase 4H): Self-Modification Layer 1A surface.
 pub use self_mod_layer1a::{

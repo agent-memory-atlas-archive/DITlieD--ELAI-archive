@@ -94,6 +94,9 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::MicroReflection,
     SsbActionType::TelescopeCollapse,
     SsbActionType::ConfigWarning,
+    // Batch-fu — cross-cutting follow-up wiring.
+    SsbActionType::ConstraintsInjected,
+    SsbActionType::InterventionResolved,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -339,9 +342,10 @@ fn contract_variant_count_matches_enum_doc() {
     // flags a breaking change for review.
     // Batch 4C: +5 variants (profile_selected, fsm_transition,
     // micro_reflection, telescope_collapse, config_warning) bumping the
-    // floor to 62.
+    // floor to 62. Batch-fu: +2 variants (constraints_injected,
+    // intervention_resolved) bumping the floor to 64.
     assert!(
-        ALL_VARIANTS.len() >= 62,
-        "ALL_VARIANTS shrank below 62 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 64,
+        "ALL_VARIANTS shrank below 64 — review SsbActionType enum"
     );
 }

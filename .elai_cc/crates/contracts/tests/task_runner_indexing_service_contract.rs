@@ -87,6 +87,9 @@ fn task_runner_config_accepts_indexing_service_arc() {
         feasibility_prober: None,
         autonomous_gate: None,
         layer1a_processor: None,
+        dispatch_context_profile: None,
+        reflection_client: None,
+        irreversible_classifier: None,
     };
 
     assert!(

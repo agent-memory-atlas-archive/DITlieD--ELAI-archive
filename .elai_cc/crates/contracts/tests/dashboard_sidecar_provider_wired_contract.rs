@@ -135,6 +135,9 @@ async fn contract_task_runner_accepts_llm_provider() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 
@@ -173,7 +176,7 @@ fn contract_build_dispatch_context_with_dashboard_config() {
     // (a) the call compiles against the dashboard config, (b) returns Ok,
     // and (c) filters non-trivially (at least one tool allowed, at least
     // one blocked) so we know the FSM gate fired.
-    let ctx = build_dispatch_context(FsmState::Planning, &cfg, &tools, &priority, None)
+    let ctx = build_dispatch_context(FsmState::Planning, &cfg, &tools, &priority, None, None)
         .expect("build_dispatch_context accepts dashboard config");
     assert_eq!(ctx.backend_mode, BackendMode::Local);
     assert_eq!(ctx.sidecar_url, "http://localhost:8100");

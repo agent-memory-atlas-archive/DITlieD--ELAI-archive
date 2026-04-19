@@ -172,6 +172,9 @@ async fn web_research_task_emits_web_research_step_rows() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 
@@ -261,6 +264,9 @@ async fn web_research_task_without_runner_emits_finding() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 
@@ -355,6 +361,9 @@ async fn web_research_runner_invoked_once_per_task() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 

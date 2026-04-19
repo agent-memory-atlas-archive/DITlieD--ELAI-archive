@@ -233,6 +233,9 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 
@@ -320,6 +323,9 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 
@@ -403,6 +409,9 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         },
     );
 

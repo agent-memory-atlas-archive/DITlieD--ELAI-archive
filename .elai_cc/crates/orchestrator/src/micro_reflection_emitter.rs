@@ -47,12 +47,75 @@ pub enum ReflectionClientError {
 ///
 /// Implementations: production wraps `SidecarGroundingClient` (composition,
 /// not trait-sharing); tests provide a canned-JSON stub.
+///
+/// The `impl Future` return type is not dyn-compatible; use
+/// [`DynReflectionClient`] when an `Arc<dyn ...>` storage is required (e.g.
+/// on `TaskRunnerConfig`). [`DynReflectionClient`] has a blanket impl over
+/// every `ReflectionClient` so downstream types that only implement this
+/// trait pick the object-safe adapter for free.
 pub trait ReflectionClient: Send + Sync {
     fn reflect(
         &self,
         prompt: &str,
     ) -> impl std::future::Future<Output = Result<MicroReflectionResponse, ReflectionClientError>>
            + Send;
+}
+
+/// Object-safe mirror of [`ReflectionClient`]. Returns a boxed future so
+/// the trait can be stored behind `Arc<dyn DynReflectionClient>` on the
+/// runner config. The blanket impl below means every `ReflectionClient`
+/// automatically satisfies `DynReflectionClient` — call sites pass either
+/// interchangeably and [`emit_micro_reflection`] accepts both via the
+/// `?Sized` bound.
+pub trait DynReflectionClient: Send + Sync {
+    fn reflect_boxed<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<MicroReflectionResponse, ReflectionClientError>>
+                + Send
+                + 'a,
+        >,
+    >;
+}
+
+impl<T: ReflectionClient + ?Sized> DynReflectionClient for T {
+    fn reflect_boxed<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<MicroReflectionResponse, ReflectionClientError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(self.reflect(prompt))
+    }
+}
+
+/// Wrapper that makes any [`DynReflectionClient`] usable where a concrete
+/// [`ReflectionClient`] is expected. Call sites receiving an
+/// `Arc<dyn DynReflectionClient>` wrap it via `DynReflectionAdapter::new`
+/// and pass the adapter reference to [`emit_micro_reflection`].
+pub struct DynReflectionAdapter<'a> {
+    inner: &'a (dyn DynReflectionClient + 'a),
+}
+
+impl<'a> DynReflectionAdapter<'a> {
+    pub fn new(inner: &'a (dyn DynReflectionClient + 'a)) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a> ReflectionClient for DynReflectionAdapter<'a> {
+    async fn reflect(
+        &self,
+        prompt: &str,
+    ) -> Result<MicroReflectionResponse, ReflectionClientError> {
+        self.inner.reflect_boxed(prompt).await
+    }
 }
 
 /// Invoke the reflection client to diagnose a baby-step failure and record

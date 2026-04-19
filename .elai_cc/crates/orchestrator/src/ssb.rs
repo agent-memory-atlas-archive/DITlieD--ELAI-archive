@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         'system_probe', 'feasibility_report', 'novel_step_detected', 'stub_run',
         'gate_decision', 'task_split', 'escalation_fired', 'mode_changed',
         'proposal_generated', 'proposal_applied', 'proposal_rejected',
-        'msi_update', 'config_archived'
+        'msi_update', 'config_archived',
+        'profile_selected', 'fsm_transition', 'micro_reflection',
+        'telescope_collapse', 'config_warning',
+        'constraints_injected', 'intervention_resolved'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -232,6 +235,15 @@ pub enum SsbActionType {
     /// Batch 4C (A-45) — config-load warning (e.g. source-tiers.toml missing).
     /// Carries a [`ConfigWarningPayload`].
     ConfigWarning,
+    /// Batch-fu (FU.2 / A-7) — constitutional CONSTRAINTS block injected into
+    /// the assembled PhaseSpec. Emitted once per dispatch that carried a
+    /// non-empty `ProjectProfile.constraints` list. Carries a
+    /// [`ConstraintsInjectedPayload`].
+    ConstraintsInjected,
+    /// Batch-fu (FU.5 / A-31) — resolution row emitted after an
+    /// `InterventionRequest` has been answered by the dashboard via
+    /// `respond_to_confirmation`. Carries an [`InterventionResolvedPayload`].
+    InterventionResolved,
 }
 
 impl SsbActionType {
@@ -301,6 +313,8 @@ impl SsbActionType {
             Self::MicroReflection => "micro_reflection",
             Self::TelescopeCollapse => "telescope_collapse",
             Self::ConfigWarning => "config_warning",
+            Self::ConstraintsInjected => "constraints_injected",
+            Self::InterventionResolved => "intervention_resolved",
         }
     }
 }
@@ -376,6 +390,8 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "micro_reflection" => Ok(SsbActionType::MicroReflection),
         "telescope_collapse" => Ok(SsbActionType::TelescopeCollapse),
         "config_warning" => Ok(SsbActionType::ConfigWarning),
+        "constraints_injected" => Ok(SsbActionType::ConstraintsInjected),
+        "intervention_resolved" => Ok(SsbActionType::InterventionResolved),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1265,6 +1281,35 @@ pub struct ConfigWarningPayload {
     pub detail: String,
 }
 
+/// Batch-fu (FU.2 / A-7) — constitutional CONSTRAINTS block injection row.
+///
+/// Emitted by the task_runner's `build_dispatch_context` call site each time a
+/// dispatch is assembled with a non-empty `ProjectProfile.constraints` list.
+/// `constraint_count` is the number of bullets rendered into the block;
+/// `step_id` is the baby-step identifier so the dashboard can correlate the
+/// row with a specific dispatch. `project_id` is denormalised onto the payload
+/// in addition to the SSB `project_id` column so subscribe-only consumers that
+/// only see the payload can still filter by project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConstraintsInjectedPayload {
+    pub project_id: String,
+    pub constraint_count: u32,
+    pub step_id: String,
+}
+
+/// Batch-fu (FU.5 / A-31) — intervention resolution row.
+///
+/// Emitted by the task_runner after a matching `InterventionResponse` arrives
+/// on the SSB broadcast channel for a pending IRREVERSIBLE-confirmation
+/// `InterventionRequest`. Pairs with the request by `intervention_id` so the
+/// dashboard can close out a request-row once resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionResolvedPayload {
+    pub intervention_id: String,
+    pub approved: bool,
+    pub elapsed_ms: u32,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1347,6 +1392,9 @@ pub enum SsbPayload {
     MicroReflection(MicroReflectionPayload),
     TelescopeCollapse(TelescopeCollapsePayload),
     ConfigWarning(ConfigWarningPayload),
+    // Batch-fu — cross-cutting follow-up wiring.
+    ConstraintsInjected(ConstraintsInjectedPayload),
+    InterventionResolved(InterventionResolvedPayload),
 }
 
 impl SsbPayload {
@@ -1417,6 +1465,8 @@ impl SsbPayload {
             Self::MicroReflection(_) => SsbActionType::MicroReflection,
             Self::TelescopeCollapse(_) => SsbActionType::TelescopeCollapse,
             Self::ConfigWarning(_) => SsbActionType::ConfigWarning,
+            Self::ConstraintsInjected(_) => SsbActionType::ConstraintsInjected,
+            Self::InterventionResolved(_) => SsbActionType::InterventionResolved,
         }
     }
 }
@@ -2612,6 +2662,21 @@ mod tests {
                 reason: "file_not_found".into(),
                 detail: "path=/missing".into(),
             }),
+            // Batch-fu.
+            SsbActionType::ConstraintsInjected => {
+                SsbPayload::ConstraintsInjected(ConstraintsInjectedPayload {
+                    project_id: "proj-test".into(),
+                    constraint_count: 2,
+                    step_id: "step-1".into(),
+                })
+            }
+            SsbActionType::InterventionResolved => {
+                SsbPayload::InterventionResolved(InterventionResolvedPayload {
+                    intervention_id: "iv-0000-0001".into(),
+                    approved: true,
+                    elapsed_ms: 250,
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }

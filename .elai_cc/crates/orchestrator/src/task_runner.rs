@@ -1752,6 +1752,42 @@ pub struct TaskRunnerConfig {
     /// Respects [`crate::ELAI_DISABLE_LAYER1A_ENV`] — the dashboard
     /// construction site short-circuits to `None` when set.
     pub layer1a_processor: Option<Arc<dyn crate::Layer1aProcessor>>,
+    /// Batch-fu (FU.3 / A-18) — optional per-dispatch GenerationProfile
+    /// selector. When `Some`, `drive_task` invokes
+    /// [`crate::GenerationProfileSelector::select`] once per dispatch site
+    /// and threads the result into `PhaseSlot.profile_hint` so
+    /// `build_dispatch_context` records the active profile on the assembled
+    /// `DispatchContext` and emits `ProfileSelected` when the profile is
+    /// non-default. When `None`, every dispatch uses
+    /// [`crate::GenerationProfile::FirstAttempt`] (pre-batch-fu behaviour).
+    ///
+    /// Respects `ELAI_DISABLE_PROFILE_SELECTOR` as an emergency shutoff
+    /// applied by the dashboard construction site.
+    pub dispatch_context_profile: Option<Arc<dyn crate::GenerationProfileSelector>>,
+    /// Batch-fu (FU.4 / A-23) — optional micro-reflection client. When
+    /// `Some`, `drive_task` calls
+    /// [`crate::emit_micro_reflection`] after every
+    /// [`record_mistake_on_failure`] write so the dashboard renders a purple
+    /// micro-reflection row under the MistakeEntry it diagnosed. When
+    /// `None`, no reflection call is made (pre-batch-fu behaviour).
+    ///
+    /// Respects `ELAI_DISABLE_MICRO_REFLECTION` as an emergency shutoff
+    /// applied by the dashboard construction site.
+    pub reflection_client: Option<Arc<dyn crate::DynReflectionClient>>,
+    /// Batch-fu (FU.5 / A-31) — optional irreversible-action classifier. When
+    /// `Some`, `drive_task` invokes
+    /// [`crate::IrreversibleActionClassifier::classify`] on every baby step
+    /// after the PreToolUse hook dispatch; a
+    /// [`crate::IrreversibleVerdict::ConfirmationRequired`] verdict emits an
+    /// `InterventionRequest` SSB row and blocks the step until a matching
+    /// `InterventionResponse` row arrives on the broadcast channel. When
+    /// `None`, every dispatch proceeds without classification (pre-batch-fu
+    /// behaviour). The check is skipped when
+    /// `autonomous_gate.mode() == GateMode::Autonomous`.
+    ///
+    /// Respects `ELAI_DISABLE_IRREVERSIBLE_CLASSIFIER` as an emergency shutoff
+    /// applied by the dashboard construction site.
+    pub irreversible_classifier: Option<Arc<dyn crate::IrreversibleActionClassifier>>,
 }
 
 impl TaskRunnerConfig {
@@ -1781,6 +1817,9 @@ impl TaskRunnerConfig {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         }
     }
 }
@@ -1853,6 +1892,19 @@ struct ResolvedConfig {
     /// Batch 3C (Phase 4H): optional Layer 1A processor (see
     /// `TaskRunnerConfig::layer1a_processor`).
     layer1a_processor: Option<Arc<dyn crate::Layer1aProcessor>>,
+    /// Batch-fu (FU.3 / A-18): optional GenerationProfile selector (see
+    /// `TaskRunnerConfig::dispatch_context_profile`).
+    dispatch_context_profile: Option<Arc<dyn crate::GenerationProfileSelector>>,
+    /// Batch-fu (FU.4 / A-23): optional micro-reflection client (see
+    /// `TaskRunnerConfig::reflection_client`).
+    reflection_client: Option<Arc<dyn crate::DynReflectionClient>>,
+    /// Batch-fu (FU.5 / A-31): optional irreversible-action classifier (see
+    /// `TaskRunnerConfig::irreversible_classifier`).
+    irreversible_classifier: Option<Arc<dyn crate::IrreversibleActionClassifier>>,
+    /// Batch-fu (FU.6 / A-46): shared telescope stats counter. Always present —
+    /// allocated during `ResolvedConfig::from` so `invoke_telescope` can record
+    /// aggregate reductions without additional config plumbing.
+    telescope_stats: Arc<crate::TelescopeStats>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1911,6 +1963,10 @@ impl ResolvedConfig {
             feasibility_prober: cfg.feasibility_prober,
             autonomous_gate: cfg.autonomous_gate,
             layer1a_processor: cfg.layer1a_processor,
+            dispatch_context_profile: cfg.dispatch_context_profile,
+            reflection_client: cfg.reflection_client,
+            irreversible_classifier: cfg.irreversible_classifier,
+            telescope_stats: Arc::new(crate::TelescopeStats::new()),
         }
     }
 }
@@ -2714,22 +2770,19 @@ async fn drive_task(
     );
     emit_reasoning(writer, 0, "observe", &observe_content).await;
 
-    // patch-1.32: when the caller plumbed an LlmProvider (dashboard path),
-    // build the per-dispatch context so the FSM-state tool filter + context
-    // budget adapter are exercised on every task. The returned struct is not
-    // threaded into the synthetic decomposition call below — but merely
-    // running build_dispatch_context exercises phase 3J's plumbing contract
-    // (and the `tools_allowed` count lands in SSB as an info finding so the
-    // dashboard can confirm the filter fired). See
-    // `docs/mvp-wiring-audit-2026-04-18.md` section 4 item #3 and the CLI
-    // parallel caller at `crates/cli/src/main.rs:~7632`.
+    // patch-1.32 + batch-fu: when the caller plumbed an LlmProvider (dashboard
+    // path), build the per-dispatch context so the FSM-state tool filter +
+    // context budget adapter are exercised on every task. Batch-fu folds the
+    // PhaseSlot (FU.1), constitutional CONSTRAINTS (A-7 / FU.2), and the
+    // GenerationProfile selector (A-18 / FU.3) into the call so every dispatch
+    // emits a ProfileSelected + ConstraintsInjected row when the respective
+    // plumbing is active. See `docs/mvp-wiring-audit-2026-04-18.md` section 4
+    // item #3 and the CLI parallel caller at `crates/cli/src/main.rs:~7632`.
     if resolved.llm_provider.is_some() {
         // Baseline orchestrator-visible tool list. Kept intentionally small
         // and stable — the elai-tools `mvp_tool_specs` catalogue lives on the
         // CLI side and would drag a workspace dependency cycle if imported
-        // here. The FSM-state tool filter below is the load-bearing contract:
-        // adding or removing items from this list only changes the `tools_allowed`
-        // count emitted below.
+        // here.
         let specs: Vec<String> = DISPATCH_CONTEXT_BASELINE_TOOLS
             .iter()
             .map(|s| (*s).to_string())
@@ -2738,12 +2791,47 @@ async fn drive_task(
             .iter()
             .map(|name| (name.clone(), 0u8))
             .collect();
+        let fsm_state = crate::fsm::FsmState::Planning;
+
+        // Batch-fu (A-18): pick the per-dispatch GenerationProfile before
+        // building the context so the profile can be threaded into the
+        // PhaseSlot.profile_hint. Falls back to FirstAttempt when no selector
+        // was plumbed.
+        let profile = match resolved.dispatch_context_profile.as_ref() {
+            Some(selector) => selector.select(
+                crate::profile_selector::DispatchRole::Executor,
+                fsm_state,
+            ),
+            None => crate::context_budget::GenerationProfile::FirstAttempt,
+        };
+
+        // Batch-fu (A-7 / FU.2): load the ProjectProfile lazily so the
+        // CONSTRAINTS list is available to the PhaseSlot. Missing profile →
+        // empty constraints (no block injected).
+        let project_dir_path = project_dir
+            .as_deref()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let constraints: Vec<String> =
+            match elai_knowledge::detect_project_profile(&project_dir_path) {
+                Ok(pp) => pp.constraints.clone(),
+                Err(_) => Vec::new(),
+            };
+
+        let phase_slot = crate::dispatcher::PhaseSlot {
+            goal: format!("task seq={}", seq),
+            constraints: constraints.clone(),
+            profile_hint: Some(profile),
+            repair_snippet: None,
+        };
+
         match crate::dispatcher::build_dispatch_context(
-            crate::fsm::FsmState::Planning,
+            fsm_state,
             &resolved.backend_config,
             &specs,
             &priority_map,
             None,
+            Some(&phase_slot),
         ) {
             Ok(ctx) => {
                 emit_finding(
@@ -2751,14 +2839,74 @@ async fn drive_task(
                     "info",
                     DISPATCH_CONTEXT_CATEGORY,
                     &format!(
-                        "dispatch_context: backend={} fsm={:?} tools_allowed={} max_tools={}",
+                        "dispatch_context: backend={} fsm={:?} tools_allowed={} max_tools={} profile={}",
                         ctx.backend_mode,
                         ctx.fsm_state,
                         ctx.filtered_tool_names.len(),
-                        ctx.max_tools
+                        ctx.max_tools,
+                        crate::profile_selector::profile_name(ctx.profile)
                     ),
                 )
                 .await;
+
+                // Batch-fu (A-7): emit a ConstraintsInjected row whenever the
+                // phase_slot carried at least one constraint so the dashboard
+                // can render a teal row per dispatch.
+                if !constraints.is_empty() {
+                    let payload = crate::ssb::SsbPayload::ConstraintsInjected(
+                        crate::ssb::ConstraintsInjectedPayload {
+                            project_id: task.project_id.clone(),
+                            constraint_count: constraints.len().try_into().unwrap_or(u32::MAX),
+                            step_id: format!("task_{}", seq),
+                        },
+                    );
+                    if let Err(e) = writer
+                        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                        .await
+                    {
+                        warn!(seq, error = %e, "task_runner: ConstraintsInjected write failed");
+                    }
+                }
+
+                // Batch-fu (A-18): emit ProfileSelected only when a selector was
+                // plumbed AND the profile differs from the default. The row
+                // carries the role + fsm_state so the dashboard can filter the
+                // activity feed on "profile · RepairRetry" / etc.
+                if resolved.dispatch_context_profile.is_some()
+                    && profile != crate::context_budget::GenerationProfile::FirstAttempt
+                {
+                    if let Err(e) = crate::profile_selector::emit_profile_selected(
+                        writer,
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        profile,
+                        crate::profile_selector::DispatchRole::Executor,
+                        fsm_state,
+                        &format!("task_{}", seq),
+                    )
+                    .await
+                    {
+                        warn!(seq, error = %e, "task_runner: ProfileSelected write failed");
+                    }
+                }
+
+                // Batch-fu (A-46 / FU.6): when a Repair profile was picked AND
+                // the phase_slot carried a repair_snippet, invoke the
+                // ContextTelescope to collapse layers until the snippet fits
+                // under the Slot-3 token budget. The telescope is a no-op for
+                // non-Repair profiles so pre-batch-fu dispatches are
+                // unchanged.
+                if profile == crate::context_budget::GenerationProfile::RepairRetry
+                    && phase_slot.repair_snippet.is_some()
+                {
+                    invoke_repair_telescope(
+                        writer,
+                        &resolved.telescope_stats,
+                        phase_slot.repair_snippet.as_deref().unwrap_or(""),
+                        &format!("task_{}", seq),
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 warn!(seq, error = %e, "task_runner: build_dispatch_context failed");
@@ -3049,6 +3197,51 @@ async fn drive_task(
                     );
                 }
             }
+        }
+
+        // Batch-fu (FU.5 / A-31): irreversible-action confirmation gate.
+        // Runs BEFORE the baby-step executor so a `ConfirmationRequired`
+        // verdict can park the runner until the dashboard resolves it.
+        // Skipped when the classifier wasn't plumbed OR when the autonomous
+        // gate is in `Autonomous` mode (spec §4C: autonomous mode proceeds
+        // without prompts). The emitted `InterventionRequest` + matching
+        // `InterventionResolved` pair is the load-bearing SSB trail for the
+        // Svelte InterventionCard; `hook_pre_blocked` is preserved so the
+        // flag is not accidentally reset by an approval path.
+        let mut classifier_rejected = false;
+        if let Some(classifier) = resolved.irreversible_classifier.as_ref() {
+            let autonomous_mode = if let Some(gate) = resolved.autonomous_gate.as_ref() {
+                gate.mode().await == crate::autonomous_gate::GateMode::Autonomous
+            } else {
+                false
+            };
+            if !autonomous_mode {
+                let verdict =
+                    classifier.classify(BABY_STEP_PRE_GATE_ACTION, &task_summary);
+                if let crate::IrreversibleVerdict::ConfirmationRequired { reason } = &verdict {
+                    classifier_rejected = run_confirmation_gate(
+                        writer,
+                        reason,
+                        &task_summary,
+                        bs_id.0,
+                        cancel,
+                    )
+                    .await;
+                }
+            }
+        }
+        if classifier_rejected {
+            // Skip executor, mark the step failed. Downstream checkpoint /
+            // bubble-up + TestOutcome paths still render the row with
+            // passed=false so the dashboard surfaces the rejection.
+            hook_pre_blocked = true;
+            emit_finding(
+                writer,
+                "warn",
+                "irreversible_rejected",
+                "irreversible_action: user rejected confirmation",
+            )
+            .await;
         }
 
         // Batch 3B (Phase 4G): autonomous-gate decision boundary. Runs on
@@ -3431,6 +3624,28 @@ async fn drive_task(
                 &task_summary,
             )
             .await;
+
+            // Batch-fu (FU.4 / A-23): call the sidecar-backed reflection client
+            // so the MistakeEntry row just written gets a matching purple
+            // MicroReflection row in the activity feed. No-op when the
+            // dashboard skipped wiring the client (env kill switch or
+            // grounding client unreachable).
+            if let Some(client) = resolved.reflection_client.as_ref() {
+                let adapter = crate::micro_reflection_emitter::DynReflectionAdapter::new(
+                    client.as_ref(),
+                );
+                let _ = crate::micro_reflection_emitter::emit_micro_reflection(
+                    writer,
+                    &adapter,
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    &mistake_book_step_id,
+                    &task_summary,
+                    "", // code_snippet: not available at this call site; future patch may thread it
+                    category.as_str(),
+                )
+                .await;
+            }
         } else if prior_attempts > 0 {
             clear_mistakes_on_success(writer, &mistake_book_step_id).await;
         }
@@ -4715,6 +4930,194 @@ async fn record_mistake_on_failure(
     }
 }
 
+/// Batch-fu (FU.5 / A-31): emit an `InterventionRequest` row, block until a
+/// matching `InterventionResponse` arrives on the SSB broadcast channel, then
+/// emit an `InterventionResolved` row. Returns `true` when the user rejected.
+///
+/// The intervention is identified by a UUID rendered into both the
+/// `InterventionRequestPayload.step_id` (prefixed with `intervention:`) and
+/// the `InterventionResolvedPayload.intervention_id` so consumers can pair the
+/// two rows without walking the seq column. The `reason` and `summary` land
+/// on the request `description` as a single line so the frontend can render
+/// them without deserializing the classifier's internal state.
+async fn run_confirmation_gate(
+    writer: &Arc<Ssb>,
+    reason: &str,
+    summary: &str,
+    baby_step_id: u64,
+    cancel: &CancelHandle,
+) -> bool {
+    let intervention_id = Uuid::new_v4();
+    let id_str = intervention_id.to_string();
+    let step_id = format!("baby_step_{}", baby_step_id);
+    let description = format!(
+        "{}: {} | summary: {}",
+        crate::CONFIRM_IRREVERSIBLE_ACTION_KIND,
+        reason,
+        truncate_for_log(summary, 160)
+    );
+    let options = vec![
+        crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Accept),
+        crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Decline),
+    ];
+    let request_payload = crate::ssb::SsbPayload::InterventionRequest(
+        crate::ssb::InterventionRequestPayload {
+            step_id: format!("intervention:{}", id_str),
+            intervention_type: crate::ssb::InterventionType::ApproveChange,
+            description,
+            diff_summary: None,
+            options,
+        },
+    );
+
+    // Subscribe BEFORE writing the request so we never miss a response that
+    // arrives on a fast path. The broadcast channel is many-to-many — a
+    // subscribe returned here does not affect other subscribers.
+    let mut rx = writer.subscribe();
+    let request_seq = match writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, request_payload, Vec::new())
+        .await
+    {
+        Ok(seq) => seq,
+        Err(e) => {
+            warn!(
+                error = %e,
+                baby_step_id,
+                "task_runner: InterventionRequest write failed; proceeding without gate",
+            );
+            return false;
+        }
+    };
+    let started = std::time::Instant::now();
+
+    // Poll the broadcast rx for a matching InterventionResponse. The
+    // dashboard's `respond_to_confirmation` writes a response row with
+    // `request_id == request_seq`; any earlier intervention response is
+    // ignored. Cancel-signals short-circuit the wait via a periodic
+    // `is_cancelled` check so runner shutdown does not deadlock on a
+    // pending prompt.
+    const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+    let approved = loop {
+        if cancel.is_cancelled() {
+            warn!(
+                baby_step_id,
+                "task_runner: confirmation gate cancelled; treating as reject"
+            );
+            break false;
+        }
+        match tokio::time::timeout(CANCEL_POLL, rx.recv()).await {
+            Err(_) => continue,
+            Ok(Ok(entry)) => {
+                if !matches!(
+                    entry.action_type,
+                    crate::ssb::SsbActionType::InterventionResponse
+                ) {
+                    continue;
+                }
+                let resp: crate::ssb::InterventionResponsePayload =
+                    match rmp_serde::from_slice(&entry.payload) {
+                        Ok(crate::ssb::SsbPayload::InterventionResponse(p)) => p,
+                        _ => continue,
+                    };
+                if resp.request_id != request_seq {
+                    continue;
+                }
+                let ok = matches!(
+                    resp.chosen,
+                    crate::ssb::InterventionOption::Keyword(
+                        crate::ssb::InterventionKeyword::Accept,
+                    ),
+                );
+                break ok;
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                warn!(
+                    baby_step_id,
+                    "task_runner: SSB broadcast closed during confirmation gate",
+                );
+                break false;
+            }
+        }
+    };
+
+    let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+    let resolved_payload = crate::ssb::SsbPayload::InterventionResolved(
+        crate::ssb::InterventionResolvedPayload {
+            intervention_id: id_str,
+            approved,
+            elapsed_ms,
+        },
+    );
+    if let Err(e) = writer
+        .write_payload(
+            RUNNER_AGENT_ID,
+            RUNNER_SUPERSTEP,
+            resolved_payload,
+            vec![step_id],
+        )
+        .await
+    {
+        warn!(
+            error = %e,
+            baby_step_id,
+            "task_runner: InterventionResolved write failed",
+        );
+    }
+    !approved
+}
+
+/// Batch-fu (FU.6 / A-46): invoke the ContextTelescope on a repair snippet.
+///
+/// Constructs a single-layer [`elai_core::telescope::ContextTelescope`] with
+/// the snippet placed into the innermost `step_context` slot, then calls
+/// [`crate::telescope_caller::invoke_telescope`] with the repair context
+/// budget (`context_budget::RepairContextSlots::relevant_code` target of
+/// 500 tokens per spec §REPAIR). Stats are recorded on the shared
+/// `TelescopeStats`; the `TelescopeCollapse` SSB row is emitted by
+/// `invoke_telescope` only when at least one layer was dropped.
+async fn invoke_repair_telescope(
+    writer: &Arc<Ssb>,
+    stats: &Arc<crate::TelescopeStats>,
+    snippet: &str,
+    step_id: &str,
+) {
+    use elai_core::bounded_string::{BoundedString, WordTokenCounter};
+    use elai_core::telescope::{
+        ContextTelescope, TELESCOPE_CONCEPT_MAX, TELESCOPE_PHASE_MAX, TELESCOPE_STEP_MAX,
+        TELESCOPE_VISION_MAX,
+    };
+    const REPAIR_SLOT_RELEVANT_CODE_TOKENS: u32 = 500;
+    let counter = WordTokenCounter;
+    let vision = match BoundedString::<TELESCOPE_VISION_MAX>::new("repair context vision", &counter)
+    {
+        Ok(v) => v,
+        Err(_) => return, // Unreachable; bounded string fits literal.
+    };
+    let concept = BoundedString::<TELESCOPE_CONCEPT_MAX>::new("repair concept", &counter).ok();
+    let phase = BoundedString::<TELESCOPE_PHASE_MAX>::new("repair phase", &counter).ok();
+    let step = BoundedString::<TELESCOPE_STEP_MAX>::new(snippet, &counter).ok();
+    let telescope = ContextTelescope {
+        project_vision: vision,
+        concept_summary: concept,
+        phase_goal: phase,
+        step_context: step,
+    };
+    if let Err(e) = crate::telescope_caller::invoke_telescope(
+        writer,
+        stats,
+        RUNNER_AGENT_ID,
+        RUNNER_SUPERSTEP,
+        step_id,
+        &telescope,
+        REPAIR_SLOT_RELEVANT_CODE_TOKENS,
+    )
+    .await
+    {
+        warn!(step_id, error = %e, "task_runner: invoke_telescope failed");
+    }
+}
+
 /// 3F.REDO: write a tombstone clearing all MistakeBook entries for a baby
 /// step that has just succeeded. Called only when prior entries exist so the
 /// tombstone is never spurious.
@@ -5803,6 +6206,9 @@ mod tests {
                 feasibility_prober: None,
                 autonomous_gate: None,
                 layer1a_processor: None,
+                dispatch_context_profile: None,
+                reflection_client: None,
+                irreversible_classifier: None,
             },
         );
 
@@ -5915,6 +6321,9 @@ mod tests {
                 feasibility_prober: None,
                 autonomous_gate: None,
                 layer1a_processor: None,
+                dispatch_context_profile: None,
+                reflection_client: None,
+                irreversible_classifier: None,
             },
         );
 
@@ -6104,6 +6513,9 @@ mod tests {
                 feasibility_prober: None,
                 autonomous_gate: None,
                 layer1a_processor: None,
+                dispatch_context_profile: None,
+                reflection_client: None,
+                irreversible_classifier: None,
             },
         );
 
@@ -6853,6 +7265,9 @@ mod tests {
             feasibility_prober: None,
             autonomous_gate: None,
             layer1a_processor: None,
+            dispatch_context_profile: None,
+            reflection_client: None,
+            irreversible_classifier: None,
         })
     }
 
