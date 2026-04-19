@@ -50,6 +50,7 @@ pub mod searx_search_backend;
 pub mod research_tier;
 pub mod research_tree;
 pub mod pipeline_builder;
+pub mod phase_sizing_splitter;
 pub mod pipeline_tree_navigator;
 #[cfg(test)]
 mod pipeline_builder_bench;

@@ -1802,6 +1802,14 @@ pub struct TaskRunnerConfig {
     pub dkg_querier_swap: Option<
         Arc<std::sync::RwLock<Box<dyn elai_rules::predicate::DkgQuerier + Send + Sync>>>,
     >,
+    /// Batch FUL-B: optional PhaseSizing-aware splitter. When `Some`, the
+    /// autonomous-gate SPLIT_TASK emit path consults the splitter to build
+    /// real sub-task descriptors (ids + summaries + preserved contracts).
+    /// When `None`, the emit path falls back to the Batch 3B
+    /// deterministic `{step_id}.subN` fallback. Preserving backward-compat
+    /// is the contract — see
+    /// `fulb_phase_sizing_splitter_contract::contract_task_runner_config_splitter_defaults_to_none`.
+    pub task_splitter: Option<Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
 }
 
 impl TaskRunnerConfig {
@@ -1835,6 +1843,7 @@ impl TaskRunnerConfig {
             reflection_client: None,
             irreversible_classifier: None,
             dkg_querier_swap: None,
+            task_splitter: None,
         }
     }
 }
@@ -1931,6 +1940,9 @@ struct ResolvedConfig {
     /// and pairs the contract with `SsbActionType::DkgQuerierSwapped` being
     /// emitted exactly once per project.
     dkg_querier_swapped_projects: Mutex<std::collections::HashSet<String>>,
+    /// Batch FUL-B: optional PhaseSizing-aware splitter. See
+    /// [`TaskRunnerConfig::task_splitter`].
+    task_splitter: Option<Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1995,6 +2007,7 @@ impl ResolvedConfig {
             telescope_stats: Arc::new(crate::TelescopeStats::new()),
             dkg_querier_swap: cfg.dkg_querier_swap,
             dkg_querier_swapped_projects: Mutex::new(std::collections::HashSet::new()),
+            task_splitter: cfg.task_splitter,
         }
     }
 }
@@ -3425,7 +3438,19 @@ async fn drive_task(
                 step_id: format!("baby_step_{}", bs_id.0),
             };
             let decision = gate.decide(&gctx).await;
-            emit_autonomous_decision(writer, &decision, &gctx.step_id).await;
+            // Batch FUL-B: hand the optional splitter to the emit path so
+            // `AutonomyDecision::SplitTask` produces real sub-task summaries
+            // when the runner was configured with a `TaskSplitter`. When
+            // `resolved.task_splitter` is `None`, the emit path preserves
+            // the Batch 3B deterministic `{step_id}.subN` fallback.
+            emit_autonomous_decision(
+                writer,
+                &decision,
+                &gctx.step_id,
+                resolved.task_splitter.as_ref(),
+                &task_summary,
+            )
+            .await;
         }
 
         // Session wire-4A: dispatch this baby step through the pluggable
@@ -4602,6 +4627,8 @@ async fn emit_autonomous_decision(
     writer: &Arc<Ssb>,
     decision: &crate::autonomous_gate::AutonomyDecision,
     step_id: &str,
+    splitter: Option<&Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
+    task_summary: &str,
 ) {
     use crate::autonomous_gate::AutonomyDecision;
     let (decision_label, risk_level, reason, evidence_summary) = match decision {
@@ -4676,15 +4703,76 @@ async fn emit_autonomous_decision(
             sub_task_count,
             depth,
         } => {
-            // Spec: deterministic sub-task ids for MVP — no dynamic splitter yet.
-            let ids: Vec<String> = (0..*sub_task_count)
-                .map(|i| format!("{}.sub{}", step_id, i))
-                .collect();
-            let p = SsbPayload::TaskSplit(crate::ssb::TaskSplitPayload {
-                original_task_id: step_id.to_owned(),
-                sub_task_ids: ids,
-                depth: *depth,
-            });
+            // Batch FUL-B: consult the optional PhaseSizing-aware splitter
+            // for real sub-task descriptors when one was plumbed via
+            // `TaskRunnerConfig::task_splitter`. When absent, fall back to
+            // the Batch 3B deterministic `{step_id}.subN` behaviour so
+            // existing callers (and the 14 autonomous_gate contracts)
+            // remain unchanged.
+            let payload = if let Some(splitter) = splitter {
+                let target = crate::phase_sizing_splitter::SplitTarget {
+                    step_id: step_id.to_owned(),
+                    summary: task_summary.to_owned(),
+                    // The gate's SplitTask variant does not carry token
+                    // estimates; pass 0 and let the splitter derive a
+                    // summary-length proxy. Callers with a structured
+                    // BabyStepSpec should invoke the splitter directly
+                    // upstream and propagate the richer estimate.
+                    estimated_tokens: 0,
+                    input_contracts: Vec::new(),
+                    output_contracts: Vec::new(),
+                    current_depth: depth.saturating_sub(1),
+                };
+                let est = splitter.estimate_complexity(&target);
+                let subs = splitter.split(
+                    &target,
+                    crate::phase_sizing_splitter::DEFAULT_TOKEN_BUDGET,
+                );
+                if subs.is_empty() {
+                    // Splitter declined (under threshold / at depth cap).
+                    // Preserve the gate's sub_task_count with the
+                    // deterministic-fallback ids so the SSB row remains
+                    // consistent with the gate decision.
+                    let ids: Vec<String> = (0..*sub_task_count)
+                        .map(|i| format!("{}.sub{}", step_id, i))
+                        .collect();
+                    crate::ssb::TaskSplitPayload {
+                        original_task_id: step_id.to_owned(),
+                        sub_task_ids: ids,
+                        depth: *depth,
+                        sub_task_summaries: None,
+                        splitter: Some("deterministic_fallback".to_owned()),
+                        complexity_estimate: Some(est.token_estimate),
+                    }
+                } else {
+                    let ids: Vec<String> =
+                        subs.iter().map(|s| s.sub_task_id.clone()).collect();
+                    let summaries: Vec<String> =
+                        subs.iter().map(|s| s.summary.clone()).collect();
+                    crate::ssb::TaskSplitPayload {
+                        original_task_id: step_id.to_owned(),
+                        sub_task_ids: ids,
+                        depth: *depth,
+                        sub_task_summaries: Some(summaries),
+                        splitter: Some("phase_sizing".to_owned()),
+                        complexity_estimate: Some(est.token_estimate),
+                    }
+                }
+            } else {
+                // Pre-FUL-B path: deterministic sub-task ids.
+                let ids: Vec<String> = (0..*sub_task_count)
+                    .map(|i| format!("{}.sub{}", step_id, i))
+                    .collect();
+                crate::ssb::TaskSplitPayload {
+                    original_task_id: step_id.to_owned(),
+                    sub_task_ids: ids,
+                    depth: *depth,
+                    sub_task_summaries: None,
+                    splitter: None,
+                    complexity_estimate: None,
+                }
+            };
+            let p = SsbPayload::TaskSplit(payload);
             if let Err(e) = writer
                 .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, p, Vec::new())
                 .await
@@ -6361,6 +6449,7 @@ mod tests {
                 reflection_client: None,
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
+                task_splitter: None,
             },
         );
 
@@ -6477,6 +6566,7 @@ mod tests {
                 reflection_client: None,
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
+                task_splitter: None,
             },
         );
 
@@ -6670,6 +6760,7 @@ mod tests {
                 reflection_client: None,
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
+                task_splitter: None,
             },
         );
 
@@ -7423,6 +7514,7 @@ mod tests {
             reflection_client: None,
             irreversible_classifier: None,
             dkg_querier_swap: None,
+            task_splitter: None,
         })
     }
 

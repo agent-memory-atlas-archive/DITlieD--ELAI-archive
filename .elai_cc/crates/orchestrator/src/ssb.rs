@@ -1149,11 +1149,30 @@ pub struct GateDecisionPayload {
 
 /// Batch 3B (Phase 4G) — task-split announcement. Emitted when the gate
 /// decides the current task must be split under context pressure.
+///
+/// Batch FUL-B extends the payload with three optional fields describing
+/// the real splitter's output (human-readable summaries, splitter kind,
+/// token estimate). All three carry `#[serde(default)]` so rows serialized
+/// before FUL-B still deserialize into `None` / `None` / `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSplitPayload {
     pub original_task_id: String,
     pub sub_task_ids: Vec<String>,
     pub depth: u8,
+    /// Batch FUL-B: one-line summary per sub-task, aligned positionally
+    /// with `sub_task_ids`. `None` when the deterministic-fallback path
+    /// fired (Batch 3B semantics, no splitter plugged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_task_summaries: Option<Vec<String>>,
+    /// Batch FUL-B: name of the splitter that produced the sub-tasks.
+    /// Canonical values: `"phase_sizing"` (real splitter) or
+    /// `"deterministic_fallback"` (Batch 3B fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splitter: Option<String>,
+    /// Batch FUL-B: token estimate that triggered the split. Populated
+    /// only when `splitter = Some("phase_sizing")`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_estimate: Option<u32>,
 }
 
 /// Batch 3B (Phase 4G) — escalation trigger row. `trigger` is the
@@ -2629,6 +2648,9 @@ mod tests {
                 original_task_id: "task-1".into(),
                 sub_task_ids: vec!["task-1.1".into(), "task-1.2".into()],
                 depth: 1,
+                sub_task_summaries: None,
+                splitter: None,
+                complexity_estimate: None,
             }),
             SsbActionType::EscalationFired => SsbPayload::EscalationFired(EscalationFiredPayload {
                 trigger: "anti_spiral".into(),
