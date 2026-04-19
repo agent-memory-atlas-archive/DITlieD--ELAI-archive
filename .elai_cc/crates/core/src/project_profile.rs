@@ -48,6 +48,14 @@ pub struct ProjectProfile {
     pub architecture: Option<ArchitecturePattern>,
     pub domains: Vec<DomainClassification>,
 
+    /// Batch 4A (A-36): canonical keys (`{language}.{kind}`) of fix templates
+    /// available for this project. Populated from
+    /// `data/fix_templates/` by `elai_knowledge::fix_templates`. Empty when
+    /// the directory is missing — backward compatible with pre-4A profiles
+    /// (`#[serde(default)]` keeps the TOML round-trip working).
+    #[serde(default)]
+    pub fix_template_keys: Vec<String>,
+
     // Commands
     pub commands: BuildCommandRegistry,
 

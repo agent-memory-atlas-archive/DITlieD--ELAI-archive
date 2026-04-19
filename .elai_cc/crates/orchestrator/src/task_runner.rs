@@ -4110,6 +4110,8 @@ async fn emit_finding(writer: &Arc<Ssb>, severity: &str, category: &str, message
         file_path: None,
         line: None,
         failure_category: None,
+        audit_step: None,
+        few_shot_examples: None,
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())

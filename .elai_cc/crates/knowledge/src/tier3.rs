@@ -489,17 +489,27 @@ fn entry_point_type_label(profile: &ProjectProfile) -> String {
 // Tier 3 orchestration: populate profile with domain, architecture, vision
 // ---------------------------------------------------------------------------
 
-/// Populate Tier 3 fields on a ProjectProfile: domains, architecture, project_vision.
-/// Call after Tier 1+2 are populated. `dkg_nodes` may be empty (no DKG data).
+/// Populate Tier 3 fields on a ProjectProfile: domains, architecture,
+/// project_vision, and (batch 4A) the fix_template_keys discovered under
+/// the project root. Call after Tier 1+2 are populated. `dkg_nodes` may be
+/// empty (no DKG data).
 pub fn populate_tier3(
     profile: &mut ProjectProfile,
     dkg_nodes: &[DkgNodeInfo],
 ) {
-    debug!("populating Tier 3: domains, architecture, vision");
+    debug!("populating Tier 3: domains, architecture, vision, fix_templates");
 
     profile.domains = classify_domains(profile);
     profile.architecture = Some(infer_architecture(profile, dkg_nodes));
     profile.project_vision = Some(generate_project_vision(profile));
+
+    // Batch 4A (A-36): load curated fix templates from
+    // `.elai_cc/data/fix_templates/` (relative to the project root). When the
+    // directory is missing the registry is empty and `fix_template_keys`
+    // stays the empty vec its `#[serde(default)]` guarantees — fully
+    // backward compatible with pre-4A profiles.
+    let registry = crate::fix_templates::FixTemplateRegistry::load_default(&profile.project_root);
+    crate::fix_templates::attach_fix_template_keys(profile, &registry);
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +554,7 @@ mod tests {
             architecture: None,
             domains: Vec::new(),
             commands: BuildCommandRegistry::default(),
+            fix_template_keys: Vec::new(),
             overrides_applied: false,
         }
     }

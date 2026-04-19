@@ -35,7 +35,7 @@ use std::sync::Arc;
 use elai_core::project_profile::ProjectProfile;
 
 use crate::deterministic_auditor::{
-    DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
+    CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
 };
 use crate::ssb::{FindingPayload, Ssb, SsbPayload};
@@ -127,6 +127,7 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
     ) -> DeterministicAuditResult {
         let profile = (self.profile_supplier)();
         let changed = (self.changed_files_supplier)();
+        let primary_lang = profile.languages.primary.clone();
         let config = DeterministicAuditorConfig::from_profile(&profile, Vec::new());
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&changed);
@@ -141,12 +142,63 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
             "deterministic_audit_gate: evaluated"
         );
 
+        // Batch 4A (A-41): probe the toolchain for the project's primary
+        // language. When the toolchain binary is absent, surface an
+        // `AuditSkipped { language }` info Finding so the dashboard makes the
+        // gap visible without blocking the transition. Probe happens after
+        // run_all so it piggybacks on the same tokio spawn and does not hold
+        // the FSM transition lock.
+        let tool_missing_language = tool_missing_for_language(&primary_lang);
+
         let writer = Arc::clone(&self.writer);
         let findings = result.findings.clone();
         tokio::spawn(async move {
             emit_findings(writer.as_ref(), &findings).await;
+            if let Some(lang) = tool_missing_language {
+                emit_audit_skipped(writer.as_ref(), &lang).await;
+            }
         });
         result
+    }
+}
+
+/// Probe whether the primary-language toolchain binary is present on the host.
+/// Returns `Some(language_id)` when absent so the gate can emit
+/// `AuditSkipped { language }`. `None` means the probe was skipped (unknown
+/// language) or the binary was found.
+fn tool_missing_for_language(lang: &elai_core::project_profile::Language) -> Option<String> {
+    use elai_core::project_profile::Language;
+    let probe = match lang {
+        Language::Rust => ("cargo", "--version"),
+        Language::Python => ("python", "--version"),
+        Language::Go => ("go", "version"),
+        Language::TypeScript | Language::JavaScript => ("tsc", "--version"),
+        Language::Java | Language::Kotlin => ("javac", "-version"),
+        Language::CSharp => ("dotnet", "--version"),
+        Language::Ruby => ("ruby", "--version"),
+        _ => return None,
+    };
+    match std::process::Command::new(probe.0)
+        .arg(probe.1)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => None,
+        _ => Some(lang.id_str().to_owned()),
+    }
+}
+
+/// Map a `CheckKind` to the batch-4a `audit_step` tag surfaced on
+/// `FindingPayload`. Only the 5 pipeline step kinds map; the remaining kinds
+/// (ImportCrossRef, ModuleCoherence) fold into the step they're a sub-check of.
+pub fn audit_step_tag(kind: CheckKind) -> &'static str {
+    match kind {
+        CheckKind::Build => "build",
+        CheckKind::VersionGate | CheckKind::ImportCrossRef => "version_gate",
+        CheckKind::FileSizeCensus => "file_size",
+        CheckKind::LazyCode => "lazy_code",
+        CheckKind::Completeness | CheckKind::ModuleCoherence => "completeness",
     }
 }
 
@@ -167,6 +219,10 @@ async fn emit_findings(writer: &Ssb, findings: &[DeterministicFinding]) {
             file_path,
             line: f.line,
             failure_category: None,
+            // Batch 4A (A-41): label the Finding with the pipeline step so the
+            // dashboard can render per-step totals without re-parsing `message`.
+            audit_step: Some(audit_step_tag(f.check).to_owned()),
+            few_shot_examples: None,
         });
         if let Err(e) = writer
             .write_payload(GATE_AGENT_ID, GATE_SUPERSTEP, payload, Vec::new())
@@ -174,6 +230,28 @@ async fn emit_findings(writer: &Ssb, findings: &[DeterministicFinding]) {
         {
             tracing::error!(error = %e, "deterministic_audit_gate: write Finding failed");
         }
+    }
+}
+
+/// Emit an "audit skipped" informational Finding for a language whose build
+/// toolchain is absent on the host. Severity is `"info"` — the caller's step
+/// count is unaffected, and the dashboard can collapse these rows.
+pub async fn emit_audit_skipped(writer: &Ssb, language: &str) {
+    let payload = SsbPayload::Finding(FindingPayload {
+        severity: "info".to_owned(),
+        category: GATE_FINDING_CATEGORY.to_owned(),
+        message: format!("audit skipped: no build toolchain for '{language}'"),
+        file_path: None,
+        line: None,
+        failure_category: None,
+        audit_step: Some("build".to_owned()),
+        few_shot_examples: None,
+    });
+    if let Err(e) = writer
+        .write_payload(GATE_AGENT_ID, GATE_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        tracing::error!(error = %e, "deterministic_audit_gate: write AuditSkipped failed");
     }
 }
 

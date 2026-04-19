@@ -80,6 +80,30 @@ pub struct SidecarConfig {
     /// ETC entropy threshold (f64::INFINITY = disabled until calibration).
     #[serde(default = "default_etc_threshold", with = "etc_threshold_serde")]
     pub etc_threshold: f64,
+    /// Batch 4A (3J): HyDE enabled for this dispatch. Forwarded to the sidecar
+    /// so the engine can decide whether to call `HydeStage::hypothesize`
+    /// instead of the direct search path. Default: `false` (skipped unless
+    /// the dispatch context enables it on DEEP-tier queries).
+    #[serde(default, skip_serializing_if = "is_default_bool")]
+    pub hyde_enabled: bool,
+    /// Batch 4A (3J): ActAdd steering add-on. Distinct from the legacy
+    /// `steering_enabled` flag which drives the global ActAdd vector cache —
+    /// this per-dispatch flag lets the orchestrator opt in to a per-role
+    /// ActAdd payload without flipping the global switch.
+    #[serde(default, skip_serializing_if = "is_default_bool")]
+    pub actadd_enabled: bool,
+    /// Batch 4A (3J): target layer for the per-dispatch ActAdd payload. Only
+    /// serialized when `actadd_enabled` is true — default stays implicit.
+    #[serde(default, skip_serializing_if = "is_default_u32")]
+    pub actadd_layer: u32,
+}
+
+fn is_default_bool(b: &bool) -> bool {
+    !*b
+}
+
+fn is_default_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Default for SidecarConfig {
@@ -96,6 +120,9 @@ impl Default for SidecarConfig {
             temperature: 0.0,
             max_tokens: 256,
             etc_threshold: f64::INFINITY,
+            hyde_enabled: false,
+            actadd_enabled: false,
+            actadd_layer: 0,
         }
     }
 }
@@ -238,7 +265,7 @@ impl SidecarProvider {
         } else {
             serde_json::json!(config.etc_threshold)
         };
-        serde_json::json!({
+        let mut body = serde_json::json!({
             "prompt": prompt,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
@@ -249,7 +276,23 @@ impl SidecarProvider {
             "steering_coefficient": config.steering_coefficient,
             "steering_layer": config.steering_layer,
             "etc_threshold": etc_threshold_json,
-        })
+        });
+        // Batch 4A (3J): include optional per-dispatch knobs only when they
+        // deviate from the default so the wire payload stays compact. Matches
+        // the `skip_serializing_if` gating on `SidecarConfig` for TOML I/O.
+        if let Some(obj) = body.as_object_mut() {
+            if config.hyde_enabled {
+                obj.insert("hyde_enabled".to_owned(), serde_json::Value::Bool(true));
+            }
+            if config.actadd_enabled {
+                obj.insert("actadd_enabled".to_owned(), serde_json::Value::Bool(true));
+                obj.insert(
+                    "actadd_layer".to_owned(),
+                    serde_json::Value::Number(config.actadd_layer.into()),
+                );
+            }
+        }
+        body
     }
 
     /// Send a completion request to /v1/completions.
@@ -323,6 +366,98 @@ impl SidecarProvider {
             .ok()
             .map(|guard| guard.clone())
             .unwrap_or_default()
+    }
+
+    /// Borrow the current sidecar config.
+    pub fn config(&self) -> &SidecarConfig {
+        &self.config
+    }
+
+    /// Batch 4A (3J): check whether a per-role steering vector exists on disk
+    /// under `<project_root>/.elai_cc/steering/<project_id>/<role>.bin`.
+    /// Returns `true` when the file exists and is non-empty. Used by the
+    /// orchestrator dispatch path to decide whether to attach an ActAdd
+    /// payload without blocking when the cache is cold.
+    ///
+    /// This is a lookup-only helper — computing a fresh vector via
+    /// `compute_vector_via_sidecar` is deferred per the A-8 note in the
+    /// batch brief.
+    pub fn steering_vector_cached(
+        project_root: &std::path::Path,
+        project_id: &str,
+        role: &str,
+    ) -> bool {
+        let path = steering_cache_path(project_root, project_id, role);
+        std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false)
+    }
+}
+
+/// Batch 4A (3J): canonical filesystem location of a per-role steering
+/// vector. Separate free function so tests and the dashboard helper can
+/// both compute the same path without cloning provider state.
+pub fn steering_cache_path(
+    project_root: &std::path::Path,
+    project_id: &str,
+    role: &str,
+) -> std::path::PathBuf {
+    project_root
+        .join(".elai_cc")
+        .join("steering")
+        .join(project_id)
+        .join(format!("{role}.bin"))
+}
+
+/// Batch 4A (3J): snapshot of the optimizations currently active for a
+/// dispatch. Surfaced by the dashboard StatusBar so users see the model +
+/// TQ bits + DoLa on/off + steering role at a glance.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OptimizationSummary {
+    pub model: String,
+    pub turboquant_bits: u8,
+    pub dola_enabled: bool,
+    pub steering_enabled: bool,
+    pub actadd_enabled: bool,
+    pub hyde_enabled: bool,
+    /// Optional role label when a per-role steering vector is cached
+    /// (e.g. `"ada"` for an ActAdd ada-boost role). `None` means the
+    /// steering vector cache miss.
+    pub steering_role: Option<String>,
+}
+
+impl OptimizationSummary {
+    /// Build a summary from a SidecarConfig + an optional active role.
+    pub fn from_config(config: &SidecarConfig, steering_role: Option<String>) -> Self {
+        Self {
+            model: config.model.clone(),
+            turboquant_bits: config.turboquant_bits,
+            dola_enabled: config.dola_enabled,
+            steering_enabled: config.steering_enabled,
+            actadd_enabled: config.actadd_enabled,
+            hyde_enabled: config.hyde_enabled,
+            steering_role,
+        }
+    }
+
+    /// Compact one-line formatter used by the dashboard StatusBar. Example:
+    /// `model: qwen2.5-coder-7b · [TQ:4, DoLa:off, Steer:ada]`. Matches the
+    /// format the batch-4a brief lists for the StatusBar row.
+    pub fn to_status_line(&self) -> String {
+        let dola = if self.dola_enabled { "on" } else { "off" };
+        let steer = match &self.steering_role {
+            Some(role) if self.steering_enabled => role.clone(),
+            Some(_) => "cached".to_owned(),
+            None if self.steering_enabled => "on".to_owned(),
+            None => "off".to_owned(),
+        };
+        let model_label = if self.model.is_empty() {
+            "sidecar".to_owned()
+        } else {
+            self.model.clone()
+        };
+        format!(
+            "model: {} · [TQ:{}, DoLa:{}, Steer:{}]",
+            model_label, self.turboquant_bits, dola, steer,
+        )
     }
 }
 
@@ -435,6 +570,9 @@ mod tests {
             temperature: 0.7,
             max_tokens: 512,
             etc_threshold: 2.5,
+            hyde_enabled: false,
+            actadd_enabled: false,
+            actadd_layer: 0,
         };
 
         let json = serde_json::to_string(&config).expect("serialize");
@@ -469,6 +607,9 @@ mod tests {
             temperature: 0.3,
             max_tokens: 64,
             etc_threshold: 1.25,
+            hyde_enabled: false,
+            actadd_enabled: false,
+            actadd_layer: 0,
         };
         let body = SidecarProvider::build_completion_body(&config, "hello");
         assert_eq!(body["prompt"], "hello");

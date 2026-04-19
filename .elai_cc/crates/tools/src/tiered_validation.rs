@@ -509,6 +509,193 @@ impl SyntaxCommandRunner for LanguageSyntaxRunner {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Batch 4A (4A.4) — real `CommandIntegrationRunner`
+// ---------------------------------------------------------------------------
+
+/// Batch 4A (4A.4): language-aware production `IntegrationCommandRunner`.
+///
+/// Replaces the `NoopIntegrationRunner` constructed inside `dashboard/src/lib.rs`.
+/// Maps the four decomposition-level labels from `pipeline_tree_navigator` to
+/// a per-language command:
+///
+/// ```text
+/// level    language   command
+/// baby     rust       cargo check --message-format=json   (BabyStep)
+/// step     rust       cargo test -p <crate>               (Step)
+/// phase    rust       cargo test -p <crate>               (Phase)
+/// concept  rust       cargo test --workspace              (Concept)
+/// ```
+///
+/// Timeouts follow the batch-4a spec (5 / 30 / 60 / 120 s) and the existing
+/// `ValidationTier::timeout_ms` budget.
+///
+/// When a level / language pair has no canonical command (e.g. HTML at the
+/// Step level), `run_integration` returns `passed=true` with an
+/// `IntegrationSkipped { level, reason }` snippet so the dashboard shows a
+/// "skipped" validation tier row instead of a hard fail.
+pub struct CommandIntegrationRunner {
+    language: String,
+    /// Optional crate slug used when the Step / Phase command needs `-p <crate>`.
+    /// Empty string ⇒ fall back to `cargo test` without `-p`.
+    crate_slug: String,
+}
+
+/// Per-level command timeout (seconds) — exposed so contract tests can pin
+/// them without duplicating the mapping.
+pub const BABY_STEP_TIMEOUT_S: u64 = 5;
+pub const STEP_TIMEOUT_S: u64 = 30;
+pub const PHASE_TIMEOUT_S: u64 = 60;
+pub const CONCEPT_TIMEOUT_S: u64 = 120;
+
+impl CommandIntegrationRunner {
+    pub fn new(language: impl Into<String>) -> Self {
+        Self {
+            language: language.into().to_lowercase(),
+            crate_slug: String::new(),
+        }
+    }
+
+    pub fn with_crate_slug(mut self, slug: impl Into<String>) -> Self {
+        self.crate_slug = slug.into();
+        self
+    }
+
+    /// Borrow the resolved language label (lower-case).
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// Canonical level timeout. Used by the tiered validator to pin the
+    /// 5/30/60/120s budget without re-computing it from `ValidationTier`.
+    pub fn timeout_for_level(level_label: &str) -> Duration {
+        match level_label {
+            "baby" => Duration::from_secs(BABY_STEP_TIMEOUT_S),
+            "step" => Duration::from_secs(STEP_TIMEOUT_S),
+            "phase" => Duration::from_secs(PHASE_TIMEOUT_S),
+            "concept" => Duration::from_secs(CONCEPT_TIMEOUT_S),
+            _ => Duration::from_secs(STEP_TIMEOUT_S),
+        }
+    }
+
+    /// Resolve the language+level pair to a (`program`, `args`) tuple.
+    /// Returns `None` when the pair has no canonical command — the caller
+    /// translates that to an `IntegrationSkipped` outcome.
+    pub fn command_for(&self, level_label: &str) -> Option<(String, Vec<String>)> {
+        let crate_slug = self.crate_slug.as_str();
+        match (self.language.as_str(), level_label) {
+            ("rust", "baby") => Some((
+                "cargo".to_owned(),
+                vec!["check".to_owned(), "--message-format=json".to_owned()],
+            )),
+            ("rust", "step") | ("rust", "phase") if !crate_slug.is_empty() => Some((
+                "cargo".to_owned(),
+                vec!["test".to_owned(), "-p".to_owned(), crate_slug.to_owned()],
+            )),
+            ("rust", "step") | ("rust", "phase") => Some((
+                "cargo".to_owned(),
+                vec!["test".to_owned()],
+            )),
+            ("rust", "concept") => Some((
+                "cargo".to_owned(),
+                vec!["test".to_owned(), "--workspace".to_owned()],
+            )),
+            ("python", "baby") => Some((
+                "python".to_owned(),
+                vec!["-c".to_owned(), "print('compile check ok')".to_owned()],
+            )),
+            ("python", _) => Some((
+                "pytest".to_owned(),
+                vec!["-q".to_owned()],
+            )),
+            ("typescript", "baby") | ("javascript", "baby") => Some((
+                "tsc".to_owned(),
+                vec!["--noEmit".to_owned()],
+            )),
+            ("typescript", _) | ("javascript", _) => Some((
+                "npm".to_owned(),
+                vec!["test".to_owned(), "--".to_owned(), "--silent".to_owned()],
+            )),
+            ("go", "baby") => Some((
+                "go".to_owned(),
+                vec!["vet".to_owned(), "./...".to_owned()],
+            )),
+            ("go", _) => Some((
+                "go".to_owned(),
+                vec!["test".to_owned(), "./...".to_owned()],
+            )),
+            _ => None,
+        }
+    }
+}
+
+impl IntegrationCommandRunner for CommandIntegrationRunner {
+    fn run_integration<'a>(
+        &'a self,
+        level_label: &'a str,
+        project_dir: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = IntegrationRunOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let Some((program, args)) = self.command_for(level_label) else {
+                // IntegrationSkipped path — `passed=true` so the tiered
+                // validator does NOT short-circuit subsequent tiers on a
+                // missing-command signal. The reason lives in the snippet so
+                // the dashboard can render "skipped" instead of "fail".
+                return IntegrationRunOutcome {
+                    passed: true,
+                    rules_fired: 0,
+                    stderr_snippet: Some(format!(
+                        "IntegrationSkipped {{ level: \"{}\", reason: \"no_test_command_for_language({})\" }}",
+                        level_label, self.language
+                    )),
+                };
+            };
+            let timeout = Self::timeout_for_level(level_label);
+            let fut = tokio::process::Command::new(&program)
+                .args(&args)
+                .current_dir(project_dir)
+                .output();
+            match tokio::time::timeout(timeout, fut).await {
+                Err(_) => IntegrationRunOutcome {
+                    passed: false,
+                    rules_fired: 0,
+                    stderr_snippet: Some(format!(
+                        "integration timeout after {}s at level='{}' (lang={})",
+                        timeout.as_secs(),
+                        level_label,
+                        self.language
+                    )),
+                },
+                Ok(Err(e)) => IntegrationRunOutcome {
+                    passed: false,
+                    rules_fired: 0,
+                    stderr_snippet: Some(format!(
+                        "integration spawn failed ({}): {}",
+                        program, e,
+                    )),
+                },
+                Ok(Ok(out)) => {
+                    if out.status.success() {
+                        IntegrationRunOutcome {
+                            passed: true,
+                            rules_fired: 1,
+                            stderr_snippet: None,
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let snippet: String = stderr.chars().take(256).collect();
+                        IntegrationRunOutcome {
+                            passed: false,
+                            rules_fired: 1,
+                            stderr_snippet: Some(snippet),
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,7 +36,8 @@ pub use providers::{
 };
 #[cfg(feature = "sidecar")]
 pub use sidecar_client::{
-    GGSignals, SearchTriggerPayload, SidecarConfig, SidecarProvider, DEFAULT_SIDECAR_URL,
+    steering_cache_path, GGSignals, OptimizationSummary, SearchTriggerPayload, SidecarConfig,
+    SidecarProvider, DEFAULT_SIDECAR_URL,
 };
 #[cfg(feature = "vllm")]
 pub use vllm_client::{

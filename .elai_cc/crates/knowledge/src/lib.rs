@@ -9,6 +9,7 @@ pub mod degradation;
 pub mod dkg;
 pub mod dkg_adapter;
 pub mod error;
+pub mod fix_templates;
 pub mod freshness;
 pub mod hyde;
 pub mod incremental_profile;
@@ -264,5 +265,9 @@ pub use dkg_adapter::DkgQuerierAdapter;
 pub use error::KnowledgeError;
 pub use project_profile::{detect_project_profile, populate_tier2_conventions, serialize_profile, deserialize_profile, validate_tier_b_with_consent};
 pub use tier3::populate_tier3;
+pub use fix_templates::{
+    attach_fix_template_keys, convention_aware_key, few_shot_for_symbol, FewShotExample,
+    FixTemplateRegistry, DEFAULT_FIX_TEMPLATES_DIR, MAX_FEW_SHOT_EXAMPLES,
+};
 pub use shortcoder::ShortCoder;
 pub use telescope::{assemble_telescope, TelescopeContext};

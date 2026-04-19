@@ -564,6 +564,7 @@ mod tests {
             architecture: None,
             domains: Vec::new(),
             commands: BuildCommandRegistry::default(),
+            fix_template_keys: Vec::new(),
             overrides_applied: false,
         }
     }

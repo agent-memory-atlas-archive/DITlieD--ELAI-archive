@@ -350,7 +350,7 @@ pub use ssb::{
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
     NovelStepDetectedPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    FindingPayload, SsbPayload, SsbReader, SsbWriteRequest, StubRunPayload,
+    FewShotExample, FindingPayload, SsbPayload, SsbReader, SsbWriteRequest, StubRunPayload,
     SystemProbePayload, TaskSubmittedPayload, ToolDispatchPayload, ValidationTierPayload,
     VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
     // Batch 3B (Phase 4G).

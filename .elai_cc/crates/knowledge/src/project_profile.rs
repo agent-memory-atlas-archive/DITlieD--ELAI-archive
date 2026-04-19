@@ -460,6 +460,7 @@ pub fn detect_project_profile(project_root: &Path) -> Result<ProjectProfile, Pro
         architecture: None,
         domains: Vec::new(),
         commands,
+        fix_template_keys: Vec::new(),
         overrides_applied: false,
     };
 

@@ -1,0 +1,6 @@
+# fix_template: python.import_stub
+# When an import resolves to a missing module, suggest the canonical package
+# name. Replace `{deprecated}` with the flagged name and `{replacement}` with
+# the supported alternative.
+from {replacement} import {symbol}
+# Previously: from {deprecated} import {symbol}

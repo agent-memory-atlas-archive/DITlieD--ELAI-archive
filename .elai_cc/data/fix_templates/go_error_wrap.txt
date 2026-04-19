@@ -1,0 +1,7 @@
+// fix_template: go.error_wrap
+// When an error is returned unwrapped, wrap it with %w so errors.Is/As can
+// traverse the chain. Replace `{context}` with the calling operation and
+// `{err}` with the returned error variable.
+if {err} != nil {
+    return fmt.Errorf("{context}: %w", {err})
+}

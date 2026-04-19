@@ -1,0 +1,8 @@
+// fix_template: typescript.null_check
+// When a lint rule flags a non-null assertion or an unchecked optional,
+// suggest an explicit guard. Replace `{expr}` with the flagged expression and
+// `{fallback}` with a sensible default.
+const value = {expr} ?? {fallback};
+if (value === null || value === undefined) {
+  throw new Error("unexpected nullish value");
+}

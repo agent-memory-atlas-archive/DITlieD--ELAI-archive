@@ -80,6 +80,7 @@ fn rust_profile() -> ProjectProfile {
             run: Vec::new(),
             clean: Vec::new(),
         },
+        fix_template_keys: Vec::new(),
         overrides_applied: false,
     }
 }

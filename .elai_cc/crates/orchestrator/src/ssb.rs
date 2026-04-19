@@ -440,6 +440,31 @@ pub struct FindingPayload {
     /// both the pipeline emit-site AND the classification when we have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_category: Option<String>,
+    /// Batch 4A (A-41): which deterministic audit step produced this Finding.
+    /// One of `"build" | "version_gate" | "file_size" | "lazy_code" | "completeness"`.
+    /// `None` for findings emitted from non-audit sources (backward compatible).
+    /// The dashboard labels audit findings by step when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_step: Option<String>,
+    /// Batch 4A (A-36): DKG few-shot exemplars attached to a Finding.
+    /// Populated by Tier 3 PI when DKG similarity yields k<=3 nodes.
+    /// `None` when DKG is empty or disabled (backward compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub few_shot_examples: Option<Vec<FewShotExample>>,
+}
+
+/// Batch 4A (A-36): a single few-shot exemplar pulled from DKG similarity.
+///
+/// Each exemplar is a short in-project reference the dashboard can render under
+/// the Finding as a collapsible sub-block (max 3 per Finding, 2 lines each).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FewShotExample {
+    pub symbol_name: String,
+    pub file_path: String,
+    /// 1-based line number inside `file_path`.
+    pub line: u32,
+    /// Short snippet (<=2 lines) taken from the DKG node signature.
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2150,6 +2175,7 @@ mod tests {
             SsbActionType::Finding => SsbPayload::Finding(FindingPayload {
                 severity: "INFO".into(), category: "c".into(), message: "m".into(),
                 file_path: None, line: None, failure_category: None,
+                audit_step: None, few_shot_examples: None,
             }),
             SsbActionType::Claim => SsbPayload::Claim(ClaimPayload {
                 claim_text: "c".into(), grounding_source: "s".into(), verified: false,
@@ -3243,6 +3269,8 @@ mod tests {
                 file_path: Some("src/db.rs".into()),
                 line: Some(99),
                 failure_category: None,
+                audit_step: None,
+                few_shot_examples: None,
             }),
             SsbPayload::Claim(ClaimPayload {
                 claim_text: "blake3 is faster".into(),
@@ -3587,7 +3615,7 @@ mod tests {
                     )),
                 ("[a-z]{1,10}", "[a-z]{1,10}", "[a-z ]{1,30}", any::<Option<String>>(), any::<Option<u32>>())
                     .prop_map(|(severity, category, message, file_path, line)| SsbPayload::Finding(
-                        FindingPayload { severity, category, message, file_path, line, failure_category: None }
+                        FindingPayload { severity, category, message, file_path, line, failure_category: None, audit_step: None, few_shot_examples: None }
                     )),
                 ("[a-z ]{1,30}", "[a-z]{1,10}", any::<bool>())
                     .prop_map(|(claim_text, grounding_source, verified)| SsbPayload::Claim(

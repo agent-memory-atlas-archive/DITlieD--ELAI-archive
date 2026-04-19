@@ -217,12 +217,16 @@ fn lazy_patterns_for(lang: &Language) -> Vec<LazyPattern> {
     // Language-specific patterns
     match lang {
         Language::Rust => {
-            let rust_patterns = [
+            let rust_patterns: &[(&str, &str)] = &[
                 ("rust_todo_macro", r"\btodo!\("),
                 ("rust_unimplemented_macro", r"\bunimplemented!\("),
                 ("rust_empty_fn", r"fn\s+\w+\([^)]*\)[^{]*\{\s*\}"),
+                // Batch 4A (A-41 CC check): `panic!("not yet")` /
+                // `panic!("not implemented")` placeholders are a common
+                // stand-in for unfinished work.
+                ("rust_panic_placeholder", r#"panic!\(\s*["'](?:not |todo|implement)"#),
             ];
-            for (id, pat) in &rust_patterns {
+            for &(id, pat) in rust_patterns {
                 if let Ok(re) = regex::Regex::new(pat) {
                     patterns.push(LazyPattern { id, pattern: re });
                 }
@@ -1458,7 +1462,9 @@ mod tests {
     fn lazy_patterns_count_per_language() {
         let universal_count = 9; // 9 universal patterns
         let rust = lazy_patterns_for(&Language::Rust);
-        assert_eq!(rust.len(), universal_count + 3);
+        // Batch 4A: Rust gained `rust_panic_placeholder` on top of the
+        // existing 3 macros, so the language-specific count is now 4.
+        assert_eq!(rust.len(), universal_count + 4);
         let python = lazy_patterns_for(&Language::Python);
         assert_eq!(python.len(), universal_count + 3);
         let ts = lazy_patterns_for(&Language::TypeScript);

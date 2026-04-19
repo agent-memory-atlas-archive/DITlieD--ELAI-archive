@@ -2749,6 +2749,12 @@ fn build_hyde_sidecar_provider(config: &BackendConfig) -> Result<SidecarProvider
         temperature: elai_knowledge::hyde::HYDE_TEMPERATURE,
         max_tokens: elai_knowledge::hyde::HYDE_MAX_TOKENS,
         etc_threshold: f64::INFINITY,
+        // Batch 4A (3J): the HyDE-scoped sidecar provider stays conservative —
+        // HyDE is toggled per-dispatch, ActAdd vectors are role-scoped and
+        // loaded lazily via the per-project cache.
+        hyde_enabled: false,
+        actadd_enabled: false,
+        actadd_layer: 0,
     };
     let clock: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
     Ok(SidecarProvider::new(sidecar_cfg, clock)?)

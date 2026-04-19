@@ -1,0 +1,6 @@
+// fix_template: rust.import_path_fix
+// When a rule flags a deprecated crate or misrouted import, suggest the
+// corrected use-path. Replace `{deprecated}` with the detected name and
+// `{replacement}` with the canonical alternative.
+use {replacement}::{symbol};
+// Previously: use {deprecated}::{symbol};
