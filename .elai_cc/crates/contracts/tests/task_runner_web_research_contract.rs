@@ -176,6 +176,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             reflection_client: None,
             irreversible_classifier: None,
             dkg_querier_swap: None,
+            task_splitter: None,
         },
     );
 
@@ -269,6 +270,7 @@ async fn web_research_task_without_runner_emits_finding() {
             reflection_client: None,
             irreversible_classifier: None,
             dkg_querier_swap: None,
+            task_splitter: None,
         },
     );
 
@@ -367,6 +369,7 @@ async fn web_research_runner_invoked_once_per_task() {
             reflection_client: None,
             irreversible_classifier: None,
             dkg_querier_swap: None,
+            task_splitter: None,
         },
     );
 
