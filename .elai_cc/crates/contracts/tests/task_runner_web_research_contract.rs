@@ -168,6 +168,8 @@ async fn web_research_task_emits_web_research_step_rows() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 
@@ -253,6 +255,8 @@ async fn web_research_task_without_runner_emits_finding() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 
@@ -343,6 +347,8 @@ async fn web_research_runner_invoked_once_per_task() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 

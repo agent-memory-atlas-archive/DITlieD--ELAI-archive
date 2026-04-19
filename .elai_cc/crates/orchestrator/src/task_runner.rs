@@ -1702,6 +1702,18 @@ pub struct TaskRunnerConfig {
     /// Defaults to `BranchPerPlan` which creates `elai/plan-{plan_id}`
     /// branches per task.
     pub git_branch_policy: GitBranchPolicy,
+    /// Batch 3A (Phase 4F): optional system prober. When `Some`, `drive_task`
+    /// emits a [`SsbPayload::SystemProbe`] row once at startup by invoking
+    /// [`crate::SystemProber::probe`]. When `None`, no emission (pre-4F
+    /// behaviour). Respects `ELAI_DISABLE_SYSTEM_PROBE` as a kill switch
+    /// inside the concrete [`crate::DefaultSystemProber`].
+    pub system_prober: Option<Arc<dyn crate::system_probe::SystemProber>>,
+    /// Batch 3A (Phase 4F): optional feasibility prober. When `Some`,
+    /// `drive_task` invokes per-concept baby-step probes via
+    /// [`crate::FeasibilityProber::probe_baby_step`] and emits
+    /// [`SsbPayload::FeasibilityReport`] rows. When `None`, no emission.
+    /// Respects `ELAI_DISABLE_FEASIBILITY_PROBE`.
+    pub feasibility_prober: Option<Arc<dyn crate::feasibility_probe::FeasibilityProber>>,
 }
 
 impl TaskRunnerConfig {
@@ -1727,6 +1739,8 @@ impl TaskRunnerConfig {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         }
     }
 }
@@ -1787,6 +1801,12 @@ struct ResolvedConfig {
     /// Batch 2B: branch policy used when `tool_dispatcher.dispatch_git_commit`
     /// fires.
     git_branch_policy: GitBranchPolicy,
+    /// Batch 3A (Phase 4F): optional system prober.
+    system_prober: Option<Arc<dyn crate::system_probe::SystemProber>>,
+    /// Batch 3A (Phase 4F): one-shot emission flag for the SystemProbe row.
+    system_probe_emitted: Mutex<bool>,
+    /// Batch 3A (Phase 4F): optional feasibility prober.
+    feasibility_prober: Option<Arc<dyn crate::feasibility_probe::FeasibilityProber>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1840,6 +1860,9 @@ impl ResolvedConfig {
             vram_tier_emitted: Mutex::new(false),
             tool_dispatcher: cfg.tool_dispatcher,
             git_branch_policy: cfg.git_branch_policy,
+            system_prober: cfg.system_prober,
+            system_probe_emitted: Mutex::new(false),
+            feasibility_prober: cfg.feasibility_prober,
         }
     }
 }
@@ -2562,6 +2585,12 @@ async fn drive_task(
     // activity feed wants the tier row regardless of task flavour.
     emit_vram_tier_once(writer, resolved).await;
 
+    // Batch 3A (Phase 4F): emit the one-shot `SystemProbe` row at the first
+    // task start. No-op when no prober was plumbed OR when the probe is
+    // disabled via `ELAI_DISABLE_SYSTEM_PROBE`. Paired with `vram_tier_emitted`
+    // so the dashboard always has a system-level snapshot at startup.
+    emit_system_probe_once(writer, resolved).await;
+
     // Gap #6 (MVP audit 2026-04-18 section 4 item 6): on the first task for
     // this project_id, run the `IndexingService::run_full_index` pipeline so
     // downstream rule evaluation (Gap #9) and the `DkgQuerierAdapter` path on
@@ -2728,6 +2757,16 @@ async fn drive_task(
         ),
     )
     .await;
+
+    // Batch 3A (Phase 4F): once the pipeline is built we know the novel step
+    // set + the live system probe. Run a single pipeline-level feasibility
+    // probe and emit the summary + per-novel-step + per-stub rows. Baby-step
+    // per-concept probes are exposed via `FeasibilityProber::probe_baby_step`
+    // for callers that want finer-grained gating — the MVP wiring keeps the
+    // pipeline-level fan-out because the navigator loop is deterministic and
+    // the dashboard needs at least one report per task to render the new
+    // Feasibility panel.
+    emit_feasibility_probe_for_pipeline(writer, resolved, &pipeline).await;
 
     // --- 4. Navigate baby steps ----------------------------------------
     // 4E.13: register IntegrationSpecs at all four decomposition levels so
@@ -4094,6 +4133,176 @@ async fn emit_vram_tier_once(
     }
 }
 
+/// Batch 3A (Phase 4F): emit the one-shot `SystemProbe` SSB row at runner
+/// startup. Gated by the `system_probe_emitted` flag on `ResolvedConfig` so
+/// subsequent tasks do not re-emit. No-op when no prober was plumbed or the
+/// env kill switch fires inside the concrete prober.
+async fn emit_system_probe_once(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+) {
+    let Some(prober) = resolved.system_prober.as_ref() else {
+        return;
+    };
+    // One-shot guard — a poisoned mutex is treated as "already emitted" so
+    // we never panic at the hot path. Same pattern as emit_vram_tier_once.
+    {
+        let mut guard = match resolved.system_probe_emitted.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if *guard {
+            return;
+        }
+        *guard = true;
+    }
+    let report = prober.probe().await;
+    let tier_label = report
+        .gpu
+        .as_ref()
+        .map(|g| vram_tier_label(g.tier))
+        .unwrap_or_else(|| "12GB".to_owned());
+    let payload = SsbPayload::SystemProbe(crate::ssb::SystemProbePayload {
+        gpu_name: report.gpu.as_ref().map(|g| g.name.clone()),
+        vram_total_mb: report.gpu.as_ref().map(|g| g.vram_total_mb),
+        vram_free_mb: report.gpu.as_ref().map(|g| g.vram_free_mb),
+        ram_total_mb: report.ram_total_mb,
+        ram_free_mb: report.ram_free_mb,
+        disk_total_mb: report.disk_total_mb,
+        disk_free_mb: report.disk_free_mb,
+        detection_method: report.detection_method.as_str().to_owned(),
+        tier: tier_label,
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write SystemProbe failed");
+    }
+}
+
+/// Batch 3A helper: stable string label for a [`elai_core::VramTier`]
+/// matching the existing `VramTierDetectedPayload.tier` value set
+/// (see Batch 1B / ActivityEntry.svelte).
+fn vram_tier_label(tier: elai_core::VramTier) -> String {
+    match tier {
+        elai_core::VramTier::Vram8Gb => "8GB".to_owned(),
+        elai_core::VramTier::Vram12Gb => "12GB".to_owned(),
+        elai_core::VramTier::Vram16Gb => "16GB".to_owned(),
+        elai_core::VramTier::Vram24Gb => "24GB".to_owned(),
+        elai_core::VramTier::Vram48Gb => "48GB".to_owned(),
+        elai_core::VramTier::Cloud => "cloud".to_owned(),
+    }
+}
+
+/// Batch 3A (Phase 4F): label for [`crate::feasibility_probe::TaskFeasibility`].
+/// Matches the serde snake_case discriminants used on the SSB payload so the
+/// dashboard filters stay simple.
+fn feasibility_label(feasibility: crate::feasibility_probe::TaskFeasibility) -> &'static str {
+    match feasibility {
+        crate::feasibility_probe::TaskFeasibility::Feasible => "feasible",
+        crate::feasibility_probe::TaskFeasibility::Marginal => "marginal",
+        crate::feasibility_probe::TaskFeasibility::Infeasible => "infeasible",
+    }
+}
+
+/// Batch 3A (Phase 4F): encode a percent-margin float as a basis-point u16
+/// so the payload stays `Eq`. Clamped to [0, 10000].
+fn margin_bp(pct: f32) -> u16 {
+    let scaled = (pct * 100.0).round();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= 10_000.0 {
+        10_000
+    } else {
+        scaled as u16
+    }
+}
+
+/// Batch 3A (Phase 4F): run a single feasibility probe over the built
+/// pipeline and emit the summary + per-novel + per-stub SSB rows.
+///
+/// No-op when:
+///   * the prober was not plumbed, OR
+///   * the prober's env kill switch short-circuits (see
+///     [`crate::feasibility_probe::feasibility_probe_disabled_via_env`]).
+///
+/// Requires a system prober so resource margins reflect reality; when only
+/// the feasibility prober is plumbed, we construct a DefaultSystemProber on
+/// the fly so the probe has a [`SystemProbeReport`] to reason over.
+async fn emit_feasibility_probe_for_pipeline(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    pipeline: &crate::pipeline_builder::ExecutablePipeline,
+) {
+    let Some(prober) = resolved.feasibility_prober.as_ref() else {
+        return;
+    };
+    // Fetch a SystemProbeReport — reuse the plumbed prober when present,
+    // else construct a transient DefaultSystemProber so the feasibility
+    // probe always has something to reason over.
+    let system = match resolved.system_prober.as_ref() {
+        Some(sp) => sp.probe().await,
+        None => {
+            use crate::system_probe::SystemProber;
+            let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+                std::sync::Arc::new(elai_core::clock::OsClock);
+            let transient = crate::system_probe::DefaultSystemProber::new(None, clock);
+            transient.probe().await
+        }
+    };
+    let report = prober.probe(pipeline, &system).await;
+
+    // Emit per-novel rows first so the dashboard feed orders them above the
+    // summary row.
+    for novel in &report.novel_steps {
+        let payload = SsbPayload::NovelStepDetected(crate::ssb::NovelStepDetectedPayload {
+            step_id: novel.step_id.clone(),
+            reason: novel.reason.clone(),
+            alternative_count: u32::try_from(novel.alternatives.len()).unwrap_or(0),
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            error!(error = %e, "task_runner: write NovelStepDetected failed");
+        }
+    }
+
+    for stub in &report.stub_results {
+        let payload = SsbPayload::StubRun(crate::ssb::StubRunPayload {
+            step_id: stub.step_id.clone(),
+            passed: stub.stub_passed,
+            elapsed_ms: stub.elapsed_ms,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            error!(error = %e, "task_runner: write StubRun failed");
+        }
+    }
+
+    // Summary row last so feed consumers can reference the already-written
+    // per-step rows. `escalations_count` is the length of the escalation
+    // vector (both resource-margin and no-feasible-alternative).
+    let payload = SsbPayload::FeasibilityReport(crate::ssb::FeasibilityReportPayload {
+        task_feasibility: feasibility_label(report.task_feasibility).to_owned(),
+        skip_reason: report.skip_reason.clone(),
+        novel_step_count: u32::try_from(report.novel_steps.len()).unwrap_or(u32::MAX),
+        escalations_count: u32::try_from(report.escalations.len()).unwrap_or(u32::MAX),
+        vram_margin_bp: margin_bp(report.resource_margins.vram_margin_pct),
+        ram_margin_bp: margin_bp(report.resource_margins.ram_margin_pct),
+        disk_margin_bp: margin_bp(report.resource_margins.disk_margin_pct),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(error = %e, "task_runner: write FeasibilityReport failed");
+    }
+}
+
 /// 3F.REDO: read MistakeBook entries for `baby_step_id` from SSB once and,
 /// if the formatted CONSTRAINTS block is non-empty, emit an `info` Finding
 /// carrying it. The payload occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK
@@ -5220,6 +5429,8 @@ mod tests {
                 signal_reader: None,
                 tool_dispatcher: None,
                 git_branch_policy: GitBranchPolicy::default(),
+                system_prober: None,
+                feasibility_prober: None,
             },
         );
 
@@ -5328,6 +5539,8 @@ mod tests {
                 signal_reader: None,
                 tool_dispatcher: None,
                 git_branch_policy: GitBranchPolicy::default(),
+                system_prober: None,
+                feasibility_prober: None,
             },
         );
 
@@ -5513,6 +5726,8 @@ mod tests {
                 signal_reader: None,
                 tool_dispatcher: None,
                 git_branch_policy: GitBranchPolicy::default(),
+                system_prober: None,
+                feasibility_prober: None,
             },
         );
 
@@ -6258,6 +6473,8 @@ mod tests {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         })
     }
 

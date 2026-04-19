@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS ssb (
         'indexing_progress', 'dkg_ready',
         'tiered_analysis', 'shortcoder_compression',
         'tool_dispatch', 'validation_tier', 'failure_classified',
-        'git_commit', 'daira_trace'
+        'git_commit', 'daira_trace',
+        'system_probe', 'feasibility_report', 'novel_step_detected', 'stub_run'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -171,6 +172,19 @@ pub enum SsbActionType {
     /// every dispatch method so the activity feed can render call graphs.
     /// Carries a [`DairaTracePayload`].
     DairaTrace,
+    /// Batch 3A (Phase 4F): system probe snapshot. Emitted once per task
+    /// runner lifetime and replayed on every dashboard subscribe. Carries
+    /// a [`SystemProbePayload`].
+    SystemProbe,
+    /// Batch 3A (Phase 4F): per-concept / per-task feasibility verdict.
+    /// Carries a [`FeasibilityReportPayload`].
+    FeasibilityReport,
+    /// Batch 3A (Phase 4F): one row per novel step detected by the
+    /// feasibility prober. Carries a [`NovelStepDetectedPayload`].
+    NovelStepDetected,
+    /// Batch 3A (Phase 4F): one row per stub execution inside the
+    /// feasibility probe. Carries a [`StubRunPayload`].
+    StubRun,
 }
 
 impl SsbActionType {
@@ -222,6 +236,10 @@ impl SsbActionType {
             Self::FailureClassified => "failure_classified",
             Self::GitCommit => "git_commit",
             Self::DairaTrace => "daira_trace",
+            Self::SystemProbe => "system_probe",
+            Self::FeasibilityReport => "feasibility_report",
+            Self::NovelStepDetected => "novel_step_detected",
+            Self::StubRun => "stub_run",
         }
     }
 }
@@ -279,6 +297,10 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "failure_classified" => Ok(SsbActionType::FailureClassified),
         "git_commit" => Ok(SsbActionType::GitCommit),
         "daira_trace" => Ok(SsbActionType::DairaTrace),
+        "system_probe" => Ok(SsbActionType::SystemProbe),
+        "feasibility_report" => Ok(SsbActionType::FeasibilityReport),
+        "novel_step_detected" => Ok(SsbActionType::NovelStepDetected),
+        "stub_run" => Ok(SsbActionType::StubRun),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -929,7 +951,65 @@ pub struct DairaTracePayload {
 }
 
 // ---------------------------------------------------------------------------
-// SsbPayload enum (typed wrapper over all 31 action-type payloads)
+// Batch 3A (Phase 4F) — SystemProbe / FeasibilityReport payloads
+// ---------------------------------------------------------------------------
+
+/// Batch 3A — snapshot of the [`crate::system_probe::SystemProbeReport`] at
+/// task_runner startup. Emitted once per runner lifetime. `vram_*` fields are
+/// `Option<u32>` so env-fallback probes with no GPU data still serialise
+/// cleanly. `detection_method` / `tier` are stable string labels matching
+/// `DetectionMethod::as_str()` and the `VramTierDetectedPayload` tier set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemProbePayload {
+    pub gpu_name: Option<String>,
+    pub vram_total_mb: Option<u32>,
+    pub vram_free_mb: Option<u32>,
+    pub ram_total_mb: u64,
+    pub ram_free_mb: u64,
+    pub disk_total_mb: u64,
+    pub disk_free_mb: u64,
+    /// `"shell_out"` / `"env_fallback"` / `"unavailable"`.
+    pub detection_method: String,
+    /// `"8GB"` / `"12GB"` / `"16GB"` / `"24GB"` / `"48GB"` / `"cloud"`.
+    pub tier: String,
+}
+
+/// Batch 3A — per-concept / per-task feasibility summary. Percent values are
+/// encoded as basis-point u16 (0..=10000) so the payload stays `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeasibilityReportPayload {
+    /// `"feasible"` / `"marginal"` / `"infeasible"`.
+    pub task_feasibility: String,
+    /// Populated when the probe was skipped (e.g. `"no_novel_steps_margins_ok"`).
+    pub skip_reason: Option<String>,
+    pub novel_step_count: u32,
+    pub escalations_count: u32,
+    /// VRAM margin × 100 as u16 (bp). 2000 = 20.00%.
+    pub vram_margin_bp: u16,
+    pub ram_margin_bp: u16,
+    pub disk_margin_bp: u16,
+}
+
+/// Batch 3A — one row per novel step detected by the feasibility probe.
+/// Emitted inline with the enclosing [`FeasibilityReportPayload`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NovelStepDetectedPayload {
+    pub step_id: String,
+    pub reason: String,
+    pub alternative_count: u32,
+}
+
+/// Batch 3A — one row per stub execution inside the feasibility probe.
+/// Emitted per novel step + per baby-step probe invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StubRunPayload {
+    pub step_id: String,
+    pub passed: bool,
+    pub elapsed_ms: u32,
+}
+
+// ---------------------------------------------------------------------------
+// SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
 
 /// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (31 total).
@@ -990,6 +1070,10 @@ pub enum SsbPayload {
     FailureClassified(FailureClassifiedPayload),
     GitCommit(GitCommitPayload),
     DairaTrace(DairaTracePayload),
+    SystemProbe(SystemProbePayload),
+    FeasibilityReport(FeasibilityReportPayload),
+    NovelStepDetected(NovelStepDetectedPayload),
+    StubRun(StubRunPayload),
 }
 
 impl SsbPayload {
@@ -1042,6 +1126,10 @@ impl SsbPayload {
             Self::FailureClassified(_) => SsbActionType::FailureClassified,
             Self::GitCommit(_) => SsbActionType::GitCommit,
             Self::DairaTrace(_) => SsbActionType::DairaTrace,
+            Self::SystemProbe(_) => SsbActionType::SystemProbe,
+            Self::FeasibilityReport(_) => SsbActionType::FeasibilityReport,
+            Self::NovelStepDetected(_) => SsbActionType::NovelStepDetected,
+            Self::StubRun(_) => SsbActionType::StubRun,
         }
     }
 }
@@ -2120,6 +2208,40 @@ mod tests {
                 elapsed_us: 0,
                 outcome: "started".into(),
                 step_id: "step-1".into(),
+            }),
+            SsbActionType::SystemProbe => SsbPayload::SystemProbe(SystemProbePayload {
+                gpu_name: Some("test".into()),
+                vram_total_mb: Some(12_288),
+                vram_free_mb: Some(6_144),
+                ram_total_mb: 32_000,
+                ram_free_mb: 16_000,
+                disk_total_mb: 1_000_000,
+                disk_free_mb: 500_000,
+                detection_method: "shell_out".into(),
+                tier: "12GB".into(),
+            }),
+            SsbActionType::FeasibilityReport => {
+                SsbPayload::FeasibilityReport(FeasibilityReportPayload {
+                    task_feasibility: "feasible".into(),
+                    skip_reason: None,
+                    novel_step_count: 0,
+                    escalations_count: 0,
+                    vram_margin_bp: 5_000,
+                    ram_margin_bp: 5_000,
+                    disk_margin_bp: 5_000,
+                })
+            }
+            SsbActionType::NovelStepDetected => {
+                SsbPayload::NovelStepDetected(NovelStepDetectedPayload {
+                    step_id: "step-1".into(),
+                    reason: "unverified".into(),
+                    alternative_count: 0,
+                })
+            }
+            SsbActionType::StubRun => SsbPayload::StubRun(StubRunPayload {
+                step_id: "step-1".into(),
+                passed: true,
+                elapsed_ms: 12,
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

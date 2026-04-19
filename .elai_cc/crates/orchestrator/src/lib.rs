@@ -75,6 +75,8 @@ pub mod output_postprocessor;
 pub mod rule_loader;
 pub mod ssb;
 pub mod ssb_viewer;
+pub mod system_probe;
+pub mod feasibility_probe;
 pub mod task_runner;
 pub mod supervision;
 pub mod stale_branch;
@@ -335,14 +337,25 @@ pub use worker_boot::{
 };
 pub use ssb::{
     default_ssb_path, default_ssb_path_for_base, DairaTracePayload, DiffSummary, DkgReadyPayload,
-    FailureClassifiedPayload, GitCommitPayload, HookEventPayload, IndexingProgressPayload,
-    InterventionKeyword, InterventionOption, InterventionRequestPayload,
+    FailureClassifiedPayload, FeasibilityReportPayload, GitCommitPayload, HookEventPayload,
+    IndexingProgressPayload, InterventionKeyword, InterventionOption, InterventionRequestPayload,
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
-    PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
+    NovelStepDetectedPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
-    SsbPayload, SsbReader, SsbWriteRequest, TaskSubmittedPayload, ToolDispatchPayload,
-    ValidationTierPayload, VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME,
-    SSB_SESSIONS_SUBDIR,
+    SsbPayload, SsbReader, SsbWriteRequest, StubRunPayload, SystemProbePayload,
+    TaskSubmittedPayload, ToolDispatchPayload, ValidationTierPayload, VramTierDetectedPayload,
+    WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
+};
+pub use system_probe::{
+    classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,
+    GpuInfo, SystemProbeReport, SystemProber, ELAI_DISABLE_SYSTEM_PROBE_ENV,
+    ELAI_FREE_DISK_GB_ENV, ELAI_FREE_RAM_GB_ENV, ELAI_VRAM_FREE_GB_ENV, ELAI_VRAM_GB_ENV,
+};
+pub use feasibility_probe::{
+    feasibility_probe_disabled_via_env, BabyStepEscalation, BabyStepFeasibilityReport,
+    BabyStepStubResult, DefaultFeasibilityProber, FeasibilityEscalation, FeasibilityProber,
+    FeasibilityReport, NovelStep, ResourceMargins, StubResult, TaskFeasibility,
+    ELAI_DISABLE_FEASIBILITY_PROBE_ENV, RESOURCE_MARGIN_THRESHOLD_PCT,
 };
 pub use ssb_viewer::{
     FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,

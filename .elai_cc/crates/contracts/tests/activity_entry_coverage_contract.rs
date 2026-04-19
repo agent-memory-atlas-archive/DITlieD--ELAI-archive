@@ -73,6 +73,10 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::FailureClassified,
     SsbActionType::GitCommit,
     SsbActionType::DairaTrace,
+    SsbActionType::SystemProbe,
+    SsbActionType::FeasibilityReport,
+    SsbActionType::NovelStepDetected,
+    SsbActionType::StubRun,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -310,10 +314,11 @@ fn contract_default_arm_exists_and_returns_dim() {
 #[test]
 fn contract_variant_count_matches_enum_doc() {
     // The enum doc comment in ssb.rs L84 claims "All 32 action types" but the
-    // enum has grown. We anchor on >= 44 (current count at Batch 2C); growth
-    // is fine, shrinkage flags a breaking change for review.
+    // enum has grown. Batch 3A (Phase 4F) adds system_probe +
+    // feasibility_report + novel_step_detected + stub_run so the floor is
+    // now 48. Growth is fine; shrinkage flags a breaking change for review.
     assert!(
-        ALL_VARIANTS.len() >= 44,
-        "ALL_VARIANTS shrank below 44 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 48,
+        "ALL_VARIANTS shrank below 48 — review SsbActionType enum"
     );
 }

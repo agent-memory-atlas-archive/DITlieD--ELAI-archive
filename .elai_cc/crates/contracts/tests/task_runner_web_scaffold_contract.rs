@@ -229,6 +229,8 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 
@@ -312,6 +314,8 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 
@@ -391,6 +395,8 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 

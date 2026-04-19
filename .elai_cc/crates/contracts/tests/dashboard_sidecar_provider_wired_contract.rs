@@ -131,6 +131,8 @@ async fn contract_task_runner_accepts_llm_provider() {
             signal_reader: None,
             tool_dispatcher: None,
             git_branch_policy: GitBranchPolicy::default(),
+            system_prober: None,
+            feasibility_prober: None,
         },
     );
 
