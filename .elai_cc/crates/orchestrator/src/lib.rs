@@ -374,6 +374,8 @@ pub use ssb::{
     DkgQuerierSwappedPayload,
     // Batch-ful-c — A-8 freshness steering vector.
     SteeringComputedPayload, SteeringComputeFailedPayload,
+    // Batch-ful-d — external MCP server lifecycle.
+    McpServerConnectedPayload, McpServerDisconnectedPayload, McpToolCalledPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{

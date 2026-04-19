@@ -261,6 +261,18 @@ pub enum SsbActionType {
     /// for a role (sidecar unreachable, HTTP error, validation rejected, or
     /// cache write failed). Carries a [`SteeringComputeFailedPayload`].
     SteeringComputeFailed,
+    /// Batch-ful-d (FUL-D / phase-3J S9) — external MCP server connection
+    /// established via the `DefaultMcpBridge`. Emitted once per successful
+    /// `initialize` handshake + `tools/list` response. Carries a
+    /// [`McpServerConnectedPayload`].
+    McpServerConnected,
+    /// Batch-ful-d (FUL-D / phase-3J S9) — per-call summary row emitted on
+    /// every `tools/call` round-trip. Carries a [`McpToolCalledPayload`].
+    McpToolCalled,
+    /// Batch-ful-d (FUL-D / phase-3J S9) — MCP server disconnected, either
+    /// by user toggle, heartbeat timeout, or peer-closed TCP. Carries a
+    /// [`McpServerDisconnectedPayload`].
+    McpServerDisconnected,
 }
 
 impl SsbActionType {
@@ -335,6 +347,9 @@ impl SsbActionType {
             Self::DkgQuerierSwapped => "dkg_querier_swapped",
             Self::SteeringComputed => "steering_computed",
             Self::SteeringComputeFailed => "steering_compute_failed",
+            Self::McpServerConnected => "mcp_server_connected",
+            Self::McpToolCalled => "mcp_tool_called",
+            Self::McpServerDisconnected => "mcp_server_disconnected",
         }
     }
 }
@@ -415,6 +430,9 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "dkg_querier_swapped" => Ok(SsbActionType::DkgQuerierSwapped),
         "steering_computed" => Ok(SsbActionType::SteeringComputed),
         "steering_compute_failed" => Ok(SsbActionType::SteeringComputeFailed),
+        "mcp_server_connected" => Ok(SsbActionType::McpServerConnected),
+        "mcp_tool_called" => Ok(SsbActionType::McpToolCalled),
+        "mcp_server_disconnected" => Ok(SsbActionType::McpServerDisconnected),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1414,6 +1432,47 @@ pub struct SteeringComputeFailedPayload {
     pub reason: String,
 }
 
+/// Batch-ful-d (FUL-D / phase-3J S9) — MCP server connected payload.
+///
+/// Emitted by the dashboard `DefaultMcpBridge` after a successful JSON-RPC
+/// `initialize` + `tools/list` round-trip. The `tool_count` is informational
+/// only (for "mcp · connected · 7 tools" dashboard rows) and may be zero if
+/// the server exposes resources but no tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerConnectedPayload {
+    /// URL the bridge connected to (e.g. `http://localhost:8200` or
+    /// `stdio://elai-mcp-stub`). Useful for the dashboard to display.
+    pub server_url: String,
+    /// Number of tools advertised by the server's `tools/list` response.
+    pub tool_count: u32,
+}
+
+/// Batch-ful-d (FUL-D / phase-3J S9) — per-call MCP tool invocation row.
+///
+/// Emitted on every `tools/call` round-trip (success or error). `outcome` is
+/// a short classifier token — `"success"`, `"error"`, `"security_blocked"`,
+/// `"timeout"` — so the dashboard can colour the row without parsing the
+/// detail string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolCalledPayload {
+    pub tool_name: String,
+    pub server_url: String,
+    pub elapsed_ms: u32,
+    pub outcome: String,
+}
+
+/// Batch-ful-d (FUL-D / phase-3J S9) — MCP server disconnected payload.
+///
+/// Emitted on every disconnect path: explicit user toggle, heartbeat
+/// timeout, JSON-RPC protocol error, network drop. `reason` is a short
+/// classifier (`"user_disabled"`, `"heartbeat_timeout"`, `"protocol_error"`,
+/// `"connection_closed"`) optionally suffixed with the human detail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerDisconnectedPayload {
+    pub server_url: String,
+    pub reason: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1504,6 +1563,10 @@ pub enum SsbPayload {
     // Batch-ful-c — A-8 freshness steering vector lifecycle.
     SteeringComputed(SteeringComputedPayload),
     SteeringComputeFailed(SteeringComputeFailedPayload),
+    // Batch-ful-d — external MCP server lifecycle + per-call rows.
+    McpServerConnected(McpServerConnectedPayload),
+    McpToolCalled(McpToolCalledPayload),
+    McpServerDisconnected(McpServerDisconnectedPayload),
 }
 
 impl SsbPayload {
@@ -1579,6 +1642,9 @@ impl SsbPayload {
             Self::DkgQuerierSwapped(_) => SsbActionType::DkgQuerierSwapped,
             Self::SteeringComputed(_) => SsbActionType::SteeringComputed,
             Self::SteeringComputeFailed(_) => SsbActionType::SteeringComputeFailed,
+            Self::McpServerConnected(_) => SsbActionType::McpServerConnected,
+            Self::McpToolCalled(_) => SsbActionType::McpToolCalled,
+            Self::McpServerDisconnected(_) => SsbActionType::McpServerDisconnected,
         }
     }
 }
@@ -2812,6 +2878,26 @@ mod tests {
                 SsbPayload::SteeringComputeFailed(SteeringComputeFailedPayload {
                     role: "executor".into(),
                     reason: "sidecar_unreachable".into(),
+                })
+            }
+            SsbActionType::McpServerConnected => {
+                SsbPayload::McpServerConnected(McpServerConnectedPayload {
+                    server_url: "http://localhost:8200".into(),
+                    tool_count: 3,
+                })
+            }
+            SsbActionType::McpToolCalled => {
+                SsbPayload::McpToolCalled(McpToolCalledPayload {
+                    tool_name: "echo".into(),
+                    server_url: "http://localhost:8200".into(),
+                    elapsed_ms: 42,
+                    outcome: "success".into(),
+                })
+            }
+            SsbActionType::McpServerDisconnected => {
+                SsbPayload::McpServerDisconnected(McpServerDisconnectedPayload {
+                    server_url: "http://localhost:8200".into(),
+                    reason: "user_disabled".into(),
                 })
             }
         };

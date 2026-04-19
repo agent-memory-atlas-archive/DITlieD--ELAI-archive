@@ -25,10 +25,15 @@ tracing.workspace = true
 regex.workspace = true
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
+# Batch-ful-d (FUL-D): gated behind the `mcp` feature. The HTTP JSON-RPC
+# client lives in `mcp_bridge::jsonrpc`. Workspace already pins reqwest 0.12
+# rustls-tls in other crates; we reuse the same pin (no new dep).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 [features]
 default = []
-mcp = []
+# Batch-ful-d: enabling `mcp` activates the reqwest-backed JSON-RPC client.
+mcp = ["dep:reqwest"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

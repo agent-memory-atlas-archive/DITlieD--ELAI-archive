@@ -29,3 +29,12 @@ elai-web-validator = { path = "../web_validator" }
 # the git_commit happy-path test. Same default-features=false treatment
 # as the production pin in crates/tools.
 git2 = { version = "0.20.4", default-features = false }
+# Batch-ful-d: contract-test HTTP listener for the MCP JSON-RPC path. Uses
+# tokio::net directly; no hyper/axum server dep needed.
+
+[features]
+default = []
+# Batch-ful-d (FUL-D): forward the `mcp` feature to elai-plugins so the
+# gated half of `fuld_mcp_bridge_contract.rs` can reach the HTTP JSON-RPC
+# client. Contract test also compiles without this feature.
+mcp = ["elai-plugins/mcp"]

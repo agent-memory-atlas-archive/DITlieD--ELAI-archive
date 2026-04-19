@@ -9,10 +9,50 @@
 // in-process MCP host (e.g. dashboard Tauri → Rust tool invocation without
 // crossing the Python boundary). Do not remove without confirming the
 // dashboard roadmap does not require in-process MCP.
+//
+// Batch-ful-d (FUL-D / phase-3J S9): adds an HTTP JSON-RPC client via
+// `reqwest` (gated behind the `mcp` feature). Implements the MCP spec's
+// `initialize`, `tools/list`, and `tools/call` methods over HTTP POST. The
+// stdio transport remains unimplemented — dashboard wiring targets the HTTP
+// variant (typical for local MCP servers on `http://localhost:8200`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
+
+/// Default MCP server URL the dashboard connects to when
+/// `ELAI_MCP_SERVER_URL` is unset. Points at an HTTP JSON-RPC endpoint —
+/// not a stdio binary — because the dashboard wiring only supports HTTP.
+pub const DEFAULT_MCP_SERVER_URL: &str = "http://localhost:8200";
+
+/// Env var that enables the MCP bridge at dashboard startup. Checked once
+/// during `run`. Unset or any value other than `1` / `true` leaves the
+/// bridge disabled even when the `mcp` feature is compiled in.
+pub const ELAI_ENABLE_MCP_ENV: &str = "ELAI_ENABLE_MCP";
+
+/// Env var that selects the MCP server URL. Defaults to
+/// [`DEFAULT_MCP_SERVER_URL`] when unset or empty.
+pub const ELAI_MCP_SERVER_URL_ENV: &str = "ELAI_MCP_SERVER_URL";
+
+/// Deny-list of MCP tool names the dashboard will refuse to proxy. Matches
+/// the conservative baseline carried over from Batch 4C's
+/// `IrreversibleClassifier`: shell execution + arbitrary file write MUST
+/// never cross the MCP boundary without an explicit `AutonomousGate`
+/// confirmation.
+///
+/// Names are matched exactly — prefix matching is intentionally NOT done so
+/// legitimate tools like `shell_exec_preview` (hypothetical) are still
+/// allowed. Callers are expected to gate suffix-variants themselves via
+/// the gate.
+pub const MCP_TOOL_DENY_LIST: &[&str] = &[
+    "shell_exec",
+    "shell",
+    "exec",
+    "file_write",
+    "fs_write_arbitrary",
+    "delete_all",
+    "format_disk",
+];
 
 /// MCP transport type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +177,14 @@ impl DefaultMcpBridge {
         Ok(())
     }
 
+    /// Batch-ful-d: reject tool names on the hard-coded security deny list.
+    /// Called by the HTTP `call_tool` path before any network round-trip so
+    /// a malicious MCP server cannot convince the dashboard to proxy
+    /// `shell_exec` even with a valid JSON-RPC handshake.
+    pub fn is_deny_listed(tool_name: &str) -> bool {
+        MCP_TOOL_DENY_LIST.iter().any(|d| *d == tool_name)
+    }
+
     /// Sanitize tool result to prevent prompt injection
     /// Treats result as data, not instructions
     pub fn sanitize_result(&self, result: &Value) -> Result<Value, McpError> {
@@ -196,6 +244,178 @@ impl McpBridge for DefaultMcpBridge {
 
     async fn disconnect(&self, _conn: McpConnection) -> Result<(), McpError> {
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch-ful-d — HTTP JSON-RPC 2.0 client (MCP spec `initialize`, `tools/list`,
+// `tools/call`). Gated behind the `mcp` feature so non-mcp builds don't link
+// `reqwest` transitively.
+// ---------------------------------------------------------------------------
+
+/// Minimal MCP tool summary returned by `tools/list`. The full spec carries
+/// more fields (schema annotations, required args…); we project to the
+/// three fields the dashboard needs so the Svelte surface can stay simple.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpToolSummary {
+    pub name: String,
+    pub description: String,
+}
+
+/// Result of a successful `tools/call`. `content` is the raw JSON value
+/// returned by the tool; callers are expected to route it through
+/// [`DefaultMcpBridge::sanitize_result`] before presenting to the user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpCallResult {
+    pub tool_name: String,
+    pub content: Value,
+    pub is_error: bool,
+}
+
+#[cfg(feature = "mcp")]
+impl DefaultMcpBridge {
+    /// Build a reqwest client with a sensible default timeout. Separate
+    /// from `new()` so the dashboard can re-use one client per connection.
+    fn http_client(&self) -> Result<reqwest::Client, McpError> {
+        reqwest::Client::builder()
+            .timeout(self.tool_timeout)
+            .build()
+            .map_err(|e| McpError::ConnectionFailed(format!("reqwest client: {e}")))
+    }
+
+    /// JSON-RPC 2.0 request envelope.
+    fn jsonrpc_envelope(method: &str, params: Value, id: u64) -> Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        })
+    }
+
+    /// POST a JSON-RPC envelope and return the `result` field (or an error
+    /// constructed from the `error` field).
+    async fn post_jsonrpc(
+        client: &reqwest::Client,
+        url: &str,
+        envelope: Value,
+    ) -> Result<Value, McpError> {
+        let resp = client
+            .post(url)
+            .json(&envelope)
+            .send()
+            .await
+            .map_err(|e| McpError::ConnectionFailed(format!("POST {url}: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(McpError::ProtocolError(format!(
+                "HTTP {} from {}",
+                status.as_u16(),
+                url
+            )));
+        }
+
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| McpError::InvalidResponse(format!("parse: {e}")))?;
+
+        if let Some(err) = body.get("error") {
+            return Err(McpError::ToolCallFailed(err.to_string()));
+        }
+
+        body.get("result")
+            .cloned()
+            .ok_or_else(|| McpError::InvalidResponse("missing result field".into()))
+    }
+
+    /// Connect to an HTTP MCP server: POST `initialize`, then `tools/list`
+    /// to exercise the round-trip. Returns the tool count for the SSB row.
+    pub async fn http_initialize(&self, url: &str) -> Result<u32, McpError> {
+        let client = self.http_client()?;
+        let init = Self::jsonrpc_envelope(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "clientInfo": { "name": "elai-dashboard", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": {}
+            }),
+            1,
+        );
+        let _ = Self::post_jsonrpc(&client, url, init).await?;
+        let tools = self.http_list_tools(url).await?;
+        u32::try_from(tools.len())
+            .map_err(|_| McpError::InvalidResponse("tool count overflow".into()))
+    }
+
+    /// List tools exposed by the MCP server.
+    pub async fn http_list_tools(&self, url: &str) -> Result<Vec<McpToolSummary>, McpError> {
+        let client = self.http_client()?;
+        let env = Self::jsonrpc_envelope("tools/list", serde_json::json!({}), 2);
+        let result = Self::post_jsonrpc(&client, url, env).await?;
+
+        let tools_val = result
+            .get("tools")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(vec![]));
+        let arr = tools_val
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(arr.len());
+        for t in arr {
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let description = t
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            if name.is_empty() {
+                continue;
+            }
+            out.push(McpToolSummary { name, description });
+        }
+        Ok(out)
+    }
+
+    /// Call a tool on the MCP server. Rejects deny-listed names BEFORE any
+    /// network round-trip. Returns the raw JSON result passed back through
+    /// `sanitize_result` for prompt-injection defence.
+    pub async fn http_call_tool(
+        &self,
+        url: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<McpCallResult, McpError> {
+        if Self::is_deny_listed(tool_name) {
+            return Err(McpError::SanitizationFailed(format!(
+                "tool '{tool_name}' is in the security deny list"
+            )));
+        }
+
+        let client = self.http_client()?;
+        let env = Self::jsonrpc_envelope(
+            "tools/call",
+            serde_json::json!({ "name": tool_name, "arguments": args }),
+            3,
+        );
+        let result = Self::post_jsonrpc(&client, url, env).await?;
+
+        let sanitized = self.sanitize_result(&result)?;
+        let is_error = sanitized
+            .get("isError")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(McpCallResult {
+            tool_name: tool_name.to_owned(),
+            content: sanitized,
+            is_error,
+        })
     }
 }
 

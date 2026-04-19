@@ -29,7 +29,11 @@ pub use ipc_hooks::{
 };
 
 #[cfg(feature = "mcp")]
-pub use mcp_bridge::{McpBridge, McpConnection, McpError, McpTransport, McpToolSpec, DefaultMcpBridge};
+pub use mcp_bridge::{
+    McpBridge, McpConnection, McpError, McpTransport, McpToolSpec, DefaultMcpBridge,
+    McpToolSummary, McpCallResult, DEFAULT_MCP_SERVER_URL, ELAI_ENABLE_MCP_ENV,
+    ELAI_MCP_SERVER_URL_ENV, MCP_TOOL_DENY_LIST,
+};
 #[cfg(feature = "mcp")]
 pub use mcp_lifecycle::{HeartbeatMonitor, McpConnectionManager, RetryPolicy};
 

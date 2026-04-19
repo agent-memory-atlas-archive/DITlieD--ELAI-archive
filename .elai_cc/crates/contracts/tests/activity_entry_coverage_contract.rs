@@ -102,6 +102,10 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     // Batch-ful-c — A-8 freshness steering vector lifecycle.
     SsbActionType::SteeringComputed,
     SsbActionType::SteeringComputeFailed,
+    // Batch-ful-d — external MCP bridge lifecycle + per-call rows.
+    SsbActionType::McpServerConnected,
+    SsbActionType::McpToolCalled,
+    SsbActionType::McpServerDisconnected,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -351,9 +355,11 @@ fn contract_variant_count_matches_enum_doc() {
     // intervention_resolved) bumping the floor to 64. Batch-ful-a: +1
     // variant (dkg_querier_swapped) bumping the floor to 65. Batch-ful-c
     // (A-8): +2 variants (steering_computed, steering_compute_failed)
-    // bumping the floor to 67.
+    // bumping the floor to 67. Batch-ful-d (phase-3J S9): +3 variants
+    // (mcp_server_connected, mcp_tool_called, mcp_server_disconnected)
+    // bumping the floor to 70.
     assert!(
-        ALL_VARIANTS.len() >= 67,
-        "ALL_VARIANTS shrank below 67 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 70,
+        "ALL_VARIANTS shrank below 70 — review SsbActionType enum"
     );
 }
