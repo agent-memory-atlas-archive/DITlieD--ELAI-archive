@@ -171,6 +171,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         },
     );
 
@@ -259,6 +260,7 @@ async fn web_research_task_without_runner_emits_finding() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         },
     );
 
@@ -352,6 +354,7 @@ async fn web_research_runner_invoked_once_per_task() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         },
     );
 

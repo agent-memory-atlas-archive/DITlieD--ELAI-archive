@@ -134,6 +134,7 @@ async fn contract_task_runner_accepts_llm_provider() {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         },
     );
 

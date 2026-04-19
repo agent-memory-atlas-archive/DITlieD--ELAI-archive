@@ -23,7 +23,7 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         'tool_dispatch', 'validation_tier', 'failure_classified',
         'git_commit', 'daira_trace',
         'system_probe', 'feasibility_report', 'novel_step_detected', 'stub_run',
-        'gate_decision', 'task_split', 'escalation_fired', 'mode_changed'
+        'gate_decision', 'task_split', 'escalation_fired', 'mode_changed',
+        'proposal_generated', 'proposal_applied', 'proposal_rejected',
+        'msi_update', 'config_archived'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -200,6 +202,21 @@ pub enum SsbActionType {
     /// Batch 3B (Phase 4G): gate-mode transition (Interactive ↔ Autonomous).
     /// Carries a [`ModeChangedPayload`].
     ModeChanged,
+    /// Batch 3C (Phase 4H) — Layer 1A proposal generated. Carries a
+    /// [`ProposalGeneratedPayload`].
+    ProposalGenerated,
+    /// Batch 3C (Phase 4H) — Layer 1A proposal applied. Carries a
+    /// [`ProposalAppliedPayload`].
+    ProposalApplied,
+    /// Batch 3C (Phase 4H) — Layer 1A proposal rejected. Carries a
+    /// [`ProposalRejectedPayload`].
+    ProposalRejected,
+    /// Batch 3C (Phase 4H) — per-apply MSI update. Carries a
+    /// [`MsiUpdatePayload`].
+    MsiUpdate,
+    /// Batch 3C (Phase 4H) — archive capping event. Carries a
+    /// [`ConfigArchivedPayload`].
+    ConfigArchived,
 }
 
 impl SsbActionType {
@@ -259,6 +276,11 @@ impl SsbActionType {
             Self::TaskSplit => "task_split",
             Self::EscalationFired => "escalation_fired",
             Self::ModeChanged => "mode_changed",
+            Self::ProposalGenerated => "proposal_generated",
+            Self::ProposalApplied => "proposal_applied",
+            Self::ProposalRejected => "proposal_rejected",
+            Self::MsiUpdate => "msi_update",
+            Self::ConfigArchived => "config_archived",
         }
     }
 }
@@ -324,6 +346,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "task_split" => Ok(SsbActionType::TaskSplit),
         "escalation_fired" => Ok(SsbActionType::EscalationFired),
         "mode_changed" => Ok(SsbActionType::ModeChanged),
+        "proposal_generated" => Ok(SsbActionType::ProposalGenerated),
+        "proposal_applied" => Ok(SsbActionType::ProposalApplied),
+        "proposal_rejected" => Ok(SsbActionType::ProposalRejected),
+        "msi_update" => Ok(SsbActionType::MsiUpdate),
+        "config_archived" => Ok(SsbActionType::ConfigArchived),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1072,6 +1099,55 @@ pub struct ModeChangedPayload {
     pub to: String,
 }
 
+/// Batch 3C (Phase 4H) — Layer 1A proposal generated row. Emitted once per
+/// `process_outcome` proposal that passes the FPR + security-sensitive gates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProposalGeneratedPayload {
+    pub proposal_id: String,
+    pub table: String,
+    pub new_row_summary: String,
+    pub fpr_estimate: f32,
+    pub source: String,
+}
+
+/// Batch 3C (Phase 4H) — Layer 1A proposal applied row. `commit_sha` is
+/// `None` when git2 wiring is absent or the commit failed (non-fatal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalAppliedPayload {
+    pub proposal_id: String,
+    pub table: String,
+    pub applied_by: String,
+    pub commit_sha: Option<String>,
+}
+
+/// Batch 3C (Phase 4H) — Layer 1A proposal rejected row. Emitted both at
+/// automatic rejection time (FPR/security) and from the dashboard reject
+/// command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalRejectedPayload {
+    pub proposal_id: String,
+    pub table: String,
+    pub reason: String,
+}
+
+/// Batch 3C (Phase 4H) — MSI update row. Emitted on every apply. `status` is
+/// one of `"IMPROVING"` / `"STABILIZING"` / `"DIVERGING"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MsiUpdatePayload {
+    pub pipeline_mode: String,
+    pub msi_value: f32,
+    pub status: String,
+}
+
+/// Batch 3C (Phase 4H) — config archive cap event. `dropped_id` is
+/// `Some(_)` when the 51st apply bumped an old entry out; `None` otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigArchivedPayload {
+    pub pipeline_mode: String,
+    pub archived_count: u32,
+    pub dropped_id: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1142,6 +1218,12 @@ pub enum SsbPayload {
     TaskSplit(TaskSplitPayload),
     EscalationFired(EscalationFiredPayload),
     ModeChanged(ModeChangedPayload),
+    // Batch 3C (Phase 4H) — Layer 1A.
+    ProposalGenerated(ProposalGeneratedPayload),
+    ProposalApplied(ProposalAppliedPayload),
+    ProposalRejected(ProposalRejectedPayload),
+    MsiUpdate(MsiUpdatePayload),
+    ConfigArchived(ConfigArchivedPayload),
 }
 
 impl SsbPayload {
@@ -1202,6 +1284,11 @@ impl SsbPayload {
             Self::TaskSplit(_) => SsbActionType::TaskSplit,
             Self::EscalationFired(_) => SsbActionType::EscalationFired,
             Self::ModeChanged(_) => SsbActionType::ModeChanged,
+            Self::ProposalGenerated(_) => SsbActionType::ProposalGenerated,
+            Self::ProposalApplied(_) => SsbActionType::ProposalApplied,
+            Self::ProposalRejected(_) => SsbActionType::ProposalRejected,
+            Self::MsiUpdate(_) => SsbActionType::MsiUpdate,
+            Self::ConfigArchived(_) => SsbActionType::ConfigArchived,
         }
     }
 }
@@ -2335,6 +2422,35 @@ mod tests {
             SsbActionType::ModeChanged => SsbPayload::ModeChanged(ModeChangedPayload {
                 from: "interactive".into(),
                 to: "autonomous".into(),
+            }),
+            // Batch 3C (Phase 4H) — Layer 1A.
+            SsbActionType::ProposalGenerated => SsbPayload::ProposalGenerated(ProposalGeneratedPayload {
+                proposal_id: "pp-0000-1".into(),
+                table: "lazy_code_regex".into(),
+                new_row_summary: "todo!".into(),
+                fpr_estimate: 0.0,
+                source: "auto_from_outcome".into(),
+            }),
+            SsbActionType::ProposalApplied => SsbPayload::ProposalApplied(ProposalAppliedPayload {
+                proposal_id: "pp-0000-1".into(),
+                table: "lazy_code_regex".into(),
+                applied_by: "layer1a".into(),
+                commit_sha: None,
+            }),
+            SsbActionType::ProposalRejected => SsbPayload::ProposalRejected(ProposalRejectedPayload {
+                proposal_id: "pp-0000-1".into(),
+                table: "lazy_code_regex".into(),
+                reason: "fpr too high".into(),
+            }),
+            SsbActionType::MsiUpdate => SsbPayload::MsiUpdate(MsiUpdatePayload {
+                pipeline_mode: "surgical".into(),
+                msi_value: 0.5,
+                status: "IMPROVING".into(),
+            }),
+            SsbActionType::ConfigArchived => SsbPayload::ConfigArchived(ConfigArchivedPayload {
+                pipeline_mode: "surgical".into(),
+                archived_count: 1,
+                dropped_id: None,
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

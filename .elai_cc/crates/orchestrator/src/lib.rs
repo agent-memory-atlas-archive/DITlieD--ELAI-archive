@@ -74,6 +74,7 @@ pub use session_dag::{
 pub mod mistake_book;
 pub mod output_postprocessor;
 pub mod rule_loader;
+pub mod self_mod_layer1a;
 pub mod ssb;
 pub mod ssb_viewer;
 pub mod system_probe;
@@ -354,6 +355,20 @@ pub use ssb::{
     VramTierDetectedPayload, WebResearchStepPayload, SSB_DB_FILE_NAME, SSB_SESSIONS_SUBDIR,
     // Batch 3B (Phase 4G).
     EscalationFiredPayload, GateDecisionPayload, ModeChangedPayload, TaskSplitPayload,
+    // Batch 3C (Phase 4H) — Layer 1A.
+    ConfigArchivedPayload, MsiUpdatePayload, ProposalAppliedPayload, ProposalGeneratedPayload,
+    ProposalRejectedPayload,
+};
+// Batch 3C (Phase 4H): Self-Modification Layer 1A surface.
+pub use self_mod_layer1a::{
+    acquire_rules_lock, build_pattern_regex, classify_table, estimate_fpr, is_allowed,
+    is_security_sensitive, layer1a_auto_apply_via_env, layer1a_disabled_via_env,
+    status_label as msi_status_label, AllowedConfigKey, AppliedProposalRecord, DataTable,
+    DataTableProposal, DefaultLayer1aProcessor, FailureRecord, FindingRecord, Layer1aError,
+    Layer1aProcessor, MsiStatus, PipelineMode, PipelineOutcome, ProposalOutcome, ProposalSource,
+    RulesDbLockGuard, DEFAULT_ARCHIVE_CAP, DEFAULT_MAX_FPR, DEFAULT_MIN_OCCURRENCES,
+    DEFAULT_MSI_LAMBDA, DEFAULT_MSI_WINDOW, ELAI_DISABLE_LAYER1A_ENV, ELAI_LAYER1A_AUTO_APPLY_ENV,
+    LAYER1A_AGENT_ID, MSI_DIVERGING_THRESHOLD, MSI_IMPROVING_THRESHOLD, RULES_DB_LOCKFILE,
 };
 pub use system_probe::{
     classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,

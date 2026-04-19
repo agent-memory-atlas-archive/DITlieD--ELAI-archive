@@ -1724,6 +1724,16 @@ pub struct TaskRunnerConfig {
     /// Respects [`crate::autonomous_gate::ELAI_DISABLE_AUTONOMOUS_GATE_ENV`]
     /// as an emergency shutoff applied inside `decide` itself.
     pub autonomous_gate: Option<Arc<crate::autonomous_gate::AutonomousGate>>,
+    /// Batch 3C (Phase 4H) — optional Layer 1A self-modification processor.
+    /// When `Some`, `drive_task` assembles a [`crate::PipelineOutcome`] from
+    /// the SSB stream at task completion and invokes `process_outcome` +
+    /// (when `ELAI_LAYER1A_AUTO_APPLY` is set) `apply_proposal` on each
+    /// returned proposal. When `None`, self-modification is fully disabled
+    /// (pre-batch-3c behaviour).
+    ///
+    /// Respects [`crate::ELAI_DISABLE_LAYER1A_ENV`] — the dashboard
+    /// construction site short-circuits to `None` when set.
+    pub layer1a_processor: Option<Arc<dyn crate::Layer1aProcessor>>,
 }
 
 impl TaskRunnerConfig {
@@ -1752,6 +1762,7 @@ impl TaskRunnerConfig {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         }
     }
 }
@@ -1821,6 +1832,9 @@ struct ResolvedConfig {
     /// Batch 3B (Phase 4G): optional autonomous gate (see
     /// `TaskRunnerConfig::autonomous_gate`).
     autonomous_gate: Option<Arc<crate::autonomous_gate::AutonomousGate>>,
+    /// Batch 3C (Phase 4H): optional Layer 1A processor (see
+    /// `TaskRunnerConfig::layer1a_processor`).
+    layer1a_processor: Option<Arc<dyn crate::Layer1aProcessor>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1878,6 +1892,7 @@ impl ResolvedConfig {
             system_probe_emitted: Mutex::new(false),
             feasibility_prober: cfg.feasibility_prober,
             autonomous_gate: cfg.autonomous_gate,
+            layer1a_processor: cfg.layer1a_processor,
         }
     }
 }
@@ -3441,6 +3456,36 @@ async fn drive_task(
         .await
     {
         error!(seq, error = %e, "task_runner: write PhaseComplete failed");
+    }
+    // Batch 3C (Phase 4H): Layer 1A self-modification. Construct a minimal
+    // PipelineOutcome from the just-completed task and hand it to the
+    // processor. For MVP we always report `PipelineMode::Surgical` — the
+    // concept-decomposition path below this layer is surgical by default; a
+    // future batch can flip to Greenfield based on scaffold flags.
+    if let Some(processor) = resolved.layer1a_processor.as_ref() {
+        let all_passed = baby_step_outcomes.iter().all(|(_, p)| *p);
+        let outcome = crate::PipelineOutcome {
+            task_id: format!("seq-{seq}"),
+            success: all_passed,
+            failures: Vec::new(),
+            findings: Vec::new(),
+            pipeline_mode: crate::PipelineMode::Surgical,
+            elapsed_ms: 0,
+        };
+        let proposals = processor.process_outcome(&outcome).await;
+        let auto_apply = crate::layer1a_auto_apply_via_env();
+        for proposal in &proposals {
+            if auto_apply {
+                if let Err(e) = processor.apply_proposal(proposal).await {
+                    tracing::warn!(
+                        seq,
+                        proposal = %proposal.proposal_id,
+                        error = %e,
+                        "layer1a auto-apply failed",
+                    );
+                }
+            }
+        }
     }
     info!(
         seq,
@@ -5598,6 +5643,7 @@ mod tests {
                 system_prober: None,
                 feasibility_prober: None,
                 autonomous_gate: None,
+                layer1a_processor: None,
             },
         );
 
@@ -5709,6 +5755,7 @@ mod tests {
                 system_prober: None,
                 feasibility_prober: None,
                 autonomous_gate: None,
+                layer1a_processor: None,
             },
         );
 
@@ -5897,6 +5944,7 @@ mod tests {
                 system_prober: None,
                 feasibility_prober: None,
                 autonomous_gate: None,
+                layer1a_processor: None,
             },
         );
 
@@ -6645,6 +6693,7 @@ mod tests {
             system_prober: None,
             feasibility_prober: None,
             autonomous_gate: None,
+            layer1a_processor: None,
         })
     }
 

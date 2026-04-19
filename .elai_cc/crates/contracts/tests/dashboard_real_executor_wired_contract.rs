@@ -115,6 +115,7 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         system_prober: None,
         feasibility_prober: None,
         autonomous_gate: None,
+        layer1a_processor: None,
     };
 
     assert!(
@@ -159,6 +160,7 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         system_prober: None,
         feasibility_prober: None,
         autonomous_gate: None,
+        layer1a_processor: None,
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);
