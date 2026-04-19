@@ -369,6 +369,8 @@ pub use ssb::{
     ProfileSelectedPayload, TelescopeCollapsePayload,
     // Batch-fu — cross-cutting follow-up wiring.
     ConstraintsInjectedPayload, InterventionResolvedPayload,
+    // Batch-ful-a — DkgQuerierAdapter hot-swap.
+    DkgQuerierSwappedPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{

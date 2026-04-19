@@ -138,6 +138,7 @@ async fn contract_task_runner_accepts_llm_provider() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 

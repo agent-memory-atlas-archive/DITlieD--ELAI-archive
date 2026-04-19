@@ -96,8 +96,8 @@ use crate::research_tree::{
     DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
-    DkgReadyPayload, FindingPayload, IndexingProgressPayload, PhaseCompletePayload,
-    PreviewAvailablePayload, ProviderSignalsPayload, ReasoningTracePayload,
+    DkgQuerierSwappedPayload, DkgReadyPayload, FindingPayload, IndexingProgressPayload,
+    PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload, ReasoningTracePayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload, SsbReader,
     TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload, WebResearchStepPayload,
 };
@@ -1788,6 +1788,20 @@ pub struct TaskRunnerConfig {
     /// Respects `ELAI_DISABLE_IRREVERSIBLE_CLASSIFIER` as an emergency shutoff
     /// applied by the dashboard construction site.
     pub irreversible_classifier: Option<Arc<dyn crate::IrreversibleActionClassifier>>,
+    /// Batch-ful-a (FUL-A.1) — shared RwLock handle over the rule engine's
+    /// DkgQuerier trait object. When `Some`, `drive_task` attempts to build
+    /// a real `DkgQuerierAdapter` pointing at the freshly-built DKG database
+    /// and swap it into this slot after `IndexingService::run_full_index`
+    /// succeeds for the first time on the current project. When `None`, no
+    /// swap is performed (pre-ful-a behaviour: rule engine sticks with whatever
+    /// querier was plugged at construction).
+    ///
+    /// The dashboard constructs this handle from the same `Arc<RwLock<...>>`
+    /// it threads into `HotSwappableDkgQuerier` so the rule engine and the
+    /// post-index hook share a single trait object.
+    pub dkg_querier_swap: Option<
+        Arc<std::sync::RwLock<Box<dyn elai_rules::predicate::DkgQuerier + Send + Sync>>>,
+    >,
 }
 
 impl TaskRunnerConfig {
@@ -1820,6 +1834,7 @@ impl TaskRunnerConfig {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         }
     }
 }
@@ -1905,6 +1920,17 @@ struct ResolvedConfig {
     /// allocated during `ResolvedConfig::from` so `invoke_telescope` can record
     /// aggregate reductions without additional config plumbing.
     telescope_stats: Arc<crate::TelescopeStats>,
+    /// Batch-ful-a (FUL-A.1): optional shared RwLock over the rule engine's
+    /// DkgQuerier (see `TaskRunnerConfig::dkg_querier_swap`).
+    dkg_querier_swap: Option<
+        Arc<std::sync::RwLock<Box<dyn elai_rules::predicate::DkgQuerier + Send + Sync>>>,
+    >,
+    /// Batch-ful-a: per-project set of `project_id`s for which the
+    /// DkgQuerierAdapter has already been hot-swapped in this runner
+    /// lifetime. Prevents re-swap on a subsequent task for the same project
+    /// and pairs the contract with `SsbActionType::DkgQuerierSwapped` being
+    /// emitted exactly once per project.
+    dkg_querier_swapped_projects: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1967,6 +1993,8 @@ impl ResolvedConfig {
             reflection_client: cfg.reflection_client,
             irreversible_classifier: cfg.irreversible_classifier,
             telescope_stats: Arc::new(crate::TelescopeStats::new()),
+            dkg_querier_swap: cfg.dkg_querier_swap,
+            dkg_querier_swapped_projects: Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
@@ -2530,6 +2558,113 @@ async fn emit_indexing_progress(
     }
 }
 
+/// Batch-ful-a helper — emit the one-shot `DkgQuerierSwapped` SSB row.
+///
+/// Called from `maybe_build_project_index` success branch immediately after
+/// `emit_dkg_ready` when the caller has plumbed a `dkg_querier_swap` RwLock
+/// handle AND the DKG db path is openable by `DkgQuerierAdapter::new`. The
+/// `from` / `to` tags surface as "DKG querier upgraded · empty → adapter"
+/// on the dashboard.
+async fn emit_dkg_querier_swapped(
+    writer: &Arc<Ssb>,
+    project_id: &str,
+    from: &str,
+    to: &str,
+) {
+    let payload = SsbPayload::DkgQuerierSwapped(DkgQuerierSwappedPayload {
+        project_id: project_id.to_owned(),
+        from: from.to_owned(),
+        to: to.to_owned(),
+    });
+    if let Err(e) = writer
+        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        error!(
+            project_id = %project_id,
+            error = %e,
+            "task_runner: write DkgQuerierSwapped failed",
+        );
+    }
+}
+
+/// Batch-ful-a helper — attempt to hot-swap `EmptyDkgQuerier` for
+/// `DkgQuerierAdapter` on the rule engine's shared RwLock slot.
+///
+/// Returns `Ok(true)` when a swap actually occurred, `Ok(false)` when no slot
+/// was plumbed / project already swapped / adapter construction failed.
+/// Never panics — lock poisoning surfaces as a warn-logged skip.
+async fn maybe_swap_dkg_querier(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    project_id: &str,
+    dkg_db_path: &std::path::Path,
+) -> bool {
+    let Some(slot) = resolved.dkg_querier_swap.as_ref() else {
+        return false;
+    };
+
+    // Fast-path idempotency: one swap per project per runner lifetime.
+    if let Ok(mut done) = resolved.dkg_querier_swapped_projects.lock() {
+        if done.contains(project_id) {
+            return false;
+        }
+        done.insert(project_id.to_owned());
+    } else {
+        // Poisoned sync mutex — nothing we can safely do. Log + skip.
+        tracing::warn!(
+            project_id = %project_id,
+            "task_runner: dkg_querier_swapped_projects mutex poisoned — skipping swap",
+        );
+        return false;
+    }
+
+    // Build the adapter from the freshly-produced DKG db.
+    let adapter = match elai_knowledge::DkgQuerierAdapter::new(dkg_db_path) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(
+                project_id = %project_id,
+                dkg_db = %dkg_db_path.display(),
+                error = %e,
+                "task_runner: DkgQuerierAdapter construction failed — keeping previous querier",
+            );
+            return false;
+        }
+    };
+
+    // Scope the write guard tightly so it drops BEFORE any await — the
+    // std::sync::RwLockWriteGuard is !Send, so holding it across
+    // `emit_dkg_querier_swapped(...).await` fails the Send bound on
+    // tokio::spawn. The inner block returns a bool telling the post-drop
+    // path whether to emit the SSB row + log.
+    let swapped: bool = {
+        match slot.write() {
+            Ok(mut g) => {
+                *g = Box::new(adapter)
+                    as Box<dyn elai_rules::predicate::DkgQuerier + Send + Sync>;
+                true
+            }
+            Err(_) => {
+                tracing::warn!(
+                    project_id = %project_id,
+                    "task_runner: dkg_querier_swap RwLock poisoned — keeping previous querier",
+                );
+                false
+            }
+        }
+    };
+
+    if swapped {
+        emit_dkg_querier_swapped(writer, project_id, "empty", "adapter").await;
+        tracing::info!(
+            project_id = %project_id,
+            "task_runner: DkgQuerierAdapter hot-swapped into rule engine",
+        );
+    }
+    swapped
+}
+
 /// Batch 1C helper — emit the one-shot `DkgReady` SSB row.
 async fn emit_dkg_ready(
     writer: &Arc<Ssb>,
@@ -2617,6 +2752,14 @@ async fn maybe_build_project_index(
             &format!("project_id={project_id} indexes_present=true skipped_rebuild=true"),
         )
         .await;
+
+        // Batch-ful-a: even when the DKG db was already on disk (prior
+        // session / stale cache), the dashboard-plugged querier may still
+        // be `EmptyDkgQuerier` if the dashboard booted before the db
+        // existed. Attempt the swap once.
+        let dkg_db_path = guard.indexes_dir().join("dkg.db");
+        drop(guard);
+        maybe_swap_dkg_querier(writer, resolved, project_id, &dkg_db_path).await;
         return;
     }
 
@@ -2660,6 +2803,14 @@ async fn maybe_build_project_index(
             // engine does not yet expose per-language stats; adding that is
             // A-35 scope (multi-lang DKG grammars).
             emit_dkg_ready(writer, project_id, node_count, edge_count, Vec::new()).await;
+
+            // Batch-ful-a (FUL-A.1): the DKG db is fresh — if the dashboard
+            // started this runner with `EmptyDkgQuerier` plugged into the
+            // rule engine and handed us the shared RwLock via
+            // `dkg_querier_swap`, upgrade it in-place so the NEXT PRE_GATE
+            // evaluation on any baby step sees live reachability results.
+            let dkg_db_path = guard.indexes_dir().join("dkg.db");
+            maybe_swap_dkg_querier(writer, resolved, project_id, &dkg_db_path).await;
 
             // Legacy Finding (pre-Batch-1C dashboards filter on this).
             if let Ok(mut cache) = resolved.indexed_projects.lock() {
@@ -6209,6 +6360,7 @@ mod tests {
                 dispatch_context_profile: None,
                 reflection_client: None,
                 irreversible_classifier: None,
+                dkg_querier_swap: None,
             },
         );
 
@@ -6324,6 +6476,7 @@ mod tests {
                 dispatch_context_profile: None,
                 reflection_client: None,
                 irreversible_classifier: None,
+                dkg_querier_swap: None,
             },
         );
 
@@ -6516,6 +6669,7 @@ mod tests {
                 dispatch_context_profile: None,
                 reflection_client: None,
                 irreversible_classifier: None,
+                dkg_querier_swap: None,
             },
         );
 
@@ -7268,6 +7422,7 @@ mod tests {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         })
     }
 

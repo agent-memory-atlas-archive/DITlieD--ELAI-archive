@@ -535,7 +535,13 @@ impl SyntaxCommandRunner for LanguageSyntaxRunner {
 /// `IntegrationSkipped { level, reason }` snippet so the dashboard shows a
 /// "skipped" validation tier row instead of a hard fail.
 pub struct CommandIntegrationRunner {
-    language: String,
+    /// Languages the runner considers at each level, in priority order.
+    /// Polyglot projects enumerate each primary + secondary language here so
+    /// every tier executes ALL detected language commands and first-fail
+    /// short-circuits. A single-language project keeps the one-element Vec.
+    /// An empty input is rejected at construction and collapsed to
+    /// `["rust"]` so callers cannot accidentally disable the runner.
+    languages: Vec<String>,
     /// Optional crate slug used when the Step / Phase command needs `-p <crate>`.
     /// Empty string ⇒ fall back to `cargo test` without `-p`.
     crate_slug: String,
@@ -549,9 +555,28 @@ pub const PHASE_TIMEOUT_S: u64 = 60;
 pub const CONCEPT_TIMEOUT_S: u64 = 120;
 
 impl CommandIntegrationRunner {
+    /// Single-language convenience constructor. Preserved as-is from
+    /// Batch 4A so existing call sites keep compiling without changes.
     pub fn new(language: impl Into<String>) -> Self {
+        Self::new_multi(vec![language.into()])
+    }
+
+    /// Batch-ful-a (FUL-A.2): polyglot-aware constructor. Takes the
+    /// languages in priority order (primary first, secondary tail). An
+    /// empty input collapses to `["rust"]` so existing Rust-centric
+    /// callers continue to work when the project profile hasn't
+    /// been detected yet (greenfield scaffolds before a language is picked).
+    pub fn new_multi(languages: Vec<String>) -> Self {
+        let mut normalised: Vec<String> = languages
+            .into_iter()
+            .map(|l| l.to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if normalised.is_empty() {
+            normalised.push("rust".to_string());
+        }
         Self {
-            language: language.into().to_lowercase(),
+            languages: normalised,
             crate_slug: String::new(),
         }
     }
@@ -561,9 +586,19 @@ impl CommandIntegrationRunner {
         self
     }
 
-    /// Borrow the resolved language label (lower-case).
+    /// Borrow the primary language label (lower-case). Kept for backward
+    /// compatibility with Batch-4A callers; prefer [`languages`] for the
+    /// full list.
     pub fn language(&self) -> &str {
-        &self.language
+        self.languages
+            .first()
+            .map(String::as_str)
+            .unwrap_or("rust")
+    }
+
+    /// Batch-ful-a: all configured languages in priority order.
+    pub fn languages(&self) -> &[String] {
+        &self.languages
     }
 
     /// Canonical level timeout. Used by the tiered validator to pin the
@@ -578,12 +613,15 @@ impl CommandIntegrationRunner {
         }
     }
 
-    /// Resolve the language+level pair to a (`program`, `args`) tuple.
-    /// Returns `None` when the pair has no canonical command — the caller
-    /// translates that to an `IntegrationSkipped` outcome.
-    pub fn command_for(&self, level_label: &str) -> Option<(String, Vec<String>)> {
-        let crate_slug = self.crate_slug.as_str();
-        match (self.language.as_str(), level_label) {
+    /// Static table mapping (language, level) → (program, args). Extracted
+    /// from the legacy `command_for` body so [`commands_for`] can reuse it
+    /// per-language without duplicating the match arms.
+    fn command_for_language(
+        language: &str,
+        level_label: &str,
+        crate_slug: &str,
+    ) -> Option<(String, Vec<String>)> {
+        match (language, level_label) {
             ("rust", "baby") => Some((
                 "cargo".to_owned(),
                 vec!["check".to_owned(), "--message-format=json".to_owned()],
@@ -627,6 +665,29 @@ impl CommandIntegrationRunner {
             _ => None,
         }
     }
+
+    /// Resolve the primary language+level pair to a (`program`, `args`)
+    /// tuple. Preserved for backward compatibility with Batch-4A contract
+    /// tests; new callers should prefer [`commands_for`] which returns the
+    /// polyglot list.
+    pub fn command_for(&self, level_label: &str) -> Option<(String, Vec<String>)> {
+        Self::command_for_language(self.language(), level_label, &self.crate_slug)
+    }
+
+    /// Batch-ful-a (FUL-A.2): resolve ALL configured languages to
+    /// `(language, program, args)` triples. Unsupported
+    /// (language, level) pairs are filtered out; an empty result means
+    /// every language was skipped — the caller surfaces that as
+    /// `IntegrationSkipped`.
+    pub fn commands_for(&self, level_label: &str) -> Vec<(String, String, Vec<String>)> {
+        self.languages
+            .iter()
+            .filter_map(|lang| {
+                Self::command_for_language(lang, level_label, &self.crate_slug)
+                    .map(|(program, args)| (lang.clone(), program, args))
+            })
+            .collect()
+    }
 }
 
 impl IntegrationCommandRunner for CommandIntegrationRunner {
@@ -636,61 +697,81 @@ impl IntegrationCommandRunner for CommandIntegrationRunner {
         project_dir: &'a Path,
     ) -> Pin<Box<dyn Future<Output = IntegrationRunOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let Some((program, args)) = self.command_for(level_label) else {
-                // IntegrationSkipped path — `passed=true` so the tiered
-                // validator does NOT short-circuit subsequent tiers on a
-                // missing-command signal. The reason lives in the snippet so
-                // the dashboard can render "skipped" instead of "fail".
+            // Batch-ful-a: polyglot — run every configured language's
+            // command for this level and short-circuit on first fail. All
+            // commands must succeed for the tier to pass. When every
+            // language-level pair is skipped (no canonical command for any
+            // language), return IntegrationSkipped so the tiered validator
+            // does NOT short-circuit subsequent tiers.
+            let commands = self.commands_for(level_label);
+            if commands.is_empty() {
+                let lang_list = if self.languages.is_empty() {
+                    "none".to_string()
+                } else {
+                    self.languages.join(",")
+                };
                 return IntegrationRunOutcome {
                     passed: true,
                     rules_fired: 0,
                     stderr_snippet: Some(format!(
                         "IntegrationSkipped {{ level: \"{}\", reason: \"no_test_command_for_language({})\" }}",
-                        level_label, self.language
+                        level_label, lang_list
                     )),
                 };
-            };
+            }
+
             let timeout = Self::timeout_for_level(level_label);
-            let fut = tokio::process::Command::new(&program)
-                .args(&args)
-                .current_dir(project_dir)
-                .output();
-            match tokio::time::timeout(timeout, fut).await {
-                Err(_) => IntegrationRunOutcome {
-                    passed: false,
-                    rules_fired: 0,
-                    stderr_snippet: Some(format!(
-                        "integration timeout after {}s at level='{}' (lang={})",
-                        timeout.as_secs(),
-                        level_label,
-                        self.language
-                    )),
-                },
-                Ok(Err(e)) => IntegrationRunOutcome {
-                    passed: false,
-                    rules_fired: 0,
-                    stderr_snippet: Some(format!(
-                        "integration spawn failed ({}): {}",
-                        program, e,
-                    )),
-                },
-                Ok(Ok(out)) => {
-                    if out.status.success() {
-                        IntegrationRunOutcome {
-                            passed: true,
-                            rules_fired: 1,
-                            stderr_snippet: None,
-                        }
-                    } else {
-                        let stderr = String::from_utf8_lossy(&out.stderr);
-                        let snippet: String = stderr.chars().take(256).collect();
-                        IntegrationRunOutcome {
+            let mut ran: u32 = 0;
+            for (lang, program, args) in &commands {
+                ran = ran.saturating_add(1);
+                let fut = tokio::process::Command::new(program)
+                    .args(args)
+                    .current_dir(project_dir)
+                    .output();
+                match tokio::time::timeout(timeout, fut).await {
+                    Err(_) => {
+                        return IntegrationRunOutcome {
                             passed: false,
-                            rules_fired: 1,
-                            stderr_snippet: Some(snippet),
+                            rules_fired: ran,
+                            stderr_snippet: Some(format!(
+                                "integration timeout after {}s at level='{}' (lang={})",
+                                timeout.as_secs(),
+                                level_label,
+                                lang
+                            )),
+                        };
+                    }
+                    Ok(Err(e)) => {
+                        return IntegrationRunOutcome {
+                            passed: false,
+                            rules_fired: ran,
+                            stderr_snippet: Some(format!(
+                                "integration spawn failed ({} for lang={}): {}",
+                                program, lang, e,
+                            )),
+                        };
+                    }
+                    Ok(Ok(out)) => {
+                        if !out.status.success() {
+                            let stderr = String::from_utf8_lossy(&out.stderr);
+                            let snippet_body: String = stderr.chars().take(240).collect();
+                            return IntegrationRunOutcome {
+                                passed: false,
+                                rules_fired: ran,
+                                stderr_snippet: Some(format!(
+                                    "lang={lang}: {snippet_body}"
+                                )),
+                            };
                         }
+                        // pass — continue to next language
                     }
                 }
+            }
+
+            IntegrationRunOutcome {
+                passed: true,
+                rules_fired: ran,
+                stderr_snippet: None,
             }
         })
     }

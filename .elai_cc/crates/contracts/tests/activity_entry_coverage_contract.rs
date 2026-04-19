@@ -97,6 +97,8 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     // Batch-fu — cross-cutting follow-up wiring.
     SsbActionType::ConstraintsInjected,
     SsbActionType::InterventionResolved,
+    // Batch-ful-a — DkgQuerierAdapter hot-swap signal.
+    SsbActionType::DkgQuerierSwapped,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -343,9 +345,10 @@ fn contract_variant_count_matches_enum_doc() {
     // Batch 4C: +5 variants (profile_selected, fsm_transition,
     // micro_reflection, telescope_collapse, config_warning) bumping the
     // floor to 62. Batch-fu: +2 variants (constraints_injected,
-    // intervention_resolved) bumping the floor to 64.
+    // intervention_resolved) bumping the floor to 64. Batch-ful-a: +1
+    // variant (dkg_querier_swapped) bumping the floor to 65.
     assert!(
-        ALL_VARIANTS.len() >= 64,
-        "ALL_VARIANTS shrank below 64 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 65,
+        "ALL_VARIANTS shrank below 65 — review SsbActionType enum"
     );
 }

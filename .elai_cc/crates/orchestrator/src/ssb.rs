@@ -244,6 +244,13 @@ pub enum SsbActionType {
     /// `InterventionRequest` has been answered by the dashboard via
     /// `respond_to_confirmation`. Carries an [`InterventionResolvedPayload`].
     InterventionResolved,
+    /// Batch-ful-a (FUL-A.1) — live upgrade of the rule engine's DkgQuerier
+    /// after the first successful `IndexingService::run_full_index`. Carries
+    /// a [`DkgQuerierSwappedPayload`]. Emitted once per project per runner
+    /// lifetime, immediately after the structured `IndexingProgress=complete`
+    /// + `DkgReady` rows. Lets the dashboard activity feed render "DKG querier
+    /// upgraded · empty → adapter" without polling the rule engine.
+    DkgQuerierSwapped,
 }
 
 impl SsbActionType {
@@ -315,6 +322,7 @@ impl SsbActionType {
             Self::ConfigWarning => "config_warning",
             Self::ConstraintsInjected => "constraints_injected",
             Self::InterventionResolved => "intervention_resolved",
+            Self::DkgQuerierSwapped => "dkg_querier_swapped",
         }
     }
 }
@@ -392,6 +400,7 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "config_warning" => Ok(SsbActionType::ConfigWarning),
         "constraints_injected" => Ok(SsbActionType::ConstraintsInjected),
         "intervention_resolved" => Ok(SsbActionType::InterventionResolved),
+        "dkg_querier_swapped" => Ok(SsbActionType::DkgQuerierSwapped),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1310,6 +1319,31 @@ pub struct InterventionResolvedPayload {
     pub elapsed_ms: u32,
 }
 
+/// Batch-ful-a (FUL-A.1) — DkgQuerier upgrade event.
+///
+/// Emitted by `task_runner::drive_task` immediately after a fresh build of the
+/// DKG database succeeds (`IndexingProgress=complete` + `DkgReady`). The rule
+/// engine's previously-plugged `EmptyDkgQuerier` is replaced in-place with a
+/// `DkgQuerierAdapter` via the `HotSwappableDkgQuerier` wrapper so every
+/// subsequent rule evaluation sees the live DKG without requiring a dashboard
+/// relaunch. Exactly one row per project per runner lifetime — the dashboard
+/// surfaces this as "DKG querier upgraded · empty → adapter".
+///
+/// `from` / `to` are tags (not full type names) so the wire format remains
+/// small and stable. Current values: `"empty"` (EmptyDkgQuerier) /
+/// `"adapter"` (DkgQuerierAdapter). Additional tags may be added as the
+/// querier hierarchy grows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgQuerierSwappedPayload {
+    /// Project identifier — matches the `project_id` on `TaskSubmittedPayload`.
+    pub project_id: String,
+    /// Short tag for the previous querier implementation (e.g. `"empty"`).
+    pub from: String,
+    /// Short tag for the newly-installed querier implementation (e.g.
+    /// `"adapter"`).
+    pub to: String,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -1395,6 +1429,8 @@ pub enum SsbPayload {
     // Batch-fu — cross-cutting follow-up wiring.
     ConstraintsInjected(ConstraintsInjectedPayload),
     InterventionResolved(InterventionResolvedPayload),
+    // Batch-ful-a — DkgQuerierAdapter hot-swap notification.
+    DkgQuerierSwapped(DkgQuerierSwappedPayload),
 }
 
 impl SsbPayload {
@@ -1467,6 +1503,7 @@ impl SsbPayload {
             Self::ConfigWarning(_) => SsbActionType::ConfigWarning,
             Self::ConstraintsInjected(_) => SsbActionType::ConstraintsInjected,
             Self::InterventionResolved(_) => SsbActionType::InterventionResolved,
+            Self::DkgQuerierSwapped(_) => SsbActionType::DkgQuerierSwapped,
         }
     }
 }
@@ -2675,6 +2712,13 @@ mod tests {
                     intervention_id: "iv-0000-0001".into(),
                     approved: true,
                     elapsed_ms: 250,
+                })
+            }
+            SsbActionType::DkgQuerierSwapped => {
+                SsbPayload::DkgQuerierSwapped(DkgQuerierSwappedPayload {
+                    project_id: "p".into(),
+                    from: "empty".into(),
+                    to: "adapter".into(),
                 })
             }
         };

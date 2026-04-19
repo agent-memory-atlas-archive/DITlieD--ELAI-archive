@@ -90,6 +90,7 @@ fn task_runner_config_accepts_indexing_service_arc() {
         dispatch_context_profile: None,
         reflection_client: None,
         irreversible_classifier: None,
+        dkg_querier_swap: None,
     };
 
     assert!(

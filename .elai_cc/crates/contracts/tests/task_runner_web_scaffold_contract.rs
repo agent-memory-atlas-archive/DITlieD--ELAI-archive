@@ -236,6 +236,7 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 
@@ -326,6 +327,7 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 
@@ -412,6 +414,7 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 

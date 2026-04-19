@@ -175,6 +175,7 @@ async fn web_research_task_emits_web_research_step_rows() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 
@@ -267,6 +268,7 @@ async fn web_research_task_without_runner_emits_finding() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 
@@ -364,6 +366,7 @@ async fn web_research_runner_invoked_once_per_task() {
             dispatch_context_profile: None,
             reflection_client: None,
             irreversible_classifier: None,
+            dkg_querier_swap: None,
         },
     );
 
