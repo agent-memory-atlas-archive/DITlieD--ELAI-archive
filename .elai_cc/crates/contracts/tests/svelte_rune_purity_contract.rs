@@ -142,6 +142,50 @@ fn contract_no_svelte_4_patterns() {
 }
 
 // ---------------------------------------------------------------------------
+// Contract 1b: main.ts bootstrap uses Svelte 5 `mount()` — NOT Svelte 4
+// `new App({ target })`. The class-style constructor throws "App is not a
+// constructor" at runtime in Svelte 5 and leaves `#app` empty. Contract 1
+// only scans .svelte files, so this separate check covers the TS entry point.
+// Grounding: blank-dashboard regression debugged live (2026-04-19); class
+// mount leaked past Contract 1 because main.ts is TypeScript not Svelte.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_main_ts_uses_svelte5_mount() {
+    let root = frontend_src_dir();
+    let main_ts = root.join("main.ts");
+    let body = fs::read_to_string(&main_ts)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", main_ts.display()));
+
+    // Banned: `new App(` or `new \w+\({ target` — Svelte 4 class bootstrap.
+    let banned_patterns = ["new App(", "new App ({", "new App({"];
+    for pat in banned_patterns {
+        assert!(
+            !body.contains(pat),
+            "{} contains banned Svelte-4 pattern `{}` — use Svelte 5 `mount(App, {{ target }})` instead",
+            main_ts.display(),
+            pat
+        );
+    }
+
+    // Required: either `mount(App, ...)` or `hydrate(App, ...)` from svelte.
+    let has_mount = body.contains("mount(App") || body.contains("hydrate(App");
+    assert!(
+        has_mount,
+        "{} must bootstrap via Svelte 5 `mount(App, {{ target }})` (import from 'svelte')",
+        main_ts.display()
+    );
+
+    // Required: the `mount` (or `hydrate`) symbol must be imported from "svelte".
+    let has_import = body.contains("from \"svelte\"") || body.contains("from 'svelte'");
+    assert!(
+        has_import,
+        "{} must import `mount` (or `hydrate`) from \"svelte\"",
+        main_ts.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Contract 2: every script block (lang="ts") uses `$props()` OR is stateless.
 // We assert by counting that the TOTAL appearance of `$props(`, `$state(`,
 // or `$derived(` across all files is greater than zero — i.e. the dashboard
