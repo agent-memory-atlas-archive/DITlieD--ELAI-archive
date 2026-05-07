@@ -78,6 +78,10 @@ pub enum SpiralResult {
     EscalationSignalNeeded {
         message: String,
         spiral_depth: u32,
+        /// Blake3 hex of the repeated step content (for AntiSpiralHit SSB row).
+        step_hash: String,
+        /// Number of consecutive repetitions at escalation time.
+        count: u32,
     },
     HardStop {
         spiral_depth: u32,
@@ -165,9 +169,12 @@ impl<C: ClockProvider> AntiSpiralDetector<C> {
             // the safe checkpoint is one before that.
             let spiral_start = superstep - (state.same_step_count as i64) + 1;
             state.recovery_target_step_index = Some(spiral_start - 1);
+            let hash_hex = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
             return SpiralResult::EscalationSignalNeeded {
                 message: ESCALATION_MESSAGE.to_owned(),
                 spiral_depth: ESCALATION_DEPTH,
+                step_hash: hash_hex,
+                count: state.same_step_count,
             };
         }
 
@@ -248,13 +255,21 @@ mod tests {
         }
         // Step 4: same_step_count becomes 4 which is > SPIRAL_THRESHOLD (3)
         let result = det.record_step(id, "observe", "debug", "checking file X", 3);
-        assert_eq!(
-            result,
+        match &result {
             SpiralResult::EscalationSignalNeeded {
-                message: ESCALATION_MESSAGE.to_owned(),
-                spiral_depth: 1,
+                message,
+                spiral_depth,
+                step_hash,
+                count,
+            } => {
+                assert_eq!(message.as_str(), ESCALATION_MESSAGE);
+                assert_eq!(*spiral_depth, 1);
+                assert_eq!(*count, 4);
+                // step_hash is a 64-char blake3 hex string
+                assert_eq!(step_hash.len(), 64, "expected 64-char hex step_hash");
             }
-        );
+            other => panic!("expected EscalationSignalNeeded, got {:?}", other),
+        }
     }
 
     // TEST-2: 3 different steps -> Clean (no spiral)

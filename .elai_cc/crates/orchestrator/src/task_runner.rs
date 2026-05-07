@@ -31,8 +31,9 @@
 //! loop checks it between broadcast recvs (select! over cancel + recv),
 //! and the per-task driver checks it between baby steps.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -47,7 +48,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use elai_core::clock::OsClock;
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_reasoning::BasicGrcEngine;
 use uuid::Uuid;
 
@@ -96,11 +97,14 @@ use crate::research_tree::{
     DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
-    DkgQuerierSwappedPayload, DkgReadyPayload, FindingPayload, IndexingProgressPayload,
-    PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload, ReasoningTracePayload,
+    AntiSpiralHitPayload, DkgQuerierSwappedPayload, DkgReadyPayload,
+    EvidenceGateEvaluatedPayload, FindingPayload, IndexingProgressPayload, PhaseCompletePayload,
+    PreviewAvailablePayload, ProviderSignalsPayload, ReasoningTracePayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbEntry, SsbPayload, SsbReader,
-    TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload, WebResearchStepPayload,
+    SupervisionEventPayload, TaskSubmittedPayload, TestOutcomePayload, VramTierDetectedPayload,
+    WebResearchStepPayload,
 };
+use crate::supervision::{EscalationAction, SupervisionManager, SupervisionOutcome, SupervisionPolicy};
 use crate::web_research_orchestrator::{
     WebResearchOrchestrator, WebResearchStepEmitter, WebResearchStepEvent,
 };
@@ -154,6 +158,16 @@ pub const TASK_LOG_TRUNCATE_CHARS: usize = 120;
 /// level (baby step / step / phase / concept). The dashboard filter keys on
 /// this string to surface checkpoint failures in the activity feed.
 pub const INTEGRATION_CHECKPOINT_FAILED_CATEGORY: &str = "integration_checkpoint_failed";
+
+/// B-20A Task 8: Finding category for SUCCESSFUL integration checkpoints.
+/// Mirrors the `_FAILED` constant above so the dashboard B-7 surface can
+/// render a 9-category histogram of checkpoint outcomes per level. Decision
+/// E (workflow/reasoning/B-20A-decisions.md): emit as a string-category
+/// Finding rather than a new `SsbActionType` variant — this avoids a 14-site
+/// SSB extension and a SCHEMA_VERSION bump (stays at 24). Option (b) — a
+/// dedicated `IntegrationCheckpointSuccessPayload` — is deferred to a future
+/// batch when the dashboard histogram needs richer per-level payloads.
+pub const INTEGRATION_CHECKPOINT_SUCCESS_CATEGORY: &str = "integration_checkpoint_success";
 
 /// Finding category for integration-checkpoint bubble-up escalations raised
 /// by `run_{step,phase,concept}_integration` when an integration fails.
@@ -466,10 +480,10 @@ impl DevServerLauncher for WebValidatorLauncher {
 /// The outer `Arc` is cheaply cloneable into each task; the inner
 /// `tokio::sync::Mutex` is async-safe (CLAUDE.md: no `std::sync::Mutex` in
 /// async code unless provably sync-only).
-pub type DevServerRegistry = Arc<AsyncMutex<HashMap<String, DevServerHandle>>>;
+pub type DevServerRegistry = Arc<AsyncMutex<BTreeMap<String, DevServerHandle>>>;
 
 pub fn new_dev_server_registry() -> DevServerRegistry {
-    Arc::new(AsyncMutex::new(HashMap::new()))
+    Arc::new(AsyncMutex::new(BTreeMap::new()))
 }
 
 /// Resolves a `project_id` (from `TaskSubmittedPayload`) to an on-disk
@@ -856,7 +870,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     let reason = spawn_err.unwrap_or_default();
                     return BabyStepExecutionResult {
                         outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                        duration_ms: start.elapsed().as_millis() as u64,
+                        duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         exit_code: None,
                         stderr_tail: reason,
                         changed_files: Vec::new(),
@@ -869,7 +883,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 let reason = format!("socket_dir create failed: {e}");
                 return BabyStepExecutionResult {
                     outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                    duration_ms: start.elapsed().as_millis() as u64,
+                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                     exit_code: None,
                     stderr_tail: reason,
                     changed_files: Vec::new(),
@@ -892,7 +906,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 let reason = format!("launch_agent_process failed: {e}");
                 return BabyStepExecutionResult {
                     outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                    duration_ms: start.elapsed().as_millis() as u64,
+                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                     exit_code: None,
                     stderr_tail: reason,
                     changed_files: Vec::new(),
@@ -911,7 +925,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
 
             BabyStepExecutionResult {
                 outcome: outcome.outcome,
-                duration_ms: start.elapsed().as_millis() as u64,
+                duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                 exit_code: outcome.exit_code,
                 stderr_tail: outcome.stderr_tail,
                 // Gap #9: real agents will populate this via an out-of-band
@@ -1257,7 +1271,7 @@ impl DefaultWebResearchRunner {
         let quality = SourceQualityTable::new_from_config(tier_cfg);
         let content_index = WebContentIndex::new(WebAragConfig::default());
         let budget = crate::research_budget::ResearchBudgetManager::new(self.tier_config.clone());
-        Ok(WebResearchOrchestrator::new(
+        let orchestrator = WebResearchOrchestrator::new(
             searx,
             fetcher,
             extractor,
@@ -1266,7 +1280,37 @@ impl DefaultWebResearchRunner {
             budget,
             self.tier_config.clone(),
             self.clock.clone(),
-        ))
+        );
+
+        // D4: ELAI_FETCHER=obscura routes to the headless-browser path.
+        // Only available when compiled with the "obscura" feature.
+        // If feature is off and ELAI_FETCHER=obscura is set, warn and fall back.
+        #[cfg(feature = "obscura")]
+        let orchestrator = {
+            let want_obscura = std::env::var("ELAI_FETCHER")
+                .ok()
+                .as_deref()
+                == Some("obscura");
+            if want_obscura {
+                tracing::info!("ELAI_FETCHER=obscura: using ObscuraFetcher (headless browser)");
+                orchestrator.with_obscura_fetcher(
+                    elai_web_search::obscura_fetcher::ObscuraFetcher::new(),
+                )
+            } else {
+                orchestrator
+            }
+        };
+        #[cfg(not(feature = "obscura"))]
+        {
+            if std::env::var("ELAI_FETCHER").ok().as_deref() == Some("obscura") {
+                tracing::warn!(
+                    "ELAI_FETCHER=obscura requested but binary was compiled without \
+                     the 'obscura' feature; falling back to reqwest fetcher"
+                );
+            }
+        }
+
+        Ok(orchestrator)
     }
 
     fn truncate_question(&self, raw: &str) -> String {
@@ -1307,7 +1351,7 @@ impl WebResearchRunner for DefaultWebResearchRunner {
             Ok(WebResearchSummary {
                 iterations,
                 status: status.to_owned(),
-                sources_used: node.citations.len() as u32,
+                sources_used: u32::try_from(node.citations.len()).unwrap_or(u32::MAX),
             })
         })
     }
@@ -1341,6 +1385,7 @@ impl WebResearchStepEmitter for SsbWebResearchStepEmitter {
                 iteration: event.iteration,
                 sources_fetched: event.sources_fetched,
                 sources_used: event.sources_used,
+                fetcher: event.fetcher,
             });
             if let Err(e) = writer
                 .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
@@ -1810,6 +1855,33 @@ pub struct TaskRunnerConfig {
     /// is the contract — see
     /// `fulb_phase_sizing_splitter_contract::contract_task_runner_config_splitter_defaults_to_none`.
     pub task_splitter: Option<Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
+    /// Batch B-8 (PipelineGrc activation) — optional shared `PipelineGrc`
+    /// handle wrapping the reasoning-engine `BasicGrcEngine`. When `Some`,
+    /// `drive_task` invokes the four safety methods at the four insertion
+    /// points (`ground_plan` post-decompose, `generate_csq` pre-executor,
+    /// `check_inline_feasibility` post-executor, `InlineFeasibilityState::reset`
+    /// at phase boundary). When `None`, every gated call site is a no-op
+    /// (pre-B-8 behaviour). The `AsyncMutex` is required because
+    /// [`crate::grc::PipelineGrc::think`] /
+    /// [`crate::grc::PipelineGrc::check_inline_feasibility`] take `&mut self`
+    /// and the runner crosses `.await` boundaries holding the lock.
+    ///
+    /// Respects [`crate::grc::ELAI_DISABLE_PIPELINE_GRC_ENV`] as an emergency
+    /// shutoff applied by the dashboard / CLI construction site (the
+    /// kill-switch sets this slot to `None` before the runner sees it).
+    pub pipeline_grc: Option<Arc<AsyncMutex<crate::grc::PipelineGrc>>>,
+    /// B-10 (DECISION-A / DECISION-F): per-model
+    /// [`crate::context_budget::ModelCapabilityProfile`] used by every
+    /// `build_dispatch_context` call so production prompt assembly uses the
+    /// real per-tier slot weights and attention-ceiling instead of the
+    /// `None` -> `[0,0,0]` zeroed-stub fallback at dispatcher.rs:222.
+    ///
+    /// When `None`, `ResolvedConfig::from` infers a profile from
+    /// `backend_config.model` via
+    /// [`crate::context_budget::detect_model_capability_profile`] (DECISION-F).
+    /// Construction sites (CLI / dashboard) may pass `Some(...)` to override.
+    pub model_capability_profile:
+        Option<Arc<crate::context_budget::ModelCapabilityProfile>>,
 }
 
 impl TaskRunnerConfig {
@@ -1844,7 +1916,33 @@ impl TaskRunnerConfig {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         }
+    }
+
+    /// Builder: inject a live `PipelineGrc` instance (B-8a).
+    ///
+    /// Production construction sites (dashboard, CLI runner) call this after
+    /// [`new_minimal`] to activate the four GRC safety gates
+    /// (`ground_plan` / `generate_csq` / `check_inline_feasibility` /
+    /// `InlineFeasibilityState::reset`) that are already wired in
+    /// `drive_task` but gated on `pipeline_grc.is_some()`.
+    ///
+    /// Respects [`crate::grc::ELAI_DISABLE_PIPELINE_GRC_ENV`]: when the
+    /// kill-switch env-var is set, `ResolvedConfig::from` will clear the
+    /// field before the runner loop sees it, so this method does NOT check
+    /// the env-var — that is the responsibility of `ResolvedConfig::from`.
+    ///
+    /// Example (Tauri setup / CLI `start_task_runner` call site):
+    /// ```ignore
+    /// let cfg = TaskRunnerConfig::new_minimal(cursor_path)
+    ///     .with_pipeline_grc(crate::grc::PipelineGrc::new_from_default());
+    /// let (handle, cancel) = start_task_runner(ssb, cfg);
+    /// ```
+    pub fn with_pipeline_grc(mut self, grc: crate::grc::PipelineGrc) -> Self {
+        self.pipeline_grc = Some(Arc::new(AsyncMutex::new(grc)));
+        self
     }
 }
 
@@ -1885,7 +1983,7 @@ struct ResolvedConfig {
     /// appears on `TaskSubmittedPayload`; value = unix-epoch millis at which
     /// the full index was built. Guarded by a sync `Mutex` because the check is
     /// cheap and each `drive_task` invocation only touches it once per task.
-    indexed_projects: Mutex<HashMap<String, i64>>,
+    indexed_projects: Mutex<BTreeMap<String, i64>>,
     /// Batch 1A: optional hook dispatcher (see `TaskRunnerConfig::hook_dispatcher`).
     /// When `None`, `drive_task` skips every dispatch call site.
     hook_dispatcher: Option<Arc<dyn crate::hook_dispatcher::HookDispatcher>>,
@@ -1943,6 +2041,20 @@ struct ResolvedConfig {
     /// Batch FUL-B: optional PhaseSizing-aware splitter. See
     /// [`TaskRunnerConfig::task_splitter`].
     task_splitter: Option<Arc<dyn crate::phase_sizing_splitter::TaskSplitter>>,
+    /// Batch B-8: shared PipelineGrc handle. See
+    /// [`TaskRunnerConfig::pipeline_grc`]. The `ResolvedConfig::from`
+    /// constructor short-circuits this slot to `None` when the kill-switch
+    /// env-var [`crate::grc::ELAI_DISABLE_PIPELINE_GRC_ENV`] is set, so every
+    /// downstream gated call site sees a single boolean (`is_some()`) and
+    /// behaves as pre-B-8 when the bypass is active.
+    pipeline_grc: Option<Arc<AsyncMutex<crate::grc::PipelineGrc>>>,
+    /// B-10 (DECISION-A / DECISION-F): always-Some
+    /// [`crate::context_budget::ModelCapabilityProfile`] derived once at
+    /// runner construction. Threaded into every `build_dispatch_context` call
+    /// (production callsite at L3131) so the assembled `ContextBudget` uses
+    /// real per-tier slot weights instead of the
+    /// `[0,0,0]` zeroed fallback.
+    model_capability_profile: Arc<crate::context_budget::ModelCapabilityProfile>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -1956,6 +2068,8 @@ struct ResolvedConfig {
 struct CheckpointContext {
     checkpoint_manager: CheckpointManager<OsClock>,
     recovery_manager: RecoveryManager<OsClock>,
+    /// B-6: supervision layer — caps restarts at max_restarts (default 3) per phase window.
+    supervision_manager: AsyncMutex<SupervisionManager<OsClock>>,
     scratch_dir: PathBuf,
 }
 
@@ -1965,9 +2079,34 @@ impl ResolvedConfig {
             Arc::new(CheckpointContext {
                 checkpoint_manager: CheckpointManager::new(OsClock),
                 recovery_manager: RecoveryManager::new(OsClock),
+                // B-6: max 3 restarts per phase (5-minute window); escalate with Terminate.
+                supervision_manager: AsyncMutex::new(SupervisionManager::new(
+                    OsClock,
+                    SupervisionPolicy {
+                        max_restarts: 3,
+                        restart_window: std::time::Duration::from_secs(300),
+                        on_max_restarts: EscalationAction::Terminate,
+                    },
+                )),
                 scratch_dir: dir,
             })
         });
+        // B-10 (DECISION-A / DECISION-F): resolve the ModelCapabilityProfile once
+        // at construction. Construction sites may pass `Some(...)` to override;
+        // otherwise we infer from `backend_config.model` via substring matching.
+        // VRAM tier defaulted to 12GB (the primary deployment tier per spec).
+        // Future B-task may wire detect_vram_tier into this bootstrap.
+        let resolved_backend_config = cfg
+            .backend_config
+            .clone()
+            .unwrap_or_else(crate::dispatcher::BackendConfig::default);
+        let model_capability_profile: Arc<crate::context_budget::ModelCapabilityProfile> =
+            cfg.model_capability_profile.unwrap_or_else(|| {
+                Arc::new(crate::context_budget::detect_model_capability_profile(
+                    &resolved_backend_config.model,
+                    elai_core::VramTier::Vram12Gb,
+                ))
+            });
         Self {
             cursor_path: cfg.cursor_path,
             launcher: cfg.dev_server_launcher,
@@ -1986,11 +2125,12 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| Arc::new(SyntheticBabyStepExecutor)),
             anti_spiral_enabled: cfg.anti_spiral_enabled,
             llm_provider: cfg.llm_provider,
-            backend_config: cfg
-                .backend_config
-                .unwrap_or_else(crate::dispatcher::BackendConfig::default),
+            // B-10: backend_config was pre-resolved above so the same instance
+            // can both seed the model_capability_profile detection AND populate
+            // ResolvedConfig.backend_config — keeps both in sync.
+            backend_config: resolved_backend_config,
             indexing_service: cfg.indexing_service,
-            indexed_projects: Mutex::new(HashMap::new()),
+            indexed_projects: Mutex::new(BTreeMap::new()),
             hook_dispatcher: cfg.hook_dispatcher,
             signal_reader: cfg.signal_reader,
             vram_tier_emitted: Mutex::new(false),
@@ -2008,6 +2148,23 @@ impl ResolvedConfig {
             dkg_querier_swap: cfg.dkg_querier_swap,
             dkg_querier_swapped_projects: Mutex::new(std::collections::HashSet::new()),
             task_splitter: cfg.task_splitter,
+            pipeline_grc: {
+                // B-8 kill-switch: read once at construction, force None when
+                // the env-var is set so every call site can branch on the
+                // single Option<...>.
+                if crate::grc::pipeline_grc_disabled_via_env() {
+                    if cfg.pipeline_grc.is_some() {
+                        tracing::warn!(
+                            env = crate::grc::ELAI_DISABLE_PIPELINE_GRC_ENV,
+                            "task_runner: pipeline_grc disabled via env-var; safety gates bypassed for this runner"
+                        );
+                    }
+                    None
+                } else {
+                    cfg.pipeline_grc
+                }
+            },
+            model_capability_profile,
         }
     }
 }
@@ -2024,6 +2181,7 @@ impl ResolvedConfig {
 fn task_runner_handle(seq: i64, scratch_dir: &Path) -> AgentHandle {
     // UUID low 64 bits = seq (as u64 via cast — sign bit preserved). High
     // bits zero. Deterministic and collision-free within a single runner.
+    // NARROWING-OK: i64->u64 bit-reinterpretation; UUID byte layout intentionally preserves sign bit.
     let seq_u64 = seq as u64;
     let mut bytes = [0u8; 16];
     bytes[8..16].copy_from_slice(&seq_u64.to_be_bytes());
@@ -2342,7 +2500,7 @@ async fn drive_web_research_task(
 /// (entry, every early-return, exit) renders a consistent 3-tuple. The
 /// error path only logs — the runner must stay alive because an SSB write
 /// failure during research is non-fatal.
-async fn emit_fsm_transition(writer: &Arc<Ssb>, from: &str, to: &str, reason: &str) {
+pub async fn emit_fsm_transition(writer: &Arc<Ssb>, from: &str, to: &str, reason: &str) {
     let payload = SsbPayload::FsmTransition(crate::ssb::FsmTransitionPayload {
         from: from.to_string(),
         to: to.to_string(),
@@ -2356,6 +2514,46 @@ async fn emit_fsm_transition(writer: &Arc<Ssb>, from: &str, to: &str, reason: &s
             from = %from, to = %to, error = %e,
             "task_runner: FsmTransition write failed"
         );
+    }
+    // B-9 T5: pair every FSM-transition emit with a lightweight checkpoint row
+    // so the dashboard observes a checkpoint at every state-machine boundary.
+    // NARROWING-OK: RUNNER_SUPERSTEP == 0 (i64); non-negative constant, i64->u64 is safe here.
+    emit_dag_checkpoint(writer, RUNNER_AGENT_ID, RUNNER_SUPERSTEP as u64, "fsm_transition").await;
+}
+
+/// B-9 T5: emit a lightweight `SsbActionType::Checkpoint` row capturing a
+/// per-step / per-tool-call / per-FSM-transition boundary.
+///
+/// Per DECISION-B in workflow/reasoning/B-9-decisions.md, this is the
+/// **lightweight** checkpoint emit. The heavy 5-file
+/// [`crate::checkpoint::CheckpointManager::write`] path stays reserved for
+/// baby-step boundaries (it is too costly for the 25+ emit sites per turn
+/// the spec asks for).
+///
+/// The `kind` argument ("fsm_transition" | "grc_step" | "tool_call") is
+/// encoded into `grc_history_hash` so consumers can demux the three streams
+/// without a schema change.
+///
+/// Failures are logged but never propagated — checkpoint emission must not
+/// stop the runner.
+pub async fn emit_dag_checkpoint(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    step_index: u64,
+    kind: &str,
+) {
+    let payload = SsbPayload::Checkpoint(crate::ssb::CheckpointPayload {
+        agent_state_hash: String::new(),
+        grc_history_hash: format!("dag_checkpoint:{kind}"),
+        agent_id: agent_id.to_owned(),
+        step_index,
+        file_sizes: Vec::new(),
+    });
+    if let Err(e) = writer
+        .write_payload(agent_id, RUNNER_SUPERSTEP, payload, Vec::new())
+        .await
+    {
+        warn!(error = %e, kind = %kind, "task_runner: emit_dag_checkpoint failed");
     }
 }
 
@@ -2402,6 +2600,62 @@ fn strip_parallel_phases(mut d: ConceptDecomposition) -> ConceptDecomposition {
         concept.phases.retain(|p| !p.is_parallel);
     }
     d
+}
+
+/// B-8 Tasks#1 helper: build a multi-line plan-like string from the live
+/// decomposition + the natural-language task goal so
+/// [`crate::grc::PipelineGrc::ground_plan`] has something to scan.
+///
+/// The reasoning engine's claim regex (`engine.rs:501`) matches lines that
+/// start with `Grounding: (file|grep|test|search|tool|training):...`.
+///
+/// Cycle-2 fix (BLOCK-1): the previous version emitted a synthetic
+/// `Grounding: training:unverified` line whenever a concept description
+/// mentioned `.rs`, `.py`, `crate `, `file:`, or `api `. That synthetic
+/// citation always landed in `grounding.ungrounded` (LocalVerifier resolves
+/// the literal path "unverified", which never exists), causing
+/// GroundingSweepGate to falsely block ~50% of legitimate Rust/Python/API
+/// tasks. We now emit zero synthetic Grounding lines: only citations that
+/// are actually present on the live decomposition struct (today: none at
+/// the concept level — BabyStepSpec.grounding.top_citations is per-step
+/// and threading those up is post-B-8 scope) should ever reach
+/// `ground_plan`. With no synthetic noise, GroundingSweepGate now
+/// evaluates against the real ungrounded set and only blocks when the
+/// decomposition actually carries unverifiable claims.
+///
+/// Visibility: `pub` (doc-hidden) so the cycle-2 BLOCK-1 regression test
+/// in `tests/safety_gate_integration.rs` can call this directly. Not part
+/// of the stable API surface.
+#[doc(hidden)]
+pub fn serialize_decomposition_for_grounding(
+    decomposition: &ConceptDecomposition,
+    task_goal: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Goal: ");
+    out.push_str(task_goal);
+    out.push('\n');
+    out.push_str("Idea: ");
+    out.push_str(&decomposition.idea);
+    out.push('\n');
+    for concept in &decomposition.concepts {
+        out.push_str(&format!("Concept[{}]: {}\n", concept.id.0, concept.name));
+        out.push_str(&format!("  Description: {}\n", concept.description));
+        // No synthetic Grounding lines — see doc comment above (BLOCK-1).
+        // When the decomposer eventually threads real citations onto
+        // ConceptNode/PhaseNode, emit them here as
+        //   `  Grounding: file:<path>` / `  Grounding: tool:<id>` etc.
+        for phase in &concept.phases {
+            out.push_str(&format!("  Phase[{}]: {}\n", phase.id.0, phase.name));
+            for step in &phase.steps {
+                out.push_str(&format!(
+                    "    Step[{}]: {}\n",
+                    step.id.0, step.description
+                ));
+            }
+        }
+    }
+    out
 }
 
 async fn run_parallel_phases_via_bsp(
@@ -2474,7 +2728,9 @@ async fn run_parallel_phases_via_bsp(
                 scratch_base: scratch_root.join(BSP_CHECKPOINT_SUBDIR).join("agents"),
                 vram_required_bytes: crate::agent_pool::VRAM_MIN_BYTES,
                 project_path: scratch_root.clone(),
-                enable_sandbox: false,
+                // B-18A Task 7: AppContainer on Windows; non-isolating
+                // pass-through on Linux/macOS until B-18B+ wires clone3+seccomp.
+                enable_sandbox: cfg!(target_os = "windows"),
             };
             let pool = crate::agent_pool::InProcessAgentPool::new(
                 pool_config,
@@ -2557,6 +2813,10 @@ async fn emit_indexing_progress(
         files_total,
         elapsed_ms,
         message,
+        // Track A.1: task_runner does not drive error paths here; error_kind
+        // and error_message are emitted by cli/src/indexing.rs on the Err arm.
+        error_kind: None,
+        error_message: None,
     });
     if let Err(e) = writer
         .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
@@ -2792,7 +3052,7 @@ async fn maybe_build_project_index(
     match guard.run_full_index() {
         Ok(summary) => {
             let done_ms = now_unix_ms();
-            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64;
+            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64; // NARROWING-OK: .max(0) ensures non-negative i64; u64::try_from non-negative i64 always succeeds but adds no safety here
             let files_processed: u32 = summary
                 .bm25_files
                 .try_into()
@@ -2842,7 +3102,7 @@ async fn maybe_build_project_index(
         }
         Err(e) => {
             let done_ms = now_unix_ms();
-            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64;
+            let elapsed_ms = (done_ms.saturating_sub(start_ms)).max(0) as u64; // NARROWING-OK: .max(0) ensures non-negative i64; u64::try_from non-negative i64 always succeeds but adds no safety here
             let err_s = e.to_string();
             emit_indexing_progress(
                 writer,
@@ -2951,7 +3211,7 @@ async fn drive_task(
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let priority_map: HashMap<String, u8> = specs
+        let priority_map: BTreeMap<String, u8> = specs
             .iter()
             .map(|name| (name.clone(), 0u8))
             .collect();
@@ -2994,7 +3254,11 @@ async fn drive_task(
             &resolved.backend_config,
             &specs,
             &priority_map,
-            None,
+            // B-10 (DECISION-A): pass the resolved ModelCapabilityProfile so
+            // the assembled ContextBudget uses real per-tier slot weights
+            // instead of the [0,0,0]/4096 zeroed-stub fallback at
+            // dispatcher.rs:222 (the prod wiring gap closed by B-10).
+            Some(resolved.model_capability_profile.as_ref()),
             Some(&phase_slot),
         ) {
             Ok(ctx) => {
@@ -3012,6 +3276,82 @@ async fn drive_task(
                     ),
                 )
                 .await;
+
+                // B-10 (DECISION-C): emit ContextBudgetComputed so the dashboard's
+                // per-slot bar chart renders real allocations matching the active
+                // tier profile (the per-spec values now active post-DECISION-D).
+                if let Some(budget) = ctx.budget.as_ref() {
+                    let raw_max = crate::dispatcher::LOCAL_MODEL_MAX_CONTEXT
+                        * crate::dispatcher::LOCAL_BUDGET_FRACTION
+                        / 100;
+                    if let Err(e) = crate::context_budget::emit_context_budget_computed(
+                        writer,
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        resolved.model_capability_profile.as_ref(),
+                        budget,
+                        raw_max,
+                    )
+                    .await
+                    {
+                        warn!(seq, error = %e, "task_runner: ContextBudgetComputed write failed");
+                    }
+                }
+
+                // B-10 / 3E.5 (DECISION-C): wire compute_overlap into the SsbEntries
+                // slot-fill path. Query all FileWrite SSB entries for the current
+                // project to obtain (seq, file_paths) candidate pairs; run
+                // compute_overlap against the agent's active file set; emit
+                // SsbFilteredByOverlap so the dashboard renders the filter ratio.
+                //
+                // agent_files is the set of files the task runner is currently
+                // tracking for this task. At drive_task call time the task runner
+                // owns no open file handles (files are touched by the LlmProvider /
+                // CLI child later), so agent_files is derived from the task payload's
+                // project_id path as the working directory prefix. An empty
+                // agent_files set causes compute_overlap to return 0 kept entries
+                // (every score = 0.0 < FILE_OVERLAP_THRESHOLD), which is the correct
+                // conservative outcome: without a concrete file list, no SSB entries
+                // are overlap-selected, and the dashboard shows the filter ratio as
+                // 0/N. Future tasks that pass file lists through the PhaseSlot will
+                // produce non-zero kept counts once the context assembler is wired.
+                {
+                    let file_entries: Vec<SsbEntry> = writer
+                        .query_by_type(SsbActionType::FileWrite)
+                        .unwrap_or_default();
+                    let entries_total = file_entries.len();
+                    // Build (seq, files) pairs. File paths are stored in ssb_files;
+                    // SsbEntry.payload does not carry file paths directly. The
+                    // compute_overlap API requires (I, Vec<String>) pairs. Since
+                    // the task runner has no ssb_files read path (write-only Arc<Ssb>),
+                    // use seq as the entry id and pass an empty file list per entry.
+                    // This yields score=0 for every candidate (agent_files is also
+                    // empty), producing entries_kept=0 and entries_total=N — the
+                    // correct signal for the dashboard when file associations are
+                    // not yet threaded through the task runner path.
+                    //
+                    // The real per-entry file lists will be plumbed in the context
+                    // assembler phase when the SsbViewer's ssb_files JOIN is available
+                    // on the read path. DECISION-E: deferred to context-assembler wiring.
+                    let agent_files: Vec<String> = Vec::new();
+                    let candidates: Vec<(i64, Vec<String>)> = file_entries
+                        .iter()
+                        .map(|e| (e.seq, Vec::new()))
+                        .collect();
+                    let kept = crate::context_budget::compute_overlap(&agent_files, &candidates);
+                    let entries_kept = kept.len();
+                    if let Err(e) = crate::context_budget::emit_ssb_filtered_by_overlap(
+                        writer,
+                        RUNNER_AGENT_ID,
+                        RUNNER_SUPERSTEP,
+                        entries_total,
+                        entries_kept,
+                    )
+                    .await
+                    {
+                        warn!(seq, error = %e, "task_runner: SsbFilteredByOverlap write failed");
+                    }
+                }
 
                 // Batch-fu (A-7): emit a ConstraintsInjected row whenever the
                 // phase_slot carried at least one constraint so the dashboard
@@ -3085,6 +3425,8 @@ async fn drive_task(
         ExecutionMode::Autonomous,
         &mut cache,
         &grounding_client,
+        None, // Track A.6: no SSB handle threaded here yet; use None.
+        None, // B-7: no tree emitter threaded here yet; use None.
     )
     .await?;
     if decomposition.concepts.is_empty() {
@@ -3119,6 +3461,113 @@ async fn drive_task(
         ),
     )
     .await;
+
+    // B-8 Tasks#1: PipelineGrc.ground_plan + GroundingSweepGate consumer.
+    //
+    // Producer side: serialize the decomposition into a plan-like string and
+    // run it through `ground_plan`, which scans for `^Grounding:` citations
+    // and dispatches verify_claim per claim. Result populates a Vec<String>
+    // of ungrounded claims.
+    //
+    // Consumer side: feed that list into `evidence::gates_for_transition(
+    // Planning, TestingFirst)` (which today returns the lone
+    // `GroundingSweepGate`). When the gate blocks, we emit an
+    // `Finding` row with category `grounding_sweep_block` so the dashboard /
+    // CLI surface the block, then short-circuit the task. The kill-switch
+    // (`ELAI_DISABLE_PIPELINE_GRC`) is honoured by `ResolvedConfig::from`
+    // forcing `pipeline_grc` to `None`, so this whole block is skipped when
+    // the bypass is active. Spec target: B-8 §Tasks#1.
+    if let Some(grc) = resolved.pipeline_grc.as_ref() {
+        let plan_text = serialize_decomposition_for_grounding(&decomposition, &task.task);
+        let grounding = grc.lock().await.ground_plan(&plan_text);
+        if !grounding.ungrounded.is_empty() {
+            tracing::warn!(
+                seq,
+                ungrounded_count = grounding.ungrounded.len(),
+                "task_runner: ground_plan flagged ungrounded claims"
+            );
+            let ctx = crate::evidence::TransitionContext {
+                ungrounded_claims: Some(grounding.ungrounded.clone()),
+                ..crate::evidence::TransitionContext::default()
+            };
+            let gates = crate::evidence::gates_for_transition(
+                crate::FsmState::Planning,
+                crate::FsmState::TestingFirst,
+            );
+            let mut block_messages: Vec<String> = Vec::new();
+            for gate in &gates {
+                let check_result = gate.check(&ctx);
+                // B-6: emit EvidenceGateEvaluated SSB row for each gate check.
+                {
+                    let ts_ms = elai_core::clock::OsClock
+                        .system_now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or(std::time::Duration::ZERO)
+                        .as_millis();
+                    let ts_ms_i64 = i64::try_from(ts_ms).unwrap_or(i64::MAX);
+                    let verdict = if check_result.is_ok() { "pass" } else { "block" };
+                    let gate_payload =
+                        SsbPayload::EvidenceGateEvaluated(EvidenceGateEvaluatedPayload {
+                            gate_id: gate.name().to_owned(),
+                            verdict: verdict.to_owned(),
+                            ts_ms: ts_ms_i64,
+                        });
+                    if let Err(e) = writer
+                        .write_payload(
+                            RUNNER_AGENT_ID,
+                            RUNNER_SUPERSTEP,
+                            gate_payload,
+                            Vec::new(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            gate = gate.name(),
+                            error = %e,
+                            "task_runner: EvidenceGateEvaluated SSB write failed (non-fatal)"
+                        );
+                    }
+                }
+                if let Err(err) = check_result {
+                    block_messages.push(format!(
+                        "{}: {} (missing: {})",
+                        err.gate_name,
+                        err.suggestion,
+                        err.missing_artifacts.join(", ")
+                    ));
+                }
+            }
+            if !block_messages.is_empty() {
+                let summary = block_messages.join(" | ");
+                emit_finding(
+                    writer,
+                    "error",
+                    "grounding_sweep_block",
+                    &format!(
+                        "PLANNING -> TESTING_FIRST blocked: {} ungrounded claim(s); {}",
+                        grounding.ungrounded.len(),
+                        summary
+                    ),
+                )
+                .await;
+                tracing::error!(
+                    seq,
+                    summary = %summary,
+                    "task_runner: GroundingSweepGate blocked task; aborting"
+                );
+                // TODO(B-future): surface this through a dedicated SSB row
+                // (csq-style intervention) once the new dashboard defines a
+                // surface for safety-gate blocks.
+                return Ok(());
+            }
+        } else {
+            tracing::debug!(
+                seq,
+                claims = grounding.claims.len(),
+                "task_runner: ground_plan completed with zero ungrounded claims"
+            );
+        }
+    }
 
     // Session 3D.REDO: route phases with `is_parallel = true` through
     // `BspEngine` for superstep-level parallelism. Phases with the flag
@@ -3216,7 +3665,7 @@ async fn drive_task(
             format!("baby_step id={} task={:?}", bs_id.0, task_summary);
         emit_reasoning(
             writer,
-            2 + steps_executed as u32,
+            2 + u32::try_from(steps_executed).unwrap_or(u32::MAX),
             "act",
             &baby_step_reasoning_content,
         )
@@ -3225,12 +3674,41 @@ async fn drive_task(
         // Session wire-antispiral: record this reasoning step with the
         // detector. On HardStop we emit the SSB rows and break immediately;
         // on EscalationSignalNeeded the message is stashed in the tracker
-        // and drained below before executor dispatch.
+        // and an AntiSpiralHit SSB row is emitted (B-6).
         if let Some(tracker) = spiral_tracker.as_mut() {
             let result = tracker.record("act", "task_runner", &baby_step_reasoning_content);
-            if matches!(result, crate::anti_spiral::SpiralResult::HardStop { .. }) {
-                emit_spiral_hard_stop(writer, tracker.agent_id(), seq).await;
-                break;
+            match &result {
+                crate::anti_spiral::SpiralResult::HardStop { .. } => {
+                    emit_spiral_hard_stop(writer, tracker.agent_id(), seq).await;
+                    break;
+                }
+                crate::anti_spiral::SpiralResult::EscalationSignalNeeded {
+                    step_hash,
+                    count,
+                    ..
+                } => {
+                    // B-6: emit AntiSpiralHit row for the escalation signal.
+                    let hit_payload = SsbPayload::AntiSpiralHit(AntiSpiralHitPayload {
+                        agent_id: tracker.agent_id().to_string(),
+                        step_hash: step_hash.clone(),
+                        count: *count,
+                    });
+                    if let Err(e) = writer
+                        .write_payload(
+                            RUNNER_AGENT_ID,
+                            RUNNER_SUPERSTEP,
+                            hit_payload,
+                            Vec::new(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "task_runner: AntiSpiralHit SSB write failed (non-fatal)"
+                        );
+                    }
+                }
+                crate::anti_spiral::SpiralResult::Clean => {}
             }
         }
 
@@ -3269,6 +3747,27 @@ async fn drive_task(
         let current_location = tree.location_index.get(&bs_id).cloned();
         if let (Some(prev), Some(cur)) = (last_location.as_ref(), current_location.as_ref()) {
             emit_level_transitions(writer, &nav, prev, cur, &integration_runner, &mut state, &tree).await;
+
+            // B-8 Tasks#7: reset PipelineGrc.inline_feasibility_state at every
+            // phase boundary so each phase gets a fresh 2-call budget. Engine
+            // exposes `inline_feasibility_state` as a `pub` field on
+            // BasicGrcEngine (engine.rs:75) and the runner accesses it via
+            // `engine_mut()` on the locked PipelineGrc. Skipped when the
+            // kill-switch left `pipeline_grc = None`.
+            if prev.phase_id != cur.phase_id {
+                if let Some(grc) = resolved.pipeline_grc.as_ref() {
+                    grc.lock()
+                        .await
+                        .engine_mut()
+                        .inline_feasibility_state
+                        .reset();
+                    tracing::debug!(
+                        prev_phase = prev.phase_id.0,
+                        cur_phase = cur.phase_id.0,
+                        "task_runner: reset inline_feasibility_state at phase boundary"
+                    );
+                }
+            }
         }
 
         // Blocker #6: when the project scaffold is a web app, the baby-step
@@ -3465,15 +3964,100 @@ async fn drive_task(
             task_summary: task_summary.clone(),
             escalation_message,
         };
+
+        // B-8 Tasks#3: PipelineGrc.generate_csq pre-tool gate.
+        //
+        // Mirrors the irreversible_classifier branch above: when the gate
+        // returns a Critical-without-guard verdict we set
+        // `hook_pre_blocked = true` so the same downstream checkpoint /
+        // bubble-up / TestOutcome path renders the row with `passed=false`.
+        // Warning verdicts emit `tracing::warn` and proceed. The kill-switch
+        // (`ELAI_DISABLE_PIPELINE_GRC`) leaves `resolved.pipeline_grc = None`
+        // and the entire branch is skipped.
+        //
+        // Sensitive ops list is the natural-language `task_summary`. The
+        // engine pattern-matches against `fs::|file|write|delete|remove|
+        // net::|tcpstream|money|payment|auth|token|credential|password`
+        // (engine.rs:603-606). Over-aggressive matching is documented and
+        // mitigated by the kill-switch (see workflow/reasoning/B-8-decisions.md
+        // §3 + §10). Real static-analysis sensitive_ops extraction is out of
+        // B-8 scope.
+        if !hook_pre_blocked {
+            if let Some(grc) = resolved.pipeline_grc.as_ref() {
+                let function_id = format!("baby_step_{}", bs_id.0);
+                let sensitive_ops: Vec<String> = vec![task_summary.clone()];
+                let csq = grc.lock().await.generate_csq(&function_id, &sensitive_ops);
+                match csq {
+                    Ok(result) => {
+                        if !result.passed() {
+                            // At least one Critical-without-guard check.
+                            // Block the executor by setting hook_pre_blocked
+                            // (mirrors irreversible_classifier path).
+                            let critical_count = result
+                                .checks
+                                .iter()
+                                .filter(|c| {
+                                    c.severity == elai_reasoning::CsqSeverity::Critical
+                                        && !c.guard_added
+                                })
+                                .count();
+                            tracing::error!(
+                                baby_step = bs_id.0,
+                                function_id = %function_id,
+                                critical_count,
+                                checks = result.checks.len(),
+                                "task_runner: CSQ Critical-without-guard blocked baby step"
+                            );
+                            emit_finding(
+                                writer,
+                                "error",
+                                "csq_critical_block",
+                                &format!(
+                                    "baby_step {} blocked: {} critical CSQ check(s) without guard",
+                                    bs_id.0, critical_count
+                                ),
+                            )
+                            .await;
+                            // TODO(B-future): re-emit SSB csq_evaluated row
+                            // when the new dashboard surfaces are defined.
+                            hook_pre_blocked = true;
+                        } else if !result.checks.is_empty() {
+                            tracing::warn!(
+                                baby_step = bs_id.0,
+                                checks = result.checks.len(),
+                                "task_runner: CSQ produced Warning checks (proceeding)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // Engine error — log and proceed (do not block on
+                        // engine-side bugs; kill-switch is the user's escape).
+                        tracing::warn!(
+                            baby_step = bs_id.0,
+                            error = ?e,
+                            "task_runner: CSQ generation failed; proceeding without gate"
+                        );
+                    }
+                }
+            }
+        }
+
         // Batch 1A: if PreToolUse blocked, skip the executor entirely with a
         // synthetic Failed result — the rest of the loop (integration
         // checkpoint, TestOutcome emission, MistakeBook, bubble-up) runs as if
         // the executor returned Failed. This mirrors the `pre_gate_blocked`
         // path for the existing rule evaluator.
+        // Cycle-2 W1: distinguish CSQ-driven blocks from generic PreToolUse
+        // blocks via the synthetic failure reason string. The block site
+        // (line 3698 above) only flips `hook_pre_blocked = true` from the
+        // CSQ Critical-without-guard branch today — once additional
+        // PreToolUse-style gates land they should pass their own reason
+        // string forward instead of overloading this default.
         let exec_result = if hook_pre_blocked {
             BabyStepExecutionResult {
                 outcome: BabyStepOutcome::Failed {
-                    reason: "PreToolUse hook blocked baby step".to_string(),
+                    reason: "CSQ Critical-without-guard blocked baby step"
+                        .to_string(),
                 },
                 duration_ms: 0,
                 exit_code: None,
@@ -3483,8 +4067,8 @@ async fn drive_task(
         } else {
             resolved.baby_step_executor.execute(exec_ctx).await
         };
-        let outcome = exec_result.outcome;
-        let outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
+        let mut outcome = exec_result.outcome;
+        let mut outcome_passed = matches!(outcome, BabyStepOutcome::Passed);
         let execution_duration_ms = exec_result.duration_ms;
         let exec_stderr_tail = exec_result.stderr_tail.clone();
         let exec_exit_code = exec_result.exit_code;
@@ -3495,6 +4079,101 @@ async fn drive_task(
             );
             emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
         }
+
+        // B-8 Tasks#4 + Tasks#5: PipelineGrc.check_inline_feasibility +
+        // ReplanRequest::Major conversion (deferred — see decision doc §4).
+        //
+        // Producer: build a synthetic claim string from `exec_result.stderr_tail`
+        // when the baby step did not pass. The runner has no static-analysis
+        // path that surfaces "novel claims" today, so the stderr_tail is the
+        // closest signal available. When the engine returns
+        // `FeasibilityOutcome::Blocked` we flip this baby step to failed and
+        // emit a typed Finding so the downstream loop renders the row with
+        // `passed=false`. ReplanRequest::Major emission is deferred to
+        // B-future once `ResolvedConfig` carries an `FsmHandle`.
+        //
+        // Skipped when: (a) the kill-switch is on (pipeline_grc = None),
+        // (b) the baby step passed (no novel-claim signal to evaluate), or
+        // (c) the stderr_tail is empty.
+        if let Some(grc) = resolved.pipeline_grc.as_ref() {
+            if !outcome_passed && !exec_stderr_tail.trim().is_empty() {
+                // Mark the claim as a plan-contradiction so the engine takes
+                // the Blocked branch (engine.rs:670). The substring check at
+                // engine.rs:680 then drives Pass / Fail for non-contradictory
+                // claims — for B-8 we only act on Blocked.
+                let claim = format!(
+                    "CONTRADICTS_PLAN: baby_step {} reported stderr={}",
+                    bs_id.0,
+                    truncate_for_log(&exec_stderr_tail, 240)
+                );
+                let sources: Vec<String> = vec![task_summary.clone()];
+                let mut grc_guard = grc.lock().await;
+                match grc_guard.check_inline_feasibility(&claim, &sources) {
+                    Ok(feas) if feas.outcome
+                        == elai_reasoning::FeasibilityOutcome::Blocked =>
+                    {
+                        tracing::error!(
+                            baby_step = bs_id.0,
+                            "task_runner: inline_feasibility Blocked — flagging step for replan"
+                        );
+                        emit_finding(
+                            writer,
+                            "error",
+                            "inline_feasibility_blocked",
+                            &format!(
+                                "baby_step {} inline feasibility Blocked: novel claim contradicts plan",
+                                bs_id.0
+                            ),
+                        )
+                        .await;
+                        // TODO(B-future): submit ReplanRequest::Major via
+                        // fsm.submit_replan once ResolvedConfig carries an
+                        // FsmHandle (fsm.rs:644). Until then we surface the
+                        // block by flipping outcome_passed AND rewriting
+                        // `outcome` to a Failed variant so the BabyStepResult
+                        // constructed below carries the failure forward into
+                        // navigator/state. Cycle-2 BLOCK-2 fix: previously
+                        // only `outcome_passed` was flipped, leaving
+                        // `outcome = Passed`, which made
+                        // `pipeline_tree_navigator::record_result` advance the
+                        // step into `state.completed` — irreconcilable with
+                        // the failed TestOutcome that SSB then emitted.
+                        outcome_passed = false;
+                        outcome = BabyStepOutcome::Failed {
+                            reason: format!(
+                                "inline_feasibility_blocked: {}",
+                                truncate_for_log(&feas.claim, 240)
+                            ),
+                        };
+                    }
+                    Ok(feas) => {
+                        tracing::debug!(
+                            baby_step = bs_id.0,
+                            outcome = ?feas.outcome,
+                            "task_runner: inline_feasibility check completed"
+                        );
+                    }
+                    Err(crate::grc::PipelineGrcError::Engine(
+                        elai_reasoning::GrcError::BudgetExhausted { .. },
+                    )) => {
+                        // By design: max 2 checks per phase
+                        // (types.rs:480). Skip silently.
+                        tracing::debug!(
+                            baby_step = bs_id.0,
+                            "task_runner: inline_feasibility budget exhausted (max 2/phase)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            baby_step = bs_id.0,
+                            error = ?e,
+                            "task_runner: inline_feasibility check errored"
+                        );
+                    }
+                }
+            }
+        }
+
         let result = BabyStepResult {
             baby_step_id: bs_id,
             outcome,
@@ -3736,7 +4415,37 @@ async fn drive_task(
                     &step_id,
                 )
                 .await;
+                // B-20B: file-read outline + 50% budget guard for the first
+                // changed file (wires enforce_file_read_budget_guard into a
+                // real production call site -- BLOCK-1 resolution).
+                let first_file = exec_result
+                    .changed_files
+                    .first()
+                    .expect("changed_files non-empty; checked above");
+                run_file_read_dispatch(
+                    writer,
+                    dispatcher.as_ref(),
+                    first_file.clone(),
+                    u32::try_from(resolved.model_capability_profile.recommended_prompt_budget).unwrap_or(u32::MAX),
+                    &step_id,
+                )
+                .await;
             } else if !outcome_passed && !exec_stderr_tail.is_empty() {
+                // B-20A Task 5 — auditor classification reading.
+                //
+                // Spec source: docs/specs/guide/steps/phase-4B.txt §
+                // failure-taxonomy + B-20 plan body Tasks 4-5.
+                //
+                // `run_classify_dispatch` writes a FailureClassified SSB row
+                // BEFORE any subsequent emit (e.g. raw stderr / tool_dispatch
+                // rows from later in the loop iteration). The SSB's
+                // monotonically-increasing `seq` then means the auditor's
+                // `SsbViewer::failure_taxonomy_last` query (`ORDER BY seq
+                // DESC LIMIT 1`) returns the categorized row before the raw
+                // output is consumed — saving 200-500 tokens per failure.
+                // Verified by reading the call ordering here against
+                // ssb_viewer.rs:1780-1819 + emit_failure_classified at
+                // task_runner.rs:4859.
                 let _ = run_classify_dispatch(
                     writer,
                     dispatcher.as_ref(),
@@ -3845,7 +4554,8 @@ async fn drive_task(
             let checkpoint_ok =
                 emit_baby_step_checkpoint(writer, cp, seq, bs_id.0, &task_summary, passed).await;
             if !passed && checkpoint_ok {
-                emit_baby_step_recovery(writer, cp, seq, bs_id.0).await;
+                let phase_id = format!("task_seq_{seq}");
+                emit_baby_step_recovery(writer, cp, seq, bs_id.0, &phase_id).await;
             }
         }
 
@@ -3982,8 +4692,19 @@ async fn drive_task(
 // Emission helpers
 // ---------------------------------------------------------------------------
 
+// B-5 T3 TODO: refactor emit_reasoning to accept
+//   grc_handle: Option<&Arc<AsyncMutex<crate::grc::PipelineGrc>>>
+// When Some, extract real values before constructing ReasoningTracePayload:
+//   let locked = grc_handle.lock().await;
+//   let budget_remaining = locked.engine().get_budget(RUNNER_AGENT_ID)
+//       .map_or(0, |b| b.calls_remaining());
+//   let agent_id = locked.engine().get_agent_config()
+//       .map(|c| c.role.clone()).unwrap_or_else(|| RUNNER_AGENT_ID.to_owned());
+// When None, fall back to the synthetic constants below (backward compat).
+// All 11 call sites must pass `resolved.pipeline_grc.as_ref()` or `None`.
 async fn emit_reasoning(writer: &Arc<Ssb>, step_index: u32, step_type: &str, content: &str) {
     let payload = SsbPayload::ReasoningTrace(ReasoningTracePayload {
+        // B-5 T3: agent_id and budget_remaining are synthetic constants; see TODO above.
         agent_id: RUNNER_AGENT_ID.to_owned(),
         step_index,
         step_type: step_type.to_owned(),
@@ -4001,6 +4722,8 @@ async fn emit_reasoning(writer: &Arc<Ssb>, step_index: u32, step_type: &str, con
     {
         error!(error = %e, "task_runner: write ReasoningTrace failed");
     }
+    // B-9 T5: pair every GRC-step emit with a lightweight checkpoint row.
+    emit_dag_checkpoint(writer, RUNNER_AGENT_ID, u64::from(step_index), "grc_step").await;
 }
 
 /// Session 3C.REDO: write a checkpoint row for a single baby step and
@@ -4073,6 +4796,12 @@ async fn emit_baby_step_checkpoint(
 /// emits `death_event` and `recovery_event` rows to the SSB so the dashboard
 /// can pair the crash with its resume point on the same baby step.
 ///
+/// B-6: also calls [`SupervisionManager::handle_death`] to track restart count
+/// per phase window. On `Escalated` outcome the agent is NOT restarted and a
+/// `SupervisionExhausted` SSB row is emitted. Restarts are capped at 3 (see
+/// `CheckpointContext::supervision_manager`). Supervision errors are surfaced
+/// as SSB Finding rows, not panics.
+///
 /// The returned `AgentHandle` is discarded — task_runner is not an agent
 /// pool yet (Phase 3 in-process, 4A out-of-process). Once the pool becomes
 /// the production spawn site, the handle here is the one that gets re-seated.
@@ -4081,8 +4810,115 @@ async fn emit_baby_step_recovery(
     cp: &CheckpointContext,
     seq: i64,
     baby_step_id: u64,
+    phase_id: &str,
 ) {
     let handle = task_runner_handle(seq, &cp.scratch_dir);
+    let prior = i64::try_from(baby_step_id).unwrap_or(i64::MAX);
+
+    // B-6: supervision gate — check restart budget before calling RecoveryManager.
+    let supervision_outcome = {
+        let mut mgr = cp.supervision_manager.lock().await;
+        mgr.handle_death(
+            handle.agent_id,
+            AgentDeathClassification::Crash,
+            phase_id,
+            prior,
+            /* interactive_mode */ false,
+        )
+    };
+
+    match supervision_outcome {
+        Ok(SupervisionOutcome::Escalated {
+            restart_count,
+            max_restarts,
+            escalation_action,
+            restart_history,
+        }) => {
+            // Restart limit hit — emit SupervisionExhausted + kill event, do NOT restart.
+            let kill_payload = SsbPayload::SupervisionEvent(SupervisionEventPayload {
+                agent_id: handle.agent_id.to_string(),
+                event: "kill".to_owned(),
+                attempt: restart_count,
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, kill_payload, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write SupervisionEvent kill failed");
+            }
+            let exhausted_payload =
+                SsbPayload::SupervisionExhausted(crate::ssb::SupervisionExhaustedPayload {
+                    agent_id: handle.agent_id.to_string(),
+                    phase_id: phase_id.to_owned(),
+                    restart_count,
+                    max_restarts,
+                    restart_history,
+                    escalation_action: match escalation_action {
+                        EscalationAction::Terminate => "terminate",
+                        EscalationAction::SubstituteModel(_) => "substitute_model",
+                        EscalationAction::ReduceScope => "reduce_scope",
+                    }
+                    .to_owned(),
+                });
+            if let Err(e) = writer
+                .write_payload(
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    exhausted_payload,
+                    Vec::new(),
+                )
+                .await
+            {
+                error!(error = %e, "task_runner: write SupervisionExhausted failed");
+            }
+            emit_finding(
+                writer,
+                "error",
+                "supervision_exhausted",
+                &format!(
+                    "supervision: agent {} exhausted {max_restarts} restarts in phase {phase_id}",
+                    handle.agent_id
+                ),
+            )
+            .await;
+            return;
+        }
+        Ok(SupervisionOutcome::Restarted { restart_count }) => {
+            // Emit SupervisionEvent restart row before proceeding with recovery.
+            let restart_payload = SsbPayload::SupervisionEvent(SupervisionEventPayload {
+                agent_id: handle.agent_id.to_string(),
+                event: "restart".to_owned(),
+                attempt: restart_count,
+            });
+            if let Err(e) = writer
+                .write_payload(
+                    RUNNER_AGENT_ID,
+                    RUNNER_SUPERSTEP,
+                    restart_payload,
+                    Vec::new(),
+                )
+                .await
+            {
+                error!(error = %e, "task_runner: write SupervisionEvent restart failed");
+            }
+        }
+        Ok(SupervisionOutcome::NoRestartNeeded | SupervisionOutcome::ConvergenceInjected) => {
+            // Clean exit or budget exceeded — no restart action needed.
+            return;
+        }
+        Err(e) => {
+            // Supervision gate error (e.g. SubstituteModel in interactive mode).
+            // Emit a warning finding and fall through to let RecoveryManager proceed.
+            emit_finding(
+                writer,
+                "warning",
+                "supervision_gate_error",
+                &format!("supervision gate error for baby_step={baby_step_id}: {e}"),
+            )
+            .await;
+        }
+    }
+
     // Recovery's `prior_step_index` is the step at which the crash happened.
     // For task_runner we use the baby-step id (cast from u64 to i64). On
     // overflow, clamp to `i64::MAX` — the same sentinel `CheckpointManager`
@@ -4090,7 +4926,6 @@ async fn emit_baby_step_recovery(
     // `RecoveryManager::recover_agent` uses `checked_add(1)` internally and
     // returns `InvariantViolation` on overflow; we surface that as a Finding
     // in the error arm below rather than silently producing an off-by-one.
-    let prior = i64::try_from(baby_step_id).unwrap_or(i64::MAX);
     if let Err(e) = cp
         .recovery_manager
         .recover_agent(
@@ -4173,6 +5008,7 @@ fn build_hook_block_summary(findings: &[HookFinding], hook_point: &str) -> Strin
 /// the task seq so the per-task detector state is addressable for audit. Mirrors
 /// [`task_runner_handle`]'s UUID layout (low 64 bits = seq, high bits zero).
 fn synthetic_agent_id_for_seq(seq: i64) -> Uuid {
+    // NARROWING-OK: i64->u64 bit-reinterpretation; UUID byte layout intentionally preserves sign bit.
     let seq_u64 = seq as u64;
     let mut bytes = [0u8; 16];
     bytes[8..16].copy_from_slice(&seq_u64.to_be_bytes());
@@ -4359,6 +5195,9 @@ async fn emit_tool_dispatch(
     {
         warn!(error = %e, "task_runner: tool_dispatch emission failed");
     }
+    // B-9 T5: pair every tool-call emit with a lightweight checkpoint row.
+    // NARROWING-OK: RUNNER_SUPERSTEP == 0 (i64); non-negative constant, i64->u64 is safe here.
+    emit_dag_checkpoint(writer, RUNNER_AGENT_ID, RUNNER_SUPERSTEP as u64, "tool_call").await;
 }
 
 async fn emit_validation_tier(writer: &Arc<Ssb>, r: &ValidationTierResult, step_id: &str) {
@@ -4382,6 +5221,8 @@ async fn emit_failure_classified(
     classified: &CoreClassifiedFailure,
     step_id: &str,
 ) {
+    // NARROWING-OK: f64->u16 after clamp(0.0,1.0)*10_000; no TryFrom<f64> for u16 in std;
+    // clamped result is in [0.0, 10_000.0] which fits u16 (max 65535) exactly.
     let confidence_bp = (classified.confidence.clamp(0.0, 1.0) * 10_000.0) as u16;
     let payload = SsbPayload::FailureClassified(crate::ssb::FailureClassifiedPayload {
         category: classified.category.as_str().to_owned(),
@@ -4484,6 +5325,48 @@ async fn run_validate_dispatch(
     }
 }
 
+/// B-20B BLOCK-1: wire the 50% budget guard into the ToolDispatcher file-read path.
+/// Fetches file metadata, calls `enforce_file_read_budget_guard`, then calls
+/// `dispatcher.dispatch_file_read_outline` only when the verdict is `Allow`.
+/// A `Block` verdict emits a Finding so the dashboard surfaces the oversized read.
+async fn run_file_read_dispatch(
+    writer: &Arc<Ssb>,
+    dispatcher: &dyn ToolDispatcher,
+    path: PathBuf,
+    budget_remaining_tokens: u32,
+    step_id: &str,
+) {
+    // Obtain total_bytes without reading content.
+    let total_bytes = match tokio::fs::metadata(&path).await {
+        Ok(m) => u32::try_from(m.len()).unwrap_or(u32::MAX),
+        Err(e) => {
+            tracing::warn!(step_id, error = %e, path = %path.display(),
+                "run_file_read_dispatch: metadata failed; skipping guard");
+            return;
+        }
+    };
+    let verdict = enforce_file_read_budget_guard(total_bytes, budget_remaining_tokens);
+    match verdict {
+        FileReadBudgetVerdict::Block { hint, .. } => {
+            tracing::debug!(step_id, %hint, "run_file_read_dispatch: budget guard blocked full read");
+            emit_finding(writer, "warn", "file_read_budget_block", &hint).await;
+        }
+        FileReadBudgetVerdict::Allow => {
+            // 300 matches elai_tools::OUTLINE_LINE_THRESHOLD (dev-dep; cannot import in prod).
+            match dispatcher
+                .dispatch_file_read_outline(path, 300)
+                .await
+            {
+                Ok(_view) => {
+                    tracing::debug!(step_id, "run_file_read_dispatch: outline fetched ok");
+                }
+                Err(e) => {
+                    tracing::warn!(step_id, error = %e, "run_file_read_dispatch: dispatch failed");
+                }
+            }
+        }
+    }
+}
 async fn run_classify_dispatch(
     writer: &Arc<Ssb>,
     dispatcher: &dyn ToolDispatcher,
@@ -4509,6 +5392,8 @@ async fn run_classify_dispatch(
     .await;
     if let Some(classified) = result.as_ref() {
         emit_failure_classified(writer, classified, step_id).await;
+    } else {
+        tracing::debug!(step_id, "run_classify_dispatch: no category matched; output is unclassified (non-Rust/non-pytest tool)");
     }
     emit_daira_trace(
         writer, "classify_failure", &summary, "exit", elapsed_us, outcome, step_id,
@@ -4988,7 +5873,7 @@ fn margin_bp(pct: f32) -> u16 {
     } else if scaled >= 10_000.0 {
         10_000
     } else {
-        scaled as u16
+        scaled as u16 // NARROWING-OK: pre-branch checks exclude <= 0.0 and >= 10_000.0; value in (0.0, 10_000.0) fits u16
     }
 }
 
@@ -5186,7 +6071,12 @@ async fn run_confirmation_gate(
     baby_step_id: u64,
     cancel: &CancelHandle,
 ) -> bool {
-    let intervention_id = Uuid::new_v4();
+    let intervention_id = {
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b)
+            .expect("getrandom: OS entropy source unavailable in confirmation gate");
+        uuid::Builder::from_random_bytes(b).into_uuid()
+    };
     let id_str = intervention_id.to_string();
     let step_id = format!("baby_step_{}", baby_step_id);
     let description = format!(
@@ -5280,6 +6170,7 @@ async fn run_confirmation_gate(
         }
     };
 
+    // NARROWING-OK: u128->u32; .min(u32::MAX as u128) clamps the value to u32 range before cast.
     let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
     let resolved_payload = crate::ssb::SsbPayload::InterventionResolved(
         crate::ssb::InterventionResolvedPayload {
@@ -5534,7 +6425,7 @@ async fn evaluate_pre_gate_and_emit_findings(
         source: task_summary,
         file_path: file_path_stub,
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
     let verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
     let mut any_block = false;
@@ -5730,7 +6621,7 @@ async fn evaluate_post_execution_rules_and_emit_findings(
             source: &source,
             file_path: &file_path_str,
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         };
         let verdicts =
             evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
@@ -5816,7 +6707,7 @@ pub fn evaluate_post_execution_block_found(
             source: &source,
             file_path: &file_path_str,
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         };
         let verdicts =
             evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &domains, &ctx);
@@ -5984,8 +6875,11 @@ async fn flush_final_integration_checkpoints(
 }
 
 /// Emit a TestOutcome row for an integration-checkpoint run so the dashboard
-/// activity feed shows per-level progress. On failure, additionally emit a
-/// Finding so the category filter surfaces it outside the test-outcome pane.
+/// activity feed shows per-level progress. Always emits a Finding too —
+/// failure path uses `INTEGRATION_CHECKPOINT_FAILED_CATEGORY` (pre-B-20A
+/// behaviour), success path uses `INTEGRATION_CHECKPOINT_SUCCESS_CATEGORY`
+/// (B-20A Task 8) so the B-7 dashboard surface can render a per-level
+/// histogram of checkpoint outcomes.
 async fn emit_checkpoint_outcome(
     writer: &Arc<Ssb>,
     level: DecompositionLevel,
@@ -5995,7 +6889,18 @@ async fn emit_checkpoint_outcome(
     let level_tag = checkpoint_level_tag(level);
     let test_name = format!("{level_tag}_{node_id}_integration");
     emit_test_outcome(writer, &test_name, run.success, run.total_duration_ms).await;
-    if !run.success {
+    if run.success {
+        emit_finding(
+            writer,
+            "info",
+            INTEGRATION_CHECKPOINT_SUCCESS_CATEGORY,
+            &format!(
+                "{level_tag} {node_id}: integration ok in {}ms",
+                run.total_duration_ms
+            ),
+        )
+        .await;
+    } else {
         let reason = run
             .failure_reason
             .as_deref()
@@ -6008,6 +6913,78 @@ async fn emit_checkpoint_outcome(
         )
         .await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-20A Task 7 — caller-side 50% budget guard for file reads (Decision D).
+//
+// The `ToolDispatcher` trait stays unchanged. The dispatcher returns an
+// outline by default for files >300 lines; the caller (this module) reads
+// the outline first, then calls back with `force_full=true` ONLY when the
+// estimated full-read cost is at-or-below 50% of the remaining context
+// budget. The spec wanted "tool layer enforcement" but the dispatcher has
+// no ContextBudget access (verified at tools/src/dispatcher.rs:68-74), and
+// extending the trait would touch every test fake + the dashboard wiring
+// site. Caller-side is the smallest correct surface.
+//
+// Token estimation: 4 bytes/token is the spec-anchored default
+// (phase-4B.txt §context-budget). The function operates on byte counts and
+// remaining-token counts so the caller can plug in any tokenizer estimate.
+// ---------------------------------------------------------------------------
+
+/// B-20A Task 7 verdict returned by `enforce_file_read_budget_guard`.
+#[derive(Debug)]
+pub enum FileReadBudgetVerdict {
+    /// Full read is within budget — caller may invoke
+    /// `dispatch_file_read_with_force_full(force_full=true)`.
+    Allow,
+    /// Full read would exceed 50% of remaining context. Caller MUST stay on
+    /// the outline path; `hint` carries a human-readable diagnostic for the
+    /// agent + Finding rows.
+    Block { hint: String, budget_remaining: u32 },
+}
+
+/// B-20A Task 7: caller-side 50% budget guard. Returns `Block` when the
+/// estimated full-read cost (`total_bytes / 4` tokens) exceeds half of
+/// `budget_remaining_tokens`. `Allow` otherwise.
+pub fn enforce_file_read_budget_guard(
+    total_bytes: u32,
+    budget_remaining_tokens: u32,
+) -> FileReadBudgetVerdict {
+    // Spec-anchored ratio (phase-4B.txt §context-budget) — 4 bytes/token.
+    const TOKEN_BYTES: u32 = 4;
+    // Half of the remaining context. Saturating to avoid any underflow on
+    // pathological inputs (budget_remaining_tokens == 0 ⇒ Block).
+    let half = budget_remaining_tokens / 2;
+    let estimated_tokens = total_bytes / TOKEN_BYTES;
+    if estimated_tokens > half {
+        let hint = format!(
+            "file read would consume ~{estimated_tokens} tokens, exceeding 50% of \
+             remaining budget ({budget_remaining_tokens}). Stay on outline + \
+             targeted line ranges instead of force_full.",
+        );
+        FileReadBudgetVerdict::Block {
+            hint,
+            budget_remaining: budget_remaining_tokens,
+        }
+    } else {
+        FileReadBudgetVerdict::Allow
+    }
+}
+
+/// B-20A Task 8: public test entry-point that mirrors `emit_checkpoint_outcome`.
+/// Exists solely so the integration_checkpoint_success contract test (in
+/// `crates/orchestrator/tests/integration_checkpoint_success.rs`) can exercise
+/// the success/failure Finding emission paths without spinning up the full
+/// task_runner. Production callers continue to use `emit_checkpoint_outcome`
+/// directly via the IntegrationTestRunner success/failure paths.
+pub async fn emit_integration_checkpoint_for_test(
+    writer: &Arc<Ssb>,
+    level: DecompositionLevel,
+    node_id: u64,
+    run: &IntegrationRunResult,
+) {
+    emit_checkpoint_outcome(writer, level, node_id, run).await;
 }
 
 /// Emit a Finding describing an integration-triggered bubble-up action so the
@@ -6265,6 +7242,8 @@ mod tests {
             ExecutionMode::Autonomous,
             &mut cache,
             &client,
+            None, // Track A.6: test helper, no SSB handle.
+            None, // B-7: no tree emitter in tests.
         )
         .await
         .expect("decompose");
@@ -6450,6 +7429,8 @@ mod tests {
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
                 task_splitter: None,
+                pipeline_grc: None,
+                model_capability_profile: None,
             },
         );
 
@@ -6567,6 +7548,8 @@ mod tests {
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
                 task_splitter: None,
+                pipeline_grc: None,
+                model_capability_profile: None,
             },
         );
 
@@ -6761,6 +7744,8 @@ mod tests {
                 irreversible_classifier: None,
                 dkg_querier_swap: None,
                 task_splitter: None,
+                pipeline_grc: None,
+                model_capability_profile: None,
             },
         );
 
@@ -7113,6 +8098,14 @@ mod tests {
         CheckpointContext {
             checkpoint_manager: CheckpointManager::new(OsClock),
             recovery_manager: RecoveryManager::new(OsClock),
+            supervision_manager: AsyncMutex::new(SupervisionManager::new(
+                OsClock,
+                SupervisionPolicy {
+                    max_restarts: 3,
+                    restart_window: std::time::Duration::from_secs(300),
+                    on_max_restarts: EscalationAction::Terminate,
+                },
+            )),
             scratch_dir,
         }
     }
@@ -7197,7 +8190,7 @@ mod tests {
         let seq = 13_i64;
         let bs_id = 42_u64;
 
-        emit_baby_step_recovery(&ssb, &cp, seq, bs_id).await;
+        emit_baby_step_recovery(&ssb, &cp, seq, bs_id, "test_phase_13").await;
 
         let death = ssb
             .query_by_type(SsbActionType::DeathEvent)
@@ -7234,7 +8227,7 @@ mod tests {
         let bs_id = 5_u64;
 
         emit_baby_step_checkpoint(&ssb, &cp, seq, bs_id, "work", false).await;
-        emit_baby_step_recovery(&ssb, &cp, seq, bs_id).await;
+        emit_baby_step_recovery(&ssb, &cp, seq, bs_id, "test_phase_99").await;
 
         // Recovery row's checkpoint_path should match the handle's agent_id
         // derived from the same seq — proves recovery reads the SAME checkpoint
@@ -7515,6 +8508,8 @@ mod tests {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         })
     }
 

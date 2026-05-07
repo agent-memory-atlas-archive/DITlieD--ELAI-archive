@@ -22,8 +22,8 @@ use crate::bsp::channels::{
     UNTRACKED_DEFAULT_LIMIT_BYTES, UNTRACKED_FORCE_CLEAR_MULTIPLIER,
 };
 use crate::ssb::{
-    CheckpointPayload, DeathEventPayload, MemoryMonitoringPayload, Ssb, SsbActionType,
-    SsbPayload, SsbReader,
+    AgentLifecyclePayload, BspSuperstepPayload, CheckpointPayload, DeathEventPayload,
+    MemoryMonitoringPayload, Ssb, SsbActionType, SsbPayload, SsbReader,
 };
 
 // ---------------------------------------------------------------------------
@@ -218,18 +218,20 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                 .await?;
 
             // Record timed-out agents as death events
+            let superstep_i64 = i64::try_from(superstep)
+                .map_err(|e| BspError::Serialization(format!("superstep {superstep} exceeds i64::MAX: {e}")))?;
             for (node_id, handle) in &timed_out {
                 let agent_id_str = handle.agent_id.to_string();
                 let death_payload = SsbPayload::DeathEvent(DeathEventPayload {
                     agent_id: agent_id_str.clone(),
                     classification: "timeout".to_owned(),
-                    prior_step_index: superstep as i64,
+                    prior_step_index: superstep_i64,
                     checkpoint_path: String::new(),
                     had_checkpoint: false,
                 });
                 ssb.write_payload(
                     &agent_id_str,
-                    superstep as i64,
+                    superstep_i64,
                     death_payload,
                     vec![],
                 )
@@ -282,13 +284,13 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     let death_payload = SsbPayload::DeathEvent(DeathEventPayload {
                         agent_id: agent_id_str.clone(),
                         classification: "timeout".to_owned(),
-                        prior_step_index: superstep as i64,
+                        prior_step_index: superstep_i64,
                         checkpoint_path: String::new(),
                         had_checkpoint: false,
                     });
                     ssb.write_payload(
                         &agent_id_str,
-                        superstep as i64,
+                        superstep_i64,
                         death_payload,
                         vec![],
                     )
@@ -301,6 +303,7 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
             {
                 let agent_id = format!("bsp_engine:{}", self.config.session_id);
                 let threshold = UNTRACKED_DEFAULT_LIMIT_BYTES;
+                // NARROWING-OK: UNTRACKED_FORCE_CLEAR_MULTIPLIER = 2 (u64 const), value always fits usize.
                 let force_threshold = threshold * UNTRACKED_FORCE_CLEAR_MULTIPLIER as usize;
                 let sizes = channels.iter_untracked_sizes();
 
@@ -317,7 +320,7 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         threshold_exceeded: size > threshold,
                     });
 
-                    ssb.write_payload(&agent_id, superstep as i64, payload, vec![])
+                    ssb.write_payload(&agent_id, superstep_i64, payload, vec![])
                         .await?;
 
                     if action == "force_clear" {
@@ -360,6 +363,40 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
             )
             .await?;
 
+            // 11. BspSuperstep SSB row — one summary per completed superstep.
+            {
+                let ts_ms = self
+                    .clock
+                    .system_now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(std::time::Duration::ZERO)
+                    .as_millis();
+                let ts_ms_i64 = i64::try_from(ts_ms).unwrap_or(i64::MAX);
+                let channels_count = u32::try_from(channel_snapshot.len())
+                    .unwrap_or(u32::MAX);
+                let snapshot_id = format!(
+                    "{}:superstep:{}",
+                    self.config.session_id,
+                    superstep
+                );
+                let bsp_agent_id = format!("bsp_engine:{}", self.config.session_id);
+                let payload = SsbPayload::BspSuperstep(BspSuperstepPayload {
+                    snapshot_id,
+                    ts_ms: ts_ms_i64,
+                    channels_count,
+                });
+                if let Err(e) = ssb
+                    .write_payload(&bsp_agent_id, superstep_i64, payload, vec![])
+                    .await
+                {
+                    tracing::warn!(
+                        superstep,
+                        error = %e,
+                        "bsp_engine: BspSuperstep SSB write failed (non-fatal)"
+                    );
+                }
+            }
+
             superstep += 1;
             attempt = 0;
         }
@@ -393,6 +430,29 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
         // pre-spawn state (correct for Phase 4F live hardware queries).
         let max_concurrent = self.pool.max_concurrent();
         let handles = self.pool.spawn_parallel(pool_tasks)?;
+
+        // Emit AgentLifecycle "spawned" rows (B-6). Non-fatal on write error.
+        let superstep_i64_lc = i64::try_from(superstep).unwrap_or(i64::MAX);
+        let bsp_agent_id_lc = format!("bsp_engine:{}", self.config.session_id);
+        for handle in &handles {
+            let payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                agent_id: handle.agent_id.to_string(),
+                role: agent_role_str(handle.role),
+                state: "spawned".to_owned(),
+                death_class: None,
+            });
+            if let Err(e) = ssb
+                .write_payload(&bsp_agent_id_lc, superstep_i64_lc, payload, vec![])
+                .await
+            {
+                tracing::warn!(
+                    agent_id = %handle.agent_id,
+                    error = %e,
+                    "bsp_engine: AgentLifecycle spawned SSB write failed (non-fatal)"
+                );
+            }
+        }
+
         let timeout_dur = self.config.straggler_timeout;
 
         // Semaphore limits JoinSet fan-out to VRAM-computed concurrency
@@ -454,8 +514,6 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
 
         // Sort by original task index to preserve SSB seq ordering
         results.sort_by_key(|(idx, _)| *idx);
-
-        let _ = (ssb, superstep); // used in future phases for SSB recording
 
         let mut completed = Vec::new();
         let mut timed_out = Vec::new();
@@ -554,6 +612,8 @@ async fn record_ephemeral_clears(
 ) -> Result<(), BspError> {
     let cleared_json =
         serde_json::to_string(cleared).map_err(|e| BspError::Serialization(e.to_string()))?;
+    let superstep_i64 = i64::try_from(superstep)
+        .map_err(|e| BspError::Serialization(format!("superstep {superstep} exceeds i64::MAX: {e}")))?;
 
     let agent_id = format!("bsp_engine:{session_id}");
     let payload = SsbPayload::Checkpoint(CheckpointPayload {
@@ -564,7 +624,7 @@ async fn record_ephemeral_clears(
         file_sizes: vec![],
     });
 
-    ssb.write_payload(&agent_id, superstep as i64, payload, vec![])
+    ssb.write_payload(&agent_id, superstep_i64, payload, vec![])
         .await?;
     Ok(())
 }
@@ -650,7 +710,9 @@ pub fn recover_from_checkpoint(
     // counts so the registry is in a clean state for the next run() call.
     channels.reset_ephemeral_write_counts();
     // Query SSB entries at the checkpoint's superstep
-    let entries = ssb.query_by_superstep(checkpoint.superstep as i64)?;
+    let superstep_i64 = i64::try_from(checkpoint.superstep)
+        .map_err(|e| BspError::Serialization(format!("checkpoint.superstep {} exceeds i64::MAX: {e}", checkpoint.superstep)))?;
+    let entries = ssb.query_by_superstep(superstep_i64)?;
 
     // Build a set of channel names mentioned in ephemeral-clear Checkpoint entries
     // written by this BSP engine session.
@@ -720,6 +782,25 @@ pub fn recover_from_checkpoint(
     );
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert AgentRole to its canonical snake_case string for SSB payloads.
+fn agent_role_str(role: AgentRole) -> String {
+    match role {
+        AgentRole::Executor => "executor",
+        AgentRole::Auditor => "auditor",
+        AgentRole::Researcher => "researcher",
+        AgentRole::Designer => "designer",
+        AgentRole::PromptEngineer => "prompt_engineer",
+        AgentRole::ContextCompiler => "context_compiler",
+        AgentRole::MemoryWriter => "memory_writer",
+        AgentRole::MediaValidator => "media_validator",
+    }
+    .to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,7 +1566,7 @@ mod tests {
         ];
 
         let mut engine = BspEngine::new(config, pool, clock);
-        let start = tokio::time::Instant::now();
+        let start = tokio::time::Instant::now(); // TEST_KEEP: concurrency timing assertion
         let result = engine.run(nodes, &mut channels, &ssb).await.expect("run");
         let elapsed = start.elapsed();
 

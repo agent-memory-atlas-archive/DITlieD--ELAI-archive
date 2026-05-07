@@ -21,7 +21,7 @@ mod file_ops;
 pub mod evidence;
 pub mod fsm;
 pub mod gate;
-mod hooks;
+pub mod hooks;
 pub mod hook_dispatcher;
 pub mod shortcoder_hook;
 pub mod provider_signals;
@@ -57,7 +57,6 @@ mod pipeline_builder_bench;
 #[cfg(test)]
 mod pipeline_builder_tests;
 pub mod web_research_orchestrator;
-mod remote;
 mod session;
 #[cfg(test)]
 mod session_control;
@@ -200,13 +199,15 @@ pub use file_ops::{
 };
 pub use hooks::{
     HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
+    StopHookDecision, StopHookGate, STOP_HOOK_DOUBLE_PRESS_WINDOW_MS,
 };
 pub use hook_dispatcher::{
-    emit_hook_events_to_ssb, emit_shortcoder_compression_to_ssb,
-    emit_tiered_analysis_summary_to_ssb, sanitized_block_message, HookDispatcher,
+    emit_hook_events_to_ssb, emit_hook_latency_violation_to_ssb,
+    emit_shortcoder_compression_to_ssb, emit_tiered_analysis_summary_to_ssb,
+    hook_tier_budget_ms, report_hook_latency, sanitized_block_message, HookDispatcher,
     HookError as HookDispatcherError, HookFinding, HookInvocation, HookPoint, HookTier,
     HookVerdictKind, InProcessHookDispatcher, ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
-    SANITIZED_BLOCK_MESSAGE,
+    HOOK_T1_BUDGET_MS, HOOK_T2_BUDGET_MS, HOOK_T3_BUDGET_MS, SANITIZED_BLOCK_MESSAGE,
 };
 pub use shortcoder_hook::{
     ShortCoderHook, ShortCoderHookError, ShortCoderOutcome, ELAI_DISABLE_SHORTCODER_ENV,
@@ -274,6 +275,7 @@ pub use research_pipeline::{
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend,
 };
+pub use grounding_client::{GroundingClient, SidecarGroundingClient};
 pub use searx_search_backend::{SearxSearchBackend, DEFAULT_SIDECAR_SEARCH_URL};
 pub use pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PipelineId, NodeIndex, StateId, DataRef, RuleId,
@@ -287,11 +289,6 @@ pub use pipeline_builder::{
 pub use recovery_recipes::{
     attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
     RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
-};
-pub use remote::{
-    inherited_upstream_proxy_env, no_proxy_list, read_token, upstream_proxy_ws_url,
-    RemoteSessionContext, UpstreamProxyBootstrap, UpstreamProxyState, DEFAULT_REMOTE_BASE_URL,
-    DEFAULT_SESSION_TOKEN_PATH, DEFAULT_SYSTEM_CA_BUNDLE, NO_PROXY_HOSTS, UPSTREAM_PROXY_ENV_KEYS,
 };
 pub use elai_core::sandbox::{
     build_linux_sandbox_command, detect_container_environment, detect_container_environment_from,
@@ -344,7 +341,10 @@ pub use agent_template::{
     build_agent_prompt, build_agent_system_preamble, AgentOutputFormat, AgentPromptContext,
     AgentTemplateConfig, AgentTypeConfig,
 };
-pub use grc::{PipelineGrc, PipelineGrcError};
+pub use grc::{
+    pipeline_grc_disabled_via_env, PipelineGrc, PipelineGrcError,
+    ELAI_DISABLE_PIPELINE_GRC_ENV,
+};
 pub use output_postprocessor::{process as postprocess_output, OutputConfig};
 pub use worker_boot::{
     Worker, WorkerEvent, WorkerEventKind, WorkerEventPayload, WorkerFailure, WorkerFailureKind,
@@ -376,6 +376,20 @@ pub use ssb::{
     SteeringComputedPayload, SteeringComputeFailedPayload,
     // Batch-ful-d — external MCP server lifecycle.
     McpServerConnectedPayload, McpServerDisconnectedPayload, McpToolCalledPayload,
+    // Tier 1 CHAT window — dashboard-originated message + card rows.
+    ChatMessagePayload, ChatResponsePayload,
+    // Tier 4 Settings reorg (§8) — execution-mode selection row.
+    ExecutionModeChangedPayload,
+    // Track A.2 — synthesis path selection row.
+    ResearchPathChosenPayload,
+    // Track A.6 — grounding cache hit/miss event row.
+    GroundingCacheEventPayload,
+    // B-10 (DECISION-C) — per-dispatch ContextBudget snapshot payload re-exported
+    // so dashboard commands.rs can read real per-slot allocations from SSB.
+    ContextBudgetComputedPayload,
+    // B-6 — orchestration producer wiring payloads.
+    AgentLifecyclePayload, AntiSpiralHitPayload, BspSuperstepPayload,
+    EvidenceGateEvaluatedPayload, SupervisionEventPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -419,26 +433,49 @@ pub use feasibility_probe::{
     ELAI_DISABLE_FEASIBILITY_PROBE_ENV, RESOURCE_MARGIN_THRESHOLD_PCT,
 };
 pub use ssb_viewer::{
-    FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
+    ChatEntry, FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
     RuleViolationSummary, SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError,
-    StepStatus, ThinkStepSummary, validate_request_id,
+    StepStatus, TaskSummary, ThinkStepSummary, validate_request_id,
+    // Tier 2 Track B (dashboard-wiring §6) — PlanWindow / PreviewWindow DTOs.
+    // `PhaseDetail` is renamed on re-export to `DashboardPhaseDetail` because
+    // `plan_skeleton::PhaseDetail` (re-exported above) already occupies the
+    // bare name in this module. Dashboard callers import the alias.
+    BabyStepDetail, BabyStepRef, ConceptNodeRef, DecompositionTreeSnapshot,
+    PhaseDetail as DashboardPhaseDetail, PhaseNodeRef, PreviewAvailableRow, StepNodeRef,
+    // Tier 3 partial (session s-84064) — drawer DTOs consumed by
+    // elai-dashboard::commands. Zero new SsbActionType variants; all DTOs
+    // are typed views over existing payload structs.
+    AgentCheckpointEntry, Bm25StatsSnapshot, ContextBudgetSnapshot,
+    DairTraceEntry, DkgStatsSnapshot, FailureTaxonomyEntry, FreshnessState,
+    GgSignalEntry, GrcBudgetEntry, HookVerdictEntry, KnowledgeReadinessSnapshot,
+    MistakeBookEntry, PageRankEntry, QueryTierStats, SessionHandoffEntry,
+    ShortCoderEffectEntry, TokenReclamationStats, ValidationTierEntry,
+    VectorStatsSnapshot, VramTierSnapshot,
+    // Tier 3 complete (session s-456340) — Research drawer DTOs. Typed
+    // views over existing payload structs; zero new SsbActionType variants.
+    ResearchBudgetSnapshot, ResearchStepEntry, SourceTierDistribution,
 };
 pub use task_runner::{
-    detect_scaffold_template, evaluate_post_execution_block_found, is_web_research_task,
-    is_web_scaffold_task, new_dev_server_registry, project_dir_is_web, start_task_runner,
+    detect_scaffold_template, emit_integration_checkpoint_for_test,
+    enforce_file_read_budget_guard, evaluate_post_execution_block_found, is_web_research_task,
+    is_web_scaffold_task, new_dev_server_registry, project_dir_is_web,
+    serialize_decomposition_for_grounding, start_task_runner,
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor,
     CancelHandle, CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher,
-    DevServerRegistry, LaunchedPreview, ProjectDirResolver, RuleEvaluator, ScaffoldApplier,
-    SsbWebResearchStepEmitter, SyntheticBabyStepExecutor, TaskRunnerConfig, TaskRunnerError,
-    WebResearchRunner, WebResearchSummary, WebValidatorLauncher, AGENT_FAILED_CATEGORY,
-    BABY_STEP_PRE_GATE_ACTION, DEFAULT_BABY_STEP_TIMEOUT_MS, DEFAULT_DEV_SERVER_COMMAND,
-    DEFAULT_DEV_SERVER_PORT, DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE,
-    DEFAULT_SOURCE_TIERS_TOML, DETERMINISTIC_AUDIT_CATEGORY, DEV_SERVER_FAILED_CATEGORY,
-    ELAI_DISABLE_SHORTCODER_POSTOOLUSE_ENV, INDEXING_SUMMARY_CATEGORY, MAX_BABY_STEPS_PER_TASK,
-    POST_EXECUTION_RULES_AUDIT_STEP, PREVIEW_SLOT_LIVE, RULE_VIOLATION_CATEGORY,
-    RULE_VIOLATION_POST_CATEGORY, RUNNER_AGENT_ID, SPIRAL_HARDSTOP_CATEGORY,
-    WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY, WEB_SCAFFOLD_TEMPLATE_ASTRO,
-    WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE, WEB_SCAFFOLD_TEMPLATE_VANILLA,
+    DevServerRegistry, FileReadBudgetVerdict, LaunchedPreview, ProjectDirResolver,
+    RuleEvaluator, ScaffoldApplier, SsbWebResearchStepEmitter, SyntheticBabyStepExecutor,
+    TaskRunnerConfig, TaskRunnerError, WebResearchRunner, WebResearchSummary,
+    WebValidatorLauncher, AGENT_FAILED_CATEGORY, BABY_STEP_PRE_GATE_ACTION,
+    DEFAULT_BABY_STEP_TIMEOUT_MS, DEFAULT_DEV_SERVER_COMMAND, DEFAULT_DEV_SERVER_PORT,
+    DEFAULT_ROOT_QUESTION_MAX_CHARS, DEFAULT_SCAFFOLD_TEMPLATE, DEFAULT_SOURCE_TIERS_TOML,
+    DETERMINISTIC_AUDIT_CATEGORY, DEV_SERVER_FAILED_CATEGORY,
+    ELAI_DISABLE_SHORTCODER_POSTOOLUSE_ENV, INDEXING_SUMMARY_CATEGORY,
+    INTEGRATION_CHECKPOINT_FAILED_CATEGORY, INTEGRATION_CHECKPOINT_SUCCESS_CATEGORY,
+    MAX_BABY_STEPS_PER_TASK, POST_EXECUTION_RULES_AUDIT_STEP, PREVIEW_SLOT_LIVE,
+    RULE_VIOLATION_CATEGORY, RULE_VIOLATION_POST_CATEGORY, RUNNER_AGENT_ID,
+    SPIRAL_HARDSTOP_CATEGORY, WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY,
+    WEB_SCAFFOLD_TEMPLATE_ASTRO, WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE,
+    WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };
 pub use rule_loader::load_seed_rules_from_dir;
 pub use supervision::{

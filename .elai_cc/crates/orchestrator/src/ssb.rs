@@ -23,7 +23,21 @@ use elai_core::clock::ClockProvider;
 // Schema version — bump on any DDL change
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION: i64 = 19;
+// B-10: bumped 21 -> 22 for SsbActionType::ContextBudgetComputed +
+// SsbFilteredByOverlap. Tier-4 last bumped 20 -> 21 for ExecutionModeChanged.
+// B-19A: bumped 22 -> 23 for SsbActionType::HookLatencyViolation
+// (per-hook-tier T1/T2/T3 latency budget breach beacon).
+// batch-ful-d: bumped 23 -> 24 for research_path_chosen + grounding_cache_event CHECK variants.
+// Track B (s-1430428): bumped 24 -> 25 for mcp_server_connected / mcp_tool_called /
+// mcp_server_disconnected CHECK variants. Enum + from_str + payloads already landed in
+// batch-ful-d; this bump completes the CHECK constraint to match the enum surface.
+// B-6 (coordinated schema bump): bumped 25 -> 26 for B-4 circuit_breaker_state_change,
+// B-7 bubble_up_typed / integration_checkpoint_success / dag_repair_round /
+// concept_decomposition_node, and B-6's own evidence_gate_evaluated / supervision_event /
+// bsp_superstep / agent_lifecycle / anti_spiral_hit. All CHECK, enum, as_sql_str,
+// from_str, payloads, and SsbPayload variants land atomically in this bump.
+// DESTRUCTIVE: existing v25 session DBs are DROPped on first read (no migration logic).
+const SCHEMA_VERSION: i64 = 26;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -64,7 +78,29 @@ CREATE TABLE IF NOT EXISTS ssb (
         'telescope_collapse', 'config_warning',
         'constraints_injected', 'intervention_resolved',
         'dkg_querier_swapped',
-        'steering_computed', 'steering_compute_failed'
+        'steering_computed', 'steering_compute_failed',
+        'chat_message', 'chat_response',
+        'execution_mode_changed',
+        -- B-10 (DECISION-C): per-dispatch ContextBudget snapshot + 3E.5
+        -- SSB entry filtering result for the dashboard's per-slot bar chart.
+        'context_budget_computed', 'ssb_filtered_by_overlap',
+        -- B-19A (T10): hook latency budget violation beacon emitted by
+        -- the dispatcher when a T1/T2/T3 hook overruns its tier budget.
+        'hook_latency_violation',
+        -- batch-ful-d (A.2/A.6): research path selection + grounding cache hit/miss.
+        'research_path_chosen', 'grounding_cache_event',
+        -- Track B (s-1430428): MCP bridge lifecycle + tool-call beacons.
+        -- Enum variants McpServerConnected / McpToolCalled / McpServerDisconnected
+        -- already declared at L283-291; from_str arms at L498-500.
+        'mcp_server_connected', 'mcp_tool_called', 'mcp_server_disconnected',
+        -- B-4: circuit-breaker state transition for embedding/reranker models.
+        'circuit_breaker_state_change',
+        -- B-7: bubble-up failure cascade, integration checkpoints, DAG repair, decomposition.
+        'bubble_up_typed', 'integration_checkpoint_success',
+        'dag_repair_round', 'concept_decomposition_node',
+        -- B-6: orchestration producer wiring — evidence gates, supervision, BSP, agent lifecycle.
+        'evidence_gate_evaluated', 'supervision_event',
+        'bsp_superstep', 'agent_lifecycle', 'anti_spiral_hit'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -90,7 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 32 action types recorded in SSB entries.
+/// All 75 action types recorded in SSB entries.
+/// B-19A added `HookLatencyViolation` (was 74 in B-10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -273,6 +310,79 @@ pub enum SsbActionType {
     /// by user toggle, heartbeat timeout, or peer-closed TCP. Carries a
     /// [`McpServerDisconnectedPayload`].
     McpServerDisconnected,
+    /// Tier 1 CHAT window (dashboard-wiring-plan.txt §5) — user-submitted
+    /// chat-surface message after client-side intent classification.
+    /// Dashboard-originated row; no orchestrator consumer today (same
+    /// deferral pattern as `TaskSubmitted`). Carries a [`ChatMessagePayload`].
+    ChatMessage,
+    /// Tier 1 CHAT window — system-emitted card response rendered in the
+    /// chat message list (StatusCard / ErrorCard / DisambiguationCard /
+    /// SteeringAckCard). Dashboard-originated. Carries a
+    /// [`ChatResponsePayload`].
+    ChatResponse,
+    /// Tier 4 Settings reorg (dashboard-wiring-plan.txt §8) — execution-mode
+    /// selection from the Settings window (LOCAL / CLOUD / HYBRID). Emitted
+    /// by the dashboard `set_execution_mode` Tauri command. Carries a
+    /// [`ExecutionModeChangedPayload`]. Dashboard-originated row; CLOUD /
+    /// HYBRID dispatch paths are not yet implemented (§9 group 20) — the row
+    /// is accepted but a follow-up `Finding` row is emitted to flag the gap.
+    ExecutionModeChanged,
+    /// B-10 (DECISION-C): per-dispatch ContextBudget snapshot. Emitted after
+    /// `ContextBudget::compute_with_profile` succeeds at every
+    /// `build_dispatch_context` callsite so the dashboard's per-slot bar
+    /// chart can render real allocation values matching the active tier
+    /// profile (e.g. 12.5/66.7/12.5/8.3 for 7B-12GB). Carries a
+    /// [`ContextBudgetComputedPayload`]. Schema version 22.
+    ContextBudgetComputed,
+    /// B-10 / 3E.5 (DECISION-C): SSB entry filtering summary emitted when
+    /// the SsbEntries slot truncation drops candidates below
+    /// [`crate::context_budget::FILE_OVERLAP_THRESHOLD`]. Carries a
+    /// [`SsbFilteredByOverlapPayload`] with `entries_total` / `entries_kept`
+    /// / `overlap_threshold`. Schema version 22.
+    SsbFilteredByOverlap,
+    /// B-19A (T10) — emitted by the hook dispatcher whenever a T1/T2/T3
+    /// hook overruns its tier latency budget
+    /// (T1 <= 1ms, T2 <= 10ms, T3 <= 5ms). Carries a
+    /// [`HookLatencyViolationPayload`]. Schema version 23.
+    HookLatencyViolation,
+    /// Track A.2 — research synthesis path selection. Emitted once per
+    /// `phase_f_synthesize` call. Carries a [`ResearchPathChosenPayload`].
+    ResearchPathChosen,
+    /// Track A.6 — grounding cache hit or miss. Emitted by `ground_or_cached`
+    /// on each call. Carries a [`GroundingCacheEventPayload`].
+    GroundingCacheEvent,
+    /// B-4: circuit-breaker state transition for embedding/reranker models.
+    /// Emitted by CrossEncoderReranker + OrtVectorModule on CLOSED->OPEN or HALF_OPEN transitions.
+    /// Dashboard get_embedding_breakers reads the latest row per `model` field.
+    /// Carries a [`CircuitBreakerStateChangePayload`].
+    CircuitBreakerStateChange,
+    /// B-7: one row per BubbleUpEvent push in handle_failure() / bubble_up_on_*_integration_fail().
+    /// Carries a [`BubbleUpTypedPayload`] with from/to level, action variant, and reason.
+    BubbleUpTyped,
+    /// B-7: emitted at all 4 DecompositionLevel checkpoints by IntegrationCheckpointEmitter.
+    /// Carries a [`IntegrationCheckpointSuccessPayload`] with level, node_id, timing, success flag.
+    IntegrationCheckpointSuccess,
+    /// B-7: one row per RepairAction emitted by DagRepairLoop::repair() via DagRepairEmitter.
+    /// Carries a [`DagRepairRoundPayload`] with action kind, round number, and reason string.
+    DagRepairRound,
+    /// B-7: one row per concept/phase/step/baby_step built inside research_decompose().
+    /// Carries a [`ConceptDecompositionNodePayload`] with node_kind, node_id, parent_id, name.
+    ConceptDecompositionNode,
+    /// B-6: emitted after each EvidenceGate::check() call in the FSM transition path.
+    /// Carries an [`EvidenceGateEvaluatedPayload`] with gate_id, verdict, and ts_ms.
+    EvidenceGateEvaluated,
+    /// B-6: emitted by the supervision layer on each restart or kill event.
+    /// Carries a [`SupervisionEventPayload`] with agent_id, event kind, and attempt count.
+    SupervisionEvent,
+    /// B-6: one row per completed BSP superstep written by the BSP engine.
+    /// Carries a [`BspSuperstepPayload`] with snapshot_id, ts_ms, and channels_count.
+    BspSuperstep,
+    /// B-6: agent lifecycle state change (spawned / ready / exited).
+    /// Carries an [`AgentLifecyclePayload`] with agent_id, role, state, and optional death_class.
+    AgentLifecycle,
+    /// B-6: anti-spiral escalation signal — step hash repeated past threshold.
+    /// Carries an [`AntiSpiralHitPayload`] with agent_id, step_hash, and count.
+    AntiSpiralHit,
 }
 
 impl SsbActionType {
@@ -350,6 +460,25 @@ impl SsbActionType {
             Self::McpServerConnected => "mcp_server_connected",
             Self::McpToolCalled => "mcp_tool_called",
             Self::McpServerDisconnected => "mcp_server_disconnected",
+            Self::ChatMessage => "chat_message",
+            Self::ChatResponse => "chat_response",
+            Self::ExecutionModeChanged => "execution_mode_changed",
+            Self::ContextBudgetComputed => "context_budget_computed",
+            Self::SsbFilteredByOverlap => "ssb_filtered_by_overlap",
+            Self::HookLatencyViolation => "hook_latency_violation",
+            Self::ResearchPathChosen => "research_path_chosen",
+            Self::GroundingCacheEvent => "grounding_cache_event",
+            Self::CircuitBreakerStateChange => "circuit_breaker_state_change",
+            Self::BubbleUpTyped => "bubble_up_typed",
+            Self::IntegrationCheckpointSuccess => "integration_checkpoint_success",
+            Self::DagRepairRound => "dag_repair_round",
+            Self::ConceptDecompositionNode => "concept_decomposition_node",
+            // B-6: orchestration producer wiring.
+            Self::EvidenceGateEvaluated => "evidence_gate_evaluated",
+            Self::SupervisionEvent => "supervision_event",
+            Self::BspSuperstep => "bsp_superstep",
+            Self::AgentLifecycle => "agent_lifecycle",
+            Self::AntiSpiralHit => "anti_spiral_hit",
         }
     }
 }
@@ -433,6 +562,27 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "mcp_server_connected" => Ok(SsbActionType::McpServerConnected),
         "mcp_tool_called" => Ok(SsbActionType::McpToolCalled),
         "mcp_server_disconnected" => Ok(SsbActionType::McpServerDisconnected),
+        "chat_message" => Ok(SsbActionType::ChatMessage),
+        "chat_response" => Ok(SsbActionType::ChatResponse),
+        "execution_mode_changed" => Ok(SsbActionType::ExecutionModeChanged),
+        "context_budget_computed" => Ok(SsbActionType::ContextBudgetComputed),
+        "ssb_filtered_by_overlap" => Ok(SsbActionType::SsbFilteredByOverlap),
+        "hook_latency_violation" => Ok(SsbActionType::HookLatencyViolation),
+        "research_path_chosen" => Ok(SsbActionType::ResearchPathChosen),
+        "grounding_cache_event" => Ok(SsbActionType::GroundingCacheEvent),
+        // B-4 (v26 bump completed).
+        "circuit_breaker_state_change" => Ok(SsbActionType::CircuitBreakerStateChange),
+        // B-7 (v26 bump completed).
+        "bubble_up_typed" => Ok(SsbActionType::BubbleUpTyped),
+        "integration_checkpoint_success" => Ok(SsbActionType::IntegrationCheckpointSuccess),
+        "dag_repair_round" => Ok(SsbActionType::DagRepairRound),
+        "concept_decomposition_node" => Ok(SsbActionType::ConceptDecompositionNode),
+        // B-6: orchestration producer wiring.
+        "evidence_gate_evaluated" => Ok(SsbActionType::EvidenceGateEvaluated),
+        "supervision_event" => Ok(SsbActionType::SupervisionEvent),
+        "bsp_superstep" => Ok(SsbActionType::BspSuperstep),
+        "agent_lifecycle" => Ok(SsbActionType::AgentLifecycle),
+        "anti_spiral_hit" => Ok(SsbActionType::AntiSpiralHit),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -693,6 +843,56 @@ pub struct ContextReductionPayload {
     pub slots_affected: Vec<u8>,
 }
 
+/// B-10 (DECISION-C) — per-dispatch ContextBudget snapshot. Emitted once per
+/// successful `ContextBudget::compute_with_profile` call so the dashboard
+/// per-slot bar chart can render real allocation values matching the active
+/// model tier (e.g. 12.5/66.7/12.5/8.3 weighting for 7B-12GB).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextBudgetComputedPayload {
+    /// Tier label (e.g. "micro_7b_12gb", "micro_3b_12gb", "large_32b_48gb",
+    /// "micro_8gb"). Sourced from the
+    /// `ModelCapabilityProfile.model_name` so the dashboard can group by tier.
+    pub tier: String,
+    /// Raw model_max_context fed into `compute_with_profile` before
+    /// effective_ceiling clamping (caller's pre-tier value).
+    pub raw_max: usize,
+    /// Per-slot weights snapshot (8 slots, scaled to 0..=10000 basis points).
+    pub slots: Vec<u64>,
+    /// Per-slot allocated_tokens after compute_with_profile (8 entries).
+    pub allocations: Vec<usize>,
+    /// Number of adaptive-reduction levels fired (0 = Normal, up to 4 = Terminal).
+    pub adapt_levels_fired: u8,
+}
+
+/// B-10 / 3E.5 (DECISION-C) — SSB entry filtering summary emitted whenever
+/// the SsbEntries slot truncation drops candidates scoring below
+/// [`crate::context_budget::FILE_OVERLAP_THRESHOLD`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SsbFilteredByOverlapPayload {
+    pub entries_total: usize,
+    pub entries_kept: usize,
+    pub overlap_threshold: f32,
+}
+
+/// B-19A (T10) — hook latency budget violation. Emitted by the dispatcher
+/// whenever a T1/T2/T3 hook tier overruns its budget
+/// (T1 <= 1ms, T2 <= 10ms, T3 <= 5ms). Used by the dashboard to surface
+/// rule-engine slowness on the activity feed. The dispatcher emits at most
+/// one of these per tier per dispatch; an absent row means the tier ran
+/// within budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookLatencyViolationPayload {
+    /// Hook point name — `"PreToolUse"`, `"PostToolUse"`, `"Stop"`,
+    /// or `"PreCompact"`.
+    pub hook_name: String,
+    /// Tier label — `"T1"`, `"T2"`, `"T3"`, or `"Composite"`.
+    pub tier: String,
+    /// The configured budget in milliseconds for this tier.
+    pub budget_ms: u64,
+    /// The measured wall-clock latency in milliseconds.
+    pub actual_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchMergePayload {
     pub winner_name: String,
@@ -753,6 +953,180 @@ pub struct WebResearchStepPayload {
     pub iteration: u32,
     pub sources_fetched: u32,
     pub sources_used: u32,
+    /// Track A.4: which HTTP fetcher backend served this iteration.
+    /// "reqwest" | "obscura" | "" (empty = pre-patch row, default via serde).
+    #[serde(default)]
+    pub fetcher: String,
+}
+
+/// Track A.2: research synthesis path selection.
+///
+/// Emitted once per `phase_f_synthesize` call with the chosen synthesis path
+/// ("llm" or "deterministic_fallback") and the reason for that choice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResearchPathChosenPayload {
+    /// "llm" | "deterministic_fallback"
+    pub path: String,
+    /// "sentinel" | "empty_response" | "no_citation_markers" | "grounding_error" | "no_claims" | "llm"
+    pub reason: String,
+    /// Wall-clock ms since UNIX_EPOCH at emission time.
+    pub ts_ms: u64,
+}
+
+/// Track A.6: grounding cache hit or miss event.
+///
+/// Emitted by `ground_or_cached` on each call so the dashboard can aggregate
+/// cache efficiency per research session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroundingCacheEventPayload {
+    /// "hit" | "miss"
+    pub kind: String,
+    /// First 8 hex chars of the blake3 hash of the cache key.
+    pub key_fingerprint: String,
+    /// ResearchLevel name: "Idea" | "Concept" | "Phase" | "Step"
+    pub level: String,
+    /// Microseconds elapsed from call entry to return.
+    pub elapsed_us: u64,
+}
+
+/// B-4: circuit-breaker state transition for an embedding or reranker model.
+/// Emitted by CrossEncoderReranker + OrtVectorModule on state changes.
+/// Dashboard get_embedding_breakers queries latest row per `model`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CircuitBreakerStateChangePayload {
+    /// Model identifier: "graphcodebert" | "granite-embed" | "ms-marco-l12" | "ms-marco-l6" | "splade-v3"
+    pub model: String,
+    /// New state: "CLOSED" | "OPEN" | "HALF_OPEN"
+    pub state: String,
+    /// Previous state: "CLOSED" | "OPEN" | "HALF_OPEN"
+    pub previous_state: String,
+    /// Number of consecutive failures at transition time.
+    pub failures: u32,
+    /// Rolling success rate [0.0, 1.0] at transition time.
+    pub success_rate: f64,
+    /// Unix epoch ms of the failure that triggered this transition (None if no failure).
+    pub last_failure_ts: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// B-7 SCHEMA payload structs — deferred (v25->v26 bump coordinated with B-6/B-9)
+// ---------------------------------------------------------------------------
+
+/// B-7: one row per BubbleUpEvent pushed in handle_failure() or bubble_up_on_*_integration_fail().
+/// `from_level` == `to_level` for threshold-miss events; differs on cascade triggers.
+/// `action_kind` is the BubbleUpAction discriminant as a snake_case string:
+///   "research_alternative" | "redecompose_step" | "replan_phase" | "replan_concept"
+///   | "diagnose_and_retry" | "escalate"
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BubbleUpTypedPayload {
+    pub from_level: String,
+    pub to_level: String,
+    pub action_kind: String,
+    /// Compact context string (baby_step_id, step_id, phase_id, concept_id, or escalate context).
+    pub reason: String,
+    pub failure_count: u32,
+    pub threshold: u32,
+}
+
+/// B-7: emitted by run_integration_checkpoint() for all 4 DecompositionLevels.
+/// `level` is the DecompositionLevel discriminant: "BabyStep" | "Step" | "Phase" | "Concept".
+/// This structured variant replaces the generic Finding row emitted by B-20A task_runner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationCheckpointSuccessPayload {
+    pub level: String,
+    pub node_id: u64,
+    pub wiring_target: String,
+    pub success: bool,
+    pub failure_reason: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// B-7: one row per RepairAction emitted by DagRepairLoop::repair().
+/// `action_kind` is "reorder" | "substitute".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DagRepairRoundPayload {
+    pub action_kind: String,
+    pub round: u32,
+    pub reason: String,
+}
+
+/// B-7: one row per node built during research_decompose().
+/// `node_kind` is "concept" | "phase" | "step" | "baby_step".
+/// `parent_id` is 0 for root concept nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptDecompositionNodePayload {
+    pub node_kind: String,
+    pub node_id: u64,
+    pub parent_id: u64,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// B-6 payload structs
+// ---------------------------------------------------------------------------
+
+/// B-6: emitted after each EvidenceGate::check() call in the FSM grounding-sweep path.
+/// `verdict` is "pass" | "block". `gate_id` is the gate's canonical snake_case name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceGateEvaluatedPayload {
+    /// Canonical snake_case gate name, e.g. "knowledge_readiness_gate".
+    pub gate_id: String,
+    /// "pass" or "block".
+    pub verdict: String,
+    /// Unix epoch ms at evaluation time.
+    pub ts_ms: i64,
+}
+
+/// B-6: emitted by the supervision layer on each agent restart or kill event.
+/// `event` is "restart" | "kill" | "spiral_detected".
+/// `attempt` is the 1-based restart count within the current phase window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisionEventPayload {
+    pub agent_id: String,
+    /// "restart" | "kill" | "spiral_detected"
+    pub event: String,
+    /// 1-based restart count within the current phase window.
+    pub attempt: u32,
+}
+
+/// B-6: one row per completed BSP superstep, emitted by the BSP engine after
+/// evidence-gate passes and checkpoint is saved.
+/// `snapshot_id` is "{session_id}:superstep:{n}".
+/// `channels_count` is the number of active channel topics at barrier exit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BspSuperstepPayload {
+    /// "{session_id}:superstep:{n}" uniquely identifies the snapshot.
+    pub snapshot_id: String,
+    /// Unix epoch ms at superstep completion.
+    pub ts_ms: i64,
+    /// Number of active channel topics at barrier exit.
+    pub channels_count: u32,
+}
+
+/// B-6: agent lifecycle state change emitted by the BSP engine at spawn and death sites.
+/// `state` is "spawned" | "ready" | "exited".
+/// `death_class` is present only when `state == "exited"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentLifecyclePayload {
+    pub agent_id: String,
+    /// AgentRole discriminant in snake_case (e.g. "executor", "auditor").
+    pub role: String,
+    /// "spawned" | "ready" | "exited"
+    pub state: String,
+    /// Present when state == "exited": "clean_exit" | "crash" | "timeout" | "budget_exceeded".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_class: Option<String>,
+}
+
+/// B-6: anti-spiral escalation signal — the same step hash has appeared `count` times
+/// within the current phase, triggering the escalation path in the SpiralTracker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AntiSpiralHitPayload {
+    pub agent_id: String,
+    /// Blake3 hex hash of the step content (or step_id string).
+    pub step_hash: String,
+    /// Number of times this hash was seen in the current phase window.
+    pub count: u32,
 }
 
 /// WEB.3: emitted when a dev-server check passes and a preview is available.
@@ -859,6 +1233,58 @@ pub struct TaskSubmittedPayload {
     pub submitted_at_ms: i64,
 }
 
+/// Payload for `chat_message` actions (Tier 1 CHAT window).
+///
+/// Written by the dashboard's `submit_chat_message` Tauri command after the
+/// client-side `intentRouter` (or the backend `classify_intent` fallback)
+/// classifies the user's input. `intent` is the routed category (TASK / FIX /
+/// EXPLORE / CONFIG / STATUS / CONTINUE / RESEARCH / INTERVENE / STEER /
+/// ABORT / MODE / MODEL / AMBIGUOUS). No orchestrator consumer yet — the row
+/// lives purely for chat history replay (same deferral pattern as
+/// `TaskSubmittedPayload`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessagePayload {
+    pub session_id: String,
+    pub text: String,
+    pub intent: String,
+    pub project_id: String,
+    pub submitted_at_ms: i64,
+}
+
+/// Payload for `chat_response` actions (Tier 1 CHAT window).
+///
+/// Written by the dashboard after rendering a system card back to the user
+/// (StatusCard, ErrorCard, DisambiguationCard, SteeringAckCard). `card_kind`
+/// is one of "status" | "error" | "disambiguation" | "steering_ack". `body`
+/// is the rendered card text. Row is append-only, no ACK flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatResponsePayload {
+    pub session_id: String,
+    pub card_kind: String,
+    pub body: String,
+    pub project_id: String,
+    pub emitted_at_ms: i64,
+}
+
+/// Payload for `execution_mode_changed` actions (Tier 4 Settings reorg,
+/// dashboard-wiring-plan.txt §8).
+///
+/// Written by the dashboard `set_execution_mode` Tauri command whenever the
+/// user toggles the Execution section radio (LOCAL / CLOUD / HYBRID).
+/// `from_mode` and `to_mode` are the validated mode strings (the command
+/// rejects any value outside the fixed set before writing). `project_id`
+/// identifies the active project at the time of the change. The CLOUD and
+/// HYBRID branches of the dispatch path are not yet implemented (§9 group
+/// 20); the dashboard emits a follow-up `Finding` row to flag the gap when
+/// the user selects one of those modes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionModeChangedPayload {
+    pub from_mode: String,
+    pub to_mode: String,
+    pub project_id: String,
+    pub changed_at_ms: i64,
+}
+
 /// Batch 1B — per-baby-step snapshot of sidecar extended signals.
 ///
 /// Written by the task_runner after every sidecar-backed dispatch (see
@@ -936,6 +1362,17 @@ pub struct IndexingProgressPayload {
     /// Optional human-readable status message (e.g. the error string on
     /// `failed`). Typically `None` on success stages.
     pub message: Option<String>,
+    /// Track A.1: machine-readable error kind for the "failed" stage
+    /// (e.g. "bm25_error", "dkg_error"). `None` on non-failure stages.
+    /// Backward-compatible: old rows without this field deserialize to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Track A.1: full error message string for the "failed" stage.
+    /// Duplicates `message` with a semantically distinct name so dashboards
+    /// can branch on the typed field rather than parsing `message`.
+    /// Backward-compatible: old rows without this field deserialize to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// Batch 1C — payload for the one-shot DKG-ready announcement.
@@ -1480,14 +1917,17 @@ pub struct McpServerDisconnectedPayload {
 /// Typed payload enum. Each variant maps 1:1 to an [`SsbActionType`] (31 total).
 /// Serialized to msgpack via `rmp_serde` before storage.
 ///
-/// All 31 variants are schema-committed. Variants without a current production
-/// emitter — `Claim`, `ModelSwap`, `KnowledgeDegradation`, `IsolationMetric`,
-/// `BranchMerge`, `SpiralDetected`, `SupervisionExhausted`, `InterventionRequest`
-/// — are forward-compat for phases 3F / 4G / 4H / wire-antispiral /
-/// newphase-4G. Do not remove: on-disk SSB files and the dashboard
-/// `payload_json` pipeline depend on the discriminant set staying stable.
-/// `SpiralDetected` has a scheduled emitter in Session wire-antispiral;
-/// `InterventionRequest` in Session newphase-4G (AutonomousGate).
+/// All variants are schema-committed (77 total post-B-19A — was 76 in B-10,
+/// 74 in Tier 4). B-19A adds `HookLatencyViolation`.
+/// Variants without a current production emitter — `Claim`, `ModelSwap`,
+/// `KnowledgeDegradation`, `IsolationMetric`, `BranchMerge`, `SpiralDetected`,
+/// `SupervisionExhausted`, `InterventionRequest` — are forward-compat for
+/// phases 3F / 4G / 4H / wire-antispiral / newphase-4G. Do not remove: on-disk
+/// SSB files and the dashboard `payload_json` pipeline depend on the
+/// discriminant set staying stable. `SpiralDetected` has a scheduled emitter
+/// in Session wire-antispiral; `InterventionRequest` in Session newphase-4G
+/// (AutonomousGate). B-10 added `ContextBudgetComputed` + `SsbFilteredByOverlap`
+/// for the per-slot budget bar chart and 3E.5 entry-filter transparency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SsbPayload {
     FileWrite(FileWritePayload),
@@ -1567,6 +2007,35 @@ pub enum SsbPayload {
     McpServerConnected(McpServerConnectedPayload),
     McpToolCalled(McpToolCalledPayload),
     McpServerDisconnected(McpServerDisconnectedPayload),
+    // Tier 1 CHAT window — dashboard-originated message and card rows.
+    ChatMessage(ChatMessagePayload),
+    ChatResponse(ChatResponsePayload),
+    // Tier 4 Settings reorg (dashboard-wiring-plan.txt §8) — execution-mode
+    // selection from the Settings window (LOCAL / CLOUD / HYBRID).
+    ExecutionModeChanged(ExecutionModeChangedPayload),
+    // B-10 (DECISION-C) — per-dispatch ContextBudget snapshot for the
+    // dashboard's per-slot bar chart, and 3E.5 SSB entry filtering summary.
+    ContextBudgetComputed(ContextBudgetComputedPayload),
+    SsbFilteredByOverlap(SsbFilteredByOverlapPayload),
+    // B-19A (T10) — per-tier hook latency budget violation beacon.
+    HookLatencyViolation(HookLatencyViolationPayload),
+    // Track A.2 — synthesis path selection per phase_f_synthesize call.
+    ResearchPathChosen(ResearchPathChosenPayload),
+    // Track A.6 — grounding cache hit/miss event per ground_or_cached call.
+    GroundingCacheEvent(GroundingCacheEventPayload),
+    // B-4: circuit-breaker state transition for embedding/reranker models.
+    CircuitBreakerStateChange(CircuitBreakerStateChangePayload),
+    // B-7: bubble-up cascade, integration checkpoints, DAG repair, decomposition nodes.
+    BubbleUpTyped(BubbleUpTypedPayload),
+    IntegrationCheckpointSuccess(IntegrationCheckpointSuccessPayload),
+    DagRepairRound(DagRepairRoundPayload),
+    ConceptDecompositionNode(ConceptDecompositionNodePayload),
+    // B-6: orchestration producer wiring.
+    EvidenceGateEvaluated(EvidenceGateEvaluatedPayload),
+    SupervisionEvent(SupervisionEventPayload),
+    BspSuperstep(BspSuperstepPayload),
+    AgentLifecycle(AgentLifecyclePayload),
+    AntiSpiralHit(AntiSpiralHitPayload),
 }
 
 impl SsbPayload {
@@ -1645,6 +2114,25 @@ impl SsbPayload {
             Self::McpServerConnected(_) => SsbActionType::McpServerConnected,
             Self::McpToolCalled(_) => SsbActionType::McpToolCalled,
             Self::McpServerDisconnected(_) => SsbActionType::McpServerDisconnected,
+            Self::ChatMessage(_) => SsbActionType::ChatMessage,
+            Self::ChatResponse(_) => SsbActionType::ChatResponse,
+            Self::ExecutionModeChanged(_) => SsbActionType::ExecutionModeChanged,
+            Self::ContextBudgetComputed(_) => SsbActionType::ContextBudgetComputed,
+            Self::SsbFilteredByOverlap(_) => SsbActionType::SsbFilteredByOverlap,
+            Self::HookLatencyViolation(_) => SsbActionType::HookLatencyViolation,
+            Self::ResearchPathChosen(_) => SsbActionType::ResearchPathChosen,
+            Self::GroundingCacheEvent(_) => SsbActionType::GroundingCacheEvent,
+            Self::CircuitBreakerStateChange(_) => SsbActionType::CircuitBreakerStateChange,
+            Self::BubbleUpTyped(_) => SsbActionType::BubbleUpTyped,
+            Self::IntegrationCheckpointSuccess(_) => SsbActionType::IntegrationCheckpointSuccess,
+            Self::DagRepairRound(_) => SsbActionType::DagRepairRound,
+            Self::ConceptDecompositionNode(_) => SsbActionType::ConceptDecompositionNode,
+            // B-6: orchestration producer wiring.
+            Self::EvidenceGateEvaluated(_) => SsbActionType::EvidenceGateEvaluated,
+            Self::SupervisionEvent(_) => SsbActionType::SupervisionEvent,
+            Self::BspSuperstep(_) => SsbActionType::BspSuperstep,
+            Self::AgentLifecycle(_) => SsbActionType::AgentLifecycle,
+            Self::AntiSpiralHit(_) => SsbActionType::AntiSpiralHit,
         }
     }
 }
@@ -1747,7 +2235,7 @@ impl SsbConfig {
     fn effective_pool_size(&self) -> u32 {
         self.pool_size.unwrap_or_else(|| {
             let cpus = std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
+                .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
                 .unwrap_or(2);
             cpus.saturating_mul(2).max(4)
         })
@@ -2142,11 +2630,14 @@ fn execute_write(
     project_id: &str,
     session_id: &str,
 ) -> Result<(i64, i64), SsbError> {
-    let created_at = clock
-        .system_now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs() as i64;
+    let created_at = i64::try_from(
+        clock
+            .system_now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
 
     // BEGIN IMMEDIATE acquires write lock early — avoids SQLITE_BUSY at commit.
     conn.execute("BEGIN IMMEDIATE", [])?;
@@ -2230,16 +2721,57 @@ impl Ssb {
         T: Send + 'static,
     {
         let pool = self.read_pool.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let obj = pool
-                    .get()
-                    .await
-                    .map_err(|e| SsbError::Pool(format!("{e}")))?;
-                // Object<SqliteManager> derefs to Connection
-                f(&obj)
-            })
-        })
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    // Multi-thread runtime: block_in_place is safe.
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(async move {
+                            let obj = pool
+                                .get()
+                                .await
+                                .map_err(|e| SsbError::Pool(format!("{e}")))?;
+                            f(&obj)
+                        })
+                    })
+                }
+                _ => {
+                    // CurrentThread runtime context (e.g. rt.block_on in
+                    // try_save_snapshot): block_in_place panics here, and
+                    // re-entering the same runtime deadlocks. Spawn an OS
+                    // thread with its own transient runtime to drive the work.
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| SsbError::Pool(format!("rt build: {e}")))?;
+                        rt.block_on(async move {
+                            let obj = pool
+                                .get()
+                                .await
+                                .map_err(|e| SsbError::Pool(format!("{e}")))?;
+                            f(&obj)
+                        })
+                    })
+                    .join()
+                    .map_err(|_| SsbError::Pool("read worker panicked".into()))?
+                }
+            },
+            Err(_) => {
+                // No async context: spin transient current-thread runtime.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| SsbError::Pool(format!("rt build: {e}")))?;
+                rt.block_on(async move {
+                    let obj = pool
+                        .get()
+                        .await
+                        .map_err(|e| SsbError::Pool(format!("{e}")))?;
+                    f(&obj)
+                })
+            }
+        }
     }
 }
 
@@ -2430,7 +2962,9 @@ impl SsbReader for Ssb {
 
 /// Subdirectory (relative to a project/base directory) that holds the
 /// managed sessions state, including the single SSB SQLite database.
-pub const SSB_SESSIONS_SUBDIR: &str = ".elai/sessions";
+// B-1: canonical SSB sessions subdir now under .elai_cc/sessions.
+// SSB_SESSIONS_SUBDIR kept for source-compat (external callers); value updated.
+pub const SSB_SESSIONS_SUBDIR: &str = ".elai_cc/sessions";
 
 /// File name of the canonical SSB SQLite database inside
 /// [`SSB_SESSIONS_SUBDIR`].
@@ -2439,12 +2973,12 @@ pub const SSB_DB_FILE_NAME: &str = "ssb.db";
 /// Canonical SSB database path for the given project/base directory.
 ///
 /// The CLI's sidecar bootstrap uses `<session-persistence-dir>/ssb.db`, and
-/// managed session persistence files live under `<base>/.elai/sessions/`
+/// managed session persistence files live under `<base>/.elai_cc/sessions/`
 /// (see `session_control::managed_sessions_dir_for`). The dashboard must
 /// open the SSB at the **same** path so it and a running CLI REPL share
 /// telemetry instead of silently creating a second, empty database.
 ///
-/// Returns `<base_dir>/.elai/sessions/ssb.db` as a pure path computation
+/// Returns `<base_dir>/.elai_cc/sessions/ssb.db` as a pure path computation
 /// (no filesystem side effects — callers choose whether to create the
 /// parent directory or let `Ssb::new`/`SsbViewer::open` do it).
 pub fn default_ssb_path_for_base(base_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
@@ -2599,6 +3133,7 @@ mod tests {
             SsbActionType::WebResearchStep => SsbPayload::WebResearchStep(WebResearchStepPayload {
                 agent_id: "a".into(), node_id: 0, action: "search".into(),
                 phi: 0.5, psi: 0.4, iteration: 1, sources_fetched: 3, sources_used: 2,
+                fetcher: "reqwest".into(),
             }),
             SsbActionType::PreviewAvailable => SsbPayload::PreviewAvailable(PreviewAvailablePayload {
                 url: "http://localhost:5173".into(), step_id: "step-1".into(),
@@ -2661,6 +3196,8 @@ mod tests {
                 files_total: 0,
                 elapsed_ms: 0,
                 message: None,
+                error_kind: None,
+                error_message: None,
             }),
             SsbActionType::DkgReady => SsbPayload::DkgReady(DkgReadyPayload {
                 project_id: "p".into(),
@@ -2898,6 +3435,76 @@ mod tests {
                 SsbPayload::McpServerDisconnected(McpServerDisconnectedPayload {
                     server_url: "http://localhost:8200".into(),
                     reason: "user_disabled".into(),
+                })
+            }
+            SsbActionType::ChatMessage => SsbPayload::ChatMessage(ChatMessagePayload {
+                session_id: "s-test".into(),
+                text: "hello".into(),
+                intent: "TASK".into(),
+                project_id: "p".into(),
+                submitted_at_ms: 0,
+            }),
+            SsbActionType::ChatResponse => SsbPayload::ChatResponse(ChatResponsePayload {
+                session_id: "s-test".into(),
+                card_kind: "status".into(),
+                body: "ok".into(),
+                project_id: "p".into(),
+                emitted_at_ms: 0,
+            }),
+            SsbActionType::ExecutionModeChanged => SsbPayload::ExecutionModeChanged(ExecutionModeChangedPayload {
+                from_mode: "LOCAL".into(),
+                to_mode: "CLOUD".into(),
+                project_id: "p".into(),
+                changed_at_ms: 0,
+            }),
+            SsbActionType::ContextBudgetComputed => {
+                SsbPayload::ContextBudgetComputed(ContextBudgetComputedPayload {
+                    tier: "micro_7b_12gb".into(),
+                    raw_max: 25000,
+                    slots: vec![0; 8],
+                    allocations: vec![330, 400, 800, 1500, 8000, 1500, 1000, 512],
+                    adapt_levels_fired: 0,
+                })
+            }
+            SsbActionType::SsbFilteredByOverlap => {
+                SsbPayload::SsbFilteredByOverlap(SsbFilteredByOverlapPayload {
+                    entries_total: 10,
+                    entries_kept: 4,
+                    overlap_threshold: 0.10,
+                })
+            }
+            SsbActionType::HookLatencyViolation => {
+                SsbPayload::HookLatencyViolation(HookLatencyViolationPayload {
+                    hook_name: "PreToolUse".into(),
+                    tier: "T1".into(),
+                    budget_ms: 1,
+                    actual_ms: 12,
+                })
+            }
+            SsbActionType::ResearchPathChosen => {
+                SsbPayload::ResearchPathChosen(ResearchPathChosenPayload {
+                    path: "llm".into(),
+                    reason: "llm".into(),
+                    ts_ms: 0,
+                })
+            }
+            SsbActionType::GroundingCacheEvent => {
+                SsbPayload::GroundingCacheEvent(GroundingCacheEventPayload {
+                    kind: "miss".into(),
+                    key_fingerprint: "00000000".into(),
+                    level: "Idea".into(),
+                    elapsed_us: 0,
+                })
+            }
+            // B-4 (v26 bump completed).
+            SsbActionType::CircuitBreakerStateChange => {
+                SsbPayload::CircuitBreakerStateChange(CircuitBreakerStateChangePayload {
+                    model: "graphcodebert".into(),
+                    state: "CLOSED".into(),
+                    previous_state: "CLOSED".into(),
+                    failures: 0,
+                    success_rate: 1.0,
+                    last_failure_ts: None,
                 })
             }
         };
@@ -3289,6 +3896,10 @@ mod tests {
             SsbActionType::InterventionRequest,
             SsbActionType::InterventionResponse,
             SsbActionType::TaskSubmitted,
+            SsbActionType::ExecutionModeChanged,
+            SsbActionType::ContextBudgetComputed,
+            SsbActionType::SsbFilteredByOverlap,
+            SsbActionType::HookLatencyViolation,
         ];
 
         for (i, at) in types.iter().enumerate() {
@@ -3308,7 +3919,11 @@ mod tests {
         let count: i64 = obj
             .query_row("SELECT COUNT(*) FROM ssb", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(count, 32, "must have inserted all 32 types");
+        // B-10 (DECISION-C): subset count is 35 (Tier-4 added 1, B-10 added 2).
+        // B-19A: subset count is 36 (B-19A added HookLatencyViolation).
+        // The assertion grows as variants are added to the test's `types` vec
+        // above; both must move in lockstep.
+        assert_eq!(count, 36, "must have inserted all 36 types in this test list");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3857,6 +4472,7 @@ mod tests {
                 iteration: 2,
                 sources_fetched: 5,
                 sources_used: 3,
+                fetcher: "reqwest".into(),
             }),
             SsbPayload::PreviewAvailable(PreviewAvailablePayload {
                 url: "http://localhost:5173".into(),
@@ -3893,6 +4509,40 @@ mod tests {
                 project_id: "dash-mvp".into(),
                 submitted_at_ms: 1_713_300_000_000,
             }),
+            SsbPayload::ChatMessage(ChatMessagePayload {
+                session_id: "s-dash".into(),
+                text: "/task rebuild the dashboard".into(),
+                intent: "TASK".into(),
+                project_id: "dash-mvp".into(),
+                submitted_at_ms: 1_713_300_000_100,
+            }),
+            SsbPayload::ChatResponse(ChatResponsePayload {
+                session_id: "s-dash".into(),
+                card_kind: "status".into(),
+                body: "routed to TASK".into(),
+                project_id: "dash-mvp".into(),
+                emitted_at_ms: 1_713_300_000_150,
+            }),
+            SsbPayload::ExecutionModeChanged(ExecutionModeChangedPayload {
+                from_mode: "LOCAL".into(),
+                to_mode: "HYBRID".into(),
+                project_id: "dash-mvp".into(),
+                changed_at_ms: 1_713_300_000_200,
+            }),
+            // B-10 (DECISION-C) — 2 new variants for the dashboard's per-slot
+            // budget bar chart and SSB entry filter transparency.
+            SsbPayload::ContextBudgetComputed(ContextBudgetComputedPayload {
+                tier: "micro_7b_12gb".into(),
+                raw_max: 25_000,
+                slots: vec![0, 0, 0, 1250, 6670, 1250, 830, 0],
+                allocations: vec![330, 400, 800, 1500, 8000, 1500, 1000, 512],
+                adapt_levels_fired: 0,
+            }),
+            SsbPayload::SsbFilteredByOverlap(SsbFilteredByOverlapPayload {
+                entries_total: 12,
+                entries_kept: 4,
+                overlap_threshold: 0.10,
+            }),
         ]
     }
 
@@ -3902,7 +4552,11 @@ mod tests {
         let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
 
         let payloads = all_test_payloads();
-        assert_eq!(payloads.len(), 32, "must cover all 32 action types");
+        assert_eq!(
+            payloads.len(),
+            37,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap)",
+        );
 
         for (i, payload) in payloads.iter().enumerate() {
             let expected_action = payload.action_type();
@@ -4135,6 +4789,7 @@ mod tests {
                     .prop_map(|(agent_id, node_id, action, phi, psi, iteration, sources_fetched, sources_used)|
                         SsbPayload::WebResearchStep(WebResearchStepPayload {
                             agent_id, node_id, action, phi, psi, iteration, sources_fetched, sources_used,
+                            fetcher: "reqwest".to_owned(),
                         })
                     ),
                 ("http://localhost:[1-9][0-9]{3,4}", "[a-z0-9-]{1,20}",
@@ -4167,6 +4822,56 @@ mod tests {
                     .prop_map(|(task, project_id, submitted_at_ms)| SsbPayload::TaskSubmitted(
                         TaskSubmittedPayload { task, project_id, submitted_at_ms }
                     )),
+                ("[a-z0-9-]{1,20}", "[a-z/ ]{1,40}", "[A-Z_]{3,12}",
+                 "[a-z0-9-]{1,20}", 0i64..1_000_000_000_000)
+                    .prop_map(|(session_id, text, intent, project_id, submitted_at_ms)|
+                        SsbPayload::ChatMessage(ChatMessagePayload {
+                            session_id, text, intent, project_id, submitted_at_ms,
+                        })
+                    ),
+                ("[a-z0-9-]{1,20}", "(status|error|disambiguation|steering_ack)",
+                 "[a-z ]{1,40}", "[a-z0-9-]{1,20}", 0i64..1_000_000_000_000)
+                    .prop_map(|(session_id, card_kind, body, project_id, emitted_at_ms)|
+                        SsbPayload::ChatResponse(ChatResponsePayload {
+                            session_id, card_kind, body, project_id, emitted_at_ms,
+                        })
+                    ),
+                ("(LOCAL|CLOUD|HYBRID)", "(LOCAL|CLOUD|HYBRID)",
+                 "[a-z0-9-]{1,20}", 0i64..1_000_000_000_000)
+                    .prop_map(|(from_mode, to_mode, project_id, changed_at_ms)|
+                        SsbPayload::ExecutionModeChanged(ExecutionModeChangedPayload {
+                            from_mode, to_mode, project_id, changed_at_ms,
+                        })
+                    ),
+                // B-10 (DECISION-C) — ContextBudgetComputed + SsbFilteredByOverlap
+                // arbitraries. tier kept short; slots/allocations 8-element vec.
+                ("[a-z0-9_]{1,30}", 0usize..200000,
+                 proptest::collection::vec(0u64..10000, 8..=8),
+                 proptest::collection::vec(0usize..50000, 8..=8),
+                 0u8..=4)
+                    .prop_map(|(tier, raw_max, slots, allocations, adapt_levels_fired)|
+                        SsbPayload::ContextBudgetComputed(ContextBudgetComputedPayload {
+                            tier, raw_max, slots, allocations, adapt_levels_fired,
+                        })
+                    ),
+                (0usize..1000, 0usize..1000, 0.0f32..1.0)
+                    .prop_map(|(entries_total, entries_kept, overlap_threshold)|
+                        SsbPayload::SsbFilteredByOverlap(SsbFilteredByOverlapPayload {
+                            entries_total, entries_kept, overlap_threshold,
+                        })
+                    ),
+                // B-19A (T10) — hook latency violation arbitrary. hook_name
+                // / tier kept short ASCII to mirror the discriminant strings.
+                ("(PreToolUse|PostToolUse|Stop|PreCompact)", "(T1|T2|T3|Composite)",
+                 0u64..1000, 0u64..10000)
+                    .prop_map(|(hook_name, tier, budget_ms, actual_ms)|
+                        SsbPayload::HookLatencyViolation(HookLatencyViolationPayload {
+                            hook_name: hook_name.to_string(),
+                            tier: tier.to_string(),
+                            budget_ms,
+                            actual_ms,
+                        })
+                    ),
             ]
         }
 
