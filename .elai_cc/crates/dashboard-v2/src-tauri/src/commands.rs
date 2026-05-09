@@ -2108,7 +2108,7 @@ pub fn get_execution_mode(state: State<'_, AppState>) -> CmdResult<Value> {
 fn dashboard_oauth_config() -> elai_orchestrator::OAuthConfig {
     elai_orchestrator::OAuthConfig {
         client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
-        authorize_url: String::from("https://platform.claude.com/oauth/authorize"),
+        authorize_url: String::from("https://claude.ai/oauth/authorize"),
         token_url: String::from("https://platform.claude.com/v1/oauth/token"),
         callback_port: None,
         manual_redirect_url: None,

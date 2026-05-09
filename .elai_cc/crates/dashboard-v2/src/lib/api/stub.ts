@@ -1154,7 +1154,7 @@ export async function start_oauth_login(): Promise<OAuthLoginInfo> {
   if (live) return live;
   await delay();
   return {
-    auth_url: 'https://platform.claude.com/oauth/authorize?stub=1',
+    auth_url: 'https://claude.ai/oauth/authorize?stub=1',
     callback_port: 4545,
     redirect_uri: 'http://localhost:4545/callback',
     event: 'oauth-login-complete',

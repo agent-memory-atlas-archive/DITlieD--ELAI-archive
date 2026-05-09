@@ -1,7 +1,7 @@
 @echo off
 REM ELAI Anthropic OAuth login launcher
 REM   Double-click to log in with your Anthropic account (claude.ai / platform.claude.com).
-REM   Opens a browser to platform.claude.com/oauth/authorize, listens on
+REM   Opens a browser to claude.ai/oauth/authorize (same endpoint Claude Code uses),
 REM   http://localhost:4545/callback, exchanges the PKCE code, and saves the
 REM   token to %USERPROFILE%\.elai\credentials.json under key "oauth".
 REM

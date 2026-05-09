@@ -101,7 +101,7 @@ pub(crate) fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(),
 pub(crate) fn default_oauth_config() -> OAuthConfig {
     OAuthConfig {
         client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
-        authorize_url: String::from("https://platform.claude.com/oauth/authorize"),
+        authorize_url: String::from("https://claude.ai/oauth/authorize"),
         token_url: String::from("https://platform.claude.com/v1/oauth/token"),
         callback_port: None,
         manual_redirect_url: None,
