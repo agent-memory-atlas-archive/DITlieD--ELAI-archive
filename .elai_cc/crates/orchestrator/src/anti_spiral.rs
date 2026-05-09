@@ -167,6 +167,7 @@ impl<C: ClockProvider> AntiSpiralDetector<C> {
             // Recovery target is the step just BEFORE the spiral started.
             // The spiral started at (superstep - same_step_count + 1), so
             // the safe checkpoint is one before that.
+            // NARROWING-OK: u32->i64 is widening; same_step_count fits i64 by definition.
             let spiral_start = superstep - (state.same_step_count as i64) + 1;
             state.recovery_target_step_index = Some(spiral_start - 1);
             let hash_hex = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();

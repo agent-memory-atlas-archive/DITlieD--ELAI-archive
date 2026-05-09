@@ -110,8 +110,8 @@ impl ToolHandler for SimplifyHandler {
                     in_function = true;
                 }
                 if in_function {
-                    brace_depth += line.matches('{').count() as i32;
-                    brace_depth -= line.matches('}').count() as i32;
+                    brace_depth += i32::try_from(line.matches('{').count()).unwrap_or(i32::MAX);
+                    brace_depth -= i32::try_from(line.matches('}').count()).unwrap_or(i32::MAX);
                     function_lines.push(line.to_string());
                     if brace_depth <= 0 && !function_lines.is_empty() {
                         break;

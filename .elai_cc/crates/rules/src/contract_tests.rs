@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 mod static_tests {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     use crate::predicate::{
         from_json, validate, AstError, AstEvaluator, AstMatch, DkgError,
@@ -119,7 +119,7 @@ mod static_tests {
             source,
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         }
     }
 
@@ -129,7 +129,7 @@ mod static_tests {
         metric: &str,
         value: f64,
     ) -> EvaluationContext<'a> {
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert(metric.to_string(), value);
         EvaluationContext {
             action: "write",
@@ -2995,7 +2995,7 @@ mod static_tests {
 
 #[cfg(test)]
 mod proptest_tests {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     use proptest::prelude::*;
 
@@ -3060,7 +3060,7 @@ mod proptest_tests {
             source: "eval(user_input)\nprint('debug')\nresult = x + y",
             file_path: "src/test.py",
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         }
     }
 

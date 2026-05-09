@@ -149,7 +149,8 @@ impl LaneEvent {
             emitted_at,
         )
         .with_optional_detail(detail)
-        .with_data(serde_json::to_value(provenance).expect("commit provenance should serialize"))
+        // LaneCommitProvenance derives Serialize with no custom logic; to_value is infallible for this type.
+        .with_data(serde_json::to_value(provenance).expect("LaneCommitProvenance derives Serialize; infallible"))
     }
 
     #[must_use]
@@ -164,7 +165,8 @@ impl LaneEvent {
             emitted_at,
         )
         .with_optional_detail(detail)
-        .with_data(serde_json::to_value(provenance).expect("commit provenance should serialize"))
+        // LaneCommitProvenance derives Serialize with no custom logic; to_value is infallible for this type.
+        .with_data(serde_json::to_value(provenance).expect("LaneCommitProvenance derives Serialize; infallible"))
     }
 
     #[must_use]

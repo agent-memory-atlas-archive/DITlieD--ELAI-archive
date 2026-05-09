@@ -5,11 +5,13 @@
 //! and docs/specs/architecture-overview.txt §4, §6.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
+use std::time::UNIX_EPOCH;
 use tokio::sync::Mutex;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 // Re-export RiskLevel from gate module so consumers can access it via fsm::.
 pub use crate::gate::{default_risk_level, RiskLevel};
@@ -114,7 +116,7 @@ impl std::fmt::Display for FsmState {
 pub struct FsmConfig {
     /// Per-transition risk overrides. Key: "SOURCE->TARGET", Value: RiskLevel.
     #[serde(default)]
-    pub risk_overrides: HashMap<String, RiskLevel>,
+    pub risk_overrides: FxHashMap<String, RiskLevel>,
 }
 
 /// Build the canonical transition key for risk override lookup.
@@ -339,6 +341,12 @@ pub struct Fsm {
     /// `FsmError::AuditingBlocked` if the cached result has any BLOCK findings.
     deterministic_audit_gate:
         Option<Arc<dyn crate::deterministic_audit_gate::DeterministicAuditGate>>,
+    /// B-2: SSB writer for emitting `PhaseTransition` rows on every successful
+    /// transition. Uses `OnceLock` so the field can be set once after the Fsm is
+    /// wrapped in `Arc` (needed because build_runtime returns ssb after Fsm is
+    /// already arc-shared). Write failures are non-fatal — a tracing::warn is
+    /// emitted but the FSM transition always completes.
+    ssb_writer: OnceLock<Arc<crate::ssb::Ssb>>,
 }
 
 impl std::fmt::Debug for Fsm {
@@ -362,9 +370,10 @@ struct FsmInner {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
+    OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
 
@@ -385,6 +394,7 @@ impl Fsm {
             workload_emitter: None,
             model_pool: None,
             deterministic_audit_gate: None,
+            ssb_writer: OnceLock::new(),
         }
     }
 
@@ -426,6 +436,22 @@ impl Fsm {
         self.workload_emitter = Some(emitter);
     }
 
+    /// B-2: builder-style setter for the SSB writer.  Call before wrapping in Arc.
+    pub fn with_ssb_writer(self, writer: Arc<crate::ssb::Ssb>) -> Self {
+        // Ignore the result: OnceLock guarantees the first write wins.
+        let _ = self.ssb_writer.set(writer);
+        self
+    }
+
+    /// B-2: wire an SSB writer into an already-Arc-shared Fsm.
+    ///
+    /// Uses `OnceLock::set` which takes `&self`, so this can be called through
+    /// `Arc<Fsm>` after `build_runtime` returns.  The first caller wins;
+    /// subsequent calls are silently ignored (the lock is already initialised).
+    pub fn set_ssb_writer(&self, writer: Arc<crate::ssb::Ssb>) {
+        let _ = self.ssb_writer.set(writer);
+    }
+
     /// Load FSM state from a msgpack file on disk.
     /// Returns CorruptState if the file exists but cannot be deserialized.
     pub async fn load(path: &Path) -> Result<Self, FsmError> {
@@ -460,6 +486,7 @@ impl Fsm {
             workload_emitter: None,
             model_pool: None,
             deterministic_audit_gate: None,
+            ssb_writer: OnceLock::new(),
         })
     }
 
@@ -606,7 +633,7 @@ impl Fsm {
                 vram_peak_mb: m.vram_peak_mb,
                 model_id: m.model_id.clone(),
                 gpu_id: m.gpu_id,
-                timestamp: now_ms() as i64,
+                timestamp: i64::try_from(now_ms()).unwrap_or(i64::MAX),
             };
             tracing::info!(
                 phase = phase_label,
@@ -634,6 +661,29 @@ impl Fsm {
                 transition_history: guard.transition_history.clone(),
             };
             persist_state(path, &persisted).await?;
+        }
+
+        // B-2: emit PhaseTransition SSB row on every successful transition.
+        // Non-blocking: SSB write failure must not block the FSM transition.
+        if let Some(writer) = self.ssb_writer.get() {
+            let payload = crate::ssb::SsbPayload::PhaseTransition(
+                crate::ssb::PhaseTransitionPayload {
+                    from_state: source.to_string(),
+                    to_state:   target.to_string(),
+                    evidence_summary: phase_label.to_string(),
+                },
+            );
+            if let Err(e) = writer
+                .write_payload("fsm", 0, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    from = %source,
+                    to   = %target,
+                    error = %e,
+                    "fsm: phase_transition SSB write failed (non-fatal)"
+                );
+            }
         }
 
         Ok(record)
@@ -1438,5 +1488,55 @@ mod tests {
         })
         .await
         .expect("replan in new phase should succeed");
+    }
+
+    // -- B-2: SSB PhaseTransition emission tests --
+
+    /// Verify that a wired SSB writer receives exactly one `phase_transition`
+    /// row after a successful IDLE -> PLANNING transition.
+    #[tokio::test]
+    async fn test_transition_emits_phase_transition_ssb() {
+        use crate::ssb::SsbConfig;
+        use elai_core::OsClock;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("tempdir");
+        let config = SsbConfig {
+            db_path: dir.path().join("test_ssb.db"),
+            pool_size: Some(2),
+            project_id: "test".into(),
+            session_id: "s-test".into(),
+        };
+        let clock: Arc<dyn elai_core::ClockProvider> = Arc::new(OsClock);
+        let ssb = Arc::new(crate::ssb::Ssb::new(config, clock).expect("ssb init"));
+
+        let fsm = Fsm::new(None, 8000).with_ssb_writer(Arc::clone(&ssb));
+        fsm.transition(FsmState::Planning, "plan-phase", vec![])
+            .await
+            .expect("transition should succeed");
+
+        // Give the SSB async write task time to flush.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Read back via the viewer.
+        let db_path = dir.path().join("test_ssb.db");
+        let viewer = crate::ssb_viewer::SsbViewer::open(&db_path).expect("viewer open");
+        let rows = viewer
+            .recent_phase_transitions(5)
+            .expect("recent_phase_transitions");
+        assert_eq!(rows.len(), 1, "expected exactly 1 phase_transition row");
+        let (_, from, to, _ts) = &rows[0];
+        assert_eq!(from, "IDLE");
+        assert_eq!(to, "PLANNING");
+    }
+
+    /// FSM transition must succeed even when no SSB writer is configured.
+    #[tokio::test]
+    async fn test_transition_succeeds_when_ssb_writer_none() {
+        let fsm = Fsm::new(None, 8000);
+        let result = fsm
+            .transition(FsmState::Planning, "plan-phase", vec![])
+            .await;
+        assert!(result.is_ok(), "transition must succeed without ssb_writer: {result:?}");
     }
 }

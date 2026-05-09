@@ -23,7 +23,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use elai_core::clock::ClockProvider;
 use elai_core::VramTier;
@@ -180,7 +180,7 @@ pub struct DefaultSystemProber {
 
 struct CachedReport {
     report: SystemProbeReport,
-    cached_at: Instant,
+    cached_at: elai_core::LogicalInstant,
 }
 
 impl DefaultSystemProber {
@@ -233,7 +233,7 @@ impl SystemProber for DefaultSystemProber {
             // Cache hit inside the 60 s TTL.
             if let Ok(guard) = self.cache.lock() {
                 if let Some(cached) = guard.as_ref() {
-                    if cached.cached_at.elapsed() < CACHE_TTL {
+                    if self.clock.elapsed_since(cached.cached_at) < CACHE_TTL {
                         return cached.report.clone();
                     }
                 }
@@ -283,7 +283,7 @@ impl SystemProber for DefaultSystemProber {
             if let Ok(mut guard) = self.cache.lock() {
                 *guard = Some(CachedReport {
                     report: report.clone(),
-                    cached_at: Instant::now(),
+                    cached_at: self.clock.now(),
                 });
             }
             report

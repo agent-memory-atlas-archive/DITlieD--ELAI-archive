@@ -325,7 +325,7 @@ mod tests {
     use crate::ssb::{Ssb, SsbActionType, SsbConfig};
     use elai_core::{ClockProvider, SeededClock};
     use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -342,7 +342,7 @@ mod tests {
             grounding_level: GroundingLevel::Uncertain,
             csq_required: false,
             allowed_methods: vec![],
-            transition_overrides: HashMap::new(),
+            transition_overrides: FxHashMap::default(),
             require_scope_enumeration: false,
         }
     }
@@ -361,6 +361,8 @@ mod tests {
             sandbox_handle: None,
             child_process: None,
             socket_path: None,
+            appcontainer_profile_id: None,
+            allowed_paths: Vec::new(),
         }
     }
 
@@ -613,6 +615,8 @@ mod tests {
             sandbox_handle: None,
             child_process: None,
             socket_path: None,
+            appcontainer_profile_id: None,
+            allowed_paths: Vec::new(),
         };
 
         let result = CheckpointManager::<SeededClock>::read_latest(&handle)
@@ -673,7 +677,7 @@ mod tests {
         // (much larger than 1_700_000_000 + 0).
         assert_eq!(
             actual_ts, expected_ts,
-            "checkpoint_ts must come from ClockProvider, not SystemTime::now()"
+            "checkpoint_ts must come from ClockProvider, not direct wall-clock" // TEST_KEEP
         );
     }
 
@@ -738,6 +742,8 @@ mod tests {
             sandbox_handle: None,
             child_process: None,
             socket_path: None,
+            appcontainer_profile_id: None,
+            allowed_paths: Vec::new(),
         };
 
         let clock = SeededClock::new();

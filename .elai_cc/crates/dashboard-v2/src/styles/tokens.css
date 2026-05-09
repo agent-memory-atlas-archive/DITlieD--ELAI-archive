@@ -1,0 +1,280 @@
+/* ============================================================
+   ELAI Dashboard — Design Tokens
+   Single source of truth for all custom properties.
+   No hex literals may appear outside this :root block.
+   Usage: always var(--…) — never raw hex in components.
+   ============================================================ */
+
+:root {
+
+  /* ----------------------------------------------------------
+     BACKGROUNDS — deep to lifted
+     Depth is expressed through bg steps, never box-shadow.
+  ---------------------------------------------------------- */
+  --bg-void:      #07090B;   /* window chrome, out-of-panel voids */
+  --bg-base:      #0B0E12;   /* primary surface (default panel bg) */
+  --bg-surface:   #10141A;   /* elevated cards, tab bar */
+  --bg-hover:     #161B22;   /* hover row, selected row */
+  --bg-input:     #1A2029;   /* input fields, code blocks */
+  --bg-overlay:   rgba(7,9,11,0.72); /* modal backdrop — NO blur over 4px */
+
+  /* ----------------------------------------------------------
+     PRIMARY ACCENT — muted teal-forest
+     One accent dominates. Use teal-bright sparingly.
+  ---------------------------------------------------------- */
+  --teal:         #1E8A7A;   /* active, focus ring, brand */
+  --teal-bright:  #2BAE98;   /* progress bars, important badges */
+  --teal-soft:    rgba(30,138,122,0.28);  /* glows, subtle highlights */
+  --teal-ghost:   rgba(30,138,122,0.10);  /* hover tint, active bg */
+  --teal-line:    rgba(30,138,122,0.45);  /* 1–2px accent borders */
+
+  /* ----------------------------------------------------------
+     SECONDARY — cold steel blue
+     Links, informational text, keyboard hints only.
+  ---------------------------------------------------------- */
+  --steel:        #5A7A9E;
+  --steel-soft:   rgba(90,122,158,0.25);
+  --steel-ghost:  rgba(90,122,158,0.08);
+
+  /* ----------------------------------------------------------
+     TEXT — warm-neutral, never pure white
+  ---------------------------------------------------------- */
+  --text-primary:   #DCE5E8;
+  --text-secondary: #95A1A8;
+  --text-ghost:     #5E6B73;
+  --text-disabled:  #3A4148;
+
+  /* ----------------------------------------------------------
+     SEMANTIC — used only where actual state requires it
+  ---------------------------------------------------------- */
+  --pass: #1E8A7A;   /* reuses teal */
+  --warn: #C39A3A;   /* muted amber */
+  --fail: #B04545;   /* muted red */
+  --info: #5A7A9E;   /* reuses steel */
+
+  /* ----------------------------------------------------------
+     BORDERS
+  ---------------------------------------------------------- */
+  --border-subtle:  rgba(255,255,255,0.04);
+  --border-default: rgba(255,255,255,0.07);
+  --border-strong:  rgba(255,255,255,0.12);
+
+  /* ----------------------------------------------------------
+     RADIUS
+  ---------------------------------------------------------- */
+  --r-xs:   2px;
+  --r-sm:   4px;
+  --r-md:   6px;
+  --r-lg:   10px;
+  --r-pill: 999px;
+
+  /* ----------------------------------------------------------
+     SPACING — 8px base grid
+  ---------------------------------------------------------- */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ----------------------------------------------------------
+     MOTION — 120–240ms range, ease-out for enters
+  ---------------------------------------------------------- */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);   /* expo-out, premium feel */
+  --ease-in:  cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ----------------------------------------------------------
+     ELEVATION NOTE
+     There is no --shadow-*. Depth = bg color step.
+     Use bg-surface over bg-base. Never box-shadow for depth.
+  ---------------------------------------------------------- */
+
+  /* ----------------------------------------------------------
+     TYPOGRAPHY
+  ---------------------------------------------------------- */
+  --font-sans:    'Inter', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --font-display: 'Inter', 'Segoe UI Variable', system-ui, sans-serif; /* thin-200 for display */
+
+  /* ----------------------------------------------------------
+     FOCUS RING
+  ---------------------------------------------------------- */
+  --ring: 0 0 0 1px var(--teal), 0 0 0 3px var(--teal-soft);
+
+  /* ----------------------------------------------------------
+     FSM STATE COLORS
+     Each FSM state maps to exactly one color token.
+     These are used only for FSM badges and state indicators.
+  ---------------------------------------------------------- */
+  --state-idle:        var(--text-secondary);
+  --state-planning:    #6b8eaa;
+  --state-feasibility: #7d8e6b;
+  --state-testing:     #aa8e55;
+  --state-executing:   var(--teal-bright);
+  /* NOTE: --state-auditing is a desaturated single-use lavender for the
+     AUDITING FSM badge ONLY. This is NOT a purple accent color — the system
+     has no purple accent for general use. Saturation is kept under 25%.
+     Do NOT reuse this token outside the FSM AUDITING badge. */
+  --state-auditing:    #9e7aa8;
+  --state-memorizing:  #5a7a9e;
+  --state-complete:    var(--teal);
+  --state-configuring: var(--text-ghost);
+  --state-researching: #5a9e8e;
+
+  /* ----------------------------------------------------------
+     EVIDENCE GATE VERDICTS
+     Used only for gate verdict indicators and badges.
+  ---------------------------------------------------------- */
+  --gate-pass:    var(--pass);
+  --gate-block:   var(--fail);
+  --gate-warn:    var(--warn);
+  --gate-pending: var(--text-ghost);
+
+  /* ----------------------------------------------------------
+     RULE LIFECYCLE STATES
+     Used only for rule lifecycle badges in the RULES drawer.
+  ---------------------------------------------------------- */
+  --rule-proposed:  var(--text-ghost);
+  --rule-candidate: var(--steel);
+  --rule-shadow:    var(--warn);
+  --rule-active:    var(--teal);
+  --rule-retired:   var(--text-disabled);
+
+  /* ----------------------------------------------------------
+     ORBIT — GRC reasoning step palette.
+     One color per GrcStep variant. Used by OrbitGrcDots only.
+     Cool-leaning so reasoning dots stay quiet against active node bloom.
+  ---------------------------------------------------------- */
+  --grc-observe:     #8FB4C6;   /* steel-cool — passive looking */
+  --grc-hypothesize: #6B8EAA;   /* deeper steel — pondering */
+  --grc-plan_action: #7B9BA8;   /* steel-teal blend — pre-action */
+  --grc-act:         #2BAE98;   /* teal-bright — execution moment */
+  --grc-verify:      #B49E6A;   /* warm sand — checking */
+  --grc-converge:    #1E8A7A;   /* teal — wrap-up */
+  --grc-status:      #5E6B73;   /* ghost — passive heartbeat */
+
+  /* ----------------------------------------------------------
+     ORBIT — Source-quality tier palette (T1=arxiv/official, ..., T5=spam).
+     Used for research tendril particle returns.
+  ---------------------------------------------------------- */
+  --tier-1: #DCE5E8;   /* bright cool-white  — peer-reviewed / official */
+  --tier-2: #94BFB6;   /* pale teal          — github / SO accepted */
+  --tier-3: #6F8C90;   /* dim steel-teal     — known blogs / talks */
+  --tier-4: #5E6B73;   /* ghost              — general blogs */
+  --tier-5: #3A4148;   /* near-disabled      — social / unverified */
+
+  /* ----------------------------------------------------------
+     ORBIT — BubbleUp action palette.
+     Used for cascade ripple coloring per BubbleUpAction variant.
+  ---------------------------------------------------------- */
+  --bubble-research_alternative: #5A9E8E;   /* researching — calm teal */
+  --bubble-redecompose_step:     #6b8eaa;   /* re-planning — steel */
+  --bubble-replan_phase:         #aa8e55;   /* warmer — bigger lift */
+  --bubble-replan_concept:       #9e7aa8;   /* lavender — concept-level */
+  --bubble-diagnose_and_retry:   #C39A3A;   /* warn-amber — diagnosing */
+  --bubble-escalate:             #B04545;   /* fail-red — humans needed */
+
+  /* ----------------------------------------------------------
+     ORBIT — DKG effect-tag palette (Mode 2).
+  ---------------------------------------------------------- */
+  --effect-unsafe:     #B04545;
+  --effect-filesystem: #6b8eaa;
+  --effect-network:    #5A9E8E;
+  --effect-database:   #aa8e55;
+  --effect-auth:       #9e7aa8;
+
+  /* ----------------------------------------------------------
+     ORBIT — Research lifecycle stage palette.
+  ---------------------------------------------------------- */
+  --research-formulate: var(--text-ghost);
+  --research-search:    #6b8eaa;
+  --research-extract:   #aa8e55;
+  --research-reflect:   #5A9E8E;
+  --research-converge:  var(--teal);
+
+  /* ----------------------------------------------------------
+     STARFIELD — galaxy backdrop palette (Canvas 2D).
+     Pinpoint star colors; Canvas reads these via getComputedStyle.
+     Weights live in star-state.ts so they stay in one place.
+     Cool-white dominates; pale teal/steel for chromatic variation;
+     warm amber/pink as rare accents (under 8% combined).
+  ---------------------------------------------------------- */
+  --star-cool-white: rgb(228, 234, 242);
+  --star-pale-steel: rgb(196, 212, 226);
+  --star-pale-teal:  rgb(168, 206, 200);
+  --star-warm-amber: rgb(228, 196, 176);
+  --star-pale-pink:  rgb(220, 180, 200);
+
+  /* shooting-star streak head + base trail color */
+  --star-shoot-head: rgb(228, 234, 242);
+  --star-shoot-trail: rgb(228, 234, 242);
+
+  /* ----------------------------------------------------------
+     SKYDOME / NEBULA — atmospheric backdrop palette.
+     Painted by the FBM nebula shader on the BackSide skydome
+     sphere. ALL THREE TINTS are teal-family — the design system
+     is monochromatic teal/cyan ("blocks" palette), no purples /
+     violets / lavenders, no other hues for nebulas. Token names
+     kept for backward shader-uniform binding; the legacy
+     `--nebula-violet` is now a light teal-mist highlight, NOT
+     a violet color. Saturation kept low so the dome reads as
+     "deep space with subtle atmosphere", not chromatic clouds.
+     Clamped to LDR (RGB < 1) so the bloom pass never lifts them
+     above the sun's threshold.
+     Tier (light → dark): mist → teal → deep-teal → pure void.
+  ---------------------------------------------------------- */
+  --nebula-teal:   rgb(43, 158, 140);
+  --nebula-steel:  rgb(20, 80, 90);
+  --nebula-violet: rgb(110, 195, 175);
+  /* Deep void must be pure 0 so the dome paints true black in cloud-
+     free regions. ACES tone-mapping + sRGB encoding amplifies even
+     tiny linear values (rgb(7,9,11) → ~rgb(53) on screen), so any
+     hint above zero lifts the entire sky to dark navy and destroys
+     the deep-space feel. Stars and nebulas are the ONLY light
+     sources on the dome. */
+  --nebula-deep:   rgb(0, 0, 0);
+}
+
+/* ----------------------------------------------------------
+   SELECTION
+---------------------------------------------------------- */
+::selection {
+  background: var(--teal-soft);
+  color: var(--text-primary);
+}
+
+/* ----------------------------------------------------------
+   FOCUS VISIBLE — ring applied universally to interactive
+   elements. outline: none removes browser default;
+   box-shadow supplies the teal ring from --ring.
+---------------------------------------------------------- */
+button,
+a,
+input,
+textarea,
+select,
+[role="button"],
+[tabindex]:not([tabindex="-1"]) {
+  outline: none;
+  box-shadow: none; /* reset; :focus-visible overrides below */
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}

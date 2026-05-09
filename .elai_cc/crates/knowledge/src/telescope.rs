@@ -283,7 +283,7 @@ pub fn format_few_shot_example(node: &DkgNodeInfo) -> String {
 mod tests {
     use super::*;
     use elai_core::project_profile::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_profile() -> ProjectProfile {
@@ -301,7 +301,7 @@ mod tests {
             languages: LanguageProfile {
                 primary: Language::Rust,
                 secondary: Vec::new(),
-                distribution: HashMap::new(),
+                distribution: BTreeMap::new(),
                 tree_sitter_coverage: 0.0,
             },
             frameworks: vec![FrameworkDetection {
@@ -342,7 +342,7 @@ mod tests {
                 build: vec![BuildCommand {
                     cmd: "cargo build".to_owned(),
                     working_dir: PathBuf::from("."),
-                    env: HashMap::new(),
+                    env: BTreeMap::new(),
                     timeout_s: 120,
                     scope: CommandScope::Full,
                     verified: false,
@@ -350,7 +350,7 @@ mod tests {
                 test: vec![BuildCommand {
                     cmd: "cargo test".to_owned(),
                     working_dir: PathBuf::from("."),
-                    env: HashMap::new(),
+                    env: BTreeMap::new(),
                     timeout_s: 120,
                     scope: CommandScope::Full,
                     verified: false,

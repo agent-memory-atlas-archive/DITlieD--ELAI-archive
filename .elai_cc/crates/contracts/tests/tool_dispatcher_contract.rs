@@ -228,18 +228,37 @@ async fn validate_short_circuits_on_first_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn classify_failure_covers_six_of_nine_brief_categories() {
     let d = build_dispatcher(true, true, (true, true, true));
-    // Spec §failure-taxonomy 9 categories we must classify. `LazyCode` etc.
-    // are ours-extra (13 total in the taxonomy); the 9 the brief lists are:
+    // B-20A: spec §failure-taxonomy reduced to the 9 Rust-flavoured categories
+    // (Decision A, workflow/reasoning/B-20A-decisions.md). The probes below
+    // exercise each new variant with its canonical compiler/runtime signal.
     let probes: [(&str, ToolFailureCategory); 9] = [
-        ("error[E0308]: mismatched types", ToolFailureCategory::CompilationError),
-        ("test result: FAILED. assertion", ToolFailureCategory::TestFailure),
-        ("thread 'main' panicked at 'boom'", ToolFailureCategory::RuntimeError),
-        ("job timed out", ToolFailureCategory::Timeout),
-        ("OOM killer: process killed", ToolFailureCategory::ResourceExhausted),
-        ("context window exceeded, token budget", ToolFailureCategory::ContextExplosion),
-        ("raw log overload", ToolFailureCategory::RawLogOverload),
-        ("PRE_GATE phase gate blocked", ToolFailureCategory::PhaseGateFailure),
-        ("file size exceeded 300 lines", ToolFailureCategory::FileSizeExceeded),
+        ("error: expected `;`, found `}`", ToolFailureCategory::SyntaxError),
+        ("error[E0308]: mismatched types", ToolFailureCategory::TypeMismatch),
+        (
+            "error[E0425]: cannot find value `x`",
+            ToolFailureCategory::UndefinedSymbol,
+        ),
+        (
+            "error[E0432]: unresolved import `foo`",
+            ToolFailureCategory::MissingImport,
+        ),
+        (
+            "error[E0621]: explicit lifetime required in the type",
+            ToolFailureCategory::LifetimeError,
+        ),
+        (
+            "error[E0382]: borrow of moved value: `x`",
+            ToolFailureCategory::BorrowError,
+        ),
+        (
+            "warning: unused variable: `x`",
+            ToolFailureCategory::UnusedWarning,
+        ),
+        (
+            "test result: FAILED. assertion failed: left == right",
+            ToolFailureCategory::TestAssertion,
+        ),
+        ("thread 'main' panicked at 'boom'", ToolFailureCategory::RuntimePanic),
     ];
     let mut hits = 0usize;
     for (probe, expected) in probes {

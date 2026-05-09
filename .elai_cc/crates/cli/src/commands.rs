@@ -1062,6 +1062,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: false,
     },
     SlashCommandSpec {
+        name: "mode",
+        aliases: &[],
+        summary: "Switch the runtime gate mode (Phase 4G)",
+        argument_hint: Some("<interactive|autonomous>"),
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "explore",
         aliases: &[],
         summary: "Explore project context around a question",
@@ -1106,6 +1113,14 @@ pub enum SlashCommand {
     Resume {
         session_path: Option<String>,
     },
+    /// B-9 T3: rehydrate the most recent SessionDag handoff snapshot.
+    /// Calls `SessionDag::load_handoff` (NOT `Session::load_from_path`) so
+    /// /continue is the canonical replacement for the legacy JSONL resume
+    /// path. Optional argument selects a specific snap_id; default loads the
+    /// active session's branch tip or the latest "handoff"-tagged snapshot.
+    Continue {
+        snap_id: Option<String>,
+    },
     Config {
         section: Option<String>,
     },
@@ -1119,6 +1134,11 @@ pub enum SlashCommand {
     Version,
     Export {
         path: Option<String>,
+        /// B-9 T4: when true, render the legacy JSONL transcript via
+        /// `Session::render_jsonl_snapshot`. Default false (text export).
+        /// Mirrors the spec deterministic check that `render_jsonl_snapshot`
+        /// is gated behind `--export-jsonl`.
+        jsonl: bool,
     },
     Session {
         action: Option<String>,
@@ -1227,6 +1247,16 @@ pub enum SlashCommand {
         surgical: bool,
         new_project: bool,
     },
+    /// B-22 Phase 4G: switch the runtime gate mode between INTERACTIVE
+    /// (every MEDIUM/HIGH transition prompts a human) and AUTONOMOUS
+    /// (evidence checks + escalation triggers drive auto-advance). The
+    /// `mode` field is the lower-cased string (`"interactive"` |
+    /// `"autonomous"`); validation lives at the dashboard `set_gate_mode`
+    /// boundary so the parser stays string-typed and free of an
+    /// orchestrator-type dep.
+    Mode {
+        mode: String,
+    },
     Unknown(String),
 }
 
@@ -1325,6 +1355,9 @@ pub fn validate_slash_command_input(
         "resume" => SlashCommand::Resume {
             session_path: Some(require_remainder(command, remainder, "<session-path>")?),
         },
+        "continue" => SlashCommand::Continue {
+            snap_id: remainder,
+        },
         "config" => SlashCommand::Config {
             section: parse_config_section(&args)?,
         },
@@ -1345,7 +1378,29 @@ pub fn validate_slash_command_input(
             validate_no_args(command, &args)?;
             SlashCommand::Version
         }
-        "export" => SlashCommand::Export { path: remainder },
+        "export" => {
+            // B-9 T4: --export-jsonl flag gates legacy `render_jsonl_snapshot`.
+            // Strip the flag from the remainder before treating the rest as a path.
+            let (jsonl, path) = match remainder.as_deref() {
+                Some(s) => {
+                    if let Some(rest) = s.strip_prefix("--export-jsonl") {
+                        let trimmed = rest.trim();
+                        let path = if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_owned())
+                        };
+                        (true, path)
+                    } else if let Some(rest) = s.strip_suffix(" --export-jsonl") {
+                        (true, Some(rest.trim().to_owned()))
+                    } else {
+                        (false, Some(s.to_owned()))
+                    }
+                }
+                None => (false, None),
+            };
+            SlashCommand::Export { path, jsonl }
+        }
         "session" => parse_session_command(&args)?,
         "plugin" | "plugins" | "marketplace" => parse_plugin_command(&args)?,
         "agents" => SlashCommand::Agents {
@@ -1468,6 +1523,9 @@ pub fn validate_slash_command_input(
             let (description, surgical, new_project) = parse_task_flags(remainder.as_deref());
             SlashCommand::Task { description, surgical, new_project }
         }
+        "mode" => SlashCommand::Mode {
+            mode: remainder.unwrap_or_default(),
+        },
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1880,7 +1938,7 @@ fn slash_command_category(name: &str) -> &'static str {
         }
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
-        "research" | "ask" | "explore" | "task" => "Routing & modes",
+        "research" | "ask" | "explore" | "task" | "mode" => "Routing & modes",
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -3708,6 +3766,7 @@ pub fn handle_slash_command(
         | SlashCommand::Clear { .. }
         | SlashCommand::Cost
         | SlashCommand::Resume { .. }
+        | SlashCommand::Continue { .. }
         | SlashCommand::Config { .. }
         | SlashCommand::Mcp { .. }
         | SlashCommand::Memory
@@ -3764,6 +3823,7 @@ pub fn handle_slash_command(
         | SlashCommand::Ask { .. }
         | SlashCommand::Explore { .. }
         | SlashCommand::Task { .. }
+        | SlashCommand::Mode { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -3958,6 +4018,24 @@ mod tests {
             }))
         );
         assert_eq!(
+            SlashCommand::parse("/mode interactive"),
+            Ok(Some(SlashCommand::Mode {
+                mode: "interactive".to_string(),
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/mode autonomous"),
+            Ok(Some(SlashCommand::Mode {
+                mode: "autonomous".to_string(),
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/mode"),
+            Ok(Some(SlashCommand::Mode {
+                mode: String::new(),
+            }))
+        );
+        assert_eq!(
             SlashCommand::parse("/clear"),
             Ok(Some(SlashCommand::Clear { confirm: false }))
         );
@@ -4009,7 +4087,8 @@ mod tests {
         assert_eq!(
             SlashCommand::parse("/export notes.txt"),
             Ok(Some(SlashCommand::Export {
-                path: Some("notes.txt".to_string())
+                path: Some("notes.txt".to_string()),
+                jsonl: false,
             }))
         );
         assert_eq!(
@@ -4196,7 +4275,8 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|install <path>|help]"));
-        assert_eq!(slash_command_specs().len(), 145);
+        // B-22 Phase 4G bumped 145 -> 146 (added /mode).
+        assert_eq!(slash_command_specs().len(), 146);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

@@ -1,0 +1,116 @@
+# Phase 4F (B-21) Feasibility Probe — metrics snapshot
+# Generated 2026-05-09 by session s-32820 (autonomous spec close-out).
+#
+# IMPORTANT: a subset of the spec metrics in phase-4F.txt §4F.6 require
+# instrumentation that is NOT yet wired (real Tier C stub spawn, nvml
+# latency, etc.) — those entries are flagged unmeasured=true with a
+# rationale string instead of a fabricated number.
+
+phase = "4F"
+b_id = "B-21"
+generated_at = "2026-05-09"
+session_id = "s-32820"
+
+[tests]
+contract_count = 23                  # 16 spec-aligned + 7 close-out (total 23 vs spec target 16 contract)
+contract_pass_count = 23
+adversarial_count_unmeasured = true  # 8 adversarial spec tests deferred — see HANDOFF.md "deferred"
+adversarial_pass_count = 0           # not yet authored against real sandbox
+total_count = 23
+total_pass_count = 23
+
+[implementation]
+# Surface coverage vs phase-4F.txt spec
+spec_types_present = [
+  "TaskFeasibility", "ResourceMargins", "NovelStep", "StubResult",
+  "FeasibilityEscalation", "FeasibilityReport", "BabyStepFeasibilityReport",
+  "BabyStepStubResult", "BabyStepEscalation",
+  "ConstraintResult", "FeasibilityDecision", "SystemConstraintsRequired",
+  "FeasibilityExecutionMode",
+  "SystemProbeReport", "GpuInfo", "DetectionMethod",
+]
+spec_types_missing = [
+  # Spec calls for these names; current impl ships compatible-but-different shapes:
+  "SystemProbeResult (current: SystemProbeReport)",
+  "GpuInfo.uuid field (current: no nvml device.uuid())",
+  "ResourceDelta (probe before/after deltas not collected)",
+  "StubResult.alternative_index (current: no per-alt index)",
+  "StubResult.stdout_hash (blake3) (current: no stdout capture)",
+  "StubResult.stderr_summary (current: synthetic stub has no stderr)",
+]
+spec_methods_present = [
+  "FeasibilityProber::probe",
+  "FeasibilityProber::probe_baby_step",
+  "decide_with_mode (free fn — spec named 'decide')",
+  "check_constraints (free fn)",
+  "enforce_stub_line_limit (free fn)",
+]
+spec_methods_missing = [
+  "FeasibilityProbe::probe_system (current: DefaultSystemProber::probe)",
+  "FeasibilityProbe::run_stub (no real Tier C agent spawn)",
+]
+
+[skip_logic]
+zero_novel_and_safe_margins_skip = true   # spec §4F SKIP CRITERIA
+margin_threshold_pct = 20.0
+contract_test = "contract_skip_criteria_zero_novel_and_safe_margins"
+
+[stub_harness]
+line_limit = 50                           # strict <50 per spec §4F.5 I3 / GOAL
+line_limit_enforced = true                # contract_stub_line_limit_strict_lt_50
+graceful_timeout_secs = 25
+hard_timeout_secs = 30
+real_tier_c_spawn = false                 # synthetic stub only — see HANDOFF
+unmeasured_real_stub_p50_ms = true
+unmeasured_real_stub_p99_ms = true
+
+[alternatives]
+max_per_step = 3                          # spec §4F.5 I4
+cap_enforced = true                       # contract_alternative_cap_strict_lt_3
+ssb_branch_per_alternative = false        # not yet wired — see HANDOFF
+
+[constraints]
+check_pure_function = true                # check_constraints (no I/O)
+contract_test = "contract_check_constraints_per_resource_margin"
+unmeasured_constraint_check_latency_us = true   # micro-benchmark not yet authored
+
+[decision]
+modes = ["interactive", "autonomous"]
+contract_tests = [
+  "contract_decide_proceed_when_feasible",
+  "contract_decide_proceed_with_constraints_on_margin_breach",
+  "contract_decide_mode_split_on_infeasible",
+]
+escalate_on_interactive = true
+replan_on_autonomous = true
+
+[wire_format]
+report_msgpack_max_frame_bytes = 10485760     # 10 MB
+report_msgpack_under_cap_at_1000_stubs = true # contract_feasibility_report_size_below_10mb
+ssb_action_types = ["feasibility_report", "novel_step_detected", "stub_run", "system_probe"]
+ssb_schema_version = 26
+
+[dashboard]
+get_feasibility_report_de_stubbed = true     # commands.rs reshape from SsbViewer::feasibility_summary
+default_feasibility_prober_in_appstate = true
+unwired_feasibility_flag = false             # drawers.svelte.ts
+reasoning_drawer_renders_live_table = true   # ReasoningDrawer.svelte
+ts_detail_nullable = true                    # types.ts FeasibilityResult.detail: string | null
+
+[task_runner]
+emit_pipeline_probe_helper_present = true    # emit_feasibility_probe_for_pipeline
+emit_baby_step_probe_helper_present = true   # emit_baby_step_feasibility_probe (this session)
+production_construction_paths_wired = false  # cli/main.rs etc still pass feasibility_prober: None
+env_kill_switch = "ELAI_DISABLE_FEASIBILITY_PROBE"
+
+[system_probe]
+detection_method = "shell_out + env_fallback"   # nvml-wrapper not added
+nvml_wrapper_present = false                    # CLAUDE.md no-new-deps rule
+sysinfo_present = false                         # CLAUDE.md no-new-deps rule
+unmeasured_probe_latency_ms = true
+cache_ttl_secs = 60
+
+[notes]
+session = "s-32820"
+constraint = "no commits, only 1 audit cycle, autonomous spec close-out after audit"
+remaining_work_path = "workflow/sessions/s-32820/HANDOFF.md"

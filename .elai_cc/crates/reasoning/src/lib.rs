@@ -5,7 +5,7 @@ pub mod traversal;
 pub mod types;
 pub mod verification;
 
-pub use config::{AgentGrcConfigLoader, TomlConfigLoader};
+pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
 pub use engine::{BasicGrcEngine, GrcEngine};
 pub use types::{
     AgentGrcConfig, CsqCheck, CsqResult, CsqSeverity, FeasibilityMethod, FeasibilityOutcome,

@@ -1,6 +1,6 @@
 //! Tree-sitter-backed implementation of `AstEvaluator`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use elai_rules::predicate::{AstError, AstEvaluator, AstMatch};
 use tree_sitter::StreamingIterator;
@@ -8,14 +8,16 @@ use tree_sitter::StreamingIterator;
 /// Evaluates AST queries using tree-sitter grammars.
 ///
 /// Holds a registry of language name -> `tree_sitter::Language`.
-/// Supports 7 languages: Rust, Python, TypeScript, Go, Java, C#, Ruby.
+/// Supports the original 7 source languages (Rust, Python, TypeScript, Go,
+/// Java, C#, Ruby) plus the web-domain grammars added in Phase B
+/// (HTML, CSS, Svelte; Astro behind the `web-astro` feature flag).
 pub struct TreeSitterAstEvaluator {
-    languages: HashMap<String, tree_sitter::Language>,
+    languages: FxHashMap<String, tree_sitter::Language>,
 }
 
 impl TreeSitterAstEvaluator {
     pub fn new() -> Self {
-        let mut languages = HashMap::with_capacity(7);
+        let mut languages = FxHashMap::default();
         languages.insert("rust".to_string(), tree_sitter_rust::LANGUAGE.into());
         languages.insert("python".to_string(), tree_sitter_python::LANGUAGE.into());
         languages.insert(
@@ -26,6 +28,18 @@ impl TreeSitterAstEvaluator {
         languages.insert("java".to_string(), tree_sitter_java::LANGUAGE.into());
         languages.insert("c_sharp".to_string(), tree_sitter_c_sharp::LANGUAGE.into());
         languages.insert("ruby".to_string(), tree_sitter_ruby::LANGUAGE.into());
+        // Phase B web grammars.
+        languages.insert("html".to_string(), tree_sitter_html::LANGUAGE.into());
+        languages.insert("css".to_string(), tree_sitter_css::LANGUAGE.into());
+        languages.insert(
+            "svelte".to_string(),
+            tree_sitter_svelte_ng::LANGUAGE.into(),
+        );
+        #[cfg(feature = "web-astro")]
+        languages.insert(
+            "astro".to_string(),
+            tree_sitter_astro_next::LANGUAGE.into(),
+        );
         Self { languages }
     }
 
@@ -70,8 +84,8 @@ impl AstEvaluator for TreeSitterAstEvaluator {
                     .map_err(|e| AstError::EvaluationFailed(format!("utf8: {e}")))?;
                 results.push(AstMatch {
                     node_text: text.to_string(),
-                    start_line: node.start_position().row as u32,
-                    end_line: node.end_position().row as u32,
+                    start_line: u32::try_from(node.start_position().row).unwrap_or(u32::MAX),
+                    end_line: u32::try_from(node.end_position().row).unwrap_or(u32::MAX),
                 });
             }
         }

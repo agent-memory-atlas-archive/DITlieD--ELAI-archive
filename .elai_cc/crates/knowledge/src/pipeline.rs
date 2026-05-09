@@ -59,6 +59,11 @@ pub struct QueryPipeline {
     pub hyde_stage: Option<HydeStage>,
     #[cfg(feature = "splade")]
     pub splade: Option<SpladeExpander>,
+    /// Current degradation cascade mode. Updated at startup by the cascade
+    /// evaluation (cli/main.rs) and on circuit-breaker transitions (B-4).
+    /// Used as the diagnostic label in QueryTrace so per-query traces reflect
+    /// the actual mode rather than the default Hybrid sentinel.
+    pub search_mode: SearchMode,
 }
 
 impl QueryPipeline {
@@ -73,7 +78,18 @@ impl QueryPipeline {
             hyde_stage: None,
             #[cfg(feature = "splade")]
             splade: None,
+            // Default to Hybrid until the degradation cascade has run its
+            // first evaluation (B-4 full wiring). Callers that drive the
+            // cascade can update this field before each query via
+            // `pipeline.search_mode = cascade.evaluate(...)`.
+            search_mode: SearchMode::Hybrid,
         }
+    }
+
+    /// Set the current degradation cascade mode. Call this after each cascade
+    /// evaluation so per-query QueryTrace labels reflect the real mode.
+    pub fn set_search_mode(&mut self, mode: SearchMode) {
+        self.search_mode = mode;
     }
 
     pub fn with_cross_encoder(mut self, reranker: CrossEncoderReranker) -> Self {
@@ -267,8 +283,12 @@ impl QueryPipeline {
 
         // Stage 1: vector (STANDARD + DEEP only).
         if use_vector {
+            // B-4 DEEP-tier MRR fix: always include original query as anchor signal.
+            // HyDE hypothesis may be off-domain (sidecar degraded); dropping original
+            // query entirely caused MRR regression (DEEP 0.206 vs STANDARD 0.575).
+            // Cross-encoder reranker still uses ORIGINAL query (see Stage 4 below).
             let vector_queries: Vec<String> = match hyde_hypothesis {
-                Some(ref hyp) => vec![hyp.clone()],
+                Some(ref hyp) => vec![query.to_string(), hyp.clone()],
                 None => expansion_texts.clone(),
             };
 
@@ -335,6 +355,60 @@ impl QueryPipeline {
                 circuit_breaker_state: None,
                 error: None,
             });
+        }
+
+        // Stage 1.5b: code_vector (opt-in, STANDARD + DEEP, config-gated).
+        // Only runs when VectorIndexer.has_code_index() is true (ELAI_CODE_VEC=1).
+        // Produces a separate "code_vector" stage consumed by rrf_rerank — the
+        // 3-ranker RRF path confirmed working by query_trace.rs:264-281 test fixture.
+        if use_vector {
+            if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
+                if indexer.has_code_index() {
+                    let mut code_seen: HashSet<String> = HashSet::new();
+                    let mut code_results: Vec<RetrievalResult> = Vec::new();
+                    let mut code_error: Option<String> = None;
+                    // Use original query only for code search (HyDE hypothesis is text-domain).
+                    match vm.embed_code(query) {
+                        Ok(code_vec) => {
+                            match indexer.search_code(&code_vec, 10) {
+                                Ok(hits) => {
+                                    for (meta, score) in hits {
+                                        let chunk_id = format!(
+                                            "{}:{}-{}",
+                                            meta.path.display(),
+                                            meta.line_start,
+                                            meta.line_end
+                                        );
+                                        if code_seen.insert(chunk_id.clone()) {
+                                            code_results.push(RetrievalResult {
+                                                chunk_id,
+                                                snippet: meta.snippet,
+                                                score: score as f64,
+                                                tool_used: "code_vector".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!("code_vector search failed: {e}");
+                                    code_error = Some(e.to_string());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("code embed failed: {e}");
+                            code_error = Some(e.to_string());
+                        }
+                    }
+                    stages.push(PipelineStage {
+                        stage: "code_vector".to_string(),
+                        results: code_results,
+                        latency_ms: 0,
+                        circuit_breaker_state: None,
+                        error: code_error,
+                    });
+                }
+            }
         }
 
         // Stage 1.5: splade keyword expansion (STANDARD + DEEP)
@@ -517,7 +591,7 @@ impl QueryPipeline {
             circuit_breaker_state: s.circuit_breaker_state.clone(),
         }).collect();
         let result_count = stages.last().map(|s| s.results.len()).unwrap_or(0);
-        let trace = QueryTrace::new(stage_traces, 0, SearchMode::Hybrid, result_count);
+        let trace = QueryTrace::new(stage_traces, 0, self.search_mode, result_count);
         tracing::debug!(
             query_id = %trace.query_id,
             tier = %resolved_tier,

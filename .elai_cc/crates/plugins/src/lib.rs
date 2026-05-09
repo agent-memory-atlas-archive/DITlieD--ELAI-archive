@@ -1,6 +1,7 @@
 mod hooks;
 pub mod import_extractor;
 pub mod ipc_hooks;
+pub mod post_tool_use;
 pub mod tiered_analysis;
 
 #[cfg(feature = "mcp")]

@@ -1,7 +1,7 @@
 //! Contract: CheckpointManager must write 5 atomic files, record SSB metadata,
 //! reject UntrackedValue channels, and round-trip AgentCheckpointData via msgpack.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -29,7 +29,7 @@ fn test_grc_config() -> AgentGrcConfig {
         grounding_level: GroundingLevel::Uncertain,
         csq_required: false,
         allowed_methods: vec![],
-        transition_overrides: HashMap::new(),
+        transition_overrides: FxHashMap::default(),
         require_scope_enumeration: false,
     }
 }

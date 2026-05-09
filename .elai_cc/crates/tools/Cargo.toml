@@ -18,12 +18,14 @@ elai-providers = { path = "../providers" }
 git2 = { version = "0.20.4", default-features = false }
 postcard.workspace = true
 regex = { version = "1", default-features = false, features = ["std"] }
+rustc-hash.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+walkdir = "2"
 blake3.workspace = true
 
 [dev-dependencies]

@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
+use elai_core::ClockProvider as _;
+
 /// Default MCP server URL the dashboard connects to when
 /// `ELAI_MCP_SERVER_URL` is unset. Points at an HTTP JSON-RPC endpoint —
 /// not a stdio binary — because the dashboard wiring only supports HTTP.
@@ -70,7 +72,7 @@ pub enum McpTransport {
 pub struct McpConnection {
     pub server_url: String,
     pub transport: McpTransport,
-    pub connected_at: std::time::Instant,
+    pub connected_at: elai_core::LogicalInstant,
 }
 
 /// MCP tool specification
@@ -223,7 +225,7 @@ impl McpBridge for DefaultMcpBridge {
         Ok(McpConnection {
             server_url: server_url.to_string(),
             transport: McpTransport::Stdio, // Default to stdio
-            connected_at: std::time::Instant::now(),
+            connected_at: elai_core::OsClock.now(),
         })
     }
 

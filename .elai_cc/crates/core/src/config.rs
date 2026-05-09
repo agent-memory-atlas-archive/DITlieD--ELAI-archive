@@ -252,10 +252,12 @@ impl ConfigLoader {
                 source: ConfigSource::Local,
                 path: self.cwd.join(".elai").join("settings.local.json"),
             },
-            ConfigEntry {
-                source: ConfigSource::Project,
-                path: self.cwd.join("elai_cc.toml"),
-            },
+            // NOTE: elai_cc.toml is intentionally NOT listed here. It is a
+            // TOML file loaded separately via crate::runtime_config::
+            // load_elai_config(). The JSON-only loader below cannot parse
+            // TOML — including this path here caused "unexpected character: #"
+            // on every command that invoked core::config::load(). Fixed
+            // 2026-04-29 (B-15D PART-C smoke).
         ]
     }
 

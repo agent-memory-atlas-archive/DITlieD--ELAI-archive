@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -86,7 +86,7 @@ struct OllamaGenerateResponse {
     eval_duration: u64,
     /// Captures ONLY unknown keys (draft-related fields if spec decode is supported).
     #[serde(flatten)]
-    extra: HashMap<String, serde_json::Value>,
+    extra: FxHashMap<String, serde_json::Value>,
 }
 
 /// Probe the local ollama instance for speculative decoding support.
@@ -354,6 +354,17 @@ pub trait LlmProvider: Send + Sync {
     fn embed<'a>(&'a self, text: &'a str) -> LlmFuture<'a, Vec<f32>>;
     fn token_count(&self, text: &str) -> Result<usize, ApiError>;
     fn token_count_estimate(&self, text: &str) -> usize;
+    /// B-10 (DECISION-B): identifier of the loaded model for tier detection.
+    ///
+    /// Default impl returns `""` so external implementations keep compiling,
+    /// but every internal impl in this crate overrides it. Returning empty
+    /// is treated by callers as "unknown" — they emit a single tracing::warn
+    /// and fall back to a safe default (`micro_7b_12gb`).
+    ///
+    /// MUST NOT panic. MUST be cheap (no I/O, no allocation beyond the field).
+    fn model_name(&self) -> &str {
+        ""
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +603,11 @@ impl LlmProvider for OllamaProvider {
     fn token_count_estimate(&self, text: &str) -> usize {
         ollama_token_estimate(text)
     }
+
+    /// B-10 (DECISION-B): expose the loaded Ollama model identifier.
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -679,6 +695,11 @@ impl LlmProvider for OllamaEmbedder {
 
     fn token_count_estimate(&self, text: &str) -> usize {
         ollama_token_estimate(text)
+    }
+
+    /// B-10 (DECISION-B): expose the loaded Ollama embedding model identifier.
+    fn model_name(&self) -> &str {
+        &self.model
     }
 }
 

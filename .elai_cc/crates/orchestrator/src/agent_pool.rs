@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Arc;
@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use elai_core::EntropySource;
-use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState, GroundingLevel};
+use elai_reasoning::{
+    agent_grc_config_for_role, AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcEngine, GrcState,
+    GroundingLevel,
+};
 
 use crate::sandbox::{AgentSandbox, AppContainerConfig, SandboxHandle};
 
@@ -74,6 +77,17 @@ pub struct AgentHandle {
     /// IPC socket path for this agent (Phase 4A).
     /// Used by the orchestrator to communicate with the agent process.
     pub socket_path: Option<PathBuf>,
+    /// Per-agent AppContainer profile identifier (B-18 Phase 2).
+    /// Format: "elai-agent-{agent_id}". None when sandbox is disabled.
+    /// Phase-2 note: MVP uses a single shared profile; per-agent profile
+    /// isolation (unique SID per agent) is deferred to B-18C.
+    pub appcontainer_profile_id: Option<String>,
+    /// Per-agent filesystem allow-list (B-18 Phase 3).
+    /// Glob patterns that are explicitly allowed for this agent regardless of
+    /// global HIDDEN_PATH_PATTERNS. Visibility filter checks this list first;
+    /// if any pattern matches the path is NOT filtered.
+    /// Empty = no extra allowances (applies global hidden-path rules).
+    pub allowed_paths: Vec<String>,
 }
 
 impl Clone for AgentHandle {
@@ -97,6 +111,8 @@ impl Clone for AgentHandle {
             sandbox_handle: self.sandbox_handle.clone(),
             child_process: None, // Not cloned — only original handle owns the process
             socket_path: self.socket_path.clone(),
+            appcontainer_profile_id: self.appcontainer_profile_id.clone(),
+            allowed_paths: self.allowed_paths.clone(),
         }
     }
 }
@@ -150,7 +166,13 @@ impl Default for AgentPoolConfig {
             scratch_base: PathBuf::from(".elai_cc/sessions/default/agents"),
             vram_required_bytes: VRAM_MIN_BYTES,
             project_path: PathBuf::from("."), // Default to current directory
-            enable_sandbox: false, // Disabled for Phase 3 (in-process)
+            // B-18A Task 7: enable AppContainer-based isolation on Windows by
+            // default. Linux/macOS stay false until B-18B+ wires clone3+seccomp
+            // through launch_agent_process. The factory in
+            // create_sandbox() falls back to a non-isolating Job+RestrictedToken
+            // path on hosts where AppContainer is unavailable, so this default
+            // is safe even on older Windows.
+            enable_sandbox: cfg!(target_os = "windows"),
         }
     }
 }
@@ -200,6 +222,14 @@ pub trait AgentPool {
         to: Uuid,
         message: AgentMessage,
     ) -> Result<(), AgentPoolError>;
+
+    /// B-22 Phase 4G: snake-case role string for an agent identified by
+    /// `agent_id`. Returns `None` when the UUID is unknown.
+    ///
+    /// The dashboard uses this to surface per-agent role badges in the
+    /// supervision feed and the eventual /agents inspector. The mapping is
+    /// the same canonical snake_case used in `AgentRole` SSB serialisation.
+    fn get_role(&self, agent_id: Uuid) -> Option<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +237,7 @@ pub trait AgentPool {
 // ---------------------------------------------------------------------------
 
 pub struct InProcessAgentPool<E: EntropySource> {
-    agents: HashMap<Uuid, AgentHandle>,
+    agents: FxHashMap<Uuid, AgentHandle>,
     config: AgentPoolConfig,
     entropy: E,
     model_pool: Arc<dyn ModelPool>,
@@ -231,7 +261,7 @@ impl<E: EntropySource> InProcessAgentPool<E> {
         };
 
         Self {
-            agents: HashMap::new(),
+            agents: FxHashMap::default(),
             config,
             entropy,
             model_pool,
@@ -269,6 +299,15 @@ impl<E: EntropySource> InProcessAgentPool<E> {
     ///
     /// Requires: agent_binary_path points to the elai_cc_agent binary.
     /// The socket_dir must exist with 0700 permissions (created by IpcGateway).
+    ///
+    /// B-18A Task 8: when `enable_sandbox=true` AND a sandbox + sandbox_handle
+    /// were successfully created at spawn() time, the binary is launched via
+    /// `AgentSandbox::launch_agent` so that AppContainer / Job-object /
+    /// restricted-token isolation is actually applied. The sandbox tracks the
+    /// process internally; agent_pool stores no `Child` in that branch and
+    /// kill_agent_process delegates to `AgentSandbox::kill_agent`. Falls back
+    /// to plain `Command::spawn` when the sandbox is unavailable so older
+    /// Windows hosts (and Linux until B-18B) keep working.
     pub fn launch_agent_process(
         &mut self,
         agent_id: &Uuid,
@@ -284,29 +323,69 @@ impl<E: EntropySource> InProcessAgentPool<E> {
             AgentPoolError::SpawnFailed(format!("scratch dir creation failed: {e}"))
         })?;
 
-        // Build sanitized environment
-        let env = crate::sandbox::AgentEnvironment::new(handle.scratch_dir.clone());
+        // B-18A Task 8: if a sandbox + sandbox_handle exist, launch through the
+        // sandbox so AppContainer / Job / restricted-token actually apply.
+        let scratch_dir = handle.scratch_dir.clone();
+        let sandbox_owned = if let (Some(sandbox), Some(sb_handle)) = (
+            self.sandbox.as_ref(),
+            handle.sandbox_handle.as_ref(),
+        ) {
+            let command = agent_binary_path.to_string_lossy().into_owned();
+            let args = vec![
+                socket_path.to_string_lossy().into_owned(),
+                agent_id.to_string(),
+            ];
+            match sandbox.launch_agent(sb_handle, &command, &args, &scratch_dir) {
+                Ok(proc) => {
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        pid = proc.process_id,
+                        socket_path = %socket_path.display(),
+                        "launched sandboxed agent process via AgentSandbox::launch_agent"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        error = %e,
+                        "sandbox launch_agent failed, falling back to plain Command::spawn"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
-        // Spawn the agent binary with socket_path as argv[1] and agent_id as argv[2]
-        let child = std::process::Command::new(agent_binary_path)
-            .arg(socket_path.to_string_lossy().as_ref())
-            .arg(agent_id.to_string())
-            .env_clear()
-            .envs(env.as_env_map())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| AgentPoolError::SpawnFailed(format!("process spawn failed: {e}")))?;
+        if !sandbox_owned {
+            // Fallback path (Linux until B-18B, or Windows when sandbox creation
+            // failed): plain Command::spawn with sanitized env.
+            let env = crate::sandbox::AgentEnvironment::new(scratch_dir);
+            let child = std::process::Command::new(agent_binary_path)
+                .arg(socket_path.to_string_lossy().as_ref())
+                .arg(agent_id.to_string())
+                .env_clear()
+                .envs(env.as_env_map())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    AgentPoolError::SpawnFailed(format!("process spawn failed: {e}"))
+                })?;
+            tracing::info!(
+                agent_id = %agent_id,
+                pid = child.id(),
+                socket_path = %socket_path.display(),
+                "launched agent process (no sandbox)"
+            );
+            handle.child_process = Some(child);
+        }
+        // When sandbox owns the process, child_process stays None — the
+        // sandbox's per-agent process map is the authoritative tracker, and
+        // kill_agent_process / wait below routes through it.
 
-        tracing::info!(
-            agent_id = %agent_id,
-            pid = child.id(),
-            socket_path = %socket_path.display(),
-            "launched agent process"
-        );
-
-        handle.child_process = Some(child);
         handle.socket_path = Some(socket_path.to_path_buf());
         handle.status = AgentStatus::Ready;
 
@@ -314,6 +393,10 @@ impl<E: EntropySource> InProcessAgentPool<E> {
     }
 
     /// Kill an agent's OS process and clean up resources.
+    ///
+    /// B-18A Task 8: routes the kill through `AgentSandbox::kill_agent` /
+    /// `wait_agent` when the sandbox owns the process; falls back to direct
+    /// `Child::kill` when launch_agent_process took the no-sandbox branch.
     pub fn kill_agent_process(&mut self, agent_id: &Uuid) -> Result<(), AgentPoolError> {
         let handle = self.agents.get_mut(agent_id).ok_or_else(|| {
             AgentPoolError::AgentNotFound(*agent_id)
@@ -329,6 +412,24 @@ impl<E: EntropySource> InProcessAgentPool<E> {
             }
             // Reap to avoid zombie
             let _ = child.wait();
+        } else if let Some(sandbox) = self.sandbox.as_ref() {
+            // Sandbox-owned process: delegate kill+reap to the sandbox.
+            if let Err(e) = sandbox.kill_agent(*agent_id) {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e,
+                    "AgentSandbox::kill_agent failed"
+                );
+            }
+            // wait_agent reaps and releases the per-agent kernel handle / pid
+            // entry. Errors are logged and swallowed so cleanup proceeds.
+            if let Err(e) = sandbox.wait_agent(*agent_id) {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e,
+                    "AgentSandbox::wait_agent failed"
+                );
+            }
         }
 
         // Clean up socket file
@@ -370,6 +471,71 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         let mut grc_engine = BasicGrcEngine::new();
         grc_engine.with_agent_config(grc_config.clone());
 
+        // B-8 Tasks#6: anti-rubber-stamp activation for the Auditor role.
+        //
+        // The reasoning engine enforces "Auditor must record >= 1 FINDING:
+        // Verify step before Converge" at engine.rs:297-315. The enforcement
+        // is correct as-is (any auditor that calls `Converge` without a prior
+        // `Verify` whose content starts with `FINDING:` is rejected with
+        // `GrcError::InsufficientFindings`); the unit-test suite already
+        // covers the rejection path (engine.rs tests).
+        //
+        // What was missing pre-B-8 was a production caller of
+        // `engine.think()` on the auditor's engine — without one, the engine
+        // is dormant and the gate is unreachable. We seed one Observe step
+        // here. Observe is the legal first step in the state machine
+        // (engine.rs:271-282) and consumes one budget slot from the auditor's
+        // 10-call budget, leaving the real audit flow nine slots to record
+        // its own Observe/Hypothesize/PlanAction/Act/Verify(FINDING:...)
+        // chain before reaching Converge. With this seed in place, the
+        // engine has live topic state and any subsequent Converge call
+        // exercises the anti-rubber-stamp branch — turning the dormant gate
+        // into a reachable production guard.
+        //
+        // The kill-switch (`ELAI_DISABLE_PIPELINE_GRC`) skips the seed so the
+        // engine reverts to the unenforced baseline.
+        //
+        // Seed is restricted to Auditor because engine.rs:300 gates the
+        // FINDING check on `role == "auditor"`; seeding non-auditor engines
+        // would burn budget without a corresponding production benefit.
+        if matches!(role, AgentRole::Auditor)
+            && !crate::grc::pipeline_grc_disabled_via_env()
+        {
+            let seed = elai_reasoning::ThinkStep {
+                step_type: GrcState::Observe,
+                content: "auditor engine bootstrapped via agent_pool::spawn".into(),
+                topic: format!("audit-{}", agent_id),
+                grounding: Some("tool:agent_pool::spawn".into()),
+                conclusion: None,
+                scope: None,
+            };
+            match grc_engine.think(seed) {
+                Ok(_) => tracing::debug!(
+                    agent_id = %agent_id,
+                    "agent_pool: seeded auditor Observe for anti-rubber-stamp gate activation"
+                ),
+                Err(e) => tracing::warn!(
+                    agent_id = %agent_id,
+                    error = ?e,
+                    "agent_pool: auditor seed rejected; engine continues without seed"
+                ),
+            }
+        }
+
+        // B-8 Tasks#2: ContextCompiler verify_claim pre-fetch — out of scope.
+        // The orchestrator-side ContextCompiler is currently a spawn stub
+        // with no Rust prefetch path; the real ContextCompiler is the
+        // Claude-Code sub-agent driven from CLAUDE.md session-protocol.
+        // Wiring `verify_claim` into the sub-agent flow is a workflow-tooling
+        // change tracked separately. See workflow/reasoning/B-8-decisions.md
+        // §6.
+        if matches!(role, AgentRole::ContextCompiler) {
+            tracing::debug!(
+                agent_id = %agent_id,
+                "agent_pool: ContextCompiler verify_claim wiring deferred to B-future"
+            );
+        }
+
         // Create sandbox handle if sandbox is enabled (Phase 3J.11)
         let sandbox_handle = if let Some(ref sandbox) = self.sandbox {
             let app_config = AppContainerConfig::new(
@@ -392,6 +558,19 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
             None
         };
 
+        // B-18 P2: derive per-agent AppContainer profile id from agent_id.
+        // MVP: single shared profile in create_sandbox(); per-agent SID isolation is B-18C.
+        let appcontainer_profile_id = if self.config.enable_sandbox {
+            Some(format!("elai-agent-{}", agent_id))
+        } else {
+            None
+        };
+
+        // B-18 P3: per-agent allowed_paths from role-based defaults.
+        // Executor: project source broad read; Auditor: read-only everything;
+        // ContextCompiler: read-only except memory-bank.
+        let allowed_paths = role_default_allowed_paths(&role, &self.config.project_path);
+
         // task stored in handle for lifecycle use (3C.2 wires actual execution)
         let handle = AgentHandle {
             agent_id,
@@ -405,6 +584,8 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
             sandbox_handle,
             child_process: None, // Set by launch_agent_process() after spawn
             socket_path: None,   // Set by launch_agent_process() after spawn
+            appcontainer_profile_id,
+            allowed_paths,
         };
 
         self.agents.insert(agent_id, handle.clone());
@@ -457,6 +638,29 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         }
         // In-process message delivery wired in 3C.2 lifecycle
         Ok(())
+    }
+
+    fn get_role(&self, agent_id: Uuid) -> Option<String> {
+        self.agents
+            .get(&agent_id)
+            .map(|h| agent_role_to_snake_case(h.role).to_owned())
+    }
+}
+
+/// B-22 Phase 4G: canonical snake_case for an [`AgentRole`].
+/// Mirrors `bsp::engine::agent_role_str` so SSB rows and the dashboard
+/// see the same labels (kept inline rather than re-exported to avoid a
+/// cross-module dep on the bsp submodule from agent_pool.rs).
+fn agent_role_to_snake_case(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Executor => "executor",
+        AgentRole::Auditor => "auditor",
+        AgentRole::Researcher => "researcher",
+        AgentRole::Designer => "designer",
+        AgentRole::PromptEngineer => "prompt_engineer",
+        AgentRole::ContextCompiler => "context_compiler",
+        AgentRole::MemoryWriter => "memory_writer",
+        AgentRole::MediaValidator => "media_validator",
     }
 }
 
@@ -560,10 +764,16 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
             require_scope_enumeration: false,
             ..AgentGrcConfig::default()
         },
-        AgentRole::ContextCompiler => AgentGrcConfig {
-            role: "context_compiler".into(),
-            ..AgentGrcConfig::default()
-        },
+        // B-5: delegate to reasoning crate's canonical config table so this
+        // arm stays in sync with TomlConfigLoader without duplicating the spec.
+        // agent_grc_config_for_role returns Some("context_compiler") by construction;
+        // the unwrap_or_else fallback is unreachable in practice but satisfies
+        // the no-.expect()-in-production rule.
+        AgentRole::ContextCompiler => agent_grc_config_for_role("context_compiler")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "context_compiler".into(),
+                ..AgentGrcConfig::default()
+            }),
         AgentRole::Researcher => AgentGrcConfig {
             role: "researcher".into(),
             budget: GrcBudget {
@@ -584,10 +794,59 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
             require_scope_enumeration: false,
             ..AgentGrcConfig::default()
         },
-        AgentRole::MediaValidator => AgentGrcConfig {
-            role: "media_validator".into(),
-            ..AgentGrcConfig::default()
-        },
+        // B-5: delegate to reasoning crate's canonical config table.
+        // agent_grc_config_for_role returns Some("media_validator") by construction;
+        // the unwrap_or_else fallback is unreachable in practice but satisfies
+        // the no-.expect()-in-production rule.
+        AgentRole::MediaValidator => agent_grc_config_for_role("media_validator")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "media_validator".into(),
+                ..AgentGrcConfig::default()
+            }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// role_default_allowed_paths: per-role filesystem allow-list (B-18 P3)
+// ---------------------------------------------------------------------------
+
+/// Returns glob patterns explicitly allowed for the given role.
+/// These patterns are stored on AgentHandle.allowed_paths and consulted by
+/// the visibility filter before falling through to global HIDDEN_PATH_PATTERNS.
+///
+/// Role policy (incremental — each level adds to executor base):
+///   Executor:        project/** broad read/write (normal ELAI_CC workflow)
+///   Auditor:         everything readable (needs full project visibility for audit)
+///   ContextCompiler: project/** read-only; memory-bank excluded (context delegation rule)
+///   Researcher:      project/** + system temp for download staging
+///   Others:          executor default
+pub fn role_default_allowed_paths(role: &AgentRole, project_path: &std::path::Path) -> Vec<String> {
+    let project_glob = format!("{}/**", project_path.display());
+    match role {
+        AgentRole::Auditor => {
+            // Auditor needs read access to everything in the project
+            vec![project_glob, "**".to_string()]
+        }
+        AgentRole::ContextCompiler => {
+            // Context compiler reads project but not memory-bank (context delegation rule)
+            let mem_bank_glob = format!("{}/workflow/memory-bank/**", project_path.display());
+            // Allowed = project glob; memory-bank is a sub-path but the visibility
+            // filter applies HIDDEN_PATH_PATTERNS AFTER the allow check, so we
+            // only add the base project allow and rely on hidden-path rules for
+            // sensitive sub-paths.
+            vec![project_glob, format!("!{}", mem_bank_glob)]
+        }
+        AgentRole::Researcher => {
+            // Researcher gets project access + temp for download staging
+            #[cfg(target_os = "windows")]
+            let tmp = std::env::var("TEMP")
+                .unwrap_or_else(|_| "C:\\Windows\\Temp".to_string());
+            #[cfg(not(target_os = "windows"))]
+            let tmp = "/tmp".to_string();
+            vec![project_glob, format!("{}/**", tmp)]
+        }
+        // Executor, Designer, PromptEngineer, MemoryWriter, MediaValidator
+        _ => vec![project_glob],
     }
 }
 
@@ -812,6 +1071,26 @@ mod tests {
         let retrieved = pool.get_agent(&handle.agent_id).unwrap();
         assert_eq!(retrieved.agent_id, handle.agent_id);
         assert_eq!(retrieved.role, AgentRole::Executor);
+    }
+
+    // B-22 Phase 4G: AgentPool::get_role exposes the snake-case role label
+    // used by the dashboard's per-agent inspector.
+    #[test]
+    fn get_role_returns_snake_case_for_spawned_agent() {
+        let mut pool = test_pool(u64::MAX);
+        let handle = pool.spawn(AgentRole::Executor, "t".into()).unwrap();
+        let role = pool.get_role(handle.agent_id).expect("role present");
+        assert_eq!(role, "executor");
+
+        let h2 = pool.spawn(AgentRole::ContextCompiler, "t2".into()).unwrap();
+        let role2 = pool.get_role(h2.agent_id).expect("role present");
+        assert_eq!(role2, "context_compiler");
+    }
+
+    #[test]
+    fn get_role_returns_none_for_unknown_uuid() {
+        let pool = test_pool(u64::MAX);
+        assert!(pool.get_role(Uuid::nil()).is_none());
     }
 
     #[test]

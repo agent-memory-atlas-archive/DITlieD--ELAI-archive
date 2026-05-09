@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ pub struct WebFetcher {
     client: reqwest::Client,
     clock: Arc<dyn ClockProvider>,
     robots: RobotsCache,
-    domain_limiters: HashMap<String, RateLimiter>,
+    domain_limiters: FxHashMap<String, RateLimiter>,
     sleep_fn: SleepFn,
 }
 
@@ -77,7 +77,7 @@ impl WebFetcher {
             client,
             clock: clock.clone(),
             robots: RobotsCache::new(clock),
-            domain_limiters: HashMap::new(),
+            domain_limiters: FxHashMap::default(),
             sleep_fn,
         })
     }

@@ -5,13 +5,16 @@
 //! deterministic repair (REORDER, SUBSTITUTE). T_DAG=10 max rounds.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::warn;
 
 use elai_ipc_types::ToolId;
 use crate::agent_pool::ModelPool;
 use crate::research_tree::{PipelineSpec, QualitySpec, StepId};
+use crate::ssb::{DagRepairRoundPayload, Ssb, SsbPayload};
 
 // ---------------------------------------------------------------------------
 // Newtypes
@@ -47,6 +50,30 @@ pub const SPLIT_RATIO: f64 = 0.6;
 
 /// Maximum split depth for phase sizing.
 pub const MAX_SPLIT_DEPTH: u32 = 2;
+
+// ---------------------------------------------------------------------------
+// B-7: DagRepairEmitter — injectable SSB callback for DAG repair actions
+// ---------------------------------------------------------------------------
+
+/// Payload emitted for each RepairAction produced by DagRepairLoop::repair().
+/// `action_kind` is "reorder" | "substitute".
+#[derive(Debug, Clone)]
+pub struct DagRepairEventPayload {
+    pub action_kind: &'static str,
+    pub round: u32,
+    pub reason: String,
+}
+
+/// Injectable per-action emitter for DAG repair loop events. The default
+/// PipelineBuilder uses `None` (no SSB emission); the task runner can plug in
+/// an `SsbDagRepairEmitter` so repair actions surface as `dag_repair_round` rows
+/// in the dashboard activity feed.
+///
+/// Sync trait: the SSB-backed adapter fires a `tokio::spawn` internally (fire-
+/// and-forget). Repair rows are advisory and must not block the repair loop.
+pub trait DagRepairEmitter: Send + Sync {
+    fn emit(&self, event: DagRepairEventPayload);
+}
 
 // ---------------------------------------------------------------------------
 // PredicateRef — serializable predicate reference (compiled form is ephemeral)
@@ -338,6 +365,22 @@ impl PipelineBuilder {
         pool: &dyn ModelPool,
         predicates: &dyn PredicateCompiler,
     ) -> Result<ExecutablePipeline, PipelineBuilderError> {
+        Self::build_with_emitter(spec, tools, pool, predicates, None)
+    }
+
+    /// Build with an optional [`DagRepairEmitter`] so the task runner can surface
+    /// repair actions as `dag_repair_round` SSB rows. Callers that don't need SSB
+    /// observability use [`Self::build`] which passes `None`.
+    ///
+    /// B-7b: production call site in `task_runner::drive_task` passes
+    /// `Some(&SsbDagRepairEmitter)` so DAG repair rows appear in the dashboard.
+    pub fn build_with_emitter(
+        spec: &PipelineSpec,
+        tools: &dyn ToolLookup,
+        pool: &dyn ModelPool,
+        predicates: &dyn PredicateCompiler,
+        repair_emitter: Option<&Arc<dyn DagRepairEmitter>>,
+    ) -> Result<ExecutablePipeline, PipelineBuilderError> {
         // Reject empty specs
         if spec.steps.is_empty() {
             return Err(PipelineBuilderError::EmptySpec);
@@ -360,7 +403,7 @@ impl PipelineBuilder {
         // If errors exist, attempt repair
         let mut repair_log = Vec::new();
         if !errors.is_empty() {
-            let outcome = DagRepairLoop::repair(&mut graph, &errors, tools, T_DAG);
+            let outcome = DagRepairLoop::repair_with_emitter(&mut graph, &errors, tools, T_DAG, repair_emitter);
             match outcome {
                 RepairOutcome::Repaired { actions, .. } => {
                     repair_log = actions;
@@ -571,11 +614,26 @@ impl DagRepairLoop {
     ///
     /// Non-repairable conditions (resource overflow, ambiguous deps) escalate immediately.
     /// Max T_DAG rounds. Each round must produce a structurally different graph.
+    ///
+    /// B-7: `emitter` is `None` in tests and legacy callers. When `Some`, each
+    /// RepairAction emits a `dag_repair_round` SSB row (fire-and-forget).
     pub fn repair(
         graph: &mut DependencyGraph,
         errors: &[ValidationError],
         tools: &dyn ToolLookup,
         max_rounds: u32,
+    ) -> RepairOutcome {
+        Self::repair_with_emitter(graph, errors, tools, max_rounds, None)
+    }
+
+    /// Repair with an optional per-action emitter. Called by `repair()` with `None`.
+    /// Task runner passes `Some(Arc<SsbDagRepairEmitter>)` for SSB observability.
+    pub fn repair_with_emitter(
+        graph: &mut DependencyGraph,
+        errors: &[ValidationError],
+        tools: &dyn ToolLookup,
+        max_rounds: u32,
+        emitter: Option<&Arc<dyn DagRepairEmitter>>,
     ) -> RepairOutcome {
         // Separate repairable from non-repairable errors
         let mut non_repairable: Vec<ValidationError> = Vec::new();
@@ -623,19 +681,29 @@ impl DagRepairLoop {
                         }) {
                             let (from, to) = graph.edges[edge_idx];
                             graph.edges.remove(edge_idx);
-                            round_actions.push(RepairAction::Reorder {
-                                from,
-                                to,
-                                reason: "removed back-edge to break cycle".into(),
-                            });
+                            let reason = "removed back-edge to break cycle".to_owned();
+                            // B-7: emit dag_repair_round SSB row (fire-and-forget).
+                            if let Some(e) = emitter {
+                                e.emit(DagRepairEventPayload {
+                                    action_kind: "reorder",
+                                    round,
+                                    reason: reason.clone(),
+                                });
+                            }
+                            round_actions.push(RepairAction::Reorder { from, to, reason });
                         } else if !graph.edges.is_empty() {
                             // Fallback: remove last edge
                             let (from, to) = graph.edges.pop().unwrap_or((NodeIndex(0), NodeIndex(0)));
-                            round_actions.push(RepairAction::Reorder {
-                                from,
-                                to,
-                                reason: "removed edge to break cycle (fallback)".into(),
-                            });
+                            let reason = "removed edge to break cycle (fallback)".to_owned();
+                            // B-7: emit dag_repair_round SSB row (fire-and-forget).
+                            if let Some(e) = emitter {
+                                e.emit(DagRepairEventPayload {
+                                    action_kind: "reorder",
+                                    round,
+                                    reason: reason.clone(),
+                                });
+                            }
+                            round_actions.push(RepairAction::Reorder { from, to, reason });
                         } else {
                             remaining.push(error.clone());
                         }
@@ -647,10 +715,19 @@ impl DagRepairLoop {
                                 let old_tool = graph.nodes[node_idx.0].tool_id.clone();
                                 if let Some(new_tool) = tools.find_substitute(&old_tool) {
                                     graph.nodes[node_idx.0].tool_id = new_tool.clone();
+                                    let reason = "substituted with compatible tool".to_owned();
+                                    // B-7: emit dag_repair_round SSB row (fire-and-forget).
+                                    if let Some(e) = emitter {
+                                        e.emit(DagRepairEventPayload {
+                                            action_kind: "substitute",
+                                            round,
+                                            reason: reason.clone(),
+                                        });
+                                    }
                                     round_actions.push(RepairAction::Substitute {
                                         old_tool,
                                         new_tool,
-                                        reason: "substituted with compatible tool".into(),
+                                        reason,
                                     });
                                 } else {
                                     remaining.push(error.clone());
@@ -993,6 +1070,45 @@ pub fn topological_sort(graph: &DependencyGraph) -> Result<Vec<NodeIndex>, Vec<N
             .map(NodeIndex)
             .collect();
         Err(cycle_nodes)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-7: SSB adapter implementation for DagRepairEmitter
+// ---------------------------------------------------------------------------
+
+/// SSB-backed DagRepairEmitter. Wraps Arc<Ssb> and emits `dag_repair_round`
+/// rows via `tokio::spawn` (fire-and-forget, advisory). The repair loop is
+/// never blocked on SSB I/O.
+pub struct SsbDagRepairEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbDagRepairEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self { ssb, agent_id: agent_id.into(), superstep }
+    }
+}
+
+impl DagRepairEmitter for SsbDagRepairEmitter {
+    fn emit(&self, event: DagRepairEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::DagRepairRound(DagRepairRoundPayload {
+            action_kind: event.action_kind.to_owned(),
+            round: event.round,
+            reason: event.reason,
+        });
+        // B-7 SCHEMA: requires v25->v26 bump. Row is dropped silently until schema bumped.
+        // Fire-and-forget: advisory row, repair loop must never block on SSB I/O.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbDagRepairEmitter write failed (advisory, continuing)");
+            }
+        });
     }
 }
 

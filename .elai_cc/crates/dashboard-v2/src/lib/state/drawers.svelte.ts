@@ -1,0 +1,960 @@
+// ============================================================
+// drawers.svelte.ts — Per-drawer live polling state.
+//
+// Phase C wiring: this file used to be a thin mock-data façade. It is now a
+// set of $state-backed stores, each polling its own subset of stub.ts /
+// Tauri commands at a 10-second cadence. Drawers call `xxxData.bootstrap()`
+// in onMount and `xxxData.teardown()` in the cleanup return so we never
+// poll a drawer the user can't see.
+//
+// Bootstrap is ref-counted so opening the same drawer from multiple places
+// (or re-mounting due to layout changes) does not multiply timers.
+//
+// Each store also exposes an `unwired` object listing the data sections
+// whose backend producers are NOT yet emitting real signals. Drawers consume
+// this flag to render <UnwiredNote /> instead of zero-shaped placeholders.
+// Phase numbers in `unwired` reference docs/thefinalglance/B-plan/B-0_INDEX.md.
+// ============================================================
+
+import * as stub from '../api/stub';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  AgentEntry,
+  AntiSpiralCounter,
+  BspSuperstep,
+  ContextBudget,
+  CsqEntry,
+  DepAuditResult,
+  DeprecatedPattern,
+  DkgStats,
+  EmbeddingBreaker,
+  EvidenceGate,
+  FailureTaxonomyResult,
+  FsmSnapshot,
+  GgSignals,
+  GroundingSweep,
+  GrcBudget,
+  HookExecution,
+  HeartbeatEntry,
+  InferenceMetrics,
+  McpStatus,
+  MistakeEntry,
+  ProjectProfile,
+  QueryTrace,
+  RecallMetrics,
+  ResearchTreeNode,
+  Rule,
+  RuleLifecycleCounts,
+  SessionBranch,
+  SidecarStatus,
+  SourceTierDistribution,
+  SupervisionEvent,
+  VramGauge,
+  WebAragState,
+  ShortCoderStats,
+  BuildSlot,
+  DevServer,
+  ScaffoldTemplate,
+  SearchMode,
+  BaselineResults,
+  LintFinding,
+  LighthouseReport,
+} from '../api/types';
+
+const POLL_INTERVAL_MS = 10_000;
+
+interface RefCountedTimer {
+  count: number;
+  timer: ReturnType<typeof setInterval> | null;
+}
+
+function makeRefCounted(refresh: () => Promise<void>): {
+  bootstrap: () => void;
+  teardown: () => void;
+} {
+  const ctx: RefCountedTimer = { count: 0, timer: null };
+  return {
+    bootstrap() {
+      ctx.count += 1;
+      if (ctx.timer === null) {
+        void refresh();
+        ctx.timer = setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
+      }
+    },
+    teardown() {
+      ctx.count = Math.max(0, ctx.count - 1);
+      if (ctx.count === 0 && ctx.timer !== null) {
+        clearInterval(ctx.timer);
+        ctx.timer = null;
+      }
+    },
+  };
+}
+
+// ------------------------------------------------------------------
+// KNOWLEDGE drawer
+// ------------------------------------------------------------------
+function createKnowledge() {
+  let dkgStats = $state<DkgStats>({ nodes: 0, edges: 0, bm25_chunks: 0, vector_status: 'BUILDING', freshness_decay_pct: 0 });
+  let recentTraces = $state<QueryTrace[]>([]);
+  let breakers = $state<EmbeddingBreaker[]>([]);
+  let recallMetrics = $state<RecallMetrics[]>([]);
+  let searchMode = $state<SearchMode>('HYBRID');
+
+  async function refresh() {
+    try {
+      const [stats, traces, brk, recall, sm] = await Promise.all([
+        stub.get_dkg_stats(),
+        stub.get_query_trace_recent(5),
+        stub.get_embedding_breakers(),
+        stub.get_recall_metrics(),
+        stub.get_search_mode(),
+      ]);
+      dkgStats = stats;
+      recentTraces = traces;
+      breakers = brk;
+      recallMetrics = recall;
+      searchMode = sm.mode;
+    } catch (err) {
+      console.debug('[knowledgeData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get dkgStats() { return dkgStats; },
+    get recentTraces() { return recentTraces; },
+    get breakers() { return breakers; },
+    get recallMetrics() { return recallMetrics; },
+    get searchMode() { return searchMode; },
+    /** Bucket-B sections — backend producer not yet wired. */
+    unwired: {
+      recentTraces: true, // get_query_trace_recent returns []
+      searchMode: true,   // get_search_mode returns hardcoded HYBRID
+      recallMetrics: false, // wired in PART11; commands.rs:614 returns measured constants from baseline toml
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const knowledgeData = createKnowledge();
+
+// ------------------------------------------------------------------
+// REASONING drawer
+// ------------------------------------------------------------------
+function createReasoning() {
+  let grcBudgets = $state<GrcBudget[]>([]);
+  let groundingSweep = $state<GroundingSweep>({ grounded: 0, verify_needed: 0, ungrounded: 0, claims: [] });
+  let csqPending = $state<CsqEntry[]>([]);
+  let ggSignals = $state<GgSignals>({ mean_logprob: 0, min_logprob: 0, entropy_mean: 0, entropy_max: 0, token_count: 0 });
+  let mistakePreview = $state<MistakeEntry[]>([]);
+  let feasibility = $state<{
+    overall: 'PASS' | 'FAIL' | 'BLOCKED';
+    results: {
+      id: string;
+      check: string;
+      outcome: 'PASS' | 'FAIL' | 'BLOCKED';
+      detail: string | null;
+      ts: number;
+    }[];
+    probed_at: number;
+  }>({
+    overall: 'PASS',
+    results: [],
+    probed_at: 0,
+  });
+
+  async function refresh() {
+    try {
+      const [budgets, sweep, csqs, gg, mistakes, feas] = await Promise.all([
+        stub.get_grc_budgets(),
+        stub.get_grounding_sweep(),
+        stub.get_csq_pending(),
+        stub.get_gg_signals(),
+        stub.get_mistake_book(),
+        stub.get_feasibility_report(),
+      ]);
+      grcBudgets = budgets;
+      groundingSweep = sweep;
+      csqPending = csqs;
+      ggSignals = gg;
+      mistakePreview = mistakes.slice(0, 3);
+      feasibility = {
+        overall: (feas.overall as 'PASS' | 'FAIL' | 'BLOCKED') ?? 'PASS',
+        results: (feas.results ?? []).map((r) => ({
+          id: r.id ?? '',
+          check: r.check ?? '',
+          outcome: r.outcome ?? 'PASS',
+          detail: r.detail ?? null,
+          ts: r.ts ?? 0,
+        })),
+        probed_at: feas.probed_at ?? 0,
+      };
+    } catch (err) {
+      console.debug('[reasoningData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get grcBudgets() { return grcBudgets; },
+    get groundingSweep() { return groundingSweep; },
+    get csqPending() { return csqPending; },
+    get ggSignals() { return ggSignals; },
+    get mistakePreview() { return mistakePreview; },
+    get feasibility() { return feasibility; },
+    unwired: {
+      groundingSweep: true, // GroundingSweepGate producer not wired
+      csqPending: true,     // CSQ enforcement not wired in pre-tool dispatch
+      feasibility: false,   // B-21 4F: get_feasibility_report decodes real SSB rows
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const reasoningData = createReasoning();
+
+// ------------------------------------------------------------------
+// ORCHESTRATION drawer
+// ------------------------------------------------------------------
+function createOrchestration() {
+  let fsmSnapshot = $state<FsmSnapshot>({ state: 'IDLE', current_step_id: '', progress: 0, history: [] });
+  let evidenceGates = $state<EvidenceGate[]>([]);
+  let agents = $state<AgentEntry[]>([]);
+  let supervisionLog = $state<SupervisionEvent[]>([]);
+  let bspSupersteps = $state<BspSuperstep[]>([]);
+  let contextBudget = $state<ContextBudget>({ slots: [], total_used: 0, total_cap: 0 });
+  let sessionBranches = $state<SessionBranch[]>([]);
+  let antiSpiral = $state<AntiSpiralCounter>({ step_id: '', edit_count: 0, threshold: 3, triggered: false, last_hash: '' });
+  let heartbeats = $state<HeartbeatEntry[]>([]);
+
+  async function refresh() {
+    try {
+      const [snap, gates, ags, supLog, bsp, ctx, branches, spiral, hbs] = await Promise.all([
+        stub.get_fsm_state(),
+        stub.get_evidence_gates(),
+        stub.get_agents(),
+        stub.get_supervision_log(),
+        stub.get_bsp_supersteps(),
+        stub.get_context_budget(),
+        stub.get_session_branches(),
+        stub.get_anti_spiral_counter(),
+        stub.get_heartbeats(),
+      ]);
+      fsmSnapshot = snap;
+      evidenceGates = gates;
+      agents = ags;
+      supervisionLog = supLog;
+      bspSupersteps = bsp;
+      contextBudget = ctx;
+      sessionBranches = branches;
+      antiSpiral = spiral;
+      heartbeats = hbs;
+    } catch (err) {
+      console.debug('[orchestrationData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get fsmSnapshot() { return fsmSnapshot; },
+    get evidenceGates() { return evidenceGates; },
+    get agents() { return agents; },
+    get supervisionLog() { return supervisionLog; },
+    get bspSupersteps() { return bspSupersteps.slice(-8); },
+    get contextBudget() { return contextBudget; },
+    get sessionBranches() { return sessionBranches; },
+    get antiSpiral() { return antiSpiral; },
+    get heartbeats() { return heartbeats; },
+    unwired: {
+      antiSpiral: true,   // counter returns zeros (no producer)
+      heartbeats: true,   // returns []
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const orchestrationData = createOrchestration();
+
+// ------------------------------------------------------------------
+// RULES drawer
+// ------------------------------------------------------------------
+function createRules() {
+  let lifecycleCounts = $state<RuleLifecycleCounts>({ PROPOSED: 0, CANDIDATE: 0, SHADOW: 0, ACTIVE: 0, RETIRED: 0 });
+  let activeRules = $state<Rule[]>([]);
+  let deprecatedPatterns = $state<DeprecatedPattern[]>([]);
+  let sourceTiers = $state<SourceTierDistribution[]>([]);
+  let currentFsmState = $state<FsmSnapshot['state']>('IDLE');
+
+  async function refresh() {
+    try {
+      const fsm = await stub.get_fsm_state();
+      currentFsmState = fsm.state;
+      const [lifecycle, rules, deps, tiers] = await Promise.all([
+        stub.get_rules_lifecycle(),
+        stub.get_active_rules(fsm.state),
+        stub.get_deprecated_patterns(),
+        stub.get_source_quality_tiers(),
+      ]);
+      lifecycleCounts = lifecycle;
+      activeRules = rules;
+      deprecatedPatterns = deps;
+      sourceTiers = tiers;
+    } catch (err) {
+      console.debug('[rulesData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get lifecycleCounts() { return lifecycleCounts; },
+    get activeRules() { return activeRules; },
+    get deprecatedPatterns() { return deprecatedPatterns; },
+    get sourceTiers() { return sourceTiers; },
+    get currentFsmState() { return currentFsmState; },
+    unwired: {
+      sourceTiers: true,  // get_source_quality_tiers returns zeros
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const rulesData = createRules();
+
+// ------------------------------------------------------------------
+// RESEARCH drawer
+// ------------------------------------------------------------------
+//
+// Backend payload shapes (verified against commands.rs:2696-2822 and
+// web_research_orchestrator.rs:83 WebResearchStepEvent):
+//
+//   research-progress (one event per iteration step + one on start):
+//     {
+//       request_id: string,
+//       action: "started" | "iterate" | "no_results" | "converged"
+//             | "pruned" | "max_iterations",
+//       node_id?: number,         // omitted on action="started"
+//       query?: string,            // present only on action="started"
+//       phi?: number,
+//       psi?: number,
+//       iteration?: number,
+//       sources_fetched?: number,
+//       sources_used?: number,
+//       fetcher?: string,
+//     }
+//
+//   research-done (separate channel, emitted on run completion or error):
+//     ok:    { request_id, status: "ok",    iterations, result_status, sources_used }
+//     error: { request_id, status: "error", error }
+//
+// applyProgress() updates per-node metrics incrementally; on research-done
+// it triggers a refresh() to pull the canonical tree from get_research_tree
+// since the per-step events do not carry full ResearchTreeNode payloads.
+type ResearchProgressAction =
+  | 'started'
+  | 'iterate'
+  | 'no_results'
+  | 'converged'
+  | 'pruned'
+  | 'max_iterations';
+
+interface ResearchProgressPayload {
+  request_id: string;
+  action: ResearchProgressAction;
+  node_id?: number;
+  query?: string;
+  phi?: number;
+  psi?: number;
+  iteration?: number;
+  sources_fetched?: number;
+  sources_used?: number;
+  fetcher?: string;
+}
+
+type ResearchDonePayload =
+  | { request_id: string; status: 'ok'; iterations: number; result_status?: string; sources_used?: number }
+  | { request_id: string; status: 'error'; error: string };
+
+const RESEARCH_MAX_NODES = 256;
+
+function createResearch() {
+  let researchTree = $state<ResearchTreeNode>({
+    id: 'empty', query: 'no active research', stage: 'FORMULATE',
+    children: [], source_count: 0, converged: false,
+  });
+  let sourceTiers = $state<SourceTierDistribution[]>([]);
+  let lastProgressError = $state<string | null>(null);
+  let activeRequestId = $state<string | null>(null);
+
+  async function refresh() {
+    try {
+      const [tree, tiers] = await Promise.all([
+        stub.get_research_tree(),
+        stub.get_source_quality_tiers(),
+      ]);
+      researchTree = tree;
+      sourceTiers = tiers;
+    } catch (err) {
+      console.debug('[researchData] refresh failed', err);
+    }
+  }
+
+  function actionToStage(action: ResearchProgressAction): ResearchTreeNode['stage'] {
+    if (action === 'started') return 'FORMULATE';
+    if (action === 'no_results' || action === 'iterate') return 'SEARCH';
+    if (action === 'converged' || action === 'max_iterations' || action === 'pruned') return 'CONVERGE';
+    return 'SEARCH';
+  }
+
+  function countNodes(root: ResearchTreeNode): number {
+    let n = 1;
+    for (const c of root.children ?? []) n += countNodes(c);
+    return n;
+  }
+
+  /** Update a node by id (string match against `node_id` stringified). If not
+   *  found, append as a direct child of the root unless RESEARCH_MAX_NODES
+   *  would be exceeded — in which case drop the update and warn.
+   *  Recursive: supports nested children for future tree-shaped events. */
+  function applyNodeMetrics(
+    root: ResearchTreeNode,
+    nodeId: string,
+    payload: ResearchProgressPayload,
+  ): ResearchTreeNode {
+    if (root.id === nodeId) {
+      return {
+        ...root,
+        stage: actionToStage(payload.action),
+        phi: payload.phi ?? root.phi,
+        psi: payload.psi ?? root.psi,
+        source_count: payload.sources_used ?? root.source_count,
+        converged: payload.action === 'converged' ? true : root.converged,
+      };
+    }
+    const children = root.children ?? [];
+    let changed = false;
+    const nextChildren = children.map((child) => {
+      const updated = applyNodeMetrics(child, nodeId, payload);
+      if (updated !== child) changed = true;
+      return updated;
+    });
+    if (changed) return { ...root, children: nextChildren };
+    if (countNodes(root) >= RESEARCH_MAX_NODES) {
+      console.warn('[researchData] node cap reached — dropping update for', nodeId);
+      return root;
+    }
+    return {
+      ...root,
+      children: [
+        ...children,
+        {
+          id: nodeId,
+          query: '(stream)',
+          stage: actionToStage(payload.action),
+          children: [],
+          phi: payload.phi,
+          psi: payload.psi,
+          source_count: payload.sources_used ?? 0,
+          converged: payload.action === 'converged',
+        },
+      ],
+    };
+  }
+
+  function applyProgress(p: ResearchProgressPayload) {
+    try {
+      if (p.action === 'started') {
+        activeRequestId = p.request_id;
+        researchTree = {
+          id: p.request_id,
+          query: p.query ?? '(no query)',
+          stage: 'FORMULATE',
+          children: [],
+          source_count: 0,
+          converged: false,
+        };
+        lastProgressError = null;
+        return;
+      }
+      // Per-iteration update — needs a node_id.
+      if (p.node_id === undefined) return;
+      const nodeId = String(p.node_id);
+      researchTree = applyNodeMetrics(researchTree, nodeId, p);
+      lastProgressError = null;
+    } catch (err) {
+      console.warn('[researchData] applyProgress threw', err);
+    }
+  }
+
+  function applyDone(p: ResearchDonePayload) {
+    try {
+      if (p.status === 'error') {
+        lastProgressError = p.error;
+      } else {
+        lastProgressError = null;
+      }
+      // Pull the canonical tree from the backend now that the run finished.
+      void refresh().catch((err) => console.warn('[researchData] post-done refresh failed', err));
+    } catch (err) {
+      console.warn('[researchData] applyDone threw', err);
+    }
+  }
+
+  // Listener lifecycle — generation counter version (see audit WARN).
+  // Each bootstrap/teardown bumps `listenerGen`. A late-resolving listen()
+  // compares its captured generation to the current one; mismatch => unlisten
+  // immediately. This is robust against bootstrap/teardown/bootstrap races
+  // that a boolean `cancelled` flag cannot handle.
+  let progressUnlisten: UnlistenFn | null = null;
+  let doneUnlisten: UnlistenFn | null = null;
+  let listenerGen = 0;
+
+  async function startProgressListeners() {
+    if (progressUnlisten !== null && doneUnlisten !== null) return;
+    listenerGen += 1;
+    const myGen = listenerGen;
+    try {
+      const [un1, un2] = await Promise.all([
+        listen<ResearchProgressPayload>('research-progress', (event) => applyProgress(event.payload)),
+        listen<ResearchDonePayload>('research-done', (event) => applyDone(event.payload)),
+      ]);
+      if (myGen !== listenerGen) {
+        // Generation rolled — teardown ran (and possibly another bootstrap).
+        // Unlisten the listeners we just registered; the active gen owns its own.
+        try { un1(); } catch (err) { console.warn('[researchData] late progress unlisten failed', err); }
+        try { un2(); } catch (err) { console.warn('[researchData] late done unlisten failed', err); }
+        return;
+      }
+      progressUnlisten = un1;
+      doneUnlisten = un2;
+    } catch (err) {
+      // Degrade gracefully — drawer continues to poll every 10s.
+      console.warn('[researchData] research event listen() failed', err);
+    }
+  }
+
+  function stopProgressListeners() {
+    listenerGen += 1;
+    if (progressUnlisten) {
+      try { progressUnlisten(); } catch (err) { console.warn('[researchData] progress unlisten failed', err); }
+      progressUnlisten = null;
+    }
+    if (doneUnlisten) {
+      try { doneUnlisten(); } catch (err) { console.warn('[researchData] done unlisten failed', err); }
+      doneUnlisten = null;
+    }
+  }
+
+  // Wrap rc bootstrap/teardown so the listener lifecycle matches the
+  // refcount on the polling refresh — both off when no drawer mounted.
+  const rc = makeRefCounted(refresh);
+  let listenerRefcount = 0;
+
+  return {
+    get researchTree() { return researchTree; },
+    get sourceTiers() { return sourceTiers; },
+    get lastProgressError() { return lastProgressError; },
+    get activeRequestId() { return activeRequestId; },
+    unwired: {
+      sourceTiers: true,
+      webBudget: true,        // synthetic placeholder in drawer
+      convergence: true,      // phi/psi computed only when research actually runs
+    },
+    bootstrap() {
+      rc.bootstrap();
+      listenerRefcount += 1;
+      if (listenerRefcount === 1) {
+        void startProgressListeners();
+      }
+    },
+    teardown() {
+      rc.teardown();
+      listenerRefcount = Math.max(0, listenerRefcount - 1);
+      if (listenerRefcount === 0) {
+        stopProgressListeners();
+      }
+    },
+  };
+}
+export const researchData = createResearch();
+
+// ------------------------------------------------------------------
+// PROVIDERS drawer
+// ------------------------------------------------------------------
+function createProviders() {
+  let vramGauges = $state<VramGauge[]>([]);
+  let sidecarStatus = $state<SidecarStatus>({
+    loaded: false, model: 'unavailable', fa2: false, dola: false, steering: false,
+    turboquant: 'OFF', tokens_per_sec: 0, latency_p50_ms: 0, latency_p99_ms: 0,
+    context_window: 0, mcp_bridge_active: false,
+  });
+  let inferenceMetrics = $state<InferenceMetrics>({
+    tokens_per_sec_last_60s: 0, latency_p50_ms: 0, latency_p99_ms: 0,
+    total_tokens_session: 0, cloud_fallback_count: 0,
+  });
+  let mcpStatus = $state<McpStatus>({
+    enabled: false, bridge_url: '', connected: false, tools_available: [],
+  });
+
+  async function refresh() {
+    try {
+      const [vram, sidecar, infer, mcp] = await Promise.all([
+        stub.get_vram(),
+        stub.get_sidecar_status(),
+        stub.get_inference_metrics(),
+        stub.get_mcp_status(),
+      ]);
+      vramGauges = vram;
+      sidecarStatus = sidecar;
+      inferenceMetrics = infer;
+      mcpStatus = mcp;
+    } catch (err) {
+      console.debug('[providersData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get vramGauges() { return vramGauges; },
+    get sidecarStatus() { return sidecarStatus; },
+    get inferenceMetrics() { return inferenceMetrics; },
+    get mcpStatus() { return mcpStatus; },
+    unwired: {
+      inferenceMetrics: true,  // get_inference_metrics returns zeros
+      modelPool: true,         // synthesised in drawer; no real ModelPool query
+      tokensPerSec: true,      // sparkline is synthetic; no per-second history
+      colocation: true,        // GPU multiplexing event log not emitted
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const providersData = createProviders();
+
+// ------------------------------------------------------------------
+// PROJECT-INTELLIGENCE drawer
+// ------------------------------------------------------------------
+function createProjectIntelligence() {
+  let profile = $state<ProjectProfile>({
+    tier1: { language: '', build_tool: '', framework: '', test_runner: '', ci: '', linter: '' },
+    tier2: { conventions: [] },
+    tier3: { architecture_inference: '', telescope_summaries: [] },
+  });
+
+  async function refresh() {
+    try {
+      profile = await stub.get_project_intelligence();
+    } catch (err) {
+      console.debug('[projectIntelligenceData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get profile() { return profile; },
+    unwired: {
+      override: true,  // save_override is logStub-only; no persistence command yet
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const projectIntelligenceData = createProjectIntelligence();
+
+// ------------------------------------------------------------------
+// ANTI-STALENESS drawer
+// ------------------------------------------------------------------
+function createAntiStaleness() {
+  let deprecatedPatterns = $state<DeprecatedPattern[]>([]);
+  let depAudit = $state<DepAuditResult[]>([]);
+  let baselineResults = $state<BaselineResults>({ metrics: [], run_ts: 0, deterministic: false });
+  let antiSpiral = $state<AntiSpiralCounter>({ step_id: '', edit_count: 0, threshold: 3, triggered: false, last_hash: '' });
+
+  async function refresh() {
+    try {
+      const [deps, audit, baseline, spiral] = await Promise.all([
+        stub.get_deprecated_patterns(),
+        stub.get_dep_audit_results(),
+        stub.get_baseline_results(),
+        stub.get_anti_spiral_counter(),
+      ]);
+      deprecatedPatterns = deps;
+      depAudit = audit;
+      baselineResults = baseline;
+      antiSpiral = spiral;
+    } catch (err) {
+      console.debug('[antiStalenessData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get deprecatedPatterns() { return deprecatedPatterns; },
+    get depAudit() { return depAudit; },
+    get baselineResults() { return baselineResults; },
+    get antiSpiral() { return antiSpiral; },
+    unwired: {
+      depAudit: true,         // returns []
+      baselineResults: false, // wired in PART11; commands.rs:1757 returns measured metrics from phase_A1_baseline.toml
+      antiSpiral: true,
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const antiStalenessData = createAntiStaleness();
+
+// ------------------------------------------------------------------
+// TOOLS-HOOKS drawer
+// ------------------------------------------------------------------
+function createToolsHooks() {
+  let hookExecutions = $state<HookExecution[]>([]);
+  let shortcoderStats = $state<ShortCoderStats>({
+    savings_pct: 0, exact_hits: 0, whitespace_hits: 0, ellipsis_hits: 0, total_edits: 0,
+  });
+  let failureTaxonomy = $state<FailureTaxonomyResult | null>(null);
+  let hiddenToolNames = $state<string[]>([]);
+
+  async function refresh() {
+    try {
+      const [hooks, sc, taxonomy, toolVis] = await Promise.all([
+        stub.get_hook_executions(),
+        stub.get_shortcoder_stats(),
+        stub.get_failure_taxonomy_last(),
+        stub.get_tool_visibility(),
+      ]);
+      hookExecutions = hooks;
+      shortcoderStats = sc;
+      failureTaxonomy = taxonomy;
+      hiddenToolNames = toolVis.hidden_tools;
+    } catch (err) {
+      console.debug('[toolsHooksData] refresh failed', err);
+    }
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get hookExecutions() { return hookExecutions; },
+    get shortcoderStats() { return shortcoderStats; },
+    get failureTaxonomy() { return failureTaxonomy; },
+    get hiddenTools() { return hiddenToolNames; },
+    unwired: {
+      tieredAnalysis: true,  // synthetic per-tier counts in drawer
+      shortcoderRules: true, // per-rule hit counts are synthetic
+      taxonomyDistribution: true, // per-category counts are synthetic
+      toolFilter: false,     // wired in PART11; commands.rs:3303 returns MODEL_HIDDEN_TOOL_NAMES
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+  };
+}
+export const toolsHooksData = createToolsHooks();
+
+// ------------------------------------------------------------------
+// WEB-QUALITY drawer
+// ------------------------------------------------------------------
+function createWebQuality() {
+  let buildSlots = $state<BuildSlot[]>([]);
+  let devServers = $state<DevServer[]>([]);
+  let webAragState = $state<WebAragState>({
+    index_size: 0, last_crawled_ts: 0, pages_indexed: 0, quality_score: 0,
+  });
+  let sourceTiers = $state<SourceTierDistribution[]>([]);
+  // Phase A (s-69820): live `list_scaffold_templates` Tauri command. Falls back
+  // to mock SCAFFOLD_TEMPLATES when running outside Tauri (browser-only dev).
+  let scaffoldTemplates = $state<ScaffoldTemplate[]>([]);
+  let scaffoldTemplatesIsLive = $state(false);
+  // Web rules counts: backend command returns lifecycle counts but not domain-tagged
+  // T1/T2/T3 split. Display zeros until the backend exposes a domain filter.
+  const webRulesCounts = { t1: 0, t2: 0, t3: 0 };
+
+  // Phase C1+C2 (s-67812) — lint + Lighthouse + Chromium-probe state.
+  // refresh() does NOT poll these; lint runs spawn npx subprocesses and
+  // Lighthouse takes 25-45s, so they are user-action driven. The C2
+  // action handlers below populate these fields; resetWebQualityResults()
+  // clears them on explicit user request.
+  let lintFindings = $state<LintFinding[]>([]);
+  let lighthouseReport = $state<LighthouseReport | null>(null);
+  let chromiumAvailable = $state(false);
+  let lintRunning = $state(false);
+  let lighthouseRunning = $state(false);
+  let lintHasRun = $state(false);
+  let lighthouseHasRun = $state(false);
+  let chromiumProbeDone = $state(false);
+  // Plain (non-reactive) re-entry guard for probeChromium. Refresh() may
+  // be called concurrently (manual refresh during a polling tick); without
+  // this gate two probes can fire if both observe !chromiumProbeDone.
+  let chromiumProbeInFlight = false;
+  let lintLastError = $state<string | null>(null);
+  let lighthouseLastError = $state<string | null>(null);
+
+  async function refresh() {
+    try {
+      const [slots, servers, arag, tiers, templates] = await Promise.all([
+        stub.get_build_slots(),
+        stub.get_dev_servers(),
+        stub.get_web_arag_state(),
+        stub.get_source_quality_tiers(),
+        stub.list_scaffold_templates(),
+      ]);
+      buildSlots = slots;
+      devServers = servers;
+      webAragState = arag;
+      sourceTiers = tiers;
+      scaffoldTemplates = templates;
+      // Live when at least one template carries the new sections field
+      // (mock data leaves sections undefined).
+      scaffoldTemplatesIsLive = templates.some((t) => Array.isArray(t.sections));
+      // Phase C2 (s-67812): one-shot Chromium probe on first refresh.
+      // Chromium availability is environmental; polling it every 10s is
+      // wasteful, so we gate behind chromiumProbeDone.
+      if (!chromiumProbeDone) {
+        await probeChromium();
+      }
+    } catch (err) {
+      console.debug('[webQualityData] refresh failed', err);
+    }
+  }
+
+  // Phase C2 (s-67812) — action handlers. Each handler short-circuits if
+  // its corresponding *Running flag is set, so concurrent invocations are
+  // a no-op rather than a queue. Errors are surfaced via *LastError fields
+  // (typed string | null) — never silently swallowed.
+  async function runWebLint(
+    projectDir: string,
+    eslint: boolean,
+    stylelint: boolean,
+    axe: boolean,
+  ): Promise<void> {
+    if (lintRunning) return;
+    if (!projectDir.trim()) {
+      lintLastError = 'project_dir is required';
+      return;
+    }
+    if (!eslint && !stylelint && !axe) {
+      lintLastError = 'at least one tool must be enabled';
+      return;
+    }
+    lintRunning = true;
+    lintLastError = null;
+    try {
+      const findings = await stub.run_web_lint_check(projectDir, eslint, stylelint, axe);
+      lintFindings = findings;
+      lintHasRun = true;
+    } catch (err) {
+      lintLastError = err instanceof Error ? err.message : String(err);
+      console.error('[webQualityData] runWebLint failed', err);
+    } finally {
+      lintRunning = false;
+    }
+  }
+
+  async function runLighthouseAudit(projectDir: string, url: string): Promise<void> {
+    if (lighthouseRunning) return;
+    if (!projectDir.trim() || !url.trim()) {
+      lighthouseLastError = 'project_dir and url are required';
+      return;
+    }
+    lighthouseRunning = true;
+    lighthouseLastError = null;
+    try {
+      const report = await stub.run_lighthouse_audit(projectDir, url);
+      lighthouseReport = report;
+      lighthouseHasRun = true;
+    } catch (err) {
+      lighthouseLastError = err instanceof Error ? err.message : String(err);
+      console.error('[webQualityData] runLighthouseAudit failed', err);
+    } finally {
+      lighthouseRunning = false;
+    }
+  }
+
+  async function probeChromium(): Promise<void> {
+    if (chromiumProbeInFlight) return;
+    chromiumProbeInFlight = true;
+    try {
+      chromiumAvailable = await stub.probe_chromium_runtime();
+    } catch (err) {
+      console.debug('[webQualityData] probeChromium failed (likely no Tauri)', err);
+      chromiumAvailable = false;
+    } finally {
+      chromiumProbeDone = true;
+      chromiumProbeInFlight = false;
+    }
+  }
+
+  function resetWebQualityResults(): void {
+    lintFindings = [];
+    lighthouseReport = null;
+    lintHasRun = false;
+    lighthouseHasRun = false;
+    lintLastError = null;
+    lighthouseLastError = null;
+    // Intentionally NOT resetting chromiumAvailable / chromiumProbeDone:
+    // those reflect the environment, not result data.
+  }
+
+  const rc = makeRefCounted(refresh);
+
+  return {
+    get buildSlots() { return buildSlots; },
+    get devServers() { return devServers; },
+    get webAragState() { return webAragState; },
+    get sourceTiers() { return sourceTiers; },
+    get scaffoldTemplates() { return scaffoldTemplates; },
+    get webRulesCounts() { return webRulesCounts; },
+    get lintFindings() { return lintFindings; },
+    get lighthouseReport() { return lighthouseReport; },
+    get chromiumAvailable() { return chromiumAvailable; },
+    get lintRunning() { return lintRunning; },
+    get lighthouseRunning() { return lighthouseRunning; },
+    get lintHasRun() { return lintHasRun; },
+    get lighthouseHasRun() { return lighthouseHasRun; },
+    get chromiumProbeDone() { return chromiumProbeDone; },
+    get lintLastError() { return lintLastError; },
+    get lighthouseLastError() { return lighthouseLastError; },
+    unwired: {
+      buildSlots: true,        // get_build_slots is partial; producer not actuated
+      get devServers() {
+        // Live as soon as any registered dev-server appears in the list;
+        // get_dev_servers is real Tauri-backed in Phase A.
+        return devServers.length === 0;
+      },
+      get scaffoldTemplates() {
+        // Phase A: live whenever the live-shape detector matched at least
+        // one entry in the last refresh.
+        return !scaffoldTemplatesIsLive;
+      },
+      webAragState: true,      // returns zeros
+      webRulesCounts: true,    // T1/T2/T3 split not exposed
+      sourceTiers: true,
+      // Phase C2 (s-67812): live as soon as the user has triggered a run.
+      // Before the first run, the section displays its empty state but is
+      // not "unwired" — the action handlers exist, only no result yet.
+      get lintFindings() { return !lintHasRun; },
+      get lighthouseReport() { return !lighthouseHasRun; },
+      get chromiumAvailable() { return !chromiumProbeDone; },
+    },
+    bootstrap: rc.bootstrap,
+    teardown: rc.teardown,
+    /// Phase A audit fix (s-69820): standalone one-shot refresh that does
+    /// NOT touch the refcount or the polling timer. Call this from action
+    /// handlers (Use template / Stop server / etc.) after a mutation;
+    /// `bootstrap()` would leak a refcount on every click.
+    refresh,
+    // Phase C2 (s-67812) — user-action handlers.
+    runWebLint,
+    runLighthouseAudit,
+    probeChromium,
+    resetWebQualityResults,
+  };
+}
+export const webQualityData = createWebQuality();

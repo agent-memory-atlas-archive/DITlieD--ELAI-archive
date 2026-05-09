@@ -63,6 +63,7 @@ fn contract_three_identical_steps_clean_fourth_escalates() {
         SpiralResult::EscalationSignalNeeded {
             message,
             spiral_depth,
+            ..
         } => {
             assert_eq!(
                 message, ESCALATION_MESSAGE,

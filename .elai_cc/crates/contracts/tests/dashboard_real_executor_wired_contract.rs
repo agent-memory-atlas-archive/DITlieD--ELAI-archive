@@ -120,6 +120,9 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
         reflection_client: None,
         irreversible_classifier: None,
         dkg_querier_swap: None,
+        task_splitter: None,
+        pipeline_grc: None,
+        model_capability_profile: None,
     };
 
     assert!(
@@ -169,6 +172,9 @@ fn contract_task_runner_config_synthetic_fallback_shape() {
         reflection_client: None,
         irreversible_classifier: None,
         dkg_querier_swap: None,
+        task_splitter: None,
+        pipeline_grc: None,
+        model_capability_profile: None,
     };
     assert!(cfg.baby_step_executor.is_none());
     assert!(!cfg.anti_spiral_enabled);

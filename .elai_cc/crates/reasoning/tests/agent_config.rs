@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use elai_reasoning::{
     AgentGrcConfig, AgentGrcConfigLoader, BasicGrcEngine, GrcBudget, GrcEngine, GrcError,
@@ -55,7 +55,7 @@ fn step_with_scope(
 
 /// Build auditor config: double-verify, grounding_level=Verified, budget 10/1200.
 fn auditor_config() -> AgentGrcConfig {
-    let mut overrides = HashMap::new();
+    let mut overrides = FxHashMap::default();
     // Auditor needs: Hypothesize->Verify (skip PlanAction/Act), Verify->Verify (double-verify)
     overrides.insert(
         GrcState::Hypothesize,
@@ -101,7 +101,7 @@ fn context_compiler_config() -> AgentGrcConfig {
             VerificationMethod::FileCheck,
             VerificationMethod::SourceCheck,
         ],
-        transition_overrides: HashMap::new(),
+        transition_overrides: FxHashMap::default(),
         require_scope_enumeration: false,
     }
 }
@@ -128,7 +128,7 @@ fn executor_config() -> AgentGrcConfig {
             VerificationMethod::ApiCheck,
             VerificationMethod::ApiRegistryCheck,
         ],
-        transition_overrides: HashMap::new(),
+        transition_overrides: FxHashMap::default(),
         require_scope_enumeration: true,
     }
 }
@@ -145,7 +145,7 @@ fn memory_writer_config() -> AgentGrcConfig {
             VerificationMethod::FileCheck,
             VerificationMethod::SourceCheck,
         ],
-        transition_overrides: HashMap::new(),
+        transition_overrides: FxHashMap::default(),
         require_scope_enumeration: false,
     }
 }
@@ -523,7 +523,7 @@ fn t10_global_defaults_with_per_role_override() {
 fn t11_transition_overrides_are_additive() {
     // Override: Observe -> [Verify] (additive, so default Observe -> [Hypothesize] preserved)
     // Also need Hypothesize -> [Verify] for the chain to validate.
-    let mut overrides = HashMap::new();
+    let mut overrides = FxHashMap::default();
     overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
     overrides.insert(GrcState::Hypothesize, vec![GrcState::Verify]);
 
@@ -648,7 +648,7 @@ fn t13_prompt_engineer_budget_5_800() {
             VerificationMethod::FileCheck,
             VerificationMethod::SourceCheck,
         ],
-        transition_overrides: HashMap::new(),
+        transition_overrides: FxHashMap::default(),
         require_scope_enumeration: false,
     };
 
@@ -708,7 +708,7 @@ fn t13_prompt_engineer_budget_5_800() {
 fn t14_designer_config_distinct_from_executor() {
     // Designer skips Act (produces PipelineSpec, not code). PlanAction->Verify
     // is not a default transition, so designer needs a transition override.
-    let mut designer_overrides = HashMap::new();
+    let mut designer_overrides = FxHashMap::default();
     designer_overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
 
     let designer = AgentGrcConfig {

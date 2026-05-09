@@ -182,6 +182,9 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         reflection_client: None,
         irreversible_classifier: None,
         dkg_querier_swap: Some(slot.clone()),
+        task_splitter: None,
+        pipeline_grc: None,
+        model_capability_profile: None,
     };
     assert!(populated.dkg_querier_swap.is_some());
 }

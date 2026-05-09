@@ -19,17 +19,22 @@
 //! - Escape hatch via `ELAI_HOOKS_DISABLED` matches the env-var pattern used
 //!   by other dashboard-side toggles (see `dashboard/src/lib.rs` setup).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use thiserror::Error;
 use tracing::{debug, trace, warn};
 
+use elai_core::clock::{ClockProvider, OsClock};
+use elai_plugins::post_tool_use::{
+    RuffFinding, RuffOutcome, RuffPostToolUseRunner, RuffSkipReason,
+};
 use elai_plugins::tiered_analysis::{HookVerdict, TieredAnalysis, TieredAnalysisError};
 
 use crate::shortcoder_hook::{ShortCoderHook, ShortCoderOutcome};
 use crate::ssb::{
-    HookEventPayload, ShortCoderCompressionPayload, Ssb, SsbPayload, TieredAnalysisPayload,
+    HookEventPayload, HookLatencyViolationPayload, ShortCoderCompressionPayload, Ssb, SsbPayload,
+    TieredAnalysisPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +60,28 @@ pub const ELAI_HOOKS_DISABLED_ENV: &str = "ELAI_HOOKS_DISABLED";
 /// finding's category tag; the detailed `rule_id` / pattern hash lives
 /// exclusively on the SSB row for the dashboard.
 pub const SANITIZED_BLOCK_MESSAGE: &str = "tool call rejected by policy";
+
+// ---------------------------------------------------------------------------
+// B-19A (T10) — hook latency budgets per spec
+// ---------------------------------------------------------------------------
+
+/// T1 (predicate / regex) tier latency budget in milliseconds.
+/// Source: B-19 plan §"T10 latency budgets" — T1 hooks must complete in
+/// <= 1ms because they run on the synchronous baby-step pre-gate hot path.
+/// Overruns emit one SSB `hook_latency_violation` row per dispatch.
+pub const HOOK_T1_BUDGET_MS: u64 = 1;
+
+/// T2 (deprecated-import / AST) tier latency budget in milliseconds.
+/// AST parsing tolerates more headroom than T1 — spec sets the ceiling at
+/// 10ms because tree-sitter parses on tens-of-KB Python/Rust source files
+/// in a single-digit ms range; anything beyond that means a stuck parser.
+pub const HOOK_T2_BUDGET_MS: u64 = 10;
+
+/// T3 (reasoning / advisory) tier latency budget in milliseconds.
+/// Spec sets the ceiling at 5ms — T3 does message-pattern matching on the
+/// rule output, not full LLM reasoning, so any overrun signals a
+/// pathological rule.
+pub const HOOK_T3_BUDGET_MS: u64 = 5;
 
 /// Produce the agent-facing sanitized message for a BLOCK finding.
 ///
@@ -238,10 +265,15 @@ pub struct HookInvocation<'a> {
     pub file_path: Option<&'a str>,
     /// Optional metric values consumed by the rule engine's MetricGate
     /// predicate. Empty by default.
-    pub metric_values: HashMap<String, f64>,
+    pub metric_values: FxHashMap<String, f64>,
     /// Step identifier emitted onto the SSB HookEvent row (e.g.
     /// `"baby_step_42"`). Reserved for correlation with TestOutcome rows.
     pub step_id: String,
+    /// B-19: current FSM state label (e.g. `"IDLE"`, `"EXECUTING"`).
+    /// Used by `dispatch_stop` to block termination in non-idle states.
+    /// Empty string (default) skips the FSM check — backward-compatible for
+    /// callers that have not yet plumbed FSM state into the invocation.
+    pub fsm_state: String,
 }
 
 impl<'a> HookInvocation<'a> {
@@ -252,8 +284,9 @@ impl<'a> HookInvocation<'a> {
             action_type,
             source: None,
             file_path: None,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
             step_id: step_id.into(),
+            fsm_state: String::new(),
         }
     }
 
@@ -268,8 +301,9 @@ impl<'a> HookInvocation<'a> {
             action_type,
             source: Some(source),
             file_path: None,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
             step_id: step_id.into(),
+            fsm_state: String::new(),
         }
     }
 
@@ -285,9 +319,17 @@ impl<'a> HookInvocation<'a> {
             action_type,
             source: Some(source),
             file_path: Some(file_path),
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
             step_id: step_id.into(),
+            fsm_state: String::new(),
         }
+    }
+
+    /// Set the FSM state for Stop-hook enforcement. Chain after any constructor.
+    #[must_use]
+    pub fn with_fsm_state(mut self, state: impl Into<String>) -> Self {
+        self.fsm_state = state.into();
+        self
     }
 }
 
@@ -362,6 +404,17 @@ pub trait HookDispatcher: Send + Sync {
 pub struct InProcessHookDispatcher {
     tiered: Option<Arc<TieredAnalysis>>,
     shortcoder: Option<Arc<ShortCoderHook>>,
+    /// B-19A cycle 2 (WARN-2): optional ruff PostToolUse runner. When set
+    /// AND `dispatch_post_tool_use` is invoked with a `.py`/`.pyi` file,
+    /// the dispatcher invokes the runner and merges its findings into the
+    /// returned `Vec<HookFinding>`. None preserves the previous "tiered
+    /// only" behaviour for callers that don't yet wire a runner.
+    ruff: Option<Arc<RuffPostToolUseRunner>>,
+    /// B-19A cycle 2 (BLOCK-3): injected monotonic clock used by analyze().
+    /// `OsClock` in production; `SeededClock` in tests. Replaces the
+    /// previous direct `tokio::time::Instant::now()` calls so all timing
+    /// flows through the entropy quarantine.
+    clock: Arc<dyn ClockProvider>,
     disabled: bool,
 }
 
@@ -370,6 +423,9 @@ impl InProcessHookDispatcher {
     /// the plugins crate wasn't seeded with rules), every dispatch returns an
     /// empty findings list. This is the "wiring present but no-op" surface
     /// referenced in the Batch 1A spec.
+    ///
+    /// Production timing uses [`OsClock`]; for deterministic tests, build
+    /// via [`Self::with_clock`] passing a [`elai_core::clock::SeededClock`].
     #[must_use]
     pub fn new(tiered: Option<Arc<TieredAnalysis>>) -> Self {
         let disabled = std::env::var(ELAI_HOOKS_DISABLED_ENV)
@@ -384,6 +440,8 @@ impl InProcessHookDispatcher {
         Self {
             tiered,
             shortcoder: None,
+            ruff: None,
+            clock: Arc::new(OsClock),
             disabled,
         }
     }
@@ -406,6 +464,32 @@ impl InProcessHookDispatcher {
     pub fn with_shortcoder(mut self, shortcoder: Arc<ShortCoderHook>) -> Self {
         self.shortcoder = Some(shortcoder);
         self
+    }
+
+    /// B-19A cycle 2 (BLOCK-3): inject a [`ClockProvider`] for deterministic
+    /// timing in tests. Production callers should rely on the [`OsClock`]
+    /// default installed by [`Self::new`] and never call this method.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn ClockProvider>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// B-19A cycle 2 (WARN-2): install the ruff PostToolUse runner so the
+    /// dispatcher actually invokes ruff on Python file writes. Without this
+    /// installed, `dispatch_post_tool_use` only runs the tiered pass and
+    /// the spec observable_effect ("agent runs Python file write →
+    /// ruff_check_passed within 5s") stays unreachable.
+    #[must_use]
+    pub fn with_ruff_runner(mut self, ruff: Arc<RuffPostToolUseRunner>) -> Self {
+        self.ruff = Some(ruff);
+        self
+    }
+
+    /// Returns true when a ruff PostToolUse runner is installed.
+    #[must_use]
+    pub fn has_ruff_runner(&self) -> bool {
+        self.ruff.is_some()
     }
 
     /// Returns true if the env-var escape hatch is engaged.
@@ -450,17 +534,51 @@ impl InProcessHookDispatcher {
         let Some(tiered) = self.tiered.as_ref() else {
             return Ok(Vec::new());
         };
+        // B-19A cycle 2 (BLOCK-3): time the tiered analysis pass via the
+        // injected ClockProvider. Replaces the previous `tokio::time::Instant`
+        // call so all production timing satisfies the entropy quarantine.
+        let started = self.clock.now();
         let result = tiered.analyze(
             invocation.action_type,
             invocation.source,
             invocation.file_path,
             invocation.metric_values.clone(),
         )?;
+        let composite_elapsed_ms =
+            u64::try_from(self.clock.elapsed_since(started).as_millis()).unwrap_or(u64::MAX);
         trace!(
             action = invocation.action_type,
             duration_ms = result.duration_ms,
+            composite_elapsed_ms,
             "tiered analysis complete"
         );
+
+        // B-19A cycle 2 (BLOCK-2): partial fix — TieredAnalysis::analyze
+        // returns ONE composite `duration_ms` covering T1+T2+T3, not per-tier
+        // timings. Splitting the timing requires a cross-crate refactor of
+        // `elai_plugins::TieredAnalysis` to surface (t1_ms, t2_ms, t3_ms),
+        // which is out of scope for this cycle (would touch every dependent
+        // crate's contract tests). We document the limitation here and emit
+        // ONE composite-budget warning instead of three falsely-labelled
+        // per-tier warnings. The previous code mislabeled the composite
+        // timing as "T1 exceeded latency budget" — that misleading log is
+        // removed. Per-tier T2/T3 enforcement is deferred to B-19B once
+        // TieredAnalysis grows per-tier timings.
+        //
+        // Composite budget = HOOK_T2_BUDGET_MS (10ms) — matches the
+        // existing `hook_tier_budget_ms(HookTier::Composite)` mapping so
+        // the SSB-side enforcement helper and this dispatch path agree.
+        if composite_elapsed_ms > HOOK_T2_BUDGET_MS {
+            warn!(
+                action = invocation.action_type,
+                tier = HookTier::Composite.as_str(),
+                budget_ms = HOOK_T2_BUDGET_MS,
+                actual_ms = composite_elapsed_ms,
+                "hook_dispatcher: composite tier exceeded latency budget \
+                 (per-tier enforcement deferred to B-19B; \
+                 TieredAnalysis returns composite timing only)"
+            );
+        }
 
         let mut findings: Vec<HookFinding> = Vec::new();
         push_finding(&mut findings, HookTier::T1, &result.t1_verdict);
@@ -472,6 +590,114 @@ impl InProcessHookDispatcher {
         }
         push_finding(&mut findings, HookTier::Composite, &result.final_verdict);
         Ok(findings)
+    }
+
+    /// B-19A cycle 2 (WARN-2): run the installed ruff PostToolUse runner on a
+    /// Python file write and convert its outcome into `HookFinding` rows.
+    /// Returns an empty vec when no runner is installed, the file is not
+    /// Python, or the runner returns a non-Findings outcome.
+    ///
+    /// The runner internally enforces a 5-second timeout via tokio (BLOCK-3
+    /// notes: this is acceptable because `tokio::time::timeout` is the
+    /// runtime's scheduling primitive, not entropy — `now_ms` is what we
+    /// quarantine, not the timer wheel). Findings are mapped to the
+    /// `Composite` tier with `Warn` verdict by default; ruff exit code 0
+    /// with empty findings produces a single `Allow` Composite breadcrumb.
+    async fn run_ruff_post_tool_use(
+        &self,
+        invocation: &HookInvocation<'_>,
+    ) -> Vec<HookFinding> {
+        let Some(runner) = self.ruff.as_ref() else {
+            return Vec::new();
+        };
+        let Some(path) = invocation.file_path else {
+            return Vec::new();
+        };
+        let Some(source) = invocation.source else {
+            return Vec::new();
+        };
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".py") || lower.ends_with(".pyi")) {
+            return Vec::new();
+        }
+        match runner.run(path, source).await {
+            Ok(outcome) => ruff_outcome_to_findings(&outcome),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    file = path,
+                    "hook_dispatcher: ruff runner failed (treated as no-finding)"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Convert a `RuffOutcome` into zero or more `HookFinding` rows the dispatcher
+/// can return alongside the tiered-analysis findings. Mapping rules:
+///
+/// * `NoOp` → empty (we don't surface "skipped" runs as findings; the
+///   tracing breadcrumb in the runner is enough).
+/// * `Timeout` → one `Composite Warn` finding with category `ruff_timeout`.
+/// * `Findings { exit_code: 0, findings: [] }` → empty (clean run).
+/// * `Findings { findings: [..] }` → one `Composite Warn` per ruff finding.
+fn ruff_outcome_to_findings(outcome: &RuffOutcome) -> Vec<HookFinding> {
+    match outcome {
+        RuffOutcome::NoOp { reason } => {
+            // Surface BinaryMissing as a single Warn so the dashboard can
+            // alert the user to install ruff. Other reasons (NonPython,
+            // LineLimit, EmptyPath) are silent — they're expected skips.
+            if matches!(reason, RuffSkipReason::BinaryMissing) {
+                vec![HookFinding {
+                    tier: HookTier::Composite,
+                    verdict: HookVerdictKind::Warn,
+                    rule_id: Some("ruff_binary_missing".to_string()),
+                    category: "ruff_unavailable".to_string(),
+                    message: "ruff binary not found on PATH — Python lint disabled".to_string(),
+                    fix_template: Some("pip install ruff".to_string()),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        RuffOutcome::Timeout { elapsed_ms } => vec![HookFinding {
+            tier: HookTier::Composite,
+            verdict: HookVerdictKind::Warn,
+            rule_id: Some("ruff_timeout".to_string()),
+            category: "ruff_timeout".to_string(),
+            message: format!("ruff invocation timed out after {elapsed_ms}ms"),
+            fix_template: None,
+        }],
+        RuffOutcome::Findings { findings, .. } => {
+            findings.iter().map(ruff_finding_to_hook_finding).collect()
+        }
+    }
+}
+
+/// Map a single ruff diagnostic into a `HookFinding`. Severity tier is
+/// `Composite` because ruff runs after T1/T2/T3; verdict is always `Warn`
+/// (ruff is advisory, not a policy gate).
+fn ruff_finding_to_hook_finding(f: &RuffFinding) -> HookFinding {
+    let category = if f.rule_code.is_empty() {
+        "ruff".to_string()
+    } else {
+        format!("ruff_{}", f.rule_code.to_ascii_lowercase())
+    };
+    HookFinding {
+        tier: HookTier::Composite,
+        verdict: HookVerdictKind::Warn,
+        rule_id: if f.rule_code.is_empty() {
+            None
+        } else {
+            Some(f.rule_code.clone())
+        },
+        category,
+        message: format!(
+            "{}:{}:{}: {} {}",
+            f.file_path, f.line, f.column, f.rule_code, f.message
+        ),
+        fix_template: None,
     }
 }
 
@@ -556,7 +782,21 @@ impl HookDispatcher for InProcessHookDispatcher {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
-        Box::pin(async move { self.analyze(&invocation) })
+        Box::pin(async move {
+            // B-19A cycle 2 (WARN-2): run the tiered pass first so a BLOCK at
+            // T1/T2/T3 still aborts. THEN, if the dispatcher has a ruff runner
+            // installed AND the invocation targets a Python file write, run
+            // ruff and append its findings. The runner itself short-circuits
+            // for non-`.py`/`.pyi` paths, but we replicate the predicate here
+            // so the dispatcher does not pay the runner-method tax (and the
+            // global env-disabled flag) on every call.
+            let mut findings = self.analyze(&invocation)?;
+            if !self.disabled && self.ruff.is_some() {
+                let ruff_findings = self.run_ruff_post_tool_use(&invocation).await;
+                findings.extend(ruff_findings);
+            }
+            Ok(findings)
+        })
     }
 
     /// Batch 4B: expose the inherent ShortCoder method via the trait so
@@ -578,7 +818,30 @@ impl HookDispatcher for InProcessHookDispatcher {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
-        Box::pin(async move { self.analyze(&invocation) })
+        Box::pin(async move {
+            // B-19: enforce non-IDLE block. If fsm_state is set and is not
+            // IDLE or CONFIGURING, short-circuit with a Block finding so the
+            // task_runner can surface the rejection to the dashboard.
+            // Empty string = FSM state not plumbed by caller; skip check.
+            let state_upper = invocation.fsm_state.to_uppercase();
+            if !state_upper.is_empty()
+                && state_upper != "IDLE"
+                && state_upper != "CONFIGURING"
+            {
+                return Ok(vec![HookFinding {
+                    tier: HookTier::Composite,
+                    verdict: HookVerdictKind::Block,
+                    rule_id: Some("stop_non_idle".to_string()),
+                    category: "stop_hook".to_string(),
+                    message: format!(
+                        "Cannot stop in non-IDLE state — current: {}",
+                        invocation.fsm_state
+                    ),
+                    fix_template: None,
+                }]);
+            }
+            self.analyze(&invocation)
+        })
     }
 
     fn dispatch_pre_compact<'a>(
@@ -588,10 +851,13 @@ impl HookDispatcher for InProcessHookDispatcher {
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            // TODO(batch-1b+): wire a real PreCompact site when the dashboard
-            // path grows a compaction threshold. Keeping the method on the
-            // trait now lets callers adopt it without a breaking change later.
-            debug!(step = %invocation.step_id, "pre_compact invoked (MVP no-op)");
+            // B-19: PreCompact hook fires at context-budget handoff threshold.
+            // DairaTrace "HookPre"/"HookPost" rows are emitted by the task_runner
+            // caller (which holds Arc<Ssb>) around this dispatch call so the SSB
+            // gets compact_start / compact_end breadcrumbs without the dispatcher
+            // needing a direct SSB handle. The T1 analysis pass still runs so
+            // any predicate rules that gate on "pre_compact" fire correctly.
+            debug!(step = %invocation.step_id, "pre_compact invoked");
             self.analyze(&invocation)
         })
     }
@@ -722,6 +988,99 @@ pub async fn emit_shortcoder_compression_to_ssb(
 }
 
 // ---------------------------------------------------------------------------
+// B-19A (T10) — hook latency budget enforcement helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the per-tier latency budget in milliseconds for the given tier.
+/// `Composite` aggregates across T1/T2/T3 — we use the largest individual
+/// budget (T2 at 10ms) so the composite tier alarms only when a tier
+/// overruns its own budget AND drags the whole dispatch with it.
+#[must_use]
+pub fn hook_tier_budget_ms(tier: HookTier) -> u64 {
+    match tier {
+        HookTier::T1 => HOOK_T1_BUDGET_MS,
+        HookTier::T2 => HOOK_T2_BUDGET_MS,
+        HookTier::T3 => HOOK_T3_BUDGET_MS,
+        HookTier::Composite => HOOK_T2_BUDGET_MS,
+    }
+}
+
+/// Write a single [`SsbPayload::HookLatencyViolation`] row recording that
+/// `hook_name` at `tier` ran for `actual_ms` exceeding `budget_ms`. Returns
+/// `true` on success, `false` on any SSB error (logged via tracing::warn).
+///
+/// Kept as a free function (not a dispatcher method) so callers without a
+/// concrete dispatcher reference (e.g. external instrumented runners) can
+/// use it directly.
+pub async fn emit_hook_latency_violation_to_ssb(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    hook_name: &str,
+    tier: HookTier,
+    budget_ms: u64,
+    actual_ms: u64,
+) -> bool {
+    let payload = SsbPayload::HookLatencyViolation(HookLatencyViolationPayload {
+        hook_name: hook_name.to_string(),
+        tier: tier.as_str().to_string(),
+        budget_ms,
+        actual_ms,
+    });
+    match writer
+        .write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                error = %e,
+                hook = hook_name,
+                tier = tier.as_str(),
+                "hook_dispatcher: failed to emit HookLatencyViolation row"
+            );
+            false
+        }
+    }
+}
+
+/// Compare `actual_ms` against the spec budget for `tier`. If the budget is
+/// exceeded:
+///   * Emits a `tracing::warn` log line with hook + tier + actual + budget.
+///   * Writes one `hook_latency_violation` SSB row (if `writer` is `Some`).
+/// Returns `true` when a violation was recorded; `false` otherwise.
+///
+/// This is the single place the dispatcher should call after measuring a
+/// tier's elapsed time — both the log and the SSB row stay in lockstep.
+pub async fn report_hook_latency(
+    writer: Option<&Arc<Ssb>>,
+    agent_id: &str,
+    superstep: i64,
+    hook_name: &str,
+    tier: HookTier,
+    actual_ms: u64,
+) -> bool {
+    let budget_ms = hook_tier_budget_ms(tier);
+    if actual_ms <= budget_ms {
+        return false;
+    }
+    warn!(
+        hook = hook_name,
+        tier = tier.as_str(),
+        budget_ms,
+        actual_ms,
+        "hook_dispatcher: tier exceeded latency budget"
+    );
+    if let Some(w) = writer {
+        emit_hook_latency_violation_to_ssb(
+            w, agent_id, superstep, hook_name, tier, budget_ms, actual_ms,
+        )
+        .await;
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Tests (unit level — SSB-backed tests live in contracts/)
 // ---------------------------------------------------------------------------
 
@@ -794,5 +1153,34 @@ mod tests {
     fn dispatcher_is_dyn_safe() {
         let d: Arc<dyn HookDispatcher> = Arc::new(InProcessHookDispatcher::new(None));
         assert!(Arc::strong_count(&d) >= 1);
+    }
+
+    /// B-19 W1: dispatch_stop with fsm_state="EXECUTING" MUST return a Block
+    /// finding so task_runner can surface the rejection to the dashboard.
+    #[tokio::test]
+    async fn dispatch_stop_blocks_when_fsm_state_is_executing() {
+        let d = InProcessHookDispatcher::new(None);
+        let inv = HookInvocation::for_task_level("task_stop", "step_1")
+            .with_fsm_state("EXECUTING");
+        let findings = d.dispatch_stop(inv).await.expect("ok");
+        assert!(
+            findings.iter().any(|f| f.verdict == HookVerdictKind::Block),
+            "expected at least one Block finding for non-IDLE fsm_state, got: {:?}",
+            findings,
+        );
+    }
+
+    /// B-19 W1: dispatch_stop with fsm_state="IDLE" must NOT block.
+    #[tokio::test]
+    async fn dispatch_stop_allows_when_fsm_state_is_idle() {
+        let d = InProcessHookDispatcher::new(None);
+        let inv = HookInvocation::for_task_level("task_stop", "step_1")
+            .with_fsm_state("IDLE");
+        let findings = d.dispatch_stop(inv).await.expect("ok");
+        assert!(
+            !findings.iter().any(|f| f.verdict == HookVerdictKind::Block),
+            "expected no Block finding for IDLE fsm_state, got: {:?}",
+            findings,
+        );
     }
 }

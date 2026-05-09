@@ -27,6 +27,7 @@ use elai_core::micro_reflection::{
     ReflectionError,
 };
 use elai_core::mistake_book::FailureCategory;
+use elai_core::{ClockProvider as _, OsClock};
 use tracing::{debug, warn};
 
 use crate::mistake_book::write_mistake as mistake_book_write_mistake;
@@ -152,7 +153,8 @@ pub async fn emit_micro_reflection<C: ReflectionClient + ?Sized>(
     // Mirror the reflection into the MistakeBook via the existing entry
     // writer so consumers querying MistakeBook see the `micro_reflection`
     // action label.
-    let timestamp = std::time::SystemTime::now()
+    let timestamp = OsClock
+        .system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);

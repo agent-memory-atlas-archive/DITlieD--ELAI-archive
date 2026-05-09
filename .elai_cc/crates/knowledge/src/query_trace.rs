@@ -1,6 +1,8 @@
 use crate::degradation::SearchMode;
+use rustc_hash::FxHashMap;
 use std::sync::Mutex;
 use uuid::Uuid;
+use elai_core::{EntropySource, OsEntropy};
 
 // ---------------------------------------------------------------------------
 // StageTrace (knowledge.txt L304-311)
@@ -49,8 +51,14 @@ impl QueryTrace {
         mode: SearchMode,
         result_count: usize,
     ) -> Self {
+        let mut entropy_buf = [0u8; 16];
+        let mut _entropy = OsEntropy;
+        _entropy.fill_bytes(&mut entropy_buf);
+        // Bytes filled by OsEntropy form a valid opaque UUID (not RFC 4122 v4
+        // but collision-resistant for trace IDs).
+        let query_id = Uuid::from_bytes(entropy_buf);
         Self {
-            query_id: Uuid::new_v4(),
+            query_id,
             stages,
             total_latency_ms,
             mode: format!("{mode}"),
@@ -87,7 +95,7 @@ pub struct SessionTraceStats {
 
 struct StatsInner {
     /// stage_name -> sorted-at-flush latency samples
-    latencies: std::collections::HashMap<String, Vec<u64>>,
+    latencies: FxHashMap<String, Vec<u64>>,
     query_count: usize,
 }
 
@@ -111,7 +119,7 @@ impl SessionTraceStats {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(StatsInner {
-                latencies: std::collections::HashMap::new(),
+                latencies: FxHashMap::default(),
                 query_count: 0,
             }),
         }

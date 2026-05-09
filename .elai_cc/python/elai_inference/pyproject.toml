@@ -14,6 +14,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "orjson>=3.10.0",
     "structlog>=24.1.0",
+    "lm-format-enforcer>=0.10.11",
 ]
 
 [project.optional-dependencies]

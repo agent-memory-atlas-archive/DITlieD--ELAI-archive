@@ -8,7 +8,7 @@
 //! reduction via AST-level simplification. Our adaptation targets *input context*
 //! compression rather than output generation, using tree-sitter across 7 languages.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::fmt;
 
 use tracing::debug;
@@ -133,13 +133,13 @@ pub enum ShortCoderError {
 /// simplification rules to reduce token count while preserving semantic
 /// structure needed by the local model.
 pub struct ShortCoder {
-    languages: HashMap<String, tree_sitter::Language>,
+    languages: FxHashMap<String, tree_sitter::Language>,
 }
 
 impl ShortCoder {
     /// Create a new ShortCoder with all 7 supported languages.
     pub fn new() -> Self {
-        let mut languages = HashMap::with_capacity(7);
+        let mut languages = FxHashMap::default();
         languages.insert("rust".to_string(), tree_sitter_rust::LANGUAGE.into());
         languages.insert("python".to_string(), tree_sitter_python::LANGUAGE.into());
         languages.insert(
@@ -209,6 +209,7 @@ impl ShortCoder {
         let simplified = line_result;
 
         // Deduplicate rule IDs.
+        // NARROWING-OK: RuleId has #[repr(u8)]; all variants fit u8 by definition; used only as sort key.
         rules_applied.sort_by_key(|r| *r as u8);
         rules_applied.dedup();
 
@@ -717,6 +718,7 @@ fn child_count_u32(node: tree_sitter::Node) -> u32 {
     // Node child count is bounded by file size; u32 overflow is impossible.
     let count = node.child_count();
     debug_assert!(count <= u32::MAX as usize);
+    // NARROWING-OK: pre-validated by debug_assert above; tree-sitter Node::child() API requires u32 index.
     count as u32
 }
 

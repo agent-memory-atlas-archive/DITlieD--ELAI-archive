@@ -3,18 +3,20 @@
 //! hidden paths return empty, .elai_cc/** is default-hidden,
 //! .elai_cc/models/** is specifically hidden (ONNX model files).
 //!
-//! RED phase — compiles against existing tool types, fails at
-//! runtime because visibility filtering does not exist yet.
+//! B-18A Task 13 R31 flip: error envelope now mirrors std::io::ErrorKind::NotFound
+//! (error_code "not_found", message starts with "No such file or directory:")
+//! to make hidden-vs-missing indistinguishable to the agent (tools.txt:264-266).
 
 use elai_tools::GlobalToolRegistry;
 use serde_json::json;
 
-/// A file_read on a hidden path must return an error with a
-/// "visibility_filtered" code, identical to a missing-file error.
-/// Currently no visibility filter exists — the error does not
-/// contain this code, so the assertion fails at runtime.
+/// A file_read on a hidden path must return an error with the same envelope
+/// std::io::ErrorKind::NotFound would produce. The error_code is "not_found"
+/// and the message begins with "No such file or directory:" — identical to a
+/// genuinely missing file. R31 (tools.txt:264-266) requires this so the agent
+/// cannot distinguish hidden from missing via timing or string matching.
 #[test]
-fn hidden_path_returns_visibility_filtered_error() {
+fn hidden_path_returns_not_found_error() {
     let registry = GlobalToolRegistry::builtin();
 
     let hidden_result = registry.execute(
@@ -22,13 +24,18 @@ fn hidden_path_returns_visibility_filtered_error() {
         &json!({"path": ".elai_cc/secret/hidden_file.txt"}),
     );
 
-    // CONTRACT: the error for a hidden path must contain
-    // "visibility_filtered" to indicate the filter intercepted it.
-    // No such mechanism exists yet.
     let err_output = hidden_result.unwrap_or_else(|e| e);
     assert!(
-        err_output.contains("visibility_filtered"),
-        "CONTRACT: hidden path error must contain 'visibility_filtered' — got: {err_output}"
+        err_output.contains("\"error_code\":\"not_found\""),
+        "CONTRACT R31: hidden path error must carry error_code=\"not_found\" — got: {err_output}"
+    );
+    assert!(
+        err_output.contains("No such file or directory:"),
+        "CONTRACT R31: hidden path error must look like std::io::ErrorKind::NotFound display — got: {err_output}"
+    );
+    assert!(
+        !err_output.contains("visibility_filtered"),
+        "CONTRACT R31: error must NOT leak that the visibility filter fired — got: {err_output}"
     );
 }
 
@@ -50,6 +57,126 @@ fn glob_on_hidden_path_returns_empty() {
     assert!(
         parsed.is_array() && parsed.as_array().unwrap().is_empty(),
         "CONTRACT: glob on hidden .elai_cc/** must return empty array — got: {output}"
+    );
+}
+
+/// write_file on a hidden path must mirror the std::io::ErrorKind::NotFound
+/// envelope (error_code "not_found", message starts "No such file or
+/// directory:"). R31 forbids leaking the visibility filter via timing or
+/// error-string differences.
+#[test]
+fn write_file_hidden_path_returns_not_found_error() {
+    let registry = GlobalToolRegistry::builtin();
+
+    let result = registry.execute(
+        "write_file",
+        &json!({"path": ".elai_cc/secret/forbidden.txt", "content": "x"}),
+    );
+
+    let err_output = result.unwrap_or_else(|e| e);
+    assert!(
+        err_output.contains("\"error_code\":\"not_found\""),
+        "CONTRACT R31: write_file hidden path must carry error_code=\"not_found\" — got: {err_output}"
+    );
+    assert!(
+        err_output.contains("No such file or directory:"),
+        "CONTRACT R31: write_file hidden path must look like NotFound display — got: {err_output}"
+    );
+    assert!(
+        !err_output.contains("visibility_filtered"),
+        "CONTRACT R31: error must NOT leak that the visibility filter fired — got: {err_output}"
+    );
+}
+
+/// edit_file on a hidden path must mirror the std::io::ErrorKind::NotFound
+/// envelope identically to write_file and read_file.
+#[test]
+fn edit_file_hidden_path_returns_not_found_error() {
+    let registry = GlobalToolRegistry::builtin();
+
+    let result = registry.execute(
+        "edit_file",
+        &json!({
+            "path": ".elai_cc/secret/forbidden.txt",
+            "old_string": "a",
+            "new_string": "b",
+        }),
+    );
+
+    let err_output = result.unwrap_or_else(|e| e);
+    assert!(
+        err_output.contains("\"error_code\":\"not_found\""),
+        "CONTRACT R31: edit_file hidden path must carry error_code=\"not_found\" — got: {err_output}"
+    );
+    assert!(
+        err_output.contains("No such file or directory:"),
+        "CONTRACT R31: edit_file hidden path must look like NotFound display — got: {err_output}"
+    );
+    assert!(
+        !err_output.contains("visibility_filtered"),
+        "CONTRACT R31: error must NOT leak that the visibility filter fired — got: {err_output}"
+    );
+}
+
+/// grep_search with a hidden `path` field must mirror the NotFound envelope.
+/// This locks the existing path-branch behavior so cycle-2 fixes do not
+/// regress it.
+#[test]
+fn grep_search_hidden_path_returns_not_found_error() {
+    let registry = GlobalToolRegistry::builtin();
+
+    let result = registry.execute(
+        "grep_search",
+        &json!({
+            "pattern": "anything",
+            "path": ".elai_cc/sessions",
+        }),
+    );
+
+    let err_output = result.unwrap_or_else(|e| e);
+    assert!(
+        err_output.contains("\"error_code\":\"not_found\""),
+        "CONTRACT R31: grep_search hidden path must carry error_code=\"not_found\" — got: {err_output}"
+    );
+    assert!(
+        err_output.contains("No such file or directory:"),
+        "CONTRACT R31: grep_search hidden path must look like NotFound display — got: {err_output}"
+    );
+    assert!(
+        !err_output.contains("visibility_filtered"),
+        "CONTRACT R31: error must NOT leak that the visibility filter fired — got: {err_output}"
+    );
+}
+
+/// grep_search bypass: an agent can pass path="." (allowed) with
+/// glob=".elai_cc/**" (hidden). Cycle-1 only checked `path`. Cycle-2 must
+/// also reject the hidden glob with the same NotFound envelope so the bypass
+/// is closed.
+#[test]
+fn grep_search_hidden_glob_returns_not_found_error() {
+    let registry = GlobalToolRegistry::builtin();
+
+    let result = registry.execute(
+        "grep_search",
+        &json!({
+            "pattern": "anything",
+            "path": ".",
+            "glob": ".elai_cc/**",
+        }),
+    );
+
+    let err_output = result.unwrap_or_else(|e| e);
+    assert!(
+        err_output.contains("\"error_code\":\"not_found\""),
+        "CONTRACT R31: grep_search hidden glob must carry error_code=\"not_found\" — got: {err_output}"
+    );
+    assert!(
+        err_output.contains("No such file or directory:"),
+        "CONTRACT R31: grep_search hidden glob must look like NotFound display — got: {err_output}"
+    );
+    assert!(
+        !err_output.contains("visibility_filtered"),
+        "CONTRACT R31: error must NOT leak that the visibility filter fired — got: {err_output}"
     );
 }
 

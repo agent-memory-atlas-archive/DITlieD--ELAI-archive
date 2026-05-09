@@ -91,6 +91,9 @@ fn task_runner_config_accepts_indexing_service_arc() {
         reflection_client: None,
         irreversible_classifier: None,
         dkg_querier_swap: None,
+        task_splitter: None,
+        pipeline_grc: None,
+        model_capability_profile: None,
     };
 
     assert!(
@@ -187,6 +190,8 @@ fn indexing_progress_payload_roundtrips_msgpack() {
         files_total: 150,
         elapsed_ms: 0,
         message: None,
+        error_kind: None,    // Track A.1: new optional field
+        error_message: None, // Track A.1: new optional field
     };
     let wrapped = SsbPayload::IndexingProgress(payload.clone());
     assert_eq!(wrapped.action_type(), SsbActionType::IndexingProgress);
@@ -291,6 +296,8 @@ fn indexing_stage_labels_are_stable() {
             files_total: 0,
             elapsed_ms: 0,
             message: None,
+            error_kind: None,    // Track A.1: new optional field
+            error_message: None, // Track A.1: new optional field
         };
         let bytes = rmp_serde::to_vec_named(&SsbPayload::IndexingProgress(p)).expect("ser");
         // Every recognised stage must round-trip without a discriminant mismatch.

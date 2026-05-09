@@ -957,6 +957,18 @@ pub struct WebResearchStepPayload {
     /// "reqwest" | "obscura" | "" (empty = pre-patch row, default via serde).
     #[serde(default)]
     pub fetcher: String,
+    // B-7: fine-grained per-stage fields. All `#[serde(default)]` so existing
+    // rows (stage=null) deserialize without error. No schema version bump:
+    // payload is stored as an opaque msgpack blob; DB schema unchanged.
+    // stage: "formulate"|"search"|"extract"|"reflect"|"converge"|"" (empty = coarse row)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    // stage_phase: "started"|"completed"|"" (empty = coarse row)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage_phase: String,
+    // stage_payload: stage-specific structured data (query, n_results, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_payload: Option<serde_json::Value>,
 }
 
 /// Track A.2: research synthesis path selection.
@@ -1525,12 +1537,58 @@ pub struct GitCommitPayload {
     pub message: String,
 }
 
+/// B-19 — DAIRA 15-marker vocabulary for the `phase` field of
+/// [`DairaTracePayload`]. Kept as a `&str` slice (not an enum) so existing
+/// call sites that emit legacy values ("enter"/"exit") continue to compile
+/// without modification while the frontend and SSB viewer can validate
+/// against this canonical list.
+///
+/// Marker semantics:
+/// - `Call`          — function entry (legacy: "enter")
+/// - `Return`        — function exit clean (legacy: "exit" / "success")
+/// - `Mutation`      — state-changing side effect (e.g. file write)
+/// - `Branch`        — conditional path taken
+/// - `Error`         — error bubble (legacy: "error")
+/// - `Finding`       — auditor BLOCK emit
+/// - `Read`          — file / db read
+/// - `Write`         — file / db write
+/// - `ToolCallStart` — tool dispatch entry
+/// - `ToolCallEnd`   — tool dispatch exit
+/// - `HookPre`       — hook point firing before action
+/// - `HookPost`      — hook point firing after action
+/// - `Timeout`       — operation exceeded latency budget
+/// - `Escalate`      — escalation signal needed
+/// - `Converge`      — spiral convergence / resolution
+pub const DAIRA_MARKERS: &[&str] = &[
+    "Call",
+    "Return",
+    "Mutation",
+    "Branch",
+    "Error",
+    "Finding",
+    "Read",
+    "Write",
+    "ToolCallStart",
+    "ToolCallEnd",
+    "HookPre",
+    "HookPost",
+    "Timeout",
+    "Escalate",
+    "Converge",
+];
+
 /// Batch 2B — DAIRA call-graph breadcrumb. Emitted on entry AND exit of
 /// every dispatch method so the frontend can assemble a call graph keyed
 /// on `(phase, tool)` without having to deserialise the per-dispatch row.
+///
+/// B-19: `phase` now accepts the 15-marker DAIRA vocabulary defined in
+/// [`DAIRA_MARKERS`] in addition to the legacy "enter"/"exit" strings.
+/// Legacy values remain valid and are NOT rejected — this is a superset
+/// expansion, not a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DairaTracePayload {
-    /// `"enter"` / `"exit"`.
+    /// DAIRA phase marker — see [`DAIRA_MARKERS`] for the canonical 15-value
+    /// vocabulary. Legacy values `"enter"` / `"exit"` remain accepted.
     pub phase: String,
     /// Tool name — same tag set as [`ToolDispatchPayload::tool`].
     pub tool: String,
@@ -2426,6 +2484,7 @@ impl Ssb {
         let db_path_str = config.db_path.to_string_lossy().to_string();
         let manager = SqliteManager { db_path: db_path_str };
         let read_pool = SsbPool::builder(manager)
+            // NARROWING-OK: u32 pool size always fits usize on supported 32/64-bit targets.
             .max_size(config.effective_pool_size() as usize)
             .runtime(deadpool::Runtime::Tokio1)
             .build()
@@ -3134,6 +3193,7 @@ mod tests {
                 agent_id: "a".into(), node_id: 0, action: "search".into(),
                 phi: 0.5, psi: 0.4, iteration: 1, sources_fetched: 3, sources_used: 2,
                 fetcher: "reqwest".into(),
+                stage: String::new(), stage_phase: String::new(), stage_payload: None,
             }),
             SsbActionType::PreviewAvailable => SsbPayload::PreviewAvailable(PreviewAvailablePayload {
                 url: "http://localhost:5173".into(), step_id: "step-1".into(),
@@ -3507,6 +3567,69 @@ mod tests {
                     last_failure_ts: None,
                 })
             }
+            // B-7 variants.
+            SsbActionType::BubbleUpTyped => SsbPayload::BubbleUpTyped(BubbleUpTypedPayload {
+                from_level: "BabyStep".into(),
+                to_level: "Step".into(),
+                action_kind: "diagnose_and_retry".into(),
+                reason: "test".into(),
+                failure_count: 1,
+                threshold: 3,
+            }),
+            SsbActionType::IntegrationCheckpointSuccess => {
+                SsbPayload::IntegrationCheckpointSuccess(IntegrationCheckpointSuccessPayload {
+                    level: "BabyStep".into(),
+                    node_id: 0,
+                    wiring_target: "test-target".into(),
+                    success: true,
+                    failure_reason: None,
+                    duration_ms: 1,
+                })
+            }
+            SsbActionType::DagRepairRound => SsbPayload::DagRepairRound(DagRepairRoundPayload {
+                action_kind: "reorder".into(),
+                round: 1,
+                reason: "test".into(),
+            }),
+            SsbActionType::ConceptDecompositionNode => {
+                SsbPayload::ConceptDecompositionNode(ConceptDecompositionNodePayload {
+                    node_kind: "concept".into(),
+                    node_id: 0,
+                    parent_id: 0,
+                    name: "test-concept".into(),
+                })
+            }
+            // B-6 variants.
+            SsbActionType::EvidenceGateEvaluated => {
+                SsbPayload::EvidenceGateEvaluated(EvidenceGateEvaluatedPayload {
+                    gate_id: "knowledge_readiness_gate".into(),
+                    verdict: "pass".into(),
+                    ts_ms: 0,
+                })
+            }
+            SsbActionType::SupervisionEvent => {
+                SsbPayload::SupervisionEvent(SupervisionEventPayload {
+                    agent_id: "a".into(),
+                    event: "restart".into(),
+                    attempt: 1,
+                })
+            }
+            SsbActionType::BspSuperstep => SsbPayload::BspSuperstep(BspSuperstepPayload {
+                snapshot_id: "s-test:superstep:1".into(),
+                ts_ms: 0,
+                channels_count: 1,
+            }),
+            SsbActionType::AgentLifecycle => SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                agent_id: "a".into(),
+                role: "executor".into(),
+                state: "spawned".into(),
+                death_class: None,
+            }),
+            SsbActionType::AntiSpiralHit => SsbPayload::AntiSpiralHit(AntiSpiralHitPayload {
+                agent_id: "a".into(),
+                step_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                count: 4,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -4473,6 +4596,7 @@ mod tests {
                 sources_fetched: 5,
                 sources_used: 3,
                 fetcher: "reqwest".into(),
+                stage: String::new(), stage_phase: String::new(), stage_payload: None,
             }),
             SsbPayload::PreviewAvailable(PreviewAvailablePayload {
                 url: "http://localhost:5173".into(),
@@ -4790,6 +4914,9 @@ mod tests {
                         SsbPayload::WebResearchStep(WebResearchStepPayload {
                             agent_id, node_id, action, phi, psi, iteration, sources_fetched, sources_used,
                             fetcher: "reqwest".to_owned(),
+                            stage: String::new(),
+                            stage_phase: String::new(),
+                            stage_payload: None,
                         })
                     ),
                 ("http://localhost:[1-9][0-9]{3,4}", "[a-z0-9-]{1,20}",

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use elai_core::project_profile::{ProjectProfile, ProjectProfileError, PROFILE_SCHEMA_VERSION};
+use elai_core::{ClockProvider as _, OsClock};
 
 use crate::project_profile::{deserialize_profile, detect_project_profile};
 
@@ -190,7 +191,7 @@ pub fn incremental_tier1_refresh(
     // Snapshot old state for Tier 3 gate comparison.
     let old_framework_count = current.frameworks.len();
     let old_primary_lang = current.languages.primary.clone();
-    let old_distribution: std::collections::HashMap<_, _> = current.languages.distribution.clone();
+    let old_distribution: std::collections::BTreeMap<_, _> = current.languages.distribution.clone();
 
     // Re-run full Tier 1 detection and merge into current profile.
     let fresh = detect_project_profile(root)?;
@@ -216,8 +217,9 @@ pub fn incremental_tier1_refresh(
     current.commands = fresh.commands;
 
     // Update generated_at to current time.
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
+    let now_secs = OsClock
+        .system_now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     current.generated_at = format_unix_timestamp(now_secs);
@@ -238,8 +240,8 @@ pub fn incremental_tier1_refresh(
 /// in any language between old and new distributions. Distribution maps store
 /// file counts per language; we convert to percentages for comparison.
 fn check_language_shift(
-    old: &std::collections::HashMap<elai_core::project_profile::Language, usize>,
-    new: &std::collections::HashMap<elai_core::project_profile::Language, usize>,
+    old: &std::collections::BTreeMap<elai_core::project_profile::Language, usize>,
+    new: &std::collections::BTreeMap<elai_core::project_profile::Language, usize>,
     threshold_pct: u32,
 ) -> bool {
     let threshold = f64::from(threshold_pct);

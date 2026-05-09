@@ -7,7 +7,7 @@
 use crate::context_budget::{BudgetError, ContextBudget, GenerationProfile, ModelCapabilityProfile};
 use crate::fsm::FsmState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ pub fn build_dispatch_context(
     fsm_state: FsmState,
     config: &BackendConfig,
     all_tool_names: &[String],
-    priority_map: &HashMap<String, u8>,
+    priority_map: &BTreeMap<String, u8>,
     profile: Option<&ModelCapabilityProfile>,
     phase_slot: Option<&PhaseSlot>,
 ) -> Result<DispatchContext, DispatchError> {
@@ -323,7 +323,7 @@ mod tests {
             "WebSearch".into(),
         ];
 
-        let prio = HashMap::new();
+        let prio = BTreeMap::new();
         let ctx =
             build_dispatch_context(FsmState::Executing, &config, &tools, &prio, None, None).expect("should succeed");
 
@@ -348,7 +348,7 @@ mod tests {
             "EnterPlanMode".into(),
         ];
 
-        let prio = HashMap::new();
+        let prio = BTreeMap::new();
         let ctx =
             build_dispatch_context(FsmState::Planning, &config, &tools, &prio, None, None).expect("should succeed");
 
@@ -373,7 +373,7 @@ mod tests {
         // All these are allowed in Idle state.
         let tools: Vec<String> = (0..10).map(|i| format!("read_file_{i}")).collect();
         // Assign descending priorities so read_file_0 = highest priority (0).
-        let prio: HashMap<String, u8> = (0..10u8).map(|i| (format!("read_file_{i}"), i)).collect();
+        let prio: BTreeMap<String, u8> = (0..10u8).map(|i| (format!("read_file_{i}"), i)).collect();
 
         let ctx =
             build_dispatch_context(FsmState::Idle, &config, &tools, &prio, None, None).expect("should succeed");

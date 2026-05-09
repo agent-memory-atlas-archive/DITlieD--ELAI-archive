@@ -546,6 +546,9 @@ pub fn daira_adaptive_run<F, T>(
 where
     F: FnMut(DairaScope) -> (T, usize),
 {
+    // NARROWING-OK: f64->usize; no TryFrom<f64> for usize in std; token_budget is bounded
+    // by model context window which is well within usize on supported platforms.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let threshold = (token_budget as f64 * 0.3) as usize;
     let scopes = [DairaScope::Full, DairaScope::Reduced, DairaScope::Minimal];
 
@@ -554,7 +557,7 @@ where
         if size <= threshold || attempt == scopes.len() - 1 {
             return DairaScopeResult {
                 value,
-                attempts: (attempt + 1) as u32,
+                attempts: u32::try_from(attempt + 1).unwrap_or(u32::MAX),
                 final_scope: scope,
             };
         }

@@ -202,7 +202,7 @@ mod tests {
     fn with_toml_file(content: &str, test_fn: impl FnOnce(&Path)) {
         let mut dir = std::env::temp_dir();
         // Use a per-test unique subdirectory to avoid races.
-        let id = std::time::SystemTime::now()
+        let id = std::time::SystemTime::now() // TEST_KEEP: test-only temp-dir uniquifier
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);

@@ -4,7 +4,7 @@
 // No LLM, no DKG, no network. Pattern matching on known config files.
 // If the signal is not present, the field is Unknown.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use elai_core::project_profile::{
@@ -13,6 +13,7 @@ use elai_core::project_profile::{
     LanguageProfile, LintProfile, ProjectProfile, ProjectProfileError, TestLocationPattern,
     TestProfile, WorkspaceMember, DEFAULT_COMMAND_TIMEOUT_S, PROFILE_SCHEMA_VERSION,
 };
+use elai_core::{ClockProvider as _, OsClock};
 
 use ignore::WalkBuilder;
 use tracing::{debug, warn};
@@ -431,13 +432,11 @@ pub fn detect_project_profile(project_root: &Path) -> Result<ProjectProfile, Pro
     let commands = build_command_registry(project_root, &build_system);
 
     let generated_at = {
-        let now = std::time::SystemTime::now();
-        let duration = now
+        let duration = OsClock
+            .system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         // ISO 8601 without external dep: use seconds since epoch as fallback
-        // NOTE(A-4): uses SystemTime::now() directly — entropy quarantine violation,
-        // requires ClockProvider injection to fix (out of scope for A-32).
         format!("{}", duration.as_secs())
     };
 
@@ -629,7 +628,7 @@ fn detect_build_version(root: &Path, system: &BuildSystem) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn detect_languages(root: &Path) -> LanguageProfile {
-    let mut distribution: HashMap<Language, usize> = HashMap::new();
+    let mut distribution: BTreeMap<Language, usize> = BTreeMap::new();
 
     let walker = WalkBuilder::new(root)
         .hidden(true)
@@ -1047,7 +1046,7 @@ fn make_cmd_vec(cmd: &str, working_dir: &Path) -> Vec<BuildCommand> {
     vec![BuildCommand {
         cmd: cmd.to_string(),
         working_dir: working_dir.to_path_buf(),
-        env: HashMap::new(),
+        env: BTreeMap::new(),
         timeout_s: DEFAULT_COMMAND_TIMEOUT_S,
         scope: CommandScope::Full,
         verified: false,
@@ -1232,6 +1231,7 @@ fn detect_test_location_pattern_refined(
     let has_adjacent = detect_adjacent_test_files(root, build);
 
     // Determine pattern from signals
+    // NARROWING-OK: bool->u8 is always 0 or 1; no truncation possible; summed result is at most 3 (fits u8).
     let signal_count =
         has_test_dir as u8 + has_same_file as u8 + has_adjacent as u8;
 
@@ -2249,7 +2249,7 @@ mod tests {
             build: vec![BuildCommand {
                 cmd: "nonexistent-binary-xyz build".to_string(),
                 working_dir: PathBuf::from("."),
-                env: HashMap::new(),
+                env: BTreeMap::new(),
                 timeout_s: DEFAULT_COMMAND_TIMEOUT_S,
                 scope: CommandScope::Full,
                 verified: false,

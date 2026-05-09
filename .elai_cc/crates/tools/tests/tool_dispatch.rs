@@ -271,10 +271,12 @@ fn registry_available_tools_filters_write_in_planning() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn classify_lazy_code() {
+fn classify_runtime_panic_from_panicked_at() {
+    // B-20A 9-variant taxonomy: `LazyCode` was dropped; a `panicked at`
+    // signal now classifies as `RuntimePanic`.
     let handler = ClassifyHandler::new();
     let req = ClassifyRequest {
-        error_output: "thread panicked at todo!() in src/main.rs:10".to_string(),
+        error_output: "thread 'main' panicked at 'oops' in src/main.rs:10".to_string(),
         file_path: None,
     };
     let bytes = postcard::to_allocvec(&req).unwrap();
@@ -282,15 +284,22 @@ fn classify_lazy_code() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let result = rt.block_on(handler.execute(&bytes)).unwrap();
     let diag: DiagnosticResult = serde_json::from_str(&result.output).unwrap();
-    assert_eq!(diag.category, FailureCategory::LazyCode);
-    assert_eq!(diag.fix_instruction, "replace todo!()/unimplemented!() with real implementation");
+    assert_eq!(diag.category, FailureCategory::RuntimePanic);
+    assert!(
+        diag.fix_instruction.contains("panic")
+            || diag.fix_instruction.contains("runtime")
+    );
 }
 
 #[test]
-fn classify_compilation_error_with_root_cause() {
+fn classify_missing_import_with_root_cause() {
+    // B-20A 9-variant taxonomy: `CompilationError` was split. An
+    // `unresolved import` signal now classifies as `MissingImport`.
     let handler = ClassifyHandler::new();
     let req = ClassifyRequest {
-        error_output: "error[E0433]: cannot find\n  --> src/lib.rs:5 unresolved import foo::bar".to_string(),
+        error_output:
+            "error[E0432]: unresolved import `foo::bar`\n  --> src/lib.rs:5"
+                .to_string(),
         file_path: Some("src/lib.rs".to_string()),
     };
     let bytes = postcard::to_allocvec(&req).unwrap();
@@ -298,7 +307,7 @@ fn classify_compilation_error_with_root_cause() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let result = rt.block_on(handler.execute(&bytes)).unwrap();
     let diag: DiagnosticResult = serde_json::from_str(&result.output).unwrap();
-    assert_eq!(diag.category, FailureCategory::CompilationError);
+    assert_eq!(diag.category, FailureCategory::MissingImport);
     assert!(diag.root_cause.is_some());
     assert_eq!(diag.root_cause.as_ref().unwrap().kind, RootCauseKind::MissingImport);
     assert!(!diag.escalate); // has root cause -> high confidence -> no escalate

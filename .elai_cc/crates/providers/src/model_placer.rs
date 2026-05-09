@@ -7,7 +7,7 @@
 
 use crate::multiplexing::{MultiplexingError, MultiplexingPolicy, SloTier};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 // ---------------------------------------------------------------------------
 // Model Placement Types
@@ -82,7 +82,7 @@ impl GpuSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacementResult {
     /// Map from model ID to assigned GPU ID.
-    pub assignments: HashMap<String, u8>,
+    pub assignments: FxHashMap<String, u8>,
     /// Total swap latency estimate in milliseconds.
     pub total_swap_latency_ms: u64,
     /// Whether placement succeeded (all models assigned).
@@ -94,7 +94,7 @@ pub struct PlacementResult {
 impl PlacementResult {
     /// Create a successful placement result.
     #[must_use]
-    pub fn success(assignments: HashMap<String, u8>, total_swap_latency_ms: u64) -> Self {
+    pub fn success(assignments: FxHashMap<String, u8>, total_swap_latency_ms: u64) -> Self {
         Self {
             assignments,
             total_swap_latency_ms,
@@ -107,7 +107,7 @@ impl PlacementResult {
     #[must_use]
     pub fn failure(error: impl Into<String>) -> Self {
         Self {
-            assignments: HashMap::new(),
+            assignments: FxHashMap::default(),
             total_swap_latency_ms: 0,
             success: false,
             error: Some(error.into()),
@@ -166,7 +166,7 @@ impl GreedyModelPlacer {
         gpus: &[GpuSpec],
     ) -> Result<PlacementResult, MultiplexingError> {
         if models.is_empty() {
-            return Ok(PlacementResult::success(HashMap::new(), 0));
+            return Ok(PlacementResult::success(FxHashMap::default(), 0));
         }
 
         if gpus.is_empty() {
@@ -179,7 +179,7 @@ impl GreedyModelPlacer {
 
         // Track GPU state during placement
         let mut gpu_state: Vec<_> = gpus.to_vec();
-        let mut assignments = HashMap::new();
+        let mut assignments = FxHashMap::default();
         let mut swap_count = 0;
 
         for model in &sorted_models {
@@ -202,6 +202,7 @@ impl GreedyModelPlacer {
         }
 
         // Estimate total swap latency
+        // NARROWING-OK: swap_count is always non-negative (only += 1); i32->u64 sign-extension is safe here.
         let total_swap_latency_ms = swap_count as u64 * self.swap_latency_ms_per_model;
 
         Ok(PlacementResult::success(assignments, total_swap_latency_ms))
@@ -346,7 +347,7 @@ mod tests {
 
     #[test]
     fn placement_result_success() {
-        let mut assignments = HashMap::new();
+        let mut assignments = FxHashMap::default();
         assignments.insert("model1".to_string(), 0);
         let result = PlacementResult::success(assignments, 100);
         assert!(result.success);

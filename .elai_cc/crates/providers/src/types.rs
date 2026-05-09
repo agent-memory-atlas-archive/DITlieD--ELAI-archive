@@ -151,11 +151,18 @@ pub enum OutputContentBlock {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Anthropic streaming spec: only `message_start` carries `input_tokens`;
+    /// the per-chunk `message_delta` event omits it. Treat as optional with
+    /// 0 default so streaming responses deserialize cleanly. (B-15D PART-C smoke fix)
+    #[serde(default)]
     pub input_tokens: u32,
     #[serde(default)]
     pub cache_creation_input_tokens: u32,
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+    /// Same rationale: `message_start.usage.output_tokens` is 0 anyway, but
+    /// some Anthropic-compatible servers omit it entirely.
+    #[serde(default)]
     pub output_tokens: u32,
 }
 

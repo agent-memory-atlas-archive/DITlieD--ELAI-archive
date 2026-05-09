@@ -102,6 +102,7 @@ impl SplitMix64 {
     }
 
     /// Uniform f64 in (0, 1) — excludes 0 to keep Box-Muller safe.
+    // NARROWING-OK: u64->f64 after >> 11 yields a 53-bit integer; f64 has 53-bit mantissa so no precision loss.
     fn next_f64(&mut self) -> f64 {
         loop {
             let v = (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64);
@@ -188,6 +189,9 @@ fn gaussian_cond_expect(sigma: f64, a: f64, b: f64) -> f64 {
 /// bit_width=1: closed-form {-c, +c} where c = sqrt(2/(pi*d)).
 /// bit_width=2: closed-form {-1.51, -0.453, +0.453, +1.51} / sqrt(d).
 /// bit_width=3,4: Lloyd-Max iterative solver on N(0, 1/sqrt(d)).
+// NARROWING-OK (build_codebook): all f64->f32 casts below are intentional quantization-math precision
+// downcasts. Codebook values are stored as f32 to match the quantizer's storage format. std lacks
+// TryFrom<f64> for f32; `as f32` is the canonical idiom. Precision loss is design intent.
 fn build_codebook(bit_width: u8, d: usize) -> Result<Vec<f32>, TurboQuantError> {
     let n_centroids = 1usize << bit_width;
     let d_f64 = d as f64;
@@ -424,6 +428,8 @@ fn mat_t_vec_mul(mat: &[f32], v: &[f32], d: usize) -> Vec<f32> {
 
 /// Find nearest centroid index for a single value in a sorted codebook.
 /// Linear scan over codebook entries (acceptable for codebook sizes <= 16).
+// NARROWING-OK (nearest_centroid): `i as u8` — enumerate() index i is bounded by codebook.len() <= 16
+// (bit_width <= 4, so 2^4 = 16 entries). Value 16 fits in u8 range [0, 255].
 fn nearest_centroid(value: f32, codebook: &[f32]) -> u8 {
     let mut best = 0u8;
     let mut best_dist = (value - codebook[0]).abs();
@@ -604,6 +610,9 @@ impl TurboQuantizer {
     /// # Errors
     /// - `DimensionMismatch` if qkv.d != self.d or qkv.mse_indices.len() != self.d.
     /// - `InvalidBitWidth` if qkv.bit_width != self.config.bit_width.
+    // NARROWING-OK (dequant_kv): `s as f32` casts i8 sign bits to f32 (range-widening, always safe).
+    // `self.d as f32` casts usize dimension to f32 (usize->f32 lossy above 2^24 but d is at most a few
+    // thousand in practice). Both are intentional algorithmic precision choices; std has no TryFrom for these.
     pub fn dequant_kv(&self, qkv: &QuantizedKV) -> Result<Vec<f32>, TurboQuantError> {
         if qkv.d != self.d {
             return Err(TurboQuantError::DimensionMismatch {
@@ -672,6 +681,9 @@ impl TurboQuantizer {
 // ---------------------------------------------------------------------------
 
 /// Generate d×d Gaussian matrix (row-major) from seeded PRNG.
+// NARROWING-OK (generate_gaussian_matrix): `g1 as f32` / `g2 as f32` downcast f64 Gaussian samples to
+// f32 for rotation matrix storage. Precision loss is intentional design; f32 is sufficient for the
+// rotation used in TurboQuant. std has no TryFrom<f64> for f32.
 fn generate_gaussian_matrix(rng: &mut SplitMix64, d: usize) -> Vec<f32> {
     let n = d * d;
     let mut mat = Vec::with_capacity(n);
@@ -689,6 +701,10 @@ fn generate_gaussian_matrix(rng: &mut SplitMix64, d: usize) -> Vec<f32> {
 
 /// Generate d×d orthogonal rotation matrix via modified Gram-Schmidt with
 /// re-orthogonalization for numerical stability.
+// NARROWING-OK (generate_rotation_matrix): f32->f64 widening for intermediate MGS dot products
+// (higher precision during computation), then f64->f32 narrowing for final storage in matrix.
+// Pattern: `mat[i*d+k] as f64` (widening, safe) + `correction as f32` / `mat[i*d+j] as f64 * inv) as f32`
+// (narrowing, intentional). std has no TryFrom<f64> for f32; precision loss is design intent.
 fn generate_rotation_matrix(rng: &mut SplitMix64, d: usize) -> Vec<f32> {
     let mut mat = generate_gaussian_matrix(rng, d);
 

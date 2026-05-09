@@ -6,14 +6,74 @@
 // ---------------------------------------------------------------------------
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
+use elai_core::ClockProvider;
 use elai_web_validator::WebValidationTier;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::research_tree::{
     BabyStepId, BabyStepSpec, ConceptDecomposition, ConceptId, ConceptNode, ExitCriterion,
-    IntegrationSpec, PhaseId, PhaseNode, StepId, StepNode,
+    IntegrationSpec, PhaseId, StepId, StepNode,
 };
+use crate::ssb::{
+    BubbleUpTypedPayload, IntegrationCheckpointSuccessPayload, Ssb, SsbPayload,
+};
+
+// ---------------------------------------------------------------------------
+// B-7: BubbleUpEventEmitter — injectable SSB callback for bubble-up events
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every BubbleUpEventEmitter call-site.
+///
+/// `action_kind` is the BubbleUpAction discriminant as snake_case:
+/// "research_alternative" | "redecompose_step" | "replan_phase" | "replan_concept"
+/// | "diagnose_and_retry" | "escalate"
+#[derive(Debug, Clone)]
+pub struct BubbleUpEventPayload {
+    pub from_level: DecompositionLevel,
+    pub to_level: DecompositionLevel,
+    pub action_kind: &'static str,
+    pub reason: String,
+    pub failure_count: u32,
+    pub threshold: u32,
+}
+
+/// Injectable per-event emitter for bubble-up cascade notifications. The default
+/// navigator uses `None` and emits nothing; the task runner plugs in an
+/// `SsbBubbleUpEmitter` so bubble-up events surface as `bubble_up_typed` rows
+/// in the dashboard activity feed.
+///
+/// Sync trait: the SSB-backed adapter fires a `tokio::spawn` internally (fire-
+/// and-forget). Bubble-up rows are advisory and must not block the navigator.
+pub trait BubbleUpEventEmitter: Send + Sync {
+    fn emit(&self, event: BubbleUpEventPayload);
+}
+
+// ---------------------------------------------------------------------------
+// B-7: IntegrationCheckpointEmitter — injectable SSB callback for checkpoints
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every IntegrationCheckpointEmitter call-site.
+#[derive(Debug, Clone)]
+pub struct IntegrationCheckpointEventPayload {
+    pub level: DecompositionLevel,
+    pub node_id: u64,
+    pub wiring_target: String,
+    pub success: bool,
+    pub failure_reason: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// Injectable per-checkpoint emitter for integration checkpoint completions
+/// at all 4 DecompositionLevels.
+///
+/// Sync trait: the SSB-backed adapter fires a `tokio::spawn` internally (fire-
+/// and-forget). Checkpoint rows are advisory and must not block the navigator.
+pub trait IntegrationCheckpointEmitter: Send + Sync {
+    fn emit(&self, event: IntegrationCheckpointEventPayload);
+}
 
 // ---------------------------------------------------------------------------
 // Named constants — bubble-up policy defaults (no magic numbers)
@@ -48,7 +108,15 @@ pub const NO_BABY_STEP: BabyStepId = BabyStepId(0);
 /// - BabyStep: WebBuild only (cheapest gate, catches compile/transpile errors).
 /// - Step:     WebBuild + WebLint (advisory lint after build success).
 /// - Phase:    WebBuild + WebDevServer (runtime probe after build).
-/// - Concept:  WebBuild + WebDevServer + WebLint (full preview-promotion check).
+/// - Concept:  WebBuild + WebDevServer + WebLint + WebPerformance
+///             (full preview-promotion check + Lighthouse CWV).
+///
+/// Phase B (s-44680): WebPerformance is added at Concept-level only.
+/// Lighthouse runs ~30-180 s per invocation and requires a Chromium
+/// binary on PATH (see `cwv::probe_chromium`); running it on every
+/// BabyStep / Step would be wasteful. The orchestrator must degrade
+/// the tier (treat as advisory) when probe_chromium returns
+/// `ChromiumMissing`.
 pub fn web_validation_tiers_for_level(level: DecompositionLevel) -> Vec<WebValidationTier> {
     match level {
         DecompositionLevel::BabyStep => vec![WebValidationTier::WebBuild],
@@ -60,6 +128,7 @@ pub fn web_validation_tiers_for_level(level: DecompositionLevel) -> Vec<WebValid
             WebValidationTier::WebBuild,
             WebValidationTier::WebDevServer,
             WebValidationTier::WebLint,
+            WebValidationTier::WebPerformance,
         ],
     }
 }
@@ -294,9 +363,27 @@ pub trait TreeNavigator {
 /// Depth-first navigator implementation.
 /// Stores a copy of traversal_order so it can implement TreeNavigator
 /// without needing a reference to NavigatorTree in next_baby_step.
-#[derive(Debug, Clone)]
+///
+/// B-7: optional emitters for SSB observability. Use `with_bubble_up_emitter`
+/// and `with_integration_emitter` builder methods. Both default to `None` so
+/// all existing callers keep working without changes.
+#[derive(Clone)]
 pub struct DepthFirstNavigator {
     traversal_order: Vec<BabyStepId>,
+    /// B-7: emits `bubble_up_typed` SSB rows on each BubbleUpEvent push.
+    bubble_up_emitter: Option<Arc<dyn BubbleUpEventEmitter>>,
+    /// B-7: emits `integration_checkpoint_success` SSB rows after each checkpoint.
+    integration_emitter: Option<Arc<dyn IntegrationCheckpointEmitter>>,
+}
+
+impl std::fmt::Debug for DepthFirstNavigator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DepthFirstNavigator")
+            .field("traversal_order", &self.traversal_order)
+            .field("bubble_up_emitter", &self.bubble_up_emitter.is_some())
+            .field("integration_emitter", &self.integration_emitter.is_some())
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,12 +555,44 @@ fn topological_sort_concepts(concepts: &[ConceptNode]) -> Vec<ConceptId> {
 
 impl DepthFirstNavigator {
     pub fn new(traversal_order: Vec<BabyStepId>) -> Self {
-        Self { traversal_order }
+        Self {
+            traversal_order,
+            bubble_up_emitter: None,
+            integration_emitter: None,
+        }
     }
 
     /// Convenience: build from a NavigatorTree.
     pub fn from_tree(tree: &NavigatorTree) -> Self {
         Self::new(tree.traversal_order.clone())
+    }
+
+    /// B-7: attach a bubble-up event emitter. The emitter receives one call per
+    /// BubbleUpEvent pushed in `handle_failure` and the integration-fail helpers.
+    pub fn with_bubble_up_emitter(mut self, emitter: Arc<dyn BubbleUpEventEmitter>) -> Self {
+        self.bubble_up_emitter = Some(emitter);
+        self
+    }
+
+    /// B-7: attach an integration checkpoint emitter. The emitter receives one
+    /// call per completed `run_integration_checkpoint` invocation (all 4 levels).
+    pub fn with_integration_emitter(mut self, emitter: Arc<dyn IntegrationCheckpointEmitter>) -> Self {
+        self.integration_emitter = Some(emitter);
+        self
+    }
+
+    /// B-7: internal helper — emit a bubble-up event if an emitter is attached.
+    fn notify_bubble_up(&self, payload: BubbleUpEventPayload) {
+        if let Some(ref emitter) = self.bubble_up_emitter {
+            emitter.emit(payload);
+        }
+    }
+
+    /// B-7: internal helper — emit an integration checkpoint event if an emitter is attached.
+    fn notify_integration_checkpoint(&self, payload: IntegrationCheckpointEventPayload) {
+        if let Some(ref emitter) = self.integration_emitter {
+            emitter.emit(payload);
+        }
     }
 }
 
@@ -630,6 +749,15 @@ impl DepthFirstNavigator {
                 failure_count: tree.policy.max_retries_baby_step,
                 threshold: tree.policy.max_retries_baby_step,
             });
+            // B-7: notify SSB emitter (fire-and-forget, no await).
+            self.notify_bubble_up(BubbleUpEventPayload {
+                from_level: DecompositionLevel::BabyStep,
+                to_level: DecompositionLevel::BabyStep,
+                action_kind: "research_alternative",
+                reason: format!("baby_step={:?}", bs_id),
+                failure_count: tree.policy.max_retries_baby_step,
+                threshold: tree.policy.max_retries_baby_step,
+            });
 
             // Increment step-level failure count and check cascade.
             {
@@ -646,6 +774,15 @@ impl DepthFirstNavigator {
                     failure_count: step_fail_count,
                     threshold: tree.policy.max_retries_step,
                 });
+                // B-7: cascade notification: BabyStep -> Step.
+                self.notify_bubble_up(BubbleUpEventPayload {
+                    from_level: DecompositionLevel::BabyStep,
+                    to_level: DecompositionLevel::Step,
+                    action_kind: "redecompose_step",
+                    reason: format!("step={:?}", loc.step_id),
+                    failure_count: step_fail_count,
+                    threshold: tree.policy.max_retries_step,
+                });
 
                 // Increment phase-level failure count and check cascade.
                 {
@@ -659,6 +796,15 @@ impl DepthFirstNavigator {
                     state.bubble_up_log.push(BubbleUpEvent {
                         level: DecompositionLevel::Phase,
                         action: BubbleUpAction::ReplanPhase { phase_id: loc.phase_id },
+                        failure_count: phase_fail_count,
+                        threshold: tree.policy.max_retries_phase,
+                    });
+                    // B-7: cascade notification: Step -> Phase.
+                    self.notify_bubble_up(BubbleUpEventPayload {
+                        from_level: DecompositionLevel::Step,
+                        to_level: DecompositionLevel::Phase,
+                        action_kind: "replan_phase",
+                        reason: format!("phase={:?}", loc.phase_id),
                         failure_count: phase_fail_count,
                         threshold: tree.policy.max_retries_phase,
                     });
@@ -684,6 +830,15 @@ impl DepthFirstNavigator {
                             failure_count: concept_fail_count,
                             threshold: tree.policy.max_retries_concept,
                         });
+                        // B-7: cascade notification: Phase -> Concept (Escalate).
+                        self.notify_bubble_up(BubbleUpEventPayload {
+                            from_level: DecompositionLevel::Phase,
+                            to_level: DecompositionLevel::Concept,
+                            action_kind: "escalate",
+                            reason: escalate_ctx.clone(),
+                            failure_count: concept_fail_count,
+                            threshold: tree.policy.max_retries_concept,
+                        });
 
                         return Some(BubbleUpAction::Escalate {
                             context: escalate_ctx,
@@ -706,9 +861,19 @@ impl DepthFirstNavigator {
         }
 
         // Below threshold — suggest diagnose and retry.
+        let diagnosis = format!("Failure #{}: {}", attempts, reason);
+        // B-7: emit diagnose-and-retry event (same level, not a cascade).
+        self.notify_bubble_up(BubbleUpEventPayload {
+            from_level: DecompositionLevel::BabyStep,
+            to_level: DecompositionLevel::BabyStep,
+            action_kind: "diagnose_and_retry",
+            reason: diagnosis.clone(),
+            failure_count: attempts,
+            threshold: tree.policy.max_retries_baby_step,
+        });
         Some(BubbleUpAction::DiagnoseAndRetry {
             baby_step_id: bs_id,
-            diagnosis: format!("Failure #{}: {}", attempts, reason),
+            diagnosis,
         })
     }
 
@@ -838,15 +1003,34 @@ impl DepthFirstNavigator {
             runner,
             state,
         );
+        // B-7: emit integration checkpoint row (fire-and-forget).
+        self.notify_integration_checkpoint(IntegrationCheckpointEventPayload {
+            level: DecompositionLevel::Step,
+            node_id: step_id.0,
+            wiring_target: spec.wiring_target.clone(),
+            success: result.success,
+            failure_reason: result.failure_reason.clone(),
+            duration_ms: result.total_duration_ms,
+        });
         let action = if result.success {
             None
         } else {
-            Some(bubble_up_on_step_integration_fail(
+            let bua = bubble_up_on_step_integration_fail(
                 step_id,
                 result.failure_reason.clone(),
                 state,
                 tree,
-            ))
+            );
+            // B-7: emit integration-triggered bubble-up.
+            self.notify_bubble_up(BubbleUpEventPayload {
+                from_level: DecompositionLevel::Step,
+                to_level: DecompositionLevel::Step,
+                action_kind: "redecompose_step",
+                reason: result.failure_reason.clone().unwrap_or_default(),
+                failure_count: *state.step_integration_failure_counts.get(&step_id).unwrap_or(&0),
+                threshold: tree.policy.max_retries_step,
+            });
+            Some(bua)
         };
         (Some(result), action)
     }
@@ -871,15 +1055,34 @@ impl DepthFirstNavigator {
             runner,
             state,
         );
+        // B-7: emit integration checkpoint row (fire-and-forget).
+        self.notify_integration_checkpoint(IntegrationCheckpointEventPayload {
+            level: DecompositionLevel::Phase,
+            node_id: phase_id.0,
+            wiring_target: spec.wiring_target.clone(),
+            success: result.success,
+            failure_reason: result.failure_reason.clone(),
+            duration_ms: result.total_duration_ms,
+        });
         let action = if result.success {
             None
         } else {
-            Some(bubble_up_on_phase_integration_fail(
+            let bua = bubble_up_on_phase_integration_fail(
                 phase_id,
                 result.failure_reason.clone(),
                 state,
                 tree,
-            ))
+            );
+            // B-7: emit integration-triggered bubble-up.
+            self.notify_bubble_up(BubbleUpEventPayload {
+                from_level: DecompositionLevel::Phase,
+                to_level: DecompositionLevel::Phase,
+                action_kind: "replan_phase",
+                reason: result.failure_reason.clone().unwrap_or_default(),
+                failure_count: *state.phase_integration_failure_counts.get(&phase_id).unwrap_or(&0),
+                threshold: tree.policy.max_retries_phase,
+            });
+            Some(bua)
         };
         (Some(result), action)
     }
@@ -904,15 +1107,34 @@ impl DepthFirstNavigator {
             runner,
             state,
         );
+        // B-7: emit integration checkpoint row (fire-and-forget).
+        self.notify_integration_checkpoint(IntegrationCheckpointEventPayload {
+            level: DecompositionLevel::Concept,
+            node_id: concept_id.0,
+            wiring_target: spec.wiring_target.clone(),
+            success: result.success,
+            failure_reason: result.failure_reason.clone(),
+            duration_ms: result.total_duration_ms,
+        });
         let action = if result.success {
             None
         } else {
-            Some(bubble_up_on_concept_integration_fail(
+            let bua = bubble_up_on_concept_integration_fail(
                 concept_id,
                 result.failure_reason.clone(),
                 state,
                 tree,
-            ))
+            );
+            // B-7: emit integration-triggered bubble-up.
+            self.notify_bubble_up(BubbleUpEventPayload {
+                from_level: DecompositionLevel::Concept,
+                to_level: DecompositionLevel::Concept,
+                action_kind: "replan_concept",
+                reason: result.failure_reason.clone().unwrap_or_default(),
+                failure_count: *state.concept_integration_failure_counts.get(&concept_id).unwrap_or(&0),
+                threshold: tree.policy.max_retries_concept,
+            });
+            Some(bua)
         };
         (Some(result), action)
     }
@@ -1039,8 +1261,9 @@ pub fn record_integration_checkpoint(
     baby_step_id: BabyStepId,
     spec: &IntegrationSpec,
     state: &mut TreeNavigatorState,
+    clock: &dyn ClockProvider,
 ) {
-    let timestamp = current_unix_epoch_ms();
+    let timestamp = current_unix_epoch_ms_via_clock(clock);
 
     state.integration_checkpoints.push(IntegrationCheckpoint {
         baby_step_id,
@@ -1055,11 +1278,26 @@ pub fn record_integration_checkpoint(
     });
 }
 
+/// Wall-clock milliseconds since the Unix epoch via an injected clock.
+/// Returns 0 on pre-epoch clocks and u64::MAX on clocks beyond year 584M AD.
+fn current_unix_epoch_ms_via_clock(clock: &dyn ClockProvider) -> u64 {
+    clock
+        .system_now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// Wall-clock milliseconds since the Unix epoch. Returns 0 on pre-epoch clocks
 /// and u64::MAX on clocks beyond year 584M AD — both edge cases are preserved
 /// from the 4E.8 implementation and intentionally keep this helper panic-free.
+///
+/// NOTE: kept for [`run_integration_checkpoint`] whose public signature cannot
+/// change until B-15C-HIGH (task_runner.rs CASCADE). New code should use
+/// `current_unix_epoch_ms_via_clock`.
 fn current_unix_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
+    elai_core::OsClock
+        .system_now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -1173,7 +1411,8 @@ impl IntegrationRunner for CommandIntegrationRunner {
             }
         };
 
-        let start = std::time::Instant::now();
+        let _clock = elai_core::OsClock;
+        let start = _clock.now();
         let mut cmd = if cfg!(windows) {
             let mut c = std::process::Command::new("cmd");
             c.arg("/C").arg(command);
@@ -1196,20 +1435,19 @@ impl IntegrationRunner for CommandIntegrationRunner {
                     description: criterion.description.clone(),
                     success: false,
                     reason: Some(format!("spawn error: {e}")),
-                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX),
                 };
             }
         };
 
-        let deadline =
-            start + std::time::Duration::from_secs(INTEGRATION_CRITERION_TIMEOUT_SECS);
+        let criterion_timeout = std::time::Duration::from_secs(INTEGRATION_CRITERION_TIMEOUT_SECS);
         let poll = std::time::Duration::from_millis(INTEGRATION_CRITERION_POLL_MS);
 
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break Ok(s),
                 Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
+                    if _clock.elapsed_since(start) >= criterion_timeout {
                         // Kill the runaway and collect its exit status so no
                         // zombie process remains. `kill` is best-effort: if it
                         // fails (e.g. process already gone), we still wait().
@@ -1222,7 +1460,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                                 "timeout after {}s",
                                 INTEGRATION_CRITERION_TIMEOUT_SECS
                             )),
-                            duration_ms: u64::try_from(start.elapsed().as_millis())
+                            duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis())
                                 .unwrap_or(u64::MAX),
                         };
                     }
@@ -1240,7 +1478,7 @@ impl IntegrationRunner for CommandIntegrationRunner {
                         description: criterion.description.clone(),
                         success: false,
                         reason: Some(format!("wait_with_output: {e}")),
-                        duration_ms: u64::try_from(start.elapsed().as_millis())
+                        duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis())
                             .unwrap_or(u64::MAX),
                     };
                 }
@@ -1250,13 +1488,13 @@ impl IntegrationRunner for CommandIntegrationRunner {
                     description: criterion.description.clone(),
                     success: false,
                     reason: Some(format!("try_wait: {e}")),
-                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    duration_ms: u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX),
                 };
             }
         };
 
         let duration_ms =
-            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
         let success = output.status.success();
         let reason = if success {
             None
@@ -1290,7 +1528,8 @@ pub fn run_integration_checkpoint(
     runner: &dyn IntegrationRunner,
     state: &mut TreeNavigatorState,
 ) -> IntegrationRunResult {
-    let start = std::time::Instant::now();
+    let _clock = elai_core::OsClock;
+    let start = _clock.now();
     let mut criterion_results: Vec<CriterionResult> = Vec::with_capacity(spec.exit_criteria.len());
     let mut aggregate_success = true;
     let mut first_failure: Option<String> = None;
@@ -1311,7 +1550,7 @@ pub fn run_integration_checkpoint(
     }
 
     let total_duration_ms =
-        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        u64::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
     let timestamp_epoch_ms = current_unix_epoch_ms();
     let baby_step_id = if matches!(level, DecompositionLevel::BabyStep) {
         BabyStepId(node_id)
@@ -1342,6 +1581,85 @@ pub fn run_integration_checkpoint(
 }
 
 // ---------------------------------------------------------------------------
+// B-7: SSB adapter implementations for BubbleUpEventEmitter + IntegrationCheckpointEmitter
+// ---------------------------------------------------------------------------
+
+/// SSB-backed BubbleUpEventEmitter. Wraps Arc<Ssb> and emits `bubble_up_typed`
+/// rows via `tokio::spawn` (fire-and-forget, advisory). The navigator is never
+/// blocked on SSB I/O.
+pub struct SsbBubbleUpEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbBubbleUpEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self { ssb, agent_id: agent_id.into(), superstep }
+    }
+}
+
+impl BubbleUpEventEmitter for SsbBubbleUpEmitter {
+    fn emit(&self, event: BubbleUpEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::BubbleUpTyped(BubbleUpTypedPayload {
+            from_level: format!("{:?}", event.from_level),
+            to_level: format!("{:?}", event.to_level),
+            action_kind: event.action_kind.to_owned(),
+            reason: event.reason,
+            failure_count: event.failure_count,
+            threshold: event.threshold,
+        });
+        // B-7 SCHEMA: requires v25->v26 bump. Row is dropped silently until schema bumped.
+        // Fire-and-forget: advisory row, navigator must never block on SSB I/O.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbBubbleUpEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+/// SSB-backed IntegrationCheckpointEmitter. Wraps Arc<Ssb> and emits
+/// `integration_checkpoint_success` rows via `tokio::spawn` (fire-and-forget).
+pub struct SsbIntegrationEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbIntegrationEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self { ssb, agent_id: agent_id.into(), superstep }
+    }
+}
+
+impl IntegrationCheckpointEmitter for SsbIntegrationEmitter {
+    fn emit(&self, event: IntegrationCheckpointEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::IntegrationCheckpointSuccess(IntegrationCheckpointSuccessPayload {
+            level: format!("{:?}", event.level),
+            node_id: event.node_id,
+            wiring_target: event.wiring_target,
+            success: event.success,
+            failure_reason: event.failure_reason,
+            duration_ms: event.duration_ms,
+        });
+        // B-7 SCHEMA: requires v25->v26 bump. Row is dropped silently until schema bumped.
+        // Fire-and-forget: advisory row, navigator must never block on SSB I/O.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbIntegrationEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests — 4E.8 navigation + bubble-up + checkpoint, 4E.9 execution cycle
 // ---------------------------------------------------------------------------
 
@@ -1349,7 +1667,7 @@ pub fn run_integration_checkpoint(
 mod tests {
     use super::*;
     use crate::research_tree::{
-        BabyStepGrounding, ExecutionMode, ExitCriterion, SourceCitation,
+        BabyStepGrounding, ExecutionMode, ExitCriterion, PhaseNode, SourceCitation,
     };
 
     // -----------------------------------------------------------------------
@@ -1765,7 +2083,7 @@ mod tests {
         // integration specs. We'll use the step's IntegrationSpec.
         // For now, we record checkpoint via a separate call since IntegrationSpec
         // is on StepNode, not BabyStepSpec.
-        record_integration_checkpoint(BabyStepId(1), &spec, &mut state);
+        record_integration_checkpoint(BabyStepId(1), &spec, &mut state, &elai_core::OsClock);
 
         assert_eq!(state.integration_checkpoints.len(), 1);
         assert_eq!(state.integration_checkpoints[0].wiring_target, "module_a");
@@ -1776,7 +2094,7 @@ mod tests {
         let (_, spec) = integration_tree();
         let mut state = TreeNavigatorState::new();
 
-        record_integration_checkpoint(BabyStepId(1), &spec, &mut state);
+        record_integration_checkpoint(BabyStepId(1), &spec, &mut state, &elai_core::OsClock);
 
         assert_eq!(
             state.integration_checkpoints[0].callers,
@@ -1789,7 +2107,7 @@ mod tests {
         let (_, spec) = integration_tree();
         let mut state = TreeNavigatorState::new();
 
-        record_integration_checkpoint(BabyStepId(1), &spec, &mut state);
+        record_integration_checkpoint(BabyStepId(1), &spec, &mut state, &elai_core::OsClock);
 
         let cp = &state.integration_checkpoints[0];
         assert_eq!(cp.baby_step_id, BabyStepId(1));
@@ -1802,7 +2120,7 @@ mod tests {
         let (_, spec) = integration_tree();
         let mut state = TreeNavigatorState::new();
 
-        record_integration_checkpoint(BabyStepId(42), &spec, &mut state);
+        record_integration_checkpoint(BabyStepId(42), &spec, &mut state, &elai_core::OsClock);
 
         assert!(
             state.integration_checkpoints[0].timestamp_epoch_ms > 0,
@@ -1819,7 +2137,7 @@ mod tests {
         };
         let mut state = TreeNavigatorState::new();
 
-        record_integration_checkpoint(BabyStepId(1), &spec, &mut state);
+        record_integration_checkpoint(BabyStepId(1), &spec, &mut state, &elai_core::OsClock);
 
         assert_eq!(state.integration_checkpoints[0].wiring_target, "custom_target");
     }
@@ -2480,12 +2798,15 @@ mod tests {
     #[test]
     fn test_web_validation_tiers_concept_full_pipeline() {
         let tiers = web_validation_tiers_for_level(DecompositionLevel::Concept);
+        // Phase B (s-44680): WebPerformance (Lighthouse CWV) added to the
+        // Concept-level set as the heaviest, slowest gate.
         assert_eq!(
             tiers,
             vec![
                 WebValidationTier::WebBuild,
                 WebValidationTier::WebDevServer,
                 WebValidationTier::WebLint,
+                WebValidationTier::WebPerformance,
             ]
         );
     }

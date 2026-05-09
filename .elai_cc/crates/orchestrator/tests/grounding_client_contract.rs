@@ -3,13 +3,15 @@
 // wiring. Native async fn in traits (no async_trait crate) + static dispatch.
 
 use elai_orchestrator::grounding_client::{
-    parse_research_report_json, GroundingClient, GroundingError, ResearchLevel,
-    SidecarGroundingClient, SyntheticGroundingClient,
+    parse_research_report_json, CannedSynthesisGroundingClient, GroundingClient, GroundingError,
+    ResearchLevel, SidecarGroundingClient, SyntheticGroundingClient,
 };
 use elai_orchestrator::research_tree::{
     research_decompose, ExecutionMode, ResearchCache, ResearchReport, ResearchTreeError,
     DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
 };
+use elai_orchestrator::research_pipeline::{phase_f_synthesize, ClassifiedResults};
+use elai_core::research_types::{ResearchQuery, VerificationLevel, VerifiedClaim};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -28,6 +30,12 @@ impl GroundingClient for AlwaysErrClient {
         _prompt: &str,
         _level: ResearchLevel,
     ) -> Result<ResearchReport, GroundingError> {
+        Err(GroundingError::SidecarUnavailable {
+            url: "http://localhost:8100".to_string(),
+        })
+    }
+
+    async fn synthesize_text(&self, _prompt: &str) -> Result<String, GroundingError> {
         Err(GroundingError::SidecarUnavailable {
             url: "http://localhost:8100".to_string(),
         })
@@ -51,6 +59,11 @@ impl GroundingClient for CountingClient {
     ) -> Result<ResearchReport, GroundingError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner.ground(prompt, level).await
+    }
+
+    async fn synthesize_text(&self, prompt: &str) -> Result<String, GroundingError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.synthesize_text(prompt).await
     }
 }
 
@@ -97,7 +110,7 @@ async fn research_decompose_surfaces_grounding_error_as_tree_error() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let client = AlwaysErrClient;
     let result =
-        research_decompose("test idea", ExecutionMode::Autonomous, &mut cache, &client).await;
+        research_decompose("test idea", ExecutionMode::Autonomous, &mut cache, &client, None, None).await;
     match result {
         Err(ResearchTreeError::GroundingFailed { .. }) => {}
         Err(other) => panic!("expected GroundingFailed, got {other:?}"),
@@ -123,6 +136,8 @@ async fn research_decompose_invokes_client_and_succeeds_with_synthetic() {
         ExecutionMode::Autonomous,
         &mut cache,
         &counting,
+        None, // Track A.6: no SSB handle in this test.
+        None, // B-7: no tree emitter in this test.
     )
     .await
     .expect("synthetic client must succeed");
@@ -203,4 +218,91 @@ fn grounding_json_parser_accepts_fenced_payload() {
     let fenced = format!("```json\n{raw}\n```");
     let parsed = parse_research_report_json(&fenced).expect("must accept fenced payload");
     assert_eq!(parsed.question, "topic");
+}
+
+// ---------------------------------------------------------------------------
+// Contract: Phase F — happy-path LLM branch.
+// CannedSynthesisGroundingClient returns cited prose; phase_f_synthesize must
+// use the LLM text directly (not the deterministic fallback).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_phase_f_synthesize_happy_path_with_cited_prose() {
+    // Cited prose containing `[1]` and `[2]` — must satisfy the numeric-citation guard.
+    let canned = "RAG works by retrieving relevant documents first [1]. \
+                  The retrieval step narrows the context window [2]."
+        .to_owned();
+
+    let grounding = CannedSynthesisGroundingClient::new(canned.clone());
+
+    let query = ResearchQuery::new("How does RAG work?");
+    let claims = vec![
+        VerifiedClaim {
+            claim: "RAG retrieves relevant documents first.".to_owned(),
+            supporting_facts: vec![],
+            verification_level: VerificationLevel::Verified,
+            independent_source_count: 2,
+        },
+        VerifiedClaim {
+            claim: "The retrieval step narrows the context window.".to_owned(),
+            supporting_facts: vec![],
+            verification_level: VerificationLevel::Verified,
+            independent_source_count: 2,
+        },
+    ];
+    let classified = ClassifiedResults {
+        usable: Vec::new(),
+        rejected: Vec::new(),
+        classification_errors: Vec::new(),
+    };
+
+    let answer = phase_f_synthesize(&query, &claims, &classified, &grounding).await;
+
+    // LLM path must have been used — answer_text must equal the canned prose, NOT
+    // the deterministic "[1] ... [2] ..." concatenation produced by the fallback.
+    assert_eq!(
+        answer.answer_text, canned,
+        "phase_f_synthesize must return the LLM-supplied cited prose unchanged"
+    );
+
+    // Sanity: the answer is attributed to the right question.
+    assert_eq!(answer.question, "How does RAG work?");
+}
+
+// ---------------------------------------------------------------------------
+// Contract: Phase F — negative path (existing behaviour: Err -> fallback fires).
+// SyntheticGroundingClient.synthesize_text always errors; the deterministic
+// concatenation must run instead.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_phase_f_synthesize_fallback_fires_on_synthesize_error() {
+    let grounding = SyntheticGroundingClient::new();
+
+    let query = ResearchQuery::new("fallback test");
+    let claims = vec![VerifiedClaim {
+        claim: "some fact".to_owned(),
+        supporting_facts: vec![],
+        verification_level: VerificationLevel::Supported,
+        independent_source_count: 1,
+    }];
+    let classified = ClassifiedResults {
+        usable: Vec::new(),
+        rejected: Vec::new(),
+        classification_errors: Vec::new(),
+    };
+
+    let answer = phase_f_synthesize(&query, &claims, &classified, &grounding).await;
+
+    // Deterministic path formats claims as "[N] <claim>".
+    assert!(
+        answer.answer_text.contains("[1]"),
+        "deterministic fallback must produce [1]-prefixed text; got: {}",
+        answer.answer_text
+    );
+    // Must NOT be the LLM canned prose.
+    assert!(
+        !answer.answer_text.contains("RAG works"),
+        "fallback must not contain LLM prose"
+    );
 }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/acl/schemas/capability.json",
+  "identifier": "default",
+  "description": "Default capability for ELAI dashboard window",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

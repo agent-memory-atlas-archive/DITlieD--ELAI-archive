@@ -7,10 +7,53 @@ target/
 *.so
 *.dylib
 
+# V1 dashboard backup — superseded by crates/dashboard-v2/, no longer
+# maintained. Kept on disk as reference only; never tracked.
+crates/.bkp_old/
+
 # Runtime artifacts
 *.log
 .elai/sessions/
+.elai/index_version.toml
 .hypothesis/
+.elai-agents/
+.elai_cc/
+rules.db
+crates/orchestrator/workflow/sessions/
+crates/orchestrator/workflow/audit-scratch/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv-staging/
+
+# Tauri / frontend generated
+crates/dashboard-v2/src-tauri/gen/
+crates/dashboard/gen/
+crates/dashboard-v2/vite.config.ts.timestamp-*.mjs
+
+# Dashboard-v2 working artifacts (not source)
+crates/dashboard-v2/screenshots/
+crates/dashboard-v2/previews/
+crates/dashboard-v2/.galaxy-*-backups/
+crates/dashboard-v2/design-refs/
+crates/dashboard-v2/check_*.mjs
+crates/dashboard-v2/HANDOFF-*.md
+crates/dashboard-v2/DESIGN.md
+crates/dashboard-v2/DESIGN-BRIEF.md
+crates/dashboard-v2/DOMAIN-CONTEXT.md
+crates/dashboard-v2/README.md
+crates/dashboard-v2/start-stub-ui.bat
+
+# Wiring scratch notes
+dashboard-wiring-inventory.txt
+dashboard-v2-wiring-inventory.txt
+dashboard-wiring-plan.txt
+
+# Proptest regression cases (kept local only per user preference)
+crates/orchestrator/proptest-regressions/
+crates/orchestrator/tests/*.proptest-regressions
 
 # IDE
 .vscode/

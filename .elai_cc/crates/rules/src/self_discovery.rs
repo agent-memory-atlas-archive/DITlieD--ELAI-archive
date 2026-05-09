@@ -244,7 +244,7 @@ pub fn score_violation(
     let frequency = if occurrences == 0 {
         0u8
     } else {
-        let raw = (occurrences as f64).log2().round() as u8;
+        let raw = (occurrences as f64).log2().round() as u8; // NARROWING-OK: log2(u32::MAX)=32 << u8::MAX=255; .min(MAX_SCORE) below further bounds output to [0,5]
         raw.min(MAX_SCORE)
     };
 
@@ -255,7 +255,7 @@ pub fn score_violation(
     } else if false_positive_rate >= 1.0 {
         0u8
     } else {
-        let raw = ((1.0 - false_positive_rate) * f64::from(MAX_SCORE)).round() as u8;
+        let raw = ((1.0 - false_positive_rate) * f64::from(MAX_SCORE)).round() as u8; // NARROWING-OK: false_positive_rate in (0.0,1.0) so value in (0.0, MAX_SCORE=5.0]; clamped+rounded, provably in [0, u8::MAX]
         raw.min(MAX_SCORE)
     };
 
@@ -263,6 +263,7 @@ pub fn score_violation(
     let precision = if pipelines_observed == 0 {
         0u8
     } else {
+        // NARROWING-OK: .min(u32::from(MAX_SCORE)) pre-bounds value to <= 5 (MAX_SCORE) before the u32->u8 cast
         (pipelines_observed.min(u32::from(MAX_SCORE)) as u8).min(MAX_SCORE)
     };
 
@@ -643,7 +644,7 @@ fn generate_fix_template(domain: &str, example_code: &str) -> String {
 /// Falls back to "1970-01-01T00:00:00Z" on overflow (should never happen in practice).
 fn epoch_to_iso8601(epoch: i64) -> String {
     // Simple conversion without external crate. Acceptable precision for proposals.
-    let secs = epoch.max(0) as u64;
+    let secs = u64::try_from(epoch.max(0)).unwrap_or(0); // NARROWING-OK: .max(0) eliminates negative values; i64->u64 conversion is safe for non-negative i64
     let days = secs / 86400;
     let time_of_day = secs % 86400;
     let hours = time_of_day / 3600;
@@ -710,7 +711,7 @@ pub fn detect_recurring_category_gap(
     )?;
 
     let rows = stmt.query_map(
-        params![threshold, MAX_CATEGORY_PROPOSALS_PER_SCAN as i64],
+        params![threshold, i64::from(MAX_CATEGORY_PROPOSALS_PER_SCAN as u32)], // NARROWING-OK: MAX_CATEGORY_PROPOSALS_PER_SCAN=10 (const usize); cast to u32 first (always fits) then i64::from for SQLite LIMIT param
         |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
@@ -763,7 +764,9 @@ pub fn detect_recurring_category_gap(
         // threshold -> 40, 2x threshold -> 60, 3x+ -> 80. Cap at 90.
         let ratio = total_occurrences as f64 / threshold as f64;
         let raw_confidence = (MIN_CATEGORY_CONFIDENCE as f64 + (ratio - 1.0) * 20.0).round();
-        let confidence = (raw_confidence as u8).min(90).max(MIN_CATEGORY_CONFIDENCE);
+        // NARROWING-OK: clamped to [0.0, 90.0] before cast; .clamp ensures f64->u8 truncation cannot occur.
+        // Then .max(MIN_CATEGORY_CONFIDENCE) enforces the floor post-cast.
+        let confidence = (raw_confidence.clamp(0.0, 90.0) as u8).max(MIN_CATEGORY_CONFIDENCE);
 
         // Generate a suggested name from domain.
         let suggested_name = format!("{}_recurring", domain.replace(' ', "_").to_lowercase());

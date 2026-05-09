@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::config::effective_allowed_next;
 use crate::types::{
@@ -10,6 +11,11 @@ use crate::types::{
     VerificationMethod, VerificationResult,
 };
 use crate::verification::{LocalVerifier, NoopTestRunner, StdFileReader, Verifier};
+
+static CLAIM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^(?:\s*Grounding:\s*)((file|grep|test|search|tool|training):[^\s]+)")
+        .expect("CLAIM_RE: literal pattern, must compile")
+});
 
 /// Finding marker prefix for anti-rubber-stamp enforcement.
 /// A finding is any Verify step whose content starts with this prefix
@@ -69,7 +75,7 @@ pub trait GrcEngine {
 // ---------------------------------------------------------------------------
 
 pub struct BasicGrcEngine {
-    topics: HashMap<String, TopicState>,
+    topics: FxHashMap<String, TopicState>,
     agent_config: Option<AgentGrcConfig>,
     verifier: Box<dyn Verifier>,
     pub inline_feasibility_state: InlineFeasibilityState,
@@ -80,7 +86,7 @@ impl BasicGrcEngine {
         let file_reader = Box::new(StdFileReader::new());
         let test_runner = Box::new(NoopTestRunner::new());
         Self {
-            topics: HashMap::new(),
+            topics: FxHashMap::default(),
             agent_config: None,
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
             inline_feasibility_state: InlineFeasibilityState::default(),
@@ -91,7 +97,7 @@ impl BasicGrcEngine {
         let file_reader = Box::new(StdFileReader::new());
         let test_runner = Box::new(NoopTestRunner::new());
         Self {
-            topics: HashMap::new(),
+            topics: FxHashMap::default(),
             agent_config: Some(config),
             verifier: Box::new(LocalVerifier::new(file_reader, test_runner)),
             inline_feasibility_state: InlineFeasibilityState::default(),
@@ -100,7 +106,7 @@ impl BasicGrcEngine {
 
     pub fn with_verifier(verifier: Box<dyn Verifier>) -> Self {
         Self {
-            topics: HashMap::new(),
+            topics: FxHashMap::default(),
             agent_config: None,
             verifier,
             inline_feasibility_state: InlineFeasibilityState::default(),
@@ -323,7 +329,7 @@ impl GrcEngine for BasicGrcEngine {
             });
         }
 
-        let content_len = step.content.len() as u32;
+        let content_len = u32::try_from(step.content.len()).expect("GRC step content fits u32");
         if state.budget.chars_used.saturating_add(content_len) > state.budget.max_chars {
             return Err(GrcError::BudgetExhausted {
                 topic: topic_key,
@@ -498,8 +504,7 @@ impl GrcEngine for BasicGrcEngine {
             };
         }
 
-        let claim_re = Regex::new(r"(?m)^(?:\s*Grounding:\s*)((file|grep|test|search|tool|training):[^\s]+)")
-            .expect("claim regex is valid");
+        let claim_re = &*CLAIM_RE;
 
         let mut claims = Vec::new();
         let mut ungrounded = Vec::new();

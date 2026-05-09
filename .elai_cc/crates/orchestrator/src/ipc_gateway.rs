@@ -20,12 +20,14 @@
 // lands. This module consumes IpcHookTrait/IpcHookError/HookResult from
 // elai_plugins::ipc_hooks — that module is retained for the same reason.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
+use elai_core::{ClockProvider, LogicalInstant, OsClock};
 use elai_ipc_types::{
     AgentRole, IpcFrame, IpcFrameError, IpcMessageType,
     FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
@@ -78,8 +80,8 @@ pub struct AgentConnection {
     pub role: AgentRole,
     pub process_id: u32,
     pub socket_path: PathBuf,
-    pub last_heartbeat: std::time::Instant,
-    grc_budgets: HashMap<String, GrcBudgetEntry>,
+    pub last_heartbeat: LogicalInstant,
+    grc_budgets: FxHashMap<String, GrcBudgetEntry>,
     grc_max_calls: u32,
     replan_count: u32,
     last_replan_reason: Option<String>,
@@ -95,14 +97,15 @@ impl AgentConnection {
         process_id: u32,
         socket_path: PathBuf,
         grc_max_calls: u32,
+        clock: &dyn ClockProvider,
     ) -> Self {
         Self {
             agent_id,
             role,
             process_id,
             socket_path,
-            last_heartbeat: std::time::Instant::now(),
-            grc_budgets: HashMap::new(),
+            last_heartbeat: clock.now(),
+            grc_budgets: FxHashMap::default(),
             grc_max_calls,
             replan_count: 0,
             last_replan_reason: None,
@@ -195,13 +198,13 @@ impl AgentConnection {
     }
 
     /// Update heartbeat timestamp.
-    pub fn touch_heartbeat(&mut self) {
-        self.last_heartbeat = std::time::Instant::now();
+    pub fn touch_heartbeat(&mut self, clock: &dyn ClockProvider) {
+        self.last_heartbeat = clock.now();
     }
 
     /// Check if heartbeat has timed out.
-    pub fn is_heartbeat_timeout(&self) -> bool {
-        self.last_heartbeat.elapsed().as_secs() >= AGENT_HEARTBEAT_TIMEOUT_SECS
+    pub fn is_heartbeat_timeout(&self, clock: &dyn ClockProvider) -> bool {
+        clock.elapsed_since(self.last_heartbeat).as_secs() >= AGENT_HEARTBEAT_TIMEOUT_SECS
     }
 }
 
@@ -259,18 +262,32 @@ pub enum FrameRouteResult {
 // ---------------------------------------------------------------------------
 
 pub struct IpcGateway {
-    connections: HashMap<Uuid, AgentConnection>,
+    connections: FxHashMap<Uuid, AgentConnection>,
     self_mod_locks: SelfModificationLocks,
     session_socket_dir: PathBuf,
+    clock: Arc<dyn ClockProvider>,
 }
 
 impl IpcGateway {
-    pub fn new(session_socket_dir: PathBuf, self_mod_locks: SelfModificationLocks) -> Self {
+    pub fn new(
+        session_socket_dir: PathBuf,
+        self_mod_locks: SelfModificationLocks,
+        clock: Arc<dyn ClockProvider>,
+    ) -> Self {
         Self {
-            connections: HashMap::new(),
+            connections: FxHashMap::default(),
             self_mod_locks,
             session_socket_dir,
+            clock,
         }
+    }
+
+    /// Convenience constructor using the OS clock (production default).
+    pub fn with_os_clock(
+        session_socket_dir: PathBuf,
+        self_mod_locks: SelfModificationLocks,
+    ) -> Self {
+        Self::new(session_socket_dir, self_mod_locks, Arc::new(OsClock))
     }
 
     /// Register a new agent connection.
@@ -325,9 +342,10 @@ impl IpcGateway {
 
     /// Check all connections for heartbeat timeouts. Returns IDs of timed-out agents.
     pub fn check_heartbeat_timeouts(&self) -> Vec<Uuid> {
+        let clock = &*self.clock;
         self.connections
             .iter()
-            .filter(|(_, conn)| conn.is_heartbeat_timeout())
+            .filter(|(_, conn)| conn.is_heartbeat_timeout(clock))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -355,7 +373,7 @@ impl IpcGateway {
                         conn.agent_id
                     ));
                 }
-                conn.touch_heartbeat();
+                conn.touch_heartbeat(&*self.clock);
                 FrameRouteResult::Heartbeat
             }
 
@@ -703,7 +721,7 @@ mod tests {
     use elai_ipc_types::ToolId;
 
     fn test_gateway() -> IpcGateway {
-        IpcGateway::new(
+        IpcGateway::with_os_clock(
             PathBuf::from("/tmp/elai_cc_test"),
             SelfModificationLocks::new(),
         )
@@ -716,6 +734,7 @@ mod tests {
             1234,
             PathBuf::from("/tmp/test.sock"),
             5, // grc max calls
+            &OsClock,
         )
     }
 
@@ -900,13 +919,22 @@ mod tests {
 
     #[test]
     fn heartbeat_timeout_detection() {
+        use elai_core::SeededClock;
+        // SeededClock ticks 1ms per now() call; advance past the timeout threshold.
+        let clock = SeededClock::new();
         let mut conn = test_connection(AgentRole::Executor);
-        // Fresh connection should not be timed out
-        assert!(!conn.is_heartbeat_timeout());
-        // Manually set old timestamp
-        conn.last_heartbeat = std::time::Instant::now()
-            - std::time::Duration::from_secs(AGENT_HEARTBEAT_TIMEOUT_SECS + 1);
-        assert!(conn.is_heartbeat_timeout());
+        // Set last_heartbeat to tick 0 via a fresh now()
+        conn.last_heartbeat = clock.now();
+        // Fresh connection should not be timed out (elapsed = 0 ticks)
+        assert!(!conn.is_heartbeat_timeout(&clock));
+        // Advance the clock by AGENT_HEARTBEAT_TIMEOUT_SECS + 1 seconds worth of ticks.
+        // SeededClock.elapsed_since uses tick difference × 1ms, so we need
+        // (AGENT_HEARTBEAT_TIMEOUT_SECS + 1) * 1000 ticks to exceed the threshold.
+        let ticks_needed = (AGENT_HEARTBEAT_TIMEOUT_SECS + 1) * 1000;
+        for _ in 0..ticks_needed {
+            let _ = clock.now();
+        }
+        assert!(conn.is_heartbeat_timeout(&clock));
     }
 
     #[test]

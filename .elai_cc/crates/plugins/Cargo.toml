@@ -11,6 +11,8 @@ elai-rules = { path = "../rules" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+lru.workspace = true
+rustc-hash.workspace = true
 thiserror = "2.0"
 blake3.workspace = true
 tree-sitter = "0.26"

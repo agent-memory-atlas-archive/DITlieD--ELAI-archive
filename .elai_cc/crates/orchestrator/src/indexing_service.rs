@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use elai_core::{ClockProvider as _, OsClock};
 use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::index_version::{self, UpgradeAction};
 use elai_knowledge::{DkgEngine, KnowledgeError};
@@ -11,11 +12,13 @@ use elai_knowledge::{DkgEngine, KnowledgeError};
 // Named constants (no magic numbers)
 // ---------------------------------------------------------------------------
 
-/// Subdirectory name under project root where indexes are stored.
-pub const INDEXES_DIR_NAME: &str = "indexes";
-
-/// Parent directory name for ELAI project data (e.g. ".elai_cc").
-pub const ELAI_DATA_DIR_NAME: &str = ".elai_cc";
+// B-1 Path Unification: ELAI_DATA_DIR_NAME / INDEXES_DIR_NAME live in
+// `elai_core::paths` as the single source of truth. Re-exported here so
+// existing contract tests at
+// `crates/contracts/tests/task_runner_indexing_service_contract.rs` (which
+// import them from `elai_orchestrator::indexing_service`) keep compiling
+// without edits.
+pub use elai_core::paths::{ELAI_DATA_DIR_NAME, INDEXES_DIR_NAME};
 
 /// Number of bytes to read from a file's head to detect binary content.
 /// Must stay in sync with elai_knowledge::bm25::BINARY_DETECT_BYTES (both 8192).
@@ -24,7 +27,10 @@ pub const ELAI_DATA_DIR_NAME: &str = ".elai_cc";
 pub const BINARY_DETECT_BYTES: usize = 8192;
 
 /// DKG SQLite database filename within the indexes directory.
-const DKG_DB_FILENAME: &str = "dkg.db";
+/// Mirrors `elai_core::paths::DKG_DB_FILENAME`; kept private to this
+/// module so callers go through `IndexingService::dkg_db_path()` or the
+/// canonical `elai_core::paths::dkg_db_path` helper.
+const DKG_DB_FILENAME: &str = elai_core::paths::DKG_DB_FILENAME;
 
 /// BM25 project ID used when creating the BM25 index inside indexes_dir.
 const BM25_PROJECT_ID: &str = "default";
@@ -151,7 +157,8 @@ impl IndexingService {
     pub fn run_full_index(&mut self) -> Result<IndexingSummary, IndexingServiceError> {
         std::fs::create_dir_all(&self.indexes_dir)?;
 
-        let now = std::time::SystemTime::now()
+        let now = OsClock
+            .system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);
@@ -236,7 +243,8 @@ impl IndexingService {
         if !self.indexes_dir.exists() {
             return Ok(UpgradeAction::FullRebuild);
         }
-        let now = std::time::SystemTime::now()
+        let now = OsClock
+            .system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);

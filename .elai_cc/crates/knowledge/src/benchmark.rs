@@ -4,8 +4,9 @@
 //! the ELAI codebase. Measures Recall@5, Recall@10, MRR, and latency
 //! p50/p95 per tier. Results are written to `metrics/phase_3K_rag.toml`.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use rustc_hash::FxHashMap;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use crate::pipeline::QueryPipeline;
 use crate::QueryTier;
@@ -101,7 +102,7 @@ pub struct TierMetrics {
 #[derive(Debug, Clone)]
 pub struct BenchmarkReport {
     pub results: Vec<EvalResult>,
-    pub tier_metrics: HashMap<String, TierMetrics>,
+    pub tier_metrics: FxHashMap<String, TierMetrics>,
     pub overall_recall_at_5: f64,
     pub overall_recall_at_10: f64,
     pub overall_mrr: f64,
@@ -345,7 +346,8 @@ pub fn eval_single(
     pipeline: &QueryPipeline,
     eq: &EvalQuery,
 ) -> Option<EvalResult> {
-    let start = Instant::now();
+    let _clock = OsClock;
+    let start = _clock.now();
     let stages = match pipeline.query_with_tier(&eq.query, eq.tier) {
         Ok(s) => s,
         Err(e) => {
@@ -353,7 +355,8 @@ pub fn eval_single(
             return None;
         }
     };
-    let latency_ms = start.elapsed().as_millis() as u64;
+    // NARROWING-OK: u128->u64; elapsed benchmark duration never exceeds u64::MAX ms (584M years).
+    let latency_ms = _clock.elapsed_since(start).as_millis().min(u64::MAX as u128) as u64;
 
     // Collect final results from the last stage (token_fit).
     let final_results: Vec<String> = stages
@@ -442,8 +445,8 @@ fn compute_metrics(result_ids: &[String], expected_files: &[String]) -> (f64, f6
 }
 
 /// Aggregate per-query results into per-tier metrics.
-fn aggregate_by_tier(results: &[EvalResult]) -> HashMap<String, TierMetrics> {
-    let mut tier_groups: HashMap<String, Vec<&EvalResult>> = HashMap::new();
+fn aggregate_by_tier(results: &[EvalResult]) -> FxHashMap<String, TierMetrics> {
+    let mut tier_groups: FxHashMap<String, Vec<&EvalResult>> = FxHashMap::default();
     for r in results {
         tier_groups
             .entry(format!("{}", r.tier))
@@ -451,7 +454,7 @@ fn aggregate_by_tier(results: &[EvalResult]) -> HashMap<String, TierMetrics> {
             .push(r);
     }
 
-    let mut metrics = HashMap::new();
+    let mut metrics = FxHashMap::default();
     for (tier_name, group) in &tier_groups {
         let n = group.len() as f64;
         if n == 0.0 {
@@ -812,7 +815,7 @@ mod tests {
                 total_results: 5,
             }],
             tier_metrics: {
-                let mut m = HashMap::new();
+                let mut m = FxHashMap::default();
                 m.insert("FAST".to_string(), TierMetrics {
                     recall_at_5: 1.0,
                     recall_at_10: 1.0,

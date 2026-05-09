@@ -76,7 +76,7 @@ async fn recursive_research_level0_concept_decomposition() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let client = SyntheticGroundingClient::new();
     let result =
-        research_decompose("build a web server", ExecutionMode::Autonomous, &mut cache, &client)
+        research_decompose("build a web server", ExecutionMode::Autonomous, &mut cache, &client, None, None)
             .await;
     assert!(
         result.is_ok(),
@@ -263,7 +263,7 @@ async fn recursive_research_interactive_mode_presents_alternatives() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let client = SyntheticGroundingClient::new();
     let result =
-        research_decompose("build a CLI tool", ExecutionMode::Interactive, &mut cache, &client)
+        research_decompose("build a CLI tool", ExecutionMode::Interactive, &mut cache, &client, None, None)
             .await;
     assert!(result.is_ok(), "interactive mode should succeed");
     let decomp = result.unwrap();
@@ -279,7 +279,7 @@ async fn recursive_research_autonomous_mode_auto_selects() {
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let client = SyntheticGroundingClient::new();
     let result =
-        research_decompose("build a REST API", ExecutionMode::Autonomous, &mut cache, &client)
+        research_decompose("build a REST API", ExecutionMode::Autonomous, &mut cache, &client, None, None)
             .await;
     assert!(result.is_ok(), "autonomous mode should succeed");
     let decomp = result.unwrap();
@@ -327,7 +327,7 @@ async fn recursive_research_proptest_no_panic() {
     for idea in &test_ideas {
         let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
         // Must not panic — Err is acceptable, panic is not
-        let _ = research_decompose(idea, ExecutionMode::Autonomous, &mut cache, &client).await;
+        let _ = research_decompose(idea, ExecutionMode::Autonomous, &mut cache, &client, None, None).await;
     }
 }
 

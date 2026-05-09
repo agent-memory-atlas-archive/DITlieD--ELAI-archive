@@ -17,9 +17,20 @@ tree-sitter-typescript = "0.23"
 tree-sitter-java = "0.23"
 tree-sitter-c-sharp = "0.23"
 tree-sitter-ruby = "0.23"
+# Phase B (s-44680): web-domain grammars for Tier-2 AST predicates in
+# data/rules/web.toml (WEB-013..WEB-023). Anti-slopsquatting verified
+# via `cargo info` (2026-05-08): tree-sitter-html / tree-sitter-css are
+# from the official tree-sitter org; tree-sitter-svelte-ng is from
+# tree-sitter-grammars; tree-sitter-astro-next is single-maintainer
+# (PRRPCHT) and therefore feature-gated.
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-svelte-ng = "1.0"
+tree-sitter-astro-next = { version = "0.1", optional = true }
 rusqlite = { version = "0.39", features = ["bundled"] }
 blake3 = "1.8"
 regex.workspace = true
+rustc-hash.workspace = true
 tracing.workspace = true
 tantivy = "0.26"
 elai-core = { path = "../core" }
@@ -38,6 +49,8 @@ default = []
 usearch-hnsw = ["usearch"]
 splade = []
 test-helpers = []
+# Phase B: opt-in Astro grammar (single-maintainer crate).
+web-astro = ["dep:tree-sitter-astro-next"]
 
 [dev-dependencies]
 proptest = "1"

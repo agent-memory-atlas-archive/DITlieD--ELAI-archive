@@ -836,7 +836,7 @@ impl DeterministicAuditor {
                         check: CheckKind::Completeness,
                         severity: DeterministicSeverity::Warn,
                         file: Some(file.to_path_buf()),
-                        line: Some(line as u32),
+                        line: Some(u32::try_from(line).unwrap_or(u32::MAX)),
                         message: format!(
                             "Function '{}' has trivial/empty body ({} lines)",
                             fn_name, body_lines
@@ -874,7 +874,7 @@ impl DeterministicAuditor {
                         check: CheckKind::Completeness,
                         severity: DeterministicSeverity::Warn,
                         file: Some(file.to_path_buf()),
-                        line: Some(line as u32),
+                        line: Some(u32::try_from(line).unwrap_or(u32::MAX)),
                         message: format!(
                             "Function '{}' has stub body (pass/ellipsis only)",
                             fn_name
@@ -952,9 +952,13 @@ impl DeterministicAuditor {
             let file_path = parent_dir.join(format!("{mod_name}.rs"));
             let dir_path = parent_dir.join(mod_name).join("mod.rs");
             if !file_path.exists() && !dir_path.exists() {
-                let line = content[..cap.get(0).map_or(0, |m| m.start())]
-                    .lines()
-                    .count() as u32 + 1;
+                let line = u32::try_from(
+                    content[..cap.get(0).map_or(0, |m| m.start())]
+                        .lines()
+                        .count(),
+                )
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
                 findings.push(DeterministicFinding {
                     check: CheckKind::ModuleCoherence,
                     severity: DeterministicSeverity::Block,
@@ -994,9 +998,13 @@ impl DeterministicAuditor {
             let file_path = parent_dir.join(format!("{mod_name}.py"));
             let dir_path = parent_dir.join(mod_name).join("__init__.py");
             if !file_path.exists() && !dir_path.exists() {
-                let line = content[..cap.get(0).map_or(0, |m| m.start())]
-                    .lines()
-                    .count() as u32 + 1;
+                let line = u32::try_from(
+                    content[..cap.get(0).map_or(0, |m| m.start())]
+                        .lines()
+                        .count(),
+                )
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
                 findings.push(DeterministicFinding {
                     check: CheckKind::ModuleCoherence,
                     severity: DeterministicSeverity::Block,
@@ -1037,9 +1045,13 @@ impl DeterministicAuditor {
             let js_file = parent_dir.join(format!("{mod_name}.js"));
             let index_dir = parent_dir.join(mod_name).join("index.ts");
             if !ts_file.exists() && !tsx_file.exists() && !js_file.exists() && !index_dir.exists() {
-                let line = content[..cap.get(0).map_or(0, |m| m.start())]
-                    .lines()
-                    .count() as u32 + 1;
+                let line = u32::try_from(
+                    content[..cap.get(0).map_or(0, |m| m.start())]
+                        .lines()
+                        .count(),
+                )
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
                 findings.push(DeterministicFinding {
                     check: CheckKind::ModuleCoherence,
                     severity: DeterministicSeverity::Block,
@@ -1075,7 +1087,9 @@ impl DeterministicAuditor {
             let patterns = lazy_patterns_for(&lang);
             for pat in &patterns {
                 for m in pat.pattern.find_iter(&content) {
-                    let line = content[..m.start()].lines().count() as u32 + 1;
+                    let line = u32::try_from(content[..m.start()].lines().count())
+                        .unwrap_or(u32::MAX)
+                        .saturating_add(1);
                     findings.push(DeterministicFinding {
                         check: CheckKind::LazyCode,
                         severity: DeterministicSeverity::Warn,

@@ -10,9 +10,12 @@
 #   Tier 2 (AST fall):  eslint-plugin-react, svelte-eslint-parser, axe-core heuristics.
 #   Tier 3 (semantic):  WCAG 2.2, web.dev Core Web Vitals, axe-core semantic audits.
 #
-# TIER_2_FALLBACK: all 11 Tier-2 rules are authored as GrepPattern regex stand-ins
-# because HTML/CSS/Svelte/Astro tree-sitter grammars are not yet in the DKG registry.
-# Upgrade to ast_pattern predicates when the grammars land.
+# Phase B (s-44680, 2026-05-08): 10 of 11 Tier-2 rules now use real
+# tree-sitter ast_pattern predicates against tree-sitter-html /
+# tree-sitter-css / tree-sitter-svelte-ng. WEB-022 (deep relative imports)
+# stays grep_pattern because module-graph traversal is outside the AST.
+# tree-sitter-astro-next is feature-gated (`web-astro`) due to single
+# maintainer; rules fall back gracefully on parse failure (degrade-to-INFO).
 #
 # FileContext scoping note: Predicate::GrepPattern only supports Production/Test
 # file context; there is no file_globs filter. Rule regexes therefore self-scope
@@ -132,9 +135,10 @@ predicate_json = '{"type":"grep_pattern","pattern":"@font-face\\s*\\{","scope":n
 phase_mask = 24
 
 # ---------------------------------------------------------------------------
-# Tier 2 — AST-intent rules, authored as GrepPattern fallback (11 rules)
-# TIER_2_FALLBACK: regex stand-in until HTML/CSS/Svelte/Astro tree-sitter
-# grammars land in DKG. Patterns self-scope by matching distinctive markup.
+# Tier 2 — real ast_pattern predicates over tree-sitter HTML / CSS / Svelte
+# (11 rules; WEB-022 stays grep_pattern — module-graph traversal is not AST).
+# Languages registered in elai-knowledge::TreeSitterAstEvaluator: html, css,
+# svelte. astro is feature-gated; rules below target html/css/svelte only.
 # ---------------------------------------------------------------------------
 
 [[rules]]
@@ -143,7 +147,7 @@ domain = "web"
 tier = 2
 severity = "WARN"
 title = "Form input element — verify associated <label> / aria-label"
-predicate_json = '{"type":"grep_pattern","pattern":"<input\\b[^>]*>","scope":null,"context_lines":1}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((tag_name) @t (#eq? @t \"input\"))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -152,7 +156,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "Non-semantic div with role=button — prefer <button>"
-predicate_json = '{"type":"grep_pattern","pattern":"<div[^>]*\\brole\\s*=\\s*\"button\"","scope":null,"context_lines":1}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((element (start_tag (tag_name) @tn (attribute (attribute_name) @an (quoted_attribute_value (attribute_value) @av)))) (#eq? @tn \"div\") (#eq? @an \"role\") (#eq? @av \"button\")) @div_role_button","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -161,7 +165,7 @@ domain = "web"
 tier = 2
 severity = "WARN"
 title = "Deep CSS nesting (5+ descendant combinators)"
-predicate_json = '{"type":"grep_pattern","pattern":"(?m)^[^{\\n]*\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+\\s+\\.[\\w-]+[^{\\n]*\\{","scope":null,"context_lines":1}'
+predicate_json = '{"type":"ast_pattern","language":"css","query":"(descendant_selector (descendant_selector (descendant_selector (descendant_selector (descendant_selector)))))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -170,7 +174,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "Component file with default export plus additional named exports"
-predicate_json = '{"type":"grep_pattern","pattern":"(?s)export\\s+default\\s+.+?\\bexport\\s+(?:function|const|class)\\s+\\w","scope":null,"context_lines":2}'
+predicate_json = '{"type":"ast_pattern","language":"typescript","query":"(program (export_statement) (export_statement)) @multi_export","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -179,7 +183,7 @@ domain = "web"
 tier = 2
 severity = "WARN"
 title = "<button> opening tag — verify explicit type attribute"
-predicate_json = '{"type":"grep_pattern","pattern":"<button\\b[^>]*>","scope":null,"context_lines":1}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((tag_name) @t (#eq? @t \"button\"))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -188,7 +192,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "Multiple <h1> headings in a single document"
-predicate_json = '{"type":"grep_pattern","pattern":"(?s)<h1\\b[^>]*>.+?<h1\\b","scope":null,"context_lines":2}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((document (element (start_tag (tag_name) @t1)) (element (start_tag (tag_name) @t2))) (#eq? @t1 \"h1\") (#eq? @t2 \"h1\")) @doc_two_h1","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -197,7 +201,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "List item closes into non-list container — probable orphan"
-predicate_json = '{"type":"grep_pattern","pattern":"</li>\\s*</(?:div|section|main|article|body)\\b","scope":null,"context_lines":2}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((tag_name) @t (#eq? @t \"li\"))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -206,7 +210,7 @@ domain = "web"
 tier = 2
 severity = "WARN"
 title = "<html> opening tag with no attributes (likely missing lang)"
-predicate_json = '{"type":"grep_pattern","pattern":"<html\\s*>","scope":null,"context_lines":1}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((tag_name) @t (#eq? @t \"html\"))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -215,7 +219,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "Oversized <script> block (>4000 chars) — split component"
-predicate_json = '{"type":"grep_pattern","pattern":"(?s)<script\\b[^>]*>[\\s\\S]{4000,}?</script>","scope":null,"context_lines":0}'
+predicate_json = '{"type":"ast_pattern","language":"html","query":"((script_element (raw_text) @body) (#match? @body \"[\\\\s\\\\S]{4000,}\"))","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 [[rules]]
@@ -233,7 +237,7 @@ domain = "web"
 tier = 2
 severity = "INFO"
 title = "Full-viewport fixed-position container blocks scroll"
-predicate_json = '{"type":"grep_pattern","pattern":"(?s)position\\s*:\\s*fixed[^}]*(?:width|height)\\s*:\\s*100(?:vw|vh|%)","scope":null,"context_lines":2}'
+predicate_json = '{"type":"ast_pattern","language":"css","query":"((declaration (property_name) @p (plain_value) @v) (#eq? @p \"position\") (#eq? @v \"fixed\")) @fixed_pos","query_format":"sexp","scope":null}'
 phase_mask = 24
 
 # ---------------------------------------------------------------------------

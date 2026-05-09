@@ -41,6 +41,9 @@ pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDA
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
 const MAX_INSTRUCTION_FILE_CHARS: usize = 4_000;
 const MAX_TOTAL_INSTRUCTION_CHARS: usize = 12_000;
+/// Default maximum characters allowed for the combined git diff block in the system prompt.
+/// Overridable at runtime via the `ELAI_MAX_GIT_DIFF_CHARS` environment variable.
+pub const DEFAULT_MAX_GIT_DIFF_CHARS: usize = 32_768;
 
 /// Contents of an instruction file included in prompt construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,7 +305,27 @@ fn render_project_context(project_context: &ProjectContext) -> String {
     if let Some(diff) = &project_context.git_diff {
         lines.push(String::new());
         lines.push("Git diff snapshot:".to_string());
-        lines.push(diff.clone());
+        let max = std::env::var("ELAI_MAX_GIT_DIFF_CHARS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_MAX_GIT_DIFF_CHARS);
+        let capped_diff = if diff.len() > max {
+            // Find a UTF-8 char boundary at or before `max` bytes to avoid a panic.
+            let boundary = diff
+                .char_indices()
+                .take_while(|(i, _)| *i < max)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            format!(
+                "{}\n...<truncated {} chars; set ELAI_MAX_GIT_DIFF_CHARS to raise cap>...\n",
+                &diff[..boundary],
+                diff.len().saturating_sub(boundary)
+            )
+        } else {
+            diff.clone()
+        };
+        lines.push(capped_diff);
     }
     lines.join("\n")
 }

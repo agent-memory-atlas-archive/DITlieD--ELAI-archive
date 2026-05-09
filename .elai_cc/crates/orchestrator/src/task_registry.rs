@@ -1,7 +1,7 @@
 #![allow(clippy::must_use_candidate, clippy::unnecessary_map_or)]
 //! In-memory task registry for sub-agent task lifecycle management.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -59,7 +59,7 @@ pub struct TaskRegistry {
 
 #[derive(Debug, Default)]
 struct RegistryInner {
-    tasks: HashMap<String, Task>,
+    tasks: FxHashMap<String, Task>,
     counter: u64,
 }
 
@@ -72,6 +72,11 @@ fn now_secs(clock: &dyn elai_core::ClockProvider) -> u64 {
 }
 
 impl TaskRegistry {
+    // Mutex discipline: a poisoned inner mutex means a writer panicked mid-update and left the
+    // FxHashMap in a partially-modified state. Exposing that state silently is worse than
+    // panicking loudly. All .lock() calls below use .expect() so the invariant violation is
+    // immediately visible. Panic-on-poison is correct here per CLAUDE.md infrastructure rules.
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -99,7 +104,7 @@ impl TaskRegistry {
         description: Option<String>,
         task_packet: Option<TaskPacket>,
     ) -> Task {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked mid-insert; partial FxHashMap state unrecoverable");
         inner.counter += 1;
         let ts = now_secs(&elai_core::OsClock);
         let task_id = format!("task_{:08x}_{}", ts, inner.counter);
@@ -120,12 +125,12 @@ impl TaskRegistry {
     }
 
     pub fn get(&self, task_id: &str) -> Option<Task> {
-        let inner = self.inner.lock().expect("registry lock poisoned");
+        let inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; read-only get may see partial state");
         inner.tasks.get(task_id).cloned()
     }
 
     pub fn list(&self, status_filter: Option<TaskStatus>) -> Vec<Task> {
-        let inner = self.inner.lock().expect("registry lock poisoned");
+        let inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; list may enumerate partially-inserted tasks");
         inner
             .tasks
             .values()
@@ -135,7 +140,7 @@ impl TaskRegistry {
     }
 
     pub fn stop(&self, task_id: &str) -> Result<Task, String> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked mid-status-update; stop would mutate corrupt state");
         let task = inner
             .tasks
             .get_mut(task_id)
@@ -157,7 +162,7 @@ impl TaskRegistry {
     }
 
     pub fn update(&self, task_id: &str, message: &str) -> Result<Task, String> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; update would push message onto corrupt task record");
         let task = inner
             .tasks
             .get_mut(task_id)
@@ -173,7 +178,7 @@ impl TaskRegistry {
     }
 
     pub fn output(&self, task_id: &str) -> Result<String, String> {
-        let inner = self.inner.lock().expect("registry lock poisoned");
+        let inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; output read may return truncated string");
         let task = inner
             .tasks
             .get(task_id)
@@ -182,7 +187,7 @@ impl TaskRegistry {
     }
 
     pub fn append_output(&self, task_id: &str, output: &str) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; append_output would extend corrupt output string");
         let task = inner
             .tasks
             .get_mut(task_id)
@@ -193,7 +198,7 @@ impl TaskRegistry {
     }
 
     pub fn set_status(&self, task_id: &str, status: TaskStatus) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked mid-status-field write; set_status rejects partial state");
         let task = inner
             .tasks
             .get_mut(task_id)
@@ -204,7 +209,7 @@ impl TaskRegistry {
     }
 
     pub fn assign_team(&self, task_id: &str, team_id: &str) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; assign_team would write team_id onto corrupt task record");
         let task = inner
             .tasks
             .get_mut(task_id)
@@ -215,13 +220,13 @@ impl TaskRegistry {
     }
 
     pub fn remove(&self, task_id: &str) -> Option<Task> {
-        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; remove would operate on corrupt map state");
         inner.tasks.remove(task_id)
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().expect("registry lock poisoned");
+        let inner = self.inner.lock().expect("task_registry mutex poisoned: upstream writer panicked; len would report corrupt map size");
         inner.tasks.len()
     }
 

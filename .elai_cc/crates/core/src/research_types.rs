@@ -91,6 +91,7 @@ pub fn generate_fact_id(claim: &str, source_url: &str) -> String {
     // Length-prefix each field as 4-byte little-endian to prevent collisions.
     let claim_bytes = claim.as_bytes();
     let url_bytes = source_url.as_bytes();
+    // NARROWING-OK: claim/URL strings are bounded by practical limits (<<4 GB); 4-byte LE length prefix.
     hasher.update(&(claim_bytes.len() as u32).to_le_bytes());
     hasher.update(claim_bytes);
     hasher.update(&(url_bytes.len() as u32).to_le_bytes());
@@ -202,6 +203,10 @@ pub struct ResearchAnswer {
     pub sources_consulted: Vec<SourceClassification>,
     /// Sources that were rejected (T4 or below required tier).
     pub sources_rejected: Vec<SourceClassification>,
+    /// Track A.2: which synthesis path was taken ("llm" | "deterministic_fallback").
+    /// `#[serde(default)]` ensures pre-A.2 serialized answers deserialize to "".
+    #[serde(default)]
+    pub path: String,
 }
 
 /// Errors from the research pipeline.

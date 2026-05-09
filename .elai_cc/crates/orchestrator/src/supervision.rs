@@ -10,7 +10,7 @@
 // RecoveryManager failure path and emit `SsbPayload::SupervisionExhausted`
 // on Terminate escalation.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -113,7 +113,7 @@ pub enum SupervisionError {
 pub struct SupervisionManager<C: ClockProvider> {
     clock: C,
     policy: SupervisionPolicy,
-    states: HashMap<Uuid, SupervisionState>,
+    states: FxHashMap<Uuid, SupervisionState>,
     effective_max_restarts: u32,
 }
 
@@ -132,7 +132,7 @@ impl<C: ClockProvider> SupervisionManager<C> {
         Self {
             clock,
             policy,
-            states: HashMap::new(),
+            states: FxHashMap::default(),
             effective_max_restarts,
         }
     }

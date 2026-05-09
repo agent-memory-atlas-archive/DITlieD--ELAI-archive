@@ -8,7 +8,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::predicate::{
     from_json, AstError, AstEvaluator, CompositeOperator, DkgError, DkgQuerier, EscalationTarget,
@@ -76,7 +76,7 @@ pub struct EvaluationContext<'a> {
     /// Current FSM phase (for phase-aware filtering).
     pub fsm_phase: FsmPhaseBit,
     /// Metric values for MetricGate evaluation (metric_name -> value).
-    pub metric_values: HashMap<String, f64>,
+    pub metric_values: FxHashMap<String, f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -990,7 +990,7 @@ mod tests {
             source,
             file_path,
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         }
     }
 
@@ -1369,7 +1369,7 @@ mod tests {
             source: "fn main() {}",
             file_path: "src/main.rs",
             fsm_phase: FsmPhaseBit::EXECUTING,
-            metric_values: HashMap::new(),
+            metric_values: FxHashMap::default(),
         };
         assert_eq!(ctx.action, "write");
         assert_eq!(ctx.fsm_phase, FsmPhaseBit::EXECUTING);

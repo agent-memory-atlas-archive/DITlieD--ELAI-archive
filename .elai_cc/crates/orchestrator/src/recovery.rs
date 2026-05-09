@@ -186,6 +186,8 @@ impl<C: ClockProvider> RecoveryManager<C> {
             sandbox_handle: dead_handle.sandbox_handle.clone(),
             child_process: None,
             socket_path: dead_handle.socket_path.clone(),
+            appcontainer_profile_id: dead_handle.appcontainer_profile_id.clone(),
+            allowed_paths: dead_handle.allowed_paths.clone(),
         };
 
         let context = AgentRecoveryContext {
@@ -214,7 +216,7 @@ mod tests {
     use crate::ssb::{Ssb, SsbActionType, SsbConfig};
     use elai_core::SeededClock;
     use elai_reasoning::{AgentGrcConfig, BasicGrcEngine, GrcBudget, GrcState, GroundingLevel};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -231,7 +233,7 @@ mod tests {
             grounding_level: GroundingLevel::Uncertain,
             csq_required: false,
             allowed_methods: vec![],
-            transition_overrides: HashMap::new(),
+            transition_overrides: FxHashMap::default(),
             require_scope_enumeration: false,
         }
     }
@@ -253,6 +255,8 @@ mod tests {
             sandbox_handle: None,
             child_process: None,
             socket_path: None,
+            appcontainer_profile_id: None,
+            allowed_paths: Vec::new(),
         }
     }
 

@@ -7,22 +7,24 @@ use elai_ipc_types::{ClassifyRequest, ToolResultPayload, TOOL_CLASSIFY};
 use crate::ipc_registry::{ToolError, ToolHandler};
 use serde::{Deserialize, Serialize};
 
+/// 9-variant failure taxonomy per B-20 plan body (Rust-flavoured list).
+/// Mirrored verbatim by `elai_core::tool_dispatcher::ToolFailureCategory`
+/// so the two enums never drift. Decision A (B-20A): the B-20 plan list
+/// is canonical; phase-4B.txt's competing 9-list (PERMISSION_DENIED,
+/// TIMEOUT, RESOURCE_EXHAUSTED, EMPTY_OUTPUT) is documented in
+/// workflow/reasoning/B-20A-decisions.md and rejected for this phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FailureCategory {
-    CompilationError,
-    TestFailure,
-    RuntimeError,
-    Timeout,
-    ResourceExhausted,
-    LazyCode,
-    EmptyBody,
-    FileSizeExceeded,
-    ContextExplosion,
-    RawLogOverload,
-    PhaseGateFailure,
-    ScriptQualityDependency,
-    SpeculativeRepair,
+    SyntaxError,
+    TypeMismatch,
+    UndefinedSymbol,
+    MissingImport,
+    LifetimeError,
+    BorrowError,
+    UnusedWarning,
+    TestAssertion,
+    RuntimePanic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,32 +78,82 @@ impl ClassifyHandler {
         }
     }
 
+    /// Classify an error message into the 9-variant taxonomy. Order is
+    /// load-bearing: more specific patterns must precede generic ones so
+    /// e.g. "unresolved import" maps to MissingImport (not UndefinedSymbol).
     fn detect_category(output: &str) -> FailureCategory {
-        if output.contains("todo!()") || output.contains("unimplemented!()") {
-            return FailureCategory::LazyCode;
+        // Imports first — most specific Rust diagnostic.
+        if output.contains("unresolved import")
+            || output.contains("error[E0432]")
+            || output.contains("No module named")
+            || output.contains("ModuleNotFoundError")
+        {
+            return FailureCategory::MissingImport;
         }
-        if output.contains("empty body") || output.contains("pass\n") {
-            return FailureCategory::EmptyBody;
+        if output.contains("explicit lifetime required")
+            || output.contains("error[E0621]")
+            || output.contains("missing lifetime specifier")
+            || output.contains("error[E0106]")
+            || output.contains("lifetime may not live long enough")
+        {
+            return FailureCategory::LifetimeError;
         }
-        if output.contains("file size exceeded") || output.contains("too large") {
-            return FailureCategory::FileSizeExceeded;
+        if output.contains("borrow of moved value")
+            || output.contains("error[E0382]")
+            || output.contains("cannot borrow")
+            || output.contains("error[E0502]")
+            || output.contains("error[E0499]")
+        {
+            return FailureCategory::BorrowError;
         }
-        if output.contains("error[E") || output.contains("cannot find") {
-            return FailureCategory::CompilationError;
+        if output.contains("mismatched types")
+            || output.contains("error[E0308]")
+            || output.contains("expected type")
+        {
+            return FailureCategory::TypeMismatch;
         }
-        if output.contains("FAILED") || output.contains("assertion") {
-            return FailureCategory::TestFailure;
+        if output.contains("cannot find value")
+            || output.contains("cannot find function")
+            || output.contains("cannot find type")
+            || output.contains("error[E0425]")
+            || output.contains("error[E0412]")
+            || output.contains("error[E0422]")
+        {
+            return FailureCategory::UndefinedSymbol;
         }
-        if output.contains("panic") || output.contains("thread") {
-            return FailureCategory::RuntimeError;
+        if (output.contains("error: expected") && !output.contains("expected type"))
+            || output.contains("expected `;`")
+            || output.contains("unexpected token")
+            || output.contains("invalid syntax")
+            || output.contains("SyntaxError")
+        {
+            return FailureCategory::SyntaxError;
         }
-        if output.contains("timeout") || output.contains("timed out") {
-            return FailureCategory::Timeout;
+        if output.contains("test result: FAILED")
+            || output.contains("assertion failed")
+            || output.contains("panicked at 'assertion")
+        {
+            return FailureCategory::TestAssertion;
         }
-        if output.contains("out of memory") || output.contains("OOM") {
-            return FailureCategory::ResourceExhausted;
+        if output.contains("warning:")
+            && (output.contains("unused")
+                || output.contains("dead_code")
+                || output.contains("unused_variables"))
+        {
+            return FailureCategory::UnusedWarning;
         }
-        FailureCategory::RuntimeError
+        if output.contains("panicked at")
+            || output.contains("thread '")
+            || output.contains("RuntimeError")
+            || output.contains("timeout")
+            || output.contains("timed out")
+            || output.contains("out of memory")
+            || output.contains("OOM")
+        {
+            return FailureCategory::RuntimePanic;
+        }
+        // Default: treat as RuntimePanic (was RuntimeError in the old 13-list).
+        FailureCategory::RuntimePanic
     }
 
     fn detect_root_cause(output: &str) -> Option<RootCause> {
@@ -151,19 +203,15 @@ impl ClassifyHandler {
 
     fn suggest_fix(category: &FailureCategory) -> String {
         match category {
-            FailureCategory::LazyCode => "replace todo!()/unimplemented!() with real implementation".to_string(),
-            FailureCategory::EmptyBody => "implement function body".to_string(),
-            FailureCategory::FileSizeExceeded => "split file into smaller modules".to_string(),
-            FailureCategory::CompilationError => "fix compilation errors".to_string(),
-            FailureCategory::TestFailure => "investigate test assertion failures".to_string(),
-            FailureCategory::RuntimeError => "check for panics and runtime errors".to_string(),
-            FailureCategory::Timeout => "optimize or increase timeout".to_string(),
-            FailureCategory::ResourceExhausted => "reduce memory usage or increase limits".to_string(),
-            FailureCategory::ContextExplosion => "reduce trace depth before adaptive reduction".to_string(),
-            FailureCategory::RawLogOverload => "apply TLSA transformation to logs".to_string(),
-            FailureCategory::PhaseGateFailure => "fix phase gate script".to_string(),
-            FailureCategory::ScriptQualityDependency => "improve reproduction script".to_string(),
-            FailureCategory::SpeculativeRepair => "ground repair in runtime evidence".to_string(),
+            FailureCategory::SyntaxError => "fix syntax error (missing token / malformed expression)".to_string(),
+            FailureCategory::TypeMismatch => "align argument or return types".to_string(),
+            FailureCategory::UndefinedSymbol => "declare or import the missing symbol".to_string(),
+            FailureCategory::MissingImport => "add the missing import / use statement".to_string(),
+            FailureCategory::LifetimeError => "annotate or extend lifetimes so references stay valid".to_string(),
+            FailureCategory::BorrowError => "restructure to avoid the move/aliasing conflict".to_string(),
+            FailureCategory::UnusedWarning => "remove dead code or prefix unused name with `_`".to_string(),
+            FailureCategory::TestAssertion => "investigate test assertion failures".to_string(),
+            FailureCategory::RuntimePanic => "check for panics / runtime errors / timeouts / OOM".to_string(),
         }
     }
 }

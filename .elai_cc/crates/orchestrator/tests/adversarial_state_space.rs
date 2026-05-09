@@ -74,12 +74,15 @@ fn anti_spiral_whitespace_normalization_triggers_escalation() {
             );
         } else {
             // Step 4 (i=3): same_step_count=4 which is > SPIRAL_THRESHOLD (3)
-            assert_eq!(
-                result,
-                SpiralResult::EscalationSignalNeeded {
-                    message: ESCALATION_MESSAGE.to_owned(),
-                    spiral_depth: ESCALATION_DEPTH,
-                },
+            assert!(
+                matches!(
+                    result,
+                    SpiralResult::EscalationSignalNeeded {
+                        ref message,
+                        spiral_depth,
+                        ..
+                    } if message == ESCALATION_MESSAGE && spiral_depth == ESCALATION_DEPTH
+                ),
                 "step {i} should trigger escalation"
             );
         }

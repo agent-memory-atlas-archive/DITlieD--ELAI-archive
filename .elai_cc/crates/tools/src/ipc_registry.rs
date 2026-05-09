@@ -1,6 +1,6 @@
 #![deny(dead_code, unused_imports)]
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -75,13 +75,13 @@ pub trait ToolHandler: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub struct IpcToolRegistry {
-    handlers: HashMap<String, Arc<dyn ToolHandler>>,
+    handlers: FxHashMap<String, Arc<dyn ToolHandler>>,
 }
 
 impl IpcToolRegistry {
     pub fn new() -> Self {
         Self {
-            handlers: HashMap::new(),
+            handlers: FxHashMap::default(),
         }
     }
 

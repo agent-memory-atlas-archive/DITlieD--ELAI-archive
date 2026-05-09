@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 // ---------------------------------------------------------------------------
 // GrcState: the 7 states in a Grounded Reasoning Chain
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GrcState {
     Observe,
     Hypothesize,
@@ -213,7 +213,7 @@ pub struct AgentGrcConfig {
     /// Additive transition overrides merged with GrcState::allowed_next().
     /// Cannot remove default transitions, only add new ones.
     /// Example: auditor needs {Verify: [Verify, Observe]} for double-verify.
-    pub transition_overrides: HashMap<GrcState, Vec<GrcState>>,
+    pub transition_overrides: FxHashMap<GrcState, Vec<GrcState>>,
     /// When true, Observe step's scope field must enumerate all task components.
     /// Orchestrator validates every scope item appears in subsequent PlanAction.
     /// Default: true for executor/designer, false for memory_writer.
@@ -242,7 +242,7 @@ impl Default for AgentGrcConfig {
                 VerificationMethod::ApiCheck,
                 VerificationMethod::ApiRegistryCheck,
             ],
-            transition_overrides: HashMap::new(),
+            transition_overrides: FxHashMap::default(),
             require_scope_enumeration: false,
         }
     }

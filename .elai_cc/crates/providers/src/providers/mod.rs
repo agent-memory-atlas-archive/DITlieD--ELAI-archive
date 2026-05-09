@@ -277,6 +277,7 @@ fn estimate_message_request_input_tokens(request: &MessageRequest) -> u32 {
 fn estimate_serialized_tokens<T: Serialize>(value: &T) -> u32 {
     serde_json::to_vec(value)
         .ok()
+        // NARROWING-OK: token estimate for in-memory payloads is bounded well under u32::MAX (4B tokens).
         .map_or(0, |bytes| (bytes.len() / 4 + 1) as u32)
 }
 

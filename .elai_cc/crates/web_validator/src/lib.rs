@@ -1,17 +1,26 @@
 // ---------------------------------------------------------------------------
 // WEB.3 — Web validator: runtime verification that generated sites work.
 //
-// Three validation tiers:
-//   WebBuild      — `npm run build` exits 0 and output_dir is non-empty.
-//   WebDevServer  — spawn dev server, HTTP GET /, assert 200 + </html>
-//                   + meta viewport, then kill the process.
-//   WebLint       — advisory only; never returned by this crate as a hard
-//                   block (callers treat WebLint findings as WARN).
+// Validation tiers:
+//   WebBuild        — `npm run build` exits 0 and output_dir is non-empty.
+//   WebDevServer    — spawn dev server, HTTP GET /, assert 200 + </html>
+//                     + meta viewport, then kill the process.
+//   WebLint         — Phase B (B2): real ESLint / Stylelint / axe-core
+//                     findings via `npx --yes <tool>` subprocess (see
+//                     `lint::run_web_lint`). Findings are advisory; the
+//                     orchestrator treats severity::Error as WARN.
+//   WebPerformance  — Phase B (B4): Lighthouse Core Web Vitals report via
+//                     `npx --yes lighthouse` (see `cwv::run_lighthouse`).
+//                     Heaviest gate; orchestrator runs at Concept level only.
 //
 // Crate boundary: NO dependency on `elai-orchestrator`. SSB emission is the
 // caller's responsibility (orchestrator wires `WebValidationTier` results
 // into its own `IntegrationCheckpoint` records).
 // ---------------------------------------------------------------------------
+
+pub mod contrast;
+pub mod cwv;
+pub mod lint;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 // ---------------------------------------------------------------------------
 // Named constants — no magic numbers.
@@ -61,6 +72,11 @@ pub enum WebValidationTier {
     WebBuild,
     WebDevServer,
     WebLint,
+    /// Phase B (B4): Lighthouse Core Web Vitals (LCP / CLS / INP) and
+    /// overall performance score. Runs only at Concept-level decomposition
+    /// because each invocation costs 25-180 s and requires a Chromium
+    /// binary on PATH (probed via `cwv::probe_chromium`).
+    WebPerformance,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +115,21 @@ pub enum WebValidatorError {
 
     #[error("symlink/junction creation failed for {dst:?}: {reason}")]
     SymlinkFailed { dst: PathBuf, reason: String },
+
+    /// Phase B (B2): node runtime is missing — WebLint tier cannot run.
+    #[error("node runtime missing (probe `{probe_command}` failed); WebLint disabled")]
+    NodeMissing { probe_command: String },
+
+    /// Phase B (B4): chromium / chrome runtime is missing — WebPerformance tier
+    /// cannot run. Lighthouse needs a controllable browser binary.
+    #[error("chromium/chrome runtime missing (probe `{probe_command}` failed); WebPerformance disabled")]
+    ChromiumMissing { probe_command: String },
+
+    /// Phase B (B2/B4): an external linter/auditor produced output that did
+    /// not match the expected JSON shape. The raw stderr is captured for
+    /// debugging; we never propagate the full stdout to avoid OOM.
+    #[error("external tool `{tool}` produced unparseable output: {reason}")]
+    ToolOutputInvalid { tool: String, reason: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +242,13 @@ pub async fn start_dev_server(
     // Build the HTTP client once and reuse across all readiness probes.
     let client = build_probe_client()?;
 
-    let deadline =
-        tokio::time::Instant::now() + Duration::from_secs(DEV_SERVER_START_TIMEOUT_SECS);
+    let _clock = OsClock;
+    let _start = _clock.now();
+    let _timeout_duration = Duration::from_secs(DEV_SERVER_START_TIMEOUT_SECS);
     let poll_interval = Duration::from_millis(DEV_SERVER_POLL_INTERVAL_MS);
 
     loop {
-        if tokio::time::Instant::now() >= deadline {
+        if _clock.elapsed_since(_start) >= _timeout_duration {
             // Drop on `handle` will kill the child; explicit stop ensures wait().
             let _ = stop_dev_server(handle).await;
             return Err(WebValidatorError::Timeout {
@@ -519,6 +551,7 @@ mod tests {
             WebValidationTier::WebBuild,
             WebValidationTier::WebDevServer,
             WebValidationTier::WebLint,
+            WebValidationTier::WebPerformance,
         ] {
             let s = serde_json::to_string(&tier).expect("serialize");
             let back: WebValidationTier = serde_json::from_str(&s).expect("deserialize");

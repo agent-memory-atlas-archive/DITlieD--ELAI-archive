@@ -215,7 +215,7 @@ pub fn traverse_with_answers(
 mod tests {
     use super::*;
     use elai_core::interrogation_tree::{Choice, FixTemplate, QuestionNode};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn make_choices(labels: &[&str]) -> Vec<Choice> {
         labels
@@ -233,14 +233,14 @@ mod tests {
         let leaf = QuestionNode {
             question_template: "Fix approach:".to_string(),
             choices: make_choices(&["fix A", "fix B", "fix C"]),
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: "apply fix at {line}".to_string(),
                 category: "test_fix".to_string(),
             }),
         };
 
-        let mut mid_children = HashMap::new();
+        let mut mid_children = BTreeMap::new();
         mid_children.insert(ChoiceId::new("A"), leaf);
 
         let mid = QuestionNode {
@@ -253,7 +253,7 @@ mod tests {
             }),
         };
 
-        let mut root_children = HashMap::new();
+        let mut root_children = BTreeMap::new();
         root_children.insert(ChoiceId::new("B"), mid);
 
         let root = QuestionNode {
@@ -417,7 +417,7 @@ mod tests {
         // (elai_rules::interrogation_store::build_rust_lifetime_tree).
         // Inlined here to avoid a reasoning -> rules dependency loop.
         use elai_core::interrogation_tree::{Choice, FixTemplate, QuestionNode, TREE_SCHEMA_VERSION};
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         let q3_borrow = QuestionNode {
             question_template: "borrow".into(),
@@ -426,7 +426,7 @@ mod tests {
                 Choice { id: ChoiceId::new("B"), label: "restructure".into(), confidence_hint: 0.4 },
                 Choice { id: ChoiceId::new("C"), label: "ref".into(), confidence_hint: 0.2 },
             ],
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: "borrow_instr".into(),
                 category: "borrow_fix".into(),
@@ -439,7 +439,7 @@ mod tests {
                 Choice { id: ChoiceId::new("B"), label: "owned".into(), confidence_hint: 0.3 },
                 Choice { id: ChoiceId::new("C"), label: "static".into(), confidence_hint: 0.1 },
             ],
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: "lifetime_instr".into(),
                 category: "lifetime_fix".into(),
@@ -452,13 +452,13 @@ mod tests {
                 Choice { id: ChoiceId::new("B"), label: "bound".into(), confidence_hint: 0.3 },
                 Choice { id: ChoiceId::new("C"), label: "concrete".into(), confidence_hint: 0.2 },
             ],
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: "trait_instr".into(),
                 category: "trait_fix".into(),
             }),
         };
-        let mut q2_children = HashMap::new();
+        let mut q2_children = BTreeMap::new();
         q2_children.insert(ChoiceId::new("A"), q3_borrow);
         q2_children.insert(ChoiceId::new("B"), q3_lifetime);
         q2_children.insert(ChoiceId::new("C"), q3_trait);
@@ -479,13 +479,13 @@ mod tests {
                 Choice { id: ChoiceId::new("B"), label: "setup".into(), confidence_hint: 0.35 },
                 Choice { id: ChoiceId::new("C"), label: "expected".into(), confidence_hint: 0.2 },
             ],
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: "test_instr".into(),
                 category: "test_fix".into(),
             }),
         };
-        let mut root_children = HashMap::new();
+        let mut root_children = BTreeMap::new();
         root_children.insert(ChoiceId::new("B"), q2);
         root_children.insert(ChoiceId::new("E"), q1e);
         let root = QuestionNode {

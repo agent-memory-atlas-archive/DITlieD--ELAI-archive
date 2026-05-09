@@ -193,6 +193,8 @@ impl SteeringVectorSpec {
     /// - Numeric string -> parse as usize
     pub fn resolve_layer(&self, total_layers: usize) -> Result<usize, SteeringError> {
         if self.layer == "auto" {
+            // NARROWING-OK: f64->usize; no TryFrom<f64> for usize in std; result is fraction of
+            // total_layers which is always a valid array index when total_layers > 0.
             let layer = (total_layers as f64 * LAYER_DEFAULT_FRACTION) as usize;
             Ok(layer)
         } else {
@@ -692,6 +694,7 @@ impl SteeringVectorEngine {
             reason: format!("http_error: failed to parse compute response: {e}"),
         })?;
 
+        // NARROWING-OK: u32->usize (widening on 64-bit) and f64->usize (no TryFrom<f64> in std; fraction of total_layers).
         let layer = parsed.layer.map(|l| l as usize).unwrap_or_else(|| {
             // Fall back to the same default the sidecar uses so the cached
             // metadata stays consistent when the response omits the layer.

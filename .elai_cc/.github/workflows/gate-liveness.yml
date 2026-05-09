@@ -1,0 +1,51 @@
+# B-17 Gate Liveness CI
+#
+# Runs the gate_liveness.rs regression suite on every push and pull_request.
+# Scope: elai-orchestrator only (targeted -p flag — not full workspace).
+#
+# Runner note: ubuntu-24.04 pinned explicitly (not ubuntu-latest which floats).
+# If the project gains a Windows-only gate, add a separate windows-2022 job.
+# See workflow/reasoning/B-17-decisions.md Session s-91480 for rationale.
+
+name: gate-liveness
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Disable the pipeline GRC kill-switch so the env-gated tests run as if
+  # ELAI_DISABLE_PIPELINE_GRC is unset (matches the active test assertions).
+  ELAI_DISABLE_PIPELINE_GRC: ""
+
+jobs:
+  gate-liveness:
+    name: B-17 gate liveness
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-gate-liveness-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gate-liveness-
+
+      - name: Run gate liveness suite
+        run: bash scripts/check_gate_liveness.sh
+        # Expected exit: 0 with "6 passed; 0 failed; 2 ignored" (B-4/B-2 stubs).
+        # If a wired gate goes vacuous, cargo test exits non-zero and this step fails.

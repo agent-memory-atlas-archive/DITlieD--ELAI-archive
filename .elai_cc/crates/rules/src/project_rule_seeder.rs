@@ -527,7 +527,7 @@ mod tests {
             languages: LanguageProfile {
                 primary: Language::Rust,
                 secondary: Vec::new(),
-                distribution: std::collections::HashMap::new(),
+                distribution: std::collections::BTreeMap::new(),
                 tree_sitter_coverage: 0.0,
             },
             frameworks: Vec::new(),

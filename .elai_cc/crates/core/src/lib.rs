@@ -7,6 +7,7 @@ pub mod interrogation_tree;
 pub mod micro_reflection;
 pub mod mistake_book;
 pub mod json;
+pub mod paths;
 pub mod project_id;
 pub mod project_profile;
 pub mod sandbox;

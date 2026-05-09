@@ -24,7 +24,7 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 fn test_gateway() -> IpcGateway {
-    IpcGateway::new(
+    IpcGateway::with_os_clock(
         PathBuf::from("/tmp/elai_cc_test"),
         SelfModificationLocks::new(),
     )
@@ -37,6 +37,7 @@ fn test_connection(role: AgentRole) -> AgentConnection {
         1234,
         PathBuf::from("/tmp/test.sock"),
         5,
+        &elai_core::OsClock,
     )
 }
 
@@ -254,7 +255,7 @@ fn test_4a_adv_selfmod_agent_cannot_modify_own_binary() {
     let mut locks = SelfModificationLocks::new();
     // Lock the agent binary directory
     locks.add_lock(PathBuf::from("/usr/local/bin"));
-    let gw = IpcGateway::new(PathBuf::from("/tmp/test"), locks);
+    let gw = IpcGateway::with_os_clock(PathBuf::from("/tmp/test"), locks);
 
     // Agent binary path is locked
     assert!(gw.is_self_mod_locked(&PathBuf::from("/usr/local/bin/elai_cc_agent")));
@@ -265,7 +266,7 @@ fn test_4a_adv_selfmod_agent_cannot_write_outside_scratch() {
     let mut locks = SelfModificationLocks::new();
     locks.add_lock(PathBuf::from("/project/workflow"));
     locks.add_lock(PathBuf::from("/project/.claude"));
-    let gw = IpcGateway::new(PathBuf::from("/tmp/test"), locks);
+    let gw = IpcGateway::with_os_clock(PathBuf::from("/tmp/test"), locks);
 
     // Workflow and .claude dirs are locked
     assert!(gw.is_self_mod_locked(&PathBuf::from("/project/workflow/state.json")));
@@ -308,13 +309,24 @@ fn test_4a_adv_crash_agent_crash_releases_resources() {
 
 #[test]
 fn test_4a_adv_crash_supervisor_detects_crash() {
-    // Heartbeat timeout detection: supervisor checks all agents
-    let mut gw = test_gateway();
+    use elai_core::{ClockProvider, SeededClock};
+    // Heartbeat timeout detection: supervisor checks all agents.
+    // Use a SeededClock-backed gateway so we can advance time deterministically.
+    let clock = std::sync::Arc::new(SeededClock::new());
+    let mut gw = elai_orchestrator::ipc_gateway::IpcGateway::new(
+        std::path::PathBuf::from("/tmp/elai_cc_test"),
+        elai_orchestrator::sandbox::SelfModificationLocks::new(),
+        clock.clone(),
+    );
     let agent_id = Uuid::nil();
     let mut conn = test_connection(AgentRole::Executor);
-    // Set heartbeat to far in the past
-    conn.last_heartbeat = std::time::Instant::now()
-        - std::time::Duration::from_secs(30);
+    // Record heartbeat at tick 0.
+    conn.last_heartbeat = clock.now();
+    // Advance SeededClock past AGENT_HEARTBEAT_TIMEOUT_SECS (each now() = +1ms tick).
+    let ticks_needed = (30u64 + 1) * 1000;
+    for _ in 0..ticks_needed {
+        let _ = clock.now();
+    }
     gw.register_agent(conn);
 
     let timed_out = gw.check_heartbeat_timeouts();

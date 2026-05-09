@@ -16,15 +16,24 @@ elai-plugins = { path = "../plugins" }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
 elai-orchestrator = { path = "../orchestrator", features = ["sidecar"] }
+# Tier 2 Track B: dashboard contract test imports `elai_dashboard_lib::commands::*`
+# to assert the public surface of the 8 new tauri commands + DTOs.
+# DISABLED in s-1430428: crates/dashboard moved to crates/.bkp_old/dashboard.
+# The 4 dashboard_*_contract.rs files in tests/ are gated with #![cfg(any())].
+# elai-dashboard = { path = "../dashboard" }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tempfile = "3"
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmp-serde = "1.3"
+rustc-hash.workspace = true
 uuid = { workspace = true }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
+# Phase A (s-69820): website-creation pipeline contract test imports
+# scaffold::{fim, build_vars} + apply_template_from_root + load_manifest.
+scaffold = { path = "../scaffold" }
 # Batch 2B contract tests: needed only to initialise a throwaway repo in
 # the git_commit happy-path test. Same default-features=false treatment
 # as the production pin in crates/tools.
@@ -38,3 +47,7 @@ default = []
 # gated half of `fuld_mcp_bridge_contract.rs` can reach the HTTP JSON-RPC
 # client. Contract test also compiles without this feature.
 mcp = ["elai-plugins/mcp"]
+# A.4-finish: forward the `obscura` feature to elai-orchestrator so the
+# obscura branch of `fetcher_used_ssb_contract.rs` compiles when the
+# headless-browser fetch path is enabled.
+obscura = ["elai-orchestrator/obscura"]

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use elai_core::clock::ClockProvider;
 use elai_core::entropy::EntropySource;
 
+use crate::session::ContentBlock;
 use crate::ssb::SsbReader;
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -26,8 +27,13 @@ pub const PROMPT_CACHE_PREFIX_BOUNDARY: u32 = 3;
 pub enum SessionDagError {
     #[error("database not found at path")]
     DatabaseNotFound,
-    #[error("database failed integrity check")]
-    DatabaseCorrupted,
+    /// W5 (cycle 2): the unit variant erased the underlying error so
+    /// failures were indistinguishable. The `detail` field now carries the
+    /// original error message (sqlite, msgpack decode, schema-version
+    /// integer cast, role-string lookup, etc.). Construct via
+    /// [`Self::corrupt`] or [`Self::corrupt_static`].
+    #[error("database failed integrity check: {detail}")]
+    DatabaseCorrupted { detail: String },
     #[error("schema version mismatch: found {found}, expected {expected}")]
     SchemaVersion { found: u32, expected: u32 },
     #[error("foreign key violation")]
@@ -50,6 +56,29 @@ pub enum SessionDagError {
     StubRecoveryFailed { seq: u32, reason: String },
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+}
+
+impl SessionDagError {
+    /// Construct a [`Self::DatabaseCorrupted`] from any `Display` source.
+    /// W5 (cycle 2): preserves the underlying error message for
+    /// post-mortem instead of erasing it.
+    #[inline]
+    pub fn corrupt<E: std::fmt::Display>(source: E) -> Self {
+        Self::DatabaseCorrupted {
+            detail: source.to_string(),
+        }
+    }
+
+    /// Construct a [`Self::DatabaseCorrupted`] with a static reason string
+    /// (used at sites that raise the error from a non-error source — e.g.
+    /// integrity check returning a non-"ok" string, role-name lookup
+    /// failure, BLOB-prefix detection failure).
+    #[inline]
+    pub fn corrupt_static(reason: &'static str) -> Self {
+        Self::DatabaseCorrupted {
+            detail: reason.to_owned(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +155,24 @@ pub struct TrimmedMessage {
     pub content: Vec<u8>,
     pub is_stubbed: bool,
     pub stub_ssb_seq: Option<u64>,
+    /// B-9 cycle 2 (BLOCK-2 fix): the full `ContentBlock` vector from the
+    /// originating [`crate::session::ConversationMessage`]. When `Some`,
+    /// `/continue` must rehydrate from this field so `ToolUse`/`ToolResult`
+    /// pairs survive — flattening to text alone caused the Anthropic API
+    /// to reject the conversation.
+    ///
+    /// `None` means either (a) this row predates the migration (legacy
+    /// session), or (b) trim Pass 1 stubbed the message and the original
+    /// blocks have been compacted away. Callers must treat `None` as a
+    /// signal to fall back to `ContentBlock::Text { text: <utf8(content)> }`
+    /// while logging a `tracing::warn`.
+    ///
+    /// On disk, this field rides on the `raw_blocks` BLOB column on the
+    /// `snapshot_context` table (msgpack-encoded). The column is added
+    /// lazily via `ALTER TABLE` on `open()` for back-compat with B-9
+    /// cycle 1 databases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<ContentBlock>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +223,12 @@ CREATE TABLE IF NOT EXISTS snapshots (
     tag           TEXT
 )";
 
+// B-9 cycle 2 (BLOCK-2 fix): the `raw_blocks` BLOB column carries an
+// msgpack-encoded `Vec<ContentBlock>` so /continue can rehydrate the full
+// block structure (Text + ToolUse + ToolResult) instead of flattening to
+// text. Nullable for back-compat with B-9 cycle 1 rows. Migration for
+// pre-existing databases happens lazily in `SessionDag::open()` via
+// `ALTER TABLE ... ADD COLUMN`.
 const CREATE_SNAPSHOT_CONTEXT_TABLE: &str = "\
 CREATE TABLE IF NOT EXISTS snapshot_context (
     snap_id      TEXT NOT NULL REFERENCES snapshots(snap_id) ON DELETE CASCADE,
@@ -184,6 +237,7 @@ CREATE TABLE IF NOT EXISTS snapshot_context (
     content      BLOB NOT NULL,
     is_stubbed   INTEGER NOT NULL DEFAULT 0,
     stub_ssb_seq INTEGER,
+    raw_blocks   BLOB,
     PRIMARY KEY (snap_id, seq)
 )";
 
@@ -206,11 +260,27 @@ fn heuristic_token_count(bytes: &[u8]) -> usize {
 }
 
 fn nonneg_u64(val: i64) -> Result<u64, SessionDagError> {
-    u64::try_from(val).map_err(|_| SessionDagError::DatabaseCorrupted)
+    u64::try_from(val).map_err(SessionDagError::corrupt)
 }
 
 fn safe_i64(val: u64) -> Result<i64, SessionDagError> {
-    i64::try_from(val).map_err(|_| SessionDagError::DatabaseCorrupted)
+    i64::try_from(val).map_err(SessionDagError::corrupt)
+}
+
+/// B-9 cycle 2 (BLOCK-2 fix): add the `raw_blocks` BLOB column to
+/// `snapshot_context` if it is missing. Idempotent — safe to call on every
+/// `open()`. Databases created by `SessionDag::new()` already have the
+/// column from the CREATE TABLE statement.
+fn ensure_raw_blocks_column(db: &Connection) -> Result<(), SessionDagError> {
+    let mut stmt = db.prepare("PRAGMA table_info(snapshot_context)")?;
+    let column_present = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == "raw_blocks");
+    if !column_present {
+        db.execute_batch("ALTER TABLE snapshot_context ADD COLUMN raw_blocks BLOB")?;
+    }
+    Ok(())
 }
 
 pub struct SessionDag {
@@ -218,6 +288,56 @@ pub struct SessionDag {
     session_id: String,
     active_branches: Vec<BranchRef>,
     token_counter: TokenCountFn,
+}
+
+// ---------------------------------------------------------------------------
+// B-9 T4: BLOB encode/decode helpers for findings/code_changes/tests_written.
+//
+// Authoritative encoding is msgpack (rmp_serde). Legacy JSON BLOBs written
+// before the migration are still decoded transparently — the decoder tries
+// msgpack first and falls back to JSON when the first byte looks like a JSON
+// container (`{` or `[`). This is a one-time migration path: callers reading
+// a legacy BLOB and re-saving it will rewrite it as msgpack.
+// ---------------------------------------------------------------------------
+
+/// Encode a `serde_json::Value` (or any `Serialize`) as msgpack BLOB bytes.
+/// This is the authoritative encoding for findings/code_changes/tests_written.
+///
+/// # Errors
+/// Returns `SessionDagError::DatabaseCorrupted` if msgpack encoding fails
+/// (e.g. recursive types or non-serializable variants).
+pub fn encode_blob<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, SessionDagError> {
+    rmp_serde::to_vec_named(value).map_err(SessionDagError::corrupt)
+}
+
+/// Decode a BLOB into a `serde_json::Value` (or any `DeserializeOwned`).
+///
+/// Sniff-based codec selection:
+///   - bytes starting with `{` (0x7b) or `[` (0x5b) are treated as legacy
+///     JSON and decoded via `serde_json::from_slice`. msgpack never starts
+///     with `{` or `[` for the value types we care about — those bytes map
+///     to fix-int 0x7b / 0x5b which would only appear at the top level for
+///     a single-integer BLOB (we never store integer-only BLOBs).
+///   - everything else is treated as msgpack and decoded via
+///     `rmp_serde::from_slice`.
+///
+/// This sniff is deterministic and one-direction: legacy JSON BLOBs decode
+/// transparently, but newly written BLOBs (msgpack maps start with 0x80–0x8f
+/// or 0xde/0xdf — never 0x7b/0x5b) will never be misclassified.
+///
+/// # Errors
+/// Returns `SessionDagError::DatabaseCorrupted` if the chosen codec rejects
+/// the bytes.
+pub fn decode_blob<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, SessionDagError> {
+    let looks_like_json = matches!(bytes.first(), Some(&b'{') | Some(&b'['));
+    if looks_like_json {
+        if let Ok(value) = serde_json::from_slice::<T>(bytes) {
+            return Ok(value);
+        }
+        // Legacy JSON header but body parse failed — also try msgpack as a
+        // last resort (handles edge cases where 0x7b/0x5b is a fix-int).
+    }
+    rmp_serde::from_slice::<T>(bytes).map_err(SessionDagError::corrupt)
 }
 
 impl SessionDag {
@@ -247,6 +367,11 @@ impl SessionDag {
             db.execute_batch(CREATE_SNAPSHOTS_TABLE)?;
             db.execute_batch(CREATE_SNAPSHOT_CONTEXT_TABLE)?;
             db.execute_batch(CREATE_INDEXES)?;
+            // B-9 cycle 2 (BLOCK-2 fix): if a B-9-cycle-1 database is being
+            // re-opened via `new()` (CREATE TABLE IF NOT EXISTS is a no-op
+            // when the table already exists), apply the `raw_blocks`
+            // migration here too.
+            ensure_raw_blocks_column(&db)?;
             db.execute(
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
@@ -296,7 +421,7 @@ impl SessionDag {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|_| SessionDagError::DatabaseCorrupted)?;
+            .map_err(SessionDagError::corrupt)?;
 
         if version != SCHEMA_VERSION {
             return Err(SessionDagError::SchemaVersion {
@@ -308,8 +433,17 @@ impl SessionDag {
         let integrity: String =
             db.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         if integrity != "ok" {
-            return Err(SessionDagError::DatabaseCorrupted);
+            return Err(SessionDagError::corrupt(format!(
+                "PRAGMA integrity_check returned {integrity:?}"
+            )));
         }
+
+        // B-9 cycle 2 (BLOCK-2 fix): lazily migrate older databases that
+        // predate the `raw_blocks` column on `snapshot_context`. The column
+        // is added with NULL default so old rows continue to deserialize as
+        // `blocks: None`. This is idempotent — `pragma table_info` skips the
+        // ALTER if the column is already present.
+        ensure_raw_blocks_column(&db)?;
 
         let active_branches = Self::load_branches_from_db(&db, session_id)?;
 
@@ -353,7 +487,11 @@ impl SessionDag {
         for (snap_id, tag, created_at_i64) in rows {
             let name = tag
                 .strip_prefix("branch:")
-                .ok_or(SessionDagError::DatabaseCorrupted)?
+                .ok_or_else(|| {
+                    SessionDagError::corrupt(format!(
+                        "load_branches_from_db: tag missing 'branch:' prefix: {tag:?}"
+                    ))
+                })?
                 .to_owned();
             let created_at = nonneg_u64(created_at_i64)?;
             branches.push(BranchRef {
@@ -398,11 +536,23 @@ impl SessionDag {
     ) -> Result<(), SessionDagError> {
         // Pre-validate all conversions before opening a transaction
         let commit_hashes_json = serde_json::to_string(&snapshot.commit_hashes)
-            .map_err(|_| SessionDagError::DatabaseCorrupted)?;
+            .map_err(SessionDagError::corrupt)?;
         let created_at_i64 = safe_i64(snapshot.created_at)?;
         let msg_ssb_seqs: Vec<Option<i64>> = messages
             .iter()
             .map(|m| m.stub_ssb_seq.map(safe_i64).transpose())
+            .collect::<Result<_, _>>()?;
+        // B-9 cycle 2 (BLOCK-2 fix): pre-encode `blocks` to msgpack outside
+        // the transaction so a serde failure aborts cleanly without leaving
+        // the DB in BEGIN IMMEDIATE.
+        let msg_block_blobs: Vec<Option<Vec<u8>>> = messages
+            .iter()
+            .map(|m| {
+                m.blocks
+                    .as_ref()
+                    .map(|blocks| encode_blob(blocks))
+                    .transpose()
+            })
             .collect::<Result<_, _>>()?;
 
         self.db.execute_batch("BEGIN IMMEDIATE")?;
@@ -429,18 +579,24 @@ impl SessionDag {
             )?;
 
             let mut stmt = self.db.prepare_cached(
-                "INSERT INTO snapshot_context (snap_id, seq, role, content, is_stubbed, stub_ssb_seq) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO snapshot_context \
+                 (snap_id, seq, role, content, is_stubbed, stub_ssb_seq, raw_blocks) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
 
-            for (msg, ssb_seq) in messages.iter().zip(msg_ssb_seqs.iter()) {
+            for ((msg, ssb_seq), blob) in messages
+                .iter()
+                .zip(msg_ssb_seqs.iter())
+                .zip(msg_block_blobs.iter())
+            {
                 stmt.execute(params![
                     snapshot.snap_id,
                     msg.seq,
                     msg.role.to_string(),
                     msg.content,
-                    msg.is_stubbed as i64,
+                    msg.is_stubbed as i64, // NARROWING-OK: bool->i64 is widening; SQLite stores bool as 0 or 1.
                     ssb_seq,
+                    blob,
                 ])?;
             }
             Ok(())
@@ -490,7 +646,7 @@ impl SessionDag {
         })?;
 
         let commit_hashes: Vec<String> = serde_json::from_str(&snapshot.9)
-            .map_err(|_| SessionDagError::DatabaseCorrupted)?;
+            .map_err(SessionDagError::corrupt)?;
 
         let snap = Snapshot {
             snap_id: snapshot.0,
@@ -508,7 +664,7 @@ impl SessionDag {
         };
 
         let mut stmt = self.db.prepare_cached(
-            "SELECT seq, role, content, is_stubbed, stub_ssb_seq \
+            "SELECT seq, role, content, is_stubbed, stub_ssb_seq, raw_blocks \
              FROM snapshot_context WHERE snap_id = ?1 ORDER BY seq ASC",
         )?;
 
@@ -520,14 +676,28 @@ impl SessionDag {
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
                 ))
             })?
             .map(|r| {
                 let row = r.map_err(SessionDagError::Sqlite)?;
-                let role = DagMessageRole::from_str_checked(&row.1)
-                    .ok_or(SessionDagError::DatabaseCorrupted)?;
+                let role = DagMessageRole::from_str_checked(&row.1).ok_or_else(|| {
+                    SessionDagError::corrupt(format!(
+                        "load_snapshot: unknown role string {:?}",
+                        row.1
+                    ))
+                })?;
                 let stub_ssb_seq = row.4
                     .map(nonneg_u64)
+                    .transpose()?;
+                // B-9 cycle 2 (BLOCK-2 fix): rehydrate the original
+                // ContentBlock vector from the `raw_blocks` BLOB. NULL =
+                // legacy row OR stubbed message — caller falls back to
+                // ContentBlock::Text { text: <utf8(content)> }.
+                let blocks = row
+                    .5
+                    .as_deref()
+                    .map(decode_blob::<Vec<ContentBlock>>)
                     .transpose()?;
                 Ok(TrimmedMessage {
                     seq: row.0,
@@ -535,6 +705,7 @@ impl SessionDag {
                     content: row.2,
                     is_stubbed: row.3 != 0,
                     stub_ssb_seq,
+                    blocks,
                 })
             })
             .collect::<Result<Vec<_>, SessionDagError>>()?;
@@ -598,8 +769,8 @@ impl SessionDag {
 
         match result {
             Ok(r) => {
-                let commit_hashes: Vec<String> = serde_json::from_str(&r.9)
-                    .map_err(|_| SessionDagError::DatabaseCorrupted)?;
+                let commit_hashes: Vec<String> =
+                    serde_json::from_str(&r.9).map_err(SessionDagError::corrupt)?;
                 Ok(Some(Snapshot {
                     snap_id: r.0,
                     parent_id: r.1,
@@ -664,8 +835,8 @@ impl SessionDag {
                 other => SessionDagError::Sqlite(other),
             })?;
 
-            let commit_hashes: Vec<String> = serde_json::from_str(&row.9)
-                .map_err(|_| SessionDagError::DatabaseCorrupted)?;
+            let commit_hashes: Vec<String> =
+                serde_json::from_str(&row.9).map_err(SessionDagError::corrupt)?;
 
             let next_parent = row.1.clone();
 
@@ -783,9 +954,7 @@ impl SessionDag {
                 ssb_seq,
             };
 
-            let stub_bytes = rmp_serde::to_vec(&stub).map_err(|_| {
-                SessionDagError::DatabaseCorrupted
-            })?;
+            let stub_bytes = rmp_serde::to_vec(&stub).map_err(SessionDagError::corrupt)?;
 
             result[idx] = TrimmedMessage {
                 seq: msg.seq,
@@ -793,6 +962,11 @@ impl SessionDag {
                 content: stub_bytes,
                 is_stubbed: true,
                 stub_ssb_seq: Some(ssb_seq),
+                // B-9 cycle 2 (BLOCK-2 fix): a stubbed message has no
+                // recoverable block structure — only the SSB sequence the
+                // stub points at. Drop blocks; rehydration falls back to
+                // ContentBlock::Text when this row is /continued.
+                blocks: None,
             };
         }
 
@@ -1068,6 +1242,75 @@ impl SessionDag {
         })
     }
 
+    /// B-9 T7 — SPEC AMENDMENT #2: same as [`SessionDag::merge_branch`] but
+    /// additionally emits an SSB row with `action_type='checkpoint'` describing
+    /// the merge (winner, abandoned set, trunk_snap_id). The merge proceeds
+    /// even if the SSB write fails — the structural state is the source of
+    /// truth, and the SSB row is observability only.
+    ///
+    /// Per DECISION-A in workflow/reasoning/B-9-decisions.md, the row is
+    /// `SsbActionType::Checkpoint` (not `BranchMerge`) so the dashboard reads
+    /// merge events out of the same checkpoint stream as snapshot saves.
+    /// Metadata is encoded into [`crate::ssb::CheckpointPayload`] fields:
+    ///   - `agent_id` = "session_dag::merge_branch"
+    ///   - `step_index` = `created_at` ms
+    ///   - `agent_state_hash` = trunk snap_id
+    ///   - `grc_history_hash` = "branch_merge:winner=<name>;abandoned=<csv>"
+    ///
+    /// `ssb` is optional: when `None`, behaviour is identical to
+    /// `merge_branch` (no row emitted). When `Some`, exactly one Checkpoint
+    /// row is appended on a successful `MergeResult::Winner`.
+    pub async fn merge_branch_with_ssb(
+        &mut self,
+        winner_name: &str,
+        entropy: &mut impl EntropySource,
+        clock: &impl ClockProvider,
+        ssb: Option<&crate::ssb::Ssb>,
+    ) -> Result<MergeResult, SessionDagError> {
+        // Capture the abandoned-set BEFORE the merge so the payload reflects
+        // pre-merge state (post-merge active_branches is drained).
+        let abandoned_names: Vec<String> = self
+            .active_branches
+            .iter()
+            .filter(|b| b.name != winner_name)
+            .map(|b| b.name.clone())
+            .collect();
+
+        let result = self.merge_branch(winner_name, entropy, clock)?;
+
+        if let MergeResult::Winner { branch, .. } = &result {
+            if let Some(ssb_writer) = ssb {
+                let payload = crate::ssb::SsbPayload::Checkpoint(crate::ssb::CheckpointPayload {
+                    agent_state_hash: branch.tip_snap_id.clone(),
+                    grc_history_hash: format!(
+                        "branch_merge:winner={};abandoned={}",
+                        branch.name,
+                        abandoned_names.join(",")
+                    ),
+                    agent_id: "session_dag::merge_branch".to_owned(),
+                    step_index: branch.created_at,
+                    file_sizes: Vec::new(),
+                });
+                if let Err(e) = ssb_writer
+                    .write_payload(
+                        "session_dag",
+                        i64::try_from(branch.created_at).unwrap_or(0),
+                        payload,
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    // Observability-only — do not fail the merge.
+                    eprintln!(
+                        "warn: merge_branch_with_ssb SSB Checkpoint emit failed: {e}"
+                    );
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn close_branch(&mut self, name: &str) -> Result<(), SessionDagError> {
         let idx = self
             .active_branches
@@ -1123,9 +1366,10 @@ impl SessionDag {
             return Ok(Vec::new());
         };
 
-        // code_changes is stored as JSON — extract file paths from it
-        let value: serde_json::Value =
-            serde_json::from_slice(&data).map_err(|_| SessionDagError::DatabaseCorrupted)?;
+        // B-9 T4: code_changes is now stored as msgpack with a JSON fallback for
+        // BLOBs written before the migration. `decode_blob` tries msgpack first
+        // and falls back to JSON if the bytes look like JSON (legacy reader).
+        let value: serde_json::Value = decode_blob(&data)?;
 
         let mut paths = Vec::new();
         match &value {
@@ -1476,6 +1720,7 @@ mod tests {
             content: b"hello".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: TrimmedMessage = serde_json::from_str(&json).unwrap();
@@ -1531,7 +1776,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(SessionDagError::DatabaseCorrupted) | Err(SessionDagError::Sqlite(_))
+                Err(SessionDagError::DatabaseCorrupted { .. }) | Err(SessionDagError::Sqlite(_))
             ),
             "opening a corrupt file should return DatabaseCorrupted or Sqlite error"
         );
@@ -1593,6 +1838,7 @@ mod tests {
             content: content.to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         }
     }
 
@@ -1816,6 +2062,7 @@ mod tests {
             content: vec![0xAA; content_bytes],
             is_stubbed: false,
             stub_ssb_seq: ssb_seq,
+            blocks: None,
         }
     }
 
@@ -1891,6 +2138,7 @@ mod tests {
                 content: vec![0xBB; 5000],
                 is_stubbed: false,
                 stub_ssb_seq: None,
+                blocks: None,
             },
             TrimmedMessage {
                 seq: 5,
@@ -1898,6 +2146,7 @@ mod tests {
                 content: vec![0xCC; 5000],
                 is_stubbed: false,
                 stub_ssb_seq: None,
+                blocks: None,
             },
         ];
         let valid_seqs: HashSet<u64> = HashSet::new();
@@ -2109,6 +2358,7 @@ mod tests {
             content: original_content,
             is_stubbed: false,
             stub_ssb_seq: Some(77),
+            blocks: None,
         }];
         let valid_seqs: HashSet<u64> = [77].into_iter().collect();
 
@@ -2152,6 +2402,7 @@ mod tests {
             content: stub_bytes.clone(),
             is_stubbed: true,
             stub_ssb_seq: Some(55),
+            blocks: None,
         }];
         let valid_seqs: HashSet<u64> = [55].into_iter().collect();
 
@@ -2938,6 +3189,7 @@ mod tests {
                     content: format!("prefix-{seq}").into_bytes(),
                     is_stubbed: false,
                     stub_ssb_seq: None,
+                    blocks: None,
                 });
             } else if seq % 4 == 0 {
                 // Tool messages with large content (>stub_threshold to be stubbed)
@@ -2948,6 +3200,7 @@ mod tests {
                     content: payload,
                     is_stubbed: false,
                     stub_ssb_seq: Some(seq as u64),
+                    blocks: None,
                 });
             } else if seq % 4 == 1 {
                 messages.push(make_message(seq, DagMessageRole::User, b"user-input"));

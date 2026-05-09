@@ -157,6 +157,7 @@ fn make_phase(id: u64, concept: &str, step_start_id: u64, baby_start_id: u64) ->
         steps,
         depends_on: Vec::new(),
         research: None,
+        is_parallel: false,
     }
 }
 

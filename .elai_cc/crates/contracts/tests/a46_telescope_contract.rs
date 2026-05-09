@@ -181,18 +181,27 @@ fn micro_slot_telescope_is_400() {
 }
 
 #[test]
-fn all_model_config_telescope_targets_at_least_1050() {
-    for (name, profile) in [
-        ("micro_7b", ModelCapabilityProfile::micro_7b_12gb()),
-        ("micro_3b", ModelCapabilityProfile::micro_3b_12gb()),
-        ("large_32b", ModelCapabilityProfile::large_32b_48gb()),
-        ("micro_8gb", ModelCapabilityProfile::micro_8gb()),
-    ] {
-        assert!(
-            profile.fixed_slot_targets[2] >= FIXED_SLOT_TELESCOPE_TARGET,
-            "{name} fixed_slot_targets[2] = {} must be >= {}",
-            profile.fixed_slot_targets[2],
-            FIXED_SLOT_TELESCOPE_TARGET,
+fn all_model_config_telescope_targets_match_spec_table() {
+    // B-10 (DECISION-D): per token-efficiency-design.txt §2 table (lines 516-526),
+    // Telescope is per-tier, NOT a universal floor. The previous "at least
+    // FIXED_SLOT_TELESCOPE_TARGET=1050" assertion was an A-46 hand-set floor
+    // that diverged from spec. Spec table values are now the source of truth.
+    //
+    // The FIXED_SLOT_TELESCOPE_TARGET constant remains exported for any caller
+    // that wants the previous universal default; the constructors now use
+    // per-tier numbers from the spec table.
+    let _ = FIXED_SLOT_TELESCOPE_TARGET; // keep import used.
+    let cases = [
+        ("micro_7b", ModelCapabilityProfile::micro_7b_12gb(), 800usize),
+        ("micro_3b", ModelCapabilityProfile::micro_3b_12gb(), 1500usize),
+        ("large_32b", ModelCapabilityProfile::large_32b_48gb(), 1500usize),
+        ("micro_8gb", ModelCapabilityProfile::micro_8gb(), 600usize),
+    ];
+    for (name, profile, expected) in cases {
+        assert_eq!(
+            profile.fixed_slot_targets[2], expected,
+            "{name} fixed_slot_targets[2] = {} must equal spec §2 table value {}",
+            profile.fixed_slot_targets[2], expected,
         );
     }
 }

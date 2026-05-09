@@ -6,14 +6,14 @@
 //! attempt before escalation. Each attempt is emitted as a structured
 //! recovery event.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::worker_boot::WorkerFailureKind;
 
 /// The six failure scenarios that have known recovery recipes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureScenario {
     TrustPromptUnresolved,
@@ -137,7 +137,7 @@ pub enum RecoveryEvent {
 /// optional simulation knob for controlling step outcomes during tests.
 #[derive(Debug, Clone, Default)]
 pub struct RecoveryContext {
-    attempts: HashMap<FailureScenario, u32>,
+    attempts: FxHashMap<FailureScenario, u32>,
     events: Vec<RecoveryEvent>,
     /// Optional step index at which simulated execution fails.
     /// `None` means all steps succeed.
@@ -279,7 +279,7 @@ pub fn attempt_recovery(scenario: &FailureScenario, ctx: &mut RecoveryContext) -
         }
     } else {
         RecoveryResult::Recovered {
-            steps_taken: recipe.steps.len() as u32,
+            steps_taken: u32::try_from(recipe.steps.len()).unwrap_or(u32::MAX),
         }
     };
 

@@ -7,6 +7,11 @@ pub mod rate_limiter;
 pub mod robots;
 pub mod source_quality;
 
+// D4: ObscuraFetcher — headless-browser fetch via obscura subprocess.
+// Gated behind the "obscura" cargo feature so non-obscura builds have zero overhead.
+#[cfg(feature = "obscura")]
+pub mod obscura_fetcher;
+
 use serde::Deserialize;
 
 // Named constants — no magic numbers.

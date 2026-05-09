@@ -215,6 +215,7 @@ impl Evidence {
     /// Human-readable summary for the `GateDecision` SSB payload. Format is
     /// the six single-letter pass/fail flags in check order.
     pub fn summary(&self) -> String {
+        // NARROWING-OK: bool as u8 is always 0 or 1; no truncation possible.
         format!(
             "kr={} zu={} tfc={} tf={} zb={} dcg={}",
             self.knowledge_readiness as u8,

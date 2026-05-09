@@ -286,6 +286,7 @@ impl TerminalRenderer {
     ) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
+                // NARROWING-OK: HeadingLevel is H1-H6 enum; as u8 yields 1-6; From<HeadingLevel> not in pulldown-cmark 0.13.
                 Self::start_heading(state, level as u8, output);
             }
             Event::End(TagEnd::Paragraph) => output.push_str("\n\n"),

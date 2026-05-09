@@ -11,7 +11,7 @@
 //! Provides a stateful client registry that tool handlers can use to
 //! connect to MCP servers and invoke their capabilities.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::mcp::mcp_tool_name;
@@ -71,11 +71,18 @@ pub struct McpServerState {
 
 #[derive(Debug, Clone, Default)]
 pub struct McpToolRegistry {
-    inner: Arc<Mutex<HashMap<String, McpServerState>>>,
+    inner: Arc<Mutex<FxHashMap<String, McpServerState>>>,
     manager: Arc<OnceLock<Arc<tokio::sync::Mutex<McpServerManager>>>>,
 }
 
 impl McpToolRegistry {
+    // Mutex discipline: inner is a std::sync::Mutex over FxHashMap<String, McpServerState>.
+    // A poisoned mutex means a writer panicked while the lock was held, leaving the map in a
+    // partially-modified state. Silently continuing with that state (unwrap_or_else) risks
+    // returning stale/corrupt server records to callers. All .lock() calls below use .expect()
+    // so the invariant violation surfaces immediately. Do NOT apply this pattern to the tokio
+    // manager mutex (manager.lock().await at line ~193) — that is a different lock type.
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -96,7 +103,7 @@ impl McpToolRegistry {
         resources: Vec<McpResourceInfo>,
         server_info: Option<String>,
     ) {
-        let mut inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let mut inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: register_server rejects partial McpServerState map; upstream writer panicked mid-insert");
         inner.insert(
             server_name.to_owned(),
             McpServerState {
@@ -111,17 +118,19 @@ impl McpToolRegistry {
     }
 
     pub fn get_server(&self, server_name: &str) -> Option<McpServerState> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: get_server read may clone partial McpServerState");
         inner.get(server_name).cloned()
     }
 
     pub fn list_servers(&self) -> Vec<McpServerState> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
-        inner.values().cloned().collect()
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: list_servers would enumerate corrupt server map");
+        let mut v: Vec<McpServerState> = inner.values().cloned().collect();
+        v.sort_by(|a, b| a.server_name.cmp(&b.server_name));
+        v
     }
 
     pub fn list_resources(&self, server_name: &str) -> Result<Vec<McpResourceInfo>, String> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: list_resources may clone partial resource vec from corrupt state");
         match inner.get(server_name) {
             Some(state) => {
                 if state.status != McpConnectionStatus::Connected {
@@ -137,7 +146,7 @@ impl McpToolRegistry {
     }
 
     pub fn read_resource(&self, server_name: &str, uri: &str) -> Result<McpResourceInfo, String> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: read_resource may return partial McpResourceInfo from corrupt server state");
         let state = inner
             .get(server_name)
             .ok_or_else(|| format!("server '{}' not found", server_name))?;
@@ -158,7 +167,7 @@ impl McpToolRegistry {
     }
 
     pub fn list_tools(&self, server_name: &str) -> Result<Vec<McpToolInfo>, String> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: list_tools may clone partial tool vec from corrupt server state");
         match inner.get(server_name) {
             Some(state) => {
                 if state.status != McpConnectionStatus::Connected {
@@ -240,7 +249,7 @@ impl McpToolRegistry {
         tool_name: &str,
         arguments: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: call_tool pre-flight read may inspect corrupt server/tool state");
         let state = inner
             .get(server_name)
             .ok_or_else(|| format!("server '{}' not found", server_name))?;
@@ -280,7 +289,7 @@ impl McpToolRegistry {
         server_name: &str,
         status: McpConnectionStatus,
     ) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let mut inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: set_auth_status would mutate connection status on corrupt server state");
         let state = inner
             .get_mut(server_name)
             .ok_or_else(|| format!("server '{}' not found", server_name))?;
@@ -290,14 +299,14 @@ impl McpToolRegistry {
 
     /// Disconnect / remove a server.
     pub fn disconnect(&self, server_name: &str) -> Option<McpServerState> {
-        let mut inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let mut inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: disconnect would remove entry from corrupt server map");
         inner.remove(server_name)
     }
 
     /// Number of registered servers.
     #[must_use]
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().expect("mcp registry lock poisoned");
+        let inner = self.inner.lock().expect("mcp_tool_bridge.inner mutex poisoned: len would report corrupt map size");
         inner.len()
     }
 
@@ -309,6 +318,7 @@ impl McpToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    use rustc_hash::FxHashMap;
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]

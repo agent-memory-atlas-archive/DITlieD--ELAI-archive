@@ -19,6 +19,31 @@ use elai_reasoning::{
 };
 
 // ---------------------------------------------------------------------------
+// Kill-switch: ELAI_DISABLE_PIPELINE_GRC
+// ---------------------------------------------------------------------------
+
+/// Env-var kill switch (B-8). When set to "1" or "true" (case-insensitive),
+/// the orchestrator construction site skips wiring `PipelineGrc` and every
+/// gated call site (ground_plan / generate_csq / check_inline_feasibility /
+/// auditor anti-rubber-stamp seed) short-circuits to a no-op + one-shot
+/// tracing::warn. Precedent: 11 sibling kill-switches such as
+/// `ELAI_DISABLE_PROVIDER_SIGNALS` and `ELAI_DISABLE_IRREVERSIBLE_CLASSIFIER`.
+pub const ELAI_DISABLE_PIPELINE_GRC_ENV: &str = "ELAI_DISABLE_PIPELINE_GRC";
+
+/// Returns true when the kill switch env-var is set to "1" or "true"
+/// (case-insensitive). All other values (including absent / empty / "0") are
+/// treated as the gate being enabled.
+pub fn pipeline_grc_disabled_via_env() -> bool {
+    match std::env::var(ELAI_DISABLE_PIPELINE_GRC_ENV) {
+        Ok(v) => {
+            let trimmed = v.trim();
+            trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
+        }
+        Err(_) => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PipelineGrcError
 // ---------------------------------------------------------------------------
 
@@ -67,6 +92,20 @@ impl PipelineGrc {
     /// ```
     pub fn from_engine(engine: BasicGrcEngine) -> Self {
         Self { engine }
+    }
+
+    /// Create a `PipelineGrc` using `AgentGrcConfig::default()`.
+    ///
+    /// Production construction sites (dashboard task runner, CLI `start_task_runner`
+    /// call sites) use this to inject a live GRC instance into `TaskRunnerConfig`
+    /// when no per-role config is available yet. The default config enables all
+    /// verification methods, requires the standard 5-step chain, and does not
+    /// enforce scope enumeration or CSQ.
+    ///
+    /// Call sites that have a real per-role config should use `PipelineGrc::new`
+    /// with the loaded `AgentGrcConfig` instead.
+    pub fn new_from_default() -> Self {
+        Self::new(AgentGrcConfig::default())
     }
 
     // -----------------------------------------------------------------------

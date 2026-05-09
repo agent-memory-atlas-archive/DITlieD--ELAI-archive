@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::types::{AgentGrcConfig, GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel, VerificationMethod};
 
@@ -70,12 +70,12 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
                     grounding_level: global_defaults.grounding_level,
                     csq_required: true,
                     allowed_methods: global_defaults.allowed_methods.clone(),
-                    transition_overrides: HashMap::new(),
+                    transition_overrides: FxHashMap::default(),
                     require_scope_enumeration: true,
                 }
             }
             "auditor" => {
-                let mut overrides = HashMap::new();
+                let mut overrides = FxHashMap::default();
                 overrides.insert(GrcState::Hypothesize, vec![GrcState::Verify]);
                 overrides.insert(GrcState::Verify, vec![GrcState::Verify, GrcState::Observe]);
                 AgentGrcConfig {
@@ -105,7 +105,7 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
                         VerificationMethod::FileCheck,
                         VerificationMethod::SourceCheck,
                     ],
-                    transition_overrides: HashMap::new(),
+                    transition_overrides: FxHashMap::default(),
                     require_scope_enumeration: false,
                 }
             }
@@ -124,7 +124,7 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
                         VerificationMethod::FileCheck,
                         VerificationMethod::SourceCheck,
                     ],
-                    transition_overrides: HashMap::new(),
+                    transition_overrides: FxHashMap::default(),
                     require_scope_enumeration: false,
                 }
             }
@@ -139,12 +139,12 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
                         VerificationMethod::FileCheck,
                         VerificationMethod::SourceCheck,
                     ],
-                    transition_overrides: HashMap::new(),
+                    transition_overrides: FxHashMap::default(),
                     require_scope_enumeration: false,
                 }
             }
             "designer" => {
-                let mut overrides = HashMap::new();
+                let mut overrides = FxHashMap::default();
                 overrides.insert(GrcState::PlanAction, vec![GrcState::Verify]);
                 AgentGrcConfig {
                     role: role.to_string(),
@@ -178,7 +178,7 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
                     grounding_level: global_defaults.grounding_level,
                     csq_required: global_defaults.csq_required,
                     allowed_methods: global_defaults.allowed_methods.clone(),
-                    transition_overrides: HashMap::new(),
+                    transition_overrides: FxHashMap::default(),
                     require_scope_enumeration: false,
                 }
             }
@@ -247,7 +247,7 @@ impl AgentGrcConfigLoader for TomlConfigLoader {
 /// with the config's transition_overrides (additive-only union).
 pub fn effective_allowed_next(
     state: GrcState,
-    overrides: &HashMap<GrcState, Vec<GrcState>>,
+    overrides: &FxHashMap<GrcState, Vec<GrcState>>,
 ) -> Vec<GrcState> {
     let base = state.allowed_next();
     let mut merged: Vec<GrcState> = base.to_vec();
@@ -311,4 +311,67 @@ fn all_verification_methods() -> Vec<VerificationMethod> {
         VerificationMethod::ApiCheck,
         VerificationMethod::ApiRegistryCheck,
     ]
+}
+
+// ---------------------------------------------------------------------------
+// agent_grc_config_for_role: canonical per-role config table
+// ---------------------------------------------------------------------------
+
+/// Return the canonical `AgentGrcConfig` for a role name string.
+///
+/// This is the single source of truth for role configs that are **not** covered
+/// by [`TomlConfigLoader`] (i.e., roles that exist in the agent pool but have
+/// no TOML override path yet). Roles already handled by `TomlConfigLoader` are
+/// re-exported here so callers can use one lookup function regardless of source.
+///
+/// Currently handles: `context_compiler`, `media_validator`.
+/// For all other role names, returns `None` (caller falls back to
+/// `AgentGrcConfig::default()` or `TomlConfigLoader::load_config`).
+///
+/// # B-5 wiring note
+/// `agent_pool::default_grc_config` calls this for `ContextCompiler` and
+/// `MediaValidator` arms, eliminating the divergent `..AgentGrcConfig::default()`
+/// that previously yielded `required_steps=[]` (silently violating
+/// `validate_config` rule (a)).
+pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
+    match role {
+        "context_compiler" => Some(AgentGrcConfig {
+            role: role.to_string(),
+            budget: GrcBudget::new(3, 600),
+            // Observe-only: context compiler reads, never mutates.
+            required_steps: vec![GrcState::Observe],
+            grounding_level: GroundingLevel::High,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+            ],
+            transition_overrides: FxHashMap::default(),
+            require_scope_enumeration: false,
+        }),
+        "media_validator" => {
+            // Observe->Verify is not in the default GrcState transition graph
+            // (Observe.allowed_next = [Hypothesize, Converge, Status]).
+            // Add an additive transition override so validate_config rule (b)
+            // passes if this config is ever run through TomlConfigLoader::validate_config.
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(5, 800),
+                // Observe then Verify: validate media assets without mutating.
+                required_steps: vec![GrcState::Observe, GrcState::Verify],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        _ => None,
+    }
 }

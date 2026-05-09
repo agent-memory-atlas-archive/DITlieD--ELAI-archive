@@ -487,7 +487,8 @@ impl LlmProvider for SidecarProvider {
                     }
                     tracing::debug!(
                         target: "providers::sidecar",
-                        elapsed_ms = elapsed.as_millis() as u64,
+                        // NARROWING-OK: elapsed for a sidecar request never exceeds u64::MAX ms (584M years).
+                        elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64,
                         dola = self.config.dola_enabled,
                         turboquant_bits = self.config.turboquant_bits,
                         etc_triggered = triggered,
@@ -498,7 +499,8 @@ impl LlmProvider for SidecarProvider {
                 Err(e) => {
                     tracing::debug!(
                         target: "providers::sidecar",
-                        elapsed_ms = elapsed.as_millis() as u64,
+                        // NARROWING-OK: elapsed for a sidecar request never exceeds u64::MAX ms (584M years).
+                        elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64,
                         error = %e,
                         "sidecar completion failed"
                     );
@@ -526,6 +528,14 @@ impl LlmProvider for SidecarProvider {
 
     fn token_count_estimate(&self, text: &str) -> usize {
         text.len() / 4 + 1
+    }
+
+    /// B-10 (DECISION-B): expose the sidecar's bound model identifier.
+    /// SidecarConfig.model is set at startup (cli/main.rs:2558 — abliterated 7B
+    /// local path by default). Returns empty if unset (rare); caller falls back
+    /// to micro_7b_12gb with a warn.
+    fn model_name(&self) -> &str {
+        &self.config.model
     }
 }
 

@@ -10,9 +10,10 @@
 use blake3;
 use elai_rules::predicate::VerdictResult;
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::LazyLock;
-use std::time::Instant;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use crate::import_extractor::{
     check_deprecated_imports, extract_imports, DeprecatedImport, ImportLanguage,
@@ -55,7 +56,7 @@ pub struct LanguageLimits {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct FileDisciplineConfig {
     #[serde(default)]
-    pub limits: HashMap<String, LanguageLimits>,
+    pub limits: FxHashMap<String, LanguageLimits>,
     /// File extensions exempt from size checks (e.g. generated code).
     #[serde(default)]
     pub exempt_extensions: Vec<String>,
@@ -79,7 +80,7 @@ impl FileDisciplineConfig {
 
 impl Default for FileDisciplineConfig {
     fn default() -> Self {
-        let mut limits = HashMap::new();
+        let mut limits = FxHashMap::default();
         // Per CC design spec section 3.2 table
         limits.insert("rust".into(), LanguageLimits { production_warn: 100, test_warn: 200, hard_block: 400 });
         limits.insert("go".into(), LanguageLimits { production_warn: 100, test_warn: 200, hard_block: 400 });
@@ -116,6 +117,8 @@ impl Default for FileDisciplineConfig {
 const DEFAULT_PRODUCTION_WARN: usize = 150;
 const DEFAULT_TEST_WARN: usize = 250;
 const DEFAULT_HARD_BLOCK: usize = 600;
+/// Maximum lines T2Hook will inspect before short-circuiting (circuit-breaker).
+const T2_CIRCUIT_BREAKER_LINES: usize = 5000;
 
 /// Threshold multiplier for "approaching limit" INFO (80% of WARN).
 const APPROACHING_LIMIT_RATIO: f64 = 0.8;
@@ -206,6 +209,9 @@ struct LazyPattern {
     language: Option<&'static str>,
 }
 
+// CLAUDE-md-EXCEPTION: static-init-with-literal-regex — all LazyLock<Regex> statics below use
+// provably valid literal patterns; per CLAUDE.md "const/static init with provably valid literals"
+// exception, .unwrap() in these closures is exempt from production-path unwrap ban.
 // Universal patterns
 static RE_TODO_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*TODO\b").unwrap());
 static RE_FIXME_SLASH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"//\s*FIXME\b").unwrap());
@@ -386,9 +392,10 @@ impl T1Hook {
         action: &str,
         source: &str,
         file_path: &str,
-        metric_values: HashMap<String, f64>,
+        metric_values: FxHashMap<String, f64>,
     ) -> Result<HookVerdict, T1Error> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         let ctx = EvaluationContext {
             action,
@@ -430,7 +437,7 @@ impl T1Hook {
             final_verdict = Self::merge_verdicts(final_verdict, size_verdict);
         }
 
-        let duration = start.elapsed();
+        let duration = _clock.elapsed_since(start);
         if duration.as_millis() > 1 {
             tracing::warn!("T1 hook exceeded 1ms target: {:?}", duration);
         }
@@ -686,7 +693,8 @@ impl T2Hook {
         source: &str,
         file_path: &str,
     ) -> Result<Option<HookVerdict>, T2Error> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         // Circuit breaker: count lines first
         let line_count = source.lines().count();
@@ -776,7 +784,7 @@ impl T2Hook {
             }
         }
 
-        let duration = start.elapsed();
+        let duration = _clock.elapsed_since(start);
         if duration.as_millis() > 10 {
             tracing::warn!(duration_ms = ?duration.as_millis(), "T2 hook exceeded 10ms target");
         }
@@ -967,6 +975,8 @@ impl T2Hook {
         source: &str,
         findings: &mut Vec<(String, String)>,
     ) {
+        // CLAUDE-md-EXCEPTION: static-init-with-literal-regex — function-scoped LazyLock<Regex>
+        // statics below; same exception as module-level statics applies.
         // Security patterns
         static EVAL_RE: LazyLock<regex::Regex> =
             LazyLock::new(|| regex::Regex::new(r"\beval\s*\(").unwrap());
@@ -1611,11 +1621,12 @@ impl T3Hook {
     /// All findings are advisory (Warn) per Batch 2A spec.
     /// Performance target: <5ms.
     pub fn evaluate(&self, source: &str, file_path: &str) -> Option<HookVerdict> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         for pattern in &self.patterns {
             if pattern.matches(source, file_path) {
-                let duration = start.elapsed();
+                let duration = _clock.elapsed_since(start);
                 if duration.as_millis() > 5 {
                     tracing::warn!("T3 hook exceeded 5ms target: {:?}", duration);
                 }
@@ -1631,6 +1642,8 @@ impl T3Hook {
     }
 
     fn default_patterns() -> Vec<AmbiguousPattern> {
+        // CLAUDE-md-EXCEPTION: static-init-with-literal-regex — function-scoped LazyLock<Regex>
+        // statics below; same exception as module-level statics applies.
         // Static regex compilation — provably valid literals, compiled once.
         static SWALLOW_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r"except\s+\w+\s*:\s*\n\s*pass").unwrap()
@@ -1771,7 +1784,7 @@ impl TieredAnalysis {
     pub fn new(rule_engine: Box<dyn RuleEngine + Send + Sync>, fsm_phase: FsmPhaseBit) -> Self {
         Self {
             t1: T1Hook::new(rule_engine, fsm_phase),
-            t2: T2Hook::new(5000),
+            t2: T2Hook::new(T2_CIRCUIT_BREAKER_LINES),
             t3: T3Hook::new(),
         }
     }
@@ -1808,7 +1821,7 @@ impl TieredAnalysis {
     ) -> Self {
         Self {
             t1: T1Hook::with_rules(rule_engine, fsm_phase, rules),
-            t2: T2Hook::new(5000),
+            t2: T2Hook::new(T2_CIRCUIT_BREAKER_LINES),
             t3: T3Hook::new(),
         }
     }
@@ -1822,7 +1835,7 @@ impl TieredAnalysis {
     ) -> Self {
         Self {
             t1: T1Hook::with_rules(rule_engine, fsm_phase, rules),
-            t2: T2Hook::with_deprecated_imports(5000, deprecated_imports),
+            t2: T2Hook::with_deprecated_imports(T2_CIRCUIT_BREAKER_LINES, deprecated_imports),
             t3: T3Hook::new(),
         }
     }
@@ -1839,9 +1852,10 @@ impl TieredAnalysis {
         action_type: &str,
         source: Option<&str>,
         file_path: Option<&str>,
-        metric_values: HashMap<String, f64>,
+        metric_values: FxHashMap<String, f64>,
     ) -> Result<TieredAnalysisResult, TieredAnalysisError> {
-        let total_start = Instant::now();
+        let _clock = OsClock;
+        let total_start = _clock.now();
 
         // T1: Always fires
         let t1_source = source.unwrap_or("");
@@ -1894,7 +1908,7 @@ impl TieredAnalysis {
             HookVerdict::Allow
         };
 
-        let duration_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+        let duration_ms = _clock.elapsed_since(total_start).as_secs_f64() * 1000.0;
 
         Ok(TieredAnalysisResult {
             t1_verdict,
@@ -2149,7 +2163,7 @@ mod tests {
         );
 
         // Source with TODO should trigger WARN
-        let result = hook.evaluate("file_write", "// TODO fix this", "src/lib.rs", HashMap::new());
+        let result = hook.evaluate("file_write", "// TODO fix this", "src/lib.rs", FxHashMap::default());
         assert!(result.is_ok());
         let verdict = result.unwrap();
         assert!(verdict.is_warn(), "GREP_PATTERN TODO should produce WARN, got {:?}", verdict);
@@ -2168,7 +2182,7 @@ mod tests {
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
 
         // Use clean source — lazy patterns still fire even with empty rule set
-        let result = hook.evaluate("file_write", "fn add(a: i32, b: i32) -> i32 { a + b }", "src/main.rs", HashMap::new());
+        let result = hook.evaluate("file_write", "fn add(a: i32, b: i32) -> i32 { a + b }", "src/main.rs", FxHashMap::default());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HookVerdict::Allow, "empty rules + clean source should allow");
     }
@@ -2202,7 +2216,7 @@ mod tests {
             vec![(rule, compiled)],
         );
 
-        let result = hook.evaluate("file_write", "result = eval(x)", "script.py", HashMap::new());
+        let result = hook.evaluate("file_write", "result = eval(x)", "script.py", FxHashMap::default());
         assert!(result.is_ok());
         let verdict = result.unwrap();
         assert!(verdict.is_block(), "BLOCK severity rule should produce Block verdict, got {:?}", verdict);
@@ -2217,7 +2231,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "fn main() {\n    // TODO implement\n}\n";
-        let result = hook.evaluate("file_write", source, "src/main.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "src/main.rs", FxHashMap::default()).unwrap();
         assert!(result.is_warn(), "T1 should WARN on TODO comment, got {:?}", result);
     }
 
@@ -2228,7 +2242,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "fn compute() -> i32 { todo!() }";
-        let result = hook.evaluate("file_write", source, "src/lib.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "src/lib.rs", FxHashMap::default()).unwrap();
         assert!(result.is_warn(), "T1 should WARN on todo!(), got {:?}", result);
     }
 
@@ -2239,7 +2253,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "def handler():\n    pass\n";
-        let result = hook.evaluate("file_write", source, "handler.py", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "handler.py", FxHashMap::default()).unwrap();
         assert!(result.is_warn(), "T1 should WARN on bare pass, got {:?}", result);
     }
 
@@ -2250,7 +2264,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "function handler() { throw new Error('not implemented'); }";
-        let result = hook.evaluate("file_write", source, "handler.ts", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "handler.ts", FxHashMap::default()).unwrap();
         assert!(result.is_warn(), "T1 should WARN on throw not implemented, got {:?}", result);
     }
 
@@ -2261,7 +2275,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "console.log('debug');\n";
-        let result = hook.evaluate("file_write", source, "handler.test.ts", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "handler.test.ts", FxHashMap::default()).unwrap();
         assert_eq!(result, HookVerdict::Allow, "console.log in test files should be allowed");
     }
 
@@ -2272,7 +2286,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = "fn add(a: i32, b: i32) -> i32 { a + b }\n";
-        let result = hook.evaluate("file_write", source, "src/math.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", source, "src/math.rs", FxHashMap::default()).unwrap();
         assert_eq!(result, HookVerdict::Allow, "clean code should be allowed");
     }
 
@@ -2286,7 +2300,7 @@ mod tests {
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         // Rust hard block is 400 lines
         let source = (0..450).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
-        let result = hook.evaluate("file_write", &source, "src/big.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", &source, "src/big.rs", FxHashMap::default()).unwrap();
         assert!(result.is_block(), "File >400 lines Rust should BLOCK, got {:?}", result);
     }
 
@@ -2298,7 +2312,7 @@ mod tests {
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         // Rust production WARN is 100, hard block is 400
         let source = (0..150).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
-        let result = hook.evaluate("file_write", &source, "src/medium.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", &source, "src/medium.rs", FxHashMap::default()).unwrap();
         assert!(result.is_warn(), "File >100 lines Rust should WARN, got {:?}", result);
     }
 
@@ -2309,7 +2323,7 @@ mod tests {
         let engine = DefaultRuleEngine::new(Box::new(PassAstEvaluator), Box::new(EmptyDkgQuerier));
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         let source = (0..50).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
-        let result = hook.evaluate("file_write", &source, "src/small.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", &source, "src/small.rs", FxHashMap::default()).unwrap();
         assert_eq!(result, HookVerdict::Allow, "Small file should be allowed");
     }
 
@@ -2321,7 +2335,7 @@ mod tests {
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         // Rust test WARN is 200, so 150 lines in a test file should be fine
         let source = (0..150).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
-        let result = hook.evaluate("file_write", &source, "tests/integration_test.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("file_write", &source, "tests/integration_test.rs", FxHashMap::default()).unwrap();
         assert_eq!(result, HookVerdict::Allow, "150 lines in test file (limit 200) should be allowed");
     }
 
@@ -2333,7 +2347,7 @@ mod tests {
         let hook = T1Hook::new(Box::new(engine), FsmPhaseBit::EXECUTING);
         // 500 lines on a non-file_write action should not trigger size check
         let source = (0..500).map(|i| format!("let x{i} = {i};")).collect::<Vec<_>>().join("\n");
-        let result = hook.evaluate("ssb_write", &source, "src/big.rs", HashMap::new()).unwrap();
+        let result = hook.evaluate("ssb_write", &source, "src/big.rs", FxHashMap::default()).unwrap();
         // Only lazy patterns would fire (no TODO/pass/etc in this source), so Allow
         assert_eq!(result, HookVerdict::Allow, "Non-file_write should skip file size check");
     }

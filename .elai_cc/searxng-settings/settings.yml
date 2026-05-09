@@ -1,6 +1,6 @@
 use_default_settings: true
 server:
-  secret_key: "changeme"
+  secret_key: "e088d2e9b535b3f0299dde8ef78d5bc90232f96e39727db91d6e02ff1937a648"
   limiter: false
 search:
   formats: [json]

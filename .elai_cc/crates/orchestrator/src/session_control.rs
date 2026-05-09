@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use elai_core::paths::{ELAI_DATA_DIR_NAME, SESSIONS_DIR_NAME};
+
 use crate::session::{Session, SessionError};
 
 pub const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
@@ -81,7 +83,8 @@ pub fn sessions_dir() -> Result<PathBuf, SessionControlError> {
 pub fn managed_sessions_dir_for(
     base_dir: impl AsRef<Path>,
 ) -> Result<PathBuf, SessionControlError> {
-    let path = base_dir.as_ref().join(".elai").join("sessions");
+    // B-1: canonical sessions dir is .elai_cc/sessions (not .elai/sessions).
+    let path = base_dir.as_ref().join(ELAI_DATA_DIR_NAME).join(SESSIONS_DIR_NAME);
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -318,13 +321,13 @@ fn session_id_from_path(path: &Path) -> Option<String> {
 
 fn format_missing_session_reference(reference: &str) -> String {
     format!(
-        "session not found: {reference}\nHint: managed sessions live in .elai/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
+        "session not found: {reference}\nHint: managed sessions live in .elai_cc/sessions/. Try `{LATEST_SESSION_REFERENCE}` for the most recent session or `/session list` in the REPL."
     )
 }
 
 fn format_no_managed_sessions() -> String {
     format!(
-        "no managed sessions found in .elai/sessions/\nStart `elai` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
+        "no managed sessions found in .elai_cc/sessions/\nStart `elai` to create a session, then rerun with `--resume {LATEST_SESSION_REFERENCE}`."
     )
 }
 

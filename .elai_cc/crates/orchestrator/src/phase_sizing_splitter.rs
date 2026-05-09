@@ -157,6 +157,7 @@ impl Default for DefaultPhaseSizingSplitter {
     fn default() -> Self {
         Self {
             max_sub_tasks: DEFAULT_MAX_SUB_TASKS,
+            // NARROWING-OK: MAX_SPLIT_DEPTH = 2 (u32), const value always fits u8.
             max_depth: MAX_SPLIT_DEPTH as u8,
             budget_ratio: SPLIT_RATIO as f32,
         }
@@ -173,10 +174,13 @@ impl DefaultPhaseSizingSplitter {
         let base = if target.estimated_tokens > 0 {
             target.estimated_tokens
         } else {
-            (target.summary.len() as u32) / 4
+            (u32::try_from(target.summary.len()).unwrap_or(u32::MAX)) / 4
         };
-        let contract_count = (target.input_contracts.len()
-            + target.output_contracts.len()) as u32;
+        let contract_count = u32::try_from(
+            target.input_contracts.len() + target.output_contracts.len(),
+        )
+        .unwrap_or(u32::MAX);
+        // NARROWING-OK: CONTRACT_OVERHEAD = 200 (u64), const value always fits u32.
         base.saturating_add(contract_count.saturating_mul(CONTRACT_OVERHEAD as u32))
     }
 
@@ -187,7 +191,7 @@ impl DefaultPhaseSizingSplitter {
         // Each output contract is a natural boundary; add one so N
         // boundaries yield N sub-tasks. Floor at MIN_SUB_TASKS and cap at
         // max_sub_tasks.
-        let boundaries = target.output_contracts.len().max(1) as u32;
+        let boundaries = u32::try_from(target.output_contracts.len().max(1)).unwrap_or(u32::MAX);
         boundaries.clamp(MIN_SUB_TASKS, self.max_sub_tasks)
     }
 }
@@ -198,6 +202,9 @@ impl TaskSplitter for DefaultPhaseSizingSplitter {
         // Default budget used when estimate_complexity is called without a
         // paired split call. The split call below re-evaluates against the
         // caller-supplied budget and may flip the verdict.
+        // NARROWING-OK: f32->u32; no TryFrom<f32> in std; result is clamped by
+        // DEFAULT_TOKEN_BUDGET which is well within u32::MAX.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold =
             ((DEFAULT_TOKEN_BUDGET as f32) * self.budget_ratio) as u32;
         let should_split = token_estimate > threshold
@@ -218,6 +225,9 @@ impl TaskSplitter for DefaultPhaseSizingSplitter {
         // caller-supplied budget. Cheap early-exit keeps the happy path
         // (small tasks) allocation-free.
         let token_estimate = Self::estimate_tokens(target);
+        // NARROWING-OK: f32->u32; no TryFrom<f32> in std; budget is u32 so (budget as f32)*ratio
+        // stays within u32::MAX range for any ratio in [0.0, 1.0].
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let threshold = ((budget as f32) * self.budget_ratio) as u32;
         if token_estimate <= threshold {
             return Vec::new();

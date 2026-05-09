@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 elai-core = { path = "../core" }
 futures-util = "0.3"
+rustc-hash.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +20,11 @@ url = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util", "macros", "rt"] }
+
+[features]
+# D4: enables ObscuraFetcher (headless-browser subprocess). Off by default.
+# Requires the obscura binary; see tools/obscura/. Selected at runtime via ELAI_FETCHER=obscura.
+obscura = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

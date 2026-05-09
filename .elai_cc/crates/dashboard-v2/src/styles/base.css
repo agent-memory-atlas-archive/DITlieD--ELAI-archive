@@ -1,0 +1,205 @@
+/* ============================================================
+   ELAI Dashboard — Base Reset & Global Styles
+   Depends on: tokens.css (must be imported first)
+   ============================================================ */
+
+/* ----------------------------------------------------------
+   BOX MODEL RESET
+---------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ----------------------------------------------------------
+   DOCUMENT ROOT
+---------------------------------------------------------- */
+html {
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+html,
+body,
+#app {
+  height: 100vh;
+  width: 100vw;
+}
+
+body {
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden; /* app controls scrolling per panel */
+}
+
+/* ----------------------------------------------------------
+   BUTTON RESET
+   Components build on top of this blank slate.
+---------------------------------------------------------- */
+button {
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: inherit;
+  appearance: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* ----------------------------------------------------------
+   INPUT / TEXTAREA RESET
+   Focus ring is supplied via tokens.css :focus-visible rule.
+---------------------------------------------------------- */
+input,
+textarea {
+  font: inherit;
+  outline: none;
+  border: none;
+  background: none;
+  color: inherit;
+  appearance: none;
+}
+
+/* ----------------------------------------------------------
+   LINKS
+---------------------------------------------------------- */
+a {
+  color: var(--teal);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ----------------------------------------------------------
+   PLACEHOLDER
+---------------------------------------------------------- */
+::placeholder {
+  color: var(--text-ghost);
+  opacity: 1;
+}
+
+/* ----------------------------------------------------------
+   HEADINGS
+   Restrained — weight 500 preferred over 700.
+---------------------------------------------------------- */
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+/* ----------------------------------------------------------
+   LIST RESET (used internally by components)
+---------------------------------------------------------- */
+ul,
+ol {
+  list-style: none;
+}
+
+/* ----------------------------------------------------------
+   IMAGE RESET
+---------------------------------------------------------- */
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* ----------------------------------------------------------
+   UTILITY CLASSES
+   8 total — layout primitives only; no visual chrome here.
+---------------------------------------------------------- */
+
+/* flex column with no gap — set gap in the caller */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* flex row with vertical center */
+.row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+/* flex wrap with default gap — good for tag clouds, badges */
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+/* center both axes */
+.center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* monospaced text — paths, IDs, timestamps, FSM state */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* display weight — ELAI wordmark, large labels */
+.display {
+  font-family: var(--font-display);
+  font-weight: 200;
+  letter-spacing: 0.15em;
+}
+
+/* subdued secondary text */
+.muted {
+  color: var(--text-secondary);
+}
+
+/* near-invisible ghost text */
+.ghost {
+  color: var(--text-ghost);
+}
+
+/* ----------------------------------------------------------
+   ACCESSIBILITY — screen-reader-only
+---------------------------------------------------------- */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ----------------------------------------------------------
+   BREATH SHORTCUT
+   Applies the breath animation from motion.css.
+   Used on live-indicator dots and EXECUTING pulse elements.
+---------------------------------------------------------- */
+.breath {
+  animation: breath 2.2s ease-in-out infinite;
+}

@@ -24,13 +24,16 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use elai_core::tool_dispatcher::{
     ClassifiedFailure, CommitOutcome, EditMatchTier, EditOutcome, EditRequest, FailureInput,
     FileView, GitBranchPolicy, GitCommitRequest, IncrementalOutcome, IncrementalRequest,
-    ToolDispatchError, ToolDispatcher, ToolFailureCategory, ValidateRequest, ValidationTierResult,
+    SimilarityHint, ToolDispatchError, ToolDispatcher, ToolFailureCategory, ValidateRequest,
+    ValidationTierResult,
 };
+use crate::string_similarity::best_line_match;
 // `ValidationTier` is only used inside the test module; exposed here so
 // the `#[cfg(test)]` block below keeps compiling without a separate
 // feature-gated import.
@@ -95,6 +98,43 @@ impl InProcessToolDispatcher {
             validator,
             disabled: false,
         }
+    }
+
+    /// B-20A Task 7: file-read with explicit `force_full` override.
+    ///
+    /// Decision D (workflow/reasoning/B-20A-decisions.md): the
+    /// `ToolDispatcher` trait stays unchanged. This is an inherent method
+    /// on `InProcessToolDispatcher`; the 50% context-budget guard is
+    /// enforced caller-side in
+    /// `elai_orchestrator::task_runner::enforce_file_read_budget_guard`.
+    ///
+    /// Behaviour:
+    ///   * `force_full == false` and `lines > line_threshold` → outline
+    ///     only (signatures + imports), no full content.
+    ///   * `force_full == true` → return the full content regardless of
+    ///     line count. The caller is responsible for verifying that the
+    ///     full read fits within remaining context budget.
+    ///   * `lines <= line_threshold` → full content (force_full
+    ///     irrelevant).
+    pub async fn dispatch_file_read_with_force_full(
+        &self,
+        path: PathBuf,
+        line_threshold: usize,
+        force_full: bool,
+    ) -> Result<FileView, ToolDispatchError> {
+        if self.disabled {
+            return Err(ToolDispatchError::NotImplemented(
+                "dispatch_file_read_with_force_full disabled via env".into(),
+            ));
+        }
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(ToolDispatchError::IoError)?;
+        Ok(generate_file_view_with_override(
+            &content,
+            line_threshold,
+            force_full,
+        ))
     }
 }
 
@@ -260,71 +300,92 @@ fn utf8_char_len(first_byte: u8) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Failure classification (13-variant regex table)
+// Failure classification (9-variant regex table — B-20A reduction)
 // ---------------------------------------------------------------------------
 
-/// 13-category classifier with (category, confidence, triggering-regex)
-/// triples. `confidence = 1.0` on exact-regex match, `0.7` on a partial
-/// substring match. Every production run of the existing
-/// `failure_taxonomy::ClassifyHandler` returns a category; we mirror its
-/// priority order here so the two classifiers never disagree.
+/// 9-category classifier with (category, triggering-substrings, confidence)
+/// triples. Order is load-bearing — more specific patterns must precede
+/// generic ones so `unresolved import` resolves to `MissingImport` rather
+/// than getting swallowed by `error[E` (TypeMismatch). Mirrors the priority
+/// order in `failure_taxonomy::ClassifyHandler::detect_category` so the two
+/// classifiers never disagree.
+///
+/// Decision A (B-20A): the B-20 plan's Rust-flavoured 9-list (incl.
+/// LIFETIME_ERROR / BORROW_ERROR) — phase-4B.txt's competing list (with
+/// PERMISSION_DENIED) was rejected at phase entry. See
+/// workflow/reasoning/B-20A-decisions.md.
 fn classify_output(raw: &str) -> Option<ClassifiedFailure> {
     let checks: &[(ToolFailureCategory, &[&str], f32)] = &[
-        (ToolFailureCategory::LazyCode, &["todo!()", "unimplemented!(", "FIXME"], 1.0),
-        (ToolFailureCategory::EmptyBody, &["empty body", "pass\n"], 0.7),
         (
-            ToolFailureCategory::FileSizeExceeded,
-            &["file size exceeded", "too large"],
-            0.7,
-        ),
-        (
-            ToolFailureCategory::CompilationError,
-            &["error[E", "cannot find", "mismatched types"],
+            ToolFailureCategory::MissingImport,
+            &["unresolved import", "error[E0432]", "No module named", "ModuleNotFoundError"],
             1.0,
         ),
         (
-            ToolFailureCategory::TestFailure,
-            &["FAILED", "assertion", "test result: FAILED"],
+            ToolFailureCategory::LifetimeError,
+            &[
+                "explicit lifetime required",
+                "error[E0621]",
+                "missing lifetime specifier",
+                "error[E0106]",
+                "lifetime may not live long enough",
+            ],
             1.0,
         ),
         (
-            ToolFailureCategory::Timeout,
-            &["timeout", "timed out"],
+            ToolFailureCategory::BorrowError,
+            &[
+                "borrow of moved value",
+                "error[E0382]",
+                "cannot borrow",
+                "error[E0502]",
+                "error[E0499]",
+            ],
             1.0,
         ),
         (
-            ToolFailureCategory::ResourceExhausted,
-            &["out of memory", "OOM", "ENOSPC"],
+            ToolFailureCategory::TypeMismatch,
+            &["mismatched types", "error[E0308]", "expected type"],
             1.0,
         ),
         (
-            ToolFailureCategory::ContextExplosion,
-            &["context window exceeded", "token budget"],
+            ToolFailureCategory::UndefinedSymbol,
+            &[
+                "cannot find value",
+                "cannot find function",
+                "cannot find type",
+                "error[E0425]",
+                "error[E0412]",
+                "error[E0422]",
+            ],
+            1.0,
+        ),
+        (
+            ToolFailureCategory::SyntaxError,
+            &["error: expected", "expected `;`", "unexpected token", "invalid syntax", "SyntaxError"],
+            1.0,
+        ),
+        (
+            ToolFailureCategory::TestAssertion,
+            &["test result: FAILED", "assertion failed", "panicked at 'assertion"],
+            1.0,
+        ),
+        (
+            ToolFailureCategory::UnusedWarning,
+            &["warning: unused variable", "warning: dead_code", "warning: unused_variables", "warning: unused"],
             0.7,
         ),
         (
-            ToolFailureCategory::RawLogOverload,
-            &["raw log overload", "log buffer full"],
-            0.7,
-        ),
-        (
-            ToolFailureCategory::PhaseGateFailure,
-            &["phase gate", "PRE_GATE"],
-            0.7,
-        ),
-        (
-            ToolFailureCategory::ScriptQualityDependency,
-            &["script quality", "reproduction script"],
-            0.7,
-        ),
-        (
-            ToolFailureCategory::SpeculativeRepair,
-            &["speculative repair", "no runtime evidence"],
-            0.7,
-        ),
-        (
-            ToolFailureCategory::RuntimeError,
-            &["panicked at", "thread '"],
+            ToolFailureCategory::RuntimePanic,
+            &[
+                "panicked at",
+                "thread '",
+                "RuntimeError",
+                "timed out",
+                "timeout",
+                "out of memory",
+                "OOM",
+            ],
             1.0,
         ),
     ];
@@ -480,6 +541,30 @@ fn git_commit_blocking(req: &GitCommitRequest) -> Result<CommitOutcome, ToolDisp
 // File outline
 // ---------------------------------------------------------------------------
 
+/// B-20A Task 7: like `generate_file_view` but lets the caller force a
+/// full read regardless of `threshold`. Implementation collapses to a
+/// single helper so the pre-B-20A trait method
+/// (`dispatch_file_read_outline`) and the new inherent method
+/// (`dispatch_file_read_with_force_full`) share one code path.
+fn generate_file_view_with_override(
+    content: &str,
+    threshold: usize,
+    force_full: bool,
+) -> FileView {
+    let view = generate_file_view(content, threshold);
+    if force_full && view.outline_only {
+        FileView {
+            outline_only: false,
+            signatures: view.signatures,
+            imports: view.imports,
+            full_content: Some(content.to_string()),
+            total_lines: view.total_lines,
+        }
+    } else {
+        view
+    }
+}
+
 fn generate_file_view(content: &str, threshold: usize) -> FileView {
     let mut lines = 0usize;
     let mut signatures = Vec::new();
@@ -565,11 +650,26 @@ impl ToolDispatcher for InProcessToolDispatcher {
             let (tier, updated) =
                 try_edit_tiers(&content, &req.old_text, &req.new_text);
             match (tier, updated) {
-                (EditMatchTier::NotMatched, _) => Ok(EditOutcome {
-                    tier: EditMatchTier::NotMatched,
-                    bytes_written: 0,
-                    file_path: req.file_path,
-                }),
+                (EditMatchTier::NotMatched, _) => {
+                    // B-20A Task 6: compute a similarity hint for the agent.
+                    // `best_line_match` returns `None` when the best ratio is
+                    // at-or-below `SIMILARITY_HINT_THRESHOLD` (0.5), so the
+                    // hint stays absent when nothing in the file is close.
+                    let similarity_hint = best_line_match(&content, &req.old_text)
+                        .map(|(text, line, ratio)| {
+                            SimilarityHint::from_ratio(
+                                text,
+                                u32::try_from(line).unwrap_or(u32::MAX),
+                                ratio,
+                            )
+                        });
+                    Ok(EditOutcome {
+                        tier: EditMatchTier::NotMatched,
+                        bytes_written: 0,
+                        file_path: req.file_path,
+                        similarity_hint,
+                    })
+                }
                 (matched_tier, Some(updated_content)) => {
                     tokio::fs::write(&req.file_path, updated_content.as_bytes())
                         .await
@@ -580,12 +680,14 @@ impl ToolDispatcher for InProcessToolDispatcher {
                         tier: matched_tier,
                         bytes_written,
                         file_path: req.file_path,
+                        similarity_hint: None,
                     })
                 }
                 (_, None) => Ok(EditOutcome {
                     tier: EditMatchTier::NotMatched,
                     bytes_written: 0,
                     file_path: req.file_path,
+                    similarity_hint: None,
                 }),
             }
         })
@@ -680,7 +782,8 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_incremental_compile disabled via env".into(),
                 ));
             }
-            let start = Instant::now();
+            let _clock = OsClock;
+            let start = _clock.now();
             let (cmd, args) =
                 compiler_command(&req.language).ok_or_else(|| {
                     ToolDispatchError::CrateUnreachable(format!(
@@ -701,7 +804,7 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     .map_err(ToolDispatchError::IoError)?;
                 if out.status.success() {
                     let elapsed_ms =
-                        u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+                        u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
                     return Ok(IncrementalOutcome {
                         success: true,
                         attempts,
@@ -720,7 +823,7 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     }
                 }
             }
-            let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let elapsed_ms = u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
             Ok(IncrementalOutcome {
                 success: false,
                 attempts,
@@ -891,9 +994,11 @@ mod tests {
             })
             .await
             .expect("classifier should match");
+        // B-20A: CompilationError → TypeMismatch under the 9-variant taxonomy
+        // (mismatched-types is the canonical Rust E0308 signal).
         assert_eq!(
             classified.category,
-            ToolFailureCategory::CompilationError
+            ToolFailureCategory::TypeMismatch
         );
         assert!((classified.confidence - 1.0).abs() < f32::EPSILON);
         assert_eq!(classified.source, "validator");

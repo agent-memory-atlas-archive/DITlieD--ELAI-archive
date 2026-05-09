@@ -7,6 +7,7 @@ use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use crate::LanguageGrammar;
 use crate::dkg::{ext_to_lang_id, RustGrammar, PythonGrammar, GoGrammar, TypeScriptGrammar, JavaGrammar, CSharpGrammar, RubyGrammar};
+use crate::error::KnowledgeError;
 
 /// Index format version for tantivy 0.26.0 (verified from tantivy src/lib.rs).
 pub const INDEX_FORMAT_VERSION: u32 = 7;
@@ -152,7 +153,7 @@ impl Bm25Index {
     pub fn new(
         project_root: &Path,
         project_id: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, KnowledgeError> {
         let index_path = project_root
             .join("projects")
             .join(project_id)
@@ -175,11 +176,10 @@ impl Bm25Index {
         let expected_fields = ["path", "content", "line_start", "line_end", "chunk_kind"];
         for name in &expected_fields {
             if existing_schema.get_field(name).is_err() {
-                return Err(format!(
-                    "index schema mismatch: missing field '{name}' — delete index at {} and rebuild",
-                    index_path.display()
-                )
-                .into());
+                return Err(KnowledgeError::SchemaMismatch {
+                    path: index_path.clone(),
+                    field: (*name).to_string(),
+                });
             }
         }
 
@@ -214,7 +214,7 @@ impl Bm25Index {
         &mut self,
         path: &Path,
         chunks: Option<Vec<BM25Chunk>>,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    ) -> Result<usize, KnowledgeError> {
         let chunks = match chunks {
             Some(c) => c,
             None => self.chunk_file(path)?,
@@ -240,7 +240,7 @@ impl Bm25Index {
     pub fn index_directory(
         &mut self,
         root: &Path,
-    ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+    ) -> Result<IndexStats, KnowledgeError> {
         let mut stats = IndexStats {
             files_indexed: 0,
             chunks_indexed: 0,
@@ -259,7 +259,7 @@ impl Bm25Index {
         &self,
         query_text: &str,
         limit: usize,
-    ) -> Result<Vec<BM25Hit>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<BM25Hit>, KnowledgeError> {
         if query_text.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -280,14 +280,18 @@ impl Bm25Index {
                 .get_first(self.fields.content)
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let line_start = doc
-                .get_first(self.fields.line_start)
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            let line_end = doc
-                .get_first(self.fields.line_end)
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
+            let line_start = u32::try_from(
+                doc.get_first(self.fields.line_start)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            )
+            .unwrap_or(u32::MAX);
+            let line_end = u32::try_from(
+                doc.get_first(self.fields.line_end)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            )
+            .unwrap_or(u32::MAX);
             let chunk_kind_str = doc
                 .get_first(self.fields.chunk_kind)
                 .and_then(|v| v.as_str())
@@ -311,7 +315,7 @@ impl Bm25Index {
     pub fn delete_file(
         &mut self,
         path: &Path,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    ) -> Result<usize, KnowledgeError> {
         let path_str = path.to_string_lossy();
         let term = Term::from_field_text(self.fields.path, &path_str);
         let opstamp = self.writer.delete_term(term);
@@ -326,7 +330,7 @@ impl Bm25Index {
         &mut self,
         path: &Path,
         chunks: Option<Vec<BM25Chunk>>,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    ) -> Result<usize, KnowledgeError> {
         let path_str = path.to_string_lossy();
         let term = Term::from_field_text(self.fields.path, &path_str);
         self.writer.delete_term(term);
@@ -359,7 +363,7 @@ impl Bm25Index {
         data[..check_len].contains(&0)
     }
 
-    fn chunk_file(&self, path: &Path) -> Result<Vec<BM25Chunk>, Box<dyn std::error::Error>> {
+    fn chunk_file(&self, path: &Path) -> Result<Vec<BM25Chunk>, KnowledgeError> {
         let data = std::fs::read(path)?;
         if Self::is_binary(&data) {
             return Ok(Vec::new());
@@ -383,7 +387,7 @@ impl Bm25Index {
         }
 
         // Zero-orphan invariant: every non-binary file gets at least one File-kind chunk
-        let line_count = lines.len() as u32;
+        let line_count = u32::try_from(lines.len()).unwrap_or(u32::MAX);
         drop(lines);
         chunks.push(BM25Chunk {
             path: path.to_path_buf(),
@@ -400,7 +404,7 @@ impl Bm25Index {
         &mut self,
         dir: &Path,
         stats: &mut IndexStats,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), KnowledgeError> {
         if !dir.is_dir() {
             return Ok(());
         }
@@ -471,7 +475,7 @@ impl Bm25Index {
             path: path.to_path_buf(),
             content: full_content.to_string(),
             line_start: 1,
-            line_end: lines.len() as u32,
+            line_end: u32::try_from(lines.len()).unwrap_or(u32::MAX),
             kind: ChunkKind::File,
         });
 
@@ -489,8 +493,8 @@ impl Bm25Index {
             chunks.push(BM25Chunk {
                 path: path.to_path_buf(),
                 content: chunk_content,
-                line_start: (start + 1) as u32,
-                line_end: end as u32,
+                line_start: u32::try_from(start + 1).unwrap_or(u32::MAX),
+                line_end: u32::try_from(end).unwrap_or(u32::MAX),
                 kind: ChunkKind::LineBlock,
             });
             if end == lines.len() {
@@ -655,7 +659,7 @@ fn build_ast_chunks(
     }
 
     // Trailing gap after last AST node.
-    let total_lines = lines.len() as u32;
+    let total_lines = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     if covered_end < total_lines {
         let gap_content = extract_lines(lines, covered_end + 1, total_lines);
         if estimate_tokens(&gap_content) > 0 {
@@ -721,8 +725,8 @@ fn split_large_node(
         sub_chunks.push(BM25Chunk {
             path: path.to_path_buf(),
             content,
-            line_start: (chunk_start + 1) as u32,
-            line_end: chunk_end as u32,
+            line_start: u32::try_from(chunk_start + 1).unwrap_or(u32::MAX),
+            line_end: u32::try_from(chunk_end).unwrap_or(u32::MAX),
             kind,
         });
 
@@ -825,7 +829,7 @@ fn add_overlap(chunks: &mut [BM25Chunk], lines: &[&str], overlap_chars: usize) {
         if overlap_start < prev_end {
             let overlap_text = lines[overlap_start..prev_end].join("\n");
             chunks[i].content = format!("{}\n{}", overlap_text, chunks[i].content);
-            chunks[i].line_start = (overlap_start + 1) as u32;
+            chunks[i].line_start = u32::try_from(overlap_start + 1).unwrap_or(u32::MAX);
         }
     }
 }

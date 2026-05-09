@@ -16,7 +16,8 @@ members = [
     "crates/web_search",
     "crates/scaffold",
     "crates/web_validator",
-    "crates/dashboard",
+    # "crates/dashboard",  # disabled: directory missing (moved to crates/.bkp_old/dashboard); see workspace-manifest-fix in s-1430428
+    "crates/dashboard-v2/src-tauri",
 ]
 
 [workspace.package]
@@ -38,7 +39,15 @@ regex = "1"
 jsonschema = { version = "0.45", default-features = false }
 anyhow = "1"
 blake3 = "1.8"
+lru = "0.18"
 postcard = { version = "1.1", features = ["alloc"] }
+rustc-hash = "2.1"
 elai-ipc-types = { path = "crates/ipc-types" }
 tracing-log = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = "line-tables-only"

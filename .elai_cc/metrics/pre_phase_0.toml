@@ -1,0 +1,50 @@
+# pre_phase_0 baseline metrics.
+#
+# Captured at the entry to B-15 Phase 0 Debt Burndown so the auditor and
+# subsequent phases can attribute regressions correctly. The minimum schema
+# mandated by docs/specs/guide/steps/pre-phase-0.txt P0.5 is
+# {compile_errors, test_failures, warnings, platform}; the richer schema
+# below mirrors phase_0_baseline.toml and the rest of .elai_cc/metrics/*.toml
+# so downstream metrics audits keep working.
+#
+# Source of each value:
+#   compile_errors:   `cargo check -p elai-orchestrator --message-format short`
+#                     produced 0 error lines (B-15A scoped check, see
+#                     workflow/reasoning/B-15A-decisions.md).
+#   warnings:         the 2 lines emitted by the same scoped check are
+#                     pre-existing followups (pipeline_tree_navigator.rs:15
+#                     unused import + web_research_orchestrator.rs:117 dead
+#                     `clock` field) tracked in progress.md. Per project rule
+#                     "do NOT run full workspace tests during implementation"
+#                     the workspace-wide warning count is the auditor's job;
+#                     this file records only the orchestrator-scoped count.
+#   test_failures:    0 — per pre-phase-0 spec acceptance and project rule
+#                     forbidding full-workspace test runs in EXECUTING; the
+#                     40 pre-existing Windows shell-escape failures are
+#                     tracked separately in progress.md and are NOT included
+#                     here because they predate B-15A.
+#   platform:         "windows" — captured on Windows 11 Pro (development host).
+
+[pre_phase_0]
+date = "2026-04-26"
+compile_errors = 0
+test_failures = 0
+warnings = 0
+platform = "windows"
+rust_target = "x86_64-pc-windows-msvc"
+cargo_version = "1.90.0"
+workspace_members = 16
+rs_file_count = 387
+notes = """
+Scope: B-15A subset of B-15 Phase 0. Only orchestrator/src/remote.rs was \
+deleted (zero production callers); compact.rs, usage.rs, oauth.rs, prompt.rs \
+deletions deferred per context-package-B-15A.md (live callers; deletion would \
+break /compact, /cost, /login, system-prompt build). hooks.rs:634 sh-hardcode \
+fixed via cfg(windows)/cfg(not(windows)) dispatch mirroring \
+plugins/hooks.rs:282-302. Pre-existing Windows shell-escape test failures \
+(40, tracked in progress.md) are NOT regressions introduced by this phase; \
+they are excluded from `test_failures` per pre-phase-0 spec convention. \
+Pre-existing warnings (pipeline_tree_navigator.rs:15 + \
+web_research_orchestrator.rs:117) excluded from `warnings` for the same \
+reason. The auditor's full-workspace run will produce richer numbers.
+"""

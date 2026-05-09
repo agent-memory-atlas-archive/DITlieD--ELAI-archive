@@ -37,11 +37,14 @@ impl WorkloadProfile {
         gpu_id: u8,
         clock: &dyn ClockProvider,
     ) -> Self {
-        let timestamp = clock
-            .system_now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let timestamp = i64::try_from(
+            clock
+                .system_now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
         
         Self {
             agent_role,
@@ -177,7 +180,9 @@ fn now_ms(clock: &dyn ClockProvider) -> u64 {
         .system_now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

@@ -86,11 +86,12 @@ impl ToolHandler for FileReadHandler {
                 .collect();
 
             let mut diagnostics = Vec::new();
-            if total_lines > offset + lines.len() as u32 {
+            let lines_len_u32 = u32::try_from(lines.len()).expect("line slice length fits u32");
+            if total_lines > offset + lines_len_u32 {
                 diagnostics.push(format!(
                     "showing lines {}-{} of {total_lines}",
                     offset + 1,
-                    offset + lines.len() as u32
+                    offset + lines_len_u32
                 ));
             }
 

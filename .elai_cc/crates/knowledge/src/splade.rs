@@ -5,7 +5,7 @@
 //! unconditionally (used by GraphCodeBERT/Granite reranker); only the
 //! SPLADE-specific `ort::Session` initialization lives behind this gate.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -273,6 +273,7 @@ impl SpladeExpander {
             SpladeError::Inference(format!("tokenization failed: {e}"))
         })?;
 
+        // NARROWING-OK: u32->i64 is a widening cast; tokenizer IDs/mask/type_ids are u32, i64 holds all u32 values.
         let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
         let attention_mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
         let token_type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&x| x as i64).collect();
@@ -290,6 +291,7 @@ impl SpladeExpander {
         encoding: &TokenizedInput,
         variant: ModelVariant,
     ) -> Result<Vec<f32>, String> {
+        // NARROWING-OK: usize->i64; ORT shape contract requires i64; tokenizer-bounded seq_len << i64::MAX.
         let seq_len = encoding.input_ids.len() as i64;
         let shape = vec![1_i64, seq_len];
 
@@ -302,8 +304,8 @@ impl SpladeExpander {
 
         let inputs = ort::inputs![
             "input_ids" => id_tensor,
-            "attention_mask" => mask_tensor,
-            "token_type_ids" => type_tensor,
+            "input_mask" => mask_tensor,
+            "segment_ids" => type_tensor,
         ];
 
         let mut session_guard = session
@@ -472,7 +474,7 @@ pub fn rrf_fuse(
     }
 
     let k = k.max(1) as f32;
-    let mut scores: HashMap<String, f32> = HashMap::new();
+    let mut scores: FxHashMap<String, f32> = FxHashMap::default();
 
     for (rank_0, (doc_id, _score)) in bm25_results.iter().enumerate() {
         let rank = (rank_0 + 1) as f32; // 1-based

@@ -5,7 +5,7 @@
 // Both produce the same output types. DKG path queries the symbol graph;
 // regex path scans source files directly with regex classification.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -36,7 +36,7 @@ const MIN_SAMPLE_SIZE: usize = 5;
 // ---------------------------------------------------------------------------
 
 /// Recognized naming styles per spec section 3A.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NamingStyle {
     SnakeCase,
     CamelCase,
@@ -133,7 +133,7 @@ pub fn classify_name(name: &str) -> NamingStyle {
 /// Counts of each naming style for a symbol category (functions, types, etc.).
 #[derive(Debug, Clone, Default)]
 pub struct NamingHistogram {
-    counts: HashMap<NamingStyle, usize>,
+    counts: FxHashMap<NamingStyle, usize>,
     total: usize,
 }
 
@@ -573,7 +573,7 @@ fn detect_module_organization(relative_paths: &[PathBuf]) -> ModuleOrganization 
     }
 
     // Collect first directory component under src/ (or project root).
-    let mut first_dirs: HashMap<String, usize> = HashMap::new();
+    let mut first_dirs: FxHashMap<String, usize> = FxHashMap::default();
     let mut files_in_root = 0usize;
     let mut has_packages_or_crates = false;
 
@@ -692,7 +692,7 @@ fn detect_test_location_dkg(nodes: &[DkgNodeInfo], project_root: &Path) -> TestL
     let mut separate_test_files = 0usize;
 
     // Deduplicate file paths.
-    let mut seen_files: HashMap<PathBuf, bool> = HashMap::new();
+    let mut seen_files: FxHashMap<PathBuf, bool> = FxHashMap::default();
     for node in nodes {
         let rel = node
             .file_path

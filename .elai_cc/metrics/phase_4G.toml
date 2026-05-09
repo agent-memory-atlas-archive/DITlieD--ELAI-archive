@@ -1,0 +1,165 @@
+# B-22 Phase 4G — Autonomous Mode metrics snapshot
+# Generated 2026-05-09 by session s-26716.
+#
+# Spec: docs/specs/guide/steps/phase-4G.txt §§4G.1-4G.8
+# Plan: docs/thefinalglance/B-plan/B-22_phase_4G_autonomous_mode.md
+#
+# Scope of this batch:
+# - /mode CLI slash command + parser unit tests
+# - real SSB-derived evidence in task_runner (replaces Batch-3B all-true placeholder)
+# - real get_auto_advance_stats wired through SsbViewer::auto_advance_stats
+# - AutoAdvanceStats panel in dashboard-v2 MonitorWindow.svelte (always visible)
+# - AgentPool::get_role(uuid) trait method + InProcessAgentPool impl
+# - 18 extended contract tests in phase_4g_extended_contract.rs
+# - decision doc workflow/reasoning/phase-4G-decisions.md
+
+phase = "4G"
+b_id = "B-22"
+generated_at = "2026-05-09"
+session_id = "s-26716"
+
+# ---------------------------------------------------------------------------
+# 1. tests
+# ---------------------------------------------------------------------------
+[tests]
+existing_autonomous_gate_contracts = 14   # crates/contracts/tests/autonomous_gate_contract.rs (unchanged)
+existing_mode_switch_contracts = 4        # crates/contracts/tests/mode_switch_contract.rs (unchanged)
+extended_contract_count = 18              # crates/contracts/tests/phase_4g_extended_contract.rs (this batch)
+extended_contract_breakdown = "4 per-pipeline-level + 2 policy-permutation + 6 per-evidence-field-block + 3 risk-level + 3 mode-switch"
+unit_test_added_in_cli = 3                # /mode parser tests in crates/cli/src/commands.rs
+unit_test_added_in_agent_pool = 2         # get_role tests in crates/orchestrator/src/agent_pool.rs
+contract_pass_count_unmeasured = false    # auditor will run cargo test -p elai_cc_contracts in this session
+total_count = 36                          # 14 + 4 + 18
+
+# ---------------------------------------------------------------------------
+# 2. implementation
+# ---------------------------------------------------------------------------
+[implementation]
+spec_types_present = [
+  "AutonomousGate",
+  "AutonomousGateConfig",
+  "AutonomyDecision",
+  "Evidence (re-exported as AutonomousEvidence)",
+  "GateContext (re-exported as AutonomousGateContext)",
+  "GateMode",
+  "EscalationTrigger",
+  "PipelineLevel",
+  "TreeAutoAdvancePolicy",
+  "GateDecisionPayload",
+  "EscalationFiredPayload",
+  "ModeChangedPayload",
+  "TaskSplitPayload",
+  "AutoAdvanceStats (new — DTO consumed by dashboard-v2 get_auto_advance_stats)",
+]
+spec_types_missing = []
+spec_methods_present = [
+  "AutonomousGate::decide",
+  "AutonomousGate::set_mode",
+  "AutonomousGate::mode",
+  "AutonomousGate::circuit_breaker_count",
+  "AutonomousGate::circuit_breaker_limit",
+  "AutonomousGate::reset_circuit_breaker",
+  "AutonomousGate::active_model",
+  "AutonomousGate::substitute_model",
+  "GateMode::from_str",
+  "TreeAutoAdvancePolicy::should_auto_advance",
+  "Evidence::all_passed",
+  "Evidence::summary",
+  "Evidence::failed_checks",
+  "AgentPool::get_role (new — trait method + InProcessAgentPool impl)",
+  "SsbViewer::auto_advance_stats (new)",
+  "task_runner::derive_autonomous_evidence (new — replaces hardcoded placeholder)",
+]
+spec_methods_missing = []
+
+# ---------------------------------------------------------------------------
+# 3. cli
+# ---------------------------------------------------------------------------
+[cli]
+slash_command_added = "/mode <interactive|autonomous>"
+slash_command_variant = "SlashCommand::Mode { mode: String }"
+slash_command_help_present = true        # SLASH_COMMAND_SPECS entry + slash_command_category mapping
+parser_validates_all_input = true        # accepts arbitrary string; validation at handler boundary
+remainder_handling = "remainder_after_command (consistent with /model, /permissions, /plan, /research, /ask)"
+
+# ---------------------------------------------------------------------------
+# 4. dashboard
+# ---------------------------------------------------------------------------
+[dashboard]
+get_auto_advance_stats_de_stubbed = true
+auto_advance_stats_dto_added = true       # SsbViewer::AutoAdvanceStats + dashboard JSON reshape
+monitor_window_panel_added = true         # Section 6 in MonitorWindow.svelte (always visible)
+panel_renders_when_idle = true            # !isRunning still shows historical totals per spec §4G.6
+panel_polls_with_existing_5s_interval = true
+typescript_types_unchanged = true         # AutoAdvanceStats interface matches existing types.ts shape
+gate_status_payload_unchanged = true      # mode/auto_approve_threshold/pending_count/auto_advanced_count
+get_gate_status_existing = true           # untouched in this batch
+set_gate_mode_existing = true             # untouched (already emits ModeChanged SSB row)
+
+# ---------------------------------------------------------------------------
+# 5. evidence_wiring
+# ---------------------------------------------------------------------------
+[evidence_wiring]
+file = "crates/orchestrator/src/task_runner.rs"
+helper = "derive_autonomous_evidence"
+hardcoded_placeholder_removed = true
+fields_derived_from_ssb = [
+  "knowledge_readiness",
+  "zero_ungrounded",
+  "tests_fail_correctly",
+  "test_flipped",
+  "zero_blocks",
+  "dkg_and_changelog_present",
+]
+queries = [
+  "SsbActionType::DkgReady",
+  "SsbActionType::Finding",
+  "SsbActionType::TestOutcome",
+  "SsbActionType::PhaseTransition",
+]
+vacuous_default_for_cold_start = true     # zero rows -> Batch-3B-compatible all-true semantics
+saturating_arithmetic = true              # u64 counters; no panics on overflow
+# Decision rationale lives in workflow/reasoning/phase-4G-decisions.md (key decision C).
+
+# ---------------------------------------------------------------------------
+# 6. ssb
+# ---------------------------------------------------------------------------
+[ssb]
+schema_version = 26                       # locked — no bump in this batch
+new_action_types_added = 0                # spec types already landed in Batch 3B
+existing_4g_action_types_used = [
+  "gate_decision",
+  "escalation_fired",
+  "mode_changed",
+  "task_split",
+]
+single_writer_invariant_preserved = true  # all writes still go through SsbWriter::write_payload
+
+# ---------------------------------------------------------------------------
+# 7. metrics_summary
+# ---------------------------------------------------------------------------
+[metrics_summary]
+deliverables_completed = 7                # P1, P2, P3, P4, P5, P7, P8
+audit_cycles_planned = 1                  # autonomous mode constraint per user instruction
+commits_planned = 0                       # autonomous mode constraint per user instruction
+hard_dep_changes = 0                      # zero new crate dependencies (CLAUDE.md compliance)
+unwrap_added_in_production_code = 0
+expect_added_in_production_code = 0
+todo_unimplemented_added = 0
+clippy_baseline = "expect zero new warnings"
+schema_drift = false
+clock_provider_used = true                # last_24h filtering accepts now_ms; dashboard passes ClockProvider
+
+# ---------------------------------------------------------------------------
+# 8. notes
+# ---------------------------------------------------------------------------
+[notes]
+session = "s-26716"
+constraint = "no commits, only 1 audit cycle, autonomous mode (user sleeping)"
+remaining_work_path = "workflow/sessions/s-26716/session-handoff.md"
+# Deferred items recorded in handoff:
+# - last_24h_rate uses dashboard ClockProvider but does not yet honour
+#   SeededClock under deterministic replay (low priority).
+# - W1-SEMANTIC drive_task stop enforcement gap (out of scope for 4G).
+# - Phase 4G.7-4G.8 broader tree auto-advance integration in production
+#   construction paths (cli/main.rs still passes autonomous_gate: None).

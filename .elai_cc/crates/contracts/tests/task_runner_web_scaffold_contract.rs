@@ -238,6 +238,8 @@ async fn web_scaffold_task_without_applier_emits_finding() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 
@@ -330,6 +332,8 @@ async fn web_scaffold_task_applier_error_emits_finding() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 
@@ -418,6 +422,8 @@ async fn web_scaffold_task_happy_path_round_trips_through_applier() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 

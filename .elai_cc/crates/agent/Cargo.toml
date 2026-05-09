@@ -10,8 +10,10 @@ name = "elai_cc_agent"
 path = "src/main.rs"
 
 [dependencies]
+getrandom = "0.3"
 serde.workspace = true
 postcard.workspace = true
 tracing.workspace = true
 uuid = { workspace = true }
 elai-ipc-types.workspace = true
+elai-core = { path = "../core" }

@@ -37,6 +37,10 @@ pub struct OrtSession {
     tokenizer: Arc<tokenizers::Tokenizer>,
     pub max_seq_len: usize,
     pub output_dim: usize,
+    /// True when the loaded ONNX model declares a "token_type_ids" input.
+    /// RoBERTa-family models (graphcodebert, granite-embed) do not; BERT-family
+    /// models (cross-encoder) do.  Captured once at `new()` from `session.get_inputs()`.
+    pub has_token_type_ids: bool,
 }
 
 impl std::fmt::Debug for OrtSession {
@@ -112,11 +116,17 @@ impl OrtSession {
         };
         tokenizer.with_padding(Some(padding));
 
+        let has_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|inp| inp.name() == "token_type_ids");
+
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
             tokenizer: Arc::new(tokenizer),
             max_seq_len,
             output_dim,
+            has_token_type_ids,
         })
     }
 
@@ -135,10 +145,12 @@ impl OrtSession {
         let type_ids = encoding.get_type_ids();
         let seq_len = ids.len();
 
+        // NARROWING-OK: u32->i64 is a widening cast; tokenizer IDs/mask/type_ids are u32, i64 holds all u32 values.
         let input_ids: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
         let attention_mask: Vec<i64> = mask.iter().map(|&m| m as i64).collect();
         let token_type_ids: Vec<i64> = type_ids.iter().map(|&t| t as i64).collect();
 
+        // NARROWING-OK: ORT shape contract; seq_len from tokenizer is bounded to model max_length (< i64::MAX).
         let shape = vec![1i64, seq_len as i64];
         let id_tensor = Tensor::from_array((shape.clone(), input_ids))
             .map_err(|e| OrtError::InferenceFailed(format!("tensor input_ids: {e}")))?;
@@ -147,16 +159,18 @@ impl OrtSession {
         let type_tensor = Tensor::from_array((shape, token_type_ids))
             .map_err(|e| OrtError::InferenceFailed(format!("tensor token_type_ids: {e}")))?;
 
-        let inputs = ort::inputs![
-            "input_ids" => id_tensor,
-            "attention_mask" => mask_tensor,
-            "token_type_ids" => type_tensor,
+        let mut session_inputs: Vec<(std::borrow::Cow<'_, str>, ort::session::SessionInputValue<'_>)> = vec![
+            ("input_ids".into(), id_tensor.into()),
+            ("attention_mask".into(), mask_tensor.into()),
         ];
+        if self.has_token_type_ids {
+            session_inputs.push(("token_type_ids".into(), type_tensor.into()));
+        }
 
         let mut session = self.session.lock()
             .map_err(|e| OrtError::SessionLock(e.to_string()))?;
 
-        let outputs = session.run(inputs)
+        let outputs = session.run(session_inputs)
             .map_err(|e| OrtError::InferenceFailed(format!("session.run: {e}")))?;
 
         // Output shape: [1, seq_len, hidden_dim] — apply mean pooling with attention mask.
@@ -164,6 +178,7 @@ impl OrtSession {
             .try_extract_tensor::<f32>()
             .map_err(|e| OrtError::InferenceFailed(format!("extract tensor: {e}")))?;
 
+        // NARROWING-OK: ORT shape contract; i64 output dimensions from ORT are always non-negative and fit usize on 64-bit.
         let hidden_dim = if out_shape.len() == 3 {
             out_shape[2] as usize
         } else if out_shape.len() == 2 {
@@ -193,8 +208,10 @@ impl OrtSession {
         // Mean pooling: average token embeddings weighted by attention mask.
         let mut pooled = vec![0.0f32; hidden_dim];
         let mut mask_sum = 0.0f32;
+        // NARROWING-OK: ORT shape contract; out_shape[1] from ORT is seq_len (positive, fits usize).
         let tokens = out_shape[1] as usize;
         for t in 0..tokens {
+            // NARROWING-OK: attention mask values are 0 or 1; i64->f32 is exact.
             let m = attention_mask[t] as f32;
             mask_sum += m;
             let offset = t * hidden_dim;

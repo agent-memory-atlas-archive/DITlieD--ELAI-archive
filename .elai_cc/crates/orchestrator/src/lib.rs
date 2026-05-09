@@ -13,11 +13,9 @@ pub mod coherence_check;
 pub mod dst;
 pub mod context_budget;
 pub mod dispatcher;
-pub mod bash_validation;
 pub mod branch_lock;
 mod compact;
 mod conversation;
-mod file_ops;
 pub mod evidence;
 pub mod fsm;
 pub mod gate;
@@ -86,7 +84,6 @@ pub mod telescope_caller;
 pub mod feasibility_probe;
 pub mod task_runner;
 pub mod supervision;
-pub mod stale_branch;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
@@ -191,11 +188,6 @@ pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
     ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
     ToolExecutor, TurnSummary,
-};
-pub use file_ops::{
-    edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
-    GrepSearchInput, GrepSearchOutput, ReadFileOutput, StructuredPatchHunk, TextFilePayload,
-    WriteFileOutput,
 };
 pub use hooks::{
     HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
@@ -312,10 +304,6 @@ pub use session::{
     ContentBlock, ConversationMessage, MessageRole, Session, SessionCompaction, SessionError,
     SessionFork,
 };
-pub use stale_branch::{
-    apply_policy, check_freshness, BranchFreshness, StaleBranchAction, StaleBranchEvent,
-    StaleBranchPolicy,
-};
 pub use task_packet::{validate_packet, TaskPacket, TaskPacketValidationError, ValidatedPacket};
 #[cfg(test)]
 pub use elai_rules::trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
@@ -334,8 +322,9 @@ pub use deterministic_auditor::{
     DeterministicFinding, DeterministicSeverity,
 };
 pub use agent_pool::{
-    default_grc_config, AgentHandle, AgentMessage, AgentPool, AgentPoolConfig, AgentPoolError,
-    AgentRole, AgentStatus, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
+    default_grc_config, role_default_allowed_paths, AgentHandle, AgentMessage, AgentPool,
+    AgentPoolConfig, AgentPoolError, AgentRole, AgentStatus, InProcessAgentPool, ModelPool,
+    VRAM_MIN_BYTES,
 };
 pub use agent_template::{
     build_agent_prompt, build_agent_system_preamble, AgentOutputFormat, AgentPromptContext,
@@ -427,15 +416,19 @@ pub use system_probe::{
     ELAI_FREE_DISK_GB_ENV, ELAI_FREE_RAM_GB_ENV, ELAI_VRAM_FREE_GB_ENV, ELAI_VRAM_GB_ENV,
 };
 pub use feasibility_probe::{
+    alternative_within_cap, check_constraints, decide_with_mode, enforce_stub_line_limit,
     feasibility_probe_disabled_via_env, BabyStepEscalation, BabyStepFeasibilityReport,
-    BabyStepStubResult, DefaultFeasibilityProber, FeasibilityEscalation, FeasibilityProber,
-    FeasibilityReport, NovelStep, ResourceMargins, StubResult, TaskFeasibility,
-    ELAI_DISABLE_FEASIBILITY_PROBE_ENV, RESOURCE_MARGIN_THRESHOLD_PCT,
+    BabyStepStubResult, ConstraintResult, DefaultFeasibilityProber, FeasibilityDecision,
+    FeasibilityEscalation, FeasibilityExecutionMode, FeasibilityProber, FeasibilityReport,
+    NovelStep, ResourceMargins, StubResult, SystemConstraintsRequired, TaskFeasibility,
+    ELAI_DISABLE_FEASIBILITY_PROBE_ENV, MAX_ALTERNATIVES_PER_STEP, RESOURCE_MARGIN_THRESHOLD_PCT,
+    STUB_LINE_LIMIT, STUB_TIMEOUT_GRACEFUL, STUB_TIMEOUT_HARD,
 };
 pub use ssb_viewer::{
-    ChatEntry, FileChange, FsmStateSnapshot, InterventionRequest, PhaseStatus, SessionInfo,
+    ChatEntry, FeasibilityReportRow, FeasibilitySummary, FileChange, FsmStateSnapshot,
+    InterventionRequest, NovelStepRow, PhaseStatus, SessionInfo,
     RuleViolationSummary, SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError,
-    StepStatus, TaskSummary, ThinkStepSummary, validate_request_id,
+    StepStatus, StubRunRow, TaskSummary, ThinkStepSummary, validate_request_id,
     // Tier 2 Track B (dashboard-wiring §6) — PlanWindow / PreviewWindow DTOs.
     // `PhaseDetail` is renamed on re-export to `DashboardPhaseDetail` because
     // `plan_skeleton::PhaseDetail` (re-exported above) already occupies the
@@ -454,6 +447,8 @@ pub use ssb_viewer::{
     // Tier 3 complete (session s-456340) — Research drawer DTOs. Typed
     // views over existing payload structs; zero new SsbActionType variants.
     ResearchBudgetSnapshot, ResearchStepEntry, SourceTierDistribution,
+    // B-22 Phase 4G — auto-advance counters DTO consumed by dashboard-v2.
+    AutoAdvanceStats,
 };
 pub use task_runner::{
     detect_scaffold_template, emit_integration_checkpoint_for_test,

@@ -1,0 +1,67 @@
+# B-15A Task 18 — Windows CI smoke
+#
+# Validates that the workspace compiles on windows-2022 and that the
+# Windows-specific contract suites pass. Scoped (cargo check --workspace + a
+# small set of -p targeted tests) — full-workspace test sweeps live in their
+# dedicated workflow.
+#
+# Scope today: ensure hooks.rs sh-vs-cmd dispatch (B-15A Task 16) and the
+# entropy / hashmap deterministic checks behave on a non-Unix runner.
+
+name: windows-smoke
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-smoke:
+    name: B-15A windows smoke
+    runs-on: windows-2022
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-windows-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-smoke-
+
+      - name: Workspace cargo check
+        working-directory: .elai_cc
+        run: cargo check --workspace --locked
+
+      - name: HashMap ban check
+        working-directory: .elai_cc
+        run: bash scripts/check_hashmap_ban.sh
+
+      # Entropy quarantine is intentionally NOT run here yet — 16 production
+      # sites (cli/, dashboard-v2/, orchestrator/) still need ClockProvider
+      # injection. Re-enable this step when Batch F of B-15 lands.
+      # - name: Entropy quarantine check
+      #   working-directory: .elai_cc
+      #   run: bash scripts/check_entropy_quarantine.sh
+
+      - name: Hooks Windows compat contract test
+        working-directory: .elai_cc
+        run: cargo test -p elai-orchestrator --test hooks_windows_compat --locked

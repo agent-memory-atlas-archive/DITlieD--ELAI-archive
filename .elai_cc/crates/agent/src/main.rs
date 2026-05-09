@@ -10,7 +10,9 @@
 use std::env;
 use std::io::{Read, Write};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use elai_ipc_types::{
     IpcFrame, IpcFrameError, IpcMessageType,
@@ -223,20 +225,21 @@ fn run_message_loop(
     writer: &mut dyn Write,
     agent_id: Uuid,
 ) -> Result<(), AgentError> {
+    let _clock = OsClock;
     let heartbeat_interval = Duration::from_secs(AGENT_HEARTBEAT_INTERVAL_SECS);
-    let mut last_heartbeat = Instant::now();
-    let uptime_start = Instant::now();
+    let mut last_heartbeat = _clock.now();
+    let uptime_start = _clock.now();
 
     loop {
         // Send heartbeat if interval elapsed
-        if last_heartbeat.elapsed() >= heartbeat_interval {
-            let uptime_secs = uptime_start.elapsed().as_secs();
+        if _clock.elapsed_since(last_heartbeat) >= heartbeat_interval {
+            let uptime_secs = _clock.elapsed_since(uptime_start).as_secs();
             let hb = IpcMessageType::AgentHeartbeat {
                 agent_id,
                 uptime_secs,
             };
             send_message(writer, &hb)?;
-            last_heartbeat = Instant::now();
+            last_heartbeat = _clock.now();
         }
 
         // Try to read a frame (with timeout on Unix)
@@ -290,11 +293,16 @@ fn main() -> ExitCode {
         }
     };
 
-    // Parse agent_id from args or generate one
+    // Parse agent_id from args or generate one via explicit getrandom entropy
     let agent_id = args
         .get(2)
         .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(Uuid::new_v4);
+        .unwrap_or_else(|| {
+            let mut b = [0u8; 16];
+            getrandom::fill(&mut b)
+                .expect("getrandom: OS entropy source unavailable at agent startup");
+            uuid::Builder::from_random_bytes(b).into_uuid()
+        });
 
     tracing::info!(
         socket_path = %socket_path,

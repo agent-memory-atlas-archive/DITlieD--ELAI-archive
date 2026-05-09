@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use regex::Regex;
 
@@ -49,13 +49,13 @@ pub trait FileReader: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub struct MockTestRunner {
-    results: HashMap<String, TestRunResult>,
+    results: FxHashMap<String, TestRunResult>,
 }
 
 impl MockTestRunner {
     pub fn new() -> Self {
         Self {
-            results: HashMap::new(),
+            results: FxHashMap::default(),
         }
     }
 
@@ -86,13 +86,13 @@ impl TestRunner for MockTestRunner {
 // ---------------------------------------------------------------------------
 
 pub struct MockFileReader {
-    files: HashMap<String, String>,
+    files: FxHashMap<String, String>,
 }
 
 impl MockFileReader {
     pub fn new() -> Self {
         Self {
-            files: HashMap::new(),
+            files: FxHashMap::default(),
         }
     }
 

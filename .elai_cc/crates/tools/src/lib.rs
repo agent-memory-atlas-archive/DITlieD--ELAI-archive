@@ -9,6 +9,9 @@ pub mod compile_check;
 pub mod failure_taxonomy;
 pub mod dkg_tools;
 pub mod integration_check;
+pub mod bash_validation;
+pub mod file_ops;
+pub mod stale_branch;
 // Batch 2B: 5-tier validation pipeline. Consumes
 // `elai_core::tool_dispatcher::{ValidateRequest,ValidationTier,...}`.
 pub mod tiered_validation;
@@ -16,6 +19,10 @@ pub mod tiered_validation;
 // wires every existing tool handler to the ToolDispatcher trait in
 // `elai_core`.
 pub mod dispatcher;
+// B-20A Task 6: hand-rolled Levenshtein + similarity ratio helpers used by
+// `dispatcher::try_edit_tiers` to attach a similarity hint when every
+// edit-matching tier fails.
+pub mod string_similarity;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,19 +39,19 @@ use elai_providers::{
 };
 use elai_plugins::PluginTool;
 use reqwest::blocking::Client;
+use crate::file_ops::{edit_file, glob_search, grep_search, read_file, write_file, GrepSearchInput};
+use crate::stale_branch::{check_freshness, BranchFreshness};
 use elai_orchestrator::{
     build_agent_prompt, build_agent_system_preamble, AgentPromptContext, AgentTemplateConfig,
-    check_freshness, dedupe_superseded_commit_events, edit_file, execute_bash, glob_search,
-    grep_search,
+    dedupe_superseded_commit_events, execute_bash,
     context_budget::ModelTier,
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
-    read_file,
     task_registry::TaskRegistry,
     team_cron_registry::{CronRegistry, TeamRegistry},
     worker_boot::{WorkerReadySnapshot, WorkerRegistry},
-    write_file, ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
-    BranchFreshness, ContentBlock, ConversationMessage, ConversationRuntime, GrepSearchInput,
+    ApiClient, ApiRequest, AssistantEvent, BashCommandInput, BashCommandOutput,
+    ContentBlock, ConversationMessage, ConversationRuntime,
     LaneCommitProvenance, LaneEvent, LaneEventBlocker, LaneEventName, LaneEventStatus,
     LaneFailureClass, McpDegradedReport, MessageRole, PermissionMode, PermissionPolicy,
     PromptCacheEvent, RuntimeError, Session, TaskPacket, ToolError, ToolExecutor,
@@ -1333,7 +1340,7 @@ fn fsm_state() -> &'static Mutex<FsmState> {
     })
 }
 
-fn is_visibility_filtered_path(path: &str) -> bool {
+fn is_hidden_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
     normalized.starts_with(".elai_cc/")
         || normalized.starts_with(".elai_cc\\")
@@ -1400,8 +1407,10 @@ fn execute_tool_with_enforcer(
         "read_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_visibility_filtered_path(path) {
-                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                if is_hidden_path(path) {
+                    // R31 (tools.txt:264-266): hidden paths must be indistinguishable
+                    // from missing paths. Mirror std::io::ErrorKind::NotFound display.
+                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
             from_value::<ReadFileInput>(input).and_then(run_read_file).map_err(|e| {
@@ -1411,8 +1420,8 @@ fn execute_tool_with_enforcer(
         "write_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_visibility_filtered_path(path) {
-                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                if is_hidden_path(path) {
+                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
             from_value::<WriteFileInput>(input).and_then(run_write_file)
@@ -1420,8 +1429,8 @@ fn execute_tool_with_enforcer(
         "edit_file" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_visibility_filtered_path(path) {
-                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+                if is_hidden_path(path) {
+                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
             }
             from_value::<EditFileInput>(input).and_then(run_edit_file)
@@ -1429,7 +1438,7 @@ fn execute_tool_with_enforcer(
         "glob_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
             if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
-                if is_visibility_filtered_path(pattern) {
+                if is_hidden_path(pattern) {
                     return Ok("[]".to_string());
                 }
             }
@@ -1437,10 +1446,32 @@ fn execute_tool_with_enforcer(
         }
         "grep_search" => {
             maybe_enforce_permission_check(enforcer, name, input)?;
-            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                if is_visibility_filtered_path(path) {
-                    return Err(structured_error("visibility_filtered", "visibility_filtered: path is hidden"));
+            // R31 (tools.txt:264-266): hidden paths must be indistinguishable
+            // from missing paths. Check BOTH `path` and `glob` — an agent can
+            // pass path="." (allowed) with glob=".elai_cc/**" (hidden) and
+            // bypass a path-only check. Both fields are Option<String> per
+            // GrepSearchInput (file_ops.rs:167-189); .as_str() returns None
+            // for absent or non-string values.
+            let path_opt = input.get("path").and_then(|v| v.as_str());
+            let glob_opt = input.get("glob").and_then(|v| v.as_str());
+            if let Some(path) = path_opt {
+                if is_hidden_path(path) {
+                    return Err(structured_error("not_found", &format!("No such file or directory: {path}")));
                 }
+            }
+            if let Some(glob) = glob_opt {
+                if is_hidden_path(glob) {
+                    return Err(structured_error("not_found", &format!("No such file or directory: {glob}")));
+                }
+            }
+            if path_opt.is_none() && glob_opt.is_none() {
+                // Malformed input: an empty-result success would itself leak
+                // (it would differ from the not_found envelope hidden paths
+                // produce). Return not_found to keep error shapes uniform.
+                return Err(structured_error(
+                    "not_found",
+                    "No such file or directory: (grep_search requires `path` or `glob`)",
+                ));
             }
             from_value::<GrepSearchInput>(input).and_then(run_grep_search)
         }

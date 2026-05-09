@@ -7,9 +7,11 @@
 //! `action_classifier::classify_and_gate()` in `execute_tool_with_enforcer`
 //! before the match dispatch.
 
-use elai_orchestrator::bash_validation::{classify_command, CommandIntent};
+use crate::bash_validation::{classify_command, CommandIntent};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 // ---------------------------------------------------------------------------
 // Risk classification
@@ -344,10 +346,10 @@ pub struct PolicyOverride {
 pub struct ActionPolicy {
     /// Per-tool name overrides.
     #[serde(default)]
-    pub tool_overrides: HashMap<String, PolicyOverride>,
+    pub tool_overrides: FxHashMap<String, PolicyOverride>,
     /// Per-pattern overrides for Bash commands (substring match).
     #[serde(default)]
-    pub pattern_overrides: HashMap<String, PolicyOverride>,
+    pub pattern_overrides: FxHashMap<String, PolicyOverride>,
     /// Default execution mode.
     #[serde(default)]
     pub mode: ExecutionMode,
@@ -484,7 +486,8 @@ impl DairaTraceEntry {
             risk_level: classification.risk,
             reason: classification.reason.clone(),
             gate_outcome: gate_outcome.to_string(),
-            timestamp_secs: std::time::SystemTime::now()
+            timestamp_secs: OsClock
+                .system_now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
@@ -677,7 +680,7 @@ mod tests {
 
     #[test]
     fn irreversible_allowed_in_autonomous_with_override() {
-        let mut overrides = HashMap::new();
+        let mut overrides = FxHashMap::default();
         overrides.insert(
             "bash".to_string(),
             PolicyOverride {
@@ -715,7 +718,7 @@ mod tests {
 
     #[test]
     fn pattern_override_matches_bash_command() {
-        let mut patterns = HashMap::new();
+        let mut patterns = FxHashMap::default();
         patterns.insert(
             "git push".to_string(),
             PolicyOverride {

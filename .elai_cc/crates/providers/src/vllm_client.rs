@@ -367,7 +367,8 @@ impl LlmProvider for VllmProvider {
             let elapsed = self.clock.elapsed_since(start);
             tracing::debug!(
                 target: "providers::vllm",
-                elapsed_ms = elapsed.as_millis() as u64,
+                // NARROWING-OK: elapsed for a completion request never exceeds u64::MAX ms (584M years).
+                elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64,
                 "completion request finished"
             );
             result
@@ -386,6 +387,11 @@ impl LlmProvider for VllmProvider {
 
     fn token_count_estimate(&self, text: &str) -> usize {
         text.len() / 4 + 1
+    }
+
+    /// B-10 (DECISION-B): expose the vLLM-served model identifier.
+    fn model_name(&self) -> &str {
+        &self.config.model
     }
 }
 
@@ -615,7 +621,8 @@ fn backoff_delay(attempt: u32, base: Duration) -> Result<Duration, ApiError> {
         });
     }
     let multiplier = 1u64 << shift;
-    let base_ms = base.as_millis() as u64;
+    // NARROWING-OK: backoff base is a small duration (seconds); never approaches u64::MAX ms.
+    let base_ms = base.as_millis().min(u64::MAX as u128) as u64;
     let delay_ms = base_ms.checked_mul(multiplier).ok_or(ApiError::BackoffOverflow {
         attempt,
         base_delay: base,
@@ -667,7 +674,7 @@ mod tests {
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
         let provider = VllmProvider::new(config, clock).expect("client build should succeed");
 
-        let start = std::time::Instant::now();
+        let start = std::time::Instant::now(); // TEST_KEEP: test-only health-check timing
         let result = provider.health().await;
         let elapsed = start.elapsed();
 

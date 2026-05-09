@@ -1,4 +1,6 @@
-//! IPC hook interception layer for PreToolUse/PostToolUse/Stop/PreCompact.
+//! IPC-frame hook dispatcher: invoked from IpcGateway during agent process IPC
+//! traffic. Distinct from InProcessHookDispatcher (orchestrator/hook_dispatcher.rs)
+//! which fires at orchestrator baby-step boundaries (T1/T2/T3 tiered analysis).
 //!
 //! This module provides the `IpcHookTrait` and `IpcHookDispatcher` that sit
 //! between the IPC gateway's `route_frame()` return and the tool executor.
@@ -11,13 +13,13 @@
 //!
 //! Consumed by `orchestrator::ipc_gateway::IpcGateway::run_pre_tool` /
 //! `run_post_tool` (see ipc_gateway.rs:504-563) via `IpcHookTrait`/
-//! `IpcHookError`/`HookResult`. Production wiring is scheduled in Session
-//! wire-4A per phase-4A.txt L259-L280; present callers
+//! `IpcHookError`/`HookResult`. Present callers
 //! (contracts/tests/plugins_hooks.rs and plugins_adversarial.rs) validate
-//! the spec contract as TDD red-phase. Do not remove.
+//! the spec contract. Do not remove.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use rustc_hash::FxHashMap;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use crate::tiered_analysis::{
     HookVerdict, TieredAnalysis, TieredAnalysisError, TieredAnalysisResult,
@@ -273,7 +275,8 @@ impl IpcHookDispatcher {
 
 impl IpcHookTrait for IpcHookDispatcher {
     fn pre_tool_use(&self, ctx: &HookContext) -> Result<HookResult, IpcHookError> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         // Check cross-session file lock first
         if let Some(ref file_path) = ctx.file_path {
@@ -284,7 +287,7 @@ impl IpcHookTrait for IpcHookDispatcher {
                     message: format!("file locked by session {}", locking_session),
                     pattern_hash: Self::compute_pattern_hash("cross_session_lock", file_path),
                 };
-                let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+                let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
                 let finding_written = self.write_finding_if_block(ctx, &verdict, IpcHookEvent::PreToolUse);
                 return Ok(HookResult {
                     verdict,
@@ -304,10 +307,10 @@ impl IpcHookTrait for IpcHookDispatcher {
             action,
             if source.is_empty() { None } else { Some(source) },
             if file_path.is_empty() { None } else { Some(file_path) },
-            HashMap::new(),
+            FxHashMap::default(),
         )?;
 
-        let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
         let finding_written = self.write_finding_if_block(ctx, &analysis_result.final_verdict, IpcHookEvent::PreToolUse);
 
         Ok(HookResult {
@@ -323,7 +326,8 @@ impl IpcHookTrait for IpcHookDispatcher {
         ctx: &HookContext,
         tool_output: &str,
     ) -> Result<HookResult, IpcHookError> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         // Circuit breaker: skip analysis if output exceeds line limit
         let line_count = tool_output.lines().count();
@@ -334,7 +338,7 @@ impl IpcHookTrait for IpcHookDispatcher {
                 limit = POST_TOOL_USE_LINE_LIMIT,
                 "PostToolUse circuit breaker: output too large, skipping analysis"
             );
-            let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+            let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
             return Ok(HookResult {
                 verdict: HookVerdict::Warn {
                     message: format!(
@@ -366,10 +370,10 @@ impl IpcHookTrait for IpcHookDispatcher {
             } else {
                 Some(file_path)
             },
-            HashMap::new(),
+            FxHashMap::default(),
         )?;
 
-        let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
 
         // Write finding for BLOCK or WARN in PostToolUse
         let finding_written = if analysis_result.final_verdict.is_block() {
@@ -387,7 +391,8 @@ impl IpcHookTrait for IpcHookDispatcher {
     }
 
     fn stop(&self, ctx: &HookContext) -> Result<HookResult, IpcHookError> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         // Block if FSM is not IDLE
         let verdict = if ctx.fsm_state != "idle" {
@@ -399,7 +404,7 @@ impl IpcHookTrait for IpcHookDispatcher {
             HookVerdict::Allow
         };
 
-        let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
         let finding_written = self.write_finding_if_block(ctx, &verdict, IpcHookEvent::Stop);
 
         Ok(HookResult {
@@ -411,7 +416,8 @@ impl IpcHookTrait for IpcHookDispatcher {
     }
 
     fn pre_compact(&self, ctx: &HookContext) -> Result<HookResult, IpcHookError> {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
 
         // Write checkpoint to SSB
         let checkpoint_json = serde_json::json!({
@@ -440,7 +446,7 @@ impl IpcHookTrait for IpcHookDispatcher {
                 false
             });
 
-        let latency_us = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        let latency_us = _clock.elapsed_since(start).as_micros().try_into().unwrap_or(u64::MAX);
 
         Ok(HookResult {
             verdict: HookVerdict::Allow,

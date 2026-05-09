@@ -1,0 +1,17 @@
+# ELAI phase 1H SPLADE measurement metrics
+# Measured: 2026-04-28 | Session: s-27276 | Harness: crates/knowledge/tests/splade_measure_tests.rs
+# Command: SPLADE_MODEL_PATH=D:/.ELAI_workflow/.elai_cc/models/splade cargo test -p elai-knowledge --features splade --test splade_measure_tests -- --nocapture
+# Model: prithivida/Splade_PP_en_v1 (models/splade/model.onnx 532MB, opset=14)
+
+vocab_coverage_code = 0.5795
+model_variant_chosen = "PP_en_v1_full"
+model_p50_latency_ms = 15
+recall_delta_mean_pct = 0.0
+recall_delta_std_pct = 0.0
+wilcoxon_p_value = 1.0
+wilcoxon_n_pairs = 1
+decision = "DROP"
+splade_query_latency_p50_ms = 15
+splade_query_latency_p95_ms = 16
+model_load_time_s = 0.94
+binary_size_delta_mb = 3.62

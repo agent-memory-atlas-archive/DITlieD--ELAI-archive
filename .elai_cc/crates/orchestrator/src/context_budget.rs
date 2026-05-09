@@ -2,7 +2,10 @@ use std::fmt;
 
 use blake3;
 
-use crate::ssb::{ContextReductionPayload, Ssb, SsbPayload};
+use crate::ssb::{
+    ContextBudgetComputedPayload, ContextReductionPayload, Ssb, SsbFilteredByOverlapPayload,
+    SsbPayload,
+};
 
 pub const SLOT_COUNT: usize = 8;
 pub const CACHE_BREAKPOINT_COUNT: usize = 2;
@@ -290,9 +293,10 @@ pub struct ModelCapabilityProfile {
 impl ModelCapabilityProfile {
     /// Build a MICRO-tier profile from A-1 baseline measurements.
     /// Suitable for Qwen2.5-Coder-7B NF4 on 12GB (measured configuration).
-    /// Per-tier allocation from TE design section 2:
-    ///   12GB-7B (20K): System=330, Rules=400, Telescope=1050,
-    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
+    /// Per-tier allocation from token-efficiency-design.txt §2 table (lines 516-526):
+    ///   12GB-7B (20K): System=330, Rules=400, Telescope=800,
+    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=512.
+    /// B-10 (DECISION-D): fixed_slot_targets and output_reserve corrected to spec.
     pub fn micro_7b_12gb() -> Self {
         // Dynamic proportions: 1500:8000:1500:1000 = total 12000
         Self {
@@ -306,7 +310,7 @@ impl ModelCapabilityProfile {
             attention_ceiling: 25000,
             effective_ceiling: 25000,
             recommended_prompt_budget: 20000,
-            output_reserve: 750,
+            output_reserve: 512,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
@@ -316,7 +320,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.125,
                 grc_history: 0.083,
             },
-            fixed_slot_targets: [330, 400, FIXED_SLOT_TELESCOPE_TARGET],
+            fixed_slot_targets: [330, 400, 800],
             features: ModelFeatures::none(),
             pass_at_1: 0.65,
             optimal_retries: 3,
@@ -329,9 +333,10 @@ impl ModelCapabilityProfile {
     }
 
     /// Build a profile for 3B model on 12GB (measured configuration).
-    /// Per-tier allocation from TE design section 2:
-    ///   12GB-3B (35K): System=330, Rules=500, Telescope=1050,
-    ///   RepoMap=3000, CodeContext=14000, SSB=3000, GRC=2000, Reserve=750.
+    /// Per-tier allocation from token-efficiency-design.txt §2 table (lines 516-526):
+    ///   12GB-3B (35K): System=330, Rules=500, Telescope=1500,
+    ///   RepoMap=3000, CodeContext=14000, SSB=3000, GRC=2000, Reserve=512.
+    /// B-10 (DECISION-D): fixed_slot_targets and output_reserve corrected to spec.
     pub fn micro_3b_12gb() -> Self {
         // Dynamic proportions: 3000:14000:3000:2000 = total 22000
         Self {
@@ -345,7 +350,7 @@ impl ModelCapabilityProfile {
             attention_ceiling: 40000,
             effective_ceiling: 40000,
             recommended_prompt_budget: 35000,
-            output_reserve: 750,
+            output_reserve: 512,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
@@ -355,7 +360,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.136,
                 grc_history: 0.091,
             },
-            fixed_slot_targets: [330, 500, FIXED_SLOT_TELESCOPE_TARGET],
+            fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures::none(),
             pass_at_1: 0.72,
             optimal_retries: 3,
@@ -368,9 +373,10 @@ impl ModelCapabilityProfile {
     }
 
     /// Build a projected LARGE-tier profile for 32B on 48GB.
-    /// Per-tier allocation from TE design section 2:
-    ///   48GB (30K): System=330, Rules=500, Telescope=1050,
-    ///   RepoMap=3000, CodeContext=10000, SSB=3000, GRC=2000, Reserve=4000.
+    /// Per-tier allocation from token-efficiency-design.txt §2 table (lines 516-526):
+    ///   48GB (30K): System=330, Rules=500, Telescope=1500,
+    ///   RepoMap=3000, CodeContext=10000, SSB=3000, GRC=2000, Reserve=512.
+    /// B-10 (DECISION-D): fixed_slot_targets and output_reserve corrected to spec.
     pub fn large_32b_48gb() -> Self {
         // Dynamic proportions: 3000:10000:3000:2000 = total 18000
         Self {
@@ -384,7 +390,7 @@ impl ModelCapabilityProfile {
             attention_ceiling: 35000,
             effective_ceiling: 35000,
             recommended_prompt_budget: 30000,
-            output_reserve: 4000,
+            output_reserve: 512,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
@@ -394,7 +400,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.167,
                 grc_history: 0.111,
             },
-            fixed_slot_targets: [330, 500, FIXED_SLOT_TELESCOPE_TARGET],
+            fixed_slot_targets: [330, 500, 1500],
             features: ModelFeatures {
                 supports_structured_output: false,
                 supports_grammar: false,
@@ -413,9 +419,10 @@ impl ModelCapabilityProfile {
     }
 
     /// Build a profile for small models on 8GB VRAM.
-    /// Per-tier allocation from TE design section 2:
-    ///   8GB (20K): System=200, Rules=300, Telescope=1050,
-    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=750.
+    /// Per-tier allocation from token-efficiency-design.txt §2 table (lines 516-526):
+    ///   8GB (20K): System=200, Rules=300, Telescope=600,
+    ///   RepoMap=1500, CodeContext=8000, SSB=1500, GRC=1000, Reserve=512.
+    /// B-10 (DECISION-D): fixed_slot_targets and output_reserve corrected to spec.
     pub fn micro_8gb() -> Self {
         // Dynamic proportions: 1500:8000:1500:1000 = total 12000
         Self {
@@ -429,7 +436,7 @@ impl ModelCapabilityProfile {
             attention_ceiling: 25000,
             effective_ceiling: 25000,
             recommended_prompt_budget: 20000,
-            output_reserve: 750,
+            output_reserve: 512,
             slot_weights: SlotWeights {
                 system_prompt: 0.0,
                 rules: 0.0,
@@ -439,7 +446,7 @@ impl ModelCapabilityProfile {
                 ssb_entries: 0.125,
                 grc_history: 0.083,
             },
-            fixed_slot_targets: [200, 300, FIXED_SLOT_TELESCOPE_TARGET],
+            fixed_slot_targets: [200, 300, 600],
             features: ModelFeatures::none(),
             pass_at_1: 0.72,
             optimal_retries: 3,
@@ -460,6 +467,110 @@ impl ModelCapabilityProfile {
             (v, a) => v.min(a),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-10 (DECISION-F) — model -> ModelCapabilityProfile detection
+// ---------------------------------------------------------------------------
+
+/// Map a loaded model identifier + VRAM tier to the most appropriate
+/// [`ModelCapabilityProfile`].
+///
+/// Substring matching on the model name (case-insensitive). Order matters:
+/// "32B" is tested before "3B" so the 32B path doesn't accidentally hit the
+/// 3B fallback. Unknown model names fall back to `micro_7b_12gb` with a
+/// `tracing::warn` (the safest 12GB-class default).
+///
+/// B-10 (DECISION-F): tier detection happens once at TaskRunner bootstrap
+/// and is cached on `ResolvedConfig.model_capability_profile`.
+pub fn detect_model_capability_profile(
+    model_name: &str,
+    vram_tier: VramTier,
+) -> ModelCapabilityProfile {
+    let name_lower = model_name.to_ascii_lowercase();
+
+    // Order matters: "32b" must be tested before "3b" (substring containment).
+    if name_lower.contains("32b") {
+        return ModelCapabilityProfile::large_32b_48gb();
+    }
+    if name_lower.contains("7b") {
+        return ModelCapabilityProfile::micro_7b_12gb();
+    }
+    if name_lower.contains("3b") {
+        // 3B has two tiers: 12GB (35K) and 8GB (20K).
+        return match vram_tier {
+            VramTier::Vram8Gb => ModelCapabilityProfile::micro_8gb(),
+            _ => ModelCapabilityProfile::micro_3b_12gb(),
+        };
+    }
+
+    // Unknown model: warn once and return safest 12GB default.
+    tracing::warn!(
+        target: "orchestrator::context_budget",
+        model = model_name,
+        vram_tier = ?vram_tier,
+        "detect_model_capability_profile: unknown model name; falling back to micro_7b_12gb"
+    );
+    ModelCapabilityProfile::micro_7b_12gb()
+}
+
+// ---------------------------------------------------------------------------
+// B-10 / 3E.5 — file_overlap_score + compute_overlap
+// ---------------------------------------------------------------------------
+
+/// Default file-overlap threshold for SSB entry filtering (DECISION-G).
+/// Entries scoring below this against the active agent's file set are
+/// dropped before they compete for SsbEntries slot tokens. Tuned per spec
+/// suggestion (e.g. 0.1); future tuning task may revisit with measured data.
+pub const FILE_OVERLAP_THRESHOLD: f32 = 0.10;
+
+/// Pure scalar overlap score between an agent's active file set and a single
+/// SSB entry's file set. Defined as `|intersection| / |agent_files|`.
+///
+/// Edge cases:
+///   - empty `agent_files` → 0.0 (nothing to score against)
+///   - empty `entry_files` → 0.0 (nothing to overlap)
+///   - exact equality → 1.0
+///
+/// O(n*m) where n = `agent_files.len()` and m = `entry_files.len()`. Both
+/// are small in practice (single-digit) so a hash set is unnecessary.
+pub fn file_overlap_score(agent_files: &[String], entry_files: &[String]) -> f32 {
+    if agent_files.is_empty() || entry_files.is_empty() {
+        return 0.0;
+    }
+    let intersect = entry_files
+        .iter()
+        .filter(|p| agent_files.iter().any(|a| a == *p))
+        .count();
+    intersect as f32 / agent_files.len() as f32
+}
+
+/// Rank a candidate set of SSB entries by file overlap with the active agent
+/// and filter entries scoring below [`FILE_OVERLAP_THRESHOLD`].
+///
+/// Inputs are `(entry_id, entry_files)` so this stays decoupled from the
+/// concrete `SsbEntry` shape (the caller queries SSB via `query_by_session`
+/// + a per-entry file lookup, then forwards the pair). Output is sorted by
+/// score descending so the caller can greedily truncate to slot capacity.
+///
+/// B-10 / 3E.5: the production caller emits `SsbActionType::SsbFilteredByOverlap`
+/// after truncation with `entries_total = input.len()` and `entries_kept =
+/// truncated_count` so the dashboard renders the filter ratio.
+pub fn compute_overlap<I: Copy>(
+    agent_files: &[String],
+    entries: &[(I, Vec<String>)],
+) -> Vec<(I, f32)> {
+    let mut scored: Vec<(I, f32)> = entries
+        .iter()
+        .map(|(id, files)| (*id, file_overlap_score(agent_files, files)))
+        .filter(|(_, score)| *score >= FILE_OVERLAP_THRESHOLD)
+        .collect();
+    // Stable sort by score descending; ties preserve input order (filter-stable).
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    scored
 }
 
 // Adaptive reduction factors for Level 2 (ReducedGranularity).
@@ -791,6 +902,12 @@ impl ContextBudget {
         let weights = &profile.slot_weights;
 
         // Distribute dynamic budget by profile weights (f32 -> usize truncation).
+        // NARROWING-OK: f64->usize; no TryFrom<f64> for usize in std; dynamic_budget is a token
+        // count (at most ~2M) so the f64 product fits usize with truncation-as-floor as intended.
+        debug_assert!(
+            dynamic_budget < (1usize << 53),
+            "dynamic_budget {dynamic_budget} exceeds f64 mantissa safe integer range"
+        );
         let mut repo_map_alloc = (dynamic_budget as f64 * weights.repo_map as f64) as usize;
         let mut code_ctx_alloc = (dynamic_budget as f64 * weights.code_context as f64) as usize;
         let mut ssb_alloc = (dynamic_budget as f64 * weights.ssb_entries as f64) as usize;
@@ -889,6 +1006,7 @@ impl ContextBudget {
     pub fn compute_repair_context() -> Self {
         let mut budget = Self::new(REPAIR_CONTEXT_TOTAL);
 
+        // NARROWING-OK (block): ContextSlot is #[repr(u8)] with values 0..=7; `as usize` is enum-discriminant indexing, structurally safe.
         budget.slots[ContextSlot::SystemPrompt as usize].allocated_tokens = REPAIR_SLOT_SYSTEM_PROMPT;
         budget.slots[ContextSlot::Rules as usize].allocated_tokens = REPAIR_SLOT_BABY_STEP_SPEC;
         budget.slots[ContextSlot::PhaseSpec as usize].allocated_tokens = REPAIR_SLOT_MISTAKE_BOOK;
@@ -925,12 +1043,12 @@ impl ContextBudget {
         }
 
         for bp in &mut self.cache_breakpoints {
-            let bound = bp.after_slot as usize;
+            let bound = bp.after_slot as usize; // NARROWING-OK: after_slot is ContextSlot (#[repr(u8)]); discriminant ≤ 7, always fits usize
             let mut hasher = blake3::Hasher::new();
             for slot_bytes in &slot_contents[..=bound] {
                 // Length-prefix each slot to prevent boundary ambiguity:
                 // [b"ab", b"cd"] must hash differently from [b"a", b"bcd"].
-                hasher.update(&(slot_bytes.len() as u64).to_le_bytes());
+                hasher.update(&(slot_bytes.len() as u64).to_le_bytes()); // WIDENING-OK: usize->u64 (widening on 64-bit)
                 hasher.update(slot_bytes);
             }
             let h = hasher.finalize();
@@ -983,7 +1101,7 @@ impl ContextBudget {
             // Log to SSB only if the level actually changed effective usage.
             if before_tokens != after_tokens {
                 let payload = SsbPayload::ContextReduction(ContextReductionPayload {
-                    level: level as u8,
+                    level: level as u8, // NARROWING-OK: AdaptiveLevel is #[repr(u8)]; const assert at line 640 pins Terminal==4
                     before_tokens,
                     after_tokens,
                     slots_affected,
@@ -1000,6 +1118,27 @@ impl ContextBudget {
 
         // All 3 levels exhausted — terminal.
         self.adaptive_level = AdaptiveLevel::Terminal;
+        // B-10 (Task 6): emit a Terminal-level context_reduction row before the
+        // terminal error returns so the dashboard sees the escalation event.
+        // before_tokens / after_tokens both reflect the post-Level3 totals so
+        // consumers can distinguish "fired but ineffective" from per-level rows.
+        let terminal_payload = SsbPayload::ContextReduction(ContextReductionPayload {
+            level: AdaptiveLevel::Terminal as u8, // NARROWING-OK: AdaptiveLevel is #[repr(u8)]; Terminal==4
+            before_tokens: self.total_used,
+            after_tokens: self.total_used,
+            slots_affected: Vec::new(),
+        });
+        // SSB write failure must not mask the Escalate / SplitTask error.
+        if let Err(e) = ssb
+            .write_payload("context_budget", 0, terminal_payload, vec![])
+            .await
+        {
+            tracing::warn!(
+                target: "orchestrator::context_budget",
+                error = %e,
+                "Terminal-level context_reduction emit failed; continuing with terminal error"
+            );
+        }
         match mode {
             ExecutionMode::Interactive => Err(AdaptiveError::Escalate {
                 breakdown: Box::new(BudgetBreakdown {
@@ -1011,6 +1150,10 @@ impl ContextBudget {
             ExecutionMode::Autonomous => Err(AdaptiveError::SplitTask),
         }
     }
+
+    // NARROWING-OK (block for reduce_* helpers): ContextSlot is #[repr(u8)] with values 0..=7;
+    // `slot as usize` is enum-discriminant array indexing (structurally safe, const-asserted).
+    // `slot as u8` produces the on-wire byte for `slots_affected`; same safety guarantee.
 
     /// Apply a single reduction level, returning the list of slot indices affected.
     fn apply_reduction_level(
@@ -1135,8 +1278,74 @@ impl ContextBudget {
 /// Scale down a token count by `(1 - factor)`, floored at `floor`.
 /// `factor` in [0.0, 1.0]: 0.0 = no reduction, 1.0 = reduce to floor.
 fn scale_down(current: usize, factor: f64, floor: usize) -> usize {
+    // NARROWING-OK: f64->usize; no TryFrom<f64> for usize in std; current is a token count
+    // (bounded by model_max_context, at most ~2M), factor in [0.0,1.0] so product <= current.
     let reduced = (current as f64 * (1.0 - factor)) as usize;
     reduced.max(floor)
+}
+
+// ---------------------------------------------------------------------------
+// B-10 (DECISION-C): SSB emitters for ContextBudgetComputed +
+// SsbFilteredByOverlap. Pure async helpers — keep `compute_with_profile`
+// sync so the 50+ existing test callsites and `build_dispatch_context` (also
+// sync) keep working.
+// ---------------------------------------------------------------------------
+
+/// Emit a `ContextBudgetComputed` SSB row summarizing a freshly-computed
+/// `ContextBudget`. Called by production wirings after a successful
+/// `compute_with_profile`. The dashboard reads this for the per-slot bar chart.
+pub async fn emit_context_budget_computed(
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    profile: &ModelCapabilityProfile,
+    budget: &ContextBudget,
+    raw_max: usize,
+) -> Result<i64, crate::ssb::SsbError> {
+    // Encode slot weights as basis points (0..=10000) so the on-wire payload
+    // stays integer-typed across architectures (avoids f32 endianness drift).
+    let weights = &profile.slot_weights;
+    // NARROWING-OK: f64->u64 after clamp(0.0, 10_000.0); no TryFrom<f64> for u64 in std;
+    // value is clamped so always in [0, 10000] which fits u64 exactly.
+    let to_bp = |v: f32| -> u64 { (v * 10_000.0).round().clamp(0.0, 10_000.0) as u64 };
+    let slots: Vec<u64> = vec![
+        to_bp(weights.system_prompt),
+        to_bp(weights.rules),
+        to_bp(weights.telescope),
+        to_bp(weights.repo_map),
+        to_bp(weights.code_context),
+        to_bp(weights.ssb_entries),
+        to_bp(weights.grc_history),
+        0, // OutputReserve has no weight (carries fixed reserve, not a ratio).
+    ];
+    let allocations: Vec<usize> =
+        budget.slots.iter().map(|s| s.allocated_tokens).collect();
+    let payload = SsbPayload::ContextBudgetComputed(ContextBudgetComputedPayload {
+        tier: profile.model_name.clone(),
+        raw_max,
+        slots,
+        allocations,
+        adapt_levels_fired: budget.adaptive_level as u8, // NARROWING-OK: AdaptiveLevel is #[repr(u8)]; Terminal==4
+    });
+    ssb.write_payload(agent_id, superstep, payload, Vec::new()).await
+}
+
+/// Emit an `SsbFilteredByOverlap` SSB row summarizing a per-slot SSB entry
+/// truncation. Called by the assembler after `compute_overlap` ranks and
+/// the slot-fill site truncates to fit token capacity.
+pub async fn emit_ssb_filtered_by_overlap(
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    entries_total: usize,
+    entries_kept: usize,
+) -> Result<i64, crate::ssb::SsbError> {
+    let payload = SsbPayload::SsbFilteredByOverlap(SsbFilteredByOverlapPayload {
+        entries_total,
+        entries_kept,
+        overlap_threshold: FILE_OVERLAP_THRESHOLD,
+    });
+    ssb.write_payload(agent_id, superstep, payload, Vec::new()).await
 }
 
 // ---------------------------------------------------------------------------
@@ -2252,23 +2461,29 @@ mod tests {
         assert!(p.slot_weights.validate_dynamic_sum());
         assert_eq!(p.vram_tier, VramTier::Vram8Gb);
         assert_eq!(p.model_tier, ModelTier::Micro);
-        assert_eq!(p.fixed_slot_targets, [200, 300, FIXED_SLOT_TELESCOPE_TARGET]);
+        // B-10 (DECISION-D): per token-efficiency-design.txt §2 table, 8GB
+        // Telescope = 600 (not the universal FIXED_SLOT_TELESCOPE_TARGET=1050).
+        assert_eq!(p.fixed_slot_targets, [200, 300, 600]);
     }
 
     #[test]
-    fn per_tier_output_reserve_micro_750() {
+    fn per_tier_output_reserve_micro_512() {
+        // B-10 (DECISION-D): spec §2 table specifies output_reserve = 512 for ALL tiers
+        // (rationale: real code outputs rarely exceed 256, design-grounded; previous
+        // values 750 / 4000 were OUT-OF-SPEC divergences).
         let p7b = ModelCapabilityProfile::micro_7b_12gb();
-        assert_eq!(p7b.output_reserve, 750, "MICRO 7B output_reserve must be 750");
+        assert_eq!(p7b.output_reserve, 512, "MICRO 7B output_reserve must be 512 per spec");
         let p3b = ModelCapabilityProfile::micro_3b_12gb();
-        assert_eq!(p3b.output_reserve, 750, "MICRO 3B output_reserve must be 750");
+        assert_eq!(p3b.output_reserve, 512, "MICRO 3B output_reserve must be 512 per spec");
         let p8g = ModelCapabilityProfile::micro_8gb();
-        assert_eq!(p8g.output_reserve, 750, "MICRO 8GB output_reserve must be 750");
+        assert_eq!(p8g.output_reserve, 512, "MICRO 8GB output_reserve must be 512 per spec");
     }
 
     #[test]
-    fn per_tier_output_reserve_large_4000() {
+    fn per_tier_output_reserve_large_512() {
+        // B-10 (DECISION-D): spec §2 table specifies 512 universally.
         let p = ModelCapabilityProfile::large_32b_48gb();
-        assert_eq!(p.output_reserve, 4000, "LARGE output_reserve must be 4000");
+        assert_eq!(p.output_reserve, 512, "LARGE output_reserve must be 512 per spec");
     }
 
     #[test]
@@ -2297,9 +2512,10 @@ mod tests {
             &p,
         ).unwrap();
         // Fixed slots should match profile targets.
+        // B-10 (DECISION-D): per spec §2 table, micro_7b_12gb Telescope = 800.
         assert_eq!(budget.slots[0].allocated_tokens, 330, "SystemPrompt");
         assert_eq!(budget.slots[1].allocated_tokens, 400, "Rules");
-        assert_eq!(budget.slots[2].allocated_tokens, FIXED_SLOT_TELESCOPE_TARGET, "Telescope");
+        assert_eq!(budget.slots[2].allocated_tokens, 800, "Telescope (spec §2 table)");
     }
 
     #[test]

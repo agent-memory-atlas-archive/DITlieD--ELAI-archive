@@ -10,8 +10,15 @@
 //! This provides a foundational control plane for reliable worker startup:
 //! trust-gate detection, ready-for-prompt handshakes, and prompt-misdelivery
 //! detection/recovery all live above raw terminal transport.
+//!
+//! Mutex-poison policy: std::sync::Mutex poison means an upstream writer panicked
+//! while holding the lock, leaving worker registry state partially written and
+//! state-machine invariants broken (e.g. half-committed status transitions or
+//! truncated event logs). Silently recovering that corrupt state would surface
+//! wrong worker status to callers. We panic loud instead, per CLAUDE.md
+//! "panic loud rather than continue with possibly-corrupt registry state."
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
@@ -149,7 +156,7 @@ pub struct WorkerRegistry {
 
 #[derive(Debug, Default)]
 struct WorkerRegistryInner {
-    workers: HashMap<String, Worker>,
+    workers: FxHashMap<String, Worker>,
     counter: u64,
 }
 
@@ -166,7 +173,7 @@ impl WorkerRegistry {
         trusted_roots: &[String],
         auto_recover_prompt_misdelivery: bool,
     ) -> Worker {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked mid-create; partial workers FxHashMap and counter state are unrecoverable");
         inner.counter += 1;
         let ts = now_secs(&elai_core::OsClock);
         let worker_id = format!("worker_{:08x}_{}", ts, inner.counter);
@@ -202,12 +209,12 @@ impl WorkerRegistry {
 
     #[must_use]
     pub fn get(&self, worker_id: &str) -> Option<Worker> {
-        let inner = self.inner.lock().expect("worker registry lock poisoned");
+        let inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; get() would return worker data from a corrupt workers map");
         inner.workers.get(worker_id).cloned()
     }
 
     pub fn observe(&self, worker_id: &str, screen_text: &str) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked mid-state-transition; observe() would mutate trust/status fields on corrupt Worker");
         let worker = inner
             .workers
             .get_mut(worker_id)
@@ -346,7 +353,7 @@ impl WorkerRegistry {
     }
 
     pub fn resolve_trust(&self, worker_id: &str) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; resolve_trust() would clear trust_gate_cleared on a Worker with broken invariants");
         let worker = inner
             .workers
             .get_mut(worker_id)
@@ -376,7 +383,7 @@ impl WorkerRegistry {
     }
 
     pub fn send_prompt(&self, worker_id: &str, prompt: Option<&str>) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; send_prompt() would set prompt_in_flight and last_prompt on corrupt Worker state");
         let worker = inner
             .workers
             .get_mut(worker_id)
@@ -434,7 +441,7 @@ impl WorkerRegistry {
     }
 
     pub fn restart(&self, worker_id: &str) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; restart() would reset prompt_delivery_attempts and events on corrupt Worker");
         let worker = inner
             .workers
             .get_mut(worker_id)
@@ -457,7 +464,7 @@ impl WorkerRegistry {
     }
 
     pub fn terminate(&self, worker_id: &str) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; terminate() would write Finished status and push event onto corrupt Worker");
         let worker = inner
             .workers
             .get_mut(worker_id)
@@ -482,7 +489,7 @@ impl WorkerRegistry {
         finish_reason: &str,
         tokens_output: u64,
     ) -> Result<Worker, String> {
-        let mut inner = self.inner.lock().expect("worker registry lock poisoned");
+        let mut inner = self.inner.lock().expect("worker_registry.inner mutex poisoned: upstream writer panicked; observe_completion() would classify finish_reason and mutate status on corrupt Worker");
         let worker = inner
             .workers
             .get_mut(worker_id)

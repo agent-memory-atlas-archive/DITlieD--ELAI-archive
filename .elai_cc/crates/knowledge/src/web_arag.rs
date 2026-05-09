@@ -3,7 +3,7 @@
 // Provides keyword search, semantic search (L2-normalized cosine via dot product),
 // and chunk_read (progressive disclosure) over ingested web content.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use elai_core::source_tier::SourceTier;
 
@@ -85,7 +85,7 @@ impl Default for WebAragConfig {
 /// In-memory index for web content with sentence-level retrieval.
 #[derive(Debug)]
 pub struct WebContentIndex {
-    chunks: HashMap<String, WebChunk>,
+    chunks: FxHashMap<String, WebChunk>,
     /// All sentences across all chunks, in ingestion order.
     sentences: Vec<String>,
     /// Maps each sentence index to its parent chunk_id.
@@ -97,7 +97,7 @@ pub struct WebContentIndex {
 impl WebContentIndex {
     pub fn new(_config: WebAragConfig) -> Self {
         Self {
-            chunks: HashMap::new(),
+            chunks: FxHashMap::default(),
             sentences: Vec::new(),
             sentence_to_chunk: Vec::new(),
             embeddings: None,
@@ -224,7 +224,7 @@ impl WebContentIndex {
         sentence_scores.truncate(oversample_count);
 
         // Group by chunk, max-pool scores.
-        let mut chunk_max: HashMap<&str, f64> = HashMap::new();
+        let mut chunk_max: FxHashMap<&str, f64> = FxHashMap::default();
         for (idx, score) in &sentence_scores {
             if *idx < self.sentence_to_chunk.len() {
                 let cid = &self.sentence_to_chunk[*idx];
@@ -389,6 +389,7 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
     if mag < 1e-12 {
         return vec![0.0; v.len()];
     }
+    // NARROWING-OK: intentional f64->f32 downcast; f64 used only for intermediate precision, output is f32 embedding.
     v.iter().map(|x| (*x as f64 / mag) as f32).collect()
 }
 

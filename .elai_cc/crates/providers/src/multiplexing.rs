@@ -4,7 +4,7 @@
 //! and docs/specs/crates/providers.txt S4 L120-140.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 // ---------------------------------------------------------------------------
 // SLO Quality Tiers (Murakkab-derived)
@@ -173,12 +173,12 @@ impl MultiplexingPolicy {
 pub struct PreloadPolicy {
     /// Map from FSM state to list of model IDs to pre-load.
     /// Configurable in elai_cc.toml [providers.preload].
-    pub state_to_models: HashMap<String, Vec<String>>,
+    pub state_to_models: FxHashMap<String, Vec<String>>,
 }
 
 impl Default for PreloadPolicy {
     fn default() -> Self {
-        let mut state_to_models = HashMap::new();
+        let mut state_to_models = FxHashMap::default();
         // Default preload mappings from phase-3J.txt
         state_to_models.insert("EXECUTING".to_string(), vec!["auditor".to_string()]);
         state_to_models.insert("AUDITING".to_string(), vec!["executor".to_string()]);
@@ -481,7 +481,7 @@ mod tests {
     fn adversarial_preload_policy_empty_state_handling() {
         // Test: verify empty state list doesn't cause crashes
         let policy = PreloadPolicy {
-            state_to_models: HashMap::new(),
+            state_to_models: FxHashMap::default(),
         };
         assert!(policy.models_for_state("ANY_STATE").is_empty());
         

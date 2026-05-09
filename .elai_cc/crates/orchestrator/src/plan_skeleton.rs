@@ -1279,6 +1279,7 @@ mod tests {
             PlanSkeleton::new("test-pipeline");
         for i in 0..num_phases {
             let phase_id = format!("P{i}");
+            // NARROWING-OK: i % 26 is bounded [0,25]; b'A' + val is [65,90] — always fits u8.
             let goal: String = (b'A' + (i % 26) as u8)
                 .to_string()
                 .repeat(goal_len.min(GOAL_MAX_LEN));

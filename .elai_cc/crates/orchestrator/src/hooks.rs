@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI64, Ordering},
     Arc,
 };
 use std::thread;
@@ -74,6 +74,110 @@ impl HookAbortSignal {
     #[must_use]
     pub fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::SeqCst)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-19A (T4) — Stop hook double-Ctrl+C gate.
+//
+// Decision policy for a Ctrl+C signal observed while the runtime is alive:
+//   * FSM == Idle  -> Abort immediately (legacy behaviour).
+//   * FSM != Idle, no recent press OR last press > 3s ago
+//                  -> WarnAndRecord (set first-press timestamp; do NOT abort).
+//   * FSM != Idle, last press <= 3s ago
+//                  -> Abort.
+//   * Once aborted, the gate stays aborted on subsequent presses.
+//
+// Source: B-19 plan T4 + execution-package DECISION-B. Spec rationale: an
+// agent in EXECUTING / TESTING_FIRST / AUDITING is doing real work; one
+// stray Ctrl+C should not destroy in-flight progress.
+// ---------------------------------------------------------------------------
+
+/// Window in milliseconds during which a second Ctrl+C is treated as the
+/// confirming press of a double-tap. After this window the next Ctrl+C
+/// resets the cycle (becomes a new "first press").
+pub const STOP_HOOK_DOUBLE_PRESS_WINDOW_MS: i64 = 3_000;
+
+/// Sentinel value meaning "no recorded first press". Stored in the
+/// AtomicI64 timestamp slot when the gate is freshly constructed or after
+/// an abort fires.
+const STOP_HOOK_NO_PRESS: i64 = i64::MIN;
+
+/// What the Ctrl+C handler should do based on a `StopHookGate::observe_signal`
+/// result. The handler is responsible for actually emitting the SSB
+/// intervention_request row + driving the `HookAbortSignal::abort()` —
+/// the gate is purely a decision function so it stays unit-testable from
+/// any thread / runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopHookDecision {
+    /// Trigger `HookAbortSignal::abort()` immediately. Either FSM was
+    /// Idle, OR this is a confirming Ctrl+C within the double-press window.
+    Abort,
+    /// Record the first-press timestamp; emit a warn-tier prompt + an SSB
+    /// `intervention_request` row asking the user to confirm by pressing
+    /// Ctrl+C again within the window. Do NOT abort yet.
+    WarnAndRecord,
+}
+
+/// Stop hook gate — receives raw Ctrl+C events and emits a
+/// [`StopHookDecision`] based on FSM state + the double-press window.
+///
+/// The gate is thread-safe (all state on atomics) and zero-allocation per
+/// signal so the cross-runtime Ctrl+C handler thread in cli/main.rs can
+/// query it without holding a Mutex.
+#[derive(Debug, Clone, Default)]
+pub struct StopHookGate {
+    aborted: Arc<AtomicBool>,
+    first_press_ms: Arc<AtomicI64>,
+}
+
+impl StopHookGate {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            aborted: Arc::new(AtomicBool::new(false)),
+            first_press_ms: Arc::new(AtomicI64::new(STOP_HOOK_NO_PRESS)),
+        }
+    }
+
+    /// Returns `true` when the gate has already triggered an abort. After
+    /// that point all further `observe_signal` calls return [`StopHookDecision::Abort`].
+    #[must_use]
+    pub fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::SeqCst)
+    }
+
+    /// Process a Ctrl+C signal observed at `now_ms` (epoch millis or any
+    /// monotonic clock — only relative differences matter) with the FSM in
+    /// state `fsm_state`. Returns the decision the caller must enact.
+    ///
+    /// Idempotent for already-aborted gates: stays aborted, returns Abort.
+    pub fn observe_signal(&self, fsm_state: crate::fsm::FsmState, now_ms: i64) -> StopHookDecision {
+        if self.aborted.load(Ordering::SeqCst) {
+            return StopHookDecision::Abort;
+        }
+
+        // FSM == Idle: no work in flight, abort immediately.
+        if matches!(fsm_state, crate::fsm::FsmState::Idle) {
+            self.aborted.store(true, Ordering::SeqCst);
+            return StopHookDecision::Abort;
+        }
+
+        let prev = self.first_press_ms.load(Ordering::SeqCst);
+        let within_window = prev != STOP_HOOK_NO_PRESS
+            && now_ms.saturating_sub(prev) <= STOP_HOOK_DOUBLE_PRESS_WINDOW_MS;
+
+        if within_window {
+            // Confirming press — abort.
+            self.aborted.store(true, Ordering::SeqCst);
+            return StopHookDecision::Abort;
+        }
+
+        // Either no prior press OR prior press is outside the window. Either
+        // way: this becomes the new "first press" and we ask the caller to
+        // warn the user.
+        self.first_press_ms.store(now_ms, Ordering::SeqCst);
+        StopHookDecision::WarnAndRecord
     }
 }
 
@@ -631,9 +735,39 @@ fn format_hook_failure(command: &str, code: i32, stdout: Option<&str>, stderr: &
     message
 }
 
+/// Returns the shell program name the orchestrator hook dispatcher invokes
+/// on the current platform. `"cmd"` on Windows (paired with `/C`), `"sh"`
+/// elsewhere (paired with `-c`).
+///
+/// Mirrors the plugin-side dispatcher at `crates/plugins/src/hooks.rs:282-302`.
+/// Exposed for the `tests/hooks_windows_compat.rs` contract test
+/// (B-15A Task 16). Compile-time gated via `#[cfg(windows)]` so the chosen
+/// program is fixed at build time and there is no runtime branch cost.
+#[must_use]
+pub fn shell_command_program() -> &'static str {
+    #[cfg(windows)]
+    {
+        "cmd"
+    }
+    #[cfg(not(windows))]
+    {
+        "sh"
+    }
+}
+
 fn shell_command(command: &str) -> CommandWithStdin {
-    let mut command_builder = Command::new("sh");
-    command_builder.arg("-c").arg(command);
+    #[cfg(windows)]
+    let command_builder = {
+        let mut command_builder = Command::new("cmd");
+        command_builder.arg("/C").arg(command);
+        command_builder
+    };
+    #[cfg(not(windows))]
+    let command_builder = {
+        let mut command_builder = Command::new("sh");
+        command_builder.arg("-c").arg(command);
+        command_builder
+    };
     CommandWithStdin::new(command_builder)
 }
 

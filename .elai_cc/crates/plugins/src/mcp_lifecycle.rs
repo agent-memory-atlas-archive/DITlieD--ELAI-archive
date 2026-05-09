@@ -3,8 +3,10 @@
 
 use crate::mcp_bridge::{McpBridge, McpConnection, McpError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+use elai_core::{ClockProvider as _, LogicalInstant, OsClock};
 
 /// Connection retry policy with exponential backoff
 #[derive(Debug, Clone)]
@@ -30,6 +32,7 @@ impl Default for RetryPolicy {
 impl RetryPolicy {
     /// Calculate backoff duration for a given attempt number
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
+        // NARROWING-OK: attempt is bounded by max_attempts (default 3); powi requires i32 with no TryFrom<u32>.
         let multiplier = self.backoff_multiplier.powi(attempt as i32);
         let backoff_secs = self.initial_backoff.as_secs_f64() * multiplier;
         Duration::from_secs_f64(backoff_secs.min(60.0)) // Cap at 60s
@@ -49,7 +52,7 @@ pub struct HeartbeatMonitor {
     /// Timeout after which server is considered crashed
     pub timeout: Duration,
     /// Last heartbeat timestamp
-    last_heartbeat: Arc<RwLock<Option<Instant>>>,
+    last_heartbeat: Arc<RwLock<Option<LogicalInstant>>>,
 }
 
 impl HeartbeatMonitor {
@@ -63,14 +66,14 @@ impl HeartbeatMonitor {
     /// Update the last heartbeat timestamp
     pub async fn record_heartbeat(&self) {
         let mut last = self.last_heartbeat.write().await;
-        *last = Some(Instant::now());
+        *last = Some(OsClock.now());
     }
 
     /// Check if the server is alive (heartbeat within timeout)
     pub async fn is_alive(&self) -> bool {
         let last = self.last_heartbeat.read().await;
         match *last {
-            Some(instant) => instant.elapsed() < self.timeout,
+            Some(mark) => OsClock.elapsed_since(mark) < self.timeout,
             None => false, // No heartbeat recorded yet
         }
     }
@@ -78,7 +81,7 @@ impl HeartbeatMonitor {
     /// Get time since last heartbeat
     pub async fn time_since_last_heartbeat(&self) -> Option<Duration> {
         let last = self.last_heartbeat.read().await;
-        last.map(|instant| instant.elapsed())
+        last.map(|mark| OsClock.elapsed_since(mark))
     }
 }
 

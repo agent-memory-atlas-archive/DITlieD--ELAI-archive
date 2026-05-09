@@ -115,6 +115,46 @@ pub struct EditOutcome {
     pub bytes_written: u32,
     /// File path after edit (same as request).
     pub file_path: PathBuf,
+    /// B-20A Task 6: similarity hint emitted by `dispatch_edit` when every
+    /// edit-tier fails (`tier == NotMatched`) and the best line in the
+    /// file has Levenshtein-ratio strictly above
+    /// `string_similarity::SIMILARITY_HINT_THRESHOLD` (0.5). `None` when
+    /// the edit succeeded OR no nearby match exists. Backward-compatible:
+    /// the field is `#[serde(default)]` so older payloads deserialise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity_hint: Option<SimilarityHint>,
+}
+
+/// B-20A Task 6: hint pointing at the line in the source file whose
+/// content most closely resembles the agent-provided `old_text` when the
+/// 3-tier matcher refuses the edit. `ratio_bp` is the Levenshtein ratio
+/// in basis points (0..=10_000) so the struct stays `Eq` and survives
+/// `PartialEq` comparisons in tests without re-introducing `f32` non-`Eq`
+/// behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimilarityHint {
+    /// Trimmed text of the most similar source line.
+    pub nearest_text: String,
+    /// 1-based line number in the source file.
+    pub line_no: u32,
+    /// Levenshtein ratio in basis points: 0 = unrelated, 10_000 = identical.
+    /// Convenience getter `ratio()` reconstructs the `f32`.
+    pub ratio_bp: u16,
+}
+
+impl SimilarityHint {
+    /// Convert `ratio_bp` back to a `f32` ratio in `[0.0, 1.0]`.
+    pub fn ratio(&self) -> f32 {
+        f32::from(self.ratio_bp) / 10_000.0
+    }
+
+    /// Helper: build from a raw `f32` ratio (clamped to `[0, 1]`).
+    pub fn from_ratio(nearest_text: String, line_no: u32, ratio: f32) -> Self {
+        let clamped = ratio.clamp(0.0, 1.0);
+        // NARROWING-OK: clamped in [0.0,1.0] * 10_000.0 = [0,10_000] which fits u16 (max 65_535).
+        let ratio_bp = (clamped * 10_000.0).round() as u16;
+        Self { nearest_text, line_no, ratio_bp }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,46 +251,39 @@ pub struct ValidationTierResult {
 // Failure classification
 // ---------------------------------------------------------------------------
 
-/// 13-variant failure taxonomy (superset of the 9 categories in phase-4B.txt
-/// §failure-taxonomy). Extra variants (`LazyCode`, `EmptyBody`,
-/// `FileSizeExceeded`, `ScriptQualityDependency`) are ours from a prior
-/// wiring pass; keeping them in-place preserves backward compatibility with
-/// every downstream caller. Re-exported from `elai_tools::failure_taxonomy`
-/// via a thin conversion in `in_process_tool_dispatcher.rs`.
+/// 9-variant failure taxonomy (B-20A reduction; matches
+/// `elai_tools::failure_taxonomy::FailureCategory` lockstep). Decision A:
+/// uses the B-20 plan body's Rust-flavoured 9-list (LIFETIME_ERROR /
+/// BORROW_ERROR included; PERMISSION_DENIED from the competing
+/// phase-4B.txt list rejected — see workflow/reasoning/B-20A-decisions.md).
+/// Re-exported from `elai_tools::failure_taxonomy::FailureCategory` via a
+/// thin conversion in the `InProcessToolDispatcher` impl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ToolFailureCategory {
-    CompilationError,
-    TestFailure,
-    RuntimeError,
-    Timeout,
-    ResourceExhausted,
-    LazyCode,
-    EmptyBody,
-    FileSizeExceeded,
-    ContextExplosion,
-    RawLogOverload,
-    PhaseGateFailure,
-    ScriptQualityDependency,
-    SpeculativeRepair,
+    SyntaxError,
+    TypeMismatch,
+    UndefinedSymbol,
+    MissingImport,
+    LifetimeError,
+    BorrowError,
+    UnusedWarning,
+    TestAssertion,
+    RuntimePanic,
 }
 
 impl ToolFailureCategory {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::CompilationError => "COMPILATION_ERROR",
-            Self::TestFailure => "TEST_FAILURE",
-            Self::RuntimeError => "RUNTIME_ERROR",
-            Self::Timeout => "TIMEOUT",
-            Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
-            Self::LazyCode => "LAZY_CODE",
-            Self::EmptyBody => "EMPTY_BODY",
-            Self::FileSizeExceeded => "FILE_SIZE_EXCEEDED",
-            Self::ContextExplosion => "CONTEXT_EXPLOSION",
-            Self::RawLogOverload => "RAW_LOG_OVERLOAD",
-            Self::PhaseGateFailure => "PHASE_GATE_FAILURE",
-            Self::ScriptQualityDependency => "SCRIPT_QUALITY_DEPENDENCY",
-            Self::SpeculativeRepair => "SPECULATIVE_REPAIR",
+            Self::SyntaxError => "SYNTAX_ERROR",
+            Self::TypeMismatch => "TYPE_MISMATCH",
+            Self::UndefinedSymbol => "UNDEFINED_SYMBOL",
+            Self::MissingImport => "MISSING_IMPORT",
+            Self::LifetimeError => "LIFETIME_ERROR",
+            Self::BorrowError => "BORROW_ERROR",
+            Self::UnusedWarning => "UNUSED_WARNING",
+            Self::TestAssertion => "TEST_ASSERTION",
+            Self::RuntimePanic => "RUNTIME_PANIC",
         }
     }
 }
@@ -386,8 +419,9 @@ pub trait ToolDispatcher: Send + Sync {
         >,
     >;
 
-    /// Classify a compile/test/runtime failure into one of 13 categories.
-    /// Returns `None` when the classifier can't find a confident match.
+    /// Classify a compile/test/runtime failure into one of 9 categories
+    /// (B-20A reduction). Returns `None` when the classifier can't find a
+    /// confident match.
     fn dispatch_classify_failure(
         &self,
         input: FailureInput,

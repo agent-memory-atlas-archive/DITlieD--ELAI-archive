@@ -20,10 +20,10 @@
 //! MSI tracking: exponential-decay weighted moving average (λ=0.3) of
 //! apply-success outcomes over the last 10 applies, per [`PipelineMode`].
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -35,6 +35,7 @@ use crate::ssb::{
     ProposalRejectedPayload, Ssb, SsbPayload,
 };
 use elai_core::{CommitOutcome, GitBranchPolicy, GitCommitRequest, ToolDispatcher};
+use elai_core::{ClockProvider as _, OsClock};
 
 // ---------------------------------------------------------------------------
 // Named constants (spec defaults per phase-4H.txt)
@@ -108,7 +109,7 @@ const KNOWN_GOOD_CORPUS: &[&str] = &[
 /// Which workspace pipeline emitted an outcome. Layer 1A tracks MSI
 /// independently for each mode — a SURGICAL divergence does not pause
 /// GREENFIELD, and vice versa.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PipelineMode {
     Surgical,
@@ -393,7 +394,8 @@ impl MsiState {
         let mut weight_sum = 0.0f32;
         let mut value = 0.0f32;
         for (i, d) in self.history.iter().enumerate() {
-            let w = (1.0 - lambda).powi(i as i32);
+            // NARROWING-OK: i is bounded by DEFAULT_MSI_WINDOW=10; always fits i32.
+            let w = (1.0 - lambda).powi(i32::try_from(i).unwrap_or(i32::MAX));
             value += w * d;
             weight_sum += w;
         }
@@ -405,7 +407,7 @@ impl MsiState {
     }
 
     fn samples(&self) -> u32 {
-        self.history.len() as u32
+        u32::try_from(self.history.len()).unwrap_or(u32::MAX)
     }
 }
 
@@ -445,7 +447,7 @@ pub struct DefaultLayer1aProcessor {
     pub max_fpr: f32,
     pub archive_cap: u32,
     pub msi_lambda: f32,
-    msi: Arc<AsyncMutex<HashMap<PipelineMode, MsiState>>>,
+    msi: Arc<AsyncMutex<FxHashMap<PipelineMode, MsiState>>>,
 }
 
 impl DefaultLayer1aProcessor {
@@ -466,7 +468,7 @@ impl DefaultLayer1aProcessor {
             max_fpr: DEFAULT_MAX_FPR,
             archive_cap: DEFAULT_ARCHIVE_CAP,
             msi_lambda: DEFAULT_MSI_LAMBDA,
-            msi: Arc::new(AsyncMutex::new(HashMap::new())),
+            msi: Arc::new(AsyncMutex::new(FxHashMap::default())),
         }
     }
 
@@ -649,7 +651,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
             let mut proposals: Vec<DataTableProposal> = Vec::new();
             // Aggregate identical (category, pattern) pairs so repeat
             // observations across findings accumulate.
-            let mut bucket: HashMap<(String, String), u32> = HashMap::new();
+            let mut bucket: FxHashMap<(String, String), u32> = FxHashMap::default();
             for f in &outcome.failures {
                 if f.is_false_positive {
                     continue;
@@ -880,6 +882,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                              WHERE pipeline_mode = ?1 ORDER BY archived_at ASC LIMIT ?2",
                         )?;
                         let rows_iter = stmt.query_map(
+                            // NARROWING-OK: u32->i64 is widening; to_drop is u32 (count-cap), fits i64.
                             params![proposal.pipeline_mode.as_str(), to_drop as i64],
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )?;
@@ -1054,6 +1057,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
+            // NARROWING-OK: u32->i64 is widening; capped is u32 (limit field), fits i64.
             let Ok(iter) = stmt.query_map(params![capped as i64], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1256,7 +1260,8 @@ fn parse_mode(s: &str) -> Option<PipelineMode> {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
+    OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)

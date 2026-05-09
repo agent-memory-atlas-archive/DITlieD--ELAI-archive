@@ -309,7 +309,7 @@ fn compute_jitter(model_id: &str, config: &CircuitBreakerConfig) -> Duration {
     model_id.hash(&mut hasher);
     let hash = hasher.finish();
     // Jitter range: 0..half_open_base_secs (in milliseconds for finer granularity)
-    let base_ms = config.half_open_base.as_millis() as u64;
+    let base_ms = u64::try_from(config.half_open_base.as_millis()).unwrap_or(u64::MAX);
     let jitter_ms = hash % base_ms.max(1);
     Duration::from_millis(jitter_ms)
 }
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(cb.state(), BreakerState::Open);
 
         // Advance past timeout (30s + jitter)
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -444,7 +444,7 @@ mod tests {
         }
 
         // Advance past timeout
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -479,7 +479,7 @@ mod tests {
         );
 
         // Advance past timeout, enter HALF_OPEN, then fail -> second OPEN
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -491,7 +491,7 @@ mod tests {
         );
 
         // Third OPEN: advance, fail again
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -503,7 +503,7 @@ mod tests {
         );
 
         // Fourth OPEN: capped at 120s
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -591,7 +591,7 @@ mod tests {
         }
         assert_eq!(cb.state(), BreakerState::Open);
 
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }
@@ -613,7 +613,7 @@ mod tests {
         }
 
         // Recover via HALF_OPEN
-        let timeout_ms = cb.current_timeout().as_millis() as u64;
+        let timeout_ms = u64::try_from(cb.current_timeout().as_millis()).unwrap_or(u64::MAX);
         for _ in 0..=timeout_ms {
             let _ = clock.now();
         }

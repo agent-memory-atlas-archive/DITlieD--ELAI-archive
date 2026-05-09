@@ -11,12 +11,16 @@ publish.workspace = true
 [dependencies]
 reqwest = { workspace = true }
 serde = { workspace = true }
+# Phase B (s-44680): lint::run_web_lint and cwv::run_lighthouse parse JSON
+# from external tool subprocesses. Promotes from dev-dependency to runtime
+# dependency.
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+elai-core = { path = "../core" }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread"] }
 

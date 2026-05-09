@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -6,6 +6,9 @@ use elai_core::clock::ClockProvider;
 use tracing::debug;
 
 use crate::WebSearchError;
+
+/// HTTP status code: Not Found, used to treat missing robots.txt as fully allowed.
+const HTTP_NOT_FOUND: u16 = 404;
 
 /// Cache TTL for robots.txt entries: 1 hour in milliseconds.
 const ROBOTS_CACHE_TTL_MS: u64 = 3_600_000;
@@ -17,7 +20,7 @@ const ROBOTS_MAX_BODY_BYTES: usize = 64 * 1024;
 pub struct RobotsCache {
     clock: Arc<dyn ClockProvider>,
     /// domain -> (allowed, expires_at_epoch_ms)
-    cache: HashMap<String, (bool, u64)>,
+    cache: FxHashMap<String, (bool, u64)>,
 }
 
 /// Extract epoch milliseconds from a ClockProvider.
@@ -53,7 +56,7 @@ impl RobotsCache {
     pub fn new(clock: Arc<dyn ClockProvider>) -> Self {
         Self {
             clock,
-            cache: HashMap::new(),
+            cache: FxHashMap::default(),
         }
     }
 
@@ -86,7 +89,7 @@ impl RobotsCache {
         // Fetch robots.txt with size-limited body read.
         let robots_url = format!("{base}/robots.txt");
         let allowed = match http_client.get(&robots_url).send().await {
-            Ok(resp) if resp.status().as_u16() == 404 => {
+            Ok(resp) if resp.status().as_u16() == HTTP_NOT_FOUND => {
                 debug!(domain = %base, "robots.txt 404, treating as allowed");
                 true
             }

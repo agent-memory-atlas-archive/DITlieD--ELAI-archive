@@ -29,7 +29,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 MODEL_PATH = os.environ.get(
     "ELAI_MODEL_PATH",
-    os.path.join(_PROJECT_ROOT, "models", "gemma-4-E2B-it"),
+    os.path.join(_PROJECT_ROOT, "models", "Qwen2.5-Coder-7B-Instruct-abliterated"),
 )
 OUTPUT_PATH = os.environ.get(
     "ELAI_STEERING_OUTPUT",
@@ -234,10 +234,19 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading model from: {MODEL_PATH}")
+    if not os.path.exists(MODEL_PATH):
+        import warnings
+        warnings.warn(
+            f"compute_steering_vector: model path '{MODEL_PATH}' not present on disk; "
+            "skipping steering vector recomputation. "
+            "Set ELAI_MODEL_PATH to the correct model directory.",
+            stacklevel=2,
+        )
+        sys.exit(0)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
     )
 

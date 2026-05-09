@@ -1,0 +1,127 @@
+/* ============================================================
+   ELAI Dashboard — Motion Library
+   Depends on: tokens.css (--dur-base, --ease-out must resolve)
+   Rules: 120–240ms range. ease-out enters, ease-in exits.
+   Scale never exceeds 1.03. No bounce, no spring overshoot.
+   ============================================================ */
+
+/* ----------------------------------------------------------
+   KEYFRAMES
+---------------------------------------------------------- */
+
+/* Fade in from invisible — status cards, overlays */
+@keyframes enterFade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Lift in from 4px below — list items, drawers, panel content */
+@keyframes enterLift {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Breath pulse — EXECUTING status bar line, idle dot, live indicators */
+@keyframes breath {
+  0%   { opacity: 0.2; }
+  50%  { opacity: 0.55; }
+  100% { opacity: 0.2; }
+}
+
+/* Scan — 1-px line sweeping a container on phase complete (one-shot) */
+@keyframes scan {
+  from { left: -100%; }
+  to   { left: 100%; }
+}
+
+/* Pulse scale — subtle container scale for attention-drawing (max 1.03) */
+@keyframes pulseScale {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+/* Shimmer — skeleton loading states, background-size must be 400% */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+/* ----------------------------------------------------------
+   UTILITY ANIMATION CLASSES
+---------------------------------------------------------- */
+
+/* Opacity-only enter — overlays, status cards */
+.anim-enter-fade {
+  animation: enterFade var(--dur-base) var(--ease-out) both;
+}
+
+/* Lift + fade enter — most list items, panel content */
+.anim-enter-lift {
+  animation: enterLift var(--dur-base) var(--ease-out) both;
+}
+
+/* Infinite breath pulse — live indicators, idle dot */
+.anim-breath {
+  animation: breath 2.2s ease-in-out infinite;
+}
+
+/* Phase-complete scan — use on a 1-px absolute positioned pseudo-element */
+.anim-scan {
+  animation: scan 240ms var(--ease-out) 1;
+}
+
+/* Subtle attention pulse — max scale 1.02, never exceeds 1.03 */
+.anim-pulse-scale {
+  animation: pulseScale 3s ease-in-out infinite;
+}
+
+/* Skeleton shimmer — background must be a gradient to be visible */
+.anim-shimmer {
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* ----------------------------------------------------------
+   STAGGER UTILITY
+   Apply .stagger to a list parent; children get sequential
+   animation-delay of 40ms each for up to 12 items.
+   Children start with opacity: 0 so no FOUC on load.
+---------------------------------------------------------- */
+.stagger > * {
+  animation: enterLift var(--dur-base) var(--ease-out) both;
+  opacity: 0;
+}
+
+.stagger > *:nth-child(1)  { animation-delay:   0ms; }
+.stagger > *:nth-child(2)  { animation-delay:  40ms; }
+.stagger > *:nth-child(3)  { animation-delay:  80ms; }
+.stagger > *:nth-child(4)  { animation-delay: 120ms; }
+.stagger > *:nth-child(5)  { animation-delay: 160ms; }
+.stagger > *:nth-child(6)  { animation-delay: 200ms; }
+.stagger > *:nth-child(7)  { animation-delay: 240ms; }
+.stagger > *:nth-child(8)  { animation-delay: 280ms; }
+.stagger > *:nth-child(9)  { animation-delay: 320ms; }
+.stagger > *:nth-child(10) { animation-delay: 360ms; }
+.stagger > *:nth-child(11) { animation-delay: 400ms; }
+.stagger > *:nth-child(12) { animation-delay: 440ms; }
+
+/* ----------------------------------------------------------
+   REDUCED MOTION
+   Hard override — any animation or transition collapses to
+   near-instant for users who have requested reduced motion.
+   !important is permitted here per project policy.
+---------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

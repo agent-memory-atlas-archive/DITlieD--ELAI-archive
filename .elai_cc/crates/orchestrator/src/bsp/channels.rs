@@ -8,7 +8,7 @@
 //! is excluded (in-memory only, lost on crash).
 
 use std::any::Any;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::marker::PhantomData;
 
 use serde::de::DeserializeOwned;
@@ -245,7 +245,7 @@ pub struct ChannelWrite<T> {
 /// `prepare_next_tasks` call. UntrackedValue excluded.
 #[derive(Debug, Clone)]
 pub struct ChannelSnapshot {
-    inner: HashMap<String, ChannelState>,
+    inner: FxHashMap<String, ChannelState>,
 }
 
 impl ChannelSnapshot {
@@ -428,21 +428,21 @@ struct ErasedUntracked {
 // ---------------------------------------------------------------------------
 
 /// In-memory channel registry for BSP supersteps.
-/// Separate HashMaps per channel type for type safety and performance.
+/// Separate FxHashMaps per channel type for type safety; lookup-only, no iteration order needed.
 pub struct InMemoryChannelRegistry {
-    last_values: HashMap<String, LastValueEntry>,
-    topics: HashMap<String, TopicEntry>,
-    ephemerals: HashMap<String, EphemeralEntry>,
-    untracked: HashMap<String, ErasedUntracked>,
+    last_values: FxHashMap<String, LastValueEntry>,
+    topics: FxHashMap<String, TopicEntry>,
+    ephemerals: FxHashMap<String, EphemeralEntry>,
+    untracked: FxHashMap<String, ErasedUntracked>,
 }
 
 impl InMemoryChannelRegistry {
     pub fn new() -> Self {
         Self {
-            last_values: HashMap::new(),
-            topics: HashMap::new(),
-            ephemerals: HashMap::new(),
-            untracked: HashMap::new(),
+            last_values: FxHashMap::default(),
+            topics: FxHashMap::default(),
+            ephemerals: FxHashMap::default(),
+            untracked: FxHashMap::default(),
         }
     }
 
@@ -639,7 +639,7 @@ impl ChannelRegistry for InMemoryChannelRegistry {
     }
 
     fn snapshot_for_scheduling(&self) -> ChannelSnapshot {
-        let mut inner = HashMap::new();
+        let mut inner = FxHashMap::default();
 
         for (name, entry) in &self.last_values {
             inner.insert(name.clone(), ChannelState::LastValue(entry.bytes.clone()));

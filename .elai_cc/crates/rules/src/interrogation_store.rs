@@ -241,7 +241,7 @@ pub fn build_seed_trees() -> Vec<InterrogationTree> {
 
 fn build_rust_lifetime_tree() -> InterrogationTree {
     use elai_core::interrogation_tree::{Choice, ChoiceId, FixTemplate, QuestionNode};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     // Q3 leaves for borrow path
     let q3_borrow = QuestionNode {
@@ -251,7 +251,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "restructure to avoid simultaneous borrows".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "use a reference instead of owned value".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "restructure borrows in {function} at line {line}".to_string(),
             category: "borrow_fix".to_string(),
@@ -266,7 +266,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "change to owned type (String, Vec, etc.)".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "use 'static or leak the value".to_string(), confidence_hint: 0.1 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "add lifetime annotation or change to owned type in {function}".to_string(),
             category: "lifetime_fix".to_string(),
@@ -281,7 +281,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "add a trait bound to the generic parameter".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "use a concrete type instead of generic".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "resolve trait bound in {function}: impl or constrain {type}".to_string(),
             category: "trait_fix".to_string(),
@@ -289,7 +289,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
     };
 
     // Q2: root cause by category
-    let mut q2_children = HashMap::new();
+    let mut q2_children = BTreeMap::new();
     q2_children.insert(ChoiceId::new("A"), q3_borrow);
     q2_children.insert(ChoiceId::new("B"), q3_lifetime);
     q2_children.insert(ChoiceId::new("C"), q3_trait);
@@ -301,7 +301,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "lifetime annotations (missing or wrong)".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "trait bounds (missing impl or constraint)".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: None,
     };
 
@@ -319,14 +319,14 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "fix the test setup / fixture".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "update expected output to match new behaviour".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix test assertion or setup in {function} at line {line}".to_string(),
             category: "test_fix".to_string(),
         }),
     };
 
-    let mut root_children = HashMap::new();
+    let mut root_children = BTreeMap::new();
     root_children.insert(ChoiceId::new("B"), q2_with_children);
     root_children.insert(ChoiceId::new("E"), q1e_rust);
 
@@ -362,7 +362,7 @@ fn build_rust_lifetime_tree() -> InterrogationTree {
 
 fn build_python_import_tree() -> InterrogationTree {
     use elai_core::interrogation_tree::{Choice, ChoiceId, FixTemplate, QuestionNode};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     let q3_import = QuestionNode {
         question_template: "To fix the import in {function}, should we:".to_string(),
@@ -371,7 +371,7 @@ fn build_python_import_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "install the missing package".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "use a different module/function".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix import: {import_path} in {file}".to_string(),
             category: "import_fix".to_string(),
@@ -385,14 +385,14 @@ fn build_python_import_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "convert the value to expected type".to_string(), confidence_hint: 0.4 },
             Choice { id: ChoiceId::new("C"), label: "change the function signature".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix type mismatch in {function}: convert or annotate at line {line}".to_string(),
             category: "type_fix".to_string(),
         }),
     };
 
-    let mut q2_children = HashMap::new();
+    let mut q2_children = BTreeMap::new();
     q2_children.insert(ChoiceId::new("A"), q3_import);
     q2_children.insert(ChoiceId::new("B"), q3_type);
 
@@ -417,14 +417,14 @@ fn build_python_import_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "fix the assertion (assertEqual, assertTrue, etc.)".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "fix the test fixture or setUp method".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix mock or assertion in {function} at line {line}".to_string(),
             category: "test_fix".to_string(),
         }),
     };
 
-    let mut root_children = HashMap::new();
+    let mut root_children = BTreeMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
     root_children.insert(ChoiceId::new("E"), q1e_python);
 
@@ -460,7 +460,7 @@ fn build_python_import_tree() -> InterrogationTree {
 
 fn build_go_error_tree() -> InterrogationTree {
     use elai_core::interrogation_tree::{Choice, ChoiceId, FixTemplate, QuestionNode};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     let q3_goroutine = QuestionNode {
         question_template: "The goroutine issue in {function} is:".to_string(),
@@ -469,7 +469,7 @@ fn build_go_error_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "deadlock (channel or mutex)".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "goroutine leak (no cleanup)".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "add synchronization or fix channel usage in {function}".to_string(),
             category: "concurrency_fix".to_string(),
@@ -483,14 +483,14 @@ fn build_go_error_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "add missing error check (if err != nil)".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "define custom error type".to_string(), confidence_hint: 0.15 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix error handling in {function}: wrap or check at line {line}".to_string(),
             category: "error_handling_fix".to_string(),
         }),
     };
 
-    let mut q2_children = HashMap::new();
+    let mut q2_children = BTreeMap::new();
     q2_children.insert(ChoiceId::new("A"), q3_goroutine);
     q2_children.insert(ChoiceId::new("B"), q3_error);
 
@@ -515,14 +515,14 @@ fn build_go_error_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "fix the test setup or TestMain".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "update expected value to match new behaviour".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix assert or test setup in {function} at line {line}".to_string(),
             category: "test_fix".to_string(),
         }),
     };
 
-    let mut root_children = HashMap::new();
+    let mut root_children = BTreeMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
     root_children.insert(ChoiceId::new("E"), q1e_go);
 
@@ -558,7 +558,7 @@ fn build_go_error_tree() -> InterrogationTree {
 
 fn build_typescript_type_tree() -> InterrogationTree {
     use elai_core::interrogation_tree::{Choice, ChoiceId, FixTemplate, QuestionNode};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     let q3_type = QuestionNode {
         question_template: "To fix the TypeScript type error in {function}, should we:".to_string(),
@@ -567,7 +567,7 @@ fn build_typescript_type_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "update the interface/type definition".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "add a type guard or narrowing check".to_string(), confidence_hint: 0.25 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix type in {function}: update type or add guard at line {line}".to_string(),
             category: "type_fix".to_string(),
@@ -581,14 +581,14 @@ fn build_typescript_type_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "install the missing @types package".to_string(), confidence_hint: 0.3 },
             Choice { id: ChoiceId::new("C"), label: "switch to a different export (named vs default)".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix import: update path or install types in {file}".to_string(),
             category: "import_fix".to_string(),
         }),
     };
 
-    let mut q2_children = HashMap::new();
+    let mut q2_children = BTreeMap::new();
     q2_children.insert(ChoiceId::new("A"), q3_type);
     q2_children.insert(ChoiceId::new("B"), q3_import);
 
@@ -613,14 +613,14 @@ fn build_typescript_type_tree() -> InterrogationTree {
             Choice { id: ChoiceId::new("B"), label: "fix the test setup or mock type".to_string(), confidence_hint: 0.35 },
             Choice { id: ChoiceId::new("C"), label: "update expected output to match new behaviour".to_string(), confidence_hint: 0.2 },
         ],
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(FixTemplate {
             instruction: "fix test assertion or type in {function} at line {line}".to_string(),
             category: "test_fix".to_string(),
         }),
     };
 
-    let mut root_children = HashMap::new();
+    let mut root_children = BTreeMap::new();
     root_children.insert(ChoiceId::new("B"), q2);
     root_children.insert(ChoiceId::new("E"), q1e_ts);
 

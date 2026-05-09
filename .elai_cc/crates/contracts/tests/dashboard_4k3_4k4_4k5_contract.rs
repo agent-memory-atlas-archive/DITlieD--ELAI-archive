@@ -1,3 +1,4 @@
+#![cfg(any())] // disabled: depends on removed elai-dashboard crate (s-1430428 workspace-manifest-fix)
 //! Contract tests for dashboard phase 4K.3 + 4K.4 + 4K.5 (bundled).
 //!
 //! These tests reference APIs that DO NOT yet exist (RED state). They flip

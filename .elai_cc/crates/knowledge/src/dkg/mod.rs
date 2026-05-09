@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use blake3;
@@ -88,7 +88,7 @@ pub const FLOW_FIELD_ACCESS: &str = "FIELD_ACCESS";
 
 pub struct DkgEngine {
     conn: Connection,
-    grammars: HashMap<&'static str, Box<dyn LanguageGrammar>>,
+    grammars: FxHashMap<&'static str, Box<dyn LanguageGrammar>>,
     build_graph_called: bool,
     index_version_path: Option<PathBuf>,
     created_at: i64,
@@ -121,7 +121,7 @@ impl DkgEngine {
                 .map_err(|e| KnowledgeError::Graph(format!("index_version write: {e}")))?;
         }
 
-        let mut grammars: HashMap<&'static str, Box<dyn LanguageGrammar>> = HashMap::new();
+        let mut grammars: FxHashMap<&'static str, Box<dyn LanguageGrammar>> = FxHashMap::default();
         let langs: Vec<Box<dyn LanguageGrammar>> = vec![
             Box::new(RustGrammar),
             Box::new(PythonGrammar),
@@ -191,7 +191,7 @@ impl DkgEngine {
                         [&file_path_str],
                         |row| row.get(0),
                     )?;
-                    total_node_count += count as usize;
+                    total_node_count += usize::try_from(count).unwrap_or(0);
                     continue;
                 }
                 // Hash changed: delete old nodes (edges cascade)
@@ -320,9 +320,9 @@ impl DkgEngine {
 
         Ok(DependencyGraph {
             node_count: total_node_count,
-            edge_count: edge_count as usize,
+            edge_count: usize::try_from(edge_count).unwrap_or(0),
             files_parsed,
-            data_flow_count: data_flow_count as usize,
+            data_flow_count: usize::try_from(data_flow_count).unwrap_or(0),
         })
     }
 
@@ -685,6 +685,7 @@ impl DkgEngine {
 
                             // PARAMETER edges for identifier arguments
                             if let Some(args_node) = node.child_by_field_name("arguments") {
+                                // NARROWING-OK: pre-bounded by .min(u32::MAX as usize) before cast.
                                 let arg_count = args_node.named_child_count().min(u32::MAX as usize) as u32;
                                 for i in 0..arg_count {
                                     if let Some(arg) = args_node.named_child(i) {
@@ -1100,8 +1101,8 @@ fn python_extract_recursive(
             let name = python_extract_name(&node, source, kind);
             let signature = python_build_signature(&node, source, kind, &name);
             let symbol_kind = python_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1213,8 +1214,8 @@ fn go_extract_recursive(
             let name = go_extract_name(&node, source, kind);
             let signature = go_build_signature(&node, source, kind, &name);
             let symbol_kind = go_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1251,7 +1252,7 @@ fn go_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> Strin
         }
         "type_declaration" => {
             // type_declaration contains type_spec children
-            for i in 0..node.child_count() as u32 {
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
                 if let Some(child) = node.child(i) {
                     if child.kind() == "type_spec" {
                         return child.child_by_field_name("name")
@@ -1401,8 +1402,8 @@ fn ts_extract_recursive(
             let name = ts_extract_name(&node, source, kind);
             let signature = ts_build_signature(&node, source, kind, &name);
             let symbol_kind = ts_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1432,7 +1433,7 @@ fn ts_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> Strin
         }
         "lexical_declaration" => {
             // const/let/var — find the first variable_declarator's name
-            for i in 0..node.child_count() as u32 {
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
                 if let Some(child) = node.child(i) {
                     if child.kind() == "variable_declarator" {
                         return child.child_by_field_name("name")
@@ -1539,8 +1540,8 @@ fn java_extract_recursive(
             let name = java_extract_name(&node, source, kind);
             let signature = java_build_signature(&node, source, kind, &name);
             let symbol_kind = java_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1570,7 +1571,7 @@ fn java_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> Str
         }
         "field_declaration" => {
             // Find the variable_declarator child for the field name
-            for i in 0..node.child_count() as u32 {
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
                 if let Some(child) = node.child(i) {
                     if child.kind() == "variable_declarator" {
                         return child.child_by_field_name("name")
@@ -1677,8 +1678,8 @@ fn csharp_extract_recursive(
             let name = csharp_extract_name(&node, source, kind);
             let signature = csharp_build_signature(&node, source, kind, &name);
             let symbol_kind = csharp_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1714,10 +1715,10 @@ fn csharp_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> S
         }
         "field_declaration" => {
             // Walk children to find variable_declaration -> variable_declarator
-            for i in 0..node.child_count() as u32 {
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
                 if let Some(child) = node.child(i) {
                     if child.kind() == "variable_declaration" {
-                        for j in 0..child.child_count() as u32 {
+                        for j in 0..u32::try_from(child.child_count()).unwrap_or(u32::MAX) {
                             if let Some(decl) = child.child(j) {
                                 if decl.kind() == "variable_declarator" {
                                     return decl.child_by_field_name("name")
@@ -1830,8 +1831,8 @@ fn ruby_extract_recursive(
                     .and_then(|n| n.utf8_text(source).ok())
                     .unwrap_or("?")
                     .to_string();
-                let start_line = node.start_position().row as u32 + 1;
-                let end_line = node.end_position().row as u32 + 1;
+                let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+                let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
                 nodes.push(DkgNode {
                     name: name.clone(),
                     kind: SymbolKind::Const,
@@ -1849,8 +1850,8 @@ fn ruby_extract_recursive(
             let name = ruby_extract_name(&node, source, kind);
             let signature = ruby_build_signature(kind, &name);
             let symbol_kind = ruby_kind_to_symbol(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {
@@ -1935,8 +1936,8 @@ fn extract_recursive(
             let name = extract_name(&node, source, kind);
             let signature = build_signature(&node, source, kind, &name);
             let symbol_kind = ts_kind_to_symbol_kind(kind);
-            let start_line = node.start_position().row as u32 + 1;
-            let end_line = node.end_position().row as u32 + 1;
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
 
             let idx = nodes.len();
             nodes.push(DkgNode {

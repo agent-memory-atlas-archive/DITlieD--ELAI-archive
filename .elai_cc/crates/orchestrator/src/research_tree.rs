@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -16,7 +16,57 @@ use tracing::{debug, info, warn};
 use elai_core::clock::{ClockProvider, LogicalInstant};
 
 use crate::grounding_client::{GroundingClient, GroundingError, ResearchLevel};
-use crate::ssb::{Ssb, SsbPayload, ResearchStepPayload, ResearchDecomposeLevelPayload};
+use crate::ssb::{
+    ConceptDecompositionNodePayload, GroundingCacheEventPayload, Ssb, SsbPayload,
+    ResearchStepPayload, ResearchDecomposeLevelPayload,
+};
+
+// ---------------------------------------------------------------------------
+// B-7: DecompositionTreeEmitter — injectable SSB callback for per-node events
+// ---------------------------------------------------------------------------
+
+/// Node kind discriminant for decomposition tree events.
+/// "concept" | "phase" | "step" | "baby_step"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecompositionNodeKind {
+    Concept,
+    Phase,
+    Step,
+    BabyStep,
+}
+
+impl DecompositionNodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Concept => "concept",
+            Self::Phase => "phase",
+            Self::Step => "step",
+            Self::BabyStep => "baby_step",
+        }
+    }
+}
+
+/// Payload emitted for each node built during `research_decompose`.
+/// `parent_id` is 0 for root concept nodes.
+#[derive(Debug, Clone)]
+pub struct DecompositionNodePayload {
+    pub node_kind: DecompositionNodeKind,
+    pub node_id: u64,
+    pub parent_id: u64,
+    pub name: String,
+}
+
+/// Injectable per-node emitter for decomposition tree events. The default
+/// `research_decompose` uses `None` (no SSB emission); the task runner can plug
+/// in an `SsbDecompositionEmitter` so each concept/phase/step/baby_step built
+/// during decompose surfaces as a `concept_decomposition_node` row in the
+/// dashboard's decomposition tree view.
+///
+/// Sync trait: the SSB-backed adapter fires a `tokio::spawn` internally (fire-
+/// and-forget). Decomposition rows are advisory and must not block the loop.
+pub trait DecompositionTreeEmitter: Send + Sync {
+    fn emit(&self, event: DecompositionNodePayload);
+}
 
 // ---------------------------------------------------------------------------
 // Constants (no magic numbers — all named)
@@ -529,20 +579,173 @@ impl Default for SharedResearchState {
 // ConvergenceStatus — outcome of the research loop
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Permissive deserialization helper for ConvergenceStatus.
+///
+/// Unconstrained-decoding output from the local LLM (Qwen 3B) often emits unit
+/// strings like `"Partial"` or `"Failed"` rather than the struct form serde
+/// expects. This helper accepts BOTH forms and fills missing struct fields with
+/// safe defaults so the cascade can continue rather than failing at parse time.
+///
+/// Accepted forms:
+///   "Converged"   | "converged"  | "CONVERGED"   -> Converged
+///   "Partial"     | "partial"    | "PARTIAL"      -> Partial { 0, 0 } (default fill)
+///   {"Partial": {"converged_count":3,"total_count":5}} -> Partial { 3, 5 }
+///   "Failed"      | "failed"     | "FAILED"       -> Failed { reason: "unspecified" }
+///   {"Failed": {"reason":"..."}}                  -> Failed { reason }
+///   "Diverged"    | "diverged"                    -> legacy alias -> Partial { 0, 0 }
+fn deserialize_convergence_status<'de, D>(deserializer: D) -> Result<ConvergenceStatus, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    use serde_json::Value;
+
+    // Deserialize to an untyped Value first so we can inspect shape.
+    let v = Value::deserialize(deserializer)?;
+
+    match &v {
+        // ---- unit-string form -----------------------------------------------
+        Value::String(s) => {
+            match s.to_lowercase().as_str() {
+                "converged" => Ok(ConvergenceStatus::Converged),
+                // Permissive default fill for struct variants emitted as unit strings.
+                // Lossy: callers cannot distinguish "0 of 0 converged" from "garbled
+                // LLM output." A warn! is emitted so degraded paths are visible.
+                "partial" | "diverged" => {
+                    warn!(
+                        raw = %s,
+                        "ConvergenceStatus unit-string lossy fill: Partial{{0,0}} (counts unknown)"
+                    );
+                    Ok(ConvergenceStatus::Partial {
+                        converged_count: 0,
+                        total_count: 0,
+                    })
+                }
+                "failed" => {
+                    warn!(
+                        raw = %s,
+                        "ConvergenceStatus unit-string lossy fill: Failed{{reason=unspecified}}"
+                    );
+                    Ok(ConvergenceStatus::Failed {
+                        reason: "unspecified".to_string(),
+                    })
+                }
+                other => Err(D::Error::custom(format!(
+                    "unknown ConvergenceStatus string: {other:?}"
+                ))),
+            }
+        }
+        // ---- struct / tagged form -------------------------------------------
+        Value::Object(_) => {
+            // Fall back to the standard derived deserializer via re-serialization.
+            // This handles {"Partial":{"converged_count":3,"total_count":5}} etc.
+            #[derive(Deserialize)]
+            enum Inner {
+                #[serde(alias = "converged", alias = "CONVERGED")]
+                Converged,
+                #[serde(alias = "partial", alias = "PARTIAL", alias = "diverged", alias = "DIVERGED")]
+                Partial {
+                    #[serde(default)]
+                    converged_count: usize,
+                    #[serde(default)]
+                    total_count: usize,
+                },
+                #[serde(alias = "failed", alias = "FAILED")]
+                Failed {
+                    #[serde(default = "default_unspecified_reason")]
+                    reason: String,
+                },
+            }
+            let inner: Inner = serde_json::from_value(v)
+                .map_err(|e| D::Error::custom(format!("ConvergenceStatus object parse: {e}")))?;
+            Ok(match inner {
+                Inner::Converged => ConvergenceStatus::Converged,
+                Inner::Partial { converged_count, total_count } => {
+                    ConvergenceStatus::Partial { converged_count, total_count }
+                }
+                Inner::Failed { reason } => ConvergenceStatus::Failed { reason },
+            })
+        }
+        other => Err(D::Error::custom(format!(
+            "expected string or object for ConvergenceStatus, got: {other}"
+        ))),
+    }
+}
+
+fn default_unspecified_reason() -> String {
+    "unspecified".to_string()
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum ConvergenceStatus {
     /// All nodes converged (phi >= phi_min AND psi >= psi_min).
-    #[serde(alias = "converged", alias = "CONVERGED")]
     Converged,
     /// Partial convergence — some nodes converged, some did not.
-    #[serde(alias = "partial", alias = "PARTIAL")]
     Partial {
         converged_count: usize,
         total_count: usize,
     },
     /// Failed to converge within budget.
-    #[serde(alias = "failed", alias = "FAILED")]
     Failed { reason: String },
+}
+
+impl<'de> serde::Deserialize<'de> for ConvergenceStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        deserialize_convergence_status(d)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tolerant node array deserialization (B1)
+// ---------------------------------------------------------------------------
+
+/// Deserialize `Vec<ResearchNode>` from a JSON array with per-element fault tolerance.
+///
+/// Required fields for a valid ResearchNode: `id`, `question`, `depth`.
+/// All other fields have serde defaults. Elements missing any required field are
+/// skipped with a `warn!` log rather than rejecting the entire payload.
+///
+/// This allows the live L1 cascade to produce a partial ResearchTreeSnapshot
+/// even when the unconstrained-decoding output from Qwen 3B diverges from the
+/// full ResearchNode schema.
+fn deserialize_nodes_tolerant<'de, D>(deserializer: D) -> Result<Vec<ResearchNode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+
+    // Accept both missing-key (handled by #[serde(default)] on the field) AND
+    // null-value (e.g. {"nodes": null, ...} which the LLM frequently emits).
+    // Without the Option wrapper, null would fail the inner Vec deserialize.
+    let raw: Vec<Value> = Option::<Vec<Value>>::deserialize(deserializer)?.unwrap_or_default();
+    let mut out = Vec::with_capacity(raw.len());
+    for (i, elem) in raw.into_iter().enumerate() {
+        // Quick check: required fields must be present before full parse attempt.
+        let has_required = elem.get("id").is_some()
+            && elem.get("question").is_some()
+            && elem.get("depth").is_some();
+        if !has_required {
+            warn!(
+                index = i,
+                missing = ?{
+                    let mut m = Vec::new();
+                    if elem.get("id").is_none() { m.push("id"); }
+                    if elem.get("question").is_none() { m.push("question"); }
+                    if elem.get("depth").is_none() { m.push("depth"); }
+                    m
+                },
+                "ResearchNode at index {i} skipped: missing required fields"
+            );
+            continue;
+        }
+        match serde_json::from_value::<ResearchNode>(elem) {
+            Ok(node) => out.push(node),
+            Err(e) => {
+                warn!(index = i, error = %e, "ResearchNode at index {i} skipped: conversion failed");
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +754,11 @@ pub enum ConvergenceStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchTreeSnapshot {
-    #[serde(default)]
+    /// Tolerant deserialization: accepts a JSON array where individual elements
+    /// may be malformed (missing required fields). Valid elements are converted
+    /// to ResearchNode; invalid elements are skipped with a warn! log so the
+    /// cascade can continue rather than rejecting the entire payload.
+    #[serde(default, deserialize_with = "deserialize_nodes_tolerant")]
     pub nodes: Vec<ResearchNode>,
     #[serde(default = "default_convergence")]
     pub convergence: ConvergenceStatus,
@@ -1258,9 +1465,14 @@ pub struct ConceptNode {
     pub research: Option<ResearchReport>,
 }
 
+/// Track A.5: PhaseNode.name defaults to empty string when missing in
+/// sidecar JSON so that the research decompose pipeline degrades
+/// gracefully rather than returning a serde parse error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseNode {
     pub id: PhaseId,
+    /// Phase display name. Defaults to "" when absent in JSON (Track A.5).
+    #[serde(default)]
     pub name: String,
     pub steps: Vec<StepNode>,
     pub depends_on: Vec<ConceptId>,
@@ -1272,25 +1484,39 @@ pub struct PhaseNode {
     pub is_parallel: bool,
 }
 
+/// Track A.5: StepNode.description and StepNode.evidence_level both default
+/// when missing from JSON so partial sidecar responses parse without error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepNode {
     pub id: StepId,
+    /// Step description text. Defaults to "" when absent in JSON (Track A.5).
+    #[serde(default)]
     pub description: String,
     pub baby_steps: Vec<BabyStepSpec>,
+    /// Evidence level. Defaults to Anecdotal (the weakest level, Track A.5).
+    #[serde(default)]
     pub evidence_level: EvidenceLevel,
 }
 
+/// Track A.5: BabyStepSpec.task and BabyStepSpec.grounding both default
+/// when missing from JSON so partial sidecar responses parse without error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BabyStepSpec {
     pub id: BabyStepId,
+    /// Task description. Defaults to "" when absent in JSON (Track A.5).
+    #[serde(default)]
     pub task: String,
     pub estimated_tokens: usize,
+    /// Grounding context. Defaults to BabyStepGrounding::default() (Track A.5).
+    #[serde(default)]
     pub grounding: BabyStepGrounding,
     pub tdd: Option<TddSpec>,
     pub acceptance: Option<AcceptanceCriteria>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Track A.5: BabyStepGrounding derives Default so that BabyStepSpec.grounding
+/// can use #[serde(default)] for tolerant deserialization of partial JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BabyStepGrounding {
     pub concept_name: String,
     pub phase_name: String,
@@ -1438,8 +1664,9 @@ impl ResearchCache {
             let instant = clock.now();
             clock.elapsed_since(instant).as_secs()
         } else {
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
+            elai_core::OsClock
+                .system_now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs()
         }
@@ -1528,11 +1755,21 @@ impl DecompositionTree {
 // Stub functions — Recursive Decomposition (4D.7)
 // ---------------------------------------------------------------------------
 
+/// Decompose `idea` into a [`ConceptDecomposition`] by recursively grounding
+/// each level via the provided [`GroundingClient`].
+///
+/// Track A.6: pass `ssb = Some(&arc_ssb)` to emit `GroundingCacheEvent` rows
+/// on each cache hit or miss. Existing callers pass `None` and pay no overhead.
+///
+/// B-7: pass `tree_emitter = Some(&emitter)` to emit one `concept_decomposition_node`
+/// SSB row per concept/phase/step/baby_step built. Existing callers pass `None`.
 pub async fn research_decompose<C: GroundingClient>(
     idea: &str,
     mode: ExecutionMode,
     cache: &mut ResearchCache,
     client: &C,
+    ssb: Option<&Arc<Ssb>>,
+    tree_emitter: Option<&dyn DecompositionTreeEmitter>,
 ) -> Result<ConceptDecomposition, ResearchTreeError> {
     if idea.trim().is_empty() {
         return Err(ResearchTreeError::EmptyQuestion);
@@ -1543,27 +1780,68 @@ pub async fn research_decompose<C: GroundingClient>(
     }
 
     // Level 0: ground the top-level idea via the sidecar.
-    let report = ground_or_cached(cache, client, idea, idea, ResearchLevel::Idea).await?;
+    let report = ground_or_cached(cache, client, idea, idea, ResearchLevel::Idea, ssb).await?;
 
     let mut concepts = extract_concepts(&report)?;
 
     for concept in &mut concepts {
+        // B-7: emit concept node event.
+        if let Some(emitter) = tree_emitter {
+            emitter.emit(DecompositionNodePayload {
+                node_kind: DecompositionNodeKind::Concept,
+                node_id: concept.id.0,
+                parent_id: 0,
+                name: concept.name.clone(),
+            });
+        }
+
         let key = format!("concept:{}", concept.name);
         let concept_report =
-            ground_or_cached(cache, client, &key, &concept.name, ResearchLevel::Concept).await?;
+            ground_or_cached(cache, client, &key, &concept.name, ResearchLevel::Concept, ssb).await?;
         concept.research = Some(concept_report.clone());
 
         let mut phases = extract_phases(&concept_report)?;
         for phase in &mut phases {
+            // B-7: emit phase node event.
+            if let Some(emitter) = tree_emitter {
+                emitter.emit(DecompositionNodePayload {
+                    node_kind: DecompositionNodeKind::Phase,
+                    node_id: phase.id.0,
+                    parent_id: concept.id.0,
+                    name: phase.name.clone(),
+                });
+            }
+
             let key = format!("phase:{}", phase.name);
             let phase_report =
-                ground_or_cached(cache, client, &key, &phase.name, ResearchLevel::Phase).await?;
+                ground_or_cached(cache, client, &key, &phase.name, ResearchLevel::Phase, ssb).await?;
             phase.research = Some(phase_report.clone());
 
             let steps = extract_steps(&phase_report)?;
             for mut step in steps {
+                // B-7: emit step node event.
+                if let Some(emitter) = tree_emitter {
+                    emitter.emit(DecompositionNodePayload {
+                        node_kind: DecompositionNodeKind::Step,
+                        node_id: step.id.0,
+                        parent_id: phase.id.0,
+                        name: step.description.clone(),
+                    });
+                }
+
                 let baby_steps =
                     decompose_to_baby_steps(&step, &concept.name, &phase.name)?;
+                // B-7: emit baby_step node events.
+                if let Some(emitter) = tree_emitter {
+                    for bs in &baby_steps {
+                        emitter.emit(DecompositionNodePayload {
+                            node_kind: DecompositionNodeKind::BabyStep,
+                            node_id: bs.id.0,
+                            parent_id: step.id.0,
+                            name: bs.task.clone(),
+                        });
+                    }
+                }
                 step.baby_steps = baby_steps;
                 phase.steps.push(step);
             }
@@ -1585,21 +1863,72 @@ pub async fn research_decompose<C: GroundingClient>(
 /// and cache the result. GroundingError is wrapped as
 /// `ResearchTreeError::GroundingFailed { level, source }` so upstream callers
 /// (task_runner, SSB Finding emitter) see a typed, level-tagged failure.
+///
+/// Track A.6: when `ssb` is `Some`, emits a `GroundingCacheEvent` row on
+/// every call so the dashboard can track cache efficiency. The fingerprint is
+/// the first 8 hex chars of the blake3 hash of `cache_key`. Callers that do
+/// not have an SSB handle pass `None` and pay no overhead.
 async fn ground_or_cached<C: GroundingClient>(
     cache: &mut ResearchCache,
     client: &C,
     cache_key: &str,
     prompt: &str,
     level: ResearchLevel,
+    ssb: Option<&Arc<Ssb>>,
 ) -> Result<ResearchReport, ResearchTreeError> {
+    let t0 = Instant::now();
+
     if let Some(cached) = cache.peek(cache_key) {
+        let elapsed_us = t0.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        if let Some(writer) = ssb {
+            let key_fingerprint = blake3::hash(cache_key.as_bytes())
+                .to_hex()
+                .chars()
+                .take(8)
+                .collect::<String>();
+            let event = SsbPayload::GroundingCacheEvent(GroundingCacheEventPayload {
+                kind: "hit".to_owned(),
+                key_fingerprint,
+                level: format!("{level:?}"),
+                elapsed_us,
+            });
+            if let Err(e) = writer
+                .write_payload("research_tree", 0, event, Vec::new())
+                .await
+            {
+                warn!(error = %e, "ground_or_cached: failed to emit GroundingCacheEvent(hit)");
+            }
+        }
         return Ok(cached);
     }
+
     let report = client
         .ground(prompt, level)
         .await
         .map_err(|source| ResearchTreeError::GroundingFailed { level, source })?;
     cache.put(cache_key, report.clone());
+
+    let elapsed_us = t0.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+    if let Some(writer) = ssb {
+        let key_fingerprint = blake3::hash(cache_key.as_bytes())
+            .to_hex()
+            .chars()
+            .take(8)
+            .collect::<String>();
+        let event = SsbPayload::GroundingCacheEvent(GroundingCacheEventPayload {
+            kind: "miss".to_owned(),
+            key_fingerprint,
+            level: format!("{level:?}"),
+            elapsed_us,
+        });
+        if let Err(e) = writer
+            .write_payload("research_tree", 0, event, Vec::new())
+            .await
+        {
+            warn!(error = %e, "ground_or_cached: failed to emit GroundingCacheEvent(miss)");
+        }
+    }
+
     Ok(report)
 }
 
@@ -1825,6 +2154,46 @@ fn is_plausible_package_name(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// B-7: SSB adapter implementation for DecompositionTreeEmitter
+// ---------------------------------------------------------------------------
+
+/// SSB-backed DecompositionTreeEmitter. Wraps Arc<Ssb> and emits
+/// `concept_decomposition_node` rows via `tokio::spawn` (fire-and-forget,
+/// advisory). The decompose loop is never blocked on SSB I/O.
+pub struct SsbDecompositionEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbDecompositionEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self { ssb, agent_id: agent_id.into(), superstep }
+    }
+}
+
+impl DecompositionTreeEmitter for SsbDecompositionEmitter {
+    fn emit(&self, event: DecompositionNodePayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::ConceptDecompositionNode(ConceptDecompositionNodePayload {
+            node_kind: event.node_kind.as_str().to_owned(),
+            node_id: event.node_id,
+            parent_id: event.parent_id,
+            name: event.name,
+        });
+        // B-7 SCHEMA: requires v25->v26 bump. Row is dropped silently until schema bumped.
+        // Fire-and-forget: advisory row, decompose loop must never block on SSB I/O.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbDecompositionEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests (4D.3 will add contract/integration/proptest tests externally)
 // ---------------------------------------------------------------------------
 
@@ -2024,5 +2393,148 @@ mod tests {
         assert!(!node.should_prune());
         node.low_gain_streak = LOW_GAIN_PRUNE_COUNT;
         assert!(node.should_prune());
+    }
+
+    // -----------------------------------------------------------------------
+    // B1: deserialize_nodes_tolerant tests
+    // -----------------------------------------------------------------------
+
+    /// Happy path: a JSON array of fully-valid ResearchNode objects round-trips
+    /// to a Vec<ResearchNode> with all fields intact.
+    /// NodeId(u64) is a newtype — serde serializes it as a plain integer.
+    #[test]
+    fn nodes_tolerant_happy_path() {
+        let json = r#"[
+            {"id":1,"question":"q1","parent":null,"children":[],"phi":0.9,"psi":0.8,
+             "status":"Converged","info_gain":0.1,"iterations":2,"low_gain_streak":0,
+             "citations":[],"answer":null,"depth":0},
+            {"id":2,"question":"q2","parent":null,"children":[],"phi":0.7,"psi":0.6,
+             "status":"Active","info_gain":0.05,"iterations":1,"low_gain_streak":0,
+             "citations":[],"answer":null,"depth":1}
+        ]"#;
+        let snapshot: ResearchTreeSnapshot = serde_json::from_str(&format!(
+            r#"{{"nodes":{json},"convergence":"Converged","total_iterations":2}}"#
+        ))
+        .expect("happy-path parse must succeed");
+        assert_eq!(snapshot.nodes.len(), 2);
+        assert_eq!(snapshot.nodes[0].question, "q1");
+        assert_eq!(snapshot.nodes[1].question, "q2");
+    }
+
+    /// Partial-skip: array with 2 valid + 1 invalid (missing required fields)
+    /// returns only the 2 valid nodes; the invalid one is silently skipped.
+    #[test]
+    fn nodes_tolerant_partial_skip() {
+        // Third element missing "id" and "depth" — required fields.
+        let json = r#"[
+            {"id":10,"question":"valid-a","parent":null,"children":[],"phi":0.5,"psi":0.5,
+             "status":"Pending","info_gain":0.0,"iterations":0,"low_gain_streak":0,
+             "citations":[],"answer":null,"depth":0},
+            {"id":11,"question":"valid-b","parent":null,"children":[],"phi":0.6,"psi":0.6,
+             "status":"Active","info_gain":0.0,"iterations":0,"low_gain_streak":0,
+             "citations":[],"answer":null,"depth":1},
+            {"question":"missing-id-and-depth","phi":0.3}
+        ]"#;
+        let snapshot: ResearchTreeSnapshot = serde_json::from_str(&format!(
+            r#"{{"nodes":{json},"convergence":"Converged","total_iterations":1}}"#
+        ))
+        .expect("partial-skip parse must succeed");
+        assert_eq!(snapshot.nodes.len(), 2, "invalid node must be skipped");
+        assert_eq!(snapshot.nodes[0].question, "valid-a");
+        assert_eq!(snapshot.nodes[1].question, "valid-b");
+    }
+
+    /// All-invalid: every element in the array is missing required fields;
+    /// result is an empty Vec (no panic, no error).
+    #[test]
+    fn nodes_tolerant_all_invalid() {
+        let json = r#"[
+            {"phi":0.1,"psi":0.2},
+            {"answer":"no id or question or depth"},
+            {}
+        ]"#;
+        let snapshot: ResearchTreeSnapshot = serde_json::from_str(&format!(
+            r#"{{"nodes":{json},"convergence":"Converged","total_iterations":1}}"#
+        ))
+        .expect("all-invalid parse must succeed (returns empty vec)");
+        assert_eq!(snapshot.nodes.len(), 0, "all invalid nodes must be skipped");
+    }
+
+    /// Null-value nodes: `{"nodes": null}` must deserialize to an empty Vec
+    /// rather than failing the whole snapshot parse. Qwen 3B unconstrained
+    /// output frequently emits null for empty arrays.
+    #[test]
+    fn nodes_tolerant_null_value() {
+        let snapshot: ResearchTreeSnapshot = serde_json::from_str(
+            r#"{"nodes":null,"convergence":"Converged","total_iterations":0}"#
+        )
+        .expect("null-nodes parse must succeed (returns empty vec)");
+        assert_eq!(snapshot.nodes.len(), 0, "null nodes must yield empty vec");
+    }
+
+    // -----------------------------------------------------------------------
+    // B2: ConvergenceStatus unit-string alias tests
+    // -----------------------------------------------------------------------
+
+    /// Unit-string "Partial" / "Failed" are accepted and filled with safe defaults.
+    #[test]
+    fn convergence_unit_string_defaults() {
+        let partial: ConvergenceStatus = serde_json::from_str(r#""Partial""#)
+            .expect("unit string Partial must deserialize");
+        assert!(
+            matches!(partial, ConvergenceStatus::Partial { converged_count: 0, total_count: 0 }),
+            "expected Partial{{0,0}}, got {partial:?}"
+        );
+
+        let failed: ConvergenceStatus = serde_json::from_str(r#""Failed""#)
+            .expect("unit string Failed must deserialize");
+        assert!(
+            matches!(failed, ConvergenceStatus::Failed { ref reason } if reason == "unspecified"),
+            "expected Failed{{unspecified}}, got {failed:?}"
+        );
+
+        // Case-insensitive
+        let partial_lc: ConvergenceStatus = serde_json::from_str(r#""partial""#)
+            .expect("lowercase partial must deserialize");
+        assert!(matches!(partial_lc, ConvergenceStatus::Partial { .. }));
+    }
+
+    /// Struct form round-trips with exact field values.
+    #[test]
+    fn convergence_struct_form_exact() {
+        let json = r#"{"Partial":{"converged_count":3,"total_count":5}}"#;
+        let status: ConvergenceStatus = serde_json::from_str(json)
+            .expect("struct-form Partial must deserialize");
+        assert!(
+            matches!(status, ConvergenceStatus::Partial { converged_count: 3, total_count: 5 }),
+            "expected Partial{{3,5}}, got {status:?}"
+        );
+
+        let json2 = r#"{"Failed":{"reason":"timeout exceeded"}}"#;
+        let failed: ConvergenceStatus = serde_json::from_str(json2)
+            .expect("struct-form Failed must deserialize");
+        assert!(
+            matches!(failed, ConvergenceStatus::Failed { ref reason } if reason == "timeout exceeded"),
+            "expected Failed{{timeout exceeded}}, got {failed:?}"
+        );
+    }
+
+    /// Pre-existing variants (Converged, unit-string) still work correctly.
+    #[test]
+    fn convergence_pre_existing_variants() {
+        // Unit-string Converged
+        let c: ConvergenceStatus = serde_json::from_str(r#""Converged""#)
+            .expect("unit string Converged must deserialize");
+        assert!(matches!(c, ConvergenceStatus::Converged));
+
+        // Lowercase aliases
+        let cl: ConvergenceStatus = serde_json::from_str(r#""converged""#)
+            .expect("lowercase converged must deserialize");
+        assert!(matches!(cl, ConvergenceStatus::Converged));
+
+        // Legacy "Diverged" string alias -> Partial defaults
+        let div: ConvergenceStatus = serde_json::from_str(r#""Diverged""#)
+            .expect("Diverged alias must deserialize");
+        assert!(matches!(div, ConvergenceStatus::Partial { .. }));
     }
 }

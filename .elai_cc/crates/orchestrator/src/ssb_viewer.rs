@@ -12,12 +12,15 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use elai_core::ClockProvider;
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::ssb::{
-    ssb_action_type_from_str_public, ContextBudgetComputedPayload, InterventionOption,
-    InterventionRequestPayload, InterventionType, SsbActionType, SsbPayload, TaskSubmittedPayload,
+    ssb_action_type_from_str_public, BubbleUpTypedPayload, ConceptDecompositionNodePayload,
+    ContextBudgetComputedPayload, DagRepairRoundPayload, FeasibilityReportPayload,
+    InterventionOption, InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
+    SsbActionType, SsbPayload, StubRunPayload, TaskSubmittedPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -434,6 +437,28 @@ pub struct GgSignalEntry {
     pub etc_disabled: bool,
 }
 
+/// B-22 Phase 4G — auto-advance counters derived from the GateDecision SSB
+/// rows. Returned by [`SsbViewer::auto_advance_stats`] and reshaped into
+/// the dashboard `AutoAdvanceStats` JSON shape on the way out.
+///
+/// Field semantics:
+/// * `total_steps` — every `GateDecision` row regardless of outcome.
+/// * `auto_advanced` — rows with `decision == "auto_advance"`.
+/// * `intervention_required` — rows with `decision == "request_human"`.
+///   Other variants (`escalate` / `split_task` / `substitute_model`) are
+///   counted toward `total_steps` but not toward either bucket above.
+/// * `auto_advance_rate` — `auto_advanced / total_steps`, 0 when total = 0.
+/// * `last_24h_rate` — same ratio, but restricted to rows whose `created_at`
+///   lies within the trailing 24 hours of the supplied `now_ms`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoAdvanceStats {
+    pub total_steps: u64,
+    pub auto_advanced: u64,
+    pub intervention_required: u64,
+    pub auto_advance_rate: f64,
+    pub last_24h_rate: f64,
+}
+
 /// Tier 3 Reasoning drawer — latest `FailureClassifiedPayload` snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FailureTaxonomyEntry {
@@ -697,6 +722,13 @@ pub struct ResearchStepEntry {
     pub iteration: u32,
     pub sources_fetched: u32,
     pub sources_used: u32,
+    // B-7: fine-grained stage fields. Empty string / None for coarse rows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage_phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_payload: Option<serde_json::Value>,
 }
 
 /// Tier 3 complete Research drawer — research budget snapshot.
@@ -729,6 +761,55 @@ pub struct SourceTierDistribution {
     pub t4: u32,
     pub t5: u32,
     pub known: bool,
+}
+
+/// Phase 4F (B-21) — flattened feasibility-probe view for the Reasoning drawer.
+/// Combines the most recent `feasibility_report` summary with the per-step
+/// `novel_step_detected` and `stub_run` rows that share the same probe run.
+/// `latest_report` is `None` when the SSB has not yet seen a probe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeasibilitySummary {
+    pub latest_report: Option<FeasibilityReportRow>,
+    pub novel_steps: Vec<NovelStepRow>,
+    pub stub_runs: Vec<StubRunRow>,
+}
+
+/// One decoded `feasibility_report` SSB row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeasibilityReportRow {
+    pub seq: i64,
+    pub ts_ms: i64,
+    /// `"feasible"` / `"marginal"` / `"infeasible"`.
+    pub task_feasibility: String,
+    /// `Some` when the probe was skipped — null on the wire (Option<String>
+    /// serialises to JSON null, not undefined).
+    pub skip_reason: Option<String>,
+    pub novel_step_count: u32,
+    pub escalations_count: u32,
+    /// Margins are basis-points (10000 = 100.00%).
+    pub vram_margin_bp: u16,
+    pub ram_margin_bp: u16,
+    pub disk_margin_bp: u16,
+}
+
+/// One decoded `novel_step_detected` SSB row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NovelStepRow {
+    pub seq: i64,
+    pub ts_ms: i64,
+    pub step_id: String,
+    pub reason: String,
+    pub alternative_count: u32,
+}
+
+/// One decoded `stub_run` SSB row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StubRunRow {
+    pub seq: i64,
+    pub ts_ms: i64,
+    pub step_id: String,
+    pub passed: bool,
+    pub elapsed_ms: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1210,128 @@ impl SsbViewer {
         Ok(out)
     }
 
+    /// Phase 4F (B-21) — combined feasibility-probe view for the dashboard.
+    /// Returns the most recent `feasibility_report` row plus all
+    /// `novel_step_detected` / `stub_run` rows in the latest probe run
+    /// (newest-first). Limit `n_steps` caps the per-collection size so the
+    /// dashboard cannot pull thousands of rows on a noisy task.
+    pub fn feasibility_summary(
+        &self,
+        n_steps: usize,
+    ) -> Result<FeasibilitySummary, SsbViewerError> {
+        let cap = i64::try_from(n_steps.min(500))
+            .map_err(|e| SsbViewerError::OutOfRange(format!("n_steps: {e}")))?;
+        let conn = self.lock()?;
+
+        // 1. latest feasibility_report row.
+        let latest_report = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, created_at, payload FROM ssb \
+                 WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![
+                SsbActionType::FeasibilityReport.as_sql_str()
+            ])?;
+            match rows.next()? {
+                Some(row) => {
+                    let seq: i64 = row.get(0)?;
+                    let ts_ms: i64 = row.get(1)?;
+                    let bytes: Vec<u8> = row.get(2)?;
+                    match rmp_serde::from_slice::<SsbPayload>(&bytes) {
+                        Ok(SsbPayload::FeasibilityReport(p)) => {
+                            Some(decode_feasibility_report_row(seq, ts_ms, p))
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "ssb_viewer: feasibility_report decode failed; skipping"
+                            );
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        };
+
+        // 2. recent novel_step_detected rows.
+        let novel_steps = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, created_at, payload FROM ssb \
+                 WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![SsbActionType::NovelStepDetected.as_sql_str(), cap],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )?;
+            let mut out: Vec<NovelStepRow> = Vec::new();
+            for row in rows {
+                let (seq, ts_ms, bytes) = row?;
+                match rmp_serde::from_slice::<SsbPayload>(&bytes) {
+                    Ok(SsbPayload::NovelStepDetected(p)) => {
+                        out.push(decode_novel_step_row(seq, ts_ms, p));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "ssb_viewer: novel_step_detected decode failed; skipping"
+                        );
+                    }
+                }
+            }
+            out
+        };
+
+        // 3. recent stub_run rows.
+        let stub_runs = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, created_at, payload FROM ssb \
+                 WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![SsbActionType::StubRun.as_sql_str(), cap],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )?;
+            let mut out: Vec<StubRunRow> = Vec::new();
+            for row in rows {
+                let (seq, ts_ms, bytes) = row?;
+                match rmp_serde::from_slice::<SsbPayload>(&bytes) {
+                    Ok(SsbPayload::StubRun(p)) => {
+                        out.push(decode_stub_run_row(seq, ts_ms, p));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "ssb_viewer: stub_run decode failed; skipping"
+                        );
+                    }
+                }
+            }
+            out
+        };
+
+        Ok(FeasibilitySummary {
+            latest_report,
+            novel_steps,
+            stub_runs,
+        })
+    }
+
     /// Every file touched in a given `session_id` with a short action tag.
     pub fn file_changes(&self, session_id: &str) -> Result<Vec<FileChange>, SsbViewerError> {
         let conn = self.lock()?;
@@ -1413,7 +1616,7 @@ impl SsbViewer {
             params![
                 SsbActionType::ChatMessage.as_sql_str(),
                 SsbActionType::ChatResponse.as_sql_str(),
-                limit as i64,
+                limit as i64, // NARROWING-OK: u32->i64 is widening; SQLite LIMIT parameter requires i64.
             ],
             |row| {
                 Ok((
@@ -1486,10 +1689,99 @@ impl SsbViewer {
         &self,
         _task_id: Option<&str>,
     ) -> Result<DecompositionTreeSnapshot, SsbViewerError> {
-        // Touch the lock so we surface lock-poisoned errors here rather than
-        // letting a future caller see them on a different code path.
-        let _conn = self.lock()?;
-        Ok(DecompositionTreeSnapshot::default())
+        // B-7b: read `concept_decomposition_node` rows emitted by SsbDecompositionEmitter
+        // and reconstruct the Concept > Phase > Step > BabyStep hierarchy.
+        // Rows are ordered seq-asc so parents always appear before children.
+        // Cap at 2000 rows — a task with >2000 decomposition nodes is implausible.
+        const DECOMP_SCAN_CAP: i64 = 2000;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload, created_at FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::ConceptDecompositionNode.as_sql_str(), DECOMP_SCAN_CAP],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+
+        // Collect decoded payloads (silently skip corrupt rows).
+        let mut payloads: Vec<ConceptDecompositionNodePayload> = Vec::new();
+        for row in rows {
+            let (bytes, _created_at) = row?;
+            if let Ok(SsbPayload::ConceptDecompositionNode(p)) = rmp_serde::from_slice(&bytes) {
+                payloads.push(p);
+            }
+        }
+
+        if payloads.is_empty() {
+            // No rows yet — return empty snapshot; dashboard renders placeholder.
+            return Ok(DecompositionTreeSnapshot::default());
+        }
+
+        // Two-pass tree reconstruction: collect all concepts first, then
+        // attach phases -> steps -> baby_steps bottom-up.
+        use rustc_hash::FxHashMap;
+        let mut concepts: Vec<ConceptNodeRef> = Vec::new();
+        // Map node_id -> index in `concepts`.
+        let mut concept_idx: FxHashMap<u64, usize> = FxHashMap::default();
+        // Map node_id -> (concept_idx, phase_idx).
+        let mut phase_idx: FxHashMap<u64, (usize, usize)> = FxHashMap::default();
+        // Map node_id -> (concept_idx, phase_idx, step_idx).
+        let mut step_idx: FxHashMap<u64, (usize, usize, usize)> = FxHashMap::default();
+
+        for p in &payloads {
+            match p.node_kind.as_str() {
+                "concept" => {
+                    let idx = concepts.len();
+                    concept_idx.insert(p.node_id, idx);
+                    concepts.push(ConceptNodeRef {
+                        id: p.node_id.to_string(),
+                        title: p.name.clone(),
+                        phases: Vec::new(),
+                    });
+                }
+                "phase" => {
+                    if let Some(&ci) = concept_idx.get(&p.parent_id) {
+                        let pi = concepts[ci].phases.len();
+                        phase_idx.insert(p.node_id, (ci, pi));
+                        concepts[ci].phases.push(PhaseNodeRef {
+                            id: p.node_id.to_string(),
+                            title: p.name.clone(),
+                            steps: Vec::new(),
+                        });
+                    }
+                }
+                "step" => {
+                    if let Some(&(ci, pi)) = phase_idx.get(&p.parent_id) {
+                        let si = concepts[ci].phases[pi].steps.len();
+                        step_idx.insert(p.node_id, (ci, pi, si));
+                        concepts[ci].phases[pi].steps.push(StepNodeRef {
+                            id: p.node_id.to_string(),
+                            title: p.name.clone(),
+                            baby_steps: Vec::new(),
+                        });
+                    }
+                }
+                "baby_step" => {
+                    if let Some(&(ci, pi, si)) = step_idx.get(&p.parent_id) {
+                        concepts[ci].phases[pi].steps[si].baby_steps.push(BabyStepRef {
+                            id: p.node_id.to_string(),
+                            title: p.name.clone(),
+                            status: "pending".to_owned(),
+                        });
+                    }
+                }
+                _ => {} // unknown kind — skip silently.
+            }
+        }
+
+        let generated_at_ms = elai_core::clock::OsClock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+
+        Ok(DecompositionTreeSnapshot { concepts, generated_at_ms })
     }
 
     /// Tier 2 Track B — phase metadata fetched on PlanWindow node click.
@@ -1664,7 +1956,7 @@ impl SsbViewer {
         let rows = stmt.query_map(
             params![
                 SsbActionType::TaskSubmitted.as_sql_str(),
-                limit as i64,
+                limit as i64, // NARROWING-OK: u32->i64 is widening; SQLite LIMIT parameter requires i64.
             ],
             |row| {
                 Ok((
@@ -2661,6 +2953,9 @@ impl SsbViewer {
                     iteration: w.iteration,
                     sources_fetched: w.sources_fetched,
                     sources_used: w.sources_used,
+                    stage: w.stage,
+                    stage_phase: w.stage_phase,
+                    stage_payload: w.stage_payload,
                 }),
                 SsbPayload::ResearchStep(r) => out.push(ResearchStepEntry {
                     seq,
@@ -2674,6 +2969,9 @@ impl SsbViewer {
                     iteration: r.iteration,
                     sources_fetched: 0,
                     sources_used: 0,
+                    stage: String::new(),
+                    stage_phase: String::new(),
+                    stage_payload: None,
                 }),
                 _ => continue,
             }
@@ -2777,6 +3075,7 @@ impl SsbViewer {
             }
         }
         Ok(GroundingCacheStats {
+            // NARROWING-OK: fingerprint count is bounded by DB capacity (well under u32::MAX ~4B rows).
             total_keys: fingerprints.len() as u32,
             hits,
             misses,
@@ -2941,6 +3240,154 @@ impl SsbViewer {
         }
         Ok(out)
     }
+
+    // -----------------------------------------------------------------------
+    // B-7b: Bubble-up + DAG repair drawer query methods
+    // -----------------------------------------------------------------------
+
+    /// Returns up to `limit` recent `bubble_up_typed` rows in descending seq
+    /// order (most recent first). Used by the dashboard BUBBLE_UP drawer.
+    pub fn recent_bubble_up_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<BubbleUpTypedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::BubbleUpTyped.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::BubbleUpTyped(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns up to `limit` recent `dag_repair_round` rows in descending seq
+    /// order (most recent first). Used by the dashboard DAG_REPAIR drawer.
+    pub fn recent_dag_repair_rounds(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DagRepairRoundPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::DagRepairRound.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::DagRepairRound(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-22 Phase 4G — aggregate AutoAdvanceStats from `GateDecision` rows.
+    ///
+    /// Scans every `GateDecision` row newest-first up to a hard cap of 5000
+    /// rows. Older history is irrelevant to the "did the gate auto-advance
+    /// recently" signal so an unbounded scan would be wasted I/O. The
+    /// `now_ms` argument is wall-clock UTC ms used to filter the trailing
+    /// 24-hour window — passed in by the caller so the dashboard's
+    /// `ClockProvider` controls deterministic-replay clock sources.
+    pub fn auto_advance_stats(
+        &self,
+        now_ms: i64,
+    ) -> Result<AutoAdvanceStats, SsbViewerError> {
+        const MAX_ROWS: usize = 5_000;
+        const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+        let last_24h_threshold = now_ms.saturating_sub(DAY_MS);
+
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        // NARROWING-OK: const literal MAX_ROWS=5000 fits i64 trivially.
+        let rows = stmt.query_map(
+            params![SsbActionType::GateDecision.as_sql_str(), MAX_ROWS as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                ))
+            },
+        )?;
+
+        let mut total_all: u64 = 0;
+        let mut auto_all: u64 = 0;
+        let mut intervention_all: u64 = 0;
+        let mut total_24h: u64 = 0;
+        let mut auto_24h: u64 = 0;
+
+        for row in rows {
+            let (created_at, bytes) = row?;
+            let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(&bytes) else {
+                continue;
+            };
+            let SsbPayload::GateDecision(p) = payload else {
+                continue;
+            };
+            total_all = total_all.saturating_add(1);
+            let in_24h = created_at >= last_24h_threshold;
+            if in_24h {
+                total_24h = total_24h.saturating_add(1);
+            }
+            match p.decision.as_str() {
+                "auto_advance" => {
+                    auto_all = auto_all.saturating_add(1);
+                    if in_24h {
+                        auto_24h = auto_24h.saturating_add(1);
+                    }
+                }
+                "request_human" => {
+                    intervention_all = intervention_all.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        let auto_advance_rate = if total_all == 0 {
+            0.0_f64
+        } else {
+            // NARROWING-OK: counters are bounded by MAX_ROWS=5000; f64 mantissa is 53 bits.
+            auto_all as f64 / total_all as f64
+        };
+        let last_24h_rate = if total_24h == 0 {
+            0.0_f64
+        } else {
+            auto_24h as f64 / total_24h as f64
+        };
+
+        Ok(AutoAdvanceStats {
+            total_steps: total_all,
+            auto_advanced: auto_all,
+            intervention_required: intervention_all,
+            auto_advance_rate,
+            last_24h_rate,
+        })
+    }
 }
 
 /// Tier 3 partial — hard cap on rows returned by any drawer query
@@ -2963,6 +3410,56 @@ type BTreeMapStub<K, V> = std::collections::BTreeMap<K, V>;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Phase 4F (B-21): map a typed [`FeasibilityReportPayload`] onto the
+/// dashboard-facing [`FeasibilityReportRow`]. Pure projection — preserves
+/// `skip_reason: Option<String>` so the wire format is null (not undefined)
+/// when no skip path was taken.
+fn decode_feasibility_report_row(
+    seq: i64,
+    ts_ms: i64,
+    p: FeasibilityReportPayload,
+) -> FeasibilityReportRow {
+    FeasibilityReportRow {
+        seq,
+        ts_ms,
+        task_feasibility: p.task_feasibility,
+        skip_reason: p.skip_reason,
+        novel_step_count: p.novel_step_count,
+        escalations_count: p.escalations_count,
+        vram_margin_bp: p.vram_margin_bp,
+        ram_margin_bp: p.ram_margin_bp,
+        disk_margin_bp: p.disk_margin_bp,
+    }
+}
+
+/// Phase 4F (B-21): map a typed [`NovelStepDetectedPayload`] onto the
+/// dashboard-facing [`NovelStepRow`].
+fn decode_novel_step_row(
+    seq: i64,
+    ts_ms: i64,
+    p: NovelStepDetectedPayload,
+) -> NovelStepRow {
+    NovelStepRow {
+        seq,
+        ts_ms,
+        step_id: p.step_id,
+        reason: p.reason,
+        alternative_count: p.alternative_count,
+    }
+}
+
+/// Phase 4F (B-21): map a typed [`StubRunPayload`] onto the dashboard-facing
+/// [`StubRunRow`].
+fn decode_stub_run_row(seq: i64, ts_ms: i64, p: StubRunPayload) -> StubRunRow {
+    StubRunRow {
+        seq,
+        ts_ms,
+        step_id: p.step_id,
+        passed: p.passed,
+        elapsed_ms: p.elapsed_ms,
+    }
+}
 
 /// Produce a short UTF-8 summary of a raw msgpack payload without
 /// round-tripping through `SsbPayload`. Non-UTF-8 bytes become `U+FFFD`.

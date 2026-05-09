@@ -104,6 +104,14 @@ pub trait GroundingClient: Send + Sync {
         prompt: &str,
         level: ResearchLevel,
     ) -> impl std::future::Future<Output = Result<ResearchReport, GroundingError>> + Send;
+
+    /// Call the completions endpoint with a raw prompt string (no template wrapping).
+    /// Returns the raw text from the first choice. Used by Phase F synthesis which
+    /// builds its own detailed instruction prompt.
+    fn synthesize_text(
+        &self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, GroundingError>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,11 +158,52 @@ impl Default for SidecarGroundingClient {
     }
 }
 
+// Track C-B: opt-in JSON-schema-constrained decoding via lm-format-enforcer.
+// `response_format` mirrors the OpenAI / Anthropic-compatible request shape
+//   { "type": "json_schema",
+//     "json_schema": { "name": "...", "schema": { ... JSON Schema ... } } }
+// The sidecar (server.py handle_completions) extracts this dict and threads it
+// through InferenceEngine.generate -> model.generate(prefix_allowed_tokens_fn=).
+//
+// Backward compat: `skip_serializing_if = "Option::is_none"` keeps the wire
+// shape identical to pre-C-B for callers that do not opt in. Existing call
+// sites (SidecarGroundingClient::ground / synthesize_text) build the struct
+// without a `.response_format(..)` call and are unaffected.
 #[derive(Serialize)]
 struct CompletionsRequest<'a> {
     prompt: &'a str,
     max_tokens: u32,
     temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
+}
+
+impl<'a> CompletionsRequest<'a> {
+    /// Construct with no constrained-decoding schema (pre-C-B shape).
+    /// Internal helper; `response_format` defaults to `None`. Callers that
+    /// want to opt in chain `.response_format(value)` after constructing.
+    fn new(prompt: &'a str, max_tokens: u32, temperature: f64) -> Self {
+        Self {
+            prompt,
+            max_tokens,
+            temperature,
+            response_format: None,
+        }
+    }
+
+    /// Track C-B builder: attach a JSON-schema response_format payload. The
+    /// caller is responsible for shaping `value` per the Anthropic /
+    /// OpenAI-compatible spec:
+    ///   { "type": "json_schema",
+    ///     "json_schema": { "name": "...", "schema": { ... } } }
+    /// The sidecar warns-and-ignores malformed shapes (returns unconstrained
+    /// output), so a misshaped value here will not 4xx — it will silently
+    /// disable constraint. Tests must assert on the parsed body.
+    #[allow(dead_code)] // wired through by future tracks; exposed for tests
+    fn response_format(mut self, value: serde_json::Value) -> Self {
+        self.response_format = Some(value);
+        self
+    }
 }
 
 #[derive(Deserialize)]
@@ -174,11 +223,16 @@ impl GroundingClient for SidecarGroundingClient {
         level: ResearchLevel,
     ) -> Result<ResearchReport, GroundingError> {
         let url = self.completions_url();
-        let body = CompletionsRequest {
-            prompt: &level.render(prompt),
-            max_tokens: GROUNDING_MAX_TOKENS,
-            temperature: GROUNDING_TEMPERATURE,
-        };
+        // Track C-B: callers opt into constrained-JSON via .response_format(..)
+        // on this builder. Default (no chained call) keeps the pre-C-B wire
+        // shape — `response_format` is `None` and `skip_serializing_if` omits
+        // it from the serialized request body.
+        let rendered = level.render(prompt);
+        let body = CompletionsRequest::new(
+            &rendered,
+            GROUNDING_MAX_TOKENS,
+            GROUNDING_TEMPERATURE,
+        );
 
         debug!(level = ?level, url = %url, "sidecar_grounding_request");
 
@@ -233,6 +287,66 @@ impl GroundingClient for SidecarGroundingClient {
 
         parse_research_report_json(&text)
     }
+
+    async fn synthesize_text(&self, prompt: &str) -> Result<String, GroundingError> {
+        let url = self.completions_url();
+        // Send prompt verbatim — no template wrapping.
+        // Track C-B: synthesize_text intentionally does NOT opt into
+        // constrained decoding — synthesis output is free-form prose by
+        // contract. Stays on the pre-C-B wire shape.
+        let body = CompletionsRequest::new(prompt, GROUNDING_MAX_TOKENS, GROUNDING_TEMPERATURE);
+
+        debug!(url = %url, "sidecar_synthesis_request");
+
+        let response = match self
+            .http
+            .post(&url)
+            .timeout(self.timeout)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                warn!(error = %e, "sidecar_synthesis_timeout");
+                return Err(GroundingError::Timeout {
+                    url,
+                    after: self.timeout,
+                });
+            }
+            Err(e) if e.is_connect() => {
+                warn!(error = %e, "sidecar_synthesis_unavailable");
+                return Err(GroundingError::SidecarUnavailable { url });
+            }
+            Err(e) => {
+                warn!(error = %e, "sidecar_synthesis_error");
+                return Err(GroundingError::RequestFailed {
+                    reason: e.to_string(),
+                });
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(GroundingError::HttpStatus {
+                status: status.as_u16(),
+                url,
+            });
+        }
+
+        let parsed: CompletionsResponse = response.json().await.map_err(|e| {
+            GroundingError::InvalidJson {
+                reason: format!("synthesis envelope: {e}"),
+            }
+        })?;
+
+        parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.text)
+            .ok_or(GroundingError::EmptyResponse)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +374,52 @@ impl GroundingClient for SyntheticGroundingClient {
         _level: ResearchLevel,
     ) -> Result<ResearchReport, GroundingError> {
         Ok(synthetic_report(prompt))
+    }
+
+    async fn synthesize_text(&self, prompt: &str) -> Result<String, GroundingError> {
+        // Deterministic stub: return empty string so Phase F falls back to deterministic path.
+        // Tests for Phase F verify the fallback behavior, not LLM synthesis.
+        let _ = prompt;
+        Err(GroundingError::EmptyResponse)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CannedSynthesisGroundingClient — test fixture that returns a pre-configured
+// cited-prose string from synthesize_text, allowing happy-path coverage of the
+// LLM-success branch in phase_f_synthesize.  The ground() method delegates to
+// SyntheticGroundingClient so existing tree tests are unaffected.
+// ---------------------------------------------------------------------------
+
+/// A test-only GroundingClient that returns `canned` from `synthesize_text`.
+/// Construct via `CannedSynthesisGroundingClient::new(s)`.
+/// Intended for happy-path coverage of Phase F synthesis in grounding_client_contract tests.
+#[derive(Debug, Clone)]
+pub struct CannedSynthesisGroundingClient {
+    canned: String,
+    inner: SyntheticGroundingClient,
+}
+
+impl CannedSynthesisGroundingClient {
+    pub fn new(canned: String) -> Self {
+        Self {
+            canned,
+            inner: SyntheticGroundingClient::new(),
+        }
+    }
+}
+
+impl GroundingClient for CannedSynthesisGroundingClient {
+    async fn ground(
+        &self,
+        prompt: &str,
+        level: ResearchLevel,
+    ) -> Result<ResearchReport, GroundingError> {
+        self.inner.ground(prompt, level).await
+    }
+
+    async fn synthesize_text(&self, _prompt: &str) -> Result<String, GroundingError> {
+        Ok(self.canned.clone())
     }
 }
 

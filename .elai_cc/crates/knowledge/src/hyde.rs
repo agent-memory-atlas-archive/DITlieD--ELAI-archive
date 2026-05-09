@@ -8,7 +8,7 @@
 // fails, HyDE is skipped and direct search proceeds normally.
 // Integrates with Phase 1I resilience (circuit breaker pattern).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -77,7 +77,7 @@ struct CachedHypothesis {
 /// Uses a circuit breaker (Phase 1I pattern) to avoid hammering a failing sidecar.
 pub struct HydeStage {
     client: Arc<dyn HydeClient>,
-    cache: Mutex<HashMap<[u8; 32], CachedHypothesis>>,
+    cache: Mutex<FxHashMap<[u8; 32], CachedHypothesis>>,
     breaker: Mutex<EmbeddingCircuitBreaker>,
     clock: Arc<dyn ClockProvider>,
 }
@@ -88,7 +88,7 @@ impl HydeStage {
         let breaker = EmbeddingCircuitBreaker::with_defaults("hyde_sidecar", clock.clone());
         Self {
             client,
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(FxHashMap::default()),
             breaker: Mutex::new(breaker),
             clock,
         }
@@ -121,7 +121,8 @@ impl HydeStage {
             if let Some(entry) = cache.get(&key_bytes) {
                 let age = self.clock.elapsed_since(entry.created_at);
                 if age < HYDE_CACHE_TTL {
-                    tracing::debug!(age_ms = age.as_millis() as u64, "hyde: cache hit");
+                    // NARROWING-OK: cache age never exceeds u64::MAX ms (584M years).
+                    tracing::debug!(age_ms = age.as_millis().min(u64::MAX as u128) as u64, "hyde: cache hit");
                     return Some(entry.text.clone());
                 }
             }

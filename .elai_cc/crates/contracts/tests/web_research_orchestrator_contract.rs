@@ -120,6 +120,10 @@ fn ssb_web_research_step_action_type_valid() {
         iteration: 1,
         sources_fetched: 3,
         sources_used: 2,
+        fetcher: "reqwest".to_string(), // Track A.4: new field required in struct literal.
+        stage: String::new(),
+        stage_phase: String::new(),
+        stage_payload: None,
     });
     assert_eq!(payload.action_type(), SsbActionType::WebResearchStep);
 }

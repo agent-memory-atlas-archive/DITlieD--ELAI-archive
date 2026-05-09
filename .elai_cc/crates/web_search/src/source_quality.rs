@@ -1,6 +1,9 @@
 // 4D.13: Source quality table — trusted domain lookup for Oracle research pipeline.
 // Wraps elai_core::SourceTierConfig to provide domain-to-tier lookup and f64 scoring.
 
+/// Initial capacity in bytes for the synthesized tier TOML string builder.
+const SOURCE_QUALITY_INITIAL_CAPACITY: usize = 4096;
+
 use elai_core::source_tier::{
     self, SourceTier, SourceTierConfig, SourceTierError,
 };
@@ -116,7 +119,7 @@ impl SourceQualityTable {
 
     /// Synthesize a source-tiers.toml-format string from the trusted_domains config.
     fn synthesize_tier_toml(td: &TrustedDomainsConfig) -> String {
-        let mut out = String::with_capacity(4096);
+        let mut out = String::with_capacity(SOURCE_QUALITY_INITIAL_CAPACITY);
 
         out.push_str("[tier1]\ndomains = [\n");
         for d in &td.tier1 {

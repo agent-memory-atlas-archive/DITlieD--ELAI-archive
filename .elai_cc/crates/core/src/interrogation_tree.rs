@@ -3,7 +3,7 @@
 // Language-parameterized decision trees stored in rules.db.
 // Traversal: reasoning crate. Storage: rules crate.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,7 +29,7 @@ pub const MAX_TRAVERSAL_TOKENS: usize = 2170;
 // ---------------------------------------------------------------------------
 
 /// Identifier for a choice (A, B, C, D, E, F).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ChoiceId(pub String);
 
 impl ChoiceId {
@@ -87,7 +87,7 @@ pub struct QuestionNode {
     /// Conditional follow-up questions keyed by ChoiceId.
     /// A choice not present here AND without a terminal is a dead end (should not happen
     /// in well-formed trees).
-    pub children: HashMap<ChoiceId, QuestionNode>,
+    pub children: BTreeMap<ChoiceId, QuestionNode>,
     /// If Some, this node is a leaf — the traversal produces this fix instruction.
     /// Mutually exclusive with children for a given choice path (children take priority).
     pub terminal: Option<FixTemplate>,
@@ -290,7 +290,7 @@ fn leaf(question: &str, choices: Vec<Choice>, fix: FixTemplate) -> QuestionNode 
     QuestionNode {
         question_template: question.to_string(),
         choices,
-        children: HashMap::new(),
+        children: BTreeMap::new(),
         terminal: Some(fix),
     }
 }
@@ -302,7 +302,7 @@ fn branch(
     children: Vec<(char, QuestionNode)>,
     fallback: Option<FixTemplate>,
 ) -> QuestionNode {
-    let mut child_map = HashMap::new();
+    let mut child_map = BTreeMap::new();
     for (c, node) in children {
         child_map.insert(ChoiceId::new(c.to_string()), node);
     }
@@ -498,7 +498,7 @@ mod tests {
         QuestionNode {
             question_template: question.to_string(),
             choices: make_choices(labels),
-            children: HashMap::new(),
+            children: BTreeMap::new(),
             terminal: Some(FixTemplate {
                 instruction: fix.to_string(),
                 category: "test".to_string(),
@@ -513,7 +513,7 @@ mod tests {
             "fix body logic at {line}",
         );
 
-        let mut root_children = HashMap::new();
+        let mut root_children = BTreeMap::new();
         root_children.insert(ChoiceId::new("B"), child_b);
 
         let root = QuestionNode {

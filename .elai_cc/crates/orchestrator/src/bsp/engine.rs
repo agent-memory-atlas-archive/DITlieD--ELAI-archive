@@ -220,6 +220,8 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
             // Record timed-out agents as death events
             let superstep_i64 = i64::try_from(superstep)
                 .map_err(|e| BspError::Serialization(format!("superstep {superstep} exceeds i64::MAX: {e}")))?;
+            // B-7b: emitter agent_id for AgentLifecycle rows (mirrors spawned emit pattern).
+            let lifecycle_emitter = format!("bsp_engine:{}", self.config.session_id);
             for (node_id, handle) in &timed_out {
                 let agent_id_str = handle.agent_id.to_string();
                 let death_payload = SsbPayload::DeathEvent(DeathEventPayload {
@@ -236,11 +238,45 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     vec![],
                 )
                 .await?;
+                // B-7b: AgentLifecycle "exited" — timeout death path.
+                let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                    agent_id: agent_id_str.clone(),
+                    role: agent_role_str(handle.role),
+                    state: "exited".to_owned(),
+                    death_class: Some("timeout".to_owned()),
+                });
+                if let Err(e) = ssb
+                    .write_payload(&lifecycle_emitter, superstep_i64, lc_payload, vec![])
+                    .await
+                {
+                    tracing::warn!(
+                        agent_id = %agent_id_str,
+                        error = %e,
+                        "bsp_engine: AgentLifecycle exited(timeout) SSB write failed (non-fatal)"
+                    );
+                }
                 node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
             }
 
-            // Mark completed nodes
-            for (node_id, _handle) in &completed_handles {
+            // Mark completed nodes and emit AgentLifecycle "exited" (clean_exit). B-7b.
+            for (node_id, handle) in &completed_handles {
+                let agent_id_str = handle.agent_id.to_string();
+                let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                    agent_id: agent_id_str.clone(),
+                    role: agent_role_str(handle.role),
+                    state: "exited".to_owned(),
+                    death_class: Some("clean_exit".to_owned()),
+                });
+                if let Err(e) = ssb
+                    .write_payload(&lifecycle_emitter, superstep_i64, lc_payload, vec![])
+                    .await
+                {
+                    tracing::warn!(
+                        agent_id = %agent_id_str,
+                        error = %e,
+                        "bsp_engine: AgentLifecycle exited(clean_exit) SSB write failed (non-fatal)"
+                    );
+                }
                 node_statuses.insert(node_id.clone(), NodeStatus::Complete);
             }
 
@@ -275,7 +311,25 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     .execute_tasks_with_timeout(&deferred_tasks, ssb, superstep)
                     .await?;
 
-                for (node_id, _handle) in &deferred_completed {
+                // B-7b: deferred clean_exit — AgentLifecycle "exited" for each completed deferred agent.
+                for (node_id, handle) in &deferred_completed {
+                    let agent_id_str = handle.agent_id.to_string();
+                    let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                        agent_id: agent_id_str.clone(),
+                        role: agent_role_str(handle.role),
+                        state: "exited".to_owned(),
+                        death_class: Some("clean_exit".to_owned()),
+                    });
+                    if let Err(e) = ssb
+                        .write_payload(&lifecycle_emitter, superstep_i64, lc_payload, vec![])
+                        .await
+                    {
+                        tracing::warn!(
+                            agent_id = %agent_id_str,
+                            error = %e,
+                            "bsp_engine: AgentLifecycle exited(clean_exit) deferred SSB write failed (non-fatal)"
+                        );
+                    }
                     node_statuses.insert(node_id.clone(), NodeStatus::Complete);
                 }
 
@@ -295,6 +349,23 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         vec![],
                     )
                     .await?;
+                    // B-7b: deferred timeout — AgentLifecycle "exited".
+                    let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                        agent_id: agent_id_str.clone(),
+                        role: agent_role_str(handle.role),
+                        state: "exited".to_owned(),
+                        death_class: Some("timeout".to_owned()),
+                    });
+                    if let Err(e) = ssb
+                        .write_payload(&lifecycle_emitter, superstep_i64, lc_payload, vec![])
+                        .await
+                    {
+                        tracing::warn!(
+                            agent_id = %agent_id_str,
+                            error = %e,
+                            "bsp_engine: AgentLifecycle exited(timeout) deferred SSB write failed (non-fatal)"
+                        );
+                    }
                     node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
                 }
             }
@@ -494,17 +565,48 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
         // Collect all results from JoinSet (arbitrary completion order)
         let mut results: Vec<(usize, Result<AgentHandle, tokio::time::error::Elapsed>)> =
             Vec::with_capacity(tasks.len());
+        // Track completed indices so crash emit can identify unaccounted agents. B-7b.
+        let mut completed_indices: std::collections::BTreeSet<usize> = Default::default();
         while let Some(join_result) = join_set.join_next().await {
             match join_result {
                 Ok(Ok((idx, timeout_result))) => {
+                    completed_indices.insert(idx);
                     results.push((idx, timeout_result));
                 }
                 Ok(Err(msg)) => {
+                    // B-7b: emit AgentLifecycle crash for all unaccounted spawned agents.
+                    for (i, (_orig_idx, _node_id, role, _task)) in task_meta.iter().enumerate() {
+                        if !completed_indices.contains(&i) {
+                            let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                                agent_id: format!("unknown-crash-{i}"),
+                                role: agent_role_str(*role),
+                                state: "exited".to_owned(),
+                                death_class: Some("crash".to_owned()),
+                            });
+                            let _ = ssb
+                                .write_payload(&bsp_agent_id_lc, superstep_i64_lc, lc_payload, vec![])
+                                .await;
+                        }
+                    }
                     return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
                         format!("JoinSet task error: {msg}"),
                     )));
                 }
                 Err(join_err) => {
+                    // B-7b: emit AgentLifecycle crash for all unaccounted spawned agents.
+                    for (i, (_orig_idx, _node_id, role, _task)) in task_meta.iter().enumerate() {
+                        if !completed_indices.contains(&i) {
+                            let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
+                                agent_id: format!("unknown-crash-{i}"),
+                                role: agent_role_str(*role),
+                                state: "exited".to_owned(),
+                                death_class: Some("crash".to_owned()),
+                            });
+                            let _ = ssb
+                                .write_payload(&bsp_agent_id_lc, superstep_i64_lc, lc_payload, vec![])
+                                .await;
+                        }
+                    }
                     return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
                         format!("JoinSet panic: {join_err}"),
                     )));
@@ -539,6 +641,8 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         sandbox_handle: None,
                         child_process: None,
                         socket_path: None,
+                        appcontainer_profile_id: None,
+                        allowed_paths: Vec::new(),
                     }));
                 }
             }

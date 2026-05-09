@@ -520,7 +520,7 @@ pub fn populate_tier3(
 mod tests {
     use super::*;
     use elai_core::project_profile::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn base_profile() -> ProjectProfile {
@@ -538,7 +538,7 @@ mod tests {
             languages: LanguageProfile {
                 primary: Language::Rust,
                 secondary: Vec::new(),
-                distribution: HashMap::new(),
+                distribution: BTreeMap::new(),
                 tree_sitter_coverage: 0.0,
             },
             frameworks: Vec::new(),
@@ -634,7 +634,7 @@ mod tests {
         p.commands.build.push(BuildCommand {
             cmd: "cargo build".to_owned(),
             working_dir: PathBuf::from("."),
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             timeout_s: 120,
             scope: CommandScope::Full,
             verified: false,
@@ -642,7 +642,7 @@ mod tests {
         p.commands.test.push(BuildCommand {
             cmd: "cargo test".to_owned(),
             working_dir: PathBuf::from("."),
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             timeout_s: 120,
             scope: CommandScope::Full,
             verified: false,
@@ -680,7 +680,7 @@ mod tests {
         p.languages = LanguageProfile {
             primary: Language::Python,
             secondary: Vec::new(),
-            distribution: HashMap::new(),
+            distribution: BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         };
         p.frameworks.push(FrameworkDetection {

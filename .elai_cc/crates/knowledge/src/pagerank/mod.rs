@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use crate::dkg::DkgEngine;
+use crate::error::KnowledgeError;
 use crate::SymbolKind;
 
 // ---------------------------------------------------------------------------
@@ -25,19 +26,19 @@ pub struct DkgSnapshot {
 }
 
 impl DkgSnapshot {
-    pub fn from_engine(engine: &DkgEngine) -> Result<DkgSnapshot, Box<dyn std::error::Error>> {
+    pub fn from_engine(engine: &DkgEngine) -> Result<DkgSnapshot, KnowledgeError> {
         let raw_nodes = engine.nodes()?;
         let raw_edges = engine.edges()?;
 
         // Map node_id (i64) -> index in the nodes vec
-        let id_to_idx: HashMap<i64, usize> = raw_nodes
+        let id_to_idx: FxHashMap<i64, usize> = raw_nodes
             .iter()
             .enumerate()
             .map(|(i, n)| (n.node_id, i))
             .collect();
 
         // Count inbound edges per node and track connectivity
-        let mut inbound_count: HashMap<i64, usize> = HashMap::new();
+        let mut inbound_count: FxHashMap<i64, usize> = FxHashMap::default();
         let mut has_outbound = vec![false; raw_nodes.len()];
         let mut has_inbound = vec![false; raw_nodes.len()];
 

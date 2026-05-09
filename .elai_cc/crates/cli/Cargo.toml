@@ -19,8 +19,11 @@ elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers", features = ["sidecar"] }
 elai-rules = { path = "../rules" }
 elai-tools = { path = "../tools" }
+# A5.2: optional; activated by the "obscura" feature for doctor() wiring.
+elai-web-search = { path = "../web_search", optional = true }
 pulldown-cmark = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+rustc-hash.workspace = true
 rustyline = "15"
 semver = "1"
 serde.workspace = true
@@ -29,6 +32,12 @@ tracing.workspace = true
 syntect = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
 toml.workspace = true
+
+[features]
+# D4: pass-through to orchestrator's obscura feature (headless-browser fetch via obscura subprocess).
+# Also enables elai-web-search/obscura directly so doctor.rs can call obscura_fetcher::doctor().
+# Enable with: cargo build --features obscura
+obscura = ["elai-orchestrator/obscura", "elai-web-search/obscura", "dep:elai-web-search"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

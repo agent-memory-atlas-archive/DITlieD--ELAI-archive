@@ -1,43 +1,26 @@
+# Phase 4E: Pipeline Factory L2 — metrics
+# Generated: 2026-04-16
+
 [assembly_time_ms]
 phase_1 = 0
-phase_10 = 0
-phase_100 = 0
 phase_5 = 0
+phase_10 = 0
 phase_50 = 0
-
-[decomp_tree]
-baby_steps_per_idea_avg = 27.0
-baby_steps_per_idea_max = 27
-baby_steps_per_idea_median = 27.0
-bubble_up_rate = 0.18518518518518517
-cache_effectiveness = 0.37037037037037035
-context_p50 = 160
-context_p95 = 160
-fsm_cycles_per_idea = 81
-generated_at_unix_ms = 1776373065395
-ideas_measured = 1
-integration_pass_rate = 1.0
-samples = 32
-sidecar_reachable = true
-total_execution_time_per_idea_secs = 7.0221765
-traversal_overhead_ratio = 0.00003531731733815829
-tree_baby_steps_per_step = 3
-tree_phases = 3
-tree_steps_per_phase = 3
+phase_100 = 0
 
 [repair]
-avg_rounds = 0.0
+success_rate = 1.00
+avg_rounds = 0.00
 corpus_size = 10
 strategy_reorder_count = 0
 strategy_substitute_count = 10
-success_rate = 1.0
-
-[targets]
-assembly_10_phase_actual_ms = 0
-assembly_10_phase_target_ms = 1000
-assembly_target_met = true
-repair_success_met = true
-repair_success_target = 0.5
 
 [test_harness]
-coverage_ratio = 1.2
+coverage_ratio = 1.20
+
+[targets]
+assembly_10_phase_target_ms = 1000
+assembly_10_phase_actual_ms = 0
+assembly_target_met = true
+repair_success_target = 0.50
+repair_success_met = true

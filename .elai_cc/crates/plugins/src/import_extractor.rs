@@ -196,7 +196,7 @@ pub fn extract_imports(
             if !name.is_empty() {
                 imports.push(ExtractedImport {
                     name,
-                    line: node.start_position().row as u32 + 1,
+                    line: u32::try_from(node.start_position().row).expect("source row fits u32").saturating_add(1),
                 });
             }
         }

@@ -84,7 +84,7 @@ impl SimulatorRuntime {
 
     /// Return a snapshot of current simulated system state.
     pub fn snapshot_state(&self) -> StateSnapshot {
-        let tick = self.sim_time.as_millis() as u64;
+        let tick = u64::try_from(self.sim_time.as_millis()).unwrap_or(u64::MAX);
         StateSnapshot {
             fsm_state: self.fsm_state,
             ssb_row_count: self.ssb_row_count,

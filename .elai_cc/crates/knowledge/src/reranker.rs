@@ -73,8 +73,8 @@ pub struct RerankerConfig {
 impl Default for RerankerConfig {
     fn default() -> Self {
         Self {
-            model_path: PathBuf::from("models/cross-encoder-l12.onnx"),
-            tokenizer_path: PathBuf::from("models/tokenizer.json"),
+            model_path: PathBuf::from("models/onnx/cross-encoder-l12.onnx"),
+            tokenizer_path: PathBuf::from("models/onnx/tokenizer.json"),
             fallback_model_path: None,
             quantized_model_path: None,
             skip_threshold: 10,
@@ -462,7 +462,16 @@ impl CrossEncoderReranker {
             }
 
             // Acquire semaphore for exclusive session access.
-            let _permit = semaphore.acquire().await.expect("semaphore closed");
+            // B-16A: graceful shutdown when the semaphore is closed (e.g. by
+            // tests dropping the sender, or supervisor teardown). Previously
+            // a `.expect("semaphore closed")` would panic the worker.
+            let _permit = match semaphore.acquire().await {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("reranker semaphore closed; exiting batch worker");
+                    return;
+                }
+            };
 
             // Merge all candidate sets, tracking offsets per caller.
             let mut all_pairs: Vec<(&str, &str)> = Vec::new();
@@ -550,6 +559,7 @@ impl CrossEncoderReranker {
         let mut attention_mask: Vec<i64> = Vec::with_capacity(batch_size * max_len);
         let mut token_type_ids: Vec<i64> = Vec::with_capacity(batch_size * max_len);
 
+        // NARROWING-OK: u32->i64 is widening; tokenizer IDs/mask/type_ids are u32, i64 holds all u32 values.
         for enc in &encodings {
             let ids = enc.get_ids();
             let mask = enc.get_attention_mask();
@@ -578,6 +588,7 @@ impl CrossEncoderReranker {
             }
         }
 
+        // NARROWING-OK: ORT shape contract; batch_size and max_len are tokenizer-bounded (< i64::MAX).
         let shape = vec![batch_size as i64, max_len as i64];
         let id_tensor = Tensor::from_array((shape.clone(), input_ids))
             .map_err(|e| RerankerError::Inference(format!("tensor input_ids: {e}")))?;

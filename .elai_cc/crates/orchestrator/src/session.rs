@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
+use serde::{Deserialize, Serialize};
+
 use crate::json::{JsonError, JsonValue};
 use crate::usage::TokenUsage;
 
@@ -24,7 +26,16 @@ pub enum MessageRole {
 }
 
 /// Structured message content stored inside a [`Session`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// B-9 cycle 2 (BLOCK-2 fix): the enum derives `Serialize`/`Deserialize`
+/// so the SessionDag rehydration path can roundtrip the full block vector
+/// (including `ToolUse`/`ToolResult`) through msgpack instead of
+/// flattening every block to text — flattening lost tool-call pairing and
+/// caused Anthropic 400 errors on `/continue`. The serde representation
+/// uses `tag = "type"` so the on-disk layout is `{"type":"text", ...}` /
+/// `{"type":"tool_use", ...}` / `{"type":"tool_result", ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
         text: String,
@@ -393,6 +404,15 @@ impl Session {
         })
     }
 
+    /// B-9 T4: render a JSONL snapshot of this session. DEPRECATED — kept only
+    /// for legacy export behind the `/export --jsonl` flag. SessionDag is now
+    /// the authoritative on-disk store; use `SessionDag::save_snapshot` for
+    /// new code. Reachable from:
+    ///   - `Session::save_to_path` (transitional; gated by --export-jsonl
+    ///     when the call originates from `/export`)
+    ///   - `Session::append_persisted_message` (incremental append)
+    /// New callers MUST go through `SessionDag::save_snapshot` instead.
+    #[doc(hidden)]
     fn render_jsonl_snapshot(&self) -> Result<String, SessionError> {
         let mut lines = vec![self.meta_record()?.render()];
         if let Some(compaction) = &self.compaction {

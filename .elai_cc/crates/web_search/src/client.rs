@@ -4,6 +4,15 @@ use std::time::Duration;
 use elai_core::clock::ClockProvider;
 use tracing::{debug, warn};
 
+/// HTTP status threshold: server-side errors (5xx).
+const HTTP_SERVER_ERROR_THRESHOLD: u16 = 500;
+
+/// HTTP status threshold: client-side errors (4xx).
+const HTTP_CLIENT_ERROR_THRESHOLD: u16 = 400;
+
+/// HTTP status code: Service Unavailable, used as fallback sentinel when all retries are exhausted.
+const HTTP_SERVICE_UNAVAILABLE: u16 = 503;
+
 use crate::rate_limiter::{self, RateLimiter, SleepFn};
 use crate::{
     SearchError, SearchResult, SearxResponse,
@@ -103,13 +112,13 @@ impl SearxClient {
 
             let status = response.status().as_u16();
 
-            if status >= 500 {
+            if status >= HTTP_SERVER_ERROR_THRESHOLD {
                 warn!(status = status, "search: received 5xx response");
                 last_err = Some(SearchError::ServiceUnavailable { status });
                 continue;
             }
 
-            if status >= 400 {
+            if status >= HTTP_CLIENT_ERROR_THRESHOLD {
                 // 4xx: do not retry.
                 return Err(SearchError::ServiceUnavailable { status });
             }
@@ -129,7 +138,7 @@ impl SearxClient {
         }
 
         // All retries exhausted.
-        Err(last_err.unwrap_or(SearchError::ServiceUnavailable { status: 503 }))
+        Err(last_err.unwrap_or(SearchError::ServiceUnavailable { status: HTTP_SERVICE_UNAVAILABLE }))
     }
 
     /// Health check: GET base_url with a short timeout.

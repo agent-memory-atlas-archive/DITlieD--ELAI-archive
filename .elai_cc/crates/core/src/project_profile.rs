@@ -1,7 +1,7 @@
 // Project Intelligence: Tier 1 structural discovery types.
 // Spec: docs/specs/guide/project-intelligence-design.txt sections 1, 2A-2G, 5, 11.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -123,11 +123,11 @@ pub struct WorkspaceMember {
 pub struct LanguageProfile {
     pub primary: Language,
     pub secondary: Vec<Language>,
-    pub distribution: HashMap<Language, usize>,
+    pub distribution: BTreeMap<Language, usize>,
     pub tree_sitter_coverage: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Language {
     Rust,
     Python,
@@ -499,7 +499,7 @@ pub struct BuildCommandRegistry {
 pub struct BuildCommand {
     pub cmd: String,
     pub working_dir: PathBuf,
-    pub env: HashMap<String, String>,
+    pub env: BTreeMap<String, String>,
     pub timeout_s: u32,
     pub scope: CommandScope,
     pub verified: bool,
@@ -595,7 +595,7 @@ impl Default for LanguageProfile {
         Self {
             primary: Language::Unknown,
             secondary: Vec::new(),
-            distribution: HashMap::new(),
+            distribution: BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         }
     }

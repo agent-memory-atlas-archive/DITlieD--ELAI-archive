@@ -9,9 +9,10 @@
 //! WARN-2 (exponential decay, not quadratic).
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use rusqlite::Connection;
+use elai_core::{ClockProvider as _, OsClock};
 
 use crate::error::KnowledgeError;
 
@@ -381,7 +382,8 @@ fn fs_mtime_epoch(path: &Path) -> i64 {
 
 /// Current time as epoch seconds.
 pub fn now_epoch() -> i64 {
-    SystemTime::now()
+    OsClock
+        .system_now()
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
         .unwrap_or(0)

@@ -24,7 +24,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+
+use elai_core::{ClockProvider as _, OsClock};
 
 use elai_core::tool_dispatcher::{
     ValidateRequest, ValidationTier, ValidationTierResult,
@@ -133,10 +134,11 @@ impl DefaultTieredValidator {
         tier: ValidationTier,
         fut: impl Future<Output = IntegrationRunOutcome>,
     ) -> ValidationTierResult {
-        let start = Instant::now();
+        let _clock = OsClock;
+        let start = _clock.now();
         let budget = Duration::from_millis(u64::from(tier.timeout_ms()));
         let res = tokio::time::timeout(budget, fut).await;
-        let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let elapsed_ms = u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
         match res {
             Ok(outcome) => ValidationTierResult {
                 tier,
@@ -205,7 +207,8 @@ impl TieredValidator for DefaultTieredValidator {
                 ValidationTier::Stress => {
                     // Concept-level first, then repeat unit-level N times
                     // for flakiness detection.
-                    let start = Instant::now();
+                    let _clock = OsClock;
+                    let start = _clock.now();
                     let budget = Duration::from_millis(u64::from(tier.timeout_ms()));
                     let concept = tokio::time::timeout(
                         budget,
@@ -224,7 +227,7 @@ impl TieredValidator for DefaultTieredValidator {
                         }
                         Err(_) => {
                             let elapsed_ms =
-                                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+                                u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
                             return ValidationTierResult {
                                 tier,
                                 passed: false,
@@ -239,7 +242,7 @@ impl TieredValidator for DefaultTieredValidator {
                     }
                     if passed && self.stress_unit_repeats > 0 {
                         for i in 0..self.stress_unit_repeats {
-                            let remaining = budget.saturating_sub(start.elapsed());
+                            let remaining = budget.saturating_sub(_clock.elapsed_since(start));
                             if remaining.is_zero() {
                                 snippet = Some(format!(
                                     "stress repeat {} of {} exceeded tier budget",
@@ -284,7 +287,7 @@ impl TieredValidator for DefaultTieredValidator {
                         }
                     }
                     let elapsed_ms =
-                        u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+                        u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
                     ValidationTierResult {
                         tier,
                         passed,

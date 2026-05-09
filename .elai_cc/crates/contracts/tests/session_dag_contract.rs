@@ -61,11 +61,13 @@ fn trimmed_message_fields_accessible() {
         content: vec![0xAA; 100],
         is_stubbed: false,
         stub_ssb_seq: Some(42),
+        blocks: None,
     };
     assert_eq!(msg.seq, 4);
     assert_eq!(msg.role, DagMessageRole::Tool);
     assert!(!msg.is_stubbed);
     assert_eq!(msg.stub_ssb_seq, Some(42));
+    assert!(msg.blocks.is_none());
 }
 
 #[test]
@@ -417,6 +419,7 @@ fn recover_stubs_no_stubs_unchanged() {
             content: b"hello".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 2,
@@ -424,6 +427,7 @@ fn recover_stubs_no_stubs_unchanged() {
             content: b"world".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
     ];
     dag.save_snapshot(&root, &messages).unwrap();
@@ -453,6 +457,7 @@ fn recover_single_stub_non_stubbed_unchanged() {
         content: b"not a stub".to_vec(),
         is_stubbed: false,
         stub_ssb_seq: None,
+        blocks: None,
     }];
     dag.save_snapshot(&root, &messages).unwrap();
 
@@ -482,6 +487,7 @@ fn round_trip_trim_save_load_recover() {
             content: b"system".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 2,
@@ -489,6 +495,7 @@ fn round_trip_trim_save_load_recover() {
             content: b"user".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 3,
@@ -496,6 +503,7 @@ fn round_trip_trim_save_load_recover() {
             content: b"assistant".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 4,
@@ -503,6 +511,7 @@ fn round_trip_trim_save_load_recover() {
             content: original_payload.clone(),
             is_stubbed: false,
             stub_ssb_seq: Some(ssb_seq),
+            blocks: None,
         },
     ];
 
@@ -560,6 +569,7 @@ fn make_tool_messages_for_handoff(count: usize, stub_threshold: usize) -> Vec<Tr
                 content: format!("prefix-msg-{seq}").into_bytes(),
                 is_stubbed: false,
                 stub_ssb_seq: None,
+                blocks: None,
             });
         } else if i % 3 == 0 {
             // Tool messages with large content (will be stub candidates)
@@ -570,6 +580,7 @@ fn make_tool_messages_for_handoff(count: usize, stub_threshold: usize) -> Vec<Tr
                 content: payload,
                 is_stubbed: false,
                 stub_ssb_seq: Some(seq as u64),
+                blocks: None,
             });
         } else if i % 3 == 1 {
             msgs.push(TrimmedMessage {
@@ -578,6 +589,7 @@ fn make_tool_messages_for_handoff(count: usize, stub_threshold: usize) -> Vec<Tr
                 content: format!("user-msg-{seq}").into_bytes(),
                 is_stubbed: false,
                 stub_ssb_seq: None,
+                blocks: None,
             });
         } else {
             msgs.push(TrimmedMessage {
@@ -586,6 +598,7 @@ fn make_tool_messages_for_handoff(count: usize, stub_threshold: usize) -> Vec<Tr
                 content: format!("assistant-msg-{seq}").into_bytes(),
                 is_stubbed: false,
                 stub_ssb_seq: None,
+                blocks: None,
             });
         }
     }
@@ -708,6 +721,7 @@ fn contract_handoff_round_trip() {
             content: b"system prompt".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 2,
@@ -715,6 +729,7 @@ fn contract_handoff_round_trip() {
             content: b"user message".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 4,
@@ -722,6 +737,7 @@ fn contract_handoff_round_trip() {
             content: b"assistant reply".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
     ];
 
@@ -763,6 +779,7 @@ fn contract_sequential_handoffs_parent_chain() {
             content: b"sys".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
         TrimmedMessage {
             seq: 2,
@@ -770,6 +787,7 @@ fn contract_sequential_handoffs_parent_chain() {
             content: b"usr".to_vec(),
             is_stubbed: false,
             stub_ssb_seq: None,
+            blocks: None,
         },
     ];
     let config = TrimConfig {

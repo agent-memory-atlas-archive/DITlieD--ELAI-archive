@@ -1,0 +1,66 @@
+/* ============================================================
+   ELAI Dashboard — Scrollbar Styles
+   Strategy: hidden by default, revealed on container hover.
+   4px track. Teal-soft thumb. No browser chrome on first look.
+   ============================================================ */
+
+/* ----------------------------------------------------------
+   WEBKIT — Chrome, Tauri WebView (Chromium)
+---------------------------------------------------------- */
+
+/* Track — the channel behind the thumb */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-hover);
+  border-radius: var(--r-pill);
+}
+
+/* Thumb — hidden by default, visible on ancestor hover */
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: var(--r-pill);
+  transition: background 200ms;
+}
+
+/* Reveal on container hover */
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--teal-soft);
+}
+
+/* Stronger on thumb hover */
+*:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--teal-line);
+}
+
+/* Corner where horizontal and vertical scrollbars meet */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ----------------------------------------------------------
+   FIREFOX — scrollbar-width + scrollbar-color
+   Firefox does not support the per-pseudo reveal trick;
+   we use the thin variant with a low-opacity teal thumb.
+---------------------------------------------------------- */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--teal-soft) transparent;
+}
+
+/* ----------------------------------------------------------
+   SCROLL CONTAINER UTILITIES
+   Apply to any element that should be independently scrollable.
+   scrollbar-gutter: stable prevents layout shift on overflow.
+---------------------------------------------------------- */
+.scroll-y {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.scroll-x {
+  overflow-x: auto;
+}

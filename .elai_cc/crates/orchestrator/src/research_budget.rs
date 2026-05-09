@@ -39,7 +39,10 @@ impl EvidenceItem {
     /// Estimate token count from text bytes.
     pub fn estimate_tokens(text: &str) -> usize {
         let raw = text.len() / BYTES_PER_TOKEN;
-        ((raw as f64) * TOKEN_OVERCOUNT_FACTOR).ceil() as usize
+        // NARROWING-OK: f64->usize; no TryFrom<f64> for usize in std; raw is text.len()/BYTES_PER_TOKEN
+        // which is bounded by actual file size, well within usize on supported platforms.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        { ((raw as f64) * TOKEN_OVERCOUNT_FACTOR).ceil() as usize }
     }
 }
 

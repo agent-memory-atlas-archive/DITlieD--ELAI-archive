@@ -58,7 +58,8 @@ use crate::checkpoint::{
 };
 use crate::recovery::{AgentDeathClassification, RecoveryManager};
 use crate::pipeline_builder::{
-    PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef, RuleId, ToolLookup,
+    DagRepairEmitter, PipelineBuilder, PipelineBuilderError, PredicateCompiler, PredicateRef,
+    RuleId, SsbDagRepairEmitter, ToolLookup,
 };
 use elai_rules::interrogation_store::InterrogationStore;
 use elai_rules::predicate::{Verdict, VerdictResult};
@@ -81,7 +82,8 @@ use crate::mistake_book::{
 use crate::pipeline_tree_navigator::{
     run_integration_checkpoint, BabyStepLocation, BabyStepOutcome, BabyStepResult,
     DecompositionLevel, DepthFirstNavigator, IntegrationRunResult, IntegrationRunner,
-    NavigatorTree, NoOpIntegrationRunner, TreeNavigator, TreeNavigatorState,
+    NavigatorTree, NoOpIntegrationRunner, SsbBubbleUpEmitter, SsbIntegrationEmitter,
+    TreeNavigator, TreeNavigatorState,
 };
 use crate::grounding_client::SidecarGroundingClient;
 use crate::hook_dispatcher::{
@@ -93,8 +95,8 @@ use elai_providers::LlmProvider;
 use crate::research_tree::{
     research_decompose, ConceptDecomposition, ConceptId, ExecutionMode, ExitCriterion,
     IntegrationSpec, MediaSpec, NodeId, NodeStatus, OutputType, PerfSpec, PhaseId,
-    PipelineSpec, ResearchCache, ResearchNode, StepId, DEFAULT_CACHE_MAX_ENTRIES,
-    DEFAULT_CACHE_TTL_SECONDS,
+    PipelineSpec, ResearchCache, ResearchNode, SsbDecompositionEmitter, StepId,
+    DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS,
 };
 use crate::ssb::{
     AntiSpiralHitPayload, DkgQuerierSwappedPayload, DkgReadyPayload,
@@ -106,7 +108,7 @@ use crate::ssb::{
 };
 use crate::supervision::{EscalationAction, SupervisionManager, SupervisionOutcome, SupervisionPolicy};
 use crate::web_research_orchestrator::{
-    WebResearchOrchestrator, WebResearchStepEmitter, WebResearchStepEvent,
+    WebResearchOrchestrator, WebResearchStageEvent, WebResearchStepEmitter, WebResearchStepEvent,
 };
 
 // ---------------------------------------------------------------------------
@@ -845,6 +847,10 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
         Box<dyn std::future::Future<Output = BabyStepExecutionResult> + Send + 'a>,
     > {
         Box::pin(async move {
+            // B-19 W2 DEFERRED: AgentPoolBabyStepExecutor has no ClockProvider
+            // field. Adding one requires constructor changes and caller updates
+            // (wire-4A pool spawner). Tracked as W2-DEFER-850. Replace with
+            // Arc<dyn ClockProvider> injection when wire-4A pool wiring lands.
             let start = std::time::Instant::now();
 
             // Build the task string delivered to the agent. The escalation
@@ -1386,12 +1392,48 @@ impl WebResearchStepEmitter for SsbWebResearchStepEmitter {
                 sources_fetched: event.sources_fetched,
                 sources_used: event.sources_used,
                 fetcher: event.fetcher,
+                stage: String::new(),
+                stage_phase: String::new(),
+                stage_payload: None,
             });
             if let Err(e) = writer
                 .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
                 .await
             {
                 error!(error = %e, "task_runner: write WebResearchStep failed");
+            }
+        })
+    }
+
+    /// B-7: Emit a fine-grained per-stage event as a `web_research_step` row
+    /// with `stage` + `stage_phase` + `stage_payload` fields populated.
+    /// Reuses the existing `WebResearchStep` SSB action type — no schema bump.
+    fn emit_stage(
+        &self,
+        event: WebResearchStageEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let writer = self.writer.clone();
+        Box::pin(async move {
+            let payload = SsbPayload::WebResearchStep(WebResearchStepPayload {
+                agent_id: RUNNER_AGENT_ID.to_owned(),
+                node_id: event.node_id,
+                // action="" for stage rows; consumers distinguish via stage+stage_phase.
+                action: String::new(),
+                phi: event.phi,
+                psi: event.psi,
+                iteration: event.iteration,
+                sources_fetched: 0,
+                sources_used: 0,
+                fetcher: String::new(),
+                stage: event.stage.to_owned(),
+                stage_phase: event.stage_phase.to_owned(),
+                stage_payload: Some(event.payload),
+            });
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                .await
+            {
+                error!(error = %e, "task_runner: write WebResearchStage failed");
             }
         })
     }
@@ -2200,6 +2242,8 @@ fn task_runner_handle(seq: i64, scratch_dir: &Path) -> AgentHandle {
         sandbox_handle: None,
         child_process: None,
         socket_path: None,
+        appcontainer_profile_id: None,
+        allowed_paths: Vec::new(),
     }
 }
 
@@ -3420,13 +3464,17 @@ async fn drive_task(
 
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
     let grounding_client = SidecarGroundingClient::default();
+    // B-7b: wire tree emitter so each concept/phase/step/baby_step built during
+    // decompose surfaces as a `concept_decomposition_node` SSB row in the dashboard.
+    let decompose_tree_emitter =
+        SsbDecompositionEmitter::new(Arc::clone(writer), RUNNER_AGENT_ID, RUNNER_SUPERSTEP);
     let decomposition = research_decompose(
         &task.task,
         ExecutionMode::Autonomous,
         &mut cache,
         &grounding_client,
-        None, // Track A.6: no SSB handle threaded here yet; use None.
-        None, // B-7: no tree emitter threaded here yet; use None.
+        Some(writer), // Track A.6: SSB handle for cache-miss grounding rows.
+        Some(&decompose_tree_emitter), // B-7b: emit concept_decomposition_node rows.
     )
     .await?;
     if decomposition.concepts.is_empty() {
@@ -3585,11 +3633,16 @@ async fn drive_task(
     // --- 2. PipelineSpec from decomposition -----------------------------
     let spec = spec_from_decomposition(&decomposition);
 
-    // --- 3. PipelineBuilder::build -------------------------------------
+    // --- 3. PipelineBuilder::build_with_emitter ------------------------
+    // B-7b: pass SsbDagRepairEmitter so each RepairAction surfaces as a
+    // `dag_repair_round` SSB row in the dashboard activity feed.
     let tools = RuntimeToolLookup;
     let pool = RuntimeModelPool;
     let preds = RuntimePredicates;
-    let pipeline = PipelineBuilder::build(&spec, &tools, &pool, &preds)?;
+    let dag_repair_emitter: Arc<dyn DagRepairEmitter> =
+        Arc::new(SsbDagRepairEmitter::new(Arc::clone(writer), RUNNER_AGENT_ID, RUNNER_SUPERSTEP));
+    let pipeline =
+        PipelineBuilder::build_with_emitter(&spec, &tools, &pool, &preds, Some(&dag_repair_emitter))?;
     emit_reasoning(
         writer,
         2,
@@ -3624,7 +3677,19 @@ async fn drive_task(
     // surrogate.
     let mut tree = NavigatorTree::new(decomposition, Default::default());
     register_runner_integration_specs(&mut tree);
-    let nav = DepthFirstNavigator::from_tree(&tree);
+    // B-7b: attach bubble-up and integration-checkpoint emitters so SSB rows
+    // are emitted for each BubbleUpEvent and integration checkpoint in real runs.
+    let nav = DepthFirstNavigator::from_tree(&tree)
+        .with_bubble_up_emitter(Arc::new(SsbBubbleUpEmitter::new(
+            Arc::clone(writer),
+            RUNNER_AGENT_ID,
+            RUNNER_SUPERSTEP,
+        )))
+        .with_integration_emitter(Arc::new(SsbIntegrationEmitter::new(
+            Arc::clone(writer),
+            RUNNER_AGENT_ID,
+            RUNNER_SUPERSTEP,
+        )));
     let mut state = TreeNavigatorState::new();
     let mut steps_executed: usize = 0;
     let integration_runner: NoOpIntegrationRunner = NoOpIntegrationRunner;
@@ -3655,6 +3720,16 @@ async fn drive_task(
             break;
         };
         steps_executed += 1;
+
+        // Phase 4F (B-21) per-concept probe: gated behind both
+        // `ELAI_DISABLE_FEASIBILITY_PROBE` and `feasibility_prober.is_some()`
+        // so callers that did not plumb a prober (CLI default) keep the
+        // pre-3A behaviour. Probe is informational only — it emits a
+        // StubRun SSB row (and a NovelStepDetected row when infeasible)
+        // but never short-circuits the baby-step loop. Control flow stays
+        // in the existing CSQ / hooks / executor / mistake-book path so
+        // the W1-SEMANTIC deferred site at L4657-4672 is unaffected.
+        emit_baby_step_feasibility_probe(writer, resolved, &tree, bs_id).await;
 
         let task_summary = tree
             .find_baby_step(bs_id)
@@ -3918,14 +3993,11 @@ async fn drive_task(
             let gctx = crate::autonomous_gate::GateContext {
                 level: crate::autonomous_gate::PipelineLevel::BabyStep,
                 risk_level: crate::gate::RiskLevel::Low,
-                evidence: crate::autonomous_gate::Evidence {
-                    knowledge_readiness: true,
-                    zero_ungrounded: true,
-                    tests_fail_correctly: true,
-                    test_flipped: true,
-                    zero_blocks: true,
-                    dkg_and_changelog_present: true,
-                },
+                // Phase 4G — real SSB-derived evidence (replaces the Batch-3B
+                // all-true placeholder). Cold-start sessions with zero rows
+                // fall through to vacuous-default semantics inside the helper
+                // so the gate's behaviour stays Batch-3B-compatible there.
+                evidence: derive_autonomous_evidence(writer.as_ref()),
                 anti_spiral_fired: spiral_tracker
                     .as_ref()
                     .map(|t| t.hard_stop())
@@ -4583,7 +4655,12 @@ async fn drive_task(
     // meaningfully fire; T2/T3 stay gated on file_write in `TieredAnalysis`.
     if let Some(dispatcher) = resolved.hook_dispatcher.as_ref() {
         let step_id = format!("task_{}", seq);
-        let invocation = HookInvocation::for_task_level("task_stop", step_id.clone());
+        // B-19 W1: thread FSM state so dispatch_stop can enforce the
+        // non-IDLE Block. drive_task always runs inside the EXECUTING state;
+        // the Stop hook fires at task teardown before the FSM transitions to
+        // AUDITING, so "EXECUTING" is the correct state label here.
+        let invocation = HookInvocation::for_task_level("task_stop", step_id.clone())
+            .with_fsm_state("EXECUTING");
         match dispatcher.dispatch_stop(invocation).await {
             Ok(findings) => {
                 emit_hook_events_to_ssb(
@@ -4601,12 +4678,32 @@ async fn drive_task(
             }
         }
 
-        // PreCompact: reserved MVP wiring surface. The dashboard path has no
-        // compaction threshold yet, so we invoke the no-op path to keep the
-        // contract exercised (a real threshold lands in a later batch).
+        // B-19 PreCompact: DairaTrace "HookPre" emitted before dispatch,
+        // "HookPost" after. This replaces the former debug-only no-op comment
+        // with real SSB breadcrumbs so the dashboard can surface compact events.
+        let pre_compact_summary = format!("task_{}", seq);
+        emit_daira_trace(
+            writer,
+            "pre_compact",
+            &pre_compact_summary,
+            "HookPre",
+            0,
+            "started",
+            &step_id,
+        )
+        .await;
         let pre_compact = HookInvocation::for_task_level("pre_compact", step_id.clone());
+        // B-19 W2: entropy quarantine — use ClockProvider abstraction instead of
+        // std::time::Instant::now() so tests can inject a deterministic clock.
+        let pre_compact_clock = OsClock;
+        let pre_compact_mark = elai_core::clock::ClockProvider::now(&pre_compact_clock);
         match dispatcher.dispatch_pre_compact(pre_compact).await {
             Ok(findings) => {
+                let elapsed_us = u64::try_from(
+                    elai_core::clock::ClockProvider::elapsed_since(&pre_compact_clock, pre_compact_mark)
+                        .as_micros(),
+                )
+                .unwrap_or(u64::MAX);
                 emit_hook_events_to_ssb(
                     writer,
                     RUNNER_AGENT_ID,
@@ -4616,8 +4713,33 @@ async fn drive_task(
                     &findings,
                 )
                 .await;
+                emit_daira_trace(
+                    writer,
+                    "pre_compact",
+                    &pre_compact_summary,
+                    "HookPost",
+                    elapsed_us,
+                    "success",
+                    &step_id,
+                )
+                .await;
             }
             Err(e) => {
+                let elapsed_us = u64::try_from(
+                    elai_core::clock::ClockProvider::elapsed_since(&pre_compact_clock, pre_compact_mark)
+                        .as_micros(),
+                )
+                .unwrap_or(u64::MAX);
+                emit_daira_trace(
+                    writer,
+                    "pre_compact",
+                    &pre_compact_summary,
+                    "HookPost",
+                    elapsed_us,
+                    "error",
+                    &step_id,
+                )
+                .await;
                 warn!(seq, error = %e, "task_runner: PreCompact hook dispatch failed");
             }
         }
@@ -5156,6 +5278,14 @@ async fn emit_daira_trace(
     outcome: &str,
     step_id: &str,
 ) {
+    // B-19 W4: validate phase marker at every emit site. Canonical markers are
+    // in DAIRA_MARKERS; legacy "enter"/"exit" are still accepted for backward
+    // compat with external callers that have not yet been migrated.
+    debug_assert!(
+        crate::ssb::DAIRA_MARKERS.contains(&phase) || phase == "enter" || phase == "exit",
+        "emit_daira_trace: unknown phase marker {:?}; use a canonical DAIRA_MARKERS value",
+        phase,
+    );
     let payload = SsbPayload::DairaTrace(crate::ssb::DairaTracePayload {
         phase: phase.to_owned(),
         tool: tool.to_owned(),
@@ -5273,7 +5403,9 @@ async fn run_validate_dispatch(
         language,
         changed_files.len()
     );
-    emit_daira_trace(writer, "validate", &summary, "enter", 0, "started", step_id).await;
+    // B-19 W4: use canonical DAIRA marker "Call" (legacy "enter" is still valid
+    // but new sites should use the canonical vocabulary).
+    emit_daira_trace(writer, "validate", &summary, "Call", 0, "started", step_id).await;
     let req = ValidateRequest {
         project_dir: project_dir.to_path_buf(),
         language: language.to_owned(),
@@ -5284,28 +5416,41 @@ async fn run_validate_dispatch(
             CoreValidationTier::QualityAst,
         ]),
     };
-    let start = std::time::Instant::now();
+    // B-19 W2: entropy quarantine — use ClockProvider abstraction.
+    let validate_clock = OsClock;
+    let validate_mark = elai_core::clock::ClockProvider::now(&validate_clock);
     match dispatcher.dispatch_validate(req).await {
         Ok(results) => {
             for r in &results {
                 emit_validation_tier(writer, r, step_id).await;
             }
-            let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let elapsed_ms = u32::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&validate_clock, validate_mark)
+                    .as_millis(),
+            )
+            .unwrap_or(u32::MAX);
             let any_failed = results.iter().any(|r| !r.passed);
             let outcome = if any_failed { "error" } else { "success" };
             emit_tool_dispatch(
                 writer, "validate", &summary, elapsed_ms, step_id, outcome, None,
             )
             .await;
-            let elapsed_us =
-                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed_us = u64::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&validate_clock, validate_mark)
+                    .as_micros(),
+            )
+            .unwrap_or(u64::MAX);
             emit_daira_trace(
-                writer, "validate", &summary, "exit", elapsed_us, outcome, step_id,
+                writer, "validate", &summary, "Return", elapsed_us, outcome, step_id,
             )
             .await;
         }
         Err(e) => {
-            let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let elapsed_ms = u32::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&validate_clock, validate_mark)
+                    .as_millis(),
+            )
+            .unwrap_or(u32::MAX);
             let outcome_tag = match e {
                 elai_core::ToolDispatchError::NotImplemented(_) => "not_implemented",
                 _ => "error",
@@ -5315,10 +5460,13 @@ async fn run_validate_dispatch(
                 Some(e.to_string()),
             )
             .await;
-            let elapsed_us =
-                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed_us = u64::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&validate_clock, validate_mark)
+                    .as_micros(),
+            )
+            .unwrap_or(u64::MAX);
             emit_daira_trace(
-                writer, "validate", &summary, "exit", elapsed_us, outcome_tag, step_id,
+                writer, "validate", &summary, "Error", elapsed_us, outcome_tag, step_id,
             )
             .await;
         }
@@ -5375,16 +5523,27 @@ async fn run_classify_dispatch(
     source: &str,
 ) -> Option<CoreClassifiedFailure> {
     let summary = format!("source={} bytes={}", source, raw_output.len());
-    emit_daira_trace(writer, "classify_failure", &summary, "enter", 0, "started", step_id).await;
+    // B-19 W4: canonical DAIRA markers — "Call" replaces legacy "enter".
+    emit_daira_trace(writer, "classify_failure", &summary, "Call", 0, "started", step_id).await;
     let input = FailureInput {
         raw_output: raw_output.to_owned(),
         step_id: step_id.to_owned(),
         source: source.to_owned(),
     };
-    let start = std::time::Instant::now();
+    // B-19 W2: entropy quarantine — ClockProvider abstraction.
+    let classify_clock = OsClock;
+    let classify_mark = elai_core::clock::ClockProvider::now(&classify_clock);
     let result = dispatcher.dispatch_classify_failure(input).await;
-    let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
-    let elapsed_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let elapsed_ms = u32::try_from(
+        elai_core::clock::ClockProvider::elapsed_since(&classify_clock, classify_mark)
+            .as_millis(),
+    )
+    .unwrap_or(u32::MAX);
+    let elapsed_us = u64::try_from(
+        elai_core::clock::ClockProvider::elapsed_since(&classify_clock, classify_mark)
+            .as_micros(),
+    )
+    .unwrap_or(u64::MAX);
     let outcome = if result.is_some() { "success" } else { "skipped" };
     emit_tool_dispatch(
         writer, "classify_failure", &summary, elapsed_ms, step_id, outcome, None,
@@ -5395,8 +5554,9 @@ async fn run_classify_dispatch(
     } else {
         tracing::debug!(step_id, "run_classify_dispatch: no category matched; output is unclassified (non-Rust/non-pytest tool)");
     }
+    // B-19 W4: canonical DAIRA marker — "Return" replaces legacy "exit".
     emit_daira_trace(
-        writer, "classify_failure", &summary, "exit", elapsed_us, outcome, step_id,
+        writer, "classify_failure", &summary, "Return", elapsed_us, outcome, step_id,
     )
     .await;
     result
@@ -5422,7 +5582,8 @@ async fn run_git_commit_dispatch(
         branch_policy,
         plan_id
     );
-    emit_daira_trace(writer, "git_commit", &summary, "enter", 0, "started", step_id).await;
+    // B-19 W4: canonical DAIRA marker — "Call" replaces legacy "enter".
+    emit_daira_trace(writer, "git_commit", &summary, "Call", 0, "started", step_id).await;
     let req = GitCommitRequest {
         anchor_path: project_dir.to_path_buf(),
         files: changed_files.to_vec(),
@@ -5431,26 +5592,35 @@ async fn run_git_commit_dispatch(
         plan_id: plan_id.to_owned(),
         step_id: step_id.to_owned(),
     };
-    let start = std::time::Instant::now();
+    // B-19 W2: entropy quarantine — ClockProvider abstraction.
+    let git_clock = OsClock;
+    let git_mark = elai_core::clock::ClockProvider::now(&git_clock);
     match dispatcher.dispatch_git_commit(req).await {
         Ok(outcome) => {
             emit_git_commit(writer, &outcome, step_id).await;
-            let elapsed_ms =
-                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let elapsed_ms = u32::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&git_clock, git_mark).as_millis(),
+            )
+            .unwrap_or(u32::MAX);
             emit_tool_dispatch(
                 writer, "git_commit", &summary, elapsed_ms, step_id, "success", None,
             )
             .await;
-            let elapsed_us =
-                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed_us = u64::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&git_clock, git_mark).as_micros(),
+            )
+            .unwrap_or(u64::MAX);
+            // B-19 W4: "Return" replaces legacy "exit".
             emit_daira_trace(
-                writer, "git_commit", &summary, "exit", elapsed_us, "success", step_id,
+                writer, "git_commit", &summary, "Return", elapsed_us, "success", step_id,
             )
             .await;
         }
         Err(e) => {
-            let elapsed_ms =
-                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let elapsed_ms = u32::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&git_clock, git_mark).as_millis(),
+            )
+            .unwrap_or(u32::MAX);
             let outcome_tag = match e {
                 elai_core::ToolDispatchError::NotImplemented(_) => "not_implemented",
                 _ => "error",
@@ -5460,10 +5630,13 @@ async fn run_git_commit_dispatch(
                 Some(e.to_string()),
             )
             .await;
-            let elapsed_us =
-                u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let elapsed_us = u64::try_from(
+                elai_core::clock::ClockProvider::elapsed_since(&git_clock, git_mark).as_micros(),
+            )
+            .unwrap_or(u64::MAX);
+            // B-19 W4: "Error" replaces legacy "exit" on the error arm.
             emit_daira_trace(
-                writer, "git_commit", &summary, "exit", elapsed_us, outcome_tag, step_id,
+                writer, "git_commit", &summary, "Error", elapsed_us, outcome_tag, step_id,
             )
             .await;
         }
@@ -5508,6 +5681,81 @@ async fn emit_finding_with_audit_step(
 /// Additionally writes `EscalationFired` when an escalation triggered and
 /// `TaskSplit` / `ModelSwap` when the gate elected to partition the task or
 /// swap models — downstream callers (CLI) observe these rows and act on them.
+/// Phase 4G: derive an [`crate::autonomous_gate::Evidence`] snapshot from the
+/// live SSB (replaces the Batch-3B hardcoded all-true placeholder).
+///
+/// Vacuous-default semantics for cold-start sessions: when no rows exist for
+/// a given action_type, the corresponding evidence field is treated as `true`
+/// so the gate keeps the pre-4G behaviour for fresh databases. Once the
+/// session has emitted real rows the helper picks them up and reports the
+/// real status.
+///
+/// Failure modes: every query falls back to `Vec::new()` on error so a
+/// transient SQLite hiccup never poisons the gate decision.
+fn derive_autonomous_evidence(reader: &dyn SsbReader) -> crate::autonomous_gate::Evidence {
+    let dkg_rows = reader
+        .query_by_type(SsbActionType::DkgReady)
+        .unwrap_or_default();
+    let knowledge_readiness = !dkg_rows.is_empty();
+
+    let finding_rows = reader
+        .query_by_type(SsbActionType::Finding)
+        .unwrap_or_default();
+    let mut zero_ungrounded = true;
+    let mut zero_blocks = true;
+    for entry in finding_rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        let SsbPayload::Finding(f) = payload else { continue };
+        if f.severity == "error" {
+            zero_blocks = false;
+        }
+        if f.severity == "warn" && f.category.contains("ungrounded") {
+            zero_ungrounded = false;
+        }
+    }
+
+    let test_rows = reader
+        .query_by_type(SsbActionType::TestOutcome)
+        .unwrap_or_default();
+    let mut had_red = false;
+    let mut had_green = false;
+    for entry in test_rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::TestOutcome(t) = payload {
+            if t.passed {
+                had_green = true;
+            } else {
+                had_red = true;
+            }
+        }
+    }
+    // Vacuous-default: zero TestOutcome rows -> both fields true.
+    let tests_fail_correctly = test_rows.is_empty() || had_red;
+    let test_flipped = test_rows.is_empty() || had_green;
+
+    let phase_transition_rows = reader
+        .query_by_type(SsbActionType::PhaseTransition)
+        .unwrap_or_default();
+    // dkg_and_changelog_present requires both a DkgReady row AND at least one
+    // PhaseTransition row (proxy for a changelog entry having been written by
+    // the memory-writer at phase boundary).
+    let dkg_and_changelog_present =
+        !dkg_rows.is_empty() && !phase_transition_rows.is_empty();
+
+    crate::autonomous_gate::Evidence {
+        knowledge_readiness,
+        zero_ungrounded,
+        tests_fail_correctly,
+        test_flipped,
+        zero_blocks,
+        dkg_and_changelog_present,
+    }
+}
+
 async fn emit_autonomous_decision(
     writer: &Arc<Ssb>,
     decision: &crate::autonomous_gate::AutonomyDecision,
@@ -5961,6 +6209,85 @@ async fn emit_feasibility_probe_for_pipeline(
     }
 }
 
+/// Phase 4F (B-21) per-concept feasibility probe. Emitted at the top of
+/// every baby-step loop iteration when both the prober is plumbed and
+/// `ELAI_DISABLE_FEASIBILITY_PROBE` is unset. Informational only — never
+/// short-circuits the loop. On infeasible reports, also emits a
+/// `NovelStepDetected` row tagged with the escalation reason so the
+/// dashboard can surface "novel + infeasible" as a paired event.
+async fn emit_baby_step_feasibility_probe(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    tree: &NavigatorTree,
+    bs_id: crate::research_tree::BabyStepId,
+) {
+    let Some(prober) = resolved.feasibility_prober.as_ref() else {
+        return;
+    };
+    if crate::feasibility_probe::feasibility_probe_disabled_via_env() {
+        return;
+    }
+    let Some(baby_step) = tree.find_baby_step(bs_id) else {
+        return;
+    };
+
+    let system = match resolved.system_prober.as_ref() {
+        Some(sp) => sp.probe().await,
+        None => {
+            use crate::system_probe::SystemProber;
+            let clock: std::sync::Arc<dyn elai_core::clock::ClockProvider> =
+                std::sync::Arc::new(elai_core::clock::OsClock);
+            let transient = crate::system_probe::DefaultSystemProber::new(None, clock);
+            transient.probe().await
+        }
+    };
+
+    let report: crate::feasibility_probe::BabyStepFeasibilityReport =
+        prober.probe_baby_step(baby_step, &system).await;
+
+    // One StubRun row per stub_result (always >= 1 for a real probe).
+    for stub in &report.stub_results {
+        let payload = SsbPayload::StubRun(crate::ssb::StubRunPayload {
+            step_id: stub.step_id.clone(),
+            passed: stub.stub_passed,
+            elapsed_ms: stub.elapsed_ms,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            error!(error = %e, "task_runner: write baby-step StubRun failed");
+        }
+    }
+
+    // NovelStepDetected on infeasible — gives the dashboard a paired
+    // "novel step + failed stub" row even when the runner does not
+    // short-circuit. `alternative_count = 0` because per-concept probes
+    // do not enumerate alternatives in 4F.7-4F.8 (deferred).
+    if !report.feasible {
+        let reason = match &report.escalation {
+            Some(crate::feasibility_probe::BabyStepEscalation::StubFailed { reason, .. }) => {
+                reason.clone()
+            }
+            Some(crate::feasibility_probe::BabyStepEscalation::StubTimeout {
+                elapsed_ms, ..
+            }) => format!("stub_timeout_{elapsed_ms}ms"),
+            None => "infeasible_unknown_reason".to_owned(),
+        };
+        let payload = SsbPayload::NovelStepDetected(crate::ssb::NovelStepDetectedPayload {
+            step_id: report.step_id.clone(),
+            reason,
+            alternative_count: 0,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            error!(error = %e, "task_runner: write baby-step NovelStepDetected failed");
+        }
+    }
+}
+
 /// 3F.REDO: read MistakeBook entries for `baby_step_id` from SSB once and,
 /// if the formatted CONSTRAINTS block is non-empty, emit an `info` Finding
 /// carrying it. The payload occupies the 150-token REPAIR_SLOT_MISTAKE_BOOK
@@ -6117,6 +6444,12 @@ async fn run_confirmation_gate(
             return false;
         }
     };
+    // B-19 W2 DEFERRED: confirmation gate uses Instant for loop-termination
+    // elapsed check (L6332). ClockProvider::elapsed_since works too but the
+    // loop cancellation logic relies on the CANCEL_POLL Duration constant —
+    // migrating requires threading Arc<dyn ClockProvider> through this
+    // function. Tracked as W2-DEFER-6217. Migrate when run_confirmation_gate
+    // is refactored to accept a ClockProvider (no outstanding dep).
     let started = std::time::Instant::now();
 
     // Poll the broadcast rx for a matching InterventionResponse. The

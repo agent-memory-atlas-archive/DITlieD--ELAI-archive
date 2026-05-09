@@ -9,12 +9,14 @@ allowing model.generate() to drive the decode loop in optimized C++/CUDA.
 
 Usage:
     python -m elai_inference.server \
-        --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct-abliterated \
+        --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct-abliterated \
         --port 8100 --no-dola --turboquant-bits 8 --no-steering
 """
 
 import argparse
 import asyncio
+import collections
+import hashlib
 import os
 import re
 import signal
@@ -25,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import numpy as np
 import orjson
@@ -38,9 +40,33 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DynamicCache,
     LogitsProcessor,
     TextIteratorStreamer,
 )
+
+# Track C-B: lm-format-enforcer is an OPTIONAL runtime dependency. The
+# package is added by the USER manually per USER-MANUAL-CB-DEPS.md (executors
+# MUST NOT touch pyproject.toml). When absent we degrade gracefully:
+#   * engine startup does NOT call build_token_enforcer_tokenizer_data
+#   * /v1/messages and /v1/completions accept response_format normally when
+#     it is None (zero behaviour change vs pre-C-B)
+#   * /v1/messages and /v1/completions return HTTP 503 with a clear message
+#     when response_format is set but the library is missing — surfacing the
+#     missing install to the operator instead of silently falling back to
+#     unconstrained decoding.
+try:
+    from lmformatenforcer import JsonSchemaParser  # type: ignore
+    from lmformatenforcer.integrations.transformers import (  # type: ignore
+        build_token_enforcer_tokenizer_data,
+        build_transformers_prefix_allowed_tokens_fn,
+    )
+    _LMFE_AVAILABLE = True
+except ImportError:
+    JsonSchemaParser = None  # type: ignore[assignment]
+    build_token_enforcer_tokenizer_data = None  # type: ignore[assignment]
+    build_transformers_prefix_allowed_tokens_fn = None  # type: ignore[assignment]
+    _LMFE_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Structured logging via structlog
@@ -81,6 +107,22 @@ SIDECAR_HOST_DEFAULT = "0.0.0.0"
 MAX_NEW_TOKENS_DEFAULT = 256
 STREAMER_TIMEOUT_S = 30
 THREAD_POOL_SIZE = 2
+
+# Error code constant for constrained-decoding 503 responses (Phase B/C
+# unification — applicationRules §1: one canonical string per concept).
+# Both stream and non-stream LMFE-missing returns use this single code; the
+# old "constrained_streaming_unavailable" split (s-1875676 PART5 §3.5 WARN)
+# is removed.
+_ERR_CONSTRAINED_DECODING_UNAVAILABLE: str = "constrained_decoding_unavailable"
+
+# Operator-facing 503 detail surfaced when response_format is requested but
+# lm-format-enforcer is not installed. PART6 §3.4 / codeRules Rule 17:
+# one canonical string, referenced from /v1/messages and /v1/completions.
+_ERR_DETAIL_INSTALL_LMFE: str = (
+    "response_format requested but lm-format-enforcer is not "
+    "installed on this sidecar. Run: pip install "
+    "lm-format-enforcer>=0.10.11 and restart the sidecar."
+)
 
 # ETC (Entropy-Trend Constraint) constants
 ETC_THRESHOLD_DISABLED = float("inf")  # BLOCK-7: disabled until calibration
@@ -1142,6 +1184,187 @@ def _log_vram(label: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
+# PrefixKVCache — LRU prefix reuse for DynamicCache
+# ---------------------------------------------------------------------------
+
+# Hash backend: blake3 Python package is NOT listed in pyproject.toml deps.
+# Using hashlib.sha256 (stdlib, no new dep). blake3 is preferred in Rust (CLAUDE.md
+# anti-stale rule) but that rule is Rust-scoped; Python uses stdlib sha256 here.
+def _hash_input_ids(ids: "torch.LongTensor") -> str:
+    """Return hex sha256 of the raw bytes of the token-id tensor."""
+    return hashlib.sha256(ids.cpu().numpy().tobytes()).hexdigest()
+
+
+# Minimum shared prefix (tokens) required to use a cached entry.
+_KV_MIN_PREFIX_TOKENS = 16
+
+
+class PrefixKVCache:
+    """LRU cache of DynamicCache objects keyed by input-id prefix.
+
+    Thread-safe via a threading.Lock (not asyncio.Lock) because all callers
+    run inside ThreadPoolExecutor threads (via loop.run_in_executor), not
+    in the async event loop.
+
+    Auto-disabled when --turboquant-bits > 0: TQ produces _KVQuantCache
+    objects that cannot be substituted with a plain DynamicCache pre-fill.
+    Auto-disabled when max_entries == 0.
+    """
+
+    def __init__(self, max_entries: int = 4) -> None:
+        self.max_entries = max_entries
+        # OrderedDict used as LRU: move_to_end(key, last=True) on hit.
+        # Values: (token_id_tensor, DynamicCache, last_used_ts)
+        self._lru: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
+        self._lock = Lock()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def lease(
+        self,
+        input_ids: "torch.LongTensor",
+        marker_boundary: Optional[int] = None,
+    ) -> "tuple[Optional[object], int, int]":
+        """Find longest cached prefix of input_ids.
+
+        Returns (cache, prefix_match_len, total_input_len).
+        Returns (None, 0, total_len) when no match >= _KV_MIN_PREFIX_TOKENS.
+        Does NOT clone the cache — caller must not mutate it concurrently.
+        generate() is called under InferenceEngine.lock so serialisation is
+        guaranteed at the call site.
+
+        marker_boundary (Track C-D, Anthropic ``cache_control`` support):
+          When None (default), behaviour is identical to the pre-C-D
+          full-prefix match path — backward compat preserved.
+          When int N, the matched prefix length is CAPPED at N (positions
+          ``[0..N)`` are cacheable; positions ``>= N`` are not). Concretely:
+            * the per-entry comparison ``cmp_len`` is bounded by N, so the
+              contiguous-match counter cannot exceed N;
+            * the floor ``_KV_MIN_PREFIX_TOKENS`` still applies — if N is
+              below the floor, no match is reported.
+        """
+        total_len = input_ids.shape[0]
+        # Resolve effective scan ceiling for this lease. None => total_len
+        # (legacy unbounded scan); int => marker boundary cap.
+        if marker_boundary is None:
+            effective_ceiling = total_len
+        else:
+            # Defensive clamp: never exceed total_len, never go negative.
+            effective_ceiling = max(0, min(int(marker_boundary), total_len))
+
+        best_key: Optional[str] = None
+        best_match_len = 0
+
+        with self._lock:
+            input_cpu = input_ids.cpu()
+            for key, (stored_ids, _cache, _ts) in self._lru.items():
+                # Require contiguous prefix (first mismatch ends the prefix).
+                # stored_ids is already CPU-resident (admit() stores .cpu()).
+                # marker_boundary caps cmp_len: we never report a match that
+                # extends past the marker, even if the stored cache covers it.
+                cmp_len = min(stored_ids.shape[0], total_len, effective_ceiling)
+                contiguous = 0
+                for i in range(cmp_len):
+                    if stored_ids[i] == input_cpu[i]:
+                        contiguous += 1
+                    else:
+                        break
+                if contiguous > best_match_len:
+                    best_match_len = contiguous
+                    best_key = key
+
+            if best_match_len < _KV_MIN_PREFIX_TOKENS or best_key is None:
+                return None, 0, total_len
+
+            # Bump recency
+            stored_ids, cache, _ts = self._lru[best_key]
+            self._lru.move_to_end(best_key, last=True)
+            self._lru[best_key] = (stored_ids, cache, time.time())
+            return cache, best_match_len, total_len
+
+    def admit(
+        self,
+        input_ids: "torch.LongTensor",
+        cache: "object",
+    ) -> None:
+        """Store a post-generation DynamicCache for future prefix reuse.
+
+        Evicts the LRU entry (with VRAM release) when over capacity.
+        """
+        if self.max_entries == 0:
+            return
+        key = _hash_input_ids(input_ids)
+        with self._lock:
+            # Evict any stale entry referencing the SAME Python cache object
+            # under a different key. generate() mutates DynamicCache in-place,
+            # so a leased entry's stored object now has the wrong seq length;
+            # leaving the old key in the LRU would cause future leases to
+            # return a cache whose get_seq_length() exceeds the matched
+            # prefix, corrupting cache_position on the next generate().
+            stale_keys = [k for k, (_, c, _) in self._lru.items() if c is cache and k != key]
+            for k in stale_keys:
+                del self._lru[k]
+            if key in self._lru:
+                # Update existing entry
+                self._lru.move_to_end(key, last=True)
+                self._lru[key] = (input_ids.cpu(), cache, time.time())
+                return
+            # Evict LRU entries until under capacity
+            while len(self._lru) >= self.max_entries:
+                _evict_key, (_, evicted_cache, _) = self._lru.popitem(last=False)
+                del evicted_cache
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            self._lru[key] = (input_ids.cpu(), cache, time.time())
+
+    def clear(self) -> int:
+        """Evict all entries and release VRAM.
+
+        Returns the pre-clear ``len(self._lru)`` snapshot, captured under the
+        same lock as the clear so the count is TOCTOU-safe (no entry can be
+        admitted between the snapshot and the clear). Used by the operator
+        flush endpoint at /v1/cache/flush to report n_entries_cleared.
+        """
+        with self._lock:
+            n = len(self._lru)
+            self._lru.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return n
+
+
+# Module-level singleton. None = disabled (TQ active, or max_entries=0).
+_prefix_kv_cache: Optional[PrefixKVCache] = None
+
+
+def init_prefix_kv_cache(max_entries: int, turboquant_bits: int) -> None:
+    """Initialise the module-level PrefixKVCache singleton.
+
+    Called from InferenceEngine.__init__ after model load.
+    Auto-disables if turboquant_bits > 0 (TQ path uses _KVQuantCache
+    which is incompatible with a pre-filled DynamicCache).
+    Auto-disables if max_entries == 0.
+    """
+    global _prefix_kv_cache
+    if turboquant_bits > 0:
+        logger.warning(
+            "prefix_kv_cache_disabled",
+            reason="turboquant_bits > 0; DynamicCache incompatible with _KVQuantCache",
+            turboquant_bits=turboquant_bits,
+        )
+        _prefix_kv_cache = None
+        return
+    if max_entries == 0:
+        logger.info("prefix_kv_cache_disabled", reason="max_entries=0 (--kv-cache-size 0)")
+        _prefix_kv_cache = None
+        return
+    _prefix_kv_cache = PrefixKVCache(max_entries=max_entries)
+    logger.info("prefix_kv_cache_init", max_entries=max_entries)
+
+
+# ---------------------------------------------------------------------------
 # InferenceEngine
 # ---------------------------------------------------------------------------
 
@@ -1166,12 +1389,19 @@ class InferenceEngine:
         device_map: str = "auto",
         load_in_4bit: bool = True,
         etc_threshold: float = ETC_THRESHOLD_DISABLED,
+        kv_cache_size: int = 4,
     ):
-        # Auto-detect FA2 availability
+        # Auto-detect FA2 availability. ELAI_FORCE_SDPA=1 forces sdpa even
+        # if flash_attn is installed (workaround for transformers 4.57.6
+        # flash_attention_mask kv_length non-scalar bug, see masking_utils.py:555).
         try:
             import flash_attn  # noqa: F401
-            _attn_impl = "flash_attention_2"
-            logger.info("flash_attention_2_available", version=flash_attn.__version__)
+            if os.getenv("ELAI_FORCE_SDPA", "0") == "1":
+                _attn_impl = "sdpa"
+                logger.info("sdpa_forced_via_env", flash_attn_version=flash_attn.__version__)
+            else:
+                _attn_impl = "flash_attention_2"
+                logger.info("flash_attention_2_available", version=flash_attn.__version__)
         except ImportError:
             _attn_impl = "sdpa"
 
@@ -1266,6 +1496,44 @@ class InferenceEngine:
         # Generation novelty tracker (A-25)
         self._novelty_tracker = NoveltyTracker()
 
+        # Prefix KV cache (C-A) — disabled when TQ active or kv_cache_size=0
+        self._turboquant_bits = turboquant_bits
+        self._kv_cache_size = kv_cache_size
+        init_prefix_kv_cache(kv_cache_size, turboquant_bits)
+
+        # Track C-B: cache TokenEnforcerTokenizerData ONCE at engine startup.
+        # build_token_enforcer_tokenizer_data scans the full tokenizer vocab —
+        # paper-ingestor §52 documents this as expensive and cacheable. Calling
+        # it per-request would add a ~100-500ms first-token latency tax. The
+        # data structure is reused across requests; per-request we still build
+        # a NEW prefix_allowed_tokens_fn (the underlying TokenEnforcer is NOT
+        # thread-safe per paper §83 — only the data is shareable).
+        # Skipped when lm-format-enforcer is not installed (USER-MANUAL-CB-DEPS).
+        self._enforcer_tokenizer_data = None
+        if _LMFE_AVAILABLE:
+            try:
+                self._enforcer_tokenizer_data = build_token_enforcer_tokenizer_data(
+                    self.tokenizer
+                )
+                logger.info(
+                    "enforcer_tokenizer_data_ready",
+                    vocab_size=len(self.tokenizer),
+                )
+            except Exception as e:
+                # Vocab scan failure is recoverable — log + leave None so
+                # /v1/* endpoints surface 503 when response_format is set.
+                logger.warning(
+                    "enforcer_tokenizer_data_build_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                self._enforcer_tokenizer_data = None
+        else:
+            logger.info(
+                "enforcer_tokenizer_data_skipped",
+                reason="lm-format-enforcer not installed",
+            )
+
         logger.info(
             "engine_ready",
             layers=self.n_layers,
@@ -1291,34 +1559,127 @@ class InferenceEngine:
                 logger.warning("chat_template_failed_in_format", prompt_len=len(prompt))
         return prompt
 
+    def _build_constrained_prefix_fn(
+        self, response_format: Optional[Dict[str, Any]],
+    ) -> Optional[Callable]:
+        """Track C-B: build a per-request prefix_allowed_tokens_fn from the
+        cached TokenEnforcerTokenizerData and the request-supplied JSON
+        schema.
+
+        Returns a callable suitable for the model.generate(prefix_allowed_tokens_fn=)
+        kwarg, or None on any failure / when constraint should be ignored:
+          * lm-format-enforcer not installed
+          * tokenizer-data cache absent (engine startup couldn't build it)
+          * response_format is None or wrong shape (warn + ignore — backward
+            compat: unsupported types must NOT 400 per context-package §3a/3b)
+          * JsonSchemaParser construction fails
+
+        Per paper-ingestor §40-46: pass the result as
+        ``model.generate(prefix_allowed_tokens_fn=fn)`` — NOT inside
+        LogitsProcessorList. Per paper §83: TokenEnforcer is not thread-safe;
+        a fresh enforcer (i.e. fresh build_transformers_prefix_allowed_tokens_fn
+        call) per request is required — only the underlying tokenizer-data is
+        shared.
+        """
+        if response_format is None:
+            return None
+        if not _LMFE_AVAILABLE or self._enforcer_tokenizer_data is None:
+            logger.warning(
+                "response_format_ignored_no_lmfe",
+                lmfe_available=_LMFE_AVAILABLE,
+                tokenizer_data_ready=self._enforcer_tokenizer_data is not None,
+            )
+            return None
+        if not isinstance(response_format, dict):
+            logger.warning(
+                "response_format_invalid_type",
+                got=type(response_format).__name__,
+            )
+            return None
+        rf_type = response_format.get("type")
+        if rf_type != "json_schema":
+            # Forward-compat: warn + ignore. Future {"type":"text"} or
+            # {"type":"regex"} clients should not 400.
+            logger.warning(
+                "response_format_type_unsupported",
+                type_=rf_type,
+            )
+            return None
+        js = response_format.get("json_schema") or {}
+        schema = js.get("schema") if isinstance(js, dict) else None
+        # JsonSchemaParser accepts dict (constrained), pydantic.schema(), or
+        # None (any valid JSON). For our request shape we only support dict.
+        if schema is not None and not isinstance(schema, dict):
+            logger.warning(
+                "response_format_schema_invalid_type",
+                got=type(schema).__name__,
+            )
+            return None
+        try:
+            parser = JsonSchemaParser(schema)
+            prefix_fn = build_transformers_prefix_allowed_tokens_fn(
+                self._enforcer_tokenizer_data, parser,
+            )
+            return prefix_fn
+        except Exception as e:
+            # Schema-construction errors land here; mid-generation
+            # LMFormatEnforcerException is caught in _generate_impl wrapper.
+            logger.warning(
+                "response_format_parser_build_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return None
+
     def generate(
         self,
         prompt: str,
         max_tokens: int | None = None,
         temperature: float = 0.0,
-    ) -> tuple[str, list[int], int, dict | None, dict[str, float | None]]:
+        marker_boundary: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         """Generate text synchronously.
 
-        Returns (text, token_ids, input_token_count, search_trigger, gg_signals).
+        Returns (text, token_ids, input_token_count, search_trigger, gg_signals,
+                 cache_read_tokens, cache_creation_tokens).
+        cache_read_tokens: prefix tokens served from KV cache (0 if no hit).
+        cache_creation_tokens: tokens newly admitted to KV cache (0 if disabled).
         search_trigger is None unless ETC detected a high-entropy import context.
         gg_signals contains mean_logprob, min_logprob, entropy_mean, entropy_max,
         generation_novelty (A-25).
+
+        marker_boundary (Track C-D): optional cap on PrefixKVCache prefix
+        match. None = legacy full-prefix behaviour. int = honour Anthropic
+        ``cache_control`` marker — cache_read_tokens <= marker_boundary.
         """
         max_tokens = max_tokens or self.max_new_tokens
 
         with self.lock:
-            return self._generate_impl(prompt, max_tokens, temperature)
+            return self._generate_impl(
+                prompt, max_tokens, temperature,
+                marker_boundary=marker_boundary,
+                response_format=response_format,
+            )
 
     def generate_streaming(
         self,
         prompt: str,
         max_tokens: int | None = None,
         temperature: float = 0.0,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> tuple[TextIteratorStreamer, int]:
         """Start streaming generation in a background thread.
 
         Returns (streamer, input_token_count). The caller iterates the
         streamer to get token chunks as they are produced.
+
+        response_format (Phase B): when set + LMFE installed, enforces a JSON
+        schema constraint on every token via prefix_allowed_tokens_fn. The
+        helper _build_constrained_prefix_fn returns None for any failure
+        (LMFE missing, malformed schema, unsupported type) — that case falls
+        back to unconstrained streaming silently (warn-and-ignore matches the
+        non-stream path's contract and engine.generate semantics).
         """
         max_tokens = max_tokens or self.max_new_tokens
         formatted = self._format_prompt(prompt)
@@ -1332,6 +1693,13 @@ class InferenceEngine:
             timeout=STREAMER_TIMEOUT_S,
         )
 
+        # Phase B: build prefix_fn HERE (main thread) before submitting _run to
+        # the executor — TokenEnforcer is not thread-safe (paper §83). The
+        # callable carries its own per-request enforcer state; sharing across
+        # threads would corrupt the parser FSM. Returns None if response_format
+        # is None or LMFE is unavailable; we only attach to kwargs when valid.
+        prefix_fn = self._build_constrained_prefix_fn(response_format)
+
         generation_kwargs = {
             "input_ids": inputs.input_ids,
             "attention_mask": inputs.attention_mask,
@@ -1343,6 +1711,8 @@ class InferenceEngine:
         }
         if temperature > 0:
             generation_kwargs["temperature"] = temperature
+        if prefix_fn is not None:
+            generation_kwargs["prefix_allowed_tokens_fn"] = prefix_fn
 
         logits_processors = []
         if self.dola_enabled and self._dola_processor is not None:
@@ -1408,8 +1778,13 @@ class InferenceEngine:
         return cache
 
     def _generate_impl(
-        self, prompt: str, max_tokens: int, temperature: float
-    ) -> tuple[str, list[int], int, dict | None, dict[str, float | None]]:
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        marker_boundary: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         gen_start = time.time()
         formatted = self._format_prompt(prompt)
         inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
@@ -1423,6 +1798,31 @@ class InferenceEngine:
             max_tokens=max_tokens,
         )
 
+        # C-A: Prefix KV cache lease (non-streaming path only).
+        # _prefix_kv_cache is None when TQ is active or cache disabled.
+        # Chunked prefill takes priority when input > PREFILL_CHUNK_SIZE.
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
+        prefix_cache_hit = False
+        if _prefix_kv_cache is not None and input_token_count <= self.PREFILL_CHUNK_SIZE:
+            # Track C-D: pass Anthropic cache_control marker boundary through.
+            # marker_boundary is None for the legacy unbounded full-prefix path
+            # (preserves C-A LIVE invariants), int when an Anthropic
+            # cache_control: ephemeral block was parsed by handle_messages.
+            _prefix_cache, _prefix_len, _total_len = _prefix_kv_cache.lease(
+                inputs.input_ids[0],
+                marker_boundary=marker_boundary,
+            )
+            if _prefix_cache is not None:
+                prefix_cache_hit = True
+                cache_read_tokens = _prefix_len
+                logger.info(
+                    "prefix_cache_hit",
+                    prefix_len=_prefix_len,
+                    total_len=_total_len,
+                    marker_boundary=marker_boundary,
+                )
+
         # Chunked prefill for long inputs to cap FFN activation memory
         past_kv = None
         if input_token_count > self.PREFILL_CHUNK_SIZE:
@@ -1433,11 +1833,32 @@ class InferenceEngine:
             gen_input_ids = inputs.input_ids[:, -1:]
             gen_attention_mask = inputs.attention_mask
         else:
-            gen_input_ids = inputs.input_ids
             gen_attention_mask = inputs.attention_mask
-            # Use quantized cache even for short prompts if TQ enabled
-            if self.kv_compressor.enabled:
-                past_kv = self._make_cache()
+            if prefix_cache_hit:
+                # FULL_AND_PARTIAL_PREFIX_CACHE_HIT (patch-1.X):
+                # The leased DynamicCache has seq_len equal to the FULL input
+                # length of the prior admit (>= _prefix_len). Two failure modes
+                # if we don't crop:
+                #  - Full match (_prefix_len == _total_len): HF computes
+                #    cache_position=arange(N,N)=empty -> IndexError on [-1].
+                #  - Partial match: cache covers more positions than _prefix_len;
+                #    feeding inputs[_prefix_len:] yields cache_position
+                #    [N..N+new_len) instead of [_prefix_len..total_len), causing
+                #    RoPE mis-rotation and attention_mask underflow.
+                # Unified fix: crop cache to (_prefix_len - 1) and feed
+                # inputs[_prefix_len - 1:]. Then cache_position = arange(
+                # _prefix_len - 1, _total_len), attention_mask length
+                # _total_len = (_prefix_len - 1) + (_total_len - _prefix_len + 1)
+                # is correct, and one cached token is recomputed (negligible).
+                # _prefix_len >= _KV_MIN_PREFIX_TOKENS=16 guaranteed by lease().
+                _prefix_cache.crop(_prefix_len - 1)
+                gen_input_ids = inputs.input_ids[:, _prefix_len - 1:]
+                past_kv = _prefix_cache
+            else:
+                gen_input_ids = inputs.input_ids
+                if self.kv_compressor.enabled:
+                    # Use quantized cache even for short prompts if TQ enabled
+                    past_kv = self._make_cache()
 
         generation_kwargs = {
             "input_ids": gen_input_ids,
@@ -1449,6 +1870,16 @@ class InferenceEngine:
         }
         if past_kv is not None:
             generation_kwargs["past_key_values"] = past_kv
+            if prefix_cache_hit:
+                # HF_36151_WORKAROUND: HF generation auto-infers cache_position
+                # from past_kv length on iteration 1+, but after our crop it
+                # produces an empty tensor and crashes on cache_position[-1]
+                # (transformers/generation/utils.py:476). Pass explicit
+                # cache_position covering the new tokens we're feeding:
+                # arange(_prefix_len - 1, _total_len) on the input device.
+                generation_kwargs["cache_position"] = torch.arange(
+                    _prefix_len - 1, _total_len, device=gen_input_ids.device
+                )
         if temperature > 0:
             generation_kwargs["temperature"] = temperature
 
@@ -1465,12 +1896,56 @@ class InferenceEngine:
         if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
+        # Track C-B: constrained JSON decoding via lm-format-enforcer.
+        # IMPORTANT (paper-ingestor §40-46): the correct integration is the
+        # `prefix_allowed_tokens_fn=` kwarg of model.generate(), NOT a
+        # LogitsProcessor entry in the list above. Adding to the LogitsProcessorList
+        # would require subclassing TokenEnforcer manually (paper §43 — diagnostic
+        # path only) and is incorrect.
+        # Per paper §83: TokenEnforcer is not thread-safe — build a NEW
+        # prefix_allowed_tokens_fn per request. The cached
+        # _enforcer_tokenizer_data is the only shared piece.
+        prefix_fn = self._build_constrained_prefix_fn(response_format)
+        if prefix_fn is not None:
+            generation_kwargs["prefix_allowed_tokens_fn"] = prefix_fn
+
         try:
             with torch.inference_mode():
                 outputs = self.model.generate(**generation_kwargs)
         finally:
             if self._dola_processor is not None:
                 self._dola_processor.remove_hooks()
+
+        # C-A: Admit the post-generation DynamicCache for future prefix reuse.
+        # outputs.past_key_values is populated because return_dict_in_generate=True.
+        # CRITICAL: returned_cache contains KV for input_token_count + output_len.
+        # Storing it as-is would corrupt cache_position on a future hit (generate()
+        # would compute cache_position assuming all input_ids are already cached).
+        # Crop to input_token_count so a future lease aligns with the new prompt's
+        # input_ids. crop() is in-place and supported by DynamicLayer.
+        # Only admit when prefix cache is active AND chunked prefill was not used
+        # (chunked prefill already owns the cache lifecycle).
+        if _prefix_kv_cache is not None and input_token_count <= self.PREFILL_CHUNK_SIZE:
+            returned_cache = outputs.past_key_values
+            if returned_cache is not None:
+                try:
+                    returned_cache.crop(input_token_count)
+                except (ValueError, AttributeError) as e:
+                    logger.warning(
+                        "prefix_cache_crop_failed",
+                        reason=type(e).__name__,
+                        error=str(e),
+                    )
+                    returned_cache = None
+            if returned_cache is not None:
+                _prefix_kv_cache.admit(inputs.input_ids[0], returned_cache)
+                cache_creation_tokens = input_token_count - cache_read_tokens
+                logger.info(
+                    "prefix_cache_admit",
+                    input_tokens=input_token_count,
+                    cache_read=cache_read_tokens,
+                    cache_creation=cache_creation_tokens,
+                )
 
         # Extract generated tokens (after the input we passed to generate)
         gen_prefix_len = gen_input_ids.shape[1]
@@ -1506,6 +1981,8 @@ class InferenceEngine:
             tok_per_s=round(tps, 1),
             chunked=input_token_count > self.PREFILL_CHUNK_SIZE,
             etc_triggered=search_trigger is not None,
+            cache_read=cache_read_tokens,
+            cache_creation=cache_creation_tokens,
         )
         _log_vram("after_generate")
 
@@ -1518,7 +1995,11 @@ class InferenceEngine:
         )
         gg_signals["generation_novelty"] = novelty
 
-        return stripped_text, generated_ids, input_token_count, search_trigger, gg_signals
+        return (
+            stripped_text, generated_ids, input_token_count,
+            search_trigger, gg_signals,
+            cache_read_tokens, cache_creation_tokens,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1528,6 +2009,237 @@ class InferenceEngine:
 _TOOL_CALL_RE = re.compile(
     r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL
 )
+
+
+def _extract_cache_marker_token_position(
+    tokenizer,
+    messages: list,
+    system,
+    tools: list | None,
+) -> Optional[int]:
+    """Parse Anthropic per-content-block ``cache_control`` markers.
+
+    Walks ``messages[*].content[*]``, ``system`` (when ``list[ContentBlock]``),
+    and ``tools[*]`` looking for blocks carrying ``cache_control``. Returns the
+    cumulative input-token offset (within the formatted prompt the engine
+    actually sees) up to and including the LAST marked block in token order.
+
+    Per Anthropic spec (https://docs.anthropic.com/en/docs/build-with-claude/
+    prompt-caching):
+      * ``cache_control`` is per-content-block, NOT a top-level request field.
+      * ``type`` must equal ``"ephemeral"``; we WARN-and-IGNORE other values
+        rather than 400ing (backward-compat: unknown future ``type`` values
+        should not break existing clients).
+      * Up to 4 markers per request; only the LAST in token order is honoured
+        as the boundary (earlier markers are subsumed by the last).
+      * Marker boundary is INCLUSIVE: positions ``[0..boundary)`` are
+        cacheable, positions ``>= boundary`` are not.
+
+    Returns:
+      * ``None`` when no marker is found (existing full-prefix caching).
+      * ``int`` token offset (1 <= boundary <= len(full_prompt_tokens)) when
+        a marker is honoured.
+
+    Implementation strategy: re-render the prompt up to and including the
+    marked block via the SAME chat template the engine uses, then take the
+    length of the resulting token sequence. This avoids off-by-N errors from
+    chat-template role wrappers because the same template is applied in
+    both the partial (boundary computation) and full (engine) renders.
+    """
+    if not messages:
+        return None
+
+    # Step 1: walk all blocks in token order and record the LAST cache_control
+    # location. We track location as (scope, message_index, block_index) so we
+    # can later truncate the per-scope structures up to that point.
+    #
+    # Order of scopes matches the prompt assembly in _anthropic_to_gemma_prompt:
+    # tools render first (in chat template), then system (folded into the
+    # first user message), then messages. For boundary tokenisation we
+    # currently support markers placed inside ``messages[*].content[*]`` and
+    # ``system`` list-form. Markers on tools[*] are accepted-and-ignored for
+    # now (rare in practice; supporting them would require partial-tools
+    # rendering which the chat template does not naturally expose).
+    last_marker: Optional[tuple[str, int, int]] = None
+    marker_count = 0
+
+    def _block_has_marker(block) -> bool:
+        nonlocal marker_count
+        if not isinstance(block, dict):
+            return False
+        cc = block.get("cache_control")
+        if cc is None:
+            return False
+        if not isinstance(cc, dict):
+            logger.warning(
+                "cache_control_invalid_shape",
+                got=type(cc).__name__,
+                action="ignored",
+            )
+            return False
+        cc_type = cc.get("type")
+        if cc_type != "ephemeral":
+            logger.warning(
+                "cache_control_unsupported_type",
+                got=cc_type,
+                action="ignored",
+                supported=["ephemeral"],
+            )
+            return False
+        marker_count += 1
+        return True
+
+    # Walk messages[*].content[*]
+    for msg_idx, msg in enumerate(messages):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for blk_idx, block in enumerate(content):
+            if _block_has_marker(block):
+                last_marker = ("messages", msg_idx, blk_idx)
+
+    # Walk system[*] (only when system is a list of ContentBlocks)
+    if isinstance(system, list):
+        for blk_idx, block in enumerate(system):
+            if _block_has_marker(block):
+                # system markers bind to scope="system"; message_index unused.
+                last_marker = ("system", -1, blk_idx)
+
+    # Walk tools[*] — accept-and-ignore (logged for visibility; not honoured).
+    if isinstance(tools, list):
+        for block in tools:
+            if isinstance(block, dict) and block.get("cache_control") is not None:
+                logger.warning(
+                    "cache_control_on_tool_unsupported",
+                    tool_name=block.get("name"),
+                    action="ignored",
+                    note="marker honoured only on messages/system blocks",
+                )
+
+    if last_marker is None:
+        return None
+
+    if marker_count > 4:
+        logger.warning(
+            "cache_control_too_many_markers",
+            count=marker_count,
+            action="last_in_order_honoured",
+            spec_max=4,
+        )
+
+    scope, msg_target_idx, blk_target_idx = last_marker
+
+    # Step 2: build a TRUNCATED messages/system pair that preserves only the
+    # content up to and including the marked block. Then render via the same
+    # chat template the engine uses, tokenise, and take the token count as
+    # the boundary.
+    truncated_messages = []
+    truncated_system = system
+
+    if scope == "system":
+        # Boundary lives inside the system list — keep only blocks [0..idx]
+        # of system, and DROP messages entirely (the marker subsumes nothing
+        # past it). This is the rare "system-only cacheable prefix" case.
+        if isinstance(system, list):
+            truncated_system = system[: blk_target_idx + 1]
+        truncated_messages = []
+    else:
+        # scope == "messages": copy messages[0..msg_target_idx-1] verbatim,
+        # then append a partial copy of messages[msg_target_idx] whose content
+        # list is truncated to blocks [0..blk_target_idx].
+        for i in range(msg_target_idx):
+            truncated_messages.append(messages[i])
+        target_msg = messages[msg_target_idx]
+        if isinstance(target_msg, dict):
+            target_content = target_msg.get("content")
+            if isinstance(target_content, list):
+                # Shallow-copy the message dict and truncate its content list.
+                # Strip cache_control off the copied blocks (it would otherwise
+                # be a no-op for the chat template, but we keep the partial
+                # render free of metadata that downstream renderers might
+                # complain about).
+                clean_blocks = []
+                for blk in target_content[: blk_target_idx + 1]:
+                    if isinstance(blk, dict) and "cache_control" in blk:
+                        clean = {k: v for k, v in blk.items() if k != "cache_control"}
+                        clean_blocks.append(clean)
+                    else:
+                        clean_blocks.append(blk)
+                truncated_messages.append({
+                    "role": target_msg.get("role", "user"),
+                    "content": clean_blocks,
+                })
+            else:
+                # content is a string; the marker_count check above means the
+                # marker was on a parent dict — defensive: keep message whole.
+                truncated_messages.append(target_msg)
+
+    # Step 3: render the truncated prompt with the SAME helper the engine
+    # uses for the full prompt, then format via the engine's _format_prompt
+    # is NOT how /v1/messages works — handle_messages calls
+    # _anthropic_to_gemma_prompt + passes the result string straight to
+    # generate(prompt). generate() then internally calls
+    # InferenceEngine._format_prompt which wraps the user content in another
+    # chat template layer. To match, we apply the SAME wrapping path the
+    # engine does on the full prompt: _anthropic_to_gemma_prompt produces
+    # the chat-template output, _format_prompt wraps that as a single user
+    # turn. We replicate the same composition here for the truncated input.
+    try:
+        partial_prompt = _anthropic_to_gemma_prompt(
+            tokenizer, truncated_messages, truncated_system, tools
+        )
+    except Exception as exc:
+        logger.warning(
+            "cache_marker_partial_render_failed",
+            error=str(exc),
+            action="boundary_disabled",
+        )
+        return None
+
+    # Mirror InferenceEngine._format_prompt: when the tokenizer supports
+    # apply_chat_template, the engine wraps the upstream prompt as
+    # [{"role": "user", "content": <upstream_prompt>}] with
+    # add_generation_prompt=True. We do the SAME thing for the truncated
+    # render so the token count we measure aligns with the input_ids the
+    # engine will see for the full prompt's matching prefix.
+    formatted_partial = partial_prompt
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            formatted_partial = tokenizer.apply_chat_template(
+                [{"role": "user", "content": partial_prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            # Mirror _format_prompt's silent fallback to the unwrapped string.
+            formatted_partial = partial_prompt
+
+    try:
+        partial_ids = tokenizer(formatted_partial, return_tensors=None).get(
+            "input_ids", []
+        )
+    except Exception as exc:
+        logger.warning(
+            "cache_marker_partial_tokenise_failed",
+            error=str(exc),
+            action="boundary_disabled",
+        )
+        return None
+
+    # tokenizer(...) without return_tensors returns a list[int] (single-input
+    # path) — handle the rare nested-list shape defensively.
+    if partial_ids and isinstance(partial_ids[0], list):
+        partial_ids = partial_ids[0]
+    boundary = len(partial_ids)
+    if boundary <= 0:
+        return None
+    logger.info(
+        "cache_marker_boundary",
+        boundary_tokens=boundary,
+        scope=scope,
+        marker_count=marker_count,
+    )
+    return boundary
 
 
 def _anthropic_to_gemma_prompt(
@@ -1715,6 +2427,12 @@ class OrjsonResponse(Response):
 # ---------------------------------------------------------------------------
 
 _engine: InferenceEngine | None = None
+# PART12 OQ5: dashboard SettingsWindow writes cloud / host-level keys
+# (vram_budget_gb, cloud_api_key, cloud_spend_cap_usd) that are not owned
+# by the inference engine. They live in this module-level dict so /v1/settings
+# can ack them and /v1/settings GET can re-seed dashboard state across
+# refreshes. cloud_api_key is stored but never echoed in GET responses.
+_cloud_settings: dict[str, Any] = {}
 # Separate pools: _thread_pool for GPU-bound model.generate() calls,
 # _drain_pool for lightweight streamer-drain threads. Prevents deadlock
 # when concurrent streaming requests exhaust a single shared pool.
@@ -1726,14 +2444,60 @@ _drain_pool: ThreadPoolExecutor = ThreadPoolExecutor(
 )
 
 
+_teardown_done: bool = False
+
+
+def _graceful_gpu_teardown() -> None:
+    """Release GPU resources in deterministic order before process exit.
+
+    Idempotent: subsequent calls are no-ops (guarded by _teardown_done).
+
+    Limitations:
+        - SIGKILL bypasses this handler; the WSL2 Linux kernel will reap the
+          process but CUDA context cleanup is not guaranteed in that case.
+        - WSL VM termination requires `wsl --terminate Ubuntu` from the host
+          to reset the Hyper-V partition; this code cannot handle that case.
+    """
+    global _engine, _teardown_done
+    if _teardown_done:
+        return
+    _teardown_done = True
+    if _engine is None:
+        return
+    try:
+        if hasattr(_engine, "_dola_processor") and _engine._dola_processor is not None:
+            _engine._dola_processor.remove_hooks()
+    except Exception as exc:
+        logger.warning("teardown_dola_hooks_failed", error=str(exc))
+    try:
+        if hasattr(_engine, "model") and _engine.model is not None:
+            del _engine.model
+    except Exception as exc:
+        logger.warning("teardown_model_del_failed", error=str(exc))
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            logger.info("vram_released")
+    except Exception as exc:
+        logger.warning("teardown_cuda_flush_failed", error=str(exc))
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    _engine = None
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     yield
-    # Shutdown: cleanup
-    _thread_pool.shutdown(wait=False)
-    _drain_pool.shutdown(wait=False)
-    if _engine is not None and _engine._dola_processor is not None:
-        _engine._dola_processor.remove_hooks()
+    # Shutdown: drain in-flight GPU work in the pools FIRST, then run teardown.
+    # Reversing this order produces a use-after-free: a thread mid-generate()
+    # would see its model object deleted out from under the running CUDA kernel.
+    _thread_pool.shutdown(wait=True)
+    _drain_pool.shutdown(wait=True)
+    _graceful_gpu_teardown()
     logger.info("server_shutdown")
 
 
@@ -2059,6 +2823,145 @@ async def steering_status(request: Request):
     })
 
 
+@app.post("/v1/cache/flush")
+async def handle_cache_flush(request: Request):
+    """Operator-driven cold-start hook for prefix_cache_bench.py.
+
+    Returns 200 with `{"flushed": <bool>, "n_entries_cleared": <int>}`.
+    Safe to call regardless of cache state: when the prefix KV cache is
+    disabled (TQ active or max_entries=0) `_prefix_kv_cache is None` and
+    we return `{"flushed": false, "n_entries_cleared": 0}` — operators
+    must be able to invoke this blindly between bench runs without
+    conditional handling. PART7 §5.A-5.
+    """
+    _ = await request.body()  # body is unused; reading it drains the socket
+    if _prefix_kv_cache is None:
+        return OrjsonResponse({"flushed": False, "n_entries_cleared": 0})
+    n = _prefix_kv_cache.clear()
+    return OrjsonResponse({"flushed": True, "n_entries_cleared": n})
+
+
+# B-36 D.11: dashboard get/set sidecar settings — added 2026-05-07 in s-59964.
+# Requires rsync to pythondev + sidecar restart to be reachable on remote.
+
+
+@app.get("/v1/settings")
+async def handle_get_settings() -> OrjsonResponse:
+    """Return current sidecar runtime settings (read-mostly view).
+
+    Shape mirrors the dashboard's expected SidecarSettings type:
+    { model, max_new_tokens, temperature, top_p, dola_enabled, steering_enabled,
+      turboquant_bits, kv_cache_size, fa2_enabled }.
+    temperature and top_p are per-request parameters not stored on the engine;
+    they are returned as None here. Sources: InferenceEngine instance attrs.
+    """
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+    fa2 = False
+    try:
+        fa2 = getattr(_engine.model.config, "_attn_implementation", "sdpa") == "flash_attention_2"
+    except Exception:
+        pass
+    return OrjsonResponse({
+        "model": _engine.model_name,
+        "max_new_tokens": _engine.max_new_tokens,
+        "temperature": None,   # per-request parameter; not persisted on engine
+        "top_p": None,         # per-request parameter; not persisted on engine
+        "dola_enabled": _engine.dola_enabled,
+        "steering_enabled": _engine.steering_enabled,
+        "turboquant_bits": _engine._turboquant_bits,
+        "kv_cache_size": _engine._kv_cache_size,
+        "fa2_enabled": fa2,
+        # PART12 OQ5: cloud / host-level keys re-seed dashboard state across
+        # refreshes. cloud_api_key itself is never returned — only a presence
+        # flag — so the secret stays inside the sidecar process.
+        "vram_budget_gb": _cloud_settings.get("vram_budget_gb"),
+        "cloud_spend_cap_usd": _cloud_settings.get("cloud_spend_cap_usd"),
+        "cloud_api_key_present": bool(_cloud_settings.get("cloud_api_key")),
+    })
+
+
+@app.post("/v1/settings")
+async def handle_set_settings(request: Request) -> OrjsonResponse:
+    """Update select sidecar runtime settings. Routes each key by category.
+
+    Categories (PART12 OQ5 — see workflow/reasoning/part12-oq5-findings.md):
+      RUNTIME_SETTABLE       written directly to _engine attrs.
+      RUNTIME_DISABLE_ATTR   _engine attr exists, but the underlying
+                             processor is built at __init__. Disabling
+                             (False) is always safe; re-enabling (True)
+                             only works when the processor object exists,
+                             else routed to boot_flags_require_restart.
+      BOOT_FLAG_ONLY         attr exists or is consumed only at __init__;
+                             ack but require restart.
+      NON_ENGINE             host/orchestrator concern; stored in
+                             module-level _cloud_settings.
+
+    Response shape:
+      { "applied": {...},
+        "boot_flags_require_restart": [...],
+        "silently_skipped": [...] }
+    """
+    if _engine is None:
+        return OrjsonResponse({"error": "engine not initialized"}, status_code=503)
+    body = await request.body()
+    try:
+        payload: dict[str, Any] = orjson.loads(body)
+    except Exception:
+        return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
+
+    RUNTIME_SETTABLE = {"max_new_tokens"}
+    # frontend_key -> (engine_attr_name, processor_attr_required_for_enable)
+    RUNTIME_DISABLE_ATTR: dict[str, tuple[str, str]] = {
+        "dola": ("dola_enabled", "_dola_processor"),
+        "etc": ("etc_enabled", "_etc_processor"),
+        "steering": ("steering_enabled", "steering_engine"),
+    }
+    BOOT_FLAG_ONLY = {"turboquant_bits"}
+    NON_ENGINE_KEYS = {"vram_budget_gb", "cloud_api_key", "cloud_spend_cap_usd"}
+
+    applied: dict[str, Any] = {}
+    boot_flags_require_restart: list[str] = []
+    silently_skipped: list[str] = []
+
+    for key, value in payload.items():
+        if key in RUNTIME_SETTABLE:
+            try:
+                setattr(_engine, key, value)
+                applied[key] = value
+            except (AttributeError, TypeError) as exc:
+                logger.warning("settings.set_rejected", key=key, value=value, error=str(exc))
+                silently_skipped.append(key)
+        elif key in RUNTIME_DISABLE_ATTR:
+            attr_name, processor_attr = RUNTIME_DISABLE_ATTR[key]
+            if value is False:
+                setattr(_engine, attr_name, False)
+                applied[key] = False
+            elif getattr(_engine, processor_attr, None) is not None:
+                setattr(_engine, attr_name, True)
+                applied[key] = True
+            else:
+                boot_flags_require_restart.append(key)
+        elif key in BOOT_FLAG_ONLY:
+            boot_flags_require_restart.append(key)
+        elif key in NON_ENGINE_KEYS:
+            if key == "cloud_api_key":
+                _cloud_settings["cloud_api_key"] = str(value) if value is not None else None
+                applied[key] = "***"
+            else:
+                _cloud_settings[key] = value
+                applied[key] = value
+        else:
+            logger.warning("settings.unknown_key", key=key, value=value)
+            silently_skipped.append(key)
+
+    return OrjsonResponse({
+        "applied": applied,
+        "boot_flags_require_restart": boot_flags_require_restart,
+        "silently_skipped": silently_skipped,
+    })
+
+
 @app.post("/v1/messages")
 async def handle_messages(request: Request):
     if _engine is None:
@@ -2085,7 +2988,36 @@ async def handle_messages(request: Request):
     model_name = data.get("model", "elai-local")
     temperature = data.get("temperature", 0.0)
 
+    # Track C-B: extract optional response_format. Validation is lenient by
+    # design — invalid types are warned-and-ignored (engine helper handles
+    # the inner shape check); only the "library missing while caller asked
+    # for constraint" case produces a hard 503 so operator notices.
+    response_format = data.get("response_format")
+    if response_format is not None and not _LMFE_AVAILABLE:
+        logger.warning(
+            "response_format_set_but_lmfe_missing",
+            hint="install lm-format-enforcer per USER-MANUAL-CB-DEPS.md",
+        )
+        return OrjsonResponse(
+            {
+                "error": _ERR_CONSTRAINED_DECODING_UNAVAILABLE,
+                "detail": _ERR_DETAIL_INSTALL_LMFE,
+            },
+            status_code=503,
+        )
+
     prompt = _anthropic_to_gemma_prompt(_engine.tokenizer, messages, system, tools)
+
+    # Track C-D: parse Anthropic per-content-block cache_control markers and
+    # compute the boundary token offset within the formatted prompt. None
+    # when no marker is present — preserves the legacy full-prefix cache
+    # behaviour and keeps existing requests working unchanged.
+    # Note: the system arg passed here is the RAW system_raw (str | list)
+    # so the helper can walk system list-form blocks for markers. The
+    # already-flattened ``system`` string is what the engine consumes.
+    marker_boundary = _extract_cache_marker_token_position(
+        _engine.tokenizer, messages, system_raw, tools,
+    )
 
     tool_names = [t.get("name", "?") for t in tools] if tools else []
     logger.info(
@@ -2095,11 +3027,29 @@ async def handle_messages(request: Request):
         tools=len(tools),
         tool_names=tool_names[:10],
         prompt_chars=len(prompt),
+        cache_marker_boundary=marker_boundary,
     )
 
     if stream:
-        return _stream_messages_response(prompt, max_tokens, model_name, tools, temperature)
-    return await _non_stream_messages_response(prompt, max_tokens, model_name, tools, temperature)
+        # Streaming branch is OUT OF SCOPE for Track C-D (per s-934436 audit
+        # + context-package §3 STEP 3). Marker is parsed for log visibility
+        # but not threaded — streaming cache_* still hardcoded 0.
+        # Phase B (s-1976592): response_format is now wired through to
+        # generate_streaming via prefix_allowed_tokens_fn. The L2809 gate
+        # above already returns 503 when LMFE is missing, so by the time we
+        # reach here either response_format is None (normal streaming) or
+        # LMFE is available (constrained streaming). _build_constrained_prefix_fn
+        # warn-and-ignores any malformed schema; in that case we fall back
+        # silently to unconstrained streaming, matching the non-stream path.
+        return _stream_messages_response(
+            prompt, max_tokens, model_name, tools, temperature,
+            response_format=response_format,
+        )
+    return await _non_stream_messages_response(
+        prompt, max_tokens, model_name, tools, temperature,
+        marker_boundary=marker_boundary,
+        response_format=response_format,
+    )
 
 
 @app.post("/v1/completions")
@@ -2116,11 +3066,41 @@ async def handle_completions(request: Request):
     max_tokens = data.get("max_tokens", MAX_NEW_TOKENS_DEFAULT)
     temperature = data.get("temperature", 0.0)
 
+    # Track C-B: optional response_format on /v1/completions (used by the
+    # Rust orchestrator decompose path — grounding_client.rs::CompletionsRequest).
+    # Same validation policy as /v1/messages: missing-library yields 503;
+    # malformed type/shape is warn-and-ignored inside the engine helper.
+    response_format = data.get("response_format")
+    if response_format is not None and not _LMFE_AVAILABLE:
+        logger.warning(
+            "response_format_set_but_lmfe_missing",
+            endpoint="/v1/completions",
+            hint="install lm-format-enforcer per USER-MANUAL-CB-DEPS.md",
+        )
+        return OrjsonResponse(
+            {
+                "error": _ERR_CONSTRAINED_DECODING_UNAVAILABLE,
+                "detail": _ERR_DETAIL_INSTALL_LMFE,
+            },
+            status_code=503,
+        )
+
     t0 = time.time()
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count, search_trigger, gg_signals = await loop.run_in_executor(
+    (
+        text,
+        tokens,
+        input_token_count,
+        search_trigger,
+        gg_signals,
+        _cache_read_tokens,
+        _cache_creation_tokens,
+    ) = await loop.run_in_executor(
         _thread_pool,
-        lambda: _engine.generate(prompt, max_tokens, temperature),
+        lambda: _engine.generate(
+            prompt, max_tokens, temperature,
+            response_format=response_format,
+        ),
     )
     elapsed = time.time() - t0
 
@@ -2153,6 +3133,9 @@ async def handle_completions(request: Request):
         "entropy_mean": gg_signals.get("entropy_mean"),
         "entropy_max": gg_signals.get("entropy_max"),
         "generation_novelty": gg_signals.get("generation_novelty"),
+        # Phase A bench redesign: top-level server-side elapsed_ms (sibling to
+        # the existing nested elai_metadata.elapsed_ms). Bench reads this.
+        "elapsed_ms": int(elapsed * 1000),
         "elai_metadata": {
             "dola_enabled": _engine.dola_enabled,
             "turboquant_enabled": _engine.kv_compressor.enabled,
@@ -2187,7 +3170,7 @@ async def handle_completions(request: Request):
 # ---------------------------------------------------------------------------
 
 SEARCH_MAX_RESULTS = 20
-SEARXNG_INTERNAL_URL = "http://127.0.0.1:8888"
+SEARXNG_INTERNAL_URL = os.environ.get("SEARXNG_URL", "http://127.0.0.1:8888")
 SEARXNG_CONTAINER_NAME = "searxng"
 SEARXNG_IMAGE = "searxng/searxng:latest"
 SEARXNG_SETTINGS_MOUNT = "/etc/searxng/settings.yml"
@@ -2406,13 +3389,19 @@ async def handle_search(request: Request):
 def _stream_messages_response(
     prompt: str, max_tokens: int, model_name: str, tools: list | None,
     temperature: float = 0.0,
+    response_format: Optional[Dict[str, Any]] = None,
 ) -> StreamingResponse:
-    """Real streaming: tokens are yielded as model.generate() produces them."""
+    """Real streaming: tokens are yielded as model.generate() produces them.
+
+    Phase B: response_format threads through to generate_streaming so
+    LMFE-installed sidecars can emit constrained SSE output.
+    """
 
     async def event_generator() -> AsyncIterator[bytes]:
         msg_id = f"msg_elai_{uuid.uuid4().hex[:12]}"
         streamer, input_token_count = _engine.generate_streaming(
-            prompt, max_tokens, temperature
+            prompt, max_tokens, temperature,
+            response_format=response_format,
         )
 
         # message_start
@@ -2579,12 +3568,31 @@ def _stream_messages_response(
 async def _non_stream_messages_response(
     prompt: str, max_tokens: int, model_name: str, tools: list | None,
     temperature: float = 0.0,
+    marker_boundary: Optional[int] = None,
+    response_format: Optional[Dict[str, Any]] = None,
 ) -> OrjsonResponse:
     loop = asyncio.get_running_loop()
-    text, tokens, input_token_count, _search_trigger, _gg_signals = await loop.run_in_executor(
+    # Track C-D: gg_signals is now surfaced via response.meta (was discarded
+    # pre-C-D as `_gg_signals`). marker_boundary threaded through to bound
+    # PrefixKVCache.lease().
+    # Track C-B: response_format threaded through to engine.generate; engine
+    # converts to prefix_allowed_tokens_fn= kwarg of model.generate().
+    # Phase A bench redesign: bracket the executor await with perf_counter to
+    # surface server-side end-to-end latency as response.elapsed_ms (top level).
+    # Bench reads this instead of client perf_counter to bypass SSH-tunnel RTT.
+    t0 = time.perf_counter()
+    (
+        text, tokens, input_token_count, _search_trigger, gg_signals,
+        cache_read_tokens, cache_creation_tokens,
+    ) = await loop.run_in_executor(
         _thread_pool,
-        lambda: _engine.generate(prompt, max_tokens, temperature),
+        lambda: _engine.generate(
+            prompt, max_tokens, temperature,
+            marker_boundary=marker_boundary,
+            response_format=response_format,
+        ),
     )
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     tool_calls, remaining_text = (
         _parse_tool_calls(text) if tools else ([], text)
@@ -2615,12 +3623,34 @@ async def _non_stream_messages_response(
         "model": model_name,
         "stop_reason": stop_reason,
         "stop_sequence": None,
+        # ELAI accounting note: input_tokens emits the FULL prompt token
+        # count (cache_creation + cache_read = input_tokens). Anthropic's
+        # spec emits input_tokens as the suffix-only (uncached) portion,
+        # but downstream ELAI consumers depend on the full count for
+        # billing/observability. Keep the divergence intentional.
         "usage": {
             "input_tokens": input_token_count,
             "output_tokens": len(tokens),
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": cache_creation_tokens,
+            "cache_read_input_tokens": cache_read_tokens,
         },
+        # ELAI custom extension — NOT in the documented Anthropic Messages
+        # API response spec (https://docs.anthropic.com/en/api/messages).
+        # Anthropic clients ignore unknown top-level fields, so adding this
+        # is non-breaking. Defensive .get() per key keeps the response shape
+        # stable even if GGSignalCollector internal keys change.
+        "meta": {
+            "gg_signals": {
+                "mean_logprob": gg_signals.get("mean_logprob"),
+                "min_logprob": gg_signals.get("min_logprob"),
+                "entropy_mean": gg_signals.get("entropy_mean"),
+                "entropy_max": gg_signals.get("entropy_max"),
+                "generation_novelty": gg_signals.get("generation_novelty"),
+            },
+        },
+        # Phase A bench redesign: top-level server-side elapsed_ms. Additive;
+        # ELAI custom field. Anthropic SDK clients ignore unknown top-level keys.
+        "elapsed_ms": elapsed_ms,
     }
     return OrjsonResponse(response)
 
@@ -2639,7 +3669,7 @@ def main():
     parser = argparse.ArgumentParser(description="ELAI Inference Sidecar")
     parser.add_argument(
         "--model",
-        default="D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct-abliterated",
+        default="D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct-abliterated",
     )
     parser.add_argument("--port", type=int, default=SIDECAR_PORT_DEFAULT)
     parser.add_argument("--host", default=SIDECAR_HOST_DEFAULT)
@@ -2655,6 +3685,13 @@ def main():
         default=8,
         choices=[0, 2, 4, 8],
         help="KV cache quantization bit-width (0=disabled, 8=recommended)",
+    )
+    parser.add_argument(
+        "--kv-cache-size",
+        type=int,
+        default=4,
+        help="LRU size for prefix KV cache (0 disables, "
+             "auto-disabled when --turboquant-bits > 0)",
     )
     parser.add_argument(
         "--steering", action="store_true", default=False,
@@ -2719,6 +3756,7 @@ def main():
         max_new_tokens=args.max_tokens,
         load_in_4bit=args.load_in_4bit,
         etc_threshold=args.etc_threshold,
+        kv_cache_size=args.kv_cache_size,
     )
 
     # Load pre-computed steering vectors if provided
@@ -2747,6 +3785,19 @@ def main():
         endpoint_messages=f"http://{args.host}:{args.port}/v1/messages",
         endpoint_completions=f"http://{args.host}:{args.port}/v1/completions",
     )
+
+    # GPU cleanup on shutdown is wired through the FastAPI lifespan (`_lifespan`),
+    # which uvicorn invokes when it receives SIGTERM/SIGINT. uvicorn >=0.29
+    # installs its own signal handlers that survive `signal.signal` registration
+    # at this scope, so registering handlers here would be dead code. The
+    # lifespan path drains the executor pools first (avoiding use-after-free)
+    # and then calls `_graceful_gpu_teardown()`.
+    #
+    # Limitations:
+    #   - SIGKILL bypasses lifespan entirely; use `kill -TERM` first, then -KILL
+    #     after 5 seconds (see stop-sidecar.bat).
+    #   - WSL VM termination via `wsl --terminate Ubuntu` resets the Hyper-V
+    #     partition; no in-process handler can intercept that path.
 
     uvicorn.run(
         app,

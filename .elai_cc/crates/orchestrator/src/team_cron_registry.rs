@@ -3,8 +3,14 @@
 //!
 //! Provides TeamCreate/Delete and CronCreate/Delete/List runtime backing
 //! to replace the stub implementations in the tools crate.
+//!
+//! Mutex-poison policy: std::sync::Mutex poison means an upstream writer panicked
+//! while holding the lock, leaving registry state partially written and invariants
+//! broken. Silently recovering that corrupt state would propagate wrong team/cron
+//! entries to callers. We panic loud instead, per CLAUDE.md "panic loud rather
+//! than continue with possibly-corrupt registry state."
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -55,7 +61,7 @@ pub struct TeamRegistry {
 
 #[derive(Debug, Default)]
 struct TeamInner {
-    teams: HashMap<String, Team>,
+    teams: FxHashMap<String, Team>,
     counter: u64,
 }
 
@@ -66,7 +72,7 @@ impl TeamRegistry {
     }
 
     pub fn create(&self, name: &str, task_ids: Vec<String>) -> Team {
-        let mut inner = self.inner.lock().expect("team registry lock poisoned");
+        let mut inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked mid-insert; partial teams FxHashMap state is unrecoverable");
         inner.counter += 1;
         let ts = now_secs(&elai_core::OsClock);
         let team_id = format!("team_{:08x}_{}", ts, inner.counter);
@@ -83,17 +89,19 @@ impl TeamRegistry {
     }
 
     pub fn get(&self, team_id: &str) -> Option<Team> {
-        let inner = self.inner.lock().expect("team registry lock poisoned");
+        let inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked; get() would return data from a corrupt teams map");
         inner.teams.get(team_id).cloned()
     }
 
     pub fn list(&self) -> Vec<Team> {
-        let inner = self.inner.lock().expect("team registry lock poisoned");
-        inner.teams.values().cloned().collect()
+        let inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked; list() would return a partially-populated teams snapshot");
+        let mut v: Vec<Team> = inner.teams.values().cloned().collect();
+        v.sort_by(|a, b| a.team_id.cmp(&b.team_id));
+        v
     }
 
     pub fn delete(&self, team_id: &str) -> Result<Team, String> {
-        let mut inner = self.inner.lock().expect("team registry lock poisoned");
+        let mut inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked mid-status-update; delete() would soft-delete on corrupt Team state");
         let team = inner
             .teams
             .get_mut(team_id)
@@ -104,13 +112,13 @@ impl TeamRegistry {
     }
 
     pub fn remove(&self, team_id: &str) -> Option<Team> {
-        let mut inner = self.inner.lock().expect("team registry lock poisoned");
+        let mut inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked; remove() would hard-delete from a corrupt teams FxHashMap");
         inner.teams.remove(team_id)
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().expect("team registry lock poisoned");
+        let inner = self.inner.lock().expect("team_registry.inner mutex poisoned: upstream writer panicked; len() would report a stale or partial teams count");
         inner.teams.len()
     }
 
@@ -140,7 +148,7 @@ pub struct CronRegistry {
 
 #[derive(Debug, Default)]
 struct CronInner {
-    entries: HashMap<String, CronEntry>,
+    entries: FxHashMap<String, CronEntry>,
     counter: u64,
 }
 
@@ -151,7 +159,7 @@ impl CronRegistry {
     }
 
     pub fn create(&self, schedule: &str, prompt: &str, description: Option<&str>) -> CronEntry {
-        let mut inner = self.inner.lock().expect("cron registry lock poisoned");
+        let mut inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked mid-insert; partial cron entries FxHashMap state is unrecoverable");
         inner.counter += 1;
         let ts = now_secs(&elai_core::OsClock);
         let cron_id = format!("cron_{:08x}_{}", ts, inner.counter);
@@ -171,22 +179,24 @@ impl CronRegistry {
     }
 
     pub fn get(&self, cron_id: &str) -> Option<CronEntry> {
-        let inner = self.inner.lock().expect("cron registry lock poisoned");
+        let inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked; get() would return a corrupt or partially-written CronEntry");
         inner.entries.get(cron_id).cloned()
     }
 
     pub fn list(&self, enabled_only: bool) -> Vec<CronEntry> {
-        let inner = self.inner.lock().expect("cron registry lock poisoned");
-        inner
+        let inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked; list() would filter and return entries from corrupt state");
+        let mut v: Vec<CronEntry> = inner
             .entries
             .values()
             .filter(|e| !enabled_only || e.enabled)
             .cloned()
-            .collect()
+            .collect();
+        v.sort_by(|a, b| a.cron_id.cmp(&b.cron_id));
+        v
     }
 
     pub fn delete(&self, cron_id: &str) -> Result<CronEntry, String> {
-        let mut inner = self.inner.lock().expect("cron registry lock poisoned");
+        let mut inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked; delete() would remove from an entries map with broken invariants");
         inner
             .entries
             .remove(cron_id)
@@ -195,7 +205,7 @@ impl CronRegistry {
 
     /// Disable a cron entry without removing it.
     pub fn disable(&self, cron_id: &str) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("cron registry lock poisoned");
+        let mut inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked mid-disable; mutating enabled flag on corrupt CronEntry is unsafe");
         let entry = inner
             .entries
             .get_mut(cron_id)
@@ -207,7 +217,7 @@ impl CronRegistry {
 
     /// Record a cron run.
     pub fn record_run(&self, cron_id: &str) -> Result<(), String> {
-        let mut inner = self.inner.lock().expect("cron registry lock poisoned");
+        let mut inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked; record_run() would increment run_count and last_run_at on corrupt entry");
         let entry = inner
             .entries
             .get_mut(cron_id)
@@ -220,7 +230,7 @@ impl CronRegistry {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().expect("cron registry lock poisoned");
+        let inner = self.inner.lock().expect("cron_registry.inner mutex poisoned: upstream writer panicked; len() would report an unreliable entries count from corrupt map state");
         inner.entries.len()
     }
 

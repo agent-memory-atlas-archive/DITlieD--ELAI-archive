@@ -100,6 +100,7 @@ impl WebResearchRunner for FakeWebResearchRunner {
                         iteration: (i as u32) + 1,
                         sources_fetched: 3,
                         sources_used: 2,
+                        fetcher: "reqwest".into(),
                     })
                     .await;
             }
@@ -177,6 +178,8 @@ async fn web_research_task_emits_web_research_step_rows() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 
@@ -271,6 +274,8 @@ async fn web_research_task_without_runner_emits_finding() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 
@@ -370,6 +375,8 @@ async fn web_research_runner_invoked_once_per_task() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            pipeline_grc: None,
+            model_capability_profile: None,
         },
     );
 

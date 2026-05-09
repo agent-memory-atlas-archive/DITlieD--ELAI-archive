@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use serde_json::json;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -87,6 +88,9 @@ pub struct WebResearchStepEvent {
     pub iteration: u32,
     pub sources_fetched: u32,
     pub sources_used: u32,
+    /// Backend that performed the fetch for this iteration step ("reqwest" or "obscura").
+    /// Empty string when no fetch occurred (e.g. no_results, pruned, max_iterations).
+    pub fetcher: String,
 }
 
 /// Injectable per-step emitter. The default orchestrator uses `None` and emits
@@ -100,6 +104,42 @@ pub trait WebResearchStepEmitter: Send + Sync {
         &self,
         event: WebResearchStepEvent,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+
+    /// Emit a fine-grained per-stage event (B-7: FORMULATE/SEARCH/EXTRACT/REFLECT/CONVERGE).
+    /// Default impl is a no-op; the SSB adapter overrides it. Existing impls
+    /// need not change since this method has a default body.
+    fn emit_stage(
+        &self,
+        event: WebResearchStageEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let _ = event;
+        Box::pin(async {})
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WebResearchStageEvent — fine-grained per-stage progress (B-7)
+// ---------------------------------------------------------------------------
+
+/// One FORMULATE/SEARCH/EXTRACT/REFLECT/CONVERGE inner-loop event.
+///
+/// Reuses the `web_research_step` SSB action type; the `stage` + `stage_phase`
+/// fields on `WebResearchStepPayload` distinguish these from coarse rows.
+/// No schema version bump: the payload is stored as an opaque msgpack blob.
+///
+/// `stage`:       "formulate" | "search" | "extract" | "reflect" | "converge"
+/// `stage_phase`: "started"   | "completed"
+/// `payload`:     stage-specific structured data (see variants below).
+#[derive(Debug, Clone)]
+pub struct WebResearchStageEvent {
+    pub node_id: u64,
+    pub stage: &'static str,
+    pub stage_phase: &'static str,
+    pub phi: f64,
+    pub psi: f64,
+    pub iteration: u32,
+    /// Stage-specific structured data serialised to JSON value.
+    pub payload: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +149,16 @@ pub trait WebResearchStepEmitter: Send + Sync {
 pub struct WebResearchOrchestrator {
     searx_client: SearxClient,
     web_fetcher: WebFetcher,
+    /// D4: optional obscura headless-browser fetcher. When set, fetch_and_extract
+    /// uses this instead of web_fetcher. Only present with feature = "obscura".
+    #[cfg(feature = "obscura")]
+    obscura_fetcher: Option<elai_web_search::obscura_fetcher::ObscuraFetcher>,
     extractor: BasicExtractor,
     quality_table: SourceQualityTable,
     content_index: WebContentIndex,
     budget_manager: ResearchBudgetManager,
     tier_config: ResearchTierConfig,
+    #[allow(dead_code)] // reserved for future time-bounded research sessions
     clock: Arc<dyn ClockProvider>,
     chunk_counter: u64,
     step_emitter: Option<Arc<dyn WebResearchStepEmitter>>,
@@ -133,6 +178,8 @@ impl WebResearchOrchestrator {
         Self {
             searx_client,
             web_fetcher,
+            #[cfg(feature = "obscura")]
+            obscura_fetcher: None,
             extractor,
             quality_table,
             content_index,
@@ -148,6 +195,17 @@ impl WebResearchOrchestrator {
     /// orchestrator progress to SSB `web_research_step` rows.
     pub fn with_step_emitter(mut self, emitter: Arc<dyn WebResearchStepEmitter>) -> Self {
         self.step_emitter = Some(emitter);
+        self
+    }
+
+    /// D4: attach an ObscuraFetcher. When set, fetch_and_extract uses the
+    /// headless-browser path instead of reqwest. Only available with feature = "obscura".
+    #[cfg(feature = "obscura")]
+    pub fn with_obscura_fetcher(
+        mut self,
+        fetcher: elai_web_search::obscura_fetcher::ObscuraFetcher,
+    ) -> Self {
+        self.obscura_fetcher = Some(fetcher);
         self
     }
 
@@ -173,20 +231,31 @@ impl WebResearchOrchestrator {
     ) -> Result<u32, WebResearchOrchestratorError> {
         let phi_min = self.tier_config.phi_min;
         let psi_min = self.tier_config.psi_min;
-        let max_iterations = self.tier_config.depth_limit as u32 * MAX_ITERATIONS_PER_DEPTH;
+        let max_iterations = u32::try_from(self.tier_config.depth_limit).unwrap_or(u32::MAX) * MAX_ITERATIONS_PER_DEPTH;
         let mut total_sources_fetched: u32 = 0;
         let mut total_sources_used: u32 = 0;
+        let mut last_fetcher: &'static str = "";
 
         node.status = NodeStatus::Active;
 
         for iteration in 0..max_iterations {
             node.iterations = iteration + 1;
+            last_fetcher = "";
 
             // FORMULATE: build query from question + prior evidence.
+            self.emit_stage(node, "formulate", "started", json!({
+                "prior_citations": node.citations.len()
+            })).await;
             let query = self.formulate_query(&node.question, &node.citations).await;
             debug!(node_id = node.id.0, iteration, query = %query, "formulated query");
+            self.emit_stage(node, "formulate", "completed", json!({
+                "query": query
+            })).await;
 
             // SEARCH: execute search and rank by source quality.
+            self.emit_stage(node, "search", "started", json!({
+                "query": query
+            })).await;
             let ranked_results = match self.search_and_rank(&query).await {
                 Ok(results) => results,
                 Err(e) => {
@@ -194,6 +263,21 @@ impl WebResearchOrchestrator {
                     return Err(e);
                 }
             };
+
+            // Compute source-tier distribution for the search_completed event.
+            let n_results = u32::try_from(ranked_results.len()).unwrap_or(u32::MAX);
+            let (t1, t2, t3, t4) = ranked_results.iter().fold((0u32, 0u32, 0u32, 0u32), |acc, r| {
+                match self.quality_table.lookup_url(&r.url) {
+                    SourceTier::T1Authoritative => (acc.0 + 1, acc.1, acc.2, acc.3),
+                    SourceTier::T2Strong        => (acc.0, acc.1 + 1, acc.2, acc.3),
+                    SourceTier::T3Weak          => (acc.0, acc.1, acc.2 + 1, acc.3),
+                    SourceTier::T4Rejected      => (acc.0, acc.1, acc.2, acc.3 + 1),
+                }
+            });
+            self.emit_stage(node, "search", "completed", json!({
+                "n_results": n_results,
+                "t1": t1, "t2": t2, "t3": t3, "t4": t4
+            })).await;
 
             if ranked_results.is_empty() {
                 debug!(node_id = node.id.0, "no search results, marking for prune check");
@@ -203,6 +287,7 @@ impl WebResearchOrchestrator {
                     "no_results",
                     total_sources_fetched,
                     total_sources_used,
+                    "",
                 )
                 .await;
                 if node.should_prune() {
@@ -212,6 +297,7 @@ impl WebResearchOrchestrator {
                         "pruned",
                         total_sources_fetched,
                         total_sources_used,
+                        "",
                     )
                     .await;
                     break;
@@ -234,17 +320,22 @@ impl WebResearchOrchestrator {
 
             // Cap by max_sources_per_node.
             to_fetch.truncate(self.tier_config.max_sources_per_node);
-            total_sources_fetched += to_fetch.len() as u32;
+            let n_urls_to_fetch = u32::try_from(to_fetch.len()).unwrap_or(u32::MAX);
+            total_sources_fetched = total_sources_fetched.saturating_add(n_urls_to_fetch);
 
-            // FETCH+EXTRACT: fetch pages and extract content.
+            // EXTRACT: fetch pages and extract content.
             // Respect max_concurrent_fetches by processing in batches.
+            self.emit_stage(node, "extract", "started", json!({
+                "n_urls": n_urls_to_fetch
+            })).await;
             let batch_size = self.tier_config.max_concurrent_fetches;
             let mut extracted_items: Vec<(SearchResult, String, SourceTier)> = Vec::new();
 
             for batch in to_fetch.chunks(batch_size) {
                 for result in batch {
                     match self.fetch_and_extract(&result.url).await {
-                        Ok((text, tier)) => {
+                        Ok((text, tier, ftag)) => {
+                            last_fetcher = ftag;
                             extracted_items.push((result.clone(), text, tier));
                         }
                         Err(e) => {
@@ -253,6 +344,14 @@ impl WebResearchOrchestrator {
                     }
                 }
             }
+            let extract_total_chars: u64 = extracted_items.iter()
+                .map(|(_, text, _)| u64::try_from(text.len()).unwrap_or(u64::MAX))
+                .fold(0u64, |a, b| a.saturating_add(b));
+            let n_chunks_extracted = u32::try_from(extracted_items.len()).unwrap_or(u32::MAX);
+            self.emit_stage(node, "extract", "completed", json!({
+                "n_chunks": n_chunks_extracted,
+                "total_chars": extract_total_chars
+            })).await;
 
             // INDEX: ingest extracted content into the content index.
             for (result, text, tier) in &extracted_items {
@@ -306,6 +405,9 @@ impl WebResearchOrchestrator {
             );
 
             // REFLECT: update phi/psi based on evidence quality and coverage.
+            self.emit_stage(node, "reflect", "started", json!({
+                "citations": node.citations.len()
+            })).await;
             let old_phi = node.phi;
             self.reflect(node);
 
@@ -319,6 +421,22 @@ impl WebResearchOrchestrator {
             }
 
             // CONVERGE: check phi >= phi_min AND psi >= psi_min.
+            let converge_action = if node.is_converged(phi_min, psi_min)
+                && node.citations.len() >= MIN_SOURCES_FOR_CONVERGENCE
+            {
+                "converge"
+            } else if node.should_prune() {
+                "prune"
+            } else {
+                "iterate"
+            };
+            self.emit_stage(node, "reflect", "completed", json!({
+                "action": converge_action,
+                "phi": node.phi,
+                "psi": node.psi,
+                "info_gain": info_gain
+            })).await;
+
             if node.is_converged(phi_min, psi_min) && node.citations.len() >= MIN_SOURCES_FOR_CONVERGENCE {
                 node.status = NodeStatus::Converged;
                 info!(
@@ -328,13 +446,23 @@ impl WebResearchOrchestrator {
                     iterations = node.iterations,
                     "node converged"
                 );
+                self.emit_stage(node, "converge", "started", json!({
+                    "phi": node.phi,
+                    "psi": node.psi
+                })).await;
                 self.emit_step(
                     node,
                     "converged",
                     total_sources_fetched,
                     total_sources_used,
+                    last_fetcher,
                 )
                 .await;
+                self.emit_stage(node, "converge", "completed", json!({
+                    "phi": node.phi,
+                    "psi": node.psi,
+                    "citations": node.citations.len()
+                })).await;
                 break;
             }
 
@@ -351,6 +479,7 @@ impl WebResearchOrchestrator {
                     "pruned",
                     total_sources_fetched,
                     total_sources_used,
+                    last_fetcher,
                 )
                 .await;
                 break;
@@ -362,6 +491,7 @@ impl WebResearchOrchestrator {
                 "iterate",
                 total_sources_fetched,
                 total_sources_used,
+                last_fetcher,
             )
             .await;
         }
@@ -380,6 +510,7 @@ impl WebResearchOrchestrator {
                 "max_iterations",
                 total_sources_fetched,
                 total_sources_used,
+                last_fetcher,
             )
             .await;
         }
@@ -450,12 +581,29 @@ impl WebResearchOrchestrator {
         Ok(results)
     }
 
-    /// Fetch a URL and extract its content. Returns (text, source_tier).
+    /// Fetch a URL and extract its content. Returns (text, source_tier, fetcher_tag).
+    ///
+    /// `fetcher_tag` is `"obscura"` when the headless-browser path was used,
+    /// `"reqwest"` otherwise.
+    ///
+    /// D4: if the "obscura" feature is enabled and an ObscuraFetcher was attached
+    /// via with_obscura_fetcher(), uses the headless-browser path; otherwise falls
+    /// back to the reqwest WebFetcher.
     pub async fn fetch_and_extract(
         &mut self,
         url: &str,
-    ) -> Result<(String, SourceTier), WebResearchOrchestratorError> {
-        let page = self.web_fetcher.fetch(url).await?;
+    ) -> Result<(String, SourceTier, &'static str), WebResearchOrchestratorError> {
+        #[cfg(feature = "obscura")]
+        let (page, fetcher_tag) = {
+            if let Some(ref obscura) = self.obscura_fetcher {
+                (obscura.fetch(url).await?, "obscura")
+            } else {
+                (self.web_fetcher.fetch(url).await?, "reqwest")
+            }
+        };
+        #[cfg(not(feature = "obscura"))]
+        let (page, fetcher_tag) = (self.web_fetcher.fetch(url).await?, "reqwest");
+
         let extracted = self.extractor.extract(&page.html, url)?;
 
         if extracted.page_type == PageType::Empty {
@@ -465,7 +613,7 @@ impl WebResearchOrchestrator {
         }
 
         let tier = self.quality_table.lookup_url(url);
-        Ok((extracted.text, tier))
+        Ok((extracted.text, tier, fetcher_tag))
     }
 
     /// Reflect on evidence: update phi/psi based on citation quality and count.
@@ -497,14 +645,39 @@ impl WebResearchOrchestrator {
         node.psi = avg_evidence * avg_quality * coverage_factor;
     }
 
+    /// Emit a fine-grained per-stage event (B-7). No-op when no emitter is attached.
+    async fn emit_stage(
+        &self,
+        node: &ResearchNode,
+        stage: &'static str,
+        stage_phase: &'static str,
+        payload: serde_json::Value,
+    ) {
+        if let Some(emitter) = self.step_emitter.as_ref() {
+            emitter
+                .emit_stage(WebResearchStageEvent {
+                    node_id: node.id.0,
+                    stage,
+                    stage_phase,
+                    phi: node.phi,
+                    psi: node.psi,
+                    iteration: node.iterations,
+                    payload,
+                })
+                .await;
+        }
+    }
+
     /// Emit a per-iteration progress event via the injected step emitter.
     /// No-op when no emitter is attached.
+    /// `fetcher` is the backend tag ("reqwest", "obscura", or "" when no fetch occurred).
     async fn emit_step(
         &self,
         node: &ResearchNode,
         action: &str,
         sources_fetched: u32,
         sources_used: u32,
+        fetcher: &str,
     ) {
         if let Some(emitter) = self.step_emitter.as_ref() {
             emitter
@@ -516,6 +689,7 @@ impl WebResearchOrchestrator {
                     iteration: node.iterations,
                     sources_fetched,
                     sources_used,
+                    fetcher: fetcher.to_owned(),
                 })
                 .await;
         }
@@ -528,8 +702,8 @@ impl WebResearchOrchestrator {
             iterations: node.iterations,
             phi: node.phi,
             psi: node.psi,
-            sources_fetched: node.citations.len() as u32,
-            sources_used: node.citations.len() as u32,
+            sources_fetched: u32::try_from(node.citations.len()).unwrap_or(u32::MAX),
+            sources_used: u32::try_from(node.citations.len()).unwrap_or(u32::MAX),
         }
     }
 }
