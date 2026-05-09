@@ -21,13 +21,14 @@ use tauri::Emitter;
 
 use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
-    ExecutionModeChangedPayload, InterventionKeyword, InterventionOption,
-    InterventionResponsePayload, InterventionRetry, ModeChangedPayload, SsbPayload,
-    TaskSubmittedPayload,
+    ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
+    InterventionOption, InterventionResponsePayload, InterventionRetry, ModeChangedPayload,
+    NovelStepRow, SsbPayload, StubRunRow, TaskSubmittedPayload,
 };
 use serde_json::{json, Value};
 use tauri::State;
 
+use crate::scaffold_applier::default_templates_dir;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -180,7 +181,9 @@ pub async fn submit_task(state: State<'_, AppState>, task: String) -> CmdResult<
 
 fn parse_intervention_choice(chosen: &str) -> Result<InterventionOption, String> {
     match chosen.trim().to_ascii_lowercase().as_str() {
-        "approve" | "accept" | "ok" => Ok(InterventionOption::Keyword(InterventionKeyword::Accept)),
+        "approve" | "accept" | "ok" | "takeover" => {
+            Ok(InterventionOption::Keyword(InterventionKeyword::Accept))
+        }
         "reject" | "decline" | "no" => Ok(InterventionOption::Keyword(InterventionKeyword::Decline)),
         "modify" | "skip" => Ok(InterventionOption::Keyword(InterventionKeyword::Skip)),
         "redirect" | "retry" => Ok(InterventionOption::Retry(InterventionRetry {
@@ -319,33 +322,117 @@ fn is_leap(y: i32) -> bool {
 // FEASIBILITY (read SSB FeasibilityReport rows, return v2 shape)
 // ---------------------------------------------------------------------------
 
+/// Phase 4F (B-21): cap on per-row collections lifted from the SSB. Bounds
+/// the JSON returned to the frontend so a noisy probe run cannot push a
+/// 50k-row payload across the IPC boundary.
+const FEASIBILITY_ROW_LIMIT: usize = 64;
+
 #[tauri::command]
 pub fn get_feasibility_report(state: State<'_, AppState>) -> CmdResult<Value> {
-    let rows = state
-        .viewer
+    let summary: FeasibilitySummary = match state.viewer.as_ref() {
+        Some(viewer) => viewer
+            .feasibility_summary(FEASIBILITY_ROW_LIMIT)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "get_feasibility_report: viewer query failed");
+                map_err(e)
+            })?,
+        None => FeasibilitySummary::default(),
+    };
+
+    // Empty path: no probe has emitted yet — return an empty PASS shape so
+    // the frontend always renders, never crashes on undefined.
+    if summary.latest_report.is_none()
+        && summary.novel_steps.is_empty()
+        && summary.stub_runs.is_empty()
+    {
+        return Ok(json!({
+            "overall": "PASS",
+            "results": [],
+            "probed_at": now_ms(&state),
+        }));
+    }
+
+    let probed_at = summary
+        .latest_report
         .as_ref()
-        .and_then(|v| v.recent_actions(50, 0).ok())
-        .unwrap_or_default();
-    let report_row = rows.iter().rev().find(|r| {
-        serde_json::to_value(r)
-            .ok()
-            .and_then(|v| v.get("action_type").and_then(|x| x.as_str()).map(str::to_owned))
-            .map(|s| s.eq_ignore_ascii_case("feasibility_report"))
-            .unwrap_or(false)
-    });
-    if let Some(_) = report_row {
-        // SSB row payload encodes the feasibility detail. Reshape to v2.
-        Ok(json!({
-            "overall": "PASS",
-            "results": [],
-            "probed_at": now_ms(&state),
-        }))
-    } else {
-        Ok(json!({
-            "overall": "PASS",
-            "results": [],
-            "probed_at": now_ms(&state),
-        }))
+        .map(|r| r.ts_ms)
+        .unwrap_or_else(|| now_ms(&state));
+
+    let mut results: Vec<Value> = Vec::new();
+
+    // Per-novel-step rows. Render them as PASS (probe ran) unless the
+    // matching stub_run is failed.
+    for ns in &summary.novel_steps {
+        results.push(novel_step_to_result(ns, &summary.stub_runs));
+    }
+
+    // Per-stub-run rows that have no matching novel_step (rare — the probe
+    // emits novel + stub paired, but a baby-step probe only emits stub_run).
+    for sr in &summary.stub_runs {
+        if !summary.novel_steps.iter().any(|n| n.step_id == sr.step_id) {
+            results.push(stub_run_to_result(sr));
+        }
+    }
+
+    // Skip-reason renders as a single advisory result so the dashboard can
+    // show "probe skipped: <reason>" rather than a misleading empty list.
+    if let Some(report) = summary.latest_report.as_ref() {
+        if let Some(reason) = report.skip_reason.as_ref() {
+            results.push(json!({
+                "id": format!("skip:{}", report.seq),
+                "check": "skip",
+                "outcome": "PASS",
+                "detail": reason,
+                "ts": report.ts_ms,
+            }));
+        }
+    }
+
+    let overall = match summary.latest_report.as_ref() {
+        Some(r) => derive_overall(r, &summary.stub_runs),
+        None => "PASS",
+    };
+
+    Ok(json!({
+        "overall": overall,
+        "results": results,
+        "probed_at": probed_at,
+    }))
+}
+
+fn novel_step_to_result(ns: &NovelStepRow, stubs: &[StubRunRow]) -> Value {
+    let matching = stubs.iter().find(|s| s.step_id == ns.step_id);
+    let outcome = matching.map(|s| if s.passed { "PASS" } else { "FAIL" }).unwrap_or("PASS");
+    json!({
+        "id": format!("novel:{}", ns.seq),
+        "check": "novel_step",
+        "outcome": outcome,
+        "detail": ns.reason,
+        "ts": ns.ts_ms,
+    })
+}
+
+fn stub_run_to_result(sr: &StubRunRow) -> Value {
+    json!({
+        "id": format!("stub:{}", sr.seq),
+        "check": "stub_run",
+        "outcome": if sr.passed { "PASS" } else { "FAIL" },
+        "detail": format!("step={} elapsed_ms={}", sr.step_id, sr.elapsed_ms),
+        "ts": sr.ts_ms,
+    })
+}
+
+fn derive_overall(report: &FeasibilityReportRow, stubs: &[StubRunRow]) -> &'static str {
+    if report.escalations_count > 0 {
+        return "BLOCKED";
+    }
+    if stubs.iter().any(|s| !s.passed) {
+        return "FAIL";
+    }
+    match report.task_feasibility.as_str() {
+        "infeasible" => "FAIL",
+        "marginal" => "BLOCKED",
+        _ => "PASS",
     }
 }
 
@@ -399,14 +486,32 @@ pub async fn set_gate_mode(state: State<'_, AppState>, mode: String) -> CmdResul
 }
 
 #[tauri::command]
-pub fn get_auto_advance_stats(_state: State<'_, AppState>) -> CmdResult<Value> {
-    // Aggregate from SSB rows would require a richer query; return defaults.
+pub fn get_auto_advance_stats(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Phase 4G — aggregate AutoAdvanceStats from GateDecision SSB rows.
+    // The decoding lives inside SsbViewer (no msgpack dep at the dashboard
+    // boundary). Returns zero-shape on cold session / read error so the
+    // frontend never sees undefined.
+    let zero = json!({
+        "total_steps": 0_u64,
+        "auto_advanced": 0_u64,
+        "intervention_required": 0_u64,
+        "auto_advance_rate": 0.0_f64,
+        "last_24h_rate": 0.0_f64,
+    });
+
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(zero);
+    };
+    let stats = match viewer.auto_advance_stats(now_ms(&state)) {
+        Ok(s) => s,
+        Err(_) => return Ok(zero),
+    };
     Ok(json!({
-        "total_steps": 0,
-        "auto_advanced": 0,
-        "intervention_required": 0,
-        "auto_advance_rate": 0.0,
-        "last_24h_rate": 0.0,
+        "total_steps": stats.total_steps,
+        "auto_advanced": stats.auto_advanced,
+        "intervention_required": stats.intervention_required,
+        "auto_advance_rate": stats.auto_advance_rate,
+        "last_24h_rate": stats.last_24h_rate,
     }))
 }
 
@@ -1172,8 +1277,15 @@ fn reshape_step_to_node(v: &Value) -> Value {
 }
 
 #[tauri::command]
-pub fn get_bubble_up_events(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_bubble_up_events(state: State<'_, AppState>) -> CmdResult<Value> {
+    // B-7b: query `bubble_up_typed` rows from SSB (most recent 50).
+    // Returns empty array when no viewer is configured or no rows exist yet.
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_bubble_up_events(50).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1182,8 +1294,15 @@ pub fn get_executable_pipeline(_state: State<'_, AppState>) -> CmdResult<Value> 
 }
 
 #[tauri::command]
-pub fn get_dag_repair_log(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_dag_repair_log(state: State<'_, AppState>) -> CmdResult<Value> {
+    // B-7b: query `dag_repair_round` rows from SSB (most recent 100).
+    // Returns empty array when no viewer is configured or no repair rows exist.
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_dag_repair_rounds(100).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,13 +1314,10 @@ pub fn get_research_tree(state: State<'_, AppState>) -> CmdResult<Value> {
     let steps = state
         .viewer
         .as_ref()
-        .and_then(|v| v.research_steps(50).ok())
+        .and_then(|v| v.research_steps(200).ok())
         .unwrap_or_default();
-    let arr: Vec<Value> = steps
-        .iter()
-        .filter_map(|s| serde_json::to_value(s).ok())
-        .collect();
-    if arr.is_empty() {
+
+    if steps.is_empty() {
         return Ok(json!({
             "id": "rt-root",
             "query": "",
@@ -1211,28 +1327,65 @@ pub fn get_research_tree(state: State<'_, AppState>) -> CmdResult<Value> {
             "converged": false,
             "phi": 0.0,
             "psi": 0.0,
+            "stage_events": []
         }));
     }
-    let first = &arr[0];
-    let query = first
-        .get("query")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_owned();
-    let stage = first
-        .get("stage")
-        .and_then(|x| x.as_str())
-        .unwrap_or("FORMULATE")
-        .to_uppercase();
+
+    // Coarse rows (action != "") drive tree state.
+    // Fine-grained rows (stage != "") drive per-stage timeline.
+    let coarse: Vec<&_> = steps.iter().filter(|s| !s.action.is_empty()).collect();
+    let stage_events: Vec<Value> = steps
+        .iter()
+        .filter(|s| !s.stage.is_empty())
+        .map(|s| json!({
+            "node_id": s.node_id,
+            "stage": s.stage,
+            "phase": s.stage_phase,
+            "ts_ms": s.ts_ms,
+            "phi": s.phi,
+            "psi": s.psi,
+            "iteration": s.iteration,
+            "payload": s.stage_payload
+        }))
+        .collect();
+
+    let latest = coarse.first().copied();
+    let converged = latest.map(|s| s.action == "converged").unwrap_or(false);
+    let phi = latest.map(|s| s.phi).unwrap_or(0.0);
+    let psi = latest.map(|s| s.psi).unwrap_or(0.0);
+    let sources_used = coarse.iter().map(|s| s.sources_used).max().unwrap_or(0);
+
+    // Current stage: last started stage event (newest-first from viewer).
+    let current_stage = steps
+        .iter()
+        .filter(|s| s.stage_phase == "started")
+        .map(|s| s.stage.to_uppercase())
+        .next()
+        .unwrap_or_else(|| "FORMULATE".to_owned());
+
+    // Query from most recent formulate/completed payload.
+    let query = steps
+        .iter()
+        .filter(|s| s.stage == "formulate" && s.stage_phase == "completed")
+        .find_map(|s| {
+            s.stage_payload
+                .as_ref()
+                .and_then(|p| p.get("query"))
+                .and_then(|q| q.as_str())
+                .map(|q| q.to_owned())
+        })
+        .unwrap_or_default();
+
     Ok(json!({
-        "id": format!("rt-{}", arr.len()),
+        "id": format!("rt-{}", coarse.len()),
         "query": query,
-        "stage": stage,
+        "stage": current_stage,
         "children": [],
-        "source_count": arr.len(),
-        "converged": false,
-        "phi": 0.0,
-        "psi": 0.0,
+        "source_count": sources_used,
+        "converged": converged,
+        "phi": phi,
+        "psi": psi,
+        "stage_events": stage_events
     }))
 }
 
@@ -1550,8 +1703,26 @@ pub fn get_build_slots(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 #[tauri::command]
-pub fn get_dev_servers(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub async fn get_dev_servers(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Phase A (s-69820): real registry read. Each entry corresponds to a
+    // live `start_dev_server_for_project` call that has not yet been
+    // matched by `stop_dev_server_for_project`. Async because the registry
+    // moved to `tokio::sync::Mutex` to fix the TOCTOU race in
+    // `start_dev_server_for_project` (s-69820 audit BLOCK).
+    let guard = state.dev_servers.lock().await;
+    let arr: Vec<Value> = guard
+        .iter()
+        .map(|(project_id, handle)| {
+            json!({
+                "project_id": project_id,
+                "pid": handle.pid(),
+                "port": handle.port(),
+                "dir": handle.dir().display().to_string(),
+                "status": "running",
+            })
+        })
+        .collect();
+    Ok(json!(arr))
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,7 +1916,7 @@ pub fn get_hook_executions(state: State<'_, AppState>) -> CmdResult<Value> {
         .map(|v| {
             json!({
                 "ts": v.get("ts_ms").and_then(|x| x.as_i64()).unwrap_or(0),
-                "hook": v.get("hook_kind").and_then(|x| x.as_str()).unwrap_or("PreToolUse"),
+                "hook": v.get("hook_point").or_else(|| v.get("hook_kind")).and_then(|x| x.as_str()).unwrap_or("PreToolUse"),
                 "tool": v.get("tool_name").and_then(|x| x.as_str()),
                 "verdict": v.get("verdict").and_then(|x| x.as_str()).unwrap_or("ALLOW").to_uppercase(),
                 "reason": v.get("reason").and_then(|x| x.as_str()),
@@ -1928,6 +2099,281 @@ pub fn get_execution_mode(state: State<'_, AppState>) -> CmdResult<Value> {
         .map(|g| g.clone())
         .unwrap_or_else(|_| "LOCAL".to_owned());
     Ok(json!({ "mode": m }))
+}
+
+// ---------------------------------------------------------------------------
+// CLOUD AUTH (Anthropic OAuth login surface — mirrors `elai login` CLI command)
+// ---------------------------------------------------------------------------
+
+fn dashboard_oauth_config() -> elai_orchestrator::OAuthConfig {
+    elai_orchestrator::OAuthConfig {
+        client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
+        authorize_url: String::from("https://platform.claude.com/oauth/authorize"),
+        token_url: String::from("https://platform.claude.com/v1/oauth/token"),
+        callback_port: None,
+        manual_redirect_url: None,
+        scopes: vec![
+            String::from("user:profile"),
+            String::from("user:inference"),
+            String::from("user:sessions:elai"),
+        ],
+    }
+}
+
+const DASHBOARD_OAUTH_CALLBACK_PORT: u16 = 4545;
+const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 300;
+const OAUTH_LOGIN_COMPLETE_EVENT: &str = "oauth-login-complete";
+
+fn open_browser_for_url(url: &str) -> std::io::Result<()> {
+    let commands: Vec<(&str, Vec<&str>)> = if cfg!(target_os = "macos") {
+        vec![("open", vec![url])]
+    } else if cfg!(target_os = "windows") {
+        vec![("cmd", vec!["/C", "start", "", url])]
+    } else {
+        vec![("xdg-open", vec![url])]
+    };
+    for (program, args) in commands {
+        match std::process::Command::new(program).args(args).spawn() {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no supported browser opener command found",
+    ))
+}
+
+#[tauri::command]
+pub fn get_oauth_status() -> CmdResult<Value> {
+    match elai_orchestrator::load_oauth_credentials() {
+        Ok(Some(token_set)) => {
+            let anthropic_token = elai_providers::OAuthTokenSet {
+                access_token: token_set.access_token.clone(),
+                refresh_token: token_set.refresh_token.clone(),
+                expires_at: token_set.expires_at,
+                scopes: token_set.scopes.clone(),
+            };
+            let expired = elai_providers::oauth_token_is_expired(&anthropic_token);
+            Ok(json!({
+                "logged_in": !expired,
+                "display_name": Value::Null,
+                "expires_at": token_set.expires_at,
+                "scopes": token_set.scopes,
+                "expired": expired,
+            }))
+        }
+        Ok(None) => Ok(json!({
+            "logged_in": false,
+            "display_name": Value::Null,
+            "expires_at": Value::Null,
+            "scopes": Vec::<String>::new(),
+            "expired": false,
+        })),
+        Err(error) => Err(format!("failed to read credentials: {error}")),
+    }
+}
+
+#[tauri::command]
+pub async fn start_oauth_login(app: tauri::AppHandle) -> CmdResult<Value> {
+    let oauth_config = dashboard_oauth_config();
+    let port = oauth_config
+        .callback_port
+        .unwrap_or(DASHBOARD_OAUTH_CALLBACK_PORT);
+    let redirect_uri = elai_orchestrator::loopback_redirect_uri(port);
+
+    // Bind synchronously so a port conflict surfaces as a typed Tauri error
+    // before we open the browser. If we deferred the bind into the spawned
+    // task, the user would see the browser open but never get a callback.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|e| format!("failed to bind callback port {port}: {e}"))?;
+
+    let pkce = elai_orchestrator::generate_pkce_pair()
+        .map_err(|e| format!("pkce: {e}"))?;
+    let oauth_state = elai_orchestrator::generate_state()
+        .map_err(|e| format!("state: {e}"))?;
+    let authorize_url = elai_orchestrator::OAuthAuthorizationRequest::from_config(
+        &oauth_config,
+        redirect_uri.clone(),
+        oauth_state.clone(),
+        &pkce,
+    )
+    .build_url();
+
+    if let Err(error) = open_browser_for_url(&authorize_url) {
+        tracing::warn!(
+            error = %error,
+            "dashboard-v2: open_browser_for_url failed; user must paste auth_url manually"
+        );
+    }
+
+    let app_handle = app.clone();
+    let cfg_clone = oauth_config.clone();
+    let state_clone = oauth_state.clone();
+    let verifier_clone = pkce.verifier.clone();
+    let redirect_clone = redirect_uri.clone();
+    tokio::spawn(async move {
+        let result = perform_oauth_callback_flow(
+            listener,
+            &cfg_clone,
+            &state_clone,
+            &verifier_clone,
+            &redirect_clone,
+        )
+        .await;
+        let payload = match &result {
+            Ok(()) => json!({ "ok": true }),
+            Err(e) => json!({ "ok": false, "error": e }),
+        };
+        if let Err(emit_err) = app_handle.emit(OAUTH_LOGIN_COMPLETE_EVENT, payload) {
+            tracing::warn!(
+                error = %emit_err,
+                "dashboard-v2: failed to emit oauth-login-complete event"
+            );
+        }
+    });
+
+    Ok(json!({
+        "auth_url": authorize_url,
+        "callback_port": port,
+        "redirect_uri": redirect_uri,
+        "event": OAUTH_LOGIN_COMPLETE_EVENT,
+    }))
+}
+
+async fn perform_oauth_callback_flow(
+    listener: tokio::net::TcpListener,
+    oauth_config: &elai_orchestrator::OAuthConfig,
+    expected_state: &str,
+    pkce_verifier: &str,
+    redirect_uri: &str,
+) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut stream, _addr) = tokio::time::timeout(
+        std::time::Duration::from_secs(OAUTH_CALLBACK_TIMEOUT_SECS),
+        listener.accept(),
+    )
+    .await
+    .map_err(|_| {
+        format!("oauth callback timed out after {OAUTH_CALLBACK_TIMEOUT_SECS}s")
+    })?
+    .map_err(|e| format!("oauth callback accept failed: {e}"))?;
+
+    let mut buffer = vec![0u8; 4096];
+    let bytes_read = stream
+        .read(&mut buffer)
+        .await
+        .map_err(|e| format!("oauth callback read failed: {e}"))?;
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let request_line = request
+        .lines()
+        .next()
+        .ok_or_else(|| "callback request missing request line".to_string())?;
+    let target = request_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "callback request missing target".to_string())?;
+    let callback = elai_orchestrator::parse_oauth_callback_request_target(target)
+        .map_err(|e| format!("parse callback: {e}"))?;
+
+    let body = if callback.error.is_some() {
+        "OAuth login failed. You can close this window."
+    } else {
+        "OAuth login succeeded. You can close this window."
+    };
+    let response_text = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response_text.as_bytes()).await;
+    let _ = stream.shutdown().await;
+
+    if let Some(error) = callback.error {
+        let desc = callback
+            .error_description
+            .unwrap_or_else(|| "authorization failed".to_string());
+        return Err(format!("{error}: {desc}"));
+    }
+    let code = callback
+        .code
+        .ok_or_else(|| "callback missing authorization code".to_string())?;
+    let returned_state = callback
+        .state
+        .ok_or_else(|| "callback missing state".to_string())?;
+    if returned_state != expected_state {
+        return Err("oauth state mismatch — refusing token exchange".to_string());
+    }
+
+    let client = elai_providers::AnthropicClient::from_auth(elai_providers::AuthSource::None)
+        .with_base_url(elai_providers::read_base_url());
+    let exchange_request = elai_orchestrator::OAuthTokenExchangeRequest::from_config(
+        oauth_config,
+        code,
+        expected_state.to_string(),
+        pkce_verifier.to_string(),
+        redirect_uri.to_string(),
+    );
+    let token_set = client
+        .exchange_oauth_code(oauth_config, &exchange_request)
+        .await
+        .map_err(|e| format!("token exchange: {e}"))?;
+
+    elai_orchestrator::save_oauth_credentials(&elai_orchestrator::OAuthTokenSet {
+        access_token: token_set.access_token,
+        refresh_token: token_set.refresh_token,
+        expires_at: token_set.expires_at,
+        scopes: token_set.scopes,
+    })
+    .map_err(|e| format!("save credentials: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn do_oauth_logout() -> CmdResult<Value> {
+    elai_orchestrator::clear_oauth_credentials()
+        .map_err(|e| format!("clear credentials: {e}"))?;
+    Ok(json!({ "ok": true }))
+}
+
+// ---------------------------------------------------------------------------
+// CLOUD MODEL PICKER (Anthropic model ID used when execution_mode == CLOUD)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_cloud_model(state: State<'_, AppState>) -> CmdResult<Value> {
+    let model_id = state
+        .cloud_model_id
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| elai_providers::DEFAULT_CLOUD_MODEL_ID.to_owned());
+    Ok(json!({
+        "model_id": model_id,
+        "allowlist": elai_providers::cloud_model_id_allowlist(),
+        "default": elai_providers::DEFAULT_CLOUD_MODEL_ID,
+    }))
+}
+
+#[tauri::command]
+pub fn set_cloud_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> CmdResult<Value> {
+    let trimmed = model_id.trim();
+    if !elai_providers::is_valid_cloud_model_id(trimmed) {
+        return Err(format!(
+            "model_id '{trimmed}' is not in the cloud allowlist"
+        ));
+    }
+    elai_providers::save_cloud_model_id(trimmed)
+        .map_err(|e| format!("persist cloud_model_id: {e}"))?;
+    if let Ok(mut g) = state.cloud_model_id.lock() {
+        *g = trimmed.to_owned();
+    }
+    Ok(json!({ "ok": true, "model_id": trimmed }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2137,8 +2583,26 @@ pub async fn get_sidecar_health(state: State<'_, AppState>) -> CmdResult<Value> 
         .send()
         .await;
 
+    // /health response shape dual-support:
+    //   newer sidecar: {"status": "healthy"}  — check status == "healthy"
+    //   older sidecar: {"loaded": true}        — check loaded == true
+    // HTTP 4xx/5xx is always treated as not-loaded regardless of body.
     let alive = match health_result {
-        Ok(r) => r.status().is_success(),
+        Ok(r) if r.status().is_success() => {
+            let body: Value = r.json().await.unwrap_or(Value::Null);
+            // Prefer "status" field (current sidecar). Fall back to "loaded" (legacy).
+            let via_status = body
+                .get("status")
+                .and_then(|s| s.as_str())
+                .map(|s| s == "healthy")
+                .unwrap_or(false);
+            let via_loaded = body
+                .get("loaded")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            via_status || via_loaded
+        }
+        Ok(_) => false,
         Err(e) => {
             return Ok(json!({
                 "loaded": false,
@@ -2148,7 +2612,7 @@ pub async fn get_sidecar_health(state: State<'_, AppState>) -> CmdResult<Value> 
     };
 
     if !alive {
-        return Ok(json!({ "loaded": false, "error": "health endpoint returned non-2xx" }));
+        return Ok(json!({ "loaded": false, "error": "health endpoint returned non-2xx or unexpected body" }));
     }
 
     // Pull model metadata from /v1/models — head_dim and layers live here.
@@ -2434,20 +2898,56 @@ pub async fn reindex_now(
 
     let _ = app.emit("reindex-progress", json!({ "status": "started" }));
 
-    // Run the blocking IndexingService on a dedicated thread so the Tauri
-    // main thread is not blocked.
-    let result = tokio::task::spawn_blocking(move || {
+    // Run the blocking IndexingService + Tier-1 profile load on a dedicated thread
+    // so the Tauri main thread is not blocked. Profile detection walks the project
+    // tree on first call; subsequent calls hit the cached project-profile.toml.
+    let (index_result, profile_loaded) = tokio::task::spawn_blocking(move || {
         let indexes_dir = project_root.join(".elai_cc").join("indexes");
         let mut svc = elai_orchestrator::indexing_service::IndexingService::new(
             project_root.clone(),
             indexes_dir,
         );
-        svc.run_full_index()
+        let index_result = svc.run_full_index();
+
+        // Tier-1 ProjectProfile: idempotent load_or_detect. Persist on first detect
+        // (file missing) so subsequent reindexes load from cache. Any failure is
+        // logged via tracing and surfaced to the frontend as profile_loaded=false;
+        // it never blocks the index emit.
+        let profile_loaded = match &index_result {
+            Ok(_) => {
+                let profile_path = project_root.join("project-profile.toml");
+                let profile_existed = profile_path.exists();
+                match elai_knowledge::incremental_profile::load_or_detect_profile(&project_root) {
+                    Ok(profile) => {
+                        if !profile_existed {
+                            match elai_knowledge::project_profile::serialize_profile(&profile) {
+                                Ok(toml) => {
+                                    if let Err(e) = std::fs::write(&profile_path, toml) {
+                                        tracing::warn!(error = %e, "reindex_now: failed to persist project-profile.toml");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "reindex_now: failed to serialize ProjectProfile");
+                                }
+                            }
+                        }
+                        Some(true)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "reindex_now: load_or_detect_profile failed");
+                        Some(false)
+                    }
+                }
+            }
+            Err(_) => None,
+        };
+
+        (index_result, profile_loaded)
     })
     .await
     .map_err(|e| format!("reindex task panicked: {e}"))?;
 
-    match result {
+    match index_result {
         Ok(summary) => {
             let _ = app_clone.emit(
                 "reindex-progress",
@@ -2458,6 +2958,7 @@ pub async fn reindex_now(
                     "dkg_edges": summary.dkg_edges,
                     "bm25_files": summary.bm25_files,
                     "bm25_chunks": summary.bm25_chunks,
+                    "profile_loaded": profile_loaded.unwrap_or(false),
                 }),
             );
             Ok(json!({
@@ -2467,6 +2968,7 @@ pub async fn reindex_now(
                 "dkg_edges": summary.dkg_edges,
                 "bm25_files": summary.bm25_files,
                 "bm25_chunks": summary.bm25_chunks,
+                "profile_loaded": profile_loaded.unwrap_or(false),
             }))
         }
         Err(e) => {
@@ -2481,34 +2983,266 @@ pub async fn reindex_now(
 }
 
 // ---------------------------------------------------------------------------
-// D.2 — RUN PLANNING TASK (deferred — no library entry point yet)
+// D.2 — RUN PLANNING TASK
 // ---------------------------------------------------------------------------
+//
+// Architecture: the dashboard is an actuator, not an orchestrator host.
+// Writing a TaskSubmitted SSB row is the canonical entry point — the CLI-
+// launched task runner subscribes to the SSB broadcast and processes it.
+// The command also emits a `planning-progress` Tauri event so the frontend
+// can show immediate feedback without polling.
 
 #[tauri::command]
-pub async fn run_planning_task(_task: String) -> CmdResult<Value> {
-    // WebResearchRunner / planning pipeline not exposed as a library call.
-    // Use `elai.bat repl` and run /task inside the REPL session.
-    Err(
-        "run_planning_task: not yet implemented as a dashboard command. \
-         Use `elai.bat repl` and run /task inside the interactive REPL."
-            .to_owned(),
-    )
+pub async fn run_planning_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task: String,
+    project_id: Option<String>,
+) -> CmdResult<Value> {
+    let writer = state
+        .writer
+        .as_ref()
+        .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
+
+    let pid = project_id.unwrap_or_else(|| {
+        state
+            .project_id
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "default".to_owned())
+    });
+
+    let payload = SsbPayload::TaskSubmitted(TaskSubmittedPayload {
+        task: task.clone(),
+        project_id: pid.clone(),
+        submitted_at_ms: now_ms(&state),
+    });
+    let seq = writer
+        .write_payload("dashboard-v2", 0, payload, vec![])
+        .await
+        .map_err(map_err)?;
+
+    let request_id = format!("plan-{seq}");
+
+    let _ = app.emit(
+        "planning-progress",
+        json!({
+            "request_id": request_id,
+            "status":     "submitted",
+            "task":       task,
+            "project_id": pid,
+            "seq":        seq,
+            "note": "task written to SSB; task-runner will pick up and process it",
+        }),
+    );
+
+    Ok(json!({
+        "ok":        true,
+        "requestId": request_id,
+        "taskId":    format!("t-{seq}"),
+        "seq":       seq,
+    }))
+}
+
+/// Cancels a planning request by its `request_id`.  The dashboard submit path
+/// doesn't spawn a cancelable tokio task (the SSB row is already written and
+/// the task runner owns execution), so this is a no-op that returns
+/// `ok: false` with an explanatory reason. The cancel entry-point is provided
+/// for API symmetry with `cancel_research`.
+#[tauri::command]
+pub async fn cancel_planning_task(
+    _state: State<'_, AppState>,
+    request_id: String,
+) -> CmdResult<Value> {
+    Ok(json!({
+        "ok":        false,
+        "requestId": request_id,
+        "reason":    "planning tasks run in the CLI task-runner process; cancel via SSB intervention",
+    }))
 }
 
 // ---------------------------------------------------------------------------
-// D.3 — RUN RESEARCH (deferred — pipeline requires REPL context)
+// D.3 — RUN RESEARCH
 // ---------------------------------------------------------------------------
+//
+// Architecture: `DefaultWebResearchRunner` from elai-orchestrator is a
+// self-contained async computation that requires no task-runner loop.  We
+// construct it from three process-level inputs (ResearchTierConfig defaulting
+// to Vram12Gb, the sidecar search URL from AppState, and the OsClock) and
+// drive it in a tokio task.  A `TauriWebResearchStepEmitter` bridges the
+// orchestrator's per-iteration callbacks to `research-progress` Tauri events.
+// The AbortHandle is stored in `state.active_streams` so `cancel_research`
+// can terminate the run.
+
+/// Tauri-event-backed step emitter — bridges WebResearchOrchestrator per-
+/// iteration callbacks to `research-progress` events on the Tauri app handle.
+struct TauriWebResearchStepEmitter {
+    app: tauri::AppHandle,
+    request_id: String,
+}
+
+impl elai_orchestrator::web_research_orchestrator::WebResearchStepEmitter
+    for TauriWebResearchStepEmitter
+{
+    fn emit(
+        &self,
+        event: elai_orchestrator::web_research_orchestrator::WebResearchStepEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let app = self.app.clone();
+        let request_id = self.request_id.clone();
+        Box::pin(async move {
+            let _ = app.emit(
+                "research-progress",
+                json!({
+                    "request_id":      request_id,
+                    "node_id":         event.node_id,
+                    "action":          event.action,
+                    "phi":             event.phi,
+                    "psi":             event.psi,
+                    "iteration":       event.iteration,
+                    "sources_fetched": event.sources_fetched,
+                    "sources_used":    event.sources_used,
+                    "fetcher":         event.fetcher,
+                }),
+            );
+        })
+    }
+}
 
 #[tauri::command]
-pub async fn run_research(_query: String) -> CmdResult<Value> {
-    // run_research_pipeline is a CLI-level function in elai-cli, which is
-    // intentionally excluded from dashboard-v2 deps (binary size).
-    // Use `elai.bat repl` and run /research inside the REPL session.
-    Err(
-        "run_research: not yet implemented as a dashboard command. \
-         Use `elai.bat repl` and run /research inside the interactive REPL."
-            .to_owned(),
-    )
+pub async fn run_research(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+    depth: Option<u32>,
+    breadth: Option<u32>,
+) -> CmdResult<Value> {
+    use std::sync::Arc;
+    use elai_orchestrator::{DefaultWebResearchRunner, WebResearchRunner};
+    use elai_orchestrator::research_tier::research_config_for_tier;
+    use elai_core::VramTier;
+
+    let request_id = format!(
+        "research-{}",
+        state
+            .clock
+            .system_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    // Resolve the SearXNG search URL from the sidecar URL (search proxy shares
+    // the same host as the sidecar). Fall back to the crate default.
+    let searx_url = {
+        let base = state
+            .sidecar_url
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| elai_providers::DEFAULT_SIDECAR_URL.to_owned());
+        // SearXNG is proxied through the sidecar on the same host/port.
+        base.trim_end_matches('/').to_owned()
+    };
+
+    // Build a ResearchTierConfig defaulting to the 12 GB tier (matches the
+    // remote RTX 3090 24 GB box — conservative to stay within context budget).
+    // Override breadth_factor and depth_limit when the caller supplies values.
+    let mut tier_cfg = research_config_for_tier(VramTier::Vram12Gb);
+    if let Some(d) = depth {
+        tier_cfg.depth_limit = d as usize;
+    }
+    if let Some(b) = breadth {
+        tier_cfg.breadth_factor = b as usize;
+    }
+
+    let clock = state.clock.clone();
+    // Wrap in Arc<dyn WebResearchRunner> so the future returned by .run(&self)
+    // can borrow from the Arc (which outlives the future inside the spawned
+    // task). Without Arc, the future's '_ lifetime would outlive the local.
+    let runner: Arc<dyn WebResearchRunner> =
+        Arc::new(DefaultWebResearchRunner::new(tier_cfg, &searx_url, clock));
+
+    let emitter: Arc<dyn elai_orchestrator::web_research_orchestrator::WebResearchStepEmitter> =
+        Arc::new(TauriWebResearchStepEmitter {
+            app: app.clone(),
+            request_id: request_id.clone(),
+        });
+
+    let request_id_task = request_id.clone();
+    let active_streams = state.active_streams.clone();
+    let app_task = app.clone();
+    let query_task = query.clone();
+
+    let join = tokio::task::spawn(async move {
+        // runner is moved into the task; the future from .run() borrows runner
+        // via Arc deref, which is valid for the duration of this block.
+        let result = runner.run(query_task, emitter).await;
+        match result {
+            Ok(summary) => {
+                let _ = app_task.emit(
+                    "research-done",
+                    json!({
+                        "request_id":    request_id_task,
+                        "status":        "ok",
+                        "iterations":    summary.iterations,
+                        "result_status": summary.status,
+                        "sources_used":  summary.sources_used,
+                    }),
+                );
+            }
+            Err(e) => {
+                let _ = app_task.emit(
+                    "research-done",
+                    json!({
+                        "request_id": request_id_task,
+                        "status":     "error",
+                        "error":      e,
+                    }),
+                );
+            }
+        }
+        if let Ok(mut g) = active_streams.lock() {
+            g.remove(&request_id_task);
+        }
+    });
+
+    if let Ok(mut guard) = state.active_streams.lock() {
+        guard.insert(request_id.clone(), join.abort_handle());
+    }
+
+    let _ = app.emit(
+        "research-progress",
+        json!({
+            "request_id": request_id,
+            "action":     "started",
+            "query":      query,
+        }),
+    );
+
+    Ok(json!({
+        "ok":        true,
+        "requestId": request_id,
+    }))
+}
+
+/// Aborts an active research task by its `request_id`.
+#[tauri::command]
+pub async fn cancel_research(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> CmdResult<Value> {
+    let handle = state
+        .active_streams
+        .lock()
+        .ok()
+        .and_then(|mut g| g.remove(&request_id));
+    match handle {
+        Some(h) => {
+            h.abort();
+            Ok(json!({ "ok": true, "requestId": request_id }))
+        }
+        None => Ok(json!({ "ok": false, "requestId": request_id, "reason": "not found" })),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2547,31 +3281,342 @@ pub fn fetch_settings_set(
     Ok(json!({ "ok": true, "path": config_path.display().to_string() }))
 }
 
-/// Deferred: obscura_test_fetch is a web-search validation flow that requires
-/// the web_search crate's ObscuraClient which is not exposed via HTTP.
+// ---------------------------------------------------------------------------
+// D.4 — OBSCURA TEST FETCH
+// ---------------------------------------------------------------------------
+//
+// ObscuraFetcher lives in crates/web_search which is NOT a direct dep of
+// this crate (dashboard-v2 depends on orchestrator/sidecar, not
+// orchestrator/obscura). We therefore spawn the obscura subprocess directly
+// here — same approach as ObscuraFetcher.fetch() in web_search/src/obscura_fetcher.rs.
+//
+// Binary resolution order:
+//   1. OBSCURA_PATH env var.
+//   2. Windows: cwd-relative tools/obscura/obscura.exe, then absolute project path.
+//   3. Non-Windows: "obscura" on PATH.
+//
+// Required env: none (binary path only). Returns a structured error when the
+// binary is absent so the frontend can surface a diagnostic.
+
+/// Maximum bytes to stream from obscura stdout (5 MB). Matches web_search crate.
+const D4_OBSCURA_MAX_BYTES: usize = 5 * 1024 * 1024;
+/// Read chunk size for streaming loop (64 KiB).
+const D4_OBSCURA_CHUNK: usize = 64 * 1024;
+/// Default timeout passed to obscura --timeout (seconds).
+const D4_OBSCURA_TIMEOUT_SECS: u64 = 30;
+
+fn d4_resolve_obscura_binary() -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    // Step 1: explicit env override.
+    if let Ok(env_path) = std::env::var("OBSCURA_PATH") {
+        if !env_path.trim().is_empty() {
+            let p = PathBuf::from(&env_path);
+            if p.exists() {
+                return Ok(p);
+            }
+            return Err(format!(
+                "OBSCURA_PATH env var points to non-existent path: {}",
+                p.display()
+            ));
+        }
+    }
+    // Step 2 (Windows): project-relative then absolute fallback.
+    #[cfg(target_os = "windows")]
+    {
+        let rel = PathBuf::from("tools").join("obscura").join("obscura.exe");
+        if rel.exists() {
+            return Ok(rel);
+        }
+        let abs = PathBuf::from(r"D:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe");
+        if abs.exists() {
+            return Ok(abs);
+        }
+        return Err(format!(
+            "obscura binary not found; searched '{}' and '{}'",
+            rel.display(),
+            abs.display()
+        ));
+    }
+    // Step 3 (non-Windows): scan PATH.
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(path_var) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join("obscura");
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+        Err("obscura not found in PATH".to_owned())
+    }
+}
+
+/// Spawns the obscura headless-browser CLI to fetch `url` and returns the
+/// rendered HTML (or a structured error). URL must start with http:// or
+/// https:// and must not contain whitespace. Returns JSON:
+///   { "ok": true,  "html": "...", "truncated": bool, "fetch_time_ms": u64 }
+///   { "ok": false, "error": "..." }
+///
+/// Required env: none mandatory. OBSCURA_PATH overrides binary path.
 #[tauri::command]
-pub async fn obscura_test_fetch(_url: String) -> CmdResult<Value> {
-    Err(
-        "obscura_test_fetch: deferred — use web_validator crate directly or \
-         run /search inside the REPL."
-            .to_owned(),
-    )
+pub async fn obscura_test_fetch(url: String) -> CmdResult<Value> {
+    use tokio::io::AsyncReadExt;
+
+    // URL validation — reject before spawning subprocess.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Ok(json!({
+            "ok": false,
+            "error": "URL must start with http:// or https://"
+        }));
+    }
+    if url.chars().any(|c| c.is_whitespace()) {
+        return Ok(json!({
+            "ok": false,
+            "error": "URL must not contain whitespace"
+        }));
+    }
+
+    let binary = match d4_resolve_obscura_binary() {
+        Ok(p) => p,
+        Err(e) => return Ok(json!({ "ok": false, "error": e })),
+    };
+
+    let start = std::time::Instant::now();
+
+    let mut child = match tokio::process::Command::new(&binary)
+        .arg("fetch")
+        .arg(&url)
+        .arg("--dump")
+        .arg("html")
+        .arg("--timeout")
+        .arg(D4_OBSCURA_TIMEOUT_SECS.to_string())
+        .arg("--stealth")
+        .arg("--quiet")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let reason = if e.kind() == std::io::ErrorKind::NotFound {
+                format!("obscura binary not found at '{}': {e}", binary.display())
+            } else {
+                format!("failed to spawn obscura: {e}")
+            };
+            return Ok(json!({ "ok": false, "error": reason }));
+        }
+    };
+
+    // Stream stdout with hard cap — avoids OOM on large pages.
+    // stdout is always Some because we set Stdio::piped() above.
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        "internal: stdout handle absent after piped() call".to_owned()
+    })?;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(D4_OBSCURA_CHUNK);
+    let mut chunk = vec![0u8; D4_OBSCURA_CHUNK];
+    let mut truncated = false;
+
+    loop {
+        let n = match stdout.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(e) => {
+                return Ok(json!({ "ok": false, "error": format!("read error: {e}") }));
+            }
+        };
+        if n == 0 {
+            break; // EOF
+        }
+        let remaining = D4_OBSCURA_MAX_BYTES.saturating_sub(buf.len());
+        if n > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            let _ = child.kill().await;
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+
+    if !truncated {
+        match child.wait().await {
+            Ok(status) if !status.success() => {
+                let code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                return Ok(json!({ "ok": false, "error": format!("obscura exited {code}") }));
+            }
+            Err(e) => {
+                return Ok(json!({ "ok": false, "error": format!("wait error: {e}") }));
+            }
+            Ok(_) => {}
+        }
+    }
+
+    if buf.is_empty() {
+        return Ok(json!({ "ok": false, "error": "obscura returned empty output" }));
+    }
+
+    let fetch_time_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let html = String::from_utf8_lossy(&buf).into_owned();
+
+    Ok(json!({
+        "ok": true,
+        "html": html,
+        "truncated": truncated,
+        "fetch_time_ms": fetch_time_ms,
+    }))
 }
 
 // ---------------------------------------------------------------------------
-// D.5 — RUN D5 LIVE CONTRACT (deferred — ELAI_LIVE_SIDECAR gated)
+// D.5 — RUN D5 LIVE CONTRACT
 // ---------------------------------------------------------------------------
+//
+// Spawns `cargo test -p elai_cc_contracts [--test <test_name>]` with
+// ELAI_LIVE_SIDECAR=1 and ANTHROPIC_BASE_URL=http://localhost:8100.
+// Stdout and stderr are interleaved and streamed to Tauri events:
+//   `d5-progress:{request_id}` — { line: String, ts_ms: i64 }
+//   `d5-complete:{request_id}` — { exit_code: i32 | null, ts_ms: i64 }
+//
+// Returns `{ "requestId": "<id>" }` immediately so the frontend can attach
+// a listener before the first output line arrives.
+//
+// The task AbortHandle is stored in state.active_streams so that
+// cancel_d5_live_contract can stop it.
 
+/// Spawns contract tests with ELAI_LIVE_SIDECAR=1 and streams output via
+/// Tauri events. `test_name` selects a specific `--test` integration test file;
+/// omit to run all contract tests under `-p elai_cc_contracts`.
 #[tauri::command]
-pub async fn run_d5_live_contract() -> CmdResult<Value> {
-    // D.5 contract tests require ELAI_LIVE_SIDECAR=1 and a running sidecar.
-    // They are invoked by the auditor sub-process, not the dashboard.
-    // Deferred to a future maintenance phase.
-    Err(
-        "run_d5_live_contract: deferred — requires ELAI_LIVE_SIDECAR=1 and \
-         a running sidecar. Run via the auditor agent, not the dashboard."
-            .to_owned(),
-    )
+pub async fn run_d5_live_contract(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    test_name: Option<String>,
+) -> CmdResult<Value> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let request_id = format!("d5-{}", now_ms_raw());
+    let rid_event = request_id.clone();
+    let app_task = app.clone();
+
+    let mut args: Vec<String> = vec![
+        "test".to_owned(),
+        "-p".to_owned(),
+        "elai_cc_contracts".to_owned(),
+    ];
+    if let Some(ref name) = test_name {
+        args.push("--test".to_owned());
+        args.push(name.clone());
+    }
+
+    let join = tokio::task::spawn(async move {
+        let mut child = match tokio::process::Command::new("cargo")
+            .args(&args)
+            .env("ELAI_LIVE_SIDECAR", "1")
+            .env("ANTHROPIC_BASE_URL", "http://localhost:8100")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_task.emit(
+                    &format!("d5-complete:{rid_event}"),
+                    json!({ "exit_code": null, "error": e.to_string(), "ts_ms": now_ms_raw() }),
+                );
+                return;
+            }
+        };
+
+        // Merge stdout + stderr via separate tasks feeding a channel.
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<String>(256);
+
+        // stdout reader task.
+        let tx_out = tx.clone();
+        let stdout_handle = child.stdout.take().map(|s| {
+            tokio::task::spawn(async move {
+                let mut lines = BufReader::new(s).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx_out.send(line).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+
+        // stderr reader task.
+        let tx_err = tx;
+        let stderr_handle = child.stderr.take().map(|s| {
+            tokio::task::spawn(async move {
+                let mut lines = BufReader::new(s).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx_err.send(line).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+
+        // Forward lines to frontend via Tauri events.
+        let progress_event = format!("d5-progress:{rid_event}");
+        while let Some(line) = rx.recv().await {
+            let _ = app_task.emit(
+                &progress_event,
+                json!({ "line": line, "ts_ms": now_ms_raw() }),
+            );
+        }
+
+        // Wait for reader tasks to finish.
+        if let Some(h) = stdout_handle {
+            let _ = h.await;
+        }
+        if let Some(h) = stderr_handle {
+            let _ = h.await;
+        }
+
+        let exit_code: Option<i32> = match child.wait().await {
+            Ok(status) => status.code(),
+            Err(_) => None,
+        };
+
+        let _ = app_task.emit(
+            &format!("d5-complete:{rid_event}"),
+            json!({ "exit_code": exit_code, "ts_ms": now_ms_raw() }),
+        );
+    });
+
+    // Store the abort handle so cancel_d5_live_contract can stop the task.
+    if let Ok(mut g) = state.active_streams.lock() {
+        g.insert(request_id.clone(), join.abort_handle());
+    }
+
+    Ok(json!({ "requestId": request_id }))
+}
+
+/// Aborts an in-flight `run_d5_live_contract` task by its `request_id`.
+#[tauri::command]
+pub async fn cancel_d5_live_contract(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> CmdResult<Value> {
+    let handle = state
+        .active_streams
+        .lock()
+        .ok()
+        .and_then(|mut g| g.remove(&request_id));
+    match handle {
+        Some(h) => {
+            h.abort();
+            Ok(json!({ "ok": true, "request_id": request_id }))
+        }
+        None => Ok(json!({
+            "ok": false,
+            "request_id": request_id,
+            "reason": "not found or already complete"
+        })),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2656,6 +3701,51 @@ const MODEL_HIDDEN_TOOL_NAMES: &[&str] = &[
 pub fn get_tool_visibility() -> CmdResult<Value> {
     let hidden: Vec<&str> = MODEL_HIDDEN_TOOL_NAMES.to_vec();
     Ok(json!({ "hidden_tools": hidden }))
+}
+
+// ---------------------------------------------------------------------------
+// B-18 — SANDBOX TIER STATUS
+// ---------------------------------------------------------------------------
+
+/// Returns the effective sandbox tier and per-agent profile/path counts.
+///
+/// Tier detection at runtime (compile-time cfg gating):
+///   "C-Windows"  — cfg(target_os="windows"): AppContainer available
+///   "C-Linux"    — cfg(target_os="linux"): seccomp/namespace available
+///   "A++"        — neither (in-process, no OS isolation)
+///
+/// profile_count: number of active per-agent AppContainer profiles (B-18 P2 MVP = 0 or 1)
+/// allowed_paths_per_agent: per-role allowed_paths counts from role_default_allowed_paths
+/// last_visibility_filter_hit_ms: not tracked yet (requires SSB VisibilityFilterHit action type)
+#[tauri::command]
+pub fn get_sandbox_status(_state: State<'_, AppState>) -> CmdResult<Value> {
+    #[cfg(target_os = "windows")]
+    let tier = "C-Windows";
+    #[cfg(target_os = "linux")]
+    let tier = "C-Linux";
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let tier = "A++";
+
+    // Per-role path counts from B-18 P3 role_default_allowed_paths.
+    // These reflect the defaults set at spawn time; actual values depend on
+    // project_path which is not in AppState here. We report the structure only.
+    let allowed_paths_per_agent = vec![
+        json!({ "role": "Executor",        "path_count": 1 }),
+        json!({ "role": "Auditor",         "path_count": 2 }),
+        json!({ "role": "ContextCompiler", "path_count": 2 }),
+        json!({ "role": "Researcher",      "path_count": 2 }),
+        json!({ "role": "Designer",        "path_count": 1 }),
+        json!({ "role": "PromptEngineer",  "path_count": 1 }),
+        json!({ "role": "MemoryWriter",    "path_count": 1 }),
+        json!({ "role": "MediaValidator",  "path_count": 1 }),
+    ];
+
+    Ok(json!({
+        "tier": tier,
+        "profile_count": 0_u32,
+        "allowed_paths_per_agent": allowed_paths_per_agent,
+        "last_visibility_filter_hit_ms": null,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2956,5 +4046,587 @@ pub async fn cancel_remote_sidecar(
             Ok(json!({ "ok": true, "request_id": request_id }))
         }
         None => Ok(json!({ "ok": false, "request_id": request_id, "reason": "not found or already done" })),
+    }
+}
+
+// ===========================================================================
+// PHASE A (s-69820) — WEB SCAFFOLD + DEV SERVER + FIM SECTION FILL
+// ===========================================================================
+// Six commands that wire dashboard-v2 to the existing `scaffold` crate,
+// `elai-web-validator` crate, and the sidecar `/v1/completions` endpoint.
+//
+//   list_scaffold_templates            — read templates/web/manifest.toml
+//   apply_scaffold_template            — run scaffold::apply_template_from_root
+//   fim_fill_section                   — splice a FIM region via sidecar
+//   run_web_build_check                — npm run build + output_dir check
+//   start_dev_server_for_project       — spawn vite dev server, register handle
+//   stop_dev_server_for_project        — drop handle, kill child
+//
+// All inputs are canonicalised at the boundary; template names are
+// rejected if they contain path separators (no traversal via the UI).
+// ===========================================================================
+
+const FIM_SIDECAR_MAX_TOKENS: u32 = 512;
+const FIM_SIDECAR_TEMPERATURE: f32 = 0.2;
+const FIM_SIDECAR_PATH: &str = "/v1/completions";
+const FIM_SIDECAR_TIMEOUT_SECS: u64 = 30;
+
+fn validate_template_name(name: &str) -> CmdResult<&str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("template name is empty".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return Err(format!(
+            "template name contains path separators or '..': {trimmed:?}"
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn validate_existing_path(raw: &str, label: &str) -> CmdResult<std::path::PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} is empty"));
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err(format!("{label} does not exist: {trimmed}"));
+    }
+    path.canonicalize()
+        .map_err(|e| format!("{label} canonicalize failed: {e}"))
+}
+
+/// Phase A audit BLOCK fix (s-69820): bound a candidate path inside the
+/// active project root so an XSS/injection from the frontend cannot drive
+/// `apply_scaffold_template` / `fim_fill_section` / `run_web_build_check`
+/// at arbitrary filesystem targets like `C:\\Windows\\System32\\drivers\\etc\\hosts`.
+///
+/// Handles the apply_scaffold case (target dir does not yet exist) by
+/// canonicalising the *parent* directory and rejoining the final
+/// component — `Path::canonicalize` requires the path to exist.
+fn ensure_within_project_root(
+    candidate: &std::path::Path,
+    project_root: &std::path::Path,
+    label: &str,
+) -> CmdResult<std::path::PathBuf> {
+    let project_canon = project_root
+        .canonicalize()
+        .map_err(|e| format!("project_root canonicalize failed: {e}"))?;
+
+    let candidate_canon = if candidate.exists() {
+        candidate
+            .canonicalize()
+            .map_err(|e| format!("{label} canonicalize failed: {e}"))?
+    } else {
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| format!("{label} has no parent directory: {}", candidate.display()))?;
+        let name = candidate
+            .file_name()
+            .ok_or_else(|| format!("{label} has no final component: {}", candidate.display()))?;
+        let parent_canon = parent
+            .canonicalize()
+            .map_err(|e| format!("{label} parent canonicalize failed: {e}"))?;
+        parent_canon.join(name)
+    };
+
+    if !candidate_canon.starts_with(&project_canon) {
+        return Err(format!(
+            "{label} {} escapes project root {}",
+            candidate_canon.display(),
+            project_canon.display()
+        ));
+    }
+    Ok(candidate_canon)
+}
+
+#[tauri::command]
+pub fn list_scaffold_templates(_state: State<'_, AppState>) -> CmdResult<Value> {
+    let root = default_templates_dir();
+    let manifest_path = root.join(scaffold::MANIFEST_FILENAME);
+    let manifest = scaffold::load_manifest(&manifest_path)
+        .map_err(|e| format!("load_manifest({}): {e}", manifest_path.display()))?;
+
+    let mut out: Vec<Value> = Vec::with_capacity(manifest.templates.len());
+    for entry in manifest.templates {
+        let template_dir = root.join(&entry.name);
+        let assets_path = template_dir.join("assets").join("assets.json");
+        let assets_count = match std::fs::read(&assets_path) {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(v) => count_assets(&v),
+                Err(_) => 0,
+            },
+            Err(_) => 0,
+        };
+
+        // Audit fix (s-69820): real file count, walked once per template.
+        // Bounded depth (no symlink follow) keeps this O(template size),
+        // typical templates are <30 files so the cost is negligible.
+        let files_count = count_files_recursive(&template_dir);
+
+        out.push(json!({
+            "id": entry.name,
+            "label": entry.name,
+            "framework": entry.languages.first().cloned().unwrap_or_default(),
+            "description": entry.description,
+            "sections": entry.sections,
+            "build_command": entry.build_command,
+            "dev_command": entry.dev_command,
+            "dev_port": entry.dev_port,
+            "recommended_for": entry.recommended_for,
+            "theme_system": entry.theme_system,
+            "validation_commands": entry.validation_commands,
+            "assets_count": assets_count,
+            "files_count": files_count,
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// Phase A audit fix (s-69820): walk a template directory and count files.
+/// Skips errors silently — the worst case is a smaller-than-actual count
+/// rendered in the drawer (UX-only, not a correctness boundary). Symlinks
+/// are not followed (would risk loops if a template ever contains one).
+fn count_files_recursive(dir: &std::path::Path) -> u32 {
+    let mut count: u32 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let entries = match std::fs::read_dir(&d) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() {
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    count
+}
+
+fn count_assets(v: &Value) -> u32 {
+    let mut count: u32 = 0;
+    if v
+        .get("logo")
+        .and_then(|l| l.get("src"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        count += 1;
+    }
+    if v
+        .get("favicon")
+        .and_then(|f| f.get("src"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        count += 1;
+    }
+    if let Some(arr) = v.get("images").and_then(|i| i.as_array()) {
+        count = count.saturating_add(arr.len() as u32);
+    }
+    count
+}
+
+#[tauri::command]
+pub fn apply_scaffold_template(
+    state: State<'_, AppState>,
+    template: String,
+    target_dir: String,
+    project_name: Option<String>,
+    description: Option<String>,
+) -> CmdResult<Value> {
+    let template_name = validate_template_name(&template)?.to_owned();
+    let target_raw = std::path::PathBuf::from(target_dir.trim());
+    if target_raw.as_os_str().is_empty() {
+        return Err("target_dir is empty".into());
+    }
+
+    let target =
+        ensure_within_project_root(&target_raw, &state.project_root, "target_dir")?;
+
+    let templates_root = default_templates_dir();
+    let vars = scaffold::default_build_vars(
+        "",
+        project_name.as_deref(),
+        description.as_deref(),
+        None,
+    );
+    scaffold::apply_template_from_root(&templates_root, &template_name, &target, &vars)
+        .map_err(|e| format!("apply_template({template_name}): {e}"))?;
+
+    Ok(json!({
+        "ok": true,
+        "template": template_name,
+        "target_dir": target.display().to_string(),
+        "templates_root": templates_root.display().to_string(),
+    }))
+}
+
+#[tauri::command]
+pub async fn fim_fill_section(
+    state: State<'_, AppState>,
+    target_path: String,
+    hint: String,
+) -> CmdResult<Value> {
+    let canonical = validate_existing_path(&target_path, "target_path")?;
+    let canonical =
+        ensure_within_project_root(&canonical, &state.project_root, "target_path")?;
+
+    let original = tokio::fs::read_to_string(&canonical)
+        .await
+        .map_err(|e| format!("read {}: {e}", canonical.display()))?;
+    let splice = scaffold::find_fim_section(&original)
+        .map_err(|e| format!("FIM marker scan failed: {e}"))?;
+
+    let url = state
+        .sidecar_url
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| elai_providers::DEFAULT_SIDECAR_URL.to_owned());
+    let endpoint = format!("{}{}", url.trim_end_matches('/'), FIM_SIDECAR_PATH);
+
+    let primary_prompt = scaffold::build_qwen_fim_prompt(&splice, &hint);
+    let primary = post_completion(&state.http, &endpoint, &primary_prompt).await;
+
+    let raw = match primary {
+        Ok(text) if !text.trim().is_empty() => Some(("special_tokens", text)),
+        _ => None,
+    };
+    let (strategy, raw_text) = match raw {
+        Some(v) => v,
+        None => {
+            let fallback_prompt = scaffold::build_instruction_fim_prompt(&splice, &hint);
+            let text = post_completion(&state.http, &endpoint, &fallback_prompt)
+                .await
+                .map_err(|e| format!("FIM fallback request failed: {e}"))?;
+            if text.trim().is_empty() {
+                return Err("sidecar returned empty fill in both strategies".into());
+            }
+            ("instruction_fallback", text)
+        }
+    };
+
+    let cleaned = scaffold::strip_fim_artifacts(&raw_text);
+    if cleaned.trim().is_empty() {
+        return Err("sidecar fill collapsed to empty after artifact stripping".into());
+    }
+
+    let merged = scaffold::splice_fim_section(&splice, cleaned.trim());
+    tokio::fs::write(&canonical, merged.as_bytes())
+        .await
+        .map_err(|e| format!("write {}: {e}", canonical.display()))?;
+
+    Ok(json!({
+        "ok": true,
+        "strategy": strategy,
+        "target_path": canonical.display().to_string(),
+        "fill_chars": cleaned.trim().chars().count() as u64,
+    }))
+}
+
+async fn post_completion(
+    http: &reqwest::Client,
+    endpoint: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let body = json!({
+        "model": "qwen",
+        "prompt": prompt,
+        "max_tokens": FIM_SIDECAR_MAX_TOKENS,
+        "temperature": FIM_SIDECAR_TEMPERATURE,
+    });
+    let resp = http
+        .post(endpoint)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(FIM_SIDECAR_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| format!("sidecar POST failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("sidecar HTTP {}", resp.status()));
+    }
+    let value = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("sidecar JSON decode failed: {e}"))?;
+    let text = value
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("text"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| "sidecar response missing choices[0].text".to_owned())?
+        .to_owned();
+    Ok(text)
+}
+
+#[tauri::command]
+pub async fn run_web_build_check(
+    state: State<'_, AppState>,
+    project_dir: String,
+    command: String,
+    output_dir: String,
+) -> CmdResult<Value> {
+    let project_path = validate_existing_path(&project_dir, "project_dir")?;
+    let project_path =
+        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+    let trimmed_cmd = command.trim();
+    if trimmed_cmd.is_empty() {
+        return Err("command is empty".into());
+    }
+    let raw_output = std::path::PathBuf::from(output_dir.trim());
+    if raw_output.as_os_str().is_empty() {
+        return Err("output_dir is empty".into());
+    }
+    // Resolve output_dir relative to the project_path (the convention for
+    // npm build artefacts: `dist/`, `build/`, etc.) and bound it inside
+    // project_root just like the project_dir was.
+    let resolved_output = if raw_output.is_absolute() {
+        raw_output
+    } else {
+        project_path.join(raw_output)
+    };
+    let output_path =
+        ensure_within_project_root(&resolved_output, &state.project_root, "output_dir")?;
+
+    let result = elai_web_validator::run_web_build(&project_path, trimmed_cmd, &output_path)
+        .await
+        .map_err(|e| format!("web build failed: {e}"))?;
+
+    Ok(json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "output_dir": result.output_dir.display().to_string(),
+        "stderr_errors": result.stderr_errors,
+    }))
+}
+
+#[tauri::command]
+pub async fn start_dev_server_for_project(
+    state: State<'_, AppState>,
+    project_dir: String,
+    command: String,
+    port: u16,
+) -> CmdResult<Value> {
+    if port == 0 {
+        return Err("port must be > 0".into());
+    }
+    let project_path = validate_existing_path(&project_dir, "project_dir")?;
+    let project_path =
+        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+    let trimmed_cmd = command.trim();
+    if trimmed_cmd.is_empty() {
+        return Err("command is empty".into());
+    }
+    let key = project_path.display().to_string();
+
+    // Hold the registry lock across the spawn await — `tokio::sync::Mutex`
+    // makes this safe (audit BLOCK fix). Two concurrent invocations now
+    // serialise: the second blocks on `lock().await` until the first has
+    // either inserted the handle or returned an error, eliminating the
+    // double-spawn / orphaned-child race that std::sync::Mutex permitted.
+    let mut guard = state.dev_servers.lock().await;
+    if guard.contains_key(&key) {
+        return Err(format!(
+            "dev server already running for project {key:?}; call stop_dev_server_for_project first"
+        ));
+    }
+
+    let handle = elai_web_validator::start_dev_server(&project_path, trimmed_cmd, port)
+        .await
+        .map_err(|e| format!("start_dev_server failed: {e}"))?;
+
+    let pid = handle.pid();
+    let bound_port = handle.port();
+    guard.insert(key.clone(), handle);
+
+    Ok(json!({
+        "ok": true,
+        "project_id": key,
+        "pid": pid,
+        "port": bound_port,
+    }))
+}
+
+#[tauri::command]
+pub async fn stop_dev_server_for_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> CmdResult<Value> {
+    let key = project_id.trim();
+    if key.is_empty() {
+        return Err("project_id is empty".into());
+    }
+    let removed = {
+        let mut guard = state.dev_servers.lock().await;
+        guard.remove(key)
+    };
+    let handle = match removed {
+        Some(h) => h,
+        None => {
+            return Ok(json!({
+                "ok": false,
+                "reason": "no dev server registered for that project",
+                "project_id": key,
+            }))
+        }
+    };
+    elai_web_validator::stop_dev_server(handle)
+        .await
+        .map_err(|e| format!("stop_dev_server failed: {e}"))?;
+    Ok(json!({
+        "ok": true,
+        "project_id": key,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Phase B (s-44680) — WEB LINT (B2) + WEB PERFORMANCE / LIGHTHOUSE (B3+B4)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn run_web_lint_check(
+    state: State<'_, AppState>,
+    project_dir: String,
+    eslint: bool,
+    stylelint: bool,
+    axe: bool,
+) -> CmdResult<Value> {
+    let project_path = validate_existing_path(&project_dir, "project_dir")?;
+    let project_path =
+        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+    let cfg = elai_web_validator::lint::LintRunnerConfig {
+        eslint,
+        stylelint,
+        axe,
+        skip_missing_packages: true,
+    };
+    let findings = elai_web_validator::lint::run_web_lint(&project_path, &cfg)
+        .await
+        .map_err(|e| format!("run_web_lint failed: {e}"))?;
+
+    let value = serde_json::to_value(&findings)
+        .map_err(|e| format!("serialize lint findings: {e}"))?;
+    let tool_count = [eslint, stylelint, axe].iter().filter(|x| **x).count();
+    Ok(json!({
+        "ok": true,
+        "project_dir": project_path.display().to_string(),
+        "tool_count": tool_count,
+        "findings": value,
+    }))
+}
+
+#[tauri::command]
+pub async fn run_lighthouse_audit(
+    state: State<'_, AppState>,
+    project_dir: String,
+    url: String,
+) -> CmdResult<Value> {
+    let project_path = validate_existing_path(&project_dir, "project_dir")?;
+    let project_path =
+        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+    let trimmed_url = url.trim();
+    if trimmed_url.is_empty() {
+        return Err("url is empty".into());
+    }
+    let report = elai_web_validator::cwv::run_lighthouse(&project_path, trimmed_url)
+        .await
+        .map_err(|e| format!("run_lighthouse failed: {e}"))?;
+    Ok(json!({
+        "ok": true,
+        "project_dir": project_path.display().to_string(),
+        "url": trimmed_url,
+        "lcp_ms": report.lcp_ms,
+        "cls": report.cls,
+        "inp_ms": report.inp_ms,
+        "perf_score": report.perf_score,
+    }))
+}
+
+#[tauri::command]
+pub async fn probe_chromium_runtime() -> CmdResult<Value> {
+    match elai_web_validator::cwv::probe_chromium().await {
+        Ok(()) => Ok(json!({ "ok": true, "available": true })),
+        Err(e) => Ok(json!({
+            "ok": true,
+            "available": false,
+            "reason": format!("{e}"),
+        })),
+    }
+}
+
+#[cfg(test)]
+mod parse_intervention_choice_tests {
+    use super::parse_intervention_choice;
+    use elai_orchestrator::{InterventionKeyword, InterventionOption};
+
+    fn keyword(opt: InterventionOption) -> InterventionKeyword {
+        match opt {
+            InterventionOption::Keyword(k) => k,
+            other => panic!("expected Keyword variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approve_aliases_map_to_accept() {
+        for input in ["approve", "accept", "ok", "OK", " Approve "] {
+            let got = parse_intervention_choice(input).expect("approve alias parses");
+            assert_eq!(keyword(got), InterventionKeyword::Accept, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn reject_aliases_map_to_decline() {
+        for input in ["reject", "decline", "no"] {
+            let got = parse_intervention_choice(input).expect("reject alias parses");
+            assert_eq!(keyword(got), InterventionKeyword::Decline, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn modify_and_skip_map_to_skip() {
+        for input in ["modify", "skip"] {
+            let got = parse_intervention_choice(input).expect("modify alias parses");
+            assert_eq!(keyword(got), InterventionKeyword::Skip, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn redirect_and_retry_map_to_retry_default() {
+        for input in ["redirect", "retry"] {
+            let got = parse_intervention_choice(input).expect("retry alias parses");
+            match got {
+                InterventionOption::Retry(r) => assert_eq!(r.retry, "default"),
+                other => panic!("expected Retry, got {other:?} (input={input:?})"),
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_choice_returns_err() {
+        let err = parse_intervention_choice("frobnicate").expect_err("unknown variant errors");
+        assert!(err.contains("unknown intervention choice"), "err={err}");
+    }
+
+    // PART12 OQ4 contract: 'takeover' is a first-class InterventionAction
+    // (the dashboard-v2 MonitorWindow exposes a Takeover button distinct from
+    // Approve/Reject). Semantically takeover = "I will proceed with this" =
+    // Accept keyword. The arm must be present so MonitorWindow can stop using
+    // the 'approve' workaround.
+    #[test]
+    fn takeover_maps_to_accept() {
+        let got = parse_intervention_choice("takeover").expect("takeover parses");
+        assert_eq!(keyword(got), InterventionKeyword::Accept);
     }
 }

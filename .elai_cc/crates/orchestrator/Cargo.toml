@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+getrandom = "0.3"
 elai-core = { path = "../core" }
 elai-ipc-types = { path = "../ipc-types" }
 elai-knowledge = { path = "../knowledge" }
@@ -16,6 +17,7 @@ elai-rules = { path = "../rules" }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
 indexmap = { version = "2", features = ["serde"] }
+rustc-hash.workspace = true
 toml.workspace = true
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -27,7 +29,7 @@ serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 blake3 = "1.8"
-tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time", "sync", "fs"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "time", "sync", "fs"] }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
@@ -47,12 +49,18 @@ windows-sys = { version = "0.59", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 seccompiler = "0.5"
+nix = { version = "0.31", features = ["fs", "mount", "sched", "signal"] }
 
 [dev-dependencies]
 proptest = "1.11"
 proptest-state-machine = "0.8"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
+# B-20A Task 7: file_outline_force_full integration test calls
+# `InProcessToolDispatcher::dispatch_file_read_with_force_full`. Cargo
+# allows dev-dep cycles (`elai-tools` depends on `elai-orchestrator`)
+# because dev-deps are not propagated to library builds.
+elai-tools = { path = "../tools" }
 
 [features]
 default = []
@@ -60,6 +68,8 @@ default = []
 # concrete `SidecarProviderSignalReader` compiles. The trait surface in
 # `provider_signals` is unconditional; only the concrete impl is gated.
 sidecar = ["elai-providers/sidecar"]
+# D4: headless-browser fetch via obscura subprocess. Forwards the feature to elai-web-search.
+obscura = ["elai-web-search/obscura"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -20,6 +20,12 @@ pub use client::{
     oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
     resolve_startup_auth_source, MessageStream, OAuthTokenSet, ProviderClient,
 };
+pub use oauth::{
+    clear_oauth_credentials, cloud_model_id_allowlist, credentials_path,
+    is_valid_cloud_model_id, load_cloud_model_id, load_oauth_credentials,
+    save_cloud_model_id, save_oauth_credentials, CLOUD_MODEL_ID_ALLOWLIST,
+    DEFAULT_CLOUD_MODEL_ID,
+};
 pub use error::ApiError;
 pub use prompt_cache::{
     CacheBreakEvent, PromptCache, PromptCacheConfig, PromptCachePaths, PromptCacheRecord,

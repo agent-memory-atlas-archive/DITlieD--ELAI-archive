@@ -298,6 +298,60 @@ pub fn clear_oauth_credentials() -> io::Result<()> {
     write_credentials_root(&path, &root)
 }
 
+const CLOUD_MODEL_KEY: &str = "cloud_model_id";
+
+/// Allowlist of Anthropic Claude model IDs the dashboard cloud-model picker
+/// is permitted to persist. Source: CLAUDE.md "Recent Claude model family"
+/// block + WebSearch (2026-05) verification of `/v1/messages` model IDs.
+/// Adding a new model = add it here AND in
+/// `dashboard-v2/src/lib/windows/SettingsWindow.svelte:CLOUD_MODEL_OPTIONS`.
+pub const CLOUD_MODEL_ID_ALLOWLIST: &[&str] = &[
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5",
+];
+
+/// Default cloud model when no preference is persisted. Picked for the
+/// price/intelligence balance per Anthropic 2026 pricing.
+pub const DEFAULT_CLOUD_MODEL_ID: &str = "claude-sonnet-4-6";
+
+#[must_use]
+pub fn cloud_model_id_allowlist() -> &'static [&'static str] {
+    CLOUD_MODEL_ID_ALLOWLIST
+}
+
+#[must_use]
+pub fn is_valid_cloud_model_id(model_id: &str) -> bool {
+    CLOUD_MODEL_ID_ALLOWLIST.iter().any(|id| *id == model_id)
+}
+
+pub fn load_cloud_model_id() -> io::Result<Option<String>> {
+    let path = credentials_path()?;
+    let root = read_credentials_root(&path)?;
+    let Some(value) = root.get(CLOUD_MODEL_KEY) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(text) = value.as_str() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{CLOUD_MODEL_KEY} must be a string"),
+        ));
+    };
+    Ok(Some(text.to_string()))
+}
+
+pub fn save_cloud_model_id(model_id: &str) -> io::Result<()> {
+    let path = credentials_path()?;
+    let mut root = read_credentials_root(&path)?;
+    root.insert(CLOUD_MODEL_KEY.to_string(), Value::String(model_id.to_string()));
+    write_credentials_root(&path, &root)
+}
+
 pub fn parse_oauth_callback_request_target(target: &str) -> Result<OAuthCallbackParams, String> {
     let (path, query) = target
         .split_once('?')
@@ -375,6 +429,7 @@ fn write_credentials_root(path: &PathBuf, root: &Map<String, Value>) -> io::Resu
 
 fn base64url_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    // NARROWING-OK: all `as usize` casts below are on `& 0x3F` (6-bit, 0–63) values; TABLE has 64 entries.
     let mut output = String::new();
     let mut index = 0;
     while index + 3 <= bytes.len() {

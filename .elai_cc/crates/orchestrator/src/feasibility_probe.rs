@@ -22,11 +22,19 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
 
 use crate::pipeline_builder::ExecutablePipeline;
+use elai_core::{ClockProvider as _, OsClock};
+use elai_ipc_types::{
+    AgentDispatchConfig, AgentRole, IpcFrame, IpcMessageType, ProcessConfig, ResourceLimits,
+    SeccompProfile, ToolFilter, ToolId, FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+};
 use crate::research_tree::BabyStepSpec;
 use crate::system_probe::SystemProbeReport;
 
@@ -179,6 +187,216 @@ pub enum BabyStepEscalation {
     StubTimeout { step_id: String, elapsed_ms: u32 },
 }
 
+// ---------------------------------------------------------------------------
+// Phase-4F.txt spec close-out (s-32820 autonomous run): additive types and
+// helpers that match the spec's `decide` + `check_constraints` + stub
+// line-count contract WITHOUT breaking the batch-3a surface.
+// ---------------------------------------------------------------------------
+
+/// Spec phase-4F.txt: per-resource constraint outcome with a numeric margin.
+/// `margin = (available - required) / required`. Skip threshold per spec is
+/// `margin >= 0.20` for all three resources (vram, ram, disk); at-least-met
+/// is `margin >= 0.0`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstraintResult {
+    /// `"vram_gpu0"` / `"ram"` / `"disk"`.
+    pub resource: String,
+    pub required_bytes: u64,
+    pub available_bytes: u64,
+    pub margin: f64,
+    pub passed: bool,
+}
+
+/// Spec phase-4F.txt: top-level decision the orchestrator hands to the FSM
+/// after a probe completes. The execution-mode split (`Escalate` for
+/// INTERACTIVE, `Replan` for AUTONOMOUS) is encoded in [`decide_with_mode`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeasibilityDecision {
+    /// All probes pass, all stubs pass.
+    Proceed,
+    /// Probes show limits; stubs adapted (e.g. single-GPU fallback).
+    ProceedWithConstraints(Vec<String>),
+    /// Human decision required (INTERACTIVE).
+    Escalate(Vec<FeasibilityEscalation>),
+    /// Auto-replan (AUTONOMOUS).
+    Replan(Vec<FeasibilityEscalation>),
+}
+
+/// Mirror of the orchestrator's execution-mode split for the decision logic.
+/// Defined locally so this module does not pull in the full `ExecutionMode`
+/// enum from elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeasibilityExecutionMode {
+    Interactive,
+    Autonomous,
+}
+
+/// Spec phase-4F.txt §4F.1 / §4F.5 I2: pure constraint check. No I/O.
+/// `required` carries minimum resource asks for the pipeline; `available`
+/// is the live system probe. Returns one [`ConstraintResult`] per resource.
+/// Margin >= [`RESOURCE_MARGIN_THRESHOLD_PCT / 100`] flags `passed = true`
+/// — matches the 20 % skip threshold in the spec.
+pub fn check_constraints(
+    required: &SystemConstraintsRequired,
+    available: &SystemProbeReport,
+) -> Vec<ConstraintResult> {
+    let threshold = (RESOURCE_MARGIN_THRESHOLD_PCT / 100.0) as f64;
+    let vram_total_mb = available
+        .gpu
+        .as_ref()
+        .map(|g| u64::from(g.vram_total_mb))
+        .unwrap_or(0);
+    let vram_total_bytes = vram_total_mb.saturating_mul(1024 * 1024);
+
+    let mut out: Vec<ConstraintResult> = Vec::with_capacity(3);
+    out.push(margin_constraint("vram_gpu0", required.min_vram_bytes, vram_total_bytes, threshold));
+    out.push(margin_constraint(
+        "ram",
+        required.min_ram_bytes,
+        available.ram_total_mb.saturating_mul(1024 * 1024),
+        threshold,
+    ));
+    out.push(margin_constraint(
+        "disk",
+        required.min_disk_bytes,
+        available.disk_total_mb.saturating_mul(1024 * 1024),
+        threshold,
+    ));
+    out
+}
+
+fn margin_constraint(
+    resource: &str,
+    required_bytes: u64,
+    available_bytes: u64,
+    threshold: f64,
+) -> ConstraintResult {
+    let margin = if required_bytes == 0 {
+        // Zero-required is trivially passed at +inf margin; encode as 0.0
+        // so the f64 stays serialisable and `passed` is computed from the
+        // available >= required relation.
+        0.0
+    } else {
+        (available_bytes as f64 - required_bytes as f64) / (required_bytes as f64)
+    };
+    let passed = if required_bytes == 0 {
+        true
+    } else {
+        margin >= threshold
+    };
+    ConstraintResult {
+        resource: resource.to_owned(),
+        required_bytes,
+        available_bytes,
+        margin,
+        passed,
+    }
+}
+
+/// Required-resources record derived from the pipeline spec. Bytes-typed so
+/// `check_constraints` can compare against the system probe directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemConstraintsRequired {
+    pub min_vram_bytes: u64,
+    pub min_ram_bytes: u64,
+    pub min_disk_bytes: u64,
+    pub required_gpu_count: u32,
+}
+
+impl SystemConstraintsRequired {
+    /// All-zero constraint set. Useful for code paths that have no
+    /// pipeline-derived asks yet (e.g. pre-planning probes).
+    pub fn zero() -> Self {
+        Self {
+            min_vram_bytes: 0,
+            min_ram_bytes: 0,
+            min_disk_bytes: 0,
+            required_gpu_count: 0,
+        }
+    }
+}
+
+/// Spec phase-4F.txt §4F.5 I5: turn a [`FeasibilityReport`] into a
+/// [`FeasibilityDecision`] for the given execution mode.
+/// - All clear -> `Proceed`.
+/// - Margin breach but no stub failures -> `ProceedWithConstraints` listing
+///   the breached resources.
+/// - Any [`FeasibilityEscalation::NoFeasibleAlternative`] -> `Escalate` for
+///   INTERACTIVE, `Replan` for AUTONOMOUS.
+/// - Otherwise (e.g. stub timeouts only) the decision matches the mode the
+///   same way as no-feasible-alternative: human in INTERACTIVE, auto in
+///   AUTONOMOUS.
+pub fn decide_with_mode(
+    report: &FeasibilityReport,
+    mode: FeasibilityExecutionMode,
+) -> FeasibilityDecision {
+    if report.escalations.is_empty() && report.task_feasibility == TaskFeasibility::Feasible {
+        return FeasibilityDecision::Proceed;
+    }
+
+    let only_resource_breach = !report.escalations.is_empty()
+        && report.escalations.iter().all(|e| {
+            matches!(e, FeasibilityEscalation::ResourceMarginBreached { .. })
+        });
+    if only_resource_breach {
+        let resources: Vec<String> = report
+            .escalations
+            .iter()
+            .filter_map(|e| match e {
+                FeasibilityEscalation::ResourceMarginBreached { resource, .. } => {
+                    Some(resource.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        return FeasibilityDecision::ProceedWithConstraints(resources);
+    }
+
+    match mode {
+        FeasibilityExecutionMode::Interactive => {
+            FeasibilityDecision::Escalate(report.escalations.clone())
+        }
+        FeasibilityExecutionMode::Autonomous => {
+            FeasibilityDecision::Replan(report.escalations.clone())
+        }
+    }
+}
+
+/// Spec phase-4F.txt §4F.5 I3: stub line count enforcement. Strict `<50`
+/// per the GOAL section — any stub source >= 50 newlines is rejected before
+/// execution. The check is a pure function so callers can validate before
+/// spawning the agent process.
+pub const STUB_LINE_LIMIT: usize = 50;
+
+/// Returns `Ok(line_count)` when the stub source has fewer than
+/// [`STUB_LINE_LIMIT`] newlines, else `Err(line_count)`. The caller maps
+/// the error into a synthetic [`StubResult`] / [`FeasibilityEscalation`].
+/// Counts lines as `lines().count()` so a trailing `\n` is not double-
+/// counted.
+pub fn enforce_stub_line_limit(stub_source: &str) -> Result<usize, usize> {
+    let lines = stub_source.lines().count();
+    if lines >= STUB_LINE_LIMIT {
+        Err(lines)
+    } else {
+        Ok(lines)
+    }
+}
+
+/// Spec phase-4F.txt §4F.3 T8: max alternatives per novel step before the
+/// probe escalates. Strict `<= 3` — the 4th attempt MUST trigger
+/// [`FeasibilityEscalation::NoFeasibleAlternative`] without launching a
+/// 4th stub.
+pub const MAX_ALTERNATIVES_PER_STEP: usize = 3;
+
+/// Returns `true` when an additional alternative is allowed, `false` when
+/// the cap has been reached. Pure function — used by future branch-and-
+/// explore wiring without changing the trait surface.
+pub fn alternative_within_cap(attempts_so_far: usize) -> bool {
+    attempts_so_far < MAX_ALTERNATIVES_PER_STEP
+}
+
 /// Runtime interface for running feasibility probes. Dyn-safe via
 /// `Arc<dyn ...>`. Uses hand-rolled `Pin<Box<dyn Future>>` to avoid the
 /// `async-trait` crate (CLAUDE.md anti-stale-training hard rule).
@@ -200,22 +418,474 @@ pub trait FeasibilityProber: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// DefaultFeasibilityProber — synthetic stub executor
+// StubExecutor trait + implementations (Phase 4F item 1, s-11136)
+// ---------------------------------------------------------------------------
+
+/// Pluggable executor that runs a single feasibility stub for a novel step.
+///
+/// Two production implementations are provided:
+/// - [`SyntheticStubExecutor`]: input-parse-only; the test default. Wraps the
+///   legacy `run_synthetic_stub` path so the 23 batch-3a contract tests stay
+///   exercise-able without an agent binary on disk.
+/// - [`Tier3StubExecutor`]: spawns the real `elai_cc_agent` binary via
+///   `tokio::process::Command`, sends an [`IpcMessageType::AgentRequest`] with
+///   the FEASIBILITY tool filter (stub_write + bash only), and enforces the
+///   25 s graceful + 30 s hard-kill dual-timeout per phase-4F.txt §4F.5 I3.
+///
+/// Dyn-safe via hand-rolled `Pin<Box<dyn Future>>` (CLAUDE.md anti-stale-
+/// training rule: no async-trait crate).
+pub trait StubExecutor: Send + Sync {
+    /// Run a single stub for `step_id`. `stub_source`, when present, is the
+    /// candidate stub source code; the executor MUST reject sources that
+    /// reach [`STUB_LINE_LIMIT`] before any process spawn.
+    fn run_stub<'a>(
+        &'a self,
+        step_id: &'a str,
+        stub_source: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = StubResult> + Send + 'a>>;
+}
+
+/// Test-default executor. Delegates to the in-process [`run_synthetic_stub`]
+/// (input-parse only). No agent binary required. Behaviour is identical to
+/// the pre-item-1 path so existing tests that construct
+/// `DefaultFeasibilityProber::new(...)` without an injected executor see no
+/// observable change.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SyntheticStubExecutor;
+
+impl SyntheticStubExecutor {
+    /// Construct a fresh synthetic executor. Stateless and `Copy` so callers
+    /// can hand out instances without `Arc::clone` overhead.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl StubExecutor for SyntheticStubExecutor {
+    fn run_stub<'a>(
+        &'a self,
+        step_id: &'a str,
+        _stub_source: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = StubResult> + Send + 'a>> {
+        Box::pin(async move { run_synthetic_stub(step_id).await })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tier3StubExecutor — real elai_cc_agent spawn path (phase-4F.txt §4F.5 I3)
+// ---------------------------------------------------------------------------
+
+/// Spawns the `elai_cc_agent` binary in feasibility mode and exchanges one
+/// [`IpcMessageType::AgentRequest`] / [`IpcMessageType::AgentResponse`] pair
+/// over a per-stub Unix socket (or Windows named pipe).
+///
+/// Wire flow:
+///   1. Bind socket / pipe BEFORE spawning the agent (listen-before-spawn,
+///      mirrors orchestrator.txt S12).
+///   2. Spawn `agent_binary_path` with `[socket_path, agent_id_uuid]` argv.
+///   3. Accept the agent's connection.
+///   4. Send `AgentRequest{task=feasibility_stub:{step_id}, dispatch_config}`.
+///   5. Read frames until [`IpcMessageType::AgentResponse`] arrives, ignoring
+///      heartbeats.
+///   6. On graceful timeout ([`STUB_TIMEOUT_GRACEFUL`] = 25 s): send
+///      `AgentKill{reason="graceful_shutdown"}` and wait the remaining 5 s
+///      for clean exit.
+///   7. On hard timeout ([`STUB_TIMEOUT_HARD`] = 30 s): `child.kill().await`.
+///   8. Always `child.wait().await` after the terminal branch to reap.
+///
+/// Tool restrictions: the agent runs with the FEASIBILITY [`ToolFilter`]
+/// (stub_write + bash only). No edit, no git per orchestrator.txt S2 L38.
+pub struct Tier3StubExecutor {
+    agent_binary_path: PathBuf,
+    socket_dir: PathBuf,
+}
+
+impl Tier3StubExecutor {
+    /// Construct a Tier-C executor that spawns `agent_binary_path` for each
+    /// stub. The default `socket_dir` is `std::env::temp_dir()`; override
+    /// with [`Self::with_socket_dir`] when callers need an isolated
+    /// per-task directory.
+    pub fn new(agent_binary_path: PathBuf) -> Self {
+        Self {
+            agent_binary_path,
+            socket_dir: std::env::temp_dir(),
+        }
+    }
+
+    /// Override the socket / named-pipe staging directory.
+    pub fn with_socket_dir(mut self, socket_dir: PathBuf) -> Self {
+        self.socket_dir = socket_dir;
+        self
+    }
+
+    /// Construct the FEASIBILITY [`AgentDispatchConfig`] sent to the spawned
+    /// agent. Per §4F.5 I3: tool_filter restricts to stub_write + bash; GRC
+    /// budget = 3 calls / 600 chars; sandbox = IpcBaseline seccomp.
+    fn feasibility_dispatch_config() -> AgentDispatchConfig {
+        AgentDispatchConfig {
+            role: AgentRole::Executor,
+            model_preference: "qwen2.5-coder".to_owned(),
+            tool_filter: ToolFilter {
+                allowed_tools: vec![
+                    ToolId("stub_write".to_owned()),
+                    ToolId("bash".to_owned()),
+                ],
+            },
+            rule_domains: vec!["feasibility".to_owned()],
+            grc_budget_max_calls: 3,
+            grc_budget_max_chars: 600,
+            sandbox_config: ProcessConfig {
+                allowed_paths: Vec::new(),
+                seccomp_profile: SeccompProfile::IpcBaseline,
+                resource_limits: ResourceLimits {
+                    max_memory_bytes: 512 * 1024 * 1024,
+                    max_cpu_secs: 60,
+                    max_open_files: 32,
+                },
+            },
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn bind_stub_server(
+    socket_dir: &Path,
+    socket_id: &Uuid,
+) -> Result<(tokio::net::UnixListener, PathBuf), String> {
+    let path = socket_dir.join(format!("elai_stub_{socket_id}.sock"));
+    let _ = tokio::fs::remove_file(&path).await;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("create_dir_all:{e}"))?;
+    }
+    let listener =
+        tokio::net::UnixListener::bind(&path).map_err(|e| format!("bind:{e}"))?;
+    Ok((listener, path))
+}
+
+#[cfg(windows)]
+async fn bind_stub_server(
+    _socket_dir: &Path,
+    socket_id: &Uuid,
+) -> Result<(tokio::net::windows::named_pipe::NamedPipeServer, PathBuf), String> {
+    let pipe_name = format!(r"\\.\pipe\elai_stub_{}", socket_id);
+    let server = tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe_name)
+        .map_err(|e| format!("create_pipe:{e}"))?;
+    Ok((server, PathBuf::from(pipe_name)))
+}
+
+#[cfg(unix)]
+async fn accept_stub_stream(
+    server: tokio::net::UnixListener,
+) -> Result<tokio::net::UnixStream, String> {
+    let (stream, _addr) = server.accept().await.map_err(|e| format!("accept:{e}"))?;
+    Ok(stream)
+}
+
+#[cfg(windows)]
+async fn accept_stub_stream(
+    server: tokio::net::windows::named_pipe::NamedPipeServer,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
+    server.connect().await.map_err(|e| format!("connect:{e}"))?;
+    Ok(server)
+}
+
+/// Async write of a single [`IpcFrame`] payload to the wire.
+async fn write_frame<W>(writer: &mut W, msg: &IpcMessageType) -> Result<(), String>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let frame = IpcFrame::encode(msg).map_err(|e| format!("ipc_encode:{e}"))?;
+    let bytes = frame.to_wire_bytes().map_err(|e| format!("ipc_wire:{e}"))?;
+    writer
+        .write_all(&bytes)
+        .await
+        .map_err(|e| format!("ipc_write:{e}"))?;
+    writer.flush().await.map_err(|e| format!("ipc_flush:{e}"))?;
+    Ok(())
+}
+
+/// Async read of one [`IpcFrame`] payload from the wire. Returns the decoded
+/// [`IpcMessageType`].
+async fn read_frame<R>(reader: &mut R) -> Result<IpcMessageType, String>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let mut header = [0u8; FRAME_HEADER_SIZE];
+    reader
+        .read_exact(&mut header)
+        .await
+        .map_err(|e| format!("ipc_read_header:{e}"))?;
+    let version = header[0];
+    if version != IPC_PROTOCOL_VERSION {
+        return Err(format!(
+            "ipc_version_mismatch:expected={IPC_PROTOCOL_VERSION},got={version}"
+        ));
+    }
+    let len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    if len > MAX_FRAME_SIZE {
+        return Err(format!("ipc_payload_too_large:{len}"));
+    }
+    let mut payload = vec![0u8; len];
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(|e| format!("ipc_read_payload:{e}"))?;
+    IpcFrame::decode(&payload).map_err(|e| format!("ipc_decode:{e}"))
+}
+
+impl StubExecutor for Tier3StubExecutor {
+    fn run_stub<'a>(
+        &'a self,
+        step_id: &'a str,
+        stub_source: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = StubResult> + Send + 'a>> {
+        Box::pin(async move {
+            let start = Instant::now();
+
+            // Gate 1: line-count enforcement BEFORE any process spawn. Must
+            // precede the binary-existence check so an oversized stub
+            // produces a deterministic error regardless of binary state.
+            if let Some(src) = stub_source {
+                if let Err(n) = enforce_stub_line_limit(src) {
+                    return StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: false,
+                        elapsed_ms: 0,
+                        error: Some(format!("stub_line_limit_exceeded:{n}")),
+                    };
+                }
+            }
+
+            // Listen-before-spawn: bind socket / pipe first so the spawned
+            // agent finds the endpoint on connect.
+            let socket_id = Uuid::new_v4();
+            let (server, socket_path) =
+                match bind_stub_server(&self.socket_dir, &socket_id).await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        return StubResult {
+                            step_id: step_id.to_owned(),
+                            stub_passed: false,
+                            elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                                .unwrap_or(u32::MAX),
+                            error: Some(format!("ipc_bind_failed:{e}")),
+                        };
+                    }
+                };
+
+            let agent_id_str = socket_id.to_string();
+            let mut cmd = tokio::process::Command::new(&self.agent_binary_path);
+            cmd.arg(&socket_path).arg(&agent_id_str);
+            // Belt-and-suspenders: ensure no leaked child if our future is
+            // dropped via cancellation between spawn and wait.
+            cmd.kill_on_drop(true);
+
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    #[cfg(unix)]
+                    let _ = tokio::fs::remove_file(&socket_path).await;
+                    #[cfg(windows)]
+                    let _ = &socket_path;
+                    return StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: false,
+                        elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                            .unwrap_or(u32::MAX),
+                        error: Some("agent_binary_not_found".to_owned()),
+                    };
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, step_id = %step_id, "tier3_spawn_failed");
+                    #[cfg(unix)]
+                    let _ = tokio::fs::remove_file(&socket_path).await;
+                    #[cfg(windows)]
+                    let _ = &socket_path;
+                    return StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: false,
+                        elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                            .unwrap_or(u32::MAX),
+                        error: Some(format!("spawn_failed:{e}")),
+                    };
+                }
+            };
+
+            // Build the AgentRequest.
+            let task = match stub_source {
+                Some(src) => format!("feasibility_stub:{step_id}\n{src}"),
+                None => format!("feasibility_stub:{step_id}"),
+            };
+            let dispatch_config = Self::feasibility_dispatch_config();
+            let request = IpcMessageType::AgentRequest {
+                task,
+                dispatch_config,
+            };
+
+            // Outer hard timeout wraps the entire IPC handshake — even an
+            // unresponsive agent cannot exceed STUB_TIMEOUT_HARD.
+            let handshake = tokio::time::timeout(STUB_TIMEOUT_HARD, async {
+                let mut stream = accept_stub_stream(server).await?;
+                write_frame(&mut stream, &request).await?;
+
+                // Graceful read loop bounded by STUB_TIMEOUT_GRACEFUL.
+                // Skips heartbeats; returns on AgentResponse.
+                let graceful = tokio::time::timeout(STUB_TIMEOUT_GRACEFUL, async {
+                    loop {
+                        match read_frame(&mut stream).await? {
+                            IpcMessageType::AgentResponse { content, artifacts } => {
+                                return Ok::<(String, Vec<String>), String>((content, artifacts));
+                            }
+                            IpcMessageType::AgentHeartbeat { .. } => continue,
+                            other => {
+                                return Err(format!("unexpected_ipc_message:{other:?}"));
+                            }
+                        }
+                    }
+                })
+                .await;
+
+                match graceful {
+                    Ok(Ok(resp)) => Ok::<(String, Vec<String>), String>(resp),
+                    Ok(Err(e)) => Err(e),
+                    Err(_elapsed) => {
+                        // 25 s graceful elapsed: send AgentKill IPC and wait
+                        // the remaining 5 s for the child to flush a final
+                        // status frame.
+                        let _ = write_frame(
+                            &mut stream,
+                            &IpcMessageType::AgentKill {
+                                reason: "graceful_shutdown".to_owned(),
+                            },
+                        )
+                        .await;
+                        let remaining =
+                            STUB_TIMEOUT_HARD.saturating_sub(STUB_TIMEOUT_GRACEFUL);
+                        let post = tokio::time::timeout(remaining, async {
+                            loop {
+                                match read_frame(&mut stream).await? {
+                                    IpcMessageType::AgentResponse { content, artifacts } => {
+                                        return Ok::<(String, Vec<String>), String>((
+                                            content, artifacts,
+                                        ));
+                                    }
+                                    IpcMessageType::AgentHeartbeat { .. } => continue,
+                                    other => {
+                                        return Err(format!(
+                                            "unexpected_ipc_message:{other:?}"
+                                        ));
+                                    }
+                                }
+                            }
+                        })
+                        .await;
+                        match post {
+                            Ok(inner) => inner,
+                            Err(_elapsed) => Err("stub_killed_graceful".to_owned()),
+                        }
+                    }
+                }
+            })
+            .await;
+
+            let elapsed_ms =
+                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+
+            // Reap regardless of outcome. child.wait() prevents zombie
+            // accumulation per phase-4F.txt T7 adversarial note.
+            let result = match handshake {
+                Ok(Ok((content, _artifacts))) => {
+                    if let Err(e) = child.wait().await {
+                        tracing::warn!(error = %e, step_id = %step_id, "child_wait_failed");
+                    }
+                    let passed = !content.trim().is_empty();
+                    StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: passed,
+                        elapsed_ms,
+                        error: if passed {
+                            None
+                        } else {
+                            Some("empty_agent_response".to_owned())
+                        },
+                    }
+                }
+                Ok(Err(reason)) => {
+                    if let Err(e) = child.kill().await {
+                        tracing::warn!(error = %e, step_id = %step_id, "kill_after_ipc_error");
+                    }
+                    if let Err(e) = child.wait().await {
+                        tracing::warn!(error = %e, step_id = %step_id, "child_wait_failed");
+                    }
+                    StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: false,
+                        elapsed_ms,
+                        error: Some(reason),
+                    }
+                }
+                Err(_elapsed) => {
+                    if let Err(e) = child.kill().await {
+                        tracing::warn!(error = %e, step_id = %step_id, "hard_kill_failed");
+                    }
+                    if let Err(e) = child.wait().await {
+                        tracing::warn!(error = %e, step_id = %step_id, "child_wait_failed_post_hard_kill");
+                    }
+                    StubResult {
+                        step_id: step_id.to_owned(),
+                        stub_passed: false,
+                        elapsed_ms: u32::try_from(STUB_TIMEOUT_HARD.as_millis())
+                            .unwrap_or(u32::MAX),
+                        error: Some("stub_timeout_hard_kill".to_owned()),
+                    }
+                }
+            };
+
+            // Best-effort cleanup. On Windows the named-pipe handle is
+            // released when the server drops; the path is informational.
+            #[cfg(unix)]
+            let _ = tokio::fs::remove_file(&socket_path).await;
+            #[cfg(windows)]
+            let _ = &socket_path;
+
+            result
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DefaultFeasibilityProber — pluggable stub executor (default = synthetic)
 // ---------------------------------------------------------------------------
 
 /// Default prober. Writes `stub_results.msgpack` under `feasibility_root`
-/// (typically `.elai_cc/feasibility/<task_id>/`). The stub executor is the
-/// synthetic "input_parse_probe" path (no agent binary required) so the
-/// wiring is observable on a stock dev box; future batches can plug the real
-/// `elai_cc_agent` spawn by adding a `stub_executor: Option<Arc<dyn StubExecutor>>`
-/// field without changing the trait surface.
+/// (typically `.elai_cc/feasibility/<task_id>/`). When [`Self::with_stub_executor`]
+/// is unset, falls back to the in-process [`SyntheticStubExecutor`] so the
+/// 23 batch-3a contract tests keep passing without an agent binary on disk.
+/// Callers wiring the real Tier-C agent path inject a [`Tier3StubExecutor`]
+/// via the builder.
 pub struct DefaultFeasibilityProber {
     feasibility_root: PathBuf,
+    stub_executor: Option<Arc<dyn StubExecutor>>,
 }
 
 impl DefaultFeasibilityProber {
     pub fn new(feasibility_root: PathBuf) -> Self {
-        Self { feasibility_root }
+        Self {
+            feasibility_root,
+            stub_executor: None,
+        }
+    }
+
+    /// Inject a custom [`StubExecutor`]. When set, [`Self::probe`] and
+    /// [`Self::probe_baby_step`] route every stub through the executor;
+    /// when unset they fall back to [`run_synthetic_stub`].
+    pub fn with_stub_executor(mut self, executor: Arc<dyn StubExecutor>) -> Self {
+        self.stub_executor = Some(executor);
+        self
     }
 
     /// Root under which `stub_results.msgpack` is written.
@@ -327,9 +997,10 @@ impl FeasibilityProber for DefaultFeasibilityProber {
                 });
             }
 
-            // Run synthetic stub per novel step. "Synthetic" here means we
-            // simply record the step id and mark it pending-verification —
-            // the real agent-spawn path is documented on the struct.
+            // Run a stub per novel step. When a Tier-C executor is
+            // injected via with_stub_executor it spawns the real
+            // elai_cc_agent binary; otherwise the synthetic input-parse
+            // probe runs in-process for back-compat with batch-3a tests.
             let mut novel_steps: Vec<NovelStep> = Vec::new();
             let mut stub_results: Vec<StubResult> = Vec::new();
             for step_id in &novel_step_ids {
@@ -338,7 +1009,10 @@ impl FeasibilityProber for DefaultFeasibilityProber {
                     reason: "synthetic_probe_pending_agent_binary".to_owned(),
                     alternatives: Vec::new(),
                 });
-                let stub = run_synthetic_stub(step_id).await;
+                let stub = match &self.stub_executor {
+                    Some(exec) => exec.run_stub(step_id, None).await,
+                    None => run_synthetic_stub(step_id).await,
+                };
                 if !stub.stub_passed {
                     escalations.push(FeasibilityEscalation::NoFeasibleAlternative {
                         step_id: step_id.clone(),
@@ -393,11 +1067,14 @@ impl FeasibilityProber for DefaultFeasibilityProber {
             }
 
             let step_id = baby_step.id.0.to_string();
-            let synthetic = run_synthetic_stub(&step_id).await;
-            let escalation = if !synthetic.stub_passed {
+            let stub = match &self.stub_executor {
+                Some(exec) => exec.run_stub(&step_id, None).await,
+                None => run_synthetic_stub(&step_id).await,
+            };
+            let escalation = if !stub.stub_passed {
                 Some(BabyStepEscalation::StubFailed {
                     step_id: step_id.clone(),
-                    reason: synthetic
+                    reason: stub
                         .error
                         .clone()
                         .unwrap_or_else(|| "synthetic_probe_failed".to_owned()),
@@ -406,14 +1083,14 @@ impl FeasibilityProber for DefaultFeasibilityProber {
                 None
             };
             let stub_bs = BabyStepStubResult {
-                step_id: synthetic.step_id.clone(),
-                stub_passed: synthetic.stub_passed,
-                elapsed_ms: synthetic.elapsed_ms,
-                error: synthetic.error.clone(),
+                step_id: stub.step_id.clone(),
+                stub_passed: stub.stub_passed,
+                elapsed_ms: stub.elapsed_ms,
+                error: stub.error.clone(),
             };
             BabyStepFeasibilityReport {
                 step_id,
-                feasible: synthetic.stub_passed,
+                feasible: stub.stub_passed,
                 stub_results: vec![stub_bs],
                 escalation,
             }
@@ -428,12 +1105,13 @@ impl FeasibilityProber for DefaultFeasibilityProber {
 /// is available on disk — deferred to a follow-up batch per the batch-3a
 /// spec's "synthetic fallback" note.
 async fn run_synthetic_stub(step_id: &str) -> StubResult {
-    let start = std::time::Instant::now();
+    let _clock = OsClock;
+    let start = _clock.now();
     // Baseline measurement of input-parse latency: a no-op await to let the
     // tokio scheduler yield once so `elapsed_ms` is non-zero under the
     // test-util paused-time harness.
     tokio::task::yield_now().await;
-    let elapsed_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    let elapsed_ms = u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
     if step_id.trim().is_empty() {
         return StubResult {
             step_id: step_id.to_owned(),
