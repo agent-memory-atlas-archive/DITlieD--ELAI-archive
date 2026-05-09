@@ -6,7 +6,7 @@
 
 <br><br>
 
-<img src="https://img.shields.io/badge/Rust-1B7A6E?style=flat-square&logo=rust&logoColor=0d1117" alt="Rust"> &nbsp; <img src="https://img.shields.io/badge/Phase_3-1B7A6E?style=flat-square" alt="Phase 4"> &nbsp; <img src="https://img.shields.io/badge/local--first-1B7A6E?style=flat-square" alt="local-first">
+<img src="https://img.shields.io/badge/Rust-1B7A6E?style=flat-square&logo=rust&logoColor=0d1117" alt="Rust"> &nbsp; <img src="https://img.shields.io/badge/Phase_4-1B7A6E?style=flat-square" alt="Phase 4"> &nbsp; <img src="https://img.shields.io/badge/local--first-1B7A6E?style=flat-square" alt="local-first">
 
 <br>
 
