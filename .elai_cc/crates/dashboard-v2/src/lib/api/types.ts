@@ -1254,3 +1254,39 @@ export interface CloudSpendInfo {
   cache_read_tokens: number;
   redaction_count: number;
 }
+
+// ------------------------------------------------------------------
+// REFLECT (B-39) — multi-candidate self-reflection pipeline state.
+// Fields use snake_case matching Rust struct field names verbatim.
+// Nullable fields use `T | null` (not `undefined`) because serde
+// serializes Rust `Option<T>` as JSON `null`.
+// ------------------------------------------------------------------
+export interface ReflectTriagedPayload {
+  turn_id: string;
+  class: string;
+}
+
+export interface ReflectCandidatePayload {
+  turn_id: string;
+  candidate_index: number;
+  content: string;
+}
+
+export interface ReflectAuditVerdictPayload {
+  turn_id: string;
+  best_index: number;
+  rationale: string;
+}
+
+export interface ReflectRefinedPayload {
+  turn_id: string;
+  total_tokens_used: number;
+  synthesis: string;
+}
+
+export interface ReflectState {
+  enabled: boolean;
+  last_triage: ReflectTriagedPayload | null;
+  last_verdict: ReflectAuditVerdictPayload | null;
+  last_summary: ReflectRefinedPayload | null;
+}

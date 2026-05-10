@@ -1069,6 +1069,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "reason",
+        aliases: &[],
+        summary: "Toggle the Chat REFLECT reasoning pipeline (B-39)",
+        argument_hint: Some("<on|off>"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "explore",
         aliases: &[],
         summary: "Explore project context around a question",
@@ -1256,6 +1263,12 @@ pub enum SlashCommand {
     /// orchestrator-type dep.
     Mode {
         mode: String,
+    },
+    /// B-39: Toggle the Chat REFLECT pipeline (4-stage sidecar reasoning layer).
+    /// `on_off` is the raw string (`"on"` | `"off"`); validation in the
+    /// handler mirrors the Mode pattern — string-typed, no reasoning-crate dep.
+    Reason {
+        on_off: String,
     },
     Unknown(String),
 }
@@ -1525,6 +1538,9 @@ pub fn validate_slash_command_input(
         }
         "mode" => SlashCommand::Mode {
             mode: remainder.unwrap_or_default(),
+        },
+        "reason" => SlashCommand::Reason {
+            on_off: remainder.unwrap_or_else(|| "on".to_string()),
         },
         other => SlashCommand::Unknown(other.to_string()),
     }))
@@ -3824,6 +3840,7 @@ pub fn handle_slash_command(
         | SlashCommand::Explore { .. }
         | SlashCommand::Task { .. }
         | SlashCommand::Mode { .. }
+        | SlashCommand::Reason { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -4275,8 +4292,8 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|install <path>|help]"));
-        // B-22 Phase 4G bumped 145 -> 146 (added /mode).
-        assert_eq!(slash_command_specs().len(), 146);
+        // B-39 bumped 146 -> 147 (added /reason).
+        assert_eq!(slash_command_specs().len(), 147);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

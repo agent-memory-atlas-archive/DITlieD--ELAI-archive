@@ -398,6 +398,9 @@ pub use ssb::{
     // OSC + REG + EVO).
     ConfigOscillationPayload, ConvergenceStagnantPayload, DataTableGrewPayload,
     EvolutionWithheldPayload, L3ProposalPayload, RegressionDetectedPayload,
+    // B-39 chat reflect pipeline — per-turn REFLECT stage beacons.
+    ReflectAuditVerdictPayload, ReflectCandidatePayload, ReflectRefinedPayload,
+    ReflectTriagedPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -533,6 +536,8 @@ pub use ssb_viewer::{
     ResearchBudgetSnapshot, ResearchStepEntry, SourceTierDistribution,
     // B-22 Phase 4G — auto-advance counters DTO consumed by dashboard-v2.
     AutoAdvanceStats,
+    // B-39 chat reflect pipeline — reflect state snapshot DTO.
+    ReflectState,
 };
 pub use task_runner::{
     detect_scaffold_template, emit_integration_checkpoint_for_test,

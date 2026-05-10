@@ -17,6 +17,7 @@ elai-knowledge = { path = "../knowledge", features = ["splade"] }
 elai-orchestrator = { path = "../orchestrator" }
 elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers", features = ["sidecar"] }
+elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
 elai-tools = { path = "../tools" }
 # A5.2: optional; activated by the "obscura" feature for doctor() wiring.

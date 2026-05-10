@@ -217,6 +217,8 @@ pub fn run() {
             commands::start_remote_sidecar,
             commands::get_remote_sidecar_progress,
             commands::cancel_remote_sidecar,
+            // B-39 — REFLECT STATE
+            commands::get_reflect_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

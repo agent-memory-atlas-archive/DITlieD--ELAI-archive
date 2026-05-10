@@ -23,8 +23,8 @@ use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry, ModeChangedPayload,
-    NovelStepRow, ProposalAppliedPayload, ProposalRejectedPayload, SsbActionType, SsbPayload,
-    SsbWriteRequest, StubRunRow, TaskSubmittedPayload,
+    NovelStepRow, ProposalAppliedPayload, ProposalRejectedPayload, ReflectState, SsbActionType,
+    SsbPayload, SsbWriteRequest, StubRunRow, TaskSubmittedPayload,
 };
 use elai_orchestrator::ssb_viewer::{SelfModMsiSnapshotRow, SelfModProposalRow};
 use serde_json::{json, Value};
@@ -4843,6 +4843,19 @@ pub async fn probe_chromium_runtime() -> CmdResult<Value> {
             "reason": format!("{e}"),
         })),
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-39 — REFLECT STATE
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_reflect_state(state: State<'_, AppState>) -> CmdResult<ReflectState> {
+    let viewer = state
+        .viewer
+        .as_ref()
+        .ok_or_else(|| "ssb viewer unavailable; no session db open".to_owned())?;
+    viewer.get_reflect_state().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

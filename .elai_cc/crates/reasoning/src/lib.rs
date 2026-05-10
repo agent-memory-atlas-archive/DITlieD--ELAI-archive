@@ -1,3 +1,4 @@
+pub mod chat_reflect;
 pub mod config;
 pub mod engine;
 pub mod layer_routing;
@@ -5,6 +6,11 @@ pub mod traversal;
 pub mod types;
 pub mod verification;
 
+pub use chat_reflect::{
+    ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectError,
+    ReflectEvent, ReflectEventSink, ReflectOutput, ReflectTokenSummary, TurnClass, N_CANDIDATES,
+    REFINE_CAP,
+};
 pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
 pub use engine::{BasicGrcEngine, GrcEngine};
 pub use types::{

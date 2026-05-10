@@ -20,6 +20,7 @@ use crate::ssb::{
     ssb_action_type_from_str_public, BubbleUpTypedPayload, ConceptDecompositionNodePayload,
     ContextBudgetComputedPayload, DagRepairRoundPayload, FeasibilityReportPayload,
     InterventionOption, InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
+    ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload,
     SsbActionType, SsbPayload, StubRunPayload, TaskSubmittedPayload,
 };
 
@@ -810,6 +811,22 @@ pub struct StubRunRow {
     pub step_id: String,
     pub passed: bool,
     pub elapsed_ms: u32,
+}
+
+/// B-39: snapshot of the latest REFLECT pipeline state for a session.
+///
+/// Returned by [`SsbViewer::get_reflect_state`]. Each `last_*` field holds the
+/// payload of the most recent SSB row of that type (by max seq); `None` when
+/// no such row exists yet.
+///
+/// `enabled` is `true` when any `reflect_*` row exists in the SSB, `false`
+/// otherwise. Future work: read from a project config table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReflectState {
+    pub enabled: bool,
+    pub last_triage: Option<ReflectTriagedPayload>,
+    pub last_verdict: Option<ReflectAuditVerdictPayload>,
+    pub last_summary: Option<ReflectRefinedPayload>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3546,6 +3563,78 @@ impl SsbViewer {
             }
         }
         Ok(latest.into_values().collect())
+    }
+
+    /// B-39: latest REFLECT pipeline state for the current session.
+    ///
+    /// Returns the most recent row of each type (`reflect_triaged`,
+    /// `reflect_audit_verdict`, `reflect_refined`) by max seq, plus an
+    /// `enabled` boolean that is `true` when any `reflect_*` row exists.
+    ///
+    /// Rows are fetched in a single SELECT WHERE action_type IN (...) ORDER BY id DESC;
+    /// the result is partitioned in Rust so only one DB round-trip is needed.
+    pub fn get_reflect_state(&self) -> Result<ReflectState, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT action_type, payload FROM ssb \
+             WHERE action_type IN (?1, ?2, ?3, ?4) \
+             ORDER BY seq DESC",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::ReflectTriaged.as_sql_str(),
+                SsbActionType::ReflectCandidate.as_sql_str(),
+                SsbActionType::ReflectAuditVerdict.as_sql_str(),
+                SsbActionType::ReflectRefined.as_sql_str(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                ))
+            },
+        )?;
+
+        let mut last_triage: Option<ReflectTriagedPayload> = None;
+        let mut last_verdict: Option<ReflectAuditVerdictPayload> = None;
+        let mut last_summary: Option<ReflectRefinedPayload> = None;
+        let mut any_reflect_row = false;
+
+        for row in rows {
+            let (at_str, bytes) = row?;
+            any_reflect_row = true;
+            // Only capture the first (most-recent) row of each type; subsequent
+            // rows are older and can be skipped once we have all three.
+            let need_more = last_triage.is_none() || last_verdict.is_none() || last_summary.is_none();
+            if !need_more {
+                break;
+            }
+            match at_str.as_str() {
+                "reflect_triaged" if last_triage.is_none() => {
+                    if let Ok(SsbPayload::ReflectTriaged(p)) = rmp_serde::from_slice(&bytes) {
+                        last_triage = Some(p);
+                    }
+                }
+                "reflect_audit_verdict" if last_verdict.is_none() => {
+                    if let Ok(SsbPayload::ReflectAuditVerdict(p)) = rmp_serde::from_slice(&bytes) {
+                        last_verdict = Some(p);
+                    }
+                }
+                "reflect_refined" if last_summary.is_none() => {
+                    if let Ok(SsbPayload::ReflectRefined(p)) = rmp_serde::from_slice(&bytes) {
+                        last_summary = Some(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ReflectState {
+            enabled: any_reflect_row,
+            last_triage,
+            last_verdict,
+            last_summary,
+        })
     }
 }
 

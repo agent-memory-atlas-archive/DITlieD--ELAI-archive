@@ -66,6 +66,27 @@
     { label: 'entropy_mean', value: d.ggSignals.entropy_mean.toFixed(3) },
     { label: 'entropy_max',  value: d.ggSignals.entropy_max.toFixed(3) },
   ]);
+
+  // REFLECT derived display values
+  const reflectEnabled = $derived(d.reflectState.enabled);
+  const reflectTriageClass = $derived(d.reflectState.last_triage?.class ?? '—');
+  const reflectTriageTurnId = $derived(d.reflectState.last_triage?.turn_id ?? null);
+  const reflectVerdictIndex = $derived(
+    d.reflectState.last_verdict === null ? null : d.reflectState.last_verdict.best_index
+  );
+  const reflectVerdictRationale = $derived(
+    d.reflectState.last_verdict === null
+      ? '—'
+      : d.reflectState.last_verdict.rationale.slice(0, 80)
+  );
+  const reflectSummaryTokens = $derived(
+    d.reflectState.last_summary === null ? null : d.reflectState.last_summary.total_tokens_used
+  );
+  const reflectSummarySynthesis = $derived(
+    d.reflectState.last_summary === null
+      ? '—'
+      : d.reflectState.last_summary.synthesis.slice(0, 100)
+  );
 </script>
 
 <div class="reasoning-drawer">
@@ -229,6 +250,44 @@
           <span class="gg-value">{tile.value}</span>
         </div>
       {/each}
+    </div>
+  </Card>
+
+  <!-- 7. REFLECT -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">REFLECT</div>
+    <div class="reflect-rows">
+      <div class="reflect-row">
+        <span class="reflect-key">Enabled</span>
+        <Badge tone={reflectEnabled ? 'teal' : 'neutral'} size="xs">{reflectEnabled ? 'yes' : 'no'}</Badge>
+      </div>
+      <div class="reflect-row">
+        <span class="reflect-key">Last triage</span>
+        <span class="reflect-val">
+          {reflectTriageClass}
+          {#if reflectTriageTurnId !== null}
+            <span class="reflect-mono">{reflectTriageTurnId}</span>
+          {/if}
+        </span>
+      </div>
+      <div class="reflect-row">
+        <span class="reflect-key">Last verdict</span>
+        <span class="reflect-val">
+          {reflectVerdictIndex === null ? '—' : `candidate ${reflectVerdictIndex}`}
+          {#if reflectVerdictIndex !== null}
+            <span class="reflect-rationale">{reflectVerdictRationale}</span>
+          {/if}
+        </span>
+      </div>
+      <div class="reflect-row">
+        <span class="reflect-key">Last summary</span>
+        <span class="reflect-val">
+          {reflectSummaryTokens === null ? '—' : `${reflectSummaryTokens} tokens`}
+          {#if reflectSummaryTokens !== null}
+            <span class="reflect-rationale">{reflectSummarySynthesis}</span>
+          {/if}
+        </span>
+      </div>
     </div>
   </Card>
 
@@ -537,5 +596,51 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
+  }
+
+  /* REFLECT */
+  .reflect-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .reflect-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .reflect-key {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-ghost);
+    width: 90px;
+    flex-shrink: 0;
+  }
+
+  .reflect-val {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .reflect-mono {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+
+  .reflect-rationale {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

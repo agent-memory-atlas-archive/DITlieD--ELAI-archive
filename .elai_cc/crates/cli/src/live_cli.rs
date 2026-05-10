@@ -21,6 +21,7 @@ use elai_providers::{
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
     OutputContentBlock, PromptCache,
     StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    LlmProvider, OllamaConfig, SidecarProvider,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use crossterm::{cursor::MoveToColumn, execute, terminal::{Clear, ClearType}};
@@ -74,6 +75,10 @@ use crate::progress::{InternalPromptProgressReporter, InternalPromptProgressEven
 use crate::runtime_client::RuntimeClient;
 use crate::tool_executor::CliToolExecutor;
 use crate::runtime_builder::{build_runtime, build_runtime_with_plugin_state, CliPermissionPrompter};
+use elai_reasoning::{
+    ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectError,
+    ReflectEventSink,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionHandle {
@@ -121,6 +126,13 @@ pub(crate) struct LiveCli {
     /// Toggled at startup via the top-level `--export-jsonl` CLI flag.
     /// SessionDag is the authoritative store regardless of this flag.
     pub(crate) export_jsonl_enabled: bool,
+    /// B-39: whether `/reason on` is active. When `false` (default), the
+    /// Chat REFLECT pipeline is a zero-overhead no-op in run_turn.
+    pub(crate) reflect_enabled: bool,
+    /// B-39: lazily-constructed REFLECT pipeline. Built on first use when
+    /// `reflect_enabled` is `true` and a `backend_config` is present.
+    /// Cleared on `/reason off` so a fresh build picks up any config changes.
+    pub(crate) reflect_pipeline: Option<ChatReflectPipeline>,
 }
 
 pub(crate) struct RuntimePluginState {
@@ -766,6 +778,8 @@ impl LiveCli {
             cached_profile: None,
             last_profiled_at: 0,
             export_jsonl_enabled: export_jsonl,
+            reflect_enabled: false,
+            reflect_pipeline: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -875,6 +889,8 @@ impl LiveCli {
                     cached_profile: None,
                     last_profiled_at: 0,
                     export_jsonl_enabled: false,
+                    reflect_enabled: false,
+                    reflect_pipeline: None,
                 };
                 cli.persist_session()?;
                 Ok(cli)
@@ -1211,6 +1227,8 @@ impl LiveCli {
             // B-9 cycle 2 (BLOCK-1 fix): local-mode REPL also defaults
             // SessionDag-only persistence; --export-jsonl is opt-in.
             export_jsonl_enabled: false,
+            reflect_enabled: false,
+            reflect_pipeline: None,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -1660,6 +1678,39 @@ impl LiveCli {
         // Inject knowledge pipeline retrieval context if available.
         let augmented_input = self.augment_with_knowledge(input);
         let effective_input = augmented_input.as_deref().unwrap_or(input);
+
+        // B-39: Chat REFLECT gate — observability-only, V0 scope.
+        // Pipeline output is discarded; runtime.run_turn still produces the
+        // user-visible reply. Skipped silently on sidecar-down or any error.
+        if self.reflect_enabled {
+            if self.backend_config.is_none() {
+                tracing::warn!("/reason on but no backend_config; skipping reflect");
+            } else if let Some(ref backend_cfg) = self.backend_config.clone() {
+                // Lazy-build the pipeline on first use.
+                if self.reflect_pipeline.is_none() {
+                    let cfg = ChatReflectConfig { enabled: true, ..ChatReflectConfig::default() };
+                    let sink = self.ssb.as_ref().map(|s| Arc::clone(s) as Arc<dyn ReflectEventSink>);
+                    self.reflect_pipeline = Some(ChatReflectPipeline::new(cfg, sink));
+                }
+                if let Some(pipe) = self.reflect_pipeline.as_ref() {
+                    match sidecar::build_hyde_sidecar_provider(backend_cfg) {
+                        Ok(provider) => {
+                            let client = SidecarChatClient::new(Arc::new(provider));
+                            let turn_id = format!("turn-{}", self.clock.now().tick());
+                            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                let _output = rt.block_on(pipe.run(turn_id, effective_input, &client));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "REFLECT: SidecarProvider build failed; skipping");
+                        }
+                    }
+                }
+            }
+        }
 
         let (mut runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
         let mut spinner = Spinner::new();
@@ -2283,6 +2334,28 @@ impl LiveCli {
                     eprintln!(
                         "/mode {trimmed}: live-CLI flip is handled by the dashboard. Use the dashboard mode toggle, or set ELAI_GATE_MODE={trimmed} before launching the runner."
                     );
+                }
+                false
+            }
+            SlashCommand::Reason { on_off } => {
+                // B-39: toggle the Chat REFLECT pipeline. Mirrors /mode: string-typed,
+                // validation in handler, zero orchestrator dep.
+                let trimmed = on_off.trim();
+                if trimmed.eq_ignore_ascii_case("on") {
+                    self.reflect_enabled = true;
+                    tracing::info!("REFLECT enabled");
+                    eprintln!("[reason] Chat REFLECT pipeline enabled");
+                } else if trimmed.eq_ignore_ascii_case("off") {
+                    self.reflect_enabled = false;
+                    self.reflect_pipeline = None;
+                    tracing::info!("REFLECT disabled");
+                    eprintln!("[reason] Chat REFLECT pipeline disabled");
+                } else {
+                    tracing::warn!(
+                        on_off = %trimmed,
+                        "/reason: unrecognised value; expected `on` or `off`"
+                    );
+                    eprintln!("/reason: unrecognised value `{trimmed}`; expected `on` or `off`");
                 }
                 false
             }
@@ -3950,5 +4023,45 @@ pub(crate) fn runtime_hook_config_from_plugin_hooks(hooks: PluginHooks) -> elai_
         hooks.post_tool_use,
         hooks.post_tool_use_failure,
     )
+}
+
+// ---------------------------------------------------------------------------
+// B-39: SidecarChatClient — bridges SidecarProvider to ChatInferenceClient
+// ---------------------------------------------------------------------------
+
+/// Wraps a `SidecarProvider` so it satisfies `elai_reasoning::ChatInferenceClient`.
+///
+/// `LlmProvider::complete` returns `Vec<String>` (batch completions); we take
+/// the first element. The `OllamaConfig` arg is passed as-default because
+/// `SidecarProvider` ignores it and uses its internal `SidecarConfig`.
+pub(crate) struct SidecarChatClient {
+    provider: Arc<SidecarProvider>,
+}
+
+impl SidecarChatClient {
+    pub(crate) fn new(provider: Arc<SidecarProvider>) -> Self {
+        Self { provider }
+    }
+}
+
+impl ChatInferenceClient for SidecarChatClient {
+    fn complete<'a>(&'a self, prompt: &'a str, _max_tokens: u32) -> ChatFuture<'a, String> {
+        // `SidecarProvider` uses its internal `SidecarConfig.max_tokens`; the
+        // `OllamaConfig` arg is ignored by the impl. `_max_tokens` is accepted
+        // for trait conformance — the sidecar's own token cap from BackendConfig
+        // applies instead.
+        Box::pin(async move {
+            let config = OllamaConfig::default();
+            let completions = self
+                .provider
+                .complete(prompt, &config)
+                .await
+                .map_err(|e| ReflectError::Inference(e.to_string()))?;
+            completions
+                .into_iter()
+                .next()
+                .ok_or_else(|| ReflectError::Inference("sidecar returned no completions".to_string()))
+        })
+    }
 }
 

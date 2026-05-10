@@ -18,6 +18,7 @@ use std::rc::Rc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use elai_core::clock::ClockProvider;
+use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 
 // ---------------------------------------------------------------------------
 // Schema version — bump on any DDL change
@@ -41,7 +42,8 @@ use elai_core::clock::ClockProvider;
 // (data_table_grew, l3_proposal, convergence_stagnant, config_oscillation,
 //  regression_detected, evolution_withheld). The 5 batch-3C self-mod variants
 // (proposal_*, msi_update, config_archived) already shipped in v26/v27.
-const SCHEMA_VERSION: i64 = 28;
+// B-39 chat reflect pipeline: 4 new SsbActionType variants for per-turn REFLECT events.
+const SCHEMA_VERSION: i64 = 29;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -117,7 +119,9 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- regression_detected -- REG cross-pipeline AC regression report
         -- evolution_withheld  -- EVO gate Withhold (config_blob never evolved)
         'data_table_grew', 'l3_proposal', 'convergence_stagnant',
-        'config_oscillation', 'regression_detected', 'evolution_withheld'
+        'config_oscillation', 'regression_detected', 'evolution_withheld',
+        -- B-39 chat reflect pipeline: per-turn REFLECT stage beacons.
+        'reflect_triaged', 'reflect_candidate', 'reflect_audit_verdict', 'reflect_refined'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -143,12 +147,13 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All ~96 action types recorded in SSB entries.
+/// All ~100 action types recorded in SSB entries.
 /// B-19A added `HookLatencyViolation` (was 74 in B-10). The count is
 /// approximate because per-batch additions land asynchronously; the
 /// canonical inventory lives in [`SsbActionType::as_sql_str`] and the
 /// CHECK constraint above. B-23 Phase 4H Group A is the latest tranche
-/// of additions (6 self-mod beacons).
+/// of additions (6 self-mod beacons). B-39 adds 4 reflect variants
+/// (reflect_triaged, reflect_candidate, reflect_audit_verdict, reflect_refined).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -442,6 +447,15 @@ pub enum SsbActionType {
     /// [`EvolutionWithheldPayload`]. Forces MSI verdict to STABILIZING for
     /// the affected mode.
     EvolutionWithheld,
+    // B-39 chat reflect pipeline: 4 new SsbActionType variants for per-turn REFLECT events.
+    /// B-39: TRIAGE stage verdict. Carries a [`ReflectTriagedPayload`].
+    ReflectTriaged,
+    /// B-39: REASONER candidate emitted. Carries a [`ReflectCandidatePayload`].
+    ReflectCandidate,
+    /// B-39: AUDITOR best-of-N verdict. Carries a [`ReflectAuditVerdictPayload`].
+    ReflectAuditVerdict,
+    /// B-39: SYNTHESIZE final synthesis. Carries a [`ReflectRefinedPayload`].
+    ReflectRefined,
 }
 
 impl SsbActionType {
@@ -547,6 +561,11 @@ impl SsbActionType {
             Self::ConfigOscillation => "config_oscillation",
             Self::RegressionDetected => "regression_detected",
             Self::EvolutionWithheld => "evolution_withheld",
+            // B-39 chat reflect pipeline.
+            Self::ReflectTriaged => "reflect_triaged",
+            Self::ReflectCandidate => "reflect_candidate",
+            Self::ReflectAuditVerdict => "reflect_audit_verdict",
+            Self::ReflectRefined => "reflect_refined",
         }
     }
 }
@@ -661,6 +680,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "config_oscillation" => Ok(SsbActionType::ConfigOscillation),
         "regression_detected" => Ok(SsbActionType::RegressionDetected),
         "evolution_withheld" => Ok(SsbActionType::EvolutionWithheld),
+        // B-39 chat reflect pipeline.
+        "reflect_triaged" => Ok(SsbActionType::ReflectTriaged),
+        "reflect_candidate" => Ok(SsbActionType::ReflectCandidate),
+        "reflect_audit_verdict" => Ok(SsbActionType::ReflectAuditVerdict),
+        "reflect_refined" => Ok(SsbActionType::ReflectRefined),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1340,6 +1364,46 @@ pub struct EvolutionWithheldPayload {
     pub identical_streak: u32,
     pub reason: String,          // human-readable Withhold reason
     pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// B-39 chat reflect pipeline — per-turn REFLECT stage payload structs.
+// Spec: B-39 plan; trait elai_reasoning::chat_reflect::ReflectEventSink.
+// ---------------------------------------------------------------------------
+
+/// B-39: TRIAGE stage verdict for a chat turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReflectTriagedPayload {
+    pub turn_id: String,
+    pub class: String,
+}
+
+/// B-39: single REASONER candidate emitted during best-of-N generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReflectCandidatePayload {
+    pub turn_id: String,
+    pub candidate_index: u32,
+    pub content: String,
+}
+
+/// B-39: AUDITOR best-of-N verdict selecting the winning candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReflectAuditVerdictPayload {
+    pub turn_id: String,
+    pub best_index: u32,
+    pub rationale: String,
+}
+
+/// B-39: SYNTHESIZE final output after the full REFLECT pipeline completes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReflectRefinedPayload {
+    pub turn_id: String,
+    pub total_tokens_used: u32,
+    pub synthesis: String,
 }
 
 /// WEB.3: emitted when a dev-server check passes and a preview is available.
@@ -2307,6 +2371,11 @@ pub enum SsbPayload {
     ConfigOscillation(ConfigOscillationPayload),
     RegressionDetected(RegressionDetectedPayload),
     EvolutionWithheld(EvolutionWithheldPayload),
+    // B-39 chat reflect pipeline: per-turn REFLECT stage beacons.
+    ReflectTriaged(ReflectTriagedPayload),
+    ReflectCandidate(ReflectCandidatePayload),
+    ReflectAuditVerdict(ReflectAuditVerdictPayload),
+    ReflectRefined(ReflectRefinedPayload),
 }
 
 impl SsbPayload {
@@ -2413,6 +2482,11 @@ impl SsbPayload {
             Self::ConfigOscillation(_) => SsbActionType::ConfigOscillation,
             Self::RegressionDetected(_) => SsbActionType::RegressionDetected,
             Self::EvolutionWithheld(_) => SsbActionType::EvolutionWithheld,
+            // B-39 chat reflect pipeline.
+            Self::ReflectTriaged(_) => SsbActionType::ReflectTriaged,
+            Self::ReflectCandidate(_) => SsbActionType::ReflectCandidate,
+            Self::ReflectAuditVerdict(_) => SsbActionType::ReflectAuditVerdict,
+            Self::ReflectRefined(_) => SsbActionType::ReflectRefined,
         }
     }
 }
@@ -3278,6 +3352,124 @@ pub fn default_ssb_path() -> std::io::Result<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// B-39: ReflectEventSink bridge — translates reasoning crate events to SSB rows.
+// ---------------------------------------------------------------------------
+
+impl ReflectEventSink for Ssb {
+    /// Translates each [`ReflectEvent`] variant into the corresponding
+    /// [`SsbActionType`] + [`SsbPayload`] and appends to the SSB.
+    ///
+    /// Write is fire-and-forget via `tokio::spawn`: the pipeline never awaits
+    /// SSB persistence. Write failures are logged at WARN level and silently
+    /// discarded — the pipeline must never propagate SSB errors to the caller.
+    fn emit(&self, event: ReflectEvent) {
+        let (action_type, payload) = match event {
+            ReflectEvent::Triaged { turn_id, class } => (
+                SsbActionType::ReflectTriaged,
+                SsbPayload::ReflectTriaged(ReflectTriagedPayload {
+                    turn_id,
+                    class: class.as_wire_str().to_owned(),
+                }),
+            ),
+            ReflectEvent::Candidate {
+                turn_id,
+                candidate_index,
+                content,
+            } => (
+                SsbActionType::ReflectCandidate,
+                SsbPayload::ReflectCandidate(ReflectCandidatePayload {
+                    turn_id,
+                    candidate_index,
+                    content,
+                }),
+            ),
+            ReflectEvent::AuditVerdict {
+                turn_id,
+                best_index,
+                rationale,
+            } => (
+                SsbActionType::ReflectAuditVerdict,
+                SsbPayload::ReflectAuditVerdict(ReflectAuditVerdictPayload {
+                    turn_id,
+                    best_index,
+                    rationale,
+                }),
+            ),
+            ReflectEvent::Refined {
+                turn_id,
+                total_tokens_used,
+                synthesis,
+            } => (
+                SsbActionType::ReflectRefined,
+                SsbPayload::ReflectRefined(ReflectRefinedPayload {
+                    turn_id,
+                    total_tokens_used,
+                    synthesis,
+                }),
+            ),
+        };
+
+        // Serialize payload eagerly on the caller's thread; spawn write async.
+        let bytes = match rmp_serde::to_vec_named(&payload) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    target: "orchestrator::ssb",
+                    error = %e,
+                    action_type = action_type.as_sql_str(),
+                    "ReflectEventSink: payload serialization failed — dropping event"
+                );
+                return;
+            }
+        };
+
+        if bytes.len() > PAYLOAD_MAX_BYTES {
+            tracing::warn!(
+                target: "orchestrator::ssb",
+                action_type = action_type.as_sql_str(),
+                size = bytes.len(),
+                max = PAYLOAD_MAX_BYTES,
+                "ReflectEventSink: payload exceeds size limit — dropping event"
+            );
+            return;
+        }
+
+        let write_tx = match &self.write_tx {
+            Some(tx) => tx.clone(),
+            None => {
+                tracing::warn!(
+                    target: "orchestrator::ssb",
+                    action_type = action_type.as_sql_str(),
+                    "ReflectEventSink: SSB is shut down — dropping event"
+                );
+                return;
+            }
+        };
+
+        let request = SsbWriteRequest {
+            action_type,
+            // Reflect events are emitted by the CLI chat loop; agent_id is
+            // not meaningful here, so we use a stable sentinel.
+            agent_id: "reflect_pipeline".to_owned(),
+            superstep: 0,
+            payload: bytes,
+            files: vec![],
+        };
+
+        let (respond, _rx) = tokio::sync::oneshot::channel();
+        if let Err(e) = write_tx.send(WriteMessage { request, respond }) {
+            tracing::warn!(
+                target: "orchestrator::ssb",
+                error = %e,
+                action_type = action_type.as_sql_str(),
+                "ReflectEventSink: write channel send failed — dropping event"
+            );
+        }
+        // _rx dropped intentionally: fire-and-forget; no await on the response.
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -3921,6 +4113,26 @@ mod tests {
                     ts_ms: 0,
                 })
             }
+            // B-39 chat reflect pipeline.
+            SsbActionType::ReflectTriaged => SsbPayload::ReflectTriaged(ReflectTriagedPayload {
+                turn_id: "turn-1".into(),
+                class: "problem".into(),
+            }),
+            SsbActionType::ReflectCandidate => SsbPayload::ReflectCandidate(ReflectCandidatePayload {
+                turn_id: "turn-1".into(),
+                candidate_index: 0,
+                content: "test-content".into(),
+            }),
+            SsbActionType::ReflectAuditVerdict => SsbPayload::ReflectAuditVerdict(ReflectAuditVerdictPayload {
+                turn_id: "turn-1".into(),
+                best_index: 0,
+                rationale: "most direct".into(),
+            }),
+            SsbActionType::ReflectRefined => SsbPayload::ReflectRefined(ReflectRefinedPayload {
+                turn_id: "turn-1".into(),
+                total_tokens_used: 0,
+                synthesis: "test-synthesis".into(),
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -4958,6 +5170,26 @@ mod tests {
                 entries_kept: 4,
                 overlap_threshold: 0.10,
             }),
+            // B-39 chat reflect pipeline.
+            SsbPayload::ReflectTriaged(ReflectTriagedPayload {
+                turn_id: "turn-1".into(),
+                class: "problem".into(),
+            }),
+            SsbPayload::ReflectCandidate(ReflectCandidatePayload {
+                turn_id: "turn-1".into(),
+                candidate_index: 0,
+                content: "test-content".into(),
+            }),
+            SsbPayload::ReflectAuditVerdict(ReflectAuditVerdictPayload {
+                turn_id: "turn-1".into(),
+                best_index: 0,
+                rationale: "most direct".into(),
+            }),
+            SsbPayload::ReflectRefined(ReflectRefinedPayload {
+                turn_id: "turn-1".into(),
+                total_tokens_used: 0,
+                synthesis: "test-synthesis".into(),
+            }),
         ]
     }
 
@@ -4969,8 +5201,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            37,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap)",
+            41,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
@@ -5288,6 +5520,38 @@ mod tests {
                             tier: tier.to_string(),
                             budget_ms,
                             actual_ms,
+                        })
+                    ),
+                // B-39 chat reflect pipeline arbitraries.
+                ("[a-z0-9-]{1,20}", "(chat|problem|code_fix)")
+                    .prop_map(|(turn_id, class)|
+                        SsbPayload::ReflectTriaged(ReflectTriagedPayload {
+                            turn_id,
+                            class: class.to_string(),
+                        })
+                    ),
+                ("[a-z0-9-]{1,20}", 0u32..1024, "[a-z ]{1,40}")
+                    .prop_map(|(turn_id, candidate_index, content)|
+                        SsbPayload::ReflectCandidate(ReflectCandidatePayload {
+                            turn_id,
+                            candidate_index,
+                            content,
+                        })
+                    ),
+                ("[a-z0-9-]{1,20}", 0u32..1024, "[a-z ]{1,40}")
+                    .prop_map(|(turn_id, best_index, rationale)|
+                        SsbPayload::ReflectAuditVerdict(ReflectAuditVerdictPayload {
+                            turn_id,
+                            best_index,
+                            rationale,
+                        })
+                    ),
+                ("[a-z0-9-]{1,20}", 0u32..1024, "[a-z ]{1,40}")
+                    .prop_map(|(turn_id, total_tokens_used, synthesis)|
+                        SsbPayload::ReflectRefined(ReflectRefinedPayload {
+                            turn_id,
+                            total_tokens_used,
+                            synthesis,
                         })
                     ),
             ]

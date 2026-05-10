@@ -1245,6 +1245,7 @@ dependencies = [
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "elai-reasoning",
  "elai-rules",
  "elai-tools",
  "elai-web-search",
@@ -1457,6 +1458,8 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

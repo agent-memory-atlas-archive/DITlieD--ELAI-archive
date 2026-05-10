@@ -43,6 +43,7 @@ import type {
   QueryTrace,
   RecallMetrics,
   ResearchTreeNode,
+  ReflectState,
   Rule,
   RuleLifecycleCounts,
   SessionBranch,
@@ -164,16 +165,18 @@ function createReasoning() {
     results: [],
     probed_at: 0,
   });
+  let reflectState = $state<ReflectState>({ enabled: false, last_triage: null, last_verdict: null, last_summary: null });
 
   async function refresh() {
     try {
-      const [budgets, sweep, csqs, gg, mistakes, feas] = await Promise.all([
+      const [budgets, sweep, csqs, gg, mistakes, feas, reflect] = await Promise.all([
         stub.get_grc_budgets(),
         stub.get_grounding_sweep(),
         stub.get_csq_pending(),
         stub.get_gg_signals(),
         stub.get_mistake_book(),
         stub.get_feasibility_report(),
+        stub.get_reflect_state(),
       ]);
       grcBudgets = budgets;
       groundingSweep = sweep;
@@ -191,6 +194,7 @@ function createReasoning() {
         })),
         probed_at: feas.probed_at ?? 0,
       };
+      reflectState = reflect;
     } catch (err) {
       console.debug('[reasoningData] refresh failed', err);
     }
@@ -205,10 +209,12 @@ function createReasoning() {
     get ggSignals() { return ggSignals; },
     get mistakePreview() { return mistakePreview; },
     get feasibility() { return feasibility; },
+    get reflectState() { return reflectState; },
     unwired: {
       groundingSweep: true, // GroundingSweepGate producer not wired
       csqPending: true,     // CSQ enforcement not wired in pre-tool dispatch
       feasibility: false,   // B-21 4F: get_feasibility_report decodes real SSB rows
+      reflect: false,       // B-39: get_reflect_state wired to Tauri command
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

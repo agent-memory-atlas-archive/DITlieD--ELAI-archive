@@ -130,6 +130,11 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::ConfigOscillation,
     SsbActionType::RegressionDetected,
     SsbActionType::EvolutionWithheld,
+    // B-39 chat reflect pipeline — per-turn REFLECT stage beacons.
+    SsbActionType::ReflectTriaged,
+    SsbActionType::ReflectCandidate,
+    SsbActionType::ReflectAuditVerdict,
+    SsbActionType::ReflectRefined,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -385,8 +390,10 @@ fn contract_variant_count_matches_enum_doc() {
     // bumping floor to 72. B-23 Phase 4H Group A: +6 (data_table_grew,
     // l3_proposal, convergence_stagnant, config_oscillation,
     // regression_detected, evolution_withheld) bumping floor to 78.
+    // B-39: +4 (reflect_triaged, reflect_candidate, reflect_audit_verdict,
+    // reflect_refined) bumping floor to 82.
     assert!(
-        ALL_VARIANTS.len() >= 78,
-        "ALL_VARIANTS shrank below 78 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 82,
+        "ALL_VARIANTS shrank below 82 — review SsbActionType enum"
     );
 }

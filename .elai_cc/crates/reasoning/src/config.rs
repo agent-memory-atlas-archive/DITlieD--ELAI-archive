@@ -372,6 +372,48 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
                 require_scope_enumeration: false,
             })
         }
+        // B-39 chat_reasoner: drives the REASONER stage (N best-of-N candidates).
+        // GroundingLevel::High (Medium variant absent in types.rs); reasoner reads
+        // code-just-read which IS the High definition. Required steps stop at
+        // PlanAction because the Reasoner does not Verify — that's the auditor.
+        "chat_reasoner" => Some(AgentGrcConfig {
+            role: role.to_string(),
+            budget: GrcBudget::new(4, 8192),
+            required_steps: vec![
+                GrcState::Observe,
+                GrcState::Hypothesize,
+                GrcState::PlanAction,
+            ],
+            grounding_level: GroundingLevel::High,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+            ],
+            transition_overrides: FxHashMap::default(),
+            require_scope_enumeration: false,
+        }),
+        // B-39 chat_auditor: scores candidates with EXTERNAL grounding (Kamoi 2024
+        // TACL: self-correction needs reliable feedback). Mirrors media_validator
+        // for the Observe -> Verify additive override (not in default transitions).
+        "chat_auditor" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(4, 5120),
+                required_steps: vec![GrcState::Observe, GrcState::Verify],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
         _ => None,
     }
 }

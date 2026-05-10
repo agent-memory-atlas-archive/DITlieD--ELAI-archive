@@ -82,6 +82,7 @@ import type {
   CloudSpendInfo,
   SelfModProposalRow,
   SelfModMsiSnapshot,
+  ReflectState,
 } from './types';
 
 import {
@@ -1771,6 +1772,25 @@ export async function cancel_remote_sidecar(requestId: string): Promise<{ ok: bo
   const live = await tryInvoke<{ ok: boolean }>('cancel_remote_sidecar', { requestId });
   if (live) return live;
   return { ok: true };
+}
+
+// ------------------------------------------------------------------
+// REFLECT (B-39)
+// ------------------------------------------------------------------
+
+export const MOCK_REFLECT_STATE: ReflectState = {
+  enabled: false,
+  last_triage: null,
+  last_verdict: null,
+  last_summary: null,
+};
+
+export async function get_reflect_state(): Promise<ReflectState> {
+  logStub('get_reflect_state');
+  const live = await tryInvoke<ReflectState>('get_reflect_state');
+  if (live) return live;
+  await delay();
+  return MOCK_REFLECT_STATE;
 }
 
 /**
