@@ -181,6 +181,7 @@ async fn contract_security_sensitive_returns_error() {
         fpr_estimate: 0.0,
         occurrences_seen: 3,
         pipeline_mode: PipelineMode::Surgical,
+        scope: None,
     };
     let err = f.processor.apply_proposal(&proposal).await.unwrap_err();
     assert!(matches!(err, Layer1aError::SecuritySensitive(_)));

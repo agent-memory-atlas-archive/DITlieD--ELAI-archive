@@ -80,6 +80,8 @@ import type {
   OAuthLoginInfo,
   CloudModelInfo,
   CloudSpendInfo,
+  SelfModProposalRow,
+  SelfModMsiSnapshot,
 } from './types';
 
 import {
@@ -336,17 +338,24 @@ export async function get_active_optimizations(): Promise<OptimizationProposal[]
   return OPTIMIZATION_PROPOSALS.filter((p) => p.status === 'pending');
 }
 
-export async function get_pending_proposals(): Promise<OptimizationProposal[]> {
+// B-23 Phase 4H Group F (4H.8) — these now return the self-mod shape from
+// the Rust Tauri impl. The legacy `OptimizationProposal[]` mock-data return
+// is preserved for browser-only dev mode where the Rust handler is absent.
+export async function get_pending_proposals(): Promise<
+  SelfModProposalRow[] | OptimizationProposal[]
+> {
   logStub('get_pending_proposals');
-  const live = await tryInvoke<OptimizationProposal[]>('get_pending_proposals');
+  const live = await tryInvoke<SelfModProposalRow[]>('get_pending_proposals');
   if (live) return live;
   await delay();
   return OPTIMIZATION_PROPOSALS.filter((p) => p.status === 'pending');
 }
 
-export async function get_applied_proposals(): Promise<OptimizationProposal[]> {
+export async function get_applied_proposals(): Promise<
+  SelfModProposalRow[] | OptimizationProposal[]
+> {
   logStub('get_applied_proposals');
-  const live = await tryInvoke<OptimizationProposal[]>('get_applied_proposals');
+  const live = await tryInvoke<SelfModProposalRow[]>('get_applied_proposals');
   if (live) return live;
   await delay();
   return OPTIMIZATION_PROPOSALS.filter((p) => p.status === 'applied');
@@ -372,9 +381,13 @@ export async function reject_proposal(proposalId: string): Promise<{ ok: boolean
 // MSI / STEERING / MCP
 // ------------------------------------------------------------------
 
-export async function get_msi_status(): Promise<MsiStatus> {
+// B-23 Phase 4H Group F (4H.8) — get_msi_status now returns an array of
+// per-PipelineMode self-mod MSI snapshots. The legacy multi-session MSI
+// shape stays available via the `MsiStatus` interface for any caller that
+// still expects it (none in v2 today).
+export async function get_msi_status(): Promise<SelfModMsiSnapshot[] | MsiStatus> {
   logStub('get_msi_status');
-  const live = await tryInvoke<MsiStatus>('get_msi_status');
+  const live = await tryInvoke<SelfModMsiSnapshot[]>('get_msi_status');
   if (live) return live;
   await delay();
   return MSI_STATUS;

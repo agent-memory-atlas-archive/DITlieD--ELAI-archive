@@ -37,7 +37,11 @@ use elai_core::clock::ClockProvider;
 // bsp_superstep / agent_lifecycle / anti_spiral_hit. All CHECK, enum, as_sql_str,
 // from_str, payloads, and SsbPayload variants land atomically in this bump.
 // DESTRUCTIVE: existing v25 session DBs are DROPped on first read (no migration logic).
-const SCHEMA_VERSION: i64 = 27;
+// B-23 Phase 4H Group A: bumped 27 -> 28 for 6 new self-mod SSB action types
+// (data_table_grew, l3_proposal, convergence_stagnant, config_oscillation,
+//  regression_detected, evolution_withheld). The 5 batch-3C self-mod variants
+// (proposal_*, msi_update, config_archived) already shipped in v26/v27.
+const SCHEMA_VERSION: i64 = 28;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -104,7 +108,16 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- B-27 (SCHEMA_VERSION 27): cloud-mode dual-rate spend ledger row +
         -- one-shot escalation marker emitted when local exhausts retries
         -- and cloud_mode promotes the step. cloud_mode.rs is the sole writer.
-        'cloud_spend', 'escalate_to_cloud'
+        'cloud_spend', 'escalate_to_cloud',
+        -- B-23 Phase 4H Group A (SCHEMA_VERSION 28): 6 new self-mod beacons.
+        -- data_table_grew    -- Layer 1A row insert event (per spec phase-4H.txt:140)
+        -- l3_proposal         -- Layer 3 structural-change proposal (HUMAN-ONLY review)
+        -- convergence_stagnant-- OSC verdict (3 consecutive >=0.95 similarity)
+        -- config_oscillation  -- OSC period-2 verdict (sim(N,N-2) AND sim(N-1,N-3))
+        -- regression_detected -- REG cross-pipeline AC regression report
+        -- evolution_withheld  -- EVO gate Withhold (config_blob never evolved)
+        'data_table_grew', 'l3_proposal', 'convergence_stagnant',
+        'config_oscillation', 'regression_detected', 'evolution_withheld'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -130,8 +143,12 @@ CREATE INDEX IF NOT EXISTS idx_ssb_files_seq  ON ssb_files(seq);
 // Action type enum
 // ---------------------------------------------------------------------------
 
-/// All 75 action types recorded in SSB entries.
-/// B-19A added `HookLatencyViolation` (was 74 in B-10).
+/// All ~96 action types recorded in SSB entries.
+/// B-19A added `HookLatencyViolation` (was 74 in B-10). The count is
+/// approximate because per-batch additions land asynchronously; the
+/// canonical inventory lives in [`SsbActionType::as_sql_str`] and the
+/// CHECK constraint above. B-23 Phase 4H Group A is the latest tranche
+/// of additions (6 self-mod beacons).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SsbActionType {
@@ -397,6 +414,34 @@ pub enum SsbActionType {
     /// from local execution to cloud after the local model exhausts retries
     /// or trips an explicit escalation rule. Carries an [`EscalateToCloudPayload`].
     EscalateToCloud,
+    /// B-23 Phase 4H Group A — Layer 1A row insert event. Carries a
+    /// [`DataTableGrewPayload`]. Distinct from `ConfigArchived` (capping) and
+    /// `ProposalApplied` (the action) — `DataTableGrew` records the actual
+    /// table-row growth so the dashboard can render "deprecated_patterns +1
+    /// (cargo, blake2->blake3)" without aggregating apply rows.
+    DataTableGrew,
+    /// B-23 Phase 4H — Layer 3 structural-change proposal emitted for HUMAN
+    /// review only. Carries an [`L3ProposalPayload`]. Self-mod agent NEVER
+    /// applies these; the dashboard surfaces them for an operator to approve.
+    L3Proposal,
+    /// B-23 Phase 4H 4H.7B (OSC) — emitted when ConfigVariantSimilarity over
+    /// the last `stagnation_window` consecutive variants is >= 0.95 for that
+    /// PipelineMode. Carries a [`ConvergenceStagnantPayload`].
+    ConvergenceStagnant,
+    /// B-23 Phase 4H 4H.7B (OSC) — period-2 oscillation detected
+    /// (sim(N,N-2) AND sim(N-1,N-3) both >= 0.95). Carries a
+    /// [`ConfigOscillationPayload`].
+    ConfigOscillation,
+    /// B-23 Phase 4H 4H.7C (REG) — cross-pipeline AC regression detected
+    /// (AC failed in latest pipeline, passed in some prior pipeline).
+    /// Carries a [`RegressionDetectedPayload`].
+    RegressionDetected,
+    /// B-23 Phase 4H 4H.7D (EVO) — evolution gate Withhold result emitted
+    /// when the latest N variants never structurally evolved (similarity >=
+    /// 0.95 across all consecutive pairs). Carries an
+    /// [`EvolutionWithheldPayload`]. Forces MSI verdict to STABILIZING for
+    /// the affected mode.
+    EvolutionWithheld,
 }
 
 impl SsbActionType {
@@ -495,6 +540,13 @@ impl SsbActionType {
             Self::AntiSpiralHit => "anti_spiral_hit",
             Self::CloudSpend => "cloud_spend",
             Self::EscalateToCloud => "escalate_to_cloud",
+            // B-23 Phase 4H Group A.
+            Self::DataTableGrew => "data_table_grew",
+            Self::L3Proposal => "l3_proposal",
+            Self::ConvergenceStagnant => "convergence_stagnant",
+            Self::ConfigOscillation => "config_oscillation",
+            Self::RegressionDetected => "regression_detected",
+            Self::EvolutionWithheld => "evolution_withheld",
         }
     }
 }
@@ -602,6 +654,13 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         // B-27 cloud-mode action types.
         "cloud_spend" => Ok(SsbActionType::CloudSpend),
         "escalate_to_cloud" => Ok(SsbActionType::EscalateToCloud),
+        // B-23 Phase 4H Group A self-mod action types.
+        "data_table_grew" => Ok(SsbActionType::DataTableGrew),
+        "l3_proposal" => Ok(SsbActionType::L3Proposal),
+        "convergence_stagnant" => Ok(SsbActionType::ConvergenceStagnant),
+        "config_oscillation" => Ok(SsbActionType::ConfigOscillation),
+        "regression_detected" => Ok(SsbActionType::RegressionDetected),
+        "evolution_withheld" => Ok(SsbActionType::EvolutionWithheld),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1200,6 +1259,86 @@ pub struct EscalateToCloudPayload {
     /// Reasoning layer that ran locally before escalating (1-5 per
     /// cloud-mode-design.txt REASONING LAYER COLLAPSE :140-152).
     pub layer_failed: u8,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// B-23 Phase 4H Group A — self-modification beacons (6 payload structs).
+// Spec: docs/specs/guide/steps/phase-4H.txt + B-23 plan.
+// ---------------------------------------------------------------------------
+
+/// `data_table_grew` — Layer 1A applied a row to one of the four bounded
+/// data tables (deprecated_patterns / failure_taxonomy / lazy_code_regex /
+/// source_tiers). Distinct from `proposal_applied` (the action) — this row
+/// records the resulting table-row growth so the dashboard can render
+/// "deprecated_patterns +1 (cargo, blake2 -> blake3)".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataTableGrewPayload {
+    pub proposal_id: String,
+    pub table: String,           // snake_case table name (matches DataTable::as_str)
+    pub pipeline_mode: String,   // surgical | greenfield | oracle
+    pub ecosystem: Option<String>,
+    pub language: Option<String>,
+    pub rowcount_after: u64,
+    pub ts_ms: i64,
+}
+
+/// `l3_proposal` — Layer 3 structural-change proposal emitted for HUMAN
+/// review only. Self-mod NEVER applies these. The dashboard surfaces them
+/// for an operator approve / reject decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct L3ProposalPayload {
+    pub proposal_id: String,
+    pub change_type: String,      // matches StructuralChangeType::as_str
+    pub description: String,
+    pub rationale: String,
+    pub ts_ms: i64,
+}
+
+/// `convergence_stagnant` — OSC verdict (4H.7B). Latest `window` consecutive
+/// ConfigVariants per `pipeline_mode` all crossed the similarity threshold.
+/// Triggers exploration-bonus boost in next parent_selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConvergenceStagnantPayload {
+    pub pipeline_mode: String,
+    pub window: u32,             // consecutive variants measured
+    pub similarity: f32,         // latest similarity (>= 0.95)
+    pub variant_id: String,      // latest variant id
+    pub ts_ms: i64,
+}
+
+/// `config_oscillation` — OSC period-2 verdict (4H.7B). Both half-periods
+/// passed the similarity threshold (sim(N,N-2) AND sim(N-1,N-3) >= 0.95).
+/// Triggers AllowedConfigKey runtime-exclusion freeze for differing keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigOscillationPayload {
+    pub pipeline_mode: String,
+    pub period: u32,             // currently always 2
+    pub frozen_keys: Vec<String>,
+    pub freeze_pipelines: u32,   // pipelines for which the freeze holds
+    pub ts_ms: i64,
+}
+
+/// `regression_detected` — REG cross-pipeline AC regression report (4H.7C).
+/// Distinct from `pass_to_fail` in TestOutcomeReport: REG spans the entire
+/// pipeline history per AC, not a single eval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegressionDetectedPayload {
+    pub pipeline_id: String,
+    pub pipeline_mode: String,
+    pub regressed_ac_indices: Vec<u32>,
+    pub max_consecutive_failures: u32,
+    pub ts_ms: i64,
+}
+
+/// `evolution_withheld` — EVO gate Withhold result (4H.7D). The latest N
+/// variants never structurally evolved (similarity >= 0.95 across every
+/// consecutive pair). Forces MSI verdict to STABILIZING for the mode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvolutionWithheldPayload {
+    pub pipeline_mode: String,
+    pub identical_streak: u32,
+    pub reason: String,          // human-readable Withhold reason
     pub ts_ms: i64,
 }
 
@@ -2159,6 +2298,15 @@ pub enum SsbPayload {
     // B-27: cloud-mode spend ledger + escalation marker.
     CloudSpend(CloudSpendPayload),
     EscalateToCloud(EscalateToCloudPayload),
+    // B-23 Phase 4H Group A: self-mod beacons (Layer 1A growth + Layer 3 +
+    // OSC + REG + EVO). Five batch-3C variants (proposal_*, msi_update,
+    // config_archived) shipped earlier and live above.
+    DataTableGrew(DataTableGrewPayload),
+    L3Proposal(L3ProposalPayload),
+    ConvergenceStagnant(ConvergenceStagnantPayload),
+    ConfigOscillation(ConfigOscillationPayload),
+    RegressionDetected(RegressionDetectedPayload),
+    EvolutionWithheld(EvolutionWithheldPayload),
 }
 
 impl SsbPayload {
@@ -2258,6 +2406,13 @@ impl SsbPayload {
             Self::AntiSpiralHit(_) => SsbActionType::AntiSpiralHit,
             Self::CloudSpend(_) => SsbActionType::CloudSpend,
             Self::EscalateToCloud(_) => SsbActionType::EscalateToCloud,
+            // B-23 Phase 4H Group A.
+            Self::DataTableGrew(_) => SsbActionType::DataTableGrew,
+            Self::L3Proposal(_) => SsbActionType::L3Proposal,
+            Self::ConvergenceStagnant(_) => SsbActionType::ConvergenceStagnant,
+            Self::ConfigOscillation(_) => SsbActionType::ConfigOscillation,
+            Self::RegressionDetected(_) => SsbActionType::RegressionDetected,
+            Self::EvolutionWithheld(_) => SsbActionType::EvolutionWithheld,
         }
     }
 }
@@ -3714,6 +3869,58 @@ mod tests {
                 layer_failed: 1,
                 ts_ms: 0,
             }),
+            // B-23 Phase 4H Group A.
+            SsbActionType::DataTableGrew => SsbPayload::DataTableGrew(DataTableGrewPayload {
+                proposal_id: "prop-1".into(),
+                table: "deprecated_patterns".into(),
+                pipeline_mode: "surgical".into(),
+                ecosystem: Some("cargo".into()),
+                language: Some("Rust".into()),
+                rowcount_after: 12,
+                ts_ms: 0,
+            }),
+            SsbActionType::L3Proposal => SsbPayload::L3Proposal(L3ProposalPayload {
+                proposal_id: "l3-1".into(),
+                change_type: "allowed_config_key_addition".into(),
+                description: "add EtcThreshold variant".into(),
+                rationale: "test".into(),
+                ts_ms: 0,
+            }),
+            SsbActionType::ConvergenceStagnant => {
+                SsbPayload::ConvergenceStagnant(ConvergenceStagnantPayload {
+                    pipeline_mode: "surgical".into(),
+                    window: 3,
+                    similarity: 0.96,
+                    variant_id: "v-7".into(),
+                    ts_ms: 0,
+                })
+            }
+            SsbActionType::ConfigOscillation => {
+                SsbPayload::ConfigOscillation(ConfigOscillationPayload {
+                    pipeline_mode: "surgical".into(),
+                    period: 2,
+                    frozen_keys: vec!["etc_threshold".into()],
+                    freeze_pipelines: 5,
+                    ts_ms: 0,
+                })
+            }
+            SsbActionType::RegressionDetected => {
+                SsbPayload::RegressionDetected(RegressionDetectedPayload {
+                    pipeline_id: "pipe-99".into(),
+                    pipeline_mode: "greenfield".into(),
+                    regressed_ac_indices: vec![0, 3, 7],
+                    max_consecutive_failures: 2,
+                    ts_ms: 0,
+                })
+            }
+            SsbActionType::EvolutionWithheld => {
+                SsbPayload::EvolutionWithheld(EvolutionWithheldPayload {
+                    pipeline_mode: "surgical".into(),
+                    identical_streak: 5,
+                    reason: "ontology never evolved".into(),
+                    ts_ms: 0,
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }

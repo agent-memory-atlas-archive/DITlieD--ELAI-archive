@@ -3388,6 +3388,188 @@ impl SsbViewer {
             last_24h_rate,
         })
     }
+
+    /// B-23 Phase 4H Group F (4H.8) — pending Layer 1A proposals (proposals
+    /// emitted via `proposal_generated` that have NOT yet been resolved by
+    /// a later `proposal_applied` or `proposal_rejected` row with the same
+    /// proposal_id). Newest-first; capped at `DRAWER_QUERY_HARD_CAP`.
+    pub fn pending_proposals_layer1a(&self) -> Result<Vec<SelfModProposalRow>, SsbViewerError> {
+        let conn = self.lock()?;
+        // Resolved set = applied ∪ rejected proposal_ids.
+        let mut resolved: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for action in [SsbActionType::ProposalApplied, SsbActionType::ProposalRejected] {
+            let mut stmt = conn.prepare(
+                "SELECT payload FROM ssb WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![action.as_sql_str(), DRAWER_QUERY_HARD_CAP as i64],
+                |row| row.get::<_, Vec<u8>>(0),
+            )?;
+            for row in rows {
+                let bytes = row?;
+                let Ok(payload): Result<SsbPayload, _> = rmp_serde::from_slice(&bytes) else {
+                    continue;
+                };
+                match payload {
+                    SsbPayload::ProposalApplied(p) => {
+                        resolved.insert(p.proposal_id);
+                    }
+                    SsbPayload::ProposalRejected(p) => {
+                        resolved.insert(p.proposal_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::ProposalGenerated.as_sql_str(),
+                DRAWER_QUERY_HARD_CAP as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<SelfModProposalRow> = Vec::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for row in rows {
+            let (_seq, ts_ms, bytes) = row?;
+            let Ok(payload): Result<SsbPayload, _> = rmp_serde::from_slice(&bytes) else {
+                continue;
+            };
+            if let SsbPayload::ProposalGenerated(p) = payload {
+                if resolved.contains(&p.proposal_id) {
+                    continue;
+                }
+                if !seen.insert(p.proposal_id.clone()) {
+                    continue;
+                }
+                out.push(SelfModProposalRow {
+                    proposal_id: p.proposal_id,
+                    table: p.table,
+                    fpr_estimate: Some(p.fpr_estimate),
+                    occurrences_seen: None,
+                    pipeline_mode: String::new(),
+                    applied_by: None,
+                    ts_ms,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-23 Phase 4H Group F (4H.8) — applied Layer 1A proposals history.
+    pub fn applied_proposals_layer1a(&self) -> Result<Vec<SelfModProposalRow>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::ProposalApplied.as_sql_str(),
+                DRAWER_QUERY_HARD_CAP as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut out: Vec<SelfModProposalRow> = Vec::new();
+        for row in rows {
+            let (_seq, ts_ms, bytes) = row?;
+            let Ok(payload): Result<SsbPayload, _> = rmp_serde::from_slice(&bytes) else {
+                continue;
+            };
+            if let SsbPayload::ProposalApplied(p) = payload {
+                out.push(SelfModProposalRow {
+                    proposal_id: p.proposal_id,
+                    table: p.table,
+                    fpr_estimate: None,
+                    occurrences_seen: None,
+                    pipeline_mode: String::new(),
+                    applied_by: Some(p.applied_by),
+                    ts_ms,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-23 Phase 4H Group F (4H.8) — latest MSI snapshot per pipeline mode
+    /// (newest `msi_update` row for each surgical/greenfield/oracle bucket).
+    pub fn latest_msi_per_mode(&self) -> Result<Vec<SelfModMsiSnapshotRow>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                SsbActionType::MsiUpdate.as_sql_str(),
+                DRAWER_QUERY_HARD_CAP as i64,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )?;
+        let mut latest: std::collections::BTreeMap<String, SelfModMsiSnapshotRow> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (_seq, ts_ms, bytes) = row?;
+            let Ok(payload): Result<SsbPayload, _> = rmp_serde::from_slice(&bytes) else {
+                continue;
+            };
+            if let SsbPayload::MsiUpdate(p) = payload {
+                latest.entry(p.pipeline_mode.clone()).or_insert(SelfModMsiSnapshotRow {
+                    pipeline_mode: p.pipeline_mode,
+                    msi_value: p.msi_value,
+                    status: p.status,
+                    ts_ms,
+                });
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+}
+
+/// B-23 Phase 4H Group F — DTO emitted by [`SsbViewer::pending_proposals_layer1a`]
+/// and [`SsbViewer::applied_proposals_layer1a`]. Mirrors the dashboard-v2
+/// frontend `SelfModProposalRow` interface 1:1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfModProposalRow {
+    pub proposal_id: String,
+    pub table: String,
+    pub fpr_estimate: Option<f32>,
+    pub occurrences_seen: Option<u32>,
+    pub pipeline_mode: String,
+    pub applied_by: Option<String>,
+    pub ts_ms: i64,
+}
+
+/// B-23 Phase 4H Group F — DTO for [`SsbViewer::latest_msi_per_mode`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfModMsiSnapshotRow {
+    pub pipeline_mode: String,
+    pub msi_value: f32,
+    pub status: String,
+    pub ts_ms: i64,
 }
 
 /// Tier 3 partial — hard cap on rows returned by any drawer query

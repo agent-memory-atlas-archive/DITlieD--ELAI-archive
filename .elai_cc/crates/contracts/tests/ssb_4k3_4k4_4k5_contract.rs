@@ -21,7 +21,10 @@ use elai_orchestrator::{
 };
 use tempfile::TempDir;
 
-const EXPECTED_SCHEMA: i64 = 25;
+// B-23 Phase 4H Group A: bumped 25 -> 28 atomically. The constant was stale
+// at 25 since at least Track B (live SCHEMA_VERSION had moved to 26 then 27
+// without this contract being updated). 28 covers the v28 self-mod bump.
+const EXPECTED_SCHEMA: i64 = 28;
 
 // ---------------------------------------------------------------------------
 // Helpers

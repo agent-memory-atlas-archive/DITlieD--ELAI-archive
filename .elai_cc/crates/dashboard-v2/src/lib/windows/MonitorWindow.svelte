@@ -12,6 +12,9 @@
   } from '$lib/api/types';
   import { workspace } from '$lib/state/workspace.svelte';
   import { session } from '$lib/state/session.svelte';
+  // B-23 Phase 4H Group F (4H.8) — self-mod surfaces wired into MonitorWindow.
+  import ProposalsPanel from '$lib/components/ProposalsPanel.svelte';
+  import MsiPanel from '$lib/components/MsiPanel.svelte';
 
   // ------------------------------------------------------------------
   // Phase dot model — derived from FSM history when live, static stub otherwise
@@ -206,6 +209,14 @@
 </script>
 
 <div class="monitor">
+  <!-- B-23 Phase 4H Group F (4H.8) — Self-mod surfaces. -->
+  <section class="monitor-section self-mod-msi" aria-label="MSI per pipeline mode">
+    <MsiPanel />
+  </section>
+  <section class="monitor-section self-mod-proposals" aria-label="Layer 1A proposals">
+    <ProposalsPanel />
+  </section>
+
   <!-- Section 6: AutoAdvanceStats — always visible (historical totals shown even when idle).
        Phase 4G §4G.6 requires the stats panel to render outside the running gate
        so users can see the cumulative auto-advance health between tasks.

@@ -23,8 +23,10 @@ use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry, ModeChangedPayload,
-    NovelStepRow, SsbPayload, StubRunRow, TaskSubmittedPayload,
+    NovelStepRow, ProposalAppliedPayload, ProposalRejectedPayload, SsbActionType, SsbPayload,
+    SsbWriteRequest, StubRunRow, TaskSubmittedPayload,
 };
+use elai_orchestrator::ssb_viewer::{SelfModMsiSnapshotRow, SelfModProposalRow};
 use serde_json::{json, Value};
 use tauri::State;
 
@@ -555,37 +557,97 @@ pub fn get_active_optimizations(_state: State<'_, AppState>) -> CmdResult<Value>
     Ok(json!([]))
 }
 
+/// B-23 Phase 4H Group F (4H.8) — list pending Layer 1A proposals via the
+/// SsbViewer helper. Returns an empty array when no SSB DB is reachable.
 #[tauri::command]
-pub fn get_pending_proposals(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_pending_proposals(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<SelfModProposalRow> = viewer.pending_proposals_layer1a().unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
 }
 
+/// B-23 Phase 4H Group F — list applied Layer 1A proposals (history).
 #[tauri::command]
-pub fn get_applied_proposals(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_applied_proposals(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<SelfModProposalRow> = viewer.applied_proposals_layer1a().unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
 }
 
+/// B-23 Phase 4H Group F — operator confirms a pending proposal. Emits a
+/// best-effort `proposal_applied` SSB row marking it human-applied so the
+/// dashboard renders it as resolved. The actual data-table mutation
+/// remains the responsibility of the orchestrator's Layer 1A processor;
+/// the dashboard does NOT bypass that path.
 #[tauri::command]
-pub fn apply_proposal_from_user(_state: State<'_, AppState>, proposal_id: String) -> CmdResult<Value> {
-    let _ = proposal_id;
-    Ok(json!({ "ok": true }))
+pub async fn apply_proposal_from_user(
+    state: State<'_, AppState>,
+    proposal_id: String,
+) -> CmdResult<Value> {
+    let Some(writer) = state.writer.as_ref().cloned() else {
+        return Err("no SSB writer available".into());
+    };
+    let payload = ProposalAppliedPayload {
+        proposal_id: proposal_id.clone(),
+        table: "(operator-applied)".into(),
+        applied_by: "dashboard-v2".into(),
+        commit_sha: None,
+    };
+    let bytes = rmp_serde_to_vec_named(&SsbPayload::ProposalApplied(payload))?;
+    let req = SsbWriteRequest {
+        action_type: SsbActionType::ProposalApplied,
+        agent_id: "dashboard-v2".into(),
+        superstep: 0,
+        payload: bytes,
+        files: vec![],
+    };
+    writer.write(req).await.map_err(map_err)?;
+    Ok(json!({ "ok": true, "proposal_id": proposal_id }))
 }
 
+/// B-23 Phase 4H Group F — operator rejects a pending proposal. Emits a
+/// `proposal_rejected` SSB row so the dashboard can render it as resolved.
 #[tauri::command]
-pub fn reject_proposal(_state: State<'_, AppState>, proposal_id: String) -> CmdResult<Value> {
-    let _ = proposal_id;
-    Ok(json!({ "ok": true }))
+pub async fn reject_proposal(state: State<'_, AppState>, proposal_id: String) -> CmdResult<Value> {
+    let Some(writer) = state.writer.as_ref().cloned() else {
+        return Err("no SSB writer available".into());
+    };
+    let payload = ProposalRejectedPayload {
+        proposal_id: proposal_id.clone(),
+        table: "(operator-rejected)".into(),
+        reason: "rejected by operator".into(),
+    };
+    let bytes = rmp_serde_to_vec_named(&SsbPayload::ProposalRejected(payload))?;
+    let req = SsbWriteRequest {
+        action_type: SsbActionType::ProposalRejected,
+        agent_id: "dashboard-v2".into(),
+        superstep: 0,
+        payload: bytes,
+        files: vec![],
+    };
+    writer.write(req).await.map_err(map_err)?;
+    Ok(json!({ "ok": true, "proposal_id": proposal_id }))
 }
 
+/// B-23 Phase 4H Group F — return latest MSI snapshot per pipeline_mode.
 #[tauri::command]
-pub fn get_msi_status(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!({
-        "session_id": format!("dash-v2-{}", std::process::id()),
-        "owned_files": [],
-        "locked_files": [],
-        "conflicts": [],
-        "active_sessions": [],
-    }))
+pub fn get_msi_status(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows: Vec<SelfModMsiSnapshotRow> = viewer.latest_msi_per_mode().unwrap_or_default();
+    serde_json::to_value(rows).map_err(map_err)
+}
+
+fn rmp_serde_to_vec_named(payload: &SsbPayload) -> Result<Vec<u8>, String> {
+    // Tiny shim — keeps the rmp_serde dependency confined to orchestrator-
+    // re-exported helpers without forcing dashboard-v2/src-tauri to take a
+    // direct dep on `rmp_serde`. Uses the orchestrator's serde feature.
+    elai_orchestrator::encode_ssb_payload(payload).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

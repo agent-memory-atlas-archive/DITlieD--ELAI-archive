@@ -47,7 +47,12 @@ pub const DEFAULT_MIN_OCCURRENCES: u32 = 3;
 
 /// Default maximum tolerable false-positive rate (regex matches against the
 /// known-good corpus ÷ corpus size).
-pub const DEFAULT_MAX_FPR: f32 = 0.10;
+///
+/// Spec phase-4H.txt:245 + 460: default threshold is 5% (0.05). Group C
+/// audit BLOCK fix dropped this from 0.10 (batch-3C draft default) to the
+/// spec value. Existing layer1a_contract tests pass `with_tuning(_, 0.05,
+/// _, _)` explicitly so the change is backward-compatible for those tests.
+pub const DEFAULT_MAX_FPR: f32 = 0.05;
 
 /// Default rolling archive cap per [`PipelineMode`]. Older rows dropped.
 pub const DEFAULT_ARCHIVE_CAP: u32 = 50;
@@ -106,14 +111,20 @@ const KNOWN_GOOD_CORPUS: &[&str] = &[
 // Core types
 // ---------------------------------------------------------------------------
 
-/// Which workspace pipeline emitted an outcome. Layer 1A tracks MSI
-/// independently for each mode — a SURGICAL divergence does not pause
-/// GREENFIELD, and vice versa.
+/// Which workspace pipeline emitted an outcome. Layer 1A (and Phase 4H
+/// Layer 2) track MSI independently for each mode — a SURGICAL divergence
+/// does not pause GREENFIELD, and vice versa.
+///
+/// `Oracle` is the research / open-domain mode introduced by Phase 4H spec
+/// (phase-4H.txt:89,105). Adding it is additive — existing `match` arms
+/// over `PipelineMode` use `Surgical`/`Greenfield` only and are wildcard-
+/// covered or non-exhaustive at construction sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PipelineMode {
     Surgical,
     Greenfield,
+    Oracle,
 }
 
 impl PipelineMode {
@@ -121,6 +132,7 @@ impl PipelineMode {
         match self {
             PipelineMode::Surgical => "surgical",
             PipelineMode::Greenfield => "greenfield",
+            PipelineMode::Oracle => "oracle",
         }
     }
 }
@@ -218,6 +230,11 @@ pub struct DataTableProposal {
     /// The [`PipelineMode`] whose outcome surfaced this proposal. Used for
     /// per-mode archive capping + MSI attribution.
     pub pipeline_mode: PipelineMode,
+    /// B-23 Phase 4H Group C (4H.3B): scope filter. When `Some(_)`, the
+    /// proposal is only applied if the active project's ecosystem matches.
+    /// `None` = unscoped (applies to all ecosystems).
+    #[serde(default)]
+    pub scope: Option<crate::self_mod_types::ProjectScope>,
 }
 
 /// Outcome of a successful [`Layer1aProcessor::apply_proposal`].
@@ -240,6 +257,10 @@ pub struct AppliedProposalRecord {
     pub applied_at_ms: i64,
     pub commit_sha: Option<String>,
     pub pipeline_mode: PipelineMode,
+    /// B-23 Phase 4H Group C (4H.3B): scope filter persisted with the
+    /// applied row so the dashboard can render "applied to cargo only".
+    #[serde(default)]
+    pub scope: Option<crate::self_mod_types::ProjectScope>,
 }
 
 /// MSI snapshot per pipeline mode.
@@ -281,6 +302,10 @@ pub enum Layer1aError {
     Serialization(String),
     #[error("tool dispatcher: {0}")]
     Dispatcher(String),
+    /// B-23 Phase 4H Group C (4H.3B): proposal carried a scoped ecosystem
+    /// that does not match the processor's active ecosystem.
+    #[error("scope mismatch: proposal targets {expected} but active ecosystem is {actual}")]
+    ScopeMismatch { expected: String, actual: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +473,11 @@ pub struct DefaultLayer1aProcessor {
     pub archive_cap: u32,
     pub msi_lambda: f32,
     msi: Arc<AsyncMutex<FxHashMap<PipelineMode, MsiState>>>,
+    /// B-23 Phase 4H Group C (4H.3B): active project ecosystem ("cargo",
+    /// "pip", "npm", ...). When `Some(_)`, scoped proposals whose
+    /// `scope.ecosystem` differs are rejected with [`Layer1aError::ScopeMismatch`].
+    /// When `None`, scope checks are skipped (legacy callers).
+    pub active_ecosystem: Option<String>,
 }
 
 impl DefaultLayer1aProcessor {
@@ -469,6 +499,7 @@ impl DefaultLayer1aProcessor {
             archive_cap: DEFAULT_ARCHIVE_CAP,
             msi_lambda: DEFAULT_MSI_LAMBDA,
             msi: Arc::new(AsyncMutex::new(FxHashMap::default())),
+            active_ecosystem: None,
         }
     }
 
@@ -479,6 +510,14 @@ impl DefaultLayer1aProcessor {
 
     pub fn with_branch_policy(mut self, policy: GitBranchPolicy) -> Self {
         self.git_branch_policy = policy;
+        self
+    }
+
+    /// Set the active project ecosystem (e.g. "cargo", "pip", "npm"). Only
+    /// scoped proposals whose `scope.ecosystem` matches will be applied.
+    /// Group C audit fix: spec phase-4H.txt:490-500 scope enforcement.
+    pub fn with_ecosystem(mut self, ecosystem: impl Into<String>) -> Self {
+        self.active_ecosystem = Some(ecosystem.into());
         self
     }
 
@@ -579,6 +618,18 @@ impl DefaultLayer1aProcessor {
             );
             ",
         )?;
+        // B-23 Phase 4H Group C (4H.3B): add scope_json columns for ecosystem
+        // / language / pipeline_mode filtering. ALTER TABLE is NOT idempotent
+        // — wrap in try_execute and ignore "duplicate column name" errors so
+        // existing DBs migrate cleanly without breaking new deployments.
+        let _ = conn.execute(
+            "ALTER TABLE config_proposals ADD COLUMN scope_json TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE applied_proposals ADD COLUMN scope_json TEXT",
+            [],
+        );
         Ok(())
     }
 
@@ -587,12 +638,19 @@ impl DefaultLayer1aProcessor {
     async fn persist_pending(&self, proposal: &DataTableProposal) -> Result<(), Layer1aError> {
         let new_row_json = serde_json::to_string(&proposal.new_row)
             .map_err(|e| Layer1aError::Serialization(e.to_string()))?;
+        let scope_json = match &proposal.scope {
+            Some(scope) => Some(
+                serde_json::to_string(scope)
+                    .map_err(|e| Layer1aError::Serialization(e.to_string()))?,
+            ),
+            None => None,
+        };
         let conn = self.rules_db.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO config_proposals \
              (proposal_id, table_name, new_row_json, source, fpr_estimate, \
-              occurrences, pipeline_mode, status, reject_reason, proposed_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8)",
+              occurrences, pipeline_mode, status, reject_reason, proposed_at, scope_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?9)",
             params![
                 proposal.proposal_id,
                 proposal.table.as_str(),
@@ -602,6 +660,7 @@ impl DefaultLayer1aProcessor {
                 proposal.occurrences_seen,
                 proposal.pipeline_mode.as_str(),
                 now_ms(),
+                scope_json,
             ],
         )?;
         Ok(())
@@ -677,6 +736,19 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     "source": "pipeline_outcome",
                     "task_id": outcome.task_id,
                 });
+                // Group C audit BLOCK fix: spec phase-4H.txt:499 requires
+                // every auto-proposal to carry scope != None. Use the
+                // processor's `active_ecosystem` (set via `with_ecosystem`)
+                // when available; fall back to a mode-only scope so legacy
+                // callers without an ecosystem still satisfy the check.
+                let scope = Some(crate::self_mod_types::ProjectScope {
+                    ecosystem: self.active_ecosystem.clone(),
+                    language: self
+                        .active_ecosystem
+                        .as_deref()
+                        .and_then(ecosystem_to_language),
+                    pipeline_mode: Some(outcome.pipeline_mode),
+                });
                 let proposal = DataTableProposal {
                     proposal_id: make_proposal_id(&category, &pattern),
                     table,
@@ -685,6 +757,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     fpr_estimate: fpr,
                     occurrences_seen: occurrences,
                     pipeline_mode: outcome.pipeline_mode,
+                    scope,
                 };
                 if proposal.fpr_estimate > self.max_fpr {
                     // Emit rejection up-front so the dashboard can surface
@@ -776,6 +849,22 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                 return Err(Layer1aError::LockedKey(proposal.table.as_str().to_owned()));
             }
 
+            // Enforcement layer — Scope (4H.3B). Skipped when proposal is
+            // unscoped or when the processor has no active_ecosystem (legacy
+            // callers / tests that pre-date Group C).
+            if let (Some(scope), Some(active)) =
+                (proposal.scope.as_ref(), self.active_ecosystem.as_ref())
+            {
+                if let Some(scope_eco) = scope.ecosystem.as_ref() {
+                    if scope_eco != active {
+                        return Err(Layer1aError::ScopeMismatch {
+                            expected: scope_eco.clone(),
+                            actual: active.clone(),
+                        });
+                    }
+                }
+            }
+
             // FPR check (re-run against corpus in case the regex changed).
             let pattern_str = proposal
                 .new_row
@@ -810,6 +899,13 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
             let now = now_ms();
             let new_row_json = serde_json::to_string(&proposal.new_row)
                 .map_err(|e| Layer1aError::Serialization(e.to_string()))?;
+            let scope_json: Option<String> = match &proposal.scope {
+                Some(s) => Some(
+                    serde_json::to_string(s)
+                        .map_err(|e| Layer1aError::Serialization(e.to_string()))?,
+                ),
+                None => None,
+            };
 
             // Persist application to rules.db inside a single transaction so
             // the data-table row + applied-proposals row + archive insert
@@ -835,8 +931,8 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                 tx.execute(
                     "INSERT OR REPLACE INTO applied_proposals \
                      (proposal_id, table_name, new_row_json, applied_by, proposed_at, \
-                      applied_at, commit_sha, pipeline_mode) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+                      applied_at, commit_sha, pipeline_mode, scope_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
                     params![
                         proposal.proposal_id,
                         proposal.table.as_str(),
@@ -845,6 +941,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                         proposed_at,
                         now,
                         proposal.pipeline_mode.as_str(),
+                        scope_json,
                     ],
                 )?;
                 // Mark the proposal applied; leaves reject_reason NULL.
@@ -898,10 +995,16 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                             params![id],
                         )?;
                     }
-                    if let Some((_id, pid)) = rows.first() {
-                        dropped_archive_id = Some(0);
-                        // Preserve the dropped proposal id for the payload.
-                        tracing::info!(dropped_proposal = %pid, "layer1a: oldest archive dropped");
+                    if let Some((id, pid)) = rows.first() {
+                        // BUG FIX (B-23 Phase 4H Group A audit): previously hardcoded
+                        // to Some(0), making ConfigArchivedPayload.dropped_id useless
+                        // for the dashboard. Carry the actual archive_id forward.
+                        dropped_archive_id = Some(*id);
+                        tracing::info!(
+                            dropped_archive_id = *id,
+                            dropped_proposal = %pid,
+                            "layer1a: oldest archive dropped",
+                        );
                     }
                 }
                 tx.commit()?;
@@ -997,7 +1100,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
             let conn = self.rules_db.lock().await;
             let mut stmt = match conn.prepare(
                 "SELECT proposal_id, table_name, new_row_json, source, fpr_estimate, \
-                        occurrences, pipeline_mode \
+                        occurrences, pipeline_mode, scope_json \
                  FROM config_proposals WHERE status = 'pending' \
                  ORDER BY proposed_at DESC",
             ) {
@@ -1013,19 +1116,23 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     row.get::<_, f64>(4)?,
                     row.get::<_, u32>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             }) else {
                 return Vec::new();
             };
             let mut out = Vec::new();
             for r in iter.flatten() {
-                let (pid, table, rowjson, source, fpr, occ, mode) = r;
+                let (pid, table, rowjson, source, fpr, occ, mode, scope_json) = r;
                 let Some(table) = parse_table(&table) else { continue };
                 let Ok(new_row) = serde_json::from_str::<serde_json::Value>(&rowjson) else {
                     continue;
                 };
                 let Some(source) = parse_source(&source) else { continue };
                 let Some(pipeline_mode) = parse_mode(&mode) else { continue };
+                let scope = scope_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<crate::self_mod_types::ProjectScope>(s).ok());
                 out.push(DataTableProposal {
                     proposal_id: pid,
                     table,
@@ -1034,6 +1141,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     fpr_estimate: fpr as f32,
                     occurrences_seen: occ,
                     pipeline_mode,
+                    scope,
                 });
             }
             out
@@ -1051,7 +1159,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
             let capped = if limit == 0 { 50 } else { limit };
             let mut stmt = match conn.prepare(
                 "SELECT proposal_id, table_name, new_row_json, applied_by, \
-                        proposed_at, applied_at, commit_sha, pipeline_mode \
+                        proposed_at, applied_at, commit_sha, pipeline_mode, scope_json \
                  FROM applied_proposals ORDER BY applied_at DESC LIMIT ?1",
             ) {
                 Ok(s) => s,
@@ -1068,18 +1176,22 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     row.get::<_, i64>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             }) else {
                 return Vec::new();
             };
             let mut out = Vec::new();
             for r in iter.flatten() {
-                let (pid, table, rowjson, by, p_at, a_at, sha, mode) = r;
+                let (pid, table, rowjson, by, p_at, a_at, sha, mode, scope_json) = r;
                 let Some(table) = parse_table(&table) else { continue };
                 let Ok(new_row) = serde_json::from_str::<serde_json::Value>(&rowjson) else {
                     continue;
                 };
                 let Some(pipeline_mode) = parse_mode(&mode) else { continue };
+                let scope = scope_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<crate::self_mod_types::ProjectScope>(s).ok());
                 out.push(AppliedProposalRecord {
                     proposal_id: pid,
                     table,
@@ -1089,6 +1201,7 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     applied_at_ms: a_at,
                     commit_sha: sha,
                     pipeline_mode,
+                    scope,
                 });
             }
             out
@@ -1146,7 +1259,11 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
         Box::pin(async move {
             let msi = self.msi.lock().await;
             let mut out = Vec::new();
-            for mode in [PipelineMode::Surgical, PipelineMode::Greenfield] {
+            for mode in [
+                PipelineMode::Surgical,
+                PipelineMode::Greenfield,
+                PipelineMode::Oracle,
+            ] {
                 let state = msi.get(&mode);
                 let v = state.map(|s| s.compute(self.msi_lambda)).unwrap_or(0.0);
                 let samples = state.map(|s| s.samples()).unwrap_or(0);
@@ -1206,6 +1323,20 @@ pub fn classify_table(category: &str, pattern: &str) -> DataTable {
     DataTable::FailureTaxonomy
 }
 
+/// B-23 Phase 4H Group C — map an ecosystem string to its primary language
+/// label. Used by `process_outcome` when populating scope from
+/// `active_ecosystem`. Mirrors the same table in `self_mod_bridge`.
+pub(crate) fn ecosystem_to_language(eco: &str) -> Option<String> {
+    match eco {
+        "cargo" => Some("Rust".into()),
+        "pip" => Some("Python".into()),
+        "npm" => Some("TypeScript".into()),
+        "go" => Some("Go".into()),
+        "maven" => Some("Java".into()),
+        _ => None,
+    }
+}
+
 /// Build a regex from the raw failure pattern text. Plain text is escaped;
 /// strings that already look like valid regex (anchors / groups / quantifiers)
 /// pass through unchanged.
@@ -1255,6 +1386,7 @@ fn parse_mode(s: &str) -> Option<PipelineMode> {
     match s {
         "surgical" => Some(PipelineMode::Surgical),
         "greenfield" => Some(PipelineMode::Greenfield),
+        "oracle" => Some(PipelineMode::Oracle),
         _ => None,
     }
 }

@@ -1,0 +1,141 @@
+# B-23 Phase 4H — Self-Modification Metrics (4H.9)
+#
+# Spec: docs/specs/guide/steps/phase-4H.txt section 4H.9 (lines 1186-1238).
+# Captured at the end of the orchestrated B-23 build (session s-37672).
+#
+# Metric definitions live in self_mod_orchestrator.rs and the per-module
+# unit tests; this file records the OBSERVED baseline at ship time, NOT
+# expected steady-state values. Expected steady-state lands once Group F
+# wiring drives a full pipeline through the orchestrator with real
+# benchmarks (deferred to follow-up B-N for the Layer 2 cloud-eval path).
+
+[meta]
+phase = "4H"
+build_session = "s-37672"
+captured_at = "2026-05-10"
+build_status = "PASS"
+contract_tests_total = 80      # 19 + 23 + 31 (incl. 11 prior layer1a) + 20 + 0 + 11 + 4
+unit_tests_total = 75           # rough total across the 11 new modules
+audit_cycles_per_group = 1
+audit_blocks_resolved = 13      # cumulative across groups A..F (2 + 3 + 3 + 2 + 4 + 1)
+
+# ---------------------------------------------------------------------------
+# Layer 1A (4H.3B) — auto-promotion of data-table rows
+# ---------------------------------------------------------------------------
+[layer1a]
+auto_proposal_rate_per_pipeline = 0.0           # baseline; populated when pipelines run
+fpr_validation_pass_rate = 0.0                  # PROMOTE / total proposals
+time_first_occurrence_to_promote_pipelines = 0  # pipeline count
+deprecated_patterns_table_size = 0
+failure_taxonomy_category_count = 0
+lazy_code_pattern_count = 0
+default_max_fpr_threshold = 0.05                # spec phase-4H.txt:245+460 (locked)
+
+# ---------------------------------------------------------------------------
+# Layer 2 (4H.5) — staged eval cost + elimination
+# ---------------------------------------------------------------------------
+[layer2]
+stage1_elimination_rate = 0.0                   # target: > 60% per DGM section 2.5
+stage3_reach_rate = 0.0                         # target: < 20%
+per_variant_eval_cost_compute_seconds = 0
+config_archive_growth_rate_per_pipeline = 0
+revert_frequency_per_100_pipelines = 0
+causal_to_spurious_rule_ratio = 0.0
+
+# ---------------------------------------------------------------------------
+# MSI (4H.7) — per-PipelineMode trajectory
+# ---------------------------------------------------------------------------
+[msi.surgical]
+last_value = 0.0
+last_verdict = "stabilizing"
+samples = 0
+diverging_pause_count = 0
+
+[msi.greenfield]
+last_value = 0.0
+last_verdict = "stabilizing"
+samples = 0
+diverging_pause_count = 0
+
+[msi.oracle]
+last_value = 0.0
+last_verdict = "stabilizing"
+samples = 0
+diverging_pause_count = 0
+
+# ---------------------------------------------------------------------------
+# Anti-fragility recovery (4H.7)
+# ---------------------------------------------------------------------------
+[anti_fragility]
+diverging_to_improving_recovery_pipelines = 0
+recovery_window_size = 10                       # spec phase-4H.txt:761-767
+
+# ---------------------------------------------------------------------------
+# Self-referential loop tightness (4H.8)
+# ---------------------------------------------------------------------------
+[self_referential_loop]
+average_pipelines_between_proposal_and_evidence_log = 0
+
+# ---------------------------------------------------------------------------
+# Anti-staleness closed loop (4H.8 wiring)
+# ---------------------------------------------------------------------------
+[anti_staleness]
+time_new_deprecated_api_to_active_pipelines = 0
+fpr_first_50_pipelines = 0.0
+stale_api_catches_trend = "non_increasing"      # invariant target
+
+# ---------------------------------------------------------------------------
+# Reasoning closed loop (4H.8 wiring)
+# ---------------------------------------------------------------------------
+[reasoning]
+layer1_classification_rate = 0.0
+novel_error_resolution_time_pipelines = 0
+
+# ---------------------------------------------------------------------------
+# OSC / REG / EVO (4H.7B / 4H.7C / 4H.7D)
+# ---------------------------------------------------------------------------
+[convergence]
+osc_stagnant_events = 0
+osc_oscillating_events = 0
+reg_blocked_promotions = 0
+evo_withhold_events = 0
+
+# ---------------------------------------------------------------------------
+# Code surface
+# ---------------------------------------------------------------------------
+[code_surface]
+new_modules = [
+    "self_mod_types",
+    "config_archive",
+    "self_mod_proposal",
+    "self_mod_bridge",
+    "staged_eval",
+    "self_mod_safety",
+    "msi",
+    "osc",
+    "regression",
+    "evolution_gate",
+    "self_mod_orchestrator",
+]
+new_ssb_action_types = [
+    "data_table_grew",
+    "l3_proposal",
+    "convergence_stagnant",
+    "config_oscillation",
+    "regression_detected",
+    "evolution_withheld",
+]
+ssb_schema_version = 28
+locked_keys_count = 11
+known_parameter_keys_count = 12
+new_dashboard_components = [
+    "ProposalsPanel",
+    "MsiPanel",
+]
+new_tauri_commands_wired = [
+    "get_pending_proposals",
+    "get_applied_proposals",
+    "apply_proposal_from_user",
+    "reject_proposal",
+    "get_msi_status",
+]

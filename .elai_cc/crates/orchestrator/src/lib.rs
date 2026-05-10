@@ -78,8 +78,19 @@ pub mod sidecar_reflection_adapter;
 pub mod output_postprocessor;
 pub mod profile_selector;
 pub mod rule_loader;
+pub mod config_archive;
+pub mod evolution_gate;
+pub mod msi;
+pub mod osc;
+pub mod regression;
+pub mod self_mod_bridge;
 pub mod self_mod_layer1a;
+pub mod self_mod_proposal;
+pub mod self_mod_orchestrator;
+pub mod self_mod_safety;
+pub mod self_mod_types;
 pub mod ssb;
+pub mod staged_eval;
 pub mod ssb_viewer;
 pub mod system_probe;
 pub mod telescope_caller;
@@ -381,6 +392,12 @@ pub use ssb::{
     // B-6 — orchestration producer wiring payloads.
     AgentLifecyclePayload, AntiSpiralHitPayload, BspSuperstepPayload,
     EvidenceGateEvaluatedPayload, SupervisionEventPayload,
+    // B-27 — cloud-mode spend ledger + escalation marker.
+    CloudSpendPayload, EscalateToCloudPayload,
+    // B-23 Phase 4H Group A — self-mod beacons (Layer 1A growth + Layer 3 +
+    // OSC + REG + EVO).
+    ConfigOscillationPayload, ConvergenceStagnantPayload, DataTableGrewPayload,
+    EvolutionWithheldPayload, L3ProposalPayload, RegressionDetectedPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -411,6 +428,71 @@ pub use self_mod_layer1a::{
     RulesDbLockGuard, DEFAULT_ARCHIVE_CAP, DEFAULT_MAX_FPR, DEFAULT_MIN_OCCURRENCES,
     DEFAULT_MSI_LAMBDA, DEFAULT_MSI_WINDOW, ELAI_DISABLE_LAYER1A_ENV, ELAI_LAYER1A_AUTO_APPLY_ENV,
     LAYER1A_AGENT_ID, MSI_DIVERGING_THRESHOLD, MSI_IMPROVING_THRESHOLD, RULES_DB_LOCKFILE,
+};
+// B-23 Phase 4H Group B: DGM ConfigVariant archive (4H.3) + log-driven
+// SelfModProposal builder + Class A/B routing (4H.4).
+pub use config_archive::{
+    exploration_bonus, parent_selection_probabilities, parent_selection_weights,
+    sample_variant, sigmoid_perf_score, ConfigArchive, ConfigArchiveConfig,
+    ConfigArchiveError, DEFAULT_ARCHIVE_CAP_PER_MODE, DGM_ALPHA_0, DGM_LAMBDA,
+};
+pub use self_mod_proposal::{
+    route_proposal, ProposalClass, ProposalEngine, ProposalEngineError,
+};
+// B-23 Phase 4H Group C — bridge from FullPipelineOutcome to Layer 1A
+// proposals + REG pre-screen stub (real REG lands in Group E).
+pub use self_mod_bridge::{proposals_from_full_outcome, regression_pre_screen};
+// B-23 Phase 4H Group D — staged evaluation (4H.5) + 4-layer safety (4H.6).
+pub use staged_eval::{
+    evaluate_stage, run_full_pipeline, BenchmarkRunner, StageOutcome, StageReport, StageVerdict,
+    StagedEvalError,
+};
+pub use self_mod_safety::{
+    apply_structural_change, check_lock_list_read, check_locked_key, is_known_parameter,
+    is_locked, should_auto_revert, SafetyError, DEFAULT_AUTO_REVERT_FRACTION,
+    DEFAULT_AUTO_REVERT_WINDOW, KNOWN_PARAMETER_KEYS, LOCKED_KEYS,
+};
+// B-23 Phase 4H Group E — MSI per-mode tracker (4H.7), OSC ouroboros port
+// (4H.7B), REG cross-pipeline regression detector (4H.7C), EVO evolution
+// gate (4H.7D).
+pub use msi::{
+    msi_verdict, MsiSnapshot, MsiTracker, MsiVerdict, MSI_DIVERGING_THRESHOLD as MSI_DIVERGING,
+    MSI_IMPROVING_THRESHOLD as MSI_IMPROVING, MSI_LAMBDA as MSI_LAMBDA_SPEC, MSI_WINDOW,
+};
+pub use osc::{compute_osc_verdict, compute_similarity};
+pub use regression::detect as detect_regressions;
+pub use evolution_gate::compute_evolution_gate;
+// B-23 Phase 4H Group F — top-level self-modification orchestration (4H.8).
+pub use self_mod_orchestrator::{
+    SelfModOrchestrator, SelfModOrchestratorError, SelfModUpdate,
+};
+
+/// B-23 Phase 4H Group F — msgpack helper for callers that don't want to
+/// depend on `rmp_serde` directly. Used by dashboard-v2 Tauri commands
+/// to encode SSB payloads.
+pub fn encode_ssb_payload(payload: &ssb::SsbPayload) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    rmp_serde::to_vec_named(payload)
+}
+// B-23 Phase 4H Group A: shared self-modification types used across the
+// new modules (config_archive, msi, osc, regression, evolution_gate) and
+// the dashboard wiring layer.
+//
+// `PipelineId` and `RuleId` are intentionally NOT re-exported here — they
+// collide with existing pipeline_builder + rules-crate types of the same
+// name. Consumers that need the self-mod alias use the fully-qualified
+// `crate::self_mod_types::PipelineId` path.
+pub use self_mod_types::{
+    AcRegression, AgentId, BabyStepId, CatchLayer, CatchRate, ConfigVariant,
+    ConfigVariantSimilarity, DataTableValidation, DataTableVerdict, EvolutionGateResult,
+    FullPipelineOutcome, GrcStepType, Language, OscVerdict, PhaseId,
+    PipelineOutcomeId, ProjectScope, ProposedChange, ReasoningTraceRef, RegressionReport,
+    ScoreWeights, SelfModProposal, Slot, SsbLogEntry, StagedEvaluation, StaleApiCatch,
+    StructuralChange, StructuralChangeType, TemplateId, TestId, TestOutcomeReport, TriggerCount,
+    UnclassifiedError, VariantId, VariantStatus, ProjectId,
+    DEFAULT_SCORE_WEIGHTS, SIM_STAGNATION_THRESHOLD, SIM_STAGNATION_WINDOW,
+    SIM_WEIGHT_EXACT_MATCH, SIM_WEIGHT_KEY_OVERLAP, SIM_WEIGHT_TYPE_MATCH,
+    STAGE1_DEFAULT_TASKS, STAGE2_DEFAULT_TASKS, STAGE3_DEFAULT_TASKS,
+    STAGE3_PROMOTION_THRESHOLD, STAGE3_RANKING_SUBSET,
 };
 pub use system_probe::{
     classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,

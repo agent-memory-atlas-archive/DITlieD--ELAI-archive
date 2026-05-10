@@ -955,6 +955,30 @@ export interface OptimizationProposal {
 }
 
 // ------------------------------------------------------------------
+// B-23 Phase 4H Group F — self-mod proposal + MSI surfaces.
+// Distinct from `OptimizationProposal` (legacy display shape) and from
+// the multi-session-isolation `MsiStatus` above. These mirror the
+// Tauri command return shapes for `get_pending_proposals`,
+// `get_applied_proposals`, and `get_msi_status` after the Group F wiring.
+// ------------------------------------------------------------------
+export interface SelfModProposalRow {
+  proposal_id: string;
+  table: string;
+  fpr_estimate?: number;
+  occurrences_seen?: number;
+  pipeline_mode: string;
+  applied_by?: string;
+  ts_ms: number;
+}
+
+export interface SelfModMsiSnapshot {
+  pipeline_mode: string;
+  msi_value: number;
+  status: string;
+  ts_ms: number;
+}
+
+// ------------------------------------------------------------------
 // Tab model (workspace layout)
 // ------------------------------------------------------------------
 export interface TabModel {
