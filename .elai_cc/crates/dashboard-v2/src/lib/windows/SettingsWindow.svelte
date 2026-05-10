@@ -143,11 +143,12 @@
     allowlist: [],
     default: 'claude-sonnet-4-6',
   });
-  // Bound to the Select component. Init-guarded $effect calls set_cloud_model
-  // on change; refreshCloudModel() seeds it from the backend without firing.
+  // Bound to the Select component. The $effect below saves whenever the
+  // selection diverges from `cloudModelInfo.model_id` (backend truth);
+  // refreshCloudModel() updates both fields atomically so the effect's
+  // equality check naturally skips the seed write.
   let cloudModelSelection = $state('claude-sonnet-4-6');
   let cloudModelError = $state<string | null>(null);
-  let _cloudModelInit = true;
 
   const cloudModelOptions = $derived(
     cloudModelInfo.allowlist.length > 0
@@ -165,10 +166,12 @@
 
   async function refreshCloudModel() {
     try {
-      cloudModelInfo = await stub.get_cloud_model();
-      // Seed the bound selection without firing the change effect.
-      _cloudModelInit = true;
-      cloudModelSelection = cloudModelInfo.model_id;
+      const fresh = await stub.get_cloud_model();
+      // Update selection FIRST, then the truth field. Both happen in the
+      // same microtask so the $effect runs once and sees next === prev.
+      cloudModelSelection = fresh.model_id;
+      cloudModelInfo = fresh;
+      console.debug('[SettingsWindow] refreshCloudModel ->', fresh.model_id);
     } catch (err) {
       console.debug('[SettingsWindow] get_cloud_model failed', err);
     }
@@ -205,20 +208,23 @@
 
   $effect(() => {
     const next = cloudModelSelection;
-    if (_cloudModelInit) {
-      _cloudModelInit = false;
-      return;
-    }
     const prev = cloudModelInfo.model_id;
     if (next === prev) return;
-    cloudModelInfo = { ...cloudModelInfo, model_id: next };
+    console.debug('[SettingsWindow] cloud model save', { from: prev, to: next });
     cloudModelError = null;
-    void stub.set_cloud_model(next).catch((err: unknown) => {
-      cloudModelInfo = { ...cloudModelInfo, model_id: prev };
-      _cloudModelInit = true;
-      cloudModelSelection = prev;
-      cloudModelError = err instanceof Error ? err.message : String(err);
-    });
+    void stub.set_cloud_model(next)
+      .then((r) => {
+        // Advance backend-truth on success so subsequent re-runs of this
+        // effect see next === prev and don't re-save the same value.
+        cloudModelInfo = { ...cloudModelInfo, model_id: r.model_id };
+        console.debug('[SettingsWindow] cloud model saved', r.model_id);
+      })
+      .catch((err: unknown) => {
+        // Rollback the picker to the last known backend value.
+        cloudModelSelection = prev;
+        cloudModelError = err instanceof Error ? err.message : String(err);
+        console.debug('[SettingsWindow] cloud model save failed', err);
+      });
   });
 
   $effect(() => {
@@ -588,10 +594,40 @@
       {#if oauthAuthUrl}
         <div class="s-row">
           <span class="s-label"></span>
-          <div class="s-control s-control--wide">
+          <div class="s-control s-control--wide" style="display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-start;">
             <span class="mono" style="font-size: 0.8em; opacity: 0.7;">
-              If the browser did not open: <a href={oauthAuthUrl} target="_blank" rel="noopener">paste this URL</a>
+              If the browser did not open, copy or click the URL:
             </span>
+            <textarea
+              class="mono"
+              readonly
+              rows="2"
+              style="width: 100%; font-size: 0.75em; padding: 0.3rem; user-select: all; resize: vertical;"
+              onclick={(e: Event) => { (e.currentTarget as HTMLTextAreaElement).select(); }}
+              value={oauthAuthUrl}
+            ></textarea>
+            <div style="display: flex; gap: 0.4rem;">
+              <button
+                class="toggle-pill mono"
+                onclick={() => {
+                  const u = oauthAuthUrl;
+                  if (!u) return;
+                  void navigator.clipboard.writeText(u).catch((err: unknown) => {
+                    oauthError = `clipboard: ${err instanceof Error ? err.message : String(err)}`;
+                  });
+                }}
+              >Copy</button>
+              <button
+                class="toggle-pill mono"
+                onclick={() => {
+                  const u = oauthAuthUrl;
+                  if (!u) return;
+                  void stub.open_url_in_browser(u).catch((err: unknown) => {
+                    oauthError = err instanceof Error ? err.message : String(err);
+                  });
+                }}
+              >Open in browser</button>
+            </div>
           </div>
         </div>
       {/if}
@@ -676,6 +712,45 @@
             bind:value={cloudSpendCap}
             onkeydown={onEnter(onSpendCapSubmit)}
           />
+        </div>
+      </div>
+    </section>
+
+    <!-- Section: CLOUD PANEL (B-27) — privacy + air-gapped + redaction profile.
+         Currently read-only mirror of elai_cc.toml [cloud] section. Live edit
+         + write-back is a B-27.5 follow-up; the surface here keeps the dashboard
+         honest about what's actually wired in cloud_mode::CloudConfig. Spend
+         gauges live in MonitorWindow (spec D-4:307), NOT here. -->
+    <section class="s-section">
+      <div class="s-header">cloud</div>
+
+      <div class="s-row">
+        <span class="s-label">Privacy profile</span>
+        <div class="s-control">
+          <span
+            class="bare-input bare-input--disabled mono"
+            title="Configured via elai_cc.toml [cloud.privacy].profile (minimal | standard | strict)"
+          >standard</span>
+        </div>
+      </div>
+
+      <div class="s-row">
+        <span class="s-label">Air-gapped</span>
+        <div class="s-control">
+          <span
+            class="bare-input bare-input--disabled mono"
+            title="When true, ExecMode::Cloud short-circuits with AirGappedConflict before any network call. Configured via elai_cc.toml [cloud].air_gapped"
+          >off</span>
+        </div>
+      </div>
+
+      <div class="s-row">
+        <span class="s-label">Routing mode</span>
+        <div class="s-control">
+          <span
+            class="bare-input bare-input--disabled mono"
+            title="local | cloud | auto. Auto starts local and escalates to cloud on retry exhaustion. Configured via elai_cc.toml [cloud].default_mode"
+          >auto</span>
         </div>
       </div>
     </section>

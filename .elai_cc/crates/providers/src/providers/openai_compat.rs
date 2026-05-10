@@ -643,11 +643,22 @@ struct ErrorBody {
 
 fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatConfig) -> Value {
     let mut messages = Vec::new();
-    if let Some(system) = request.system.as_ref().filter(|value| !value.is_empty()) {
-        messages.push(json!({
-            "role": "system",
-            "content": system,
-        }));
+    if let Some(system_blocks) = request.system.as_ref().filter(|blocks| !blocks.is_empty()) {
+        // OpenAI chat completions does not support per-block cache_control;
+        // flatten the Anthropic-style system array to a single string by
+        // joining text blocks. Cache markers are silently dropped on this
+        // path — they only fire on the Anthropic /v1/messages route.
+        let flattened: String = system_blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !flattened.is_empty() {
+            messages.push(json!({
+                "role": "system",
+                "content": flattened,
+            }));
+        }
     }
     for message in &request.messages {
         messages.extend(translate_message(message));
@@ -682,8 +693,10 @@ fn translate_message(message: &InputMessage) -> Vec<Value> {
             let mut tool_calls = Vec::new();
             for block in &message.content {
                 match block {
-                    InputContentBlock::Text { text: value } => text.push_str(value),
-                    InputContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
+                    InputContentBlock::Text { text: value, .. } => text.push_str(value),
+                    InputContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => tool_calls.push(json!({
                         "id": id,
                         "type": "function",
                         "function": {
@@ -708,7 +721,7 @@ fn translate_message(message: &InputMessage) -> Vec<Value> {
             .content
             .iter()
             .filter_map(|block| match block {
-                InputContentBlock::Text { text } => Some(json!({
+                InputContentBlock::Text { text, .. } => Some(json!({
                     "role": "user",
                     "content": text,
                 })),
@@ -960,7 +973,7 @@ mod tests {
     };
     use crate::error::ApiError;
     use crate::types::{
-        InputContentBlock, InputMessage, MessageRequest, ToolChoice, ToolDefinition,
+        InputContentBlock, InputMessage, MessageRequest, SystemBlock, ToolChoice, ToolDefinition,
         ToolResultContentBlock,
     };
     use serde_json::json;
@@ -976,6 +989,7 @@ mod tests {
                     content: vec![
                         InputContentBlock::Text {
                             text: "hello".to_string(),
+                            cache_control: None,
                         },
                         InputContentBlock::ToolResult {
                             tool_use_id: "tool_1".to_string(),
@@ -986,11 +1000,12 @@ mod tests {
                         },
                     ],
                 }],
-                system: Some("be helpful".to_string()),
+                system: Some(vec![SystemBlock::text("be helpful")]),
                 tools: Some(vec![ToolDefinition {
                     name: "weather".to_string(),
                     description: Some("Get weather".to_string()),
                     input_schema: json!({"type": "object"}),
+                    cache_control: None,
                 }]),
                 tool_choice: Some(ToolChoice::Auto),
                 stream: false,

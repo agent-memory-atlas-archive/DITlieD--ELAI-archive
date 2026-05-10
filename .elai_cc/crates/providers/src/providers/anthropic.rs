@@ -14,7 +14,9 @@ use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 
 use super::{preflight_message_request, Provider, ProviderFuture};
 use crate::sse::SseParser;
-use crate::types::{MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, Usage};
+use crate::types::{
+    CacheControl, MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, Usage,
+};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const REQUEST_ID_HEADER: &str = "request-id";
@@ -281,10 +283,11 @@ impl AnthropicClient {
         &self,
         request: &MessageRequest,
     ) -> Result<MessageResponse, ApiError> {
-        let request = MessageRequest {
+        let mut request = MessageRequest {
             stream: false,
             ..request.clone()
         };
+        apply_anthropic_cache_markers(&mut request);
 
         if let Some(prompt_cache) = &self.prompt_cache {
             if let Some(response) = prompt_cache.lookup_completion(&request) {
@@ -337,9 +340,11 @@ impl AnthropicClient {
         &self,
         request: &MessageRequest,
     ) -> Result<MessageStream, ApiError> {
-        preflight_message_request(request)?;
+        let mut prepared = request.clone();
+        apply_anthropic_cache_markers(&mut prepared);
+        preflight_message_request(&prepared)?;
         let response = self
-            .send_with_retry(&request.clone().with_streaming())
+            .send_with_retry(&prepared.clone().with_streaming())
             .await?;
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
@@ -347,7 +352,7 @@ impl AnthropicClient {
             parser: SseParser::new(),
             pending: VecDeque::new(),
             done: false,
-            request: request.clone(),
+            request: prepared,
             prompt_cache: self.prompt_cache.clone(),
             latest_usage: None,
             usage_recorded: false,
@@ -360,11 +365,14 @@ impl AnthropicClient {
         config: &OAuthConfig,
         request: &OAuthTokenExchangeRequest,
     ) -> Result<OAuthTokenSet, ApiError> {
+        // Claude Code's token endpoint expects JSON, NOT form-urlencoded.
+        // Source of truth: leaked claude-code-main src/services/oauth/client.ts
+        // exchangeCodeForTokens() → axios.post(TOKEN_URL, requestBody,
+        // { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }).
         let response = self
             .http
             .post(&config.token_url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .form(&request.form_params())
+            .json(&request.form_params())
             .send()
             .await
             .map_err(ApiError::from)?;
@@ -380,11 +388,11 @@ impl AnthropicClient {
         config: &OAuthConfig,
         request: &OAuthRefreshRequest,
     ) -> Result<OAuthTokenSet, ApiError> {
+        // Same JSON contract as exchange_oauth_code — see comment above.
         let response = self
             .http
             .post(&config.token_url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .form(&request.form_params())
+            .json(&request.form_params())
             .send()
             .await
             .map_err(ApiError::from)?;
@@ -702,6 +710,39 @@ fn read_auth_token() -> Option<String> {
 #[must_use]
 pub fn read_base_url() -> String {
     std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+}
+
+/// Apply Anthropic ephemeral `cache_control` markers to the stable prefix
+/// blocks of a `MessageRequest` in place.
+///
+/// Strategy (well under Anthropic's 4-marker per-request limit):
+/// - mark the LAST `SystemBlock` if any system blocks are present
+/// - mark the LAST `ToolDefinition` if any tools are present
+///
+/// Already-marked blocks are left alone; this fn is idempotent. Markers
+/// are an Anthropic-only feature and are silently dropped on the
+/// OpenAI-compat path (see `openai_compat::build_chat_completion_request`).
+///
+/// B-27 grounding: prior to this change the `PromptCache` module tracked
+/// `cache_creation_input_tokens`/`cache_read_input_tokens` from response
+/// usage, but no request ever carried a marker, so the cache hit rate
+/// was always 0 and the spend tracker reported full input cost on every
+/// call. Wiring markers makes the cloud-mode spend ledger honest.
+fn apply_anthropic_cache_markers(request: &mut MessageRequest) {
+    if let Some(blocks) = request.system.as_mut() {
+        if let Some(last) = blocks.last_mut() {
+            if last.cache_control.is_none() {
+                last.cache_control = Some(CacheControl::ephemeral());
+            }
+        }
+    }
+    if let Some(tools) = request.tools.as_mut() {
+        if let Some(last) = tools.last_mut() {
+            if last.cache_control.is_none() {
+                last.cache_control = Some(CacheControl::ephemeral());
+            }
+        }
+    }
 }
 
 fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {

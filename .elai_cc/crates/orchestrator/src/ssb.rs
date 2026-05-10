@@ -37,7 +37,7 @@ use elai_core::clock::ClockProvider;
 // bsp_superstep / agent_lifecycle / anti_spiral_hit. All CHECK, enum, as_sql_str,
 // from_str, payloads, and SsbPayload variants land atomically in this bump.
 // DESTRUCTIVE: existing v25 session DBs are DROPped on first read (no migration logic).
-const SCHEMA_VERSION: i64 = 26;
+const SCHEMA_VERSION: i64 = 27;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -100,7 +100,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         'dag_repair_round', 'concept_decomposition_node',
         -- B-6: orchestration producer wiring — evidence gates, supervision, BSP, agent lifecycle.
         'evidence_gate_evaluated', 'supervision_event',
-        'bsp_superstep', 'agent_lifecycle', 'anti_spiral_hit'
+        'bsp_superstep', 'agent_lifecycle', 'anti_spiral_hit',
+        -- B-27 (SCHEMA_VERSION 27): cloud-mode dual-rate spend ledger row +
+        -- one-shot escalation marker emitted when local exhausts retries
+        -- and cloud_mode promotes the step. cloud_mode.rs is the sole writer.
+        'cloud_spend', 'escalate_to_cloud'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -383,6 +387,16 @@ pub enum SsbActionType {
     /// B-6: anti-spiral escalation signal — step hash repeated past threshold.
     /// Carries an [`AntiSpiralHitPayload`] with agent_id, step_hash, and count.
     AntiSpiralHit,
+    /// B-27: per-call cloud-mode spend ledger row. Carries a [`CloudSpendPayload`]
+    /// with provider, model, dual-rate token counts, and computed cost_usd.
+    /// One row per AnthropicClient::send_message round-trip routed through
+    /// cloud_mode.rs. Read by `get_cloud_spend` Tauri command for the
+    /// MonitorWindow spend gauges (spec D-4:307).
+    CloudSpend,
+    /// B-27: one-shot marker emitted when cloud_mode.rs promotes a baby-step
+    /// from local execution to cloud after the local model exhausts retries
+    /// or trips an explicit escalation rule. Carries an [`EscalateToCloudPayload`].
+    EscalateToCloud,
 }
 
 impl SsbActionType {
@@ -479,6 +493,8 @@ impl SsbActionType {
             Self::BspSuperstep => "bsp_superstep",
             Self::AgentLifecycle => "agent_lifecycle",
             Self::AntiSpiralHit => "anti_spiral_hit",
+            Self::CloudSpend => "cloud_spend",
+            Self::EscalateToCloud => "escalate_to_cloud",
         }
     }
 }
@@ -583,6 +599,9 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "bsp_superstep" => Ok(SsbActionType::BspSuperstep),
         "agent_lifecycle" => Ok(SsbActionType::AgentLifecycle),
         "anti_spiral_hit" => Ok(SsbActionType::AntiSpiralHit),
+        // B-27 cloud-mode action types.
+        "cloud_spend" => Ok(SsbActionType::CloudSpend),
+        "escalate_to_cloud" => Ok(SsbActionType::EscalateToCloud),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1139,6 +1158,49 @@ pub struct AntiSpiralHitPayload {
     pub step_hash: String,
     /// Number of times this hash was seen in the current phase window.
     pub count: u32,
+}
+
+/// B-27: per-call spend ledger row.
+///
+/// Emitted by cloud_mode.rs once per [`crate::providers::AnthropicClient::send_message`]
+/// round-trip. The row is the SOLE write side of the cloud spend ledger:
+/// the dashboard's `get_cloud_spend` Tauri command reads back via
+/// `Ssb::query_by_type(SsbActionType::CloudSpend)` and aggregates per-task
+/// (last entry) + per-day (sum of today's entries).
+///
+/// Cost is computed by [`crate::cloud_mode::SpendAccumulator`] using
+/// per-model named pricing constants and a dual-rate formula
+/// (input_tokens × INPUT_PRICE + output_tokens × OUTPUT_PRICE), accumulated
+/// across all baby-steps of the task. This matches spec D-4:303-305 and
+/// supersedes B-27's original phase_count × avg_tokens approximation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudSpendPayload {
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cost_usd: f64,
+    pub task_id: String,
+    pub ts_ms: i64,
+}
+
+/// B-27: one-shot escalation marker.
+///
+/// Emitted by cloud_mode.rs the first time a baby-step is promoted from
+/// local execution to cloud — typically because the local model exhausted
+/// its retry budget, or an explicit escalation rule fired. Provides an
+/// audit trail for "why did this step go to the cloud?" without consumers
+/// having to reconstruct the decision from per-call signals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EscalateToCloudPayload {
+    pub step_id: String,
+    pub trigger_reason: String,
+    /// Reasoning layer that ran locally before escalating (1-5 per
+    /// cloud-mode-design.txt REASONING LAYER COLLAPSE :140-152).
+    pub layer_failed: u8,
+    pub ts_ms: i64,
 }
 
 /// WEB.3: emitted when a dev-server check passes and a preview is available.
@@ -2094,6 +2156,9 @@ pub enum SsbPayload {
     BspSuperstep(BspSuperstepPayload),
     AgentLifecycle(AgentLifecyclePayload),
     AntiSpiralHit(AntiSpiralHitPayload),
+    // B-27: cloud-mode spend ledger + escalation marker.
+    CloudSpend(CloudSpendPayload),
+    EscalateToCloud(EscalateToCloudPayload),
 }
 
 impl SsbPayload {
@@ -2191,6 +2256,8 @@ impl SsbPayload {
             Self::BspSuperstep(_) => SsbActionType::BspSuperstep,
             Self::AgentLifecycle(_) => SsbActionType::AgentLifecycle,
             Self::AntiSpiralHit(_) => SsbActionType::AntiSpiralHit,
+            Self::CloudSpend(_) => SsbActionType::CloudSpend,
+            Self::EscalateToCloud(_) => SsbActionType::EscalateToCloud,
         }
     }
 }
@@ -3629,6 +3696,23 @@ mod tests {
                 agent_id: "a".into(),
                 step_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
                 count: 4,
+            }),
+            SsbActionType::CloudSpend => SsbPayload::CloudSpend(CloudSpendPayload {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                cost_usd: 0.000_06,
+                task_id: "t".into(),
+                ts_ms: 0,
+            }),
+            SsbActionType::EscalateToCloud => SsbPayload::EscalateToCloud(EscalateToCloudPayload {
+                step_id: "step-1".into(),
+                trigger_reason: "test".into(),
+                layer_failed: 1,
+                ts_ms: 0,
             }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")

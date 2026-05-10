@@ -287,3 +287,29 @@ tier4_patterns = [
     'auto-blog\\.',
     'content-farm\\.',
 ]
+
+# B-27: cloud-mode routing + spend caps + privacy profile + air-gapped flag.
+# Consumed by elai_orchestrator::cloud_mode::CloudModeRouter via
+# CloudConfigToml::to_cloud_config(). Missing fields fall back to the
+# defaults declared in cli/runtime_config.rs::CloudConfigToml::default().
+[cloud]
+default_provider = "anthropic"
+default_model = "claude-sonnet-4-6"
+# default_mode: "local" | "cloud" | "auto" (typo falls back to "auto").
+default_mode = "auto"
+# air_gapped=true causes ExecMode::Cloud to short-circuit with
+# CloudModeError::AirGappedConflict before any network call.
+air_gapped = false
+
+[cloud.privacy]
+# profile: "minimal" | "standard" | "strict" (typo falls back to "standard").
+# standard scrubs email, IPv4, and Anthropic/OpenAI/GitHub-style tokens.
+# strict adds Windows + POSIX absolute paths.
+profile = "standard"
+
+[cloud.spend]
+# warn_at_usd is informational only (dashboard surface). hard_cap_daily_usd
+# and hard_cap_monthly_usd are enforced by CloudModeRouter::route when set.
+warn_at_usd = 1.0
+# hard_cap_daily_usd = 5.0
+# hard_cap_monthly_usd = 50.0

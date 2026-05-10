@@ -156,6 +156,81 @@ pub struct ElaiRuntimeConfig {
     pub inference: InferenceConfig,
     /// `[agents]` section — agent-level configuration (A-41).
     pub agents: AgentsConfig,
+    /// `[cloud]` section — B-27 cloud-mode routing + spend caps + privacy
+    /// profile + air-gapped flag. Consumed by `cloud_mode::CloudModeRouter`
+    /// via [`CloudConfigToml::to_cloud_config`].
+    pub cloud: CloudConfigToml,
+}
+
+/// `[cloud]` TOML section. Serializable mirror of
+/// [`elai_orchestrator::cloud_mode::CloudConfig`] — TOML cares about plain
+/// types, so we keep the redaction profile + mode as strings here and
+/// convert on the way out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfigToml {
+    pub default_provider: String,
+    pub default_model: String,
+    pub default_mode: String,
+    pub air_gapped: bool,
+    pub privacy: CloudPrivacyToml,
+    pub spend: CloudSpendToml,
+}
+
+impl Default for CloudConfigToml {
+    fn default() -> Self {
+        Self {
+            default_provider: "anthropic".to_string(),
+            default_model: "claude-sonnet-4-6".to_string(),
+            default_mode: "auto".to_string(),
+            air_gapped: false,
+            privacy: CloudPrivacyToml::default(),
+            spend: CloudSpendToml::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudPrivacyToml {
+    pub profile: String,
+}
+
+impl Default for CloudPrivacyToml {
+    fn default() -> Self {
+        Self {
+            profile: "standard".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudSpendToml {
+    pub warn_at_usd: Option<f64>,
+    pub hard_cap_daily_usd: Option<f64>,
+    pub hard_cap_monthly_usd: Option<f64>,
+}
+
+impl CloudConfigToml {
+    /// Convert the TOML form into the orchestrator's typed
+    /// [`elai_orchestrator::cloud_mode::CloudConfig`]. Unknown
+    /// profile/mode values fall back to safe defaults via the
+    /// `from_config_str` parsers (Standard / Auto).
+    #[must_use]
+    pub fn to_cloud_config(&self) -> elai_orchestrator::cloud_mode::CloudConfig {
+        use elai_orchestrator::cloud_mode::{CloudConfig, ExecMode};
+        use elai_orchestrator::privacy_redactor::RedactionProfile;
+        CloudConfig {
+            default_provider: self.default_provider.clone(),
+            default_model: self.default_model.clone(),
+            default_mode: ExecMode::from_config_str(&self.default_mode),
+            air_gapped: self.air_gapped,
+            privacy_profile: RedactionProfile::from_config_str(&self.privacy.profile),
+            spend_cap_daily_usd: self.spend.hard_cap_daily_usd,
+            spend_cap_monthly_usd: self.spend.hard_cap_monthly_usd,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

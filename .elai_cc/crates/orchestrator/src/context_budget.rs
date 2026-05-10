@@ -372,6 +372,55 @@ impl ModelCapabilityProfile {
         }
     }
 
+    /// B-27: cloud-mode profile for the Anthropic 200K context window.
+    /// Used when the user routes a task through cloud_mode.rs (ExecMode::Cloud
+    /// or escalated from ExecMode::Auto). Spec D-2 carves a 200K window with
+    /// most slots scaled up roughly 5× from the 48GB tier; output reserve is
+    /// raised to 8K (vs 512 local) since cloud calls produce longer responses.
+    /// Slot weights chosen to favor code_context for deep file dives in a
+    /// large window — repo_map=0.15, code_context=0.60, ssb_entries=0.15,
+    /// grc_history=0.10 (sums to 1.0, validates against
+    /// [`SlotWeights::validate_dynamic_sum`]).
+    pub fn cloud_200k() -> Self {
+        Self {
+            vram_tier: VramTier::Vram48Gb,
+            model_tier: ModelTier::Cloud,
+            model_name: "claude-sonnet-4-6".to_string(),
+            model_size_b: 0.0,
+            model_vram_mb: 0,
+            kv_bytes_per_token: 0,
+            in_vram_ceiling: 0,
+            attention_ceiling: 200_000,
+            effective_ceiling: 200_000,
+            recommended_prompt_budget: 192_000,
+            output_reserve: 8_000,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.15,
+                code_context: 0.60,
+                ssb_entries: 0.15,
+                grc_history: 0.10,
+            },
+            fixed_slot_targets: [1000, 2000, 5000],
+            features: ModelFeatures {
+                supports_structured_output: true,
+                supports_grammar: false,
+                supports_stop_sequences: true,
+                chunked_prefill: false,
+                kv_compression: false,
+            },
+            pass_at_1: 0.85,
+            optimal_retries: 2,
+            kv_quant_bits: 0,
+            requires_fa2: false,
+            dola_viable: false,
+            steering_viable: false,
+            measured: false,
+        }
+    }
+
     /// Build a projected LARGE-tier profile for 32B on 48GB.
     /// Per-tier allocation from token-efficiency-design.txt §2 table (lines 516-526):
     ///   48GB (30K): System=330, Rules=500, Telescope=1500,

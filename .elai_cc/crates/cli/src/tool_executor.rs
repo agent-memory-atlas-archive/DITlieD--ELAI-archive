@@ -226,12 +226,16 @@ pub(crate) fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMes
                 .blocks
                 .iter()
                 .map(|block| match block {
-                    ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::Text { text } => InputContentBlock::Text {
+                        text: text.clone(),
+                        cache_control: None,
+                    },
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: serde_json::from_str(input)
                             .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
+                        cache_control: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id,

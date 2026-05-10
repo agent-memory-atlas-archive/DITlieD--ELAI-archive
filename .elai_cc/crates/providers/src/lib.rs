@@ -52,10 +52,10 @@ pub use vllm_client::{
 pub use sse::{parse_frame, SseParser};
 pub use vram_tier::{detect_vram_tier, VramDetectionError};
 pub use types::{
-    ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
-    InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
-    MessageResponse, MessageStartEvent, MessageStopEvent, OutputContentBlock, StreamEvent,
-    ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
+    CacheControl, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,
+    ContentBlockStopEvent, InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent,
+    MessageRequest, MessageResponse, MessageStartEvent, MessageStopEvent, OutputContentBlock,
+    StreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };
 
 pub use telemetry_types::{

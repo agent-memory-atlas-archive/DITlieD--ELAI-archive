@@ -8,7 +8,7 @@ pub struct MessageRequest {
     pub max_tokens: u32,
     pub messages: Vec<InputMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<Vec<SystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,6 +23,71 @@ impl MessageRequest {
         self.stream = true;
         self
     }
+
+    /// Set the system prompt to a single text block with no cache marker.
+    /// Convenience constructor for callers that only need plain text system prompts.
+    #[must_use]
+    pub fn with_system_text(mut self, text: impl Into<String>) -> Self {
+        self.system = Some(vec![SystemBlock::text(text)]);
+        self
+    }
+}
+
+/// Anthropic-compatible cache_control marker for prompt-prefix caching.
+///
+/// Wire shape: {"type":"ephemeral"} (5-min TTL, the only currently-supported
+/// kind). Anthropic accepts at most 4 cache_control markers per request;
+/// B-27 cloud_mode applies them to the system prompt block and the last
+/// ToolDefinition only (2 markers, well under the cap).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl CacheControl {
+    /// Construct an ephemeral (5-min TTL) cache marker — the only kind
+    /// Anthropic currently supports.
+    #[must_use]
+    pub fn ephemeral() -> Self {
+        Self {
+            kind: "ephemeral".to_string(),
+        }
+    }
+}
+
+/// One block in the Anthropic system prompt array. The wire array form
+/// (replacing the legacy `system: "..."` string) is required to attach
+/// cache_control markers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemBlock {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl SystemBlock {
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            kind: "text".to_string(),
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    /// Construct a system block with an ephemeral cache_control marker
+    /// applied — the prefix is cached at the API gateway for ~5 min.
+    #[must_use]
+    pub fn ephemeral_text(text: impl Into<String>) -> Self {
+        Self {
+            kind: "text".to_string(),
+            text: text.into(),
+            cache_control: Some(CacheControl::ephemeral()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +101,10 @@ impl InputMessage {
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
-            content: vec![InputContentBlock::Text { text: text.into() }],
+            content: vec![InputContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
         }
     }
 
@@ -64,11 +132,15 @@ impl InputMessage {
 pub enum InputContentBlock {
     Text {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
@@ -91,6 +163,14 @@ pub struct ToolDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: Value,
+    /// Anthropic-only marker. When `Some(CacheControl::ephemeral())`, the
+    /// gateway caches everything UP TO AND INCLUDING this tool's wire
+    /// form for ~5 min, so the next request whose prefix matches reads
+    /// the cached prefix at ~1/10 the input cost. The OpenAI-compat path
+    /// strips this field when translating, since OpenAI does not support
+    /// per-block cache control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

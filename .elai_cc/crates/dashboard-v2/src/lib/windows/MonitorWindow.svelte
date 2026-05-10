@@ -8,6 +8,7 @@
     InterventionRequest,
     SupervisionEvent,
     AutoAdvanceStats,
+    CloudSpendInfo,
   } from '$lib/api/types';
   import { workspace } from '$lib/state/workspace.svelte';
   import { session } from '$lib/state/session.svelte';
@@ -41,6 +42,9 @@
   let sysStatus = $state<SystemStatus | null>(null);
   let supervisionLog = $state<SupervisionEvent[]>([]);
   let autoStats = $state<AutoAdvanceStats | null>(null);
+  // B-27: cloud-mode spend gauge. Spec D-4:308 — rows are conditionally
+  // hidden when both task_usd and day_usd are 0 (no "$0.00" display).
+  let cloudSpend = $state<CloudSpendInfo | null>(null);
   let loadError = $state<string | null>(null);
 
   // Derived from live data, fallback to empty/defaults
@@ -171,17 +175,19 @@
 
     async function poll() {
       try {
-        const [fsm, sys, log, stats] = await Promise.all([
+        const [fsm, sys, log, stats, spend] = await Promise.all([
           stub.get_fsm_state(),
           stub.get_system_status(),
           stub.get_supervision_log(),
           stub.get_auto_advance_stats(),
+          stub.get_cloud_spend(),
         ]);
         if (!alive) return;
         fsmSnap = fsm;
         sysStatus = sys;
         supervisionLog = log;
         autoStats = stats;
+        cloudSpend = spend;
         loadError = null;
       } catch (e) {
         if (!alive) return;
@@ -236,6 +242,54 @@
       {/if}
     </div>
   </section>
+
+  <!-- B-27: cloud-mode spend gauge (spec D-4:307). Conditional on > 0;
+       no "$0.00" rendered when no cloud spend has been recorded. -->
+  {#if cloudSpend && (cloudSpend.task_usd > 0 || cloudSpend.day_usd > 0)}
+    <section class="monitor-section cloud-spend" aria-label="Cloud spend">
+      <div class="auto-advance__header">
+        <span class="auto-advance__label mono">cloud spend</span>
+      </div>
+      <div class="auto-advance__row">
+        {#if cloudSpend.task_usd > 0}
+          <span
+            class="auto-advance__metric mono"
+            title="USD spent on cloud calls during the current task"
+          >
+            <span class="auto-advance__pct">${cloudSpend.task_usd.toFixed(4)}</span>
+            <span class="auto-advance__unit">task</span>
+          </span>
+        {/if}
+        {#if cloudSpend.day_usd > 0}
+          <span
+            class="auto-advance__metric mono"
+            title="USD spent on cloud calls today"
+          >
+            <span class="auto-advance__pct">${cloudSpend.day_usd.toFixed(2)}</span>
+            <span class="auto-advance__unit">today</span>
+          </span>
+        {/if}
+        {#if cloudSpend.cache_read_tokens > 0}
+          <span
+            class="auto-advance__metric mono"
+            title="Tokens served from Anthropic's prompt cache (10× cheaper than fresh input)"
+          >
+            <span class="auto-advance__num">{cloudSpend.cache_read_tokens}</span>
+            <span class="auto-advance__unit">cache hit</span>
+          </span>
+        {/if}
+        {#if cloudSpend.redaction_count > 0}
+          <span
+            class="auto-advance__metric mono"
+            title="Number of substitutions applied by the privacy redactor before each cloud send"
+          >
+            <span class="auto-advance__num">{cloudSpend.redaction_count}</span>
+            <span class="auto-advance__unit">redacted</span>
+          </span>
+        {/if}
+      </div>
+    </section>
+  {/if}
 
   {#if !isRunning}
     <div class="monitor__empty">

@@ -20,7 +20,7 @@ use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
     OutputContentBlock, PromptCache,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use elai_plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use crossterm::{cursor::MoveToColumn, execute, terminal::{Clear, ClearType}};
@@ -403,6 +403,10 @@ impl ApiClient for RuntimeClient {
                 }
             }
             BudgetPolicy::ApiDefault => model_max_tokens,
+            // B-27: cloud-mode 200K context profile. Bypasses the
+            // per-model token table so Anthropic Sonnet 4.6 actually
+            // gets its full 200K window when routed through cloud_mode.
+            BudgetPolicy::Cloud { ceiling } => *ceiling,
         };
 
         // Pipeline telemetry
@@ -429,7 +433,8 @@ impl ApiClient for RuntimeClient {
             model: self.model.clone(),
             max_tokens: effective_max_tokens,
             messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            system: (!request.system_prompt.is_empty())
+                .then(|| vec![SystemBlock::text(request.system_prompt.join("\n\n"))]),
             tool_choice: tool_defs.as_ref().map(|_| ToolChoice::Auto),
             tools: tool_defs,
             stream: true,

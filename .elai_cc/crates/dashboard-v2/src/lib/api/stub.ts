@@ -79,6 +79,7 @@ import type {
   OAuthStatus,
   OAuthLoginInfo,
   CloudModelInfo,
+  CloudSpendInfo,
 } from './types';
 
 import {
@@ -1169,6 +1170,15 @@ export async function do_oauth_logout(): Promise<{ ok: boolean }> {
   return { ok: true };
 }
 
+export async function open_url_in_browser(url: string): Promise<{ ok: boolean }> {
+  logStub('open_url_in_browser', { url });
+  const live = await tryInvoke<{ ok: boolean }>('open_url_in_browser', { url });
+  if (live) return live;
+  // Browser-only fallback: just open in a new tab.
+  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
+  return { ok: true };
+}
+
 // ------------------------------------------------------------------
 // CLOUD MODEL PICKER
 // ------------------------------------------------------------------
@@ -1201,6 +1211,28 @@ export async function set_cloud_model(
   if (live) return live;
   await delay();
   return { ok: true, model_id: modelId };
+}
+
+// ------------------------------------------------------------------
+// CLOUD SPEND (B-27)
+// ------------------------------------------------------------------
+
+export async function get_cloud_spend(): Promise<CloudSpendInfo> {
+  logStub('get_cloud_spend');
+  const live = await tryInvoke<CloudSpendInfo>('get_cloud_spend');
+  if (live) return live;
+  await delay();
+  // Stub default: zeroes everywhere. MonitorWindow's gauge rows are
+  // conditionally hidden when both task_usd and day_usd are 0, matching
+  // the live default-zero shape returned until SsbViewer aggregation
+  // lands (B-27.5 follow-up).
+  return {
+    task_usd: 0,
+    day_usd: 0,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    redaction_count: 0,
+  };
 }
 
 export async function set_webhook_url(url: string): Promise<{ ok: boolean; webhook_url: string }> {

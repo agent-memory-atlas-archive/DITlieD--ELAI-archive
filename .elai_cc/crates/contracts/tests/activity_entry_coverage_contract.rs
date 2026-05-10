@@ -106,6 +106,9 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::McpServerConnected,
     SsbActionType::McpToolCalled,
     SsbActionType::McpServerDisconnected,
+    // B-27 — cloud-mode spend ledger + escalation marker.
+    SsbActionType::CloudSpend,
+    SsbActionType::EscalateToCloud,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -359,7 +362,7 @@ fn contract_variant_count_matches_enum_doc() {
     // (mcp_server_connected, mcp_tool_called, mcp_server_disconnected)
     // bumping the floor to 70.
     assert!(
-        ALL_VARIANTS.len() >= 70,
-        "ALL_VARIANTS shrank below 70 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 72,
+        "ALL_VARIANTS shrank below 72 — review SsbActionType enum"
     );
 }

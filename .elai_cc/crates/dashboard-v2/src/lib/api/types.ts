@@ -1062,6 +1062,8 @@ export type IntentType =
   | 'TASK'
   | 'FIX'
   | 'EXPLORE'
+  | 'EXPLORE_CODE'
+  | 'RESEARCH'
   | 'INTERVENE'
   | 'STEER'
   | 'ABORT'
@@ -1215,4 +1217,16 @@ export interface CloudModelInfo {
   model_id: string;
   allowlist: string[];
   default: string;
+}
+
+// B-27: cloud-mode spend summary surfaced in MonitorWindow.
+// Fields mirror the snake_case shape returned by the Rust `get_cloud_spend`
+// Tauri command. MonitorWindow conditionally renders rows only when
+// `task_usd > 0` or `day_usd > 0` (spec D-4:308).
+export interface CloudSpendInfo {
+  task_usd: number;
+  day_usd: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  redaction_count: number;
 }

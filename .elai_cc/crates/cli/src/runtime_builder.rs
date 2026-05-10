@@ -487,4 +487,14 @@ pub(crate) enum BudgetPolicy {
         ceiling: usize,
         fraction: usize,
     },
+    /// B-27 cloud-mode 200K profile. `ceiling` is the attention window
+    /// (200_000 for Anthropic Sonnet 4.6 with the
+    /// [`elai_orchestrator::context_budget::ModelCapabilityProfile::cloud_200k`]
+    /// profile). The runtime client uses this verbatim instead of the
+    /// model-keyed `max_tokens_for_model` table. Type matches the
+    /// `MessageRequest.max_tokens` width so the match arm doesn't
+    /// require a narrowing cast.
+    Cloud {
+        ceiling: u32,
+    },
 }

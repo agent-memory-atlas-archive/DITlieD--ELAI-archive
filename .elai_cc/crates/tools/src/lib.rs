@@ -35,7 +35,7 @@ use elai_core::ClockProvider;
 use elai_providers::{
     max_tokens_for_model, resolve_model_alias, ContentBlockDelta, InputContentBlock, InputMessage,
     MessageRequest, MessageResponse, OutputContentBlock, ProviderClient,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    StreamEvent as ApiStreamEvent, SystemBlock, ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 use elai_plugins::PluginTool;
 use reqwest::blocking::Client;
@@ -292,6 +292,7 @@ impl GlobalToolRegistry {
                 name: spec.name.to_string(),
                 description: Some(spec.description.to_string()),
                 input_schema: spec.input_schema,
+                cache_control: None,
             });
         let runtime = self
             .runtime_tools
@@ -301,6 +302,7 @@ impl GlobalToolRegistry {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
+                cache_control: None,
             });
         let plugin = self
             .plugin_tools
@@ -313,6 +315,7 @@ impl GlobalToolRegistry {
                 name: tool.definition().name.clone(),
                 description: tool.definition().description.clone(),
                 input_schema: tool.definition().input_schema.clone(),
+                cache_control: None,
             });
         builtin.chain(runtime).chain(plugin).collect()
     }
@@ -3869,13 +3872,15 @@ impl ApiClient for ProviderRuntimeClient {
                 name: spec.name.to_string(),
                 description: Some(spec.description.to_string()),
                 input_schema: spec.input_schema,
+                cache_control: None,
             })
             .collect::<Vec<_>>();
         let message_request = MessageRequest {
             model: self.model.clone(),
             max_tokens: max_tokens_for_model(&self.model),
             messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            system: (!request.system_prompt.is_empty())
+                .then(|| vec![SystemBlock::text(request.system_prompt.join("\n\n"))]),
             tools: (!tools.is_empty()).then_some(tools),
             tool_choice: (!self.allowed_tools.is_empty()).then_some(ToolChoice::Auto),
             stream: true,
@@ -4025,12 +4030,16 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                 .blocks
                 .iter()
                 .map(|block| match block {
-                    ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
+                    ContentBlock::Text { text } => InputContentBlock::Text {
+                        text: text.clone(),
+                        cache_control: None,
+                    },
                     ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: serde_json::from_str(input)
                             .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
+                        cache_control: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id,

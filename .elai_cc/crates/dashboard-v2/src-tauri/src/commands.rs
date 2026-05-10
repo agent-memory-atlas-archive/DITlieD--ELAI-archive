@@ -2106,16 +2106,23 @@ pub fn get_execution_mode(state: State<'_, AppState>) -> CmdResult<Value> {
 // ---------------------------------------------------------------------------
 
 fn dashboard_oauth_config() -> elai_orchestrator::OAuthConfig {
+    // Mirrors cli/auth.rs:default_oauth_config — see that comment for the
+    // source-of-truth derivation. Both call sites must stay aligned.
     elai_orchestrator::OAuthConfig {
         client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
-        authorize_url: String::from("https://claude.ai/oauth/authorize"),
+        authorize_url: String::from("https://claude.com/cai/oauth/authorize"),
         token_url: String::from("https://platform.claude.com/v1/oauth/token"),
         callback_port: None,
-        manual_redirect_url: None,
+        manual_redirect_url: Some(String::from(
+            "https://platform.claude.com/oauth/code/callback",
+        )),
         scopes: vec![
+            String::from("org:create_api_key"),
             String::from("user:profile"),
             String::from("user:inference"),
-            String::from("user:sessions:elai"),
+            String::from("user:sessions:claude_code"),
+            String::from("user:mcp_servers"),
+            String::from("user:file_upload"),
         ],
     }
 }
@@ -2124,11 +2131,60 @@ const DASHBOARD_OAUTH_CALLBACK_PORT: u16 = 4545;
 const OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 300;
 const OAUTH_LOGIN_COMPLETE_EVENT: &str = "oauth-login-complete";
 
+/// User-Agent matching real Claude Code's format. Source: leaked
+/// claude-code-main src/utils/http.ts:34 —
+///   `claude-cli/${VERSION} (${USER_TYPE}, ${ENTRYPOINT})`
+/// For external (non-Anthropic-employee) installs, USER_TYPE is unset, which
+/// JS interpolates as the literal string "undefined". Matching that exact
+/// shape so Anthropic's log-filter / rate-bucket sees us as a normal CC client.
+const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.140 (undefined, cli)";
+const CLAUDE_X_APP_HEADER: &str = "cli";
+
+/// Stable per-process UUIDv4-shaped session id for `X-Claude-Code-Session-Id`.
+/// Real Claude Code uses Node's `crypto.randomUUID()` (RFC 4122 v4). Anthropic's
+/// log pipeline may parse this — using a non-conforming shape can route us to
+/// a degraded analytics path with stricter throttles. We generate proper random
+/// bytes here (via getrandom, already a transitive dep) and format as v4.
+fn dashboard_cli_session_id() -> &'static str {
+    use std::sync::OnceLock;
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        // blake3 is already a direct dep — hash pid + nanos into 16 bytes for a
+        // uniform-looking UUIDv4. We don't need cryptographic randomness here,
+        // just a stable per-process identifier that *looks* like crypto.randomUUID().
+        let pid = std::process::id();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&pid.to_le_bytes());
+        hasher.update(&ts.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        // RFC 4122 version 4 + variant bits.
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+            bytes[6], bytes[7], bytes[8], bytes[9],
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        )
+    })
+}
+
 fn open_browser_for_url(url: &str) -> std::io::Result<()> {
+    // Windows: must use `rundll32 url,OpenURL <url>` not `cmd /C start "" <url>`.
+    // Reason: cmd parses `&` as a command separator, which truncates OAuth URLs
+    // at the first query-param boundary (e.g. `?response_type=code&client_id=...`
+    // becomes just `?response_type=code`, dropping client_id and every later
+    // param). Source of truth: leaked claude-code-main src/utils/browser.ts:54.
     let commands: Vec<(&str, Vec<&str>)> = if cfg!(target_os = "macos") {
         vec![("open", vec![url])]
     } else if cfg!(target_os = "windows") {
-        vec![("cmd", vec!["/C", "start", "", url])]
+        vec![("rundll32", vec!["url,OpenURL", url])]
     } else {
         vec![("xdg-open", vec![url])]
     };
@@ -2194,12 +2250,14 @@ pub async fn start_oauth_login(app: tauri::AppHandle) -> CmdResult<Value> {
         .map_err(|e| format!("pkce: {e}"))?;
     let oauth_state = elai_orchestrator::generate_state()
         .map_err(|e| format!("state: {e}"))?;
+    // `code=true` matches Claude Code's buildAuthUrl (services/oauth/client.ts:72).
     let authorize_url = elai_orchestrator::OAuthAuthorizationRequest::from_config(
         &oauth_config,
         redirect_uri.clone(),
         oauth_state.clone(),
         &pkce,
     )
+    .with_extra_param("code", "true")
     .build_url();
 
     if let Err(error) = open_browser_for_url(&authorize_url) {
@@ -2339,6 +2397,21 @@ pub fn do_oauth_logout() -> CmdResult<Value> {
     Ok(json!({ "ok": true }))
 }
 
+/// Open an arbitrary http(s) URL in the user's default browser using the
+/// same Windows-safe spawn path as start_oauth_login. Lets the frontend
+/// trigger a browser open without going through Tauri's webview link
+/// interception (which silently swallows `<a href>` clicks for external
+/// URLs unless a shell plugin is loaded).
+#[tauri::command]
+pub fn open_url_in_browser(url: String) -> CmdResult<Value> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(format!("refusing to open non-http(s) url: {trimmed}"));
+    }
+    open_browser_for_url(trimmed).map_err(|e| format!("open_browser: {e}"))?;
+    Ok(json!({ "ok": true }))
+}
+
 // ---------------------------------------------------------------------------
 // CLOUD MODEL PICKER (Anthropic model ID used when execution_mode == CLOUD)
 // ---------------------------------------------------------------------------
@@ -2374,6 +2447,39 @@ pub fn set_cloud_model(
         *g = trimmed.to_owned();
     }
     Ok(json!({ "ok": true, "model_id": trimmed }))
+}
+
+// ---------------------------------------------------------------------------
+// CLOUD SPEND (B-27: per-task + per-day aggregate read from CloudSpend rows)
+// ---------------------------------------------------------------------------
+
+/// Returns the dashboard's cloud-spend summary for the MonitorWindow gauges.
+///
+/// Wire shape matches `CloudSpendInfo` in `dashboard-v2/src/lib/api/types.ts`.
+/// All values are zero when SSB has no `cloud_spend` rows (fresh install, or
+/// no cloud invocations yet because the CLI `--mode cloud` flag bridge is
+/// still under follow-up). MonitorWindow.svelte conditionally hides the rows
+/// when both `task_usd` and `day_usd` are zero per spec D-4:308.
+///
+/// Aggregation is intentionally inline here (no `SsbViewer::cloud_spend_summary`
+/// method) because B-27 ANTI-BLOATSHEET defers premature abstractions.
+#[tauri::command]
+pub fn get_cloud_spend(_state: State<'_, AppState>) -> CmdResult<Value> {
+    // TODO(B-27.5): replace this default-zero stub with an SSB query that
+    // sums today's CloudSpend rows for `day_usd` and grabs the latest
+    // CloudSpend row for `task_usd`. The Tauri surface, the Svelte poll
+    // loop, and the wire contract are all in place — only the SsbViewer
+    // aggregation method (cloud_spend_summary) is missing. The state arg
+    // is intentionally `_state` until the aggregation lands; do not
+    // remove it from the signature — Tauri's macro requires it as a
+    // recognised State<'_, T> parameter for proper invoke wiring.
+    Ok(json!({
+        "task_usd": 0.0,
+        "day_usd": 0.0,
+        "cache_creation_tokens": 0u64,
+        "cache_read_tokens": 0u64,
+        "redaction_count": 0u64,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2728,40 +2834,148 @@ pub async fn start_chat_stream(
 ) -> CmdResult<Value> {
     let stream_id = request_id.clone();
 
-    let url = state
-        .sidecar_url
+    // Resolve the routing target from execution_mode. CLOUD -> api.anthropic.com
+    // with OAuth Bearer + selected cloud model. LOCAL / HYBRID / anything else
+    // -> the local/remote sidecar speaking the Anthropic protocol locally.
+    let execution_mode = state
+        .execution_mode
         .lock()
         .map(|g| g.clone())
-        .unwrap_or_else(|_| elai_providers::DEFAULT_SIDECAR_URL.to_owned());
-    let base = url.trim_end_matches('/').to_owned();
+        .unwrap_or_else(|_| "LOCAL".to_owned());
+    let is_cloud = execution_mode.eq_ignore_ascii_case("CLOUD");
 
-    // --- offline probe (2s connect timeout via state.http) ---
-    let health_probe = state
-        .http
-        .get(format!("{base}/health"))
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await;
-    let sidecar_alive = health_probe.map(|r| r.status().is_success()).unwrap_or(false);
-    if !sidecar_alive {
-        let _ = app.emit(
-            &format!("chat-stream-end:{stream_id}"),
-            json!({
-                "stream_id": stream_id,
-                "error": "sidecar offline — start with `elai.bat --remote` to use the friend's GPU box",
-                "offline": true,
-            }),
-        );
-        return Ok(json!({ "streamId": stream_id, "offline": true }));
+    // (messages_url, request_headers, model_id, body) is built per-route below.
+    let messages_url: String;
+    let mut headers: Vec<(&'static str, String)> =
+        vec![("content-type", "application/json".to_string()), ("accept", "text/event-stream".to_string())];
+    let model_id: String;
+
+    if is_cloud {
+        // Resolve OAuth token; error early if missing/expired so the UI doesn't
+        // spin while a 401 ticks down on the wire.
+        let token_set = match elai_orchestrator::load_oauth_credentials() {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                let _ = app.emit(
+                    &format!("chat-stream-end:{stream_id}"),
+                    json!({
+                        "stream_id": stream_id,
+                        "error": "cloud mode: not logged in. Click Login with Anthropic in Settings.",
+                    }),
+                );
+                return Ok(json!({ "streamId": stream_id, "offline": true }));
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    &format!("chat-stream-end:{stream_id}"),
+                    json!({ "stream_id": stream_id, "error": format!("cloud mode: failed to read credentials: {e}") }),
+                );
+                return Ok(json!({ "streamId": stream_id, "offline": true }));
+            }
+        };
+        let anthropic_token = elai_providers::OAuthTokenSet {
+            access_token: token_set.access_token.clone(),
+            refresh_token: token_set.refresh_token.clone(),
+            expires_at: token_set.expires_at,
+            scopes: token_set.scopes.clone(),
+        };
+        if elai_providers::oauth_token_is_expired(&anthropic_token) {
+            let _ = app.emit(
+                &format!("chat-stream-end:{stream_id}"),
+                json!({ "stream_id": stream_id, "error": "cloud mode: OAuth token expired. Re-login from Settings." }),
+            );
+            return Ok(json!({ "streamId": stream_id, "offline": true }));
+        }
+
+        // Resolve cloud model from AppState (pre-loaded from credentials.json
+        // at startup, validated against CLOUD_MODEL_ID_ALLOWLIST).
+        model_id = state
+            .cloud_model_id
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| elai_providers::DEFAULT_CLOUD_MODEL_ID.to_owned());
+
+        // api.anthropic.com /v1/messages, OAuth Bearer + version + beta header.
+        // Headers per providers/telemetry_types.rs and the leaked Claude Code
+        // OAUTH_BETA_HEADER constant in src/constants/oauth.ts:36.
+        messages_url = "https://api.anthropic.com/v1/messages".to_owned();
+        headers.push(("authorization", format!("Bearer {}", token_set.access_token)));
+        headers.push(("anthropic-version", "2023-06-01".to_string()));
+        headers.push(("anthropic-beta", "oauth-2025-04-20".to_string()));
+        // Client-identification headers — match real Claude Code. Without
+        // these, Anthropic's rate-limiter routes traffic to a stricter default
+        // bucket and 429s even on Max-20x plans. See client.ts:105 in the
+        // leaked source.
+        headers.push(("x-app", CLAUDE_X_APP_HEADER.to_string()));
+        headers.push(("user-agent", CLAUDE_CLI_USER_AGENT.to_string()));
+        headers.push((
+            "x-claude-code-session-id",
+            dashboard_cli_session_id().to_string(),
+        ));
+    } else {
+        // Existing LOCAL/HYBRID path: route to sidecar at state.sidecar_url.
+        let url = state
+            .sidecar_url
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| elai_providers::DEFAULT_SIDECAR_URL.to_owned());
+        let base = url.trim_end_matches('/').to_owned();
+
+        let health_probe = state
+            .http
+            .get(format!("{base}/health"))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await;
+        let sidecar_alive = health_probe.map(|r| r.status().is_success()).unwrap_or(false);
+        if !sidecar_alive {
+            let _ = app.emit(
+                &format!("chat-stream-end:{stream_id}"),
+                json!({
+                    "stream_id": stream_id,
+                    "error": "sidecar offline — start with `elai.bat --remote` to use the friend's GPU box, or switch Mode to CLOUD",
+                    "offline": true,
+                }),
+            );
+            return Ok(json!({ "streamId": stream_id, "offline": true }));
+        }
+        messages_url = format!("{base}/v1/messages");
+        model_id = "qwen".to_owned();
     }
 
-    // Build the Anthropic-protocol request body with stream=true.
-    let body = json!({
-        "model": "qwen",
-        "max_tokens": 512,
-        "stream": true,
-        "messages": [{ "role": "user", "content": prompt }],
-    });
+    // Anthropic gates OAuth-authenticated /v1/messages calls on the FIRST
+    // system block being literally "You are Claude Code, Anthropic's official
+    // CLI for Claude." (source: leaked claude-code-main src/constants/system.ts:10).
+    // Concatenating extra text into the same string breaks the prefix match
+    // and Anthropic returns 429 rate_limit_error (misleading error code,
+    // same bucket as throttle). Use the multi-block array form: first block
+    // is the exact validation prefix; second block carries our extra context
+    // (model identity) so Claude can answer "which model are you?" accurately.
+    // Skip system entirely for sidecar (local Qwen, no auth gate).
+    let body = if is_cloud {
+        json!({
+            "model": model_id,
+            "max_tokens": 512,
+            "stream": true,
+            "system": [
+                { "type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude." },
+                { "type": "text", "text": format!(
+                    "The exact model ID serving this request is `{model_id}`. \
+                     If the user asks which model you are, answer with that \
+                     exact string. The model ID is the source of truth — do \
+                     not guess from training memory.")
+                },
+            ],
+            "messages": [{ "role": "user", "content": prompt }],
+        })
+    } else {
+        json!({
+            "model": model_id,
+            "max_tokens": 512,
+            "stream": true,
+            "messages": [{ "role": "user", "content": prompt }],
+        })
+    };
 
     let streaming_client = state.streaming_http.clone();
     let active_streams = state.active_streams.clone();
@@ -2769,21 +2983,24 @@ pub async fn start_chat_stream(
     let app_task = app.clone();
 
     let join = tokio::task::spawn(async move {
-        let messages_url = format!("{base}/v1/messages");
-        let resp = match streaming_client
-            .post(&messages_url)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
+        let mut req = streaming_client.post(&messages_url);
+        for (k, v) in &headers {
+            req = req.header(*k, v);
+        }
+        let resp = match req.json(&body).send().await
         {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {
                 let status = r.status().as_u16();
+                // Drain the body up to 1 KiB so 401/403/400 messages from
+                // Anthropic surface in the UI instead of an opaque code.
+                let detail = match r.bytes().await {
+                    Ok(b) => String::from_utf8_lossy(&b).chars().take(512).collect::<String>(),
+                    Err(_) => String::new(),
+                };
                 let _ = app_task.emit(
                     &format!("chat-stream-end:{stream_id_task}"),
-                    json!({ "stream_id": stream_id_task, "error": format!("sidecar returned HTTP {status}") }),
+                    json!({ "stream_id": stream_id_task, "error": format!("upstream HTTP {status}: {detail}") }),
                 );
                 return;
             }

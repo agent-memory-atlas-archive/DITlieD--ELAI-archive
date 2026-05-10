@@ -164,9 +164,12 @@ pub fn run() {
             commands::get_oauth_status,
             commands::start_oauth_login,
             commands::do_oauth_logout,
+            commands::open_url_in_browser,
             // CLOUD MODEL PICKER
             commands::get_cloud_model,
             commands::set_cloud_model,
+            // CLOUD SPEND (B-27)
+            commands::get_cloud_spend,
             // WEBHOOK CONFIG
             commands::set_webhook_url,
             commands::get_webhook_url,
