@@ -1679,9 +1679,12 @@ impl LiveCli {
         let augmented_input = self.augment_with_knowledge(input);
         let effective_input = augmented_input.as_deref().unwrap_or(input);
 
-        // B-39: Chat REFLECT gate — observability-only, V0 scope.
-        // Pipeline output is discarded; runtime.run_turn still produces the
-        // user-visible reply. Skipped silently on sidecar-down or any error.
+        // B-39 / B-39C: Chat REFLECT gate.
+        // When the pipeline returns skipped=false, the AUDITOR-selected reply
+        // is rendered directly and the runtime.run_turn fall-through is bypassed
+        // entirely (D2a — text-only, no tool execution). When skipped=true
+        // (TRIAGE classified the turn as Chat, or any error fell back to
+        // passthrough), control falls through to prepare_turn_runtime unchanged.
         if self.reflect_enabled {
             if self.backend_config.is_none() {
                 tracing::warn!("/reason on but no backend_config; skipping reflect");
@@ -1701,7 +1704,24 @@ impl LiveCli {
                                 .enable_all()
                                 .build()
                             {
-                                let _output = rt.block_on(pipe.run(turn_id, effective_input, &client));
+                                let output = rt.block_on(pipe.run(turn_id, effective_input, &client));
+                                if !output.skipped {
+                                    let renderer = TerminalRenderer::new();
+                                    let rendered = renderer.render_markdown(&output.final_reply);
+                                    let mut stdout = io::stdout();
+                                    write!(stdout, "{rendered}\r\n")?;
+                                    stdout.flush()?;
+                                    self.runtime.push_user_text(effective_input)?;
+                                    self.runtime.push_assistant_text(&output.final_reply)?;
+                                    self.runtime
+                                        .record_pipeline_usage(output.token_summary.total);
+                                    self.persist_session()?;
+                                    self.try_save_snapshot();
+                                    self.baby_step_counter =
+                                        self.baby_step_counter.saturating_add(1);
+                                    self.try_incremental_profile_refresh();
+                                    return Ok(());
+                                }
                             }
                         }
                         Err(e) => {

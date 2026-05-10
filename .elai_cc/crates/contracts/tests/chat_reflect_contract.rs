@@ -506,3 +506,200 @@ fn test_refine_cap_is_three() {
          (t=2→t=3 yields +12-20pp; t=3→t=4 below noise floor)"
     );
 }
+
+// ===========================================================================
+// B-39C — REFLECT answer substitution contract tests (tests 13-16).
+//
+// These tests target the substitution path that consumes ReflectOutput.final_reply
+// and propagates it into ConversationRuntime history via three new delegates:
+//   ConversationRuntime::push_user_text
+//   ConversationRuntime::push_assistant_text
+//   ConversationRuntime::record_pipeline_usage
+//
+// LiveCli is not constructible from the contracts crate, so these tests exercise
+// the contracts at the pipeline + runtime boundaries rather than the full CLI loop.
+// ===========================================================================
+
+use elai_orchestrator::{
+    ApiClient, ApiRequest, AssistantEvent, ContentBlock, ConversationRuntime, MessageRole,
+    PermissionMode, PermissionPolicy, RuntimeError, Session, StaticToolExecutor,
+    SystemPromptBuilder,
+};
+
+/// API client stub that panics if called. Tests in this section never call
+/// `runtime.run_turn`; they only exercise the new push_* delegates.
+struct UnreachableApiClient;
+impl ApiClient for UnreachableApiClient {
+    fn stream(&mut self, _request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        panic!("api client must not be invoked by push_* delegate tests")
+    }
+}
+
+fn empty_runtime() -> ConversationRuntime<UnreachableApiClient, StaticToolExecutor> {
+    ConversationRuntime::new(
+        Session::new(),
+        UnreachableApiClient,
+        StaticToolExecutor::new(),
+        PermissionPolicy::new(PermissionMode::WorkspaceWrite),
+        SystemPromptBuilder::new().build(),
+    )
+}
+
+// ===========================================================================
+// Test 13 — pipeline happy-path produces a plain-text final_reply usable as the
+// substituted assistant message (no inline tool blocks, no role confusion).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_substitute_final_reply_when_not_skipped() {
+    let config = default_config();
+    let mock = happy_path_mock();
+    let pipeline = ChatReflectPipeline::new(config, None);
+
+    let output: ReflectOutput = pipeline
+        .run("t13".to_string(), "Why does my deadlock test fail?", &mock)
+        .await;
+
+    assert!(
+        !output.skipped,
+        "happy-path TRIAGE='problem' must produce skipped=false (substitute path active)"
+    );
+    assert!(
+        !output.final_reply.is_empty(),
+        "AUDITOR-selected final_reply must be a non-empty string ready to substitute"
+    );
+    // The synthesizer selects from candidates "candidate reply 0..N-1" with best_index=0.
+    // The exact synthesis output is implementation-defined but must contain the chosen text.
+    assert!(
+        output.final_reply.contains("candidate reply 0"),
+        "synthesized final_reply must include the AUDITOR's chosen candidate text; got: {:?}",
+        output.final_reply
+    );
+}
+
+// ===========================================================================
+// Test 14 — ConversationRuntime push_user_text + push_assistant_text appends
+// role-alternating messages. Asserts the substitute path's history-append
+// contract: turn N+1 sees turn N's user input and assistant reply in order.
+// ===========================================================================
+
+#[test]
+fn test_runtime_history_includes_pipeline_reply() {
+    let mut runtime = empty_runtime();
+    runtime
+        .push_user_text("USER_INPUT")
+        .expect("push_user_text must succeed on a fresh session");
+    runtime
+        .push_assistant_text("PIPELINE_REPLY")
+        .expect("push_assistant_text must succeed after a user message");
+
+    let messages = &runtime.session().messages;
+    assert_eq!(
+        messages.len(),
+        2,
+        "session must contain exactly 2 messages after one user+assistant push pair"
+    );
+    assert_eq!(
+        messages[0].role,
+        MessageRole::User,
+        "first message must be User (push_user_text)"
+    );
+    assert_eq!(
+        messages[1].role,
+        MessageRole::Assistant,
+        "second message must be Assistant (push_assistant_text)"
+    );
+
+    let assistant_text_blocks: Vec<&str> = messages[1]
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        assistant_text_blocks,
+        vec!["PIPELINE_REPLY"],
+        "assistant message must contain exactly one Text block with the pipeline reply"
+    );
+}
+
+// ===========================================================================
+// Test 15 — pipeline short-circuit (TRIAGE classifies as Chat) returns
+// skipped=true with final_reply == original input. This is the path where
+// the substitute branch falls through to runtime.run_turn unchanged.
+// ===========================================================================
+
+#[tokio::test]
+async fn test_skipped_falls_through_to_runtime() {
+    let config = default_config();
+    let mock = MockChatInferenceClient::new(vec![Ok(r#"{"class":"Chat"}"#.into())]);
+    let pipeline = ChatReflectPipeline::new(config, None);
+
+    let input = "hi there";
+    let output: ReflectOutput = pipeline
+        .run("t15".to_string(), input, &mock)
+        .await;
+
+    assert!(
+        output.skipped,
+        "TRIAGE='Chat' must short-circuit and produce skipped=true"
+    );
+    assert_eq!(
+        output.final_reply, input,
+        "skipped=true must pass the original input through verbatim"
+    );
+    assert_eq!(
+        mock.call_count(),
+        1,
+        "Chat-class short-circuit must stop after the single TRIAGE call"
+    );
+}
+
+// ===========================================================================
+// Test 16 — D2a invariant: pushing pipeline.final_reply via push_assistant_text
+// produces a session message containing zero ToolUse blocks. This catches a
+// regression where push_assistant_text might be modified to wrap text in a
+// ToolUse block (intentionally falsifiable: replaces test 16's earlier
+// tautological inline-vec form).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_no_tool_use_blocks_in_pipeline_reply() {
+    let config = default_config();
+    let mock = happy_path_mock();
+    let pipeline = ChatReflectPipeline::new(config, None);
+
+    let output: ReflectOutput = pipeline
+        .run("t16".to_string(), "Outline a fix.", &mock)
+        .await;
+
+    // Drive the actual delegate the substitute path uses, then inspect what
+    // landed in session.messages. If push_assistant_text ever changed shape
+    // (e.g. wrapped in a ToolUse block), this assertion would fail.
+    let mut runtime = empty_runtime();
+    runtime
+        .push_assistant_text(&output.final_reply)
+        .expect("push_assistant_text must succeed");
+
+    let pushed_blocks = &runtime.session().messages[0].blocks;
+    let tool_use_count = pushed_blocks
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        .count();
+
+    assert_eq!(
+        tool_use_count, 0,
+        "push_assistant_text must produce zero ToolUse blocks (D2a invariant)"
+    );
+    assert_eq!(
+        pushed_blocks.len(),
+        1,
+        "push_assistant_text must produce exactly one ContentBlock"
+    );
+    assert!(
+        matches!(pushed_blocks[0], ContentBlock::Text { .. }),
+        "push_assistant_text must wrap text in ContentBlock::Text only"
+    );
+}

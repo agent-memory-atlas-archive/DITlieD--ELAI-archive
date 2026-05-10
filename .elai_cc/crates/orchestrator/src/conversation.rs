@@ -535,6 +535,54 @@ where
         self.session
     }
 
+    /// Append a user-role message to the session without invoking the model.
+    ///
+    /// Used by the chat REFLECT substitution path (B-39C) to keep
+    /// conversation history coherent when the model bypass returns the
+    /// pipeline's answer directly. Errors map session failures into
+    /// `RuntimeError` so callers can use the `?` operator uniformly.
+    pub fn push_user_text(
+        &mut self,
+        text: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        self.session
+            .push_user_text(text)
+            .map_err(|error| RuntimeError::new(error.to_string()))
+    }
+
+    /// Append an assistant-role text message to the session without invoking
+    /// the model. The message is wrapped in a single `ContentBlock::Text`.
+    ///
+    /// Used by the chat REFLECT substitution path (B-39C) to record the
+    /// pipeline-selected reply so subsequent turns see prior context.
+    pub fn push_assistant_text(
+        &mut self,
+        text: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        let message = ConversationMessage::assistant(vec![ContentBlock::Text {
+            text: text.into(),
+        }]);
+        self.session
+            .push_message(message)
+            .map_err(|error| RuntimeError::new(error.to_string()))
+    }
+
+    /// Record token usage from a REFLECT pipeline run.
+    ///
+    /// `total_tokens` is the combined output-token cost across pipeline
+    /// stages (TRIAGE + REASONER * N + AUDITOR + SYNTHESIZE). The pipeline
+    /// does not track per-stage input tokens, so `input_tokens` is set to
+    /// 0 by design — the value is the pipeline's reported aggregate, not a
+    /// placeholder.
+    pub fn record_pipeline_usage(&mut self, total_tokens: u32) {
+        self.usage_tracker.record(TokenUsage {
+            input_tokens: 0,
+            output_tokens: total_tokens,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+    }
+
     fn maybe_auto_compact(&mut self) -> Option<AutoCompactionEvent> {
         if self.usage_tracker.cumulative_usage().input_tokens
             < self.auto_compaction_input_tokens_threshold

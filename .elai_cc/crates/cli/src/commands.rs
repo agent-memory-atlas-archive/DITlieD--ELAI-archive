@@ -1071,7 +1071,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "reason",
         aliases: &[],
-        summary: "Toggle the Chat REFLECT reasoning pipeline (B-39)",
+        summary: "Toggle the Chat REFLECT pipeline (text-only best-of-N; bypasses tool execution)",
         argument_hint: Some("<on|off>"),
         resume_supported: false,
     },
@@ -1264,7 +1264,10 @@ pub enum SlashCommand {
     Mode {
         mode: String,
     },
-    /// B-39: Toggle the Chat REFLECT pipeline (4-stage sidecar reasoning layer).
+    /// B-39 / B-39C: Toggle the Chat REFLECT pipeline (4-stage sidecar reasoning
+    /// layer). When `on`, problem-class turns receive a best-of-N text reply from
+    /// the AUDITOR-selected candidate and bypass the tool-execution loop entirely
+    /// (D2a — text-only by design). Use `/reason off` for tool-using chat.
     /// `on_off` is the raw string (`"on"` | `"off"`); validation in the
     /// handler mirrors the Mode pattern — string-typed, no reasoning-crate dep.
     Reason {
