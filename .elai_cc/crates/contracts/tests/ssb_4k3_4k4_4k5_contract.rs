@@ -24,7 +24,12 @@ use tempfile::TempDir;
 // B-23 Phase 4H Group A: bumped 25 -> 28 atomically. The constant was stale
 // at 25 since at least Track B (live SCHEMA_VERSION had moved to 26 then 27
 // without this contract being updated). 28 covers the v28 self-mod bump.
-const EXPECTED_SCHEMA: i64 = 28;
+// B-39 (chat-reflect) bumped to 29 in flight; this constant was not updated
+// because the test was passing under destructive-rebuild semantics
+// (ssb.rs DROPs and recreates the DB on schema mismatch). B-24 Phase 4I
+// Group C1 bumps to 30 atomically with the 6 new media-validator variants;
+// updating the constant here keeps drift from accumulating.
+const EXPECTED_SCHEMA: i64 = 30;
 
 // ---------------------------------------------------------------------------
 // Helpers

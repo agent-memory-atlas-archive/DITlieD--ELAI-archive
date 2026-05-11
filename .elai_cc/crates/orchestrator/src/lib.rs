@@ -92,6 +92,9 @@ pub mod self_mod_types;
 pub mod ssb;
 pub mod staged_eval;
 pub mod ssb_viewer;
+// B-24 Phase 4I (Group C1): media validator skeleton. See
+// `media_validator/mod.rs` for the per-group rollout map.
+pub mod media_validator;
 pub mod system_probe;
 pub mod telescope_caller;
 pub mod feasibility_probe;
@@ -401,6 +404,12 @@ pub use ssb::{
     // B-39 chat reflect pipeline — per-turn REFLECT stage beacons.
     ReflectAuditVerdictPayload, ReflectCandidatePayload, ReflectRefinedPayload,
     ReflectTriagedPayload,
+    // B-24 Phase 4I (Group C1) — media-validator beacons (re-exported so
+    // dashboard-v2 can deserialize SSB rows by payload type without pulling
+    // in the orchestrator's internal `ssb` module path).
+    MediaValidationStartedPayload, MediaTier1CompletePayload,
+    MediaTier2CompletePayload, RenderCompletePayload,
+    VisualFeedbackIterationPayload, MediaHumanReviewRequiredPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -475,6 +484,27 @@ pub use self_mod_orchestrator::{
 /// to encode SSB payloads.
 pub fn encode_ssb_payload(payload: &ssb::SsbPayload) -> Result<Vec<u8>, rmp_serde::encode::Error> {
     rmp_serde::to_vec_named(payload)
+}
+
+/// B-24 Phase 4I Group C8 audit WARN 2 — inner-payload msgpack helper.
+/// B-24 Phase 4I Group C8 — generic msgpack decode helper for callers
+/// (currently dashboard-v2) that consume SSB payload bytes from the
+/// broadcast subscriber but do not want a direct `rmp_serde` dependency.
+/// Returns the deserialization error string so the caller can log/propagate
+/// without coupling to the underlying msgpack lib version.
+///
+/// Decision 92 (B-24 Phase 4I Group C8 audit-fix): the dashboard
+/// subscriber must instantiate `T = SsbPayload` so the externally-tagged
+/// enum decode matches the production wire format produced by
+/// `Ssb::write_payload` (`rmp_serde::to_vec_named(&payload: SsbPayload)`,
+/// see ssb.rs L2988). Decoding into the inner payload struct directly
+/// fails on real production bytes — the previous helper
+/// `encode_inner_payload` was removed because it documented a
+/// test-only encoding that did not exist in production.
+pub fn decode_ssb_payload_bytes<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, String> {
+    rmp_serde::from_slice::<T>(bytes).map_err(|e| e.to_string())
 }
 // B-23 Phase 4H Group A: shared self-modification types used across the
 // new modules (config_archive, msi, osc, regression, evolution_gate) and
@@ -565,6 +595,10 @@ pub use rule_loader::load_seed_rules_from_dir;
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,
 };
+// B-24 Phase 4I (Group C1) — top-level media-validator surface. Only the
+// three spec-mandated entry types are re-exported here; the deeper
+// surface lives under `elai_orchestrator::media_validator::*`.
+pub use media_validator::{MediaValidationRequest, MediaValidationResult, Verdict};
 
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {

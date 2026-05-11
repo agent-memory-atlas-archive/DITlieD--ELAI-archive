@@ -9,7 +9,7 @@
 //! the actual task pipeline via elai.exe; v2 dashboard observes via SSB rows
 //! and sidecar HTTP probes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,136 @@ pub struct RemoteSidecarProgress {
     pub ts_ms: i64,
     /// Error message, only set when status == "error".
     pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// B-24 Phase 4I Group C8: MediaValidationState — read-only snapshots fed by
+// the SSB media_* events. The dashboard never touches orchestrator-internal
+// validator types directly; it sees these stable serde-friendly mirrors.
+// ---------------------------------------------------------------------------
+
+/// One row of the Tier-1 deterministic check report (mirrors
+/// `elai_orchestrator::media_validator::types::CheckResult` but serde-stable
+/// so the dashboard contract does not couple to orchestrator internals).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CheckResultSnapshot {
+    pub name: String,
+    pub pass: bool,
+    pub detail: String,
+    pub latency_ms: u64,
+}
+
+/// Tier-1 aggregated snapshot. The full per-check breakdown is filled in
+/// when MediaTier1CompletePayload is augmented with check details by a
+/// future orchestrator change; for now `checks` is empty and the dashboard
+/// renders pass/fail + latency.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Tier1Snapshot {
+    pub pass: bool,
+    pub check_count: u32,
+    pub latency_ms: u64,
+    #[serde(default)]
+    pub checks: Vec<CheckResultSnapshot>,
+}
+
+/// Tier-2 (VLM) advisory snapshot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Tier2Snapshot {
+    pub advisory_pass: bool,
+    pub model_used: String,
+    pub latency_ms: u64,
+    /// Free-shape JSON returned by the VLM (overall_quality, issues, etc.).
+    /// `null` when the orchestrator emits Tier-2 complete without the
+    /// structured payload extension.
+    #[serde(default)]
+    pub structured_output: serde_json::Value,
+}
+
+/// One rendered frame produced by an RCE render adapter.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CapturedFrameSnapshot {
+    pub adapter_name: String,
+    pub frame_count: u32,
+    pub latency_ms: u64,
+    /// Optional path to a thumbnail file on disk. The orchestrator does
+    /// not yet emit per-frame image paths in the RenderComplete SSB payload
+    /// (only adapter_name + frame_count), so this field stays `None` until
+    /// that extension lands. Kept in the snapshot so the dashboard UI does
+    /// not need a schema change once it is wired.
+    #[serde(default)]
+    pub image_path: Option<String>,
+}
+
+/// One iteration of the visual-feedback loop.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IterationSnapshot {
+    pub iteration: u32,
+    pub issue_count: u32,
+    pub converged: bool,
+    /// Optional verdict for the iteration. The current SSB payload only
+    /// carries `converged`, so this is filled in on the final iteration
+    /// when MediaHumanReviewRequired or a follow-up status row arrives.
+    #[serde(default)]
+    pub verdict: Option<String>,
+    #[serde(default)]
+    pub issues: Vec<String>,
+}
+
+/// Top-level entry surfaced by `get_media_validations`. One per `step_id`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MediaValidationEntry {
+    /// Step id from the originating pipeline step. Used as the HashMap key.
+    pub step_id: String,
+    /// Optional request id (uuid stringified). The MediaValidationStarted
+    /// payload does not currently carry it, so we mirror the step_id when
+    /// no explicit uuid is available.
+    pub request_id: String,
+    pub media_type: String,
+    pub file_path: String,
+    #[serde(default)]
+    pub tier1: Option<Tier1Snapshot>,
+    #[serde(default)]
+    pub tier2: Option<Tier2Snapshot>,
+    #[serde(default)]
+    pub render_frames: Vec<CapturedFrameSnapshot>,
+    #[serde(default)]
+    pub feedback_iterations: Vec<IterationSnapshot>,
+    /// Final verdict: "Pass" | "Fail" | "HumanReview" | "Degraded".
+    /// Mirrors `Verdict` from media_validator::types but serialized as a
+    /// plain string for the TS contract.
+    #[serde(default)]
+    pub final_verdict: Option<String>,
+    /// Last SSB row timestamp (ms since epoch) for this entry. Used by the
+    /// dashboard to display "last updated".
+    pub updated_at: u64,
+}
+
+impl MediaValidationEntry {
+    pub fn new(step_id: String, media_type: String, file_path: String, updated_at: u64) -> Self {
+        Self {
+            step_id: step_id.clone(),
+            request_id: step_id,
+            media_type,
+            file_path,
+            tier1: None,
+            tier2: None,
+            render_frames: Vec::new(),
+            feedback_iterations: Vec::new(),
+            final_verdict: None,
+            updated_at,
+        }
+    }
+}
+
+/// Review decision the operator sends back when an entry resolves to
+/// `Verdict::HumanReview`. Mirrors the spec's HumanReview branch
+/// (phase-4I.txt L455).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ReviewDecision {
+    Pass,
+    Fail,
+    RequestRevalidate,
 }
 
 use elai_core::clock::{ClockProvider, OsClock};
@@ -136,6 +266,12 @@ pub struct AppState {
     /// `SsbViewer::feasibility_summary` and does not need the prober.
     #[allow(dead_code)] // wired for future probe-now Tauri command (4F.7-4F.8 path)
     pub feasibility_prober: Arc<dyn FeasibilityProber>,
+    /// B-24 Phase 4I Group C8: per-step media validation entries fed by the
+    /// SSB subscriber. Keyed by `step_id`. `tokio::sync::RwLock` because the
+    /// SSB subscriber updates it under an async task while Tauri commands
+    /// read it; per CLAUDE.md rule "tokio::sync::Mutex in async (std::sync::
+    /// Mutex only if provably sync-only)".
+    pub media_validation: Arc<tokio::sync::RwLock<HashMap<String, MediaValidationEntry>>>,
 }
 
 impl AppState {
@@ -249,7 +385,13 @@ impl AppState {
             project_root: Arc::new(project_root),
             project_id: Arc::new(Mutex::new("default".to_owned())),
             gate_mode: Arc::new(Mutex::new("interactive".to_owned())),
-            execution_mode: Arc::new(Mutex::new("LOCAL".to_owned())),
+            execution_mode: Arc::new(Mutex::new(
+                std::env::var("ELAI_DEFAULT_EXECUTION_MODE")
+                    .ok()
+                    .map(|s| s.trim().to_ascii_uppercase())
+                    .filter(|s| matches!(s.as_str(), "LOCAL" | "CLOUD" | "HYBRID"))
+                    .unwrap_or_else(|| "LOCAL".to_owned()),
+            )),
             model_routing: Arc::new(Mutex::new(default_routing)),
             cloud_model_id: Arc::new(Mutex::new(initial_cloud_model)),
             local_max_context: Arc::new(Mutex::new(local_max)),
@@ -265,6 +407,7 @@ impl AppState {
             remote_sidecar_progress: Arc::new(Mutex::new(None)),
             dev_servers: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             feasibility_prober,
+            media_validation: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 

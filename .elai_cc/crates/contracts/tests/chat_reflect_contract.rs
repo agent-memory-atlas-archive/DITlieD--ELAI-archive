@@ -143,7 +143,7 @@ fn default_config() -> ChatReflectConfig {
 // ===========================================================================
 
 #[tokio::test]
-async fn test_schema_version_is_29() {
+async fn test_schema_version_is_30() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let db_path = tmp.path().join("ssb_b39.db");
     // Instantiating Ssb runs the migration, setting the schema version.
@@ -154,7 +154,10 @@ async fn test_schema_version_is_29() {
     let v: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("user_version pragma");
-    assert_eq!(v, 29, "B-39 migration must bump schema to user_version=29");
+    // B-24 Phase 4I Group C1 bumped 29 -> 30 atomically with the 6 new media-validator
+    // SsbActionType variants. The B-39 baseline (v29) is preserved in this comment for
+    // archaeology but the live constant is the next floor.
+    assert_eq!(v, 30, "B-24 4I.C1 migration must bump schema to user_version=30");
 }
 
 // ===========================================================================

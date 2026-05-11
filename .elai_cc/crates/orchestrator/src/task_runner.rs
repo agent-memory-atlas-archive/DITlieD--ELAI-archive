@@ -2097,6 +2097,25 @@ struct ResolvedConfig {
     /// real per-tier slot weights instead of the
     /// `[0,0,0]` zeroed fallback.
     model_capability_profile: Arc<crate::context_budget::ModelCapabilityProfile>,
+    /// B-24 Phase 4I Group C9 (decision 94): lazily-instantiated media
+    /// validator. Populated by `drive_task` immediately after
+    /// `spec_from_decomposition` when the resulting `PipelineSpec.media` is
+    /// non-empty; remains `None` for the typical code-only task and for any
+    /// task whose decomposition never declares a media producer.
+    ///
+    /// `tokio::sync::Mutex` because the slot is mutated from inside the
+    /// async `drive_task` body and re-read by the same task for subsequent
+    /// validation calls; spec phase-4I.txt L289-294 mandates that the
+    /// validator is constructed at most once per pipeline.
+    media_validator: AsyncMutex<Option<Arc<crate::media_validator::MediaValidator>>>,
+    /// B-24 Phase 4I Group C9 (decision 94): SSB-backed sink instance paired
+    /// with `media_validator`. Lifecycle is identical — populated when
+    /// `media_validator` is constructed; the dashboard subscriber (C8) reads
+    /// from the same `Ssb` handle, so callers obtain a sink that emits the
+    /// 6 media_* SSB rows by passing this as
+    /// `Option<&dyn pipeline::MediaSsbSink>` to
+    /// `media_validator::validate_with_sink`.
+    media_sink: AsyncMutex<Option<Arc<crate::media_validator::SsbMediaSink>>>,
 }
 
 /// Session 3C.REDO: bundle the two managers so a single `Option` on
@@ -2207,6 +2226,11 @@ impl ResolvedConfig {
                 }
             },
             model_capability_profile,
+            // B-24 Phase 4I Group C9 (decision 94): slots start empty; the
+            // lazy wire-up in `drive_task` (post `spec_from_decomposition`)
+            // populates them only when the spec declares non-empty `media`.
+            media_validator: AsyncMutex::new(None),
+            media_sink: AsyncMutex::new(None),
         }
     }
 }
@@ -3632,6 +3656,50 @@ async fn drive_task(
 
     // --- 2. PipelineSpec from decomposition -----------------------------
     let spec = spec_from_decomposition(&decomposition);
+
+    // --- 2.5 B-24 Phase 4I Group C9: lazy media-validator wire-up.
+    // Spec phase-4I.txt L289-294: validator is constructed at most once per
+    // pipeline AND only when `PipelineSpec.media` is non-empty (lazy gate).
+    // Decision 94: the wire-up reads `resolved.media_validator` first — if
+    // a prior task already populated the slot we re-use the handle so the
+    // ToolCapabilityFlags subprocess probe (~900 ms p95 measured in C4)
+    // is paid at most once per runner lifetime.
+    if !spec.media.is_empty() {
+        let mut slot = resolved.media_validator.lock().await;
+        if slot.is_none() {
+            let capabilities =
+                crate::media_validator::build_capability_flags();
+            let validator = crate::media_validator::wire_media_validator_for_spec(
+                spec.media.len(),
+                capabilities,
+                None, // VLM backend lazy-instantiated on first request
+            );
+            if let Some(v) = validator {
+                *slot = Some(Arc::new(v));
+                // Pair the sink: same Arc<Ssb> + agent_id the rest of the
+                // task_runner uses, so dashboard rows correlate cleanly.
+                let mut sink_slot = resolved.media_sink.lock().await;
+                *sink_slot = Some(Arc::new(
+                    crate::media_validator::SsbMediaSink::new(
+                        Arc::clone(writer),
+                        RUNNER_AGENT_ID,
+                    )
+                    .with_superstep(RUNNER_SUPERSTEP),
+                ));
+                tracing::info!(
+                    seq,
+                    media_steps = spec.media.len(),
+                    "task_runner: media_validator + ssb_sink wired (lazy, first task)"
+                );
+            }
+        } else {
+            tracing::debug!(
+                seq,
+                media_steps = spec.media.len(),
+                "task_runner: media_validator already wired (reusing)"
+            );
+        }
+    }
 
     // --- 3. PipelineBuilder::build_with_emitter ------------------------
     // B-7b: pass SsbDagRepairEmitter so each RepairAction surfaces as a

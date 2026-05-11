@@ -22,6 +22,28 @@ toml.workspace = true
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 deadpool = { version = "0.13", features = ["managed", "rt_tokio_1"] }
+# B-24 Phase 4I (Group C1): media-validator skeleton.
+# bitflags 2.x is the spec-mandated representation for ToolCapabilityFlags
+# (see docs/specs/guide/steps/phase-4I.txt section 4I.1, and the
+# `tools.rs` interface block in workflow/sessions/s-31180/context-package.md).
+bitflags = { version = "2.6", features = ["serde"] }
+# image-compare 0.4 provides the pure-Rust SSIM (Algorithm::MSSIMSimple)
+# used by the Tier-1 image validator. Pure-Rust is mandatory for the
+# 1e-6 reproducibility budget (paper workflow/papers/ort-cpu-ep-interface.md L114-118).
+image-compare = "0.4"
+# Group C3: `image` crate for PNG decode in the Tier-1 SSIM path. Already
+# transitively pulled in by `image-compare` (0.25.x) — pinning the same
+# major to avoid duplicate resolutions. Default features include the PNG
+# decoder which is all we need; we disable the other format decoders to
+# keep the build graph small.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# ort and nvml-wrapper are gated behind `vlm-integration`; Phase 0 ships
+# the MockVlmBackend so CI does not require either crate. ort is pinned to
+# the same `=2.0.0-rc.12` already used by elai-knowledge (paper
+# ort-cpu-ep-interface.md L20-23 — 1.x line yanked). nvml-wrapper version
+# matches elai-providers (0.11) for workspace coherence.
+ort = { version = "=2.0.0-rc.12", optional = true }
+nvml-wrapper = { version = "0.11", optional = true }
 rmp-serde = "1.3"
 rusqlite.workspace = true
 postcard.workspace = true
@@ -34,7 +56,7 @@ tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tracing.workspace = true
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
 walkdir = "2"
 
 [target.'cfg(windows)'.dependencies]
@@ -70,6 +92,20 @@ default = []
 sidecar = ["elai-providers/sidecar"]
 # D4: headless-browser fetch via obscura subprocess. Forwards the feature to elai-web-search.
 obscura = ["elai-web-search/obscura"]
+# B-24 Phase 4I: VLM (Tier 2) integration toggle. Off by default — Phase 0
+# ships MockVlmBackend so CI runs without ONNX runtime or a CUDA-capable GPU.
+# Enabling this feature pulls in `ort` (CPU EP for SSIM/LPIPS/CLAP) and
+# `nvml-wrapper` (hardware guard for VlmProcessConfig::new — Mode A requires
+# >= 24 GB VRAM per workflow/papers/qwen-vl-internvl-interface.md L30-37).
+vlm-integration = ["dep:ort", "dep:nvml-wrapper"]
+# B-24 Phase 4I Group C5 (4I.7 SKELETON): marker feature for the
+# Render-Capture-Evaluate (RCE) surface. Today the feature is a pure
+# marker (no extra deps) so the SKELETON in render_adapters/* compiles
+# unconditionally. Group C6 wires real Playwright + ComfyUI adapters
+# behind this flag; reqwest is already a non-optional workspace dep
+# (Cargo.toml L23) so ComfyUI HTTP client does NOT require a new
+# dependency. See workflow/reasoning/B-24-decisions.md decision 54.
+media-validator-rce = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

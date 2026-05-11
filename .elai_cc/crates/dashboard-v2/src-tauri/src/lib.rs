@@ -7,6 +7,7 @@
 //! it should never grow beyond a builder + invoke_handler list + bootstrap.
 
 mod commands;
+mod media_validation;
 mod remote_sidecar_helpers;
 mod scaffold_applier;
 mod state;
@@ -219,7 +220,32 @@ pub fn run() {
             commands::cancel_remote_sidecar,
             // B-39 — REFLECT STATE
             commands::get_reflect_state,
+            // B-24 Phase 4I Group C8 — MEDIA VALIDATION SURFACE
+            media_validation::get_media_validations,
+            media_validation::get_media_validation_by_step,
+            media_validation::submit_media_validation_for_review,
+            media_validation::subscribe_media_ssb_events,
         ])
+        .setup(|app| {
+            // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the
+            // media_* action types and folds rows into AppState.media_validation.
+            // When the writer is None (fresh install, no SSB DB), the subscriber
+            // is skipped — Tauri commands still return empty entries and the
+            // frontend renders the "no validations yet" empty state.
+            use tauri::Manager;
+            let state: tauri::State<'_, crate::state::AppState> = app.state();
+            if let Some(writer) = state.writer.clone() {
+                let media_state = state.media_validation.clone();
+                let handle = app.handle().clone();
+                media_validation::spawn_subscriber(handle, writer, media_state);
+            } else {
+                tracing::warn!(
+                    "dashboard-v2: media SSB subscriber not spawned (no writer); \
+                     media validations will be empty until a session writes the db"
+                );
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

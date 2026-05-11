@@ -1092,6 +1092,7 @@ export type IntentType =
   | 'STEER'
   | 'ABORT'
   | 'CONFIG'
+  | 'MEDIA_VALIDATE'
   | 'AMBIGUOUS';
 
 // ------------------------------------------------------------------
@@ -1289,4 +1290,76 @@ export interface ReflectState {
   last_triage: ReflectTriagedPayload | null;
   last_verdict: ReflectAuditVerdictPayload | null;
   last_summary: ReflectRefinedPayload | null;
+}
+
+// ------------------------------------------------------------------
+// B-24 Phase 4I Group C8 — Media validator dashboard contract.
+// Mirrors src-tauri/src/state.rs MediaValidationEntry + friends.
+// Snake_case keys match Tauri's auto-derived JSON.
+// ------------------------------------------------------------------
+export type Verdict = 'Pass' | 'Fail' | 'HumanReview' | 'Degraded';
+export type ReviewDecision = 'Pass' | 'Fail' | 'RequestRevalidate';
+
+export interface CheckResultSnapshot {
+  name: string;
+  pass: boolean;
+  detail: string;
+  latency_ms: number;
+}
+
+export interface Tier1Snapshot {
+  pass: boolean;
+  check_count: number;
+  latency_ms: number;
+  checks: CheckResultSnapshot[];
+}
+
+export interface Tier2Snapshot {
+  advisory_pass: boolean;
+  model_used: string;
+  latency_ms: number;
+  // Free-shape VLM JSON output (overall_quality, issues, confidence, reasoning).
+  // `null` when the orchestrator emits Tier-2 complete without the structured
+  // payload extension.
+  structured_output: unknown;
+}
+
+export interface CapturedFrameSnapshot {
+  adapter_name: string;
+  frame_count: number;
+  latency_ms: number;
+  // file:// or absolute path to thumbnail. The Tauri webview may not load
+  // raw file:// — the panel falls back to filename text rendering when
+  // image_path is null or unreachable.
+  image_path: string | null;
+}
+
+export interface IterationSnapshot {
+  iteration: number;
+  issue_count: number;
+  converged: boolean;
+  verdict: string | null;
+  issues: string[];
+}
+
+export interface MediaValidationEntry {
+  step_id: string;
+  request_id: string;
+  media_type: string;
+  file_path: string;
+  tier1: Tier1Snapshot | null;
+  tier2: Tier2Snapshot | null;
+  render_frames: CapturedFrameSnapshot[];
+  feedback_iterations: IterationSnapshot[];
+  final_verdict: string | null;
+  updated_at: number;
+}
+
+// Payload of the Tauri `media_ssb` event re-broadcast by the SSB
+// subscriber. Frontend listens with @tauri-apps/api/event::listen.
+export interface MediaSsbEvent {
+  action: string;
+  step_id: string;
+  seq: number;
+  ts_ms: number;
 }

@@ -11,10 +11,30 @@ import {
   submit_task,
   run_explore_query,
   continue_task,
+  get_media_validations,
+  get_media_validation_by_step,
+  submit_media_validation_for_review,
   type ResearchResult,
 } from '../api/stub';
 import { classifyIntent } from '../utils/intent';
 import { parseSlashCommand, KNOWN_SLASH_COMMANDS } from '../utils/slash-parse';
+import { workspace } from './workspace.svelte';
+import { mediaValidation } from './media_validation.svelte';
+
+// B-24 Phase 4I Group C8 — re-export the 4 media commands so consumers
+// that import from 'state/commands' have a single entry point. The
+// reactive store lives in `media_validation.svelte.ts`; these wrappers
+// expose the imperative commands for ad-hoc calls (e.g. from intent
+// dispatch or from a future slash command).
+export const mediaCommands = {
+  list: get_media_validations,
+  byStep: get_media_validation_by_step,
+  submitReview: submit_media_validation_for_review,
+  // Reactive store accessor — components can `import { mediaValidation }`
+  // directly from 'state/media_validation.svelte' but re-exporting here
+  // keeps the dispatch surface symmetric.
+  store: mediaValidation,
+};
 
 function makeId() { return `cc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`; }
 
@@ -23,6 +43,11 @@ const SLASH_COMMANDS = KNOWN_SLASH_COMMANDS;
 // Slash commands whose backend dispatch is currently a TODO. These still
 // route through the slash path so the user sees a clear error card instead
 // of silently streaming the literal text into chat.
+//
+// /ask is in this set: in CLI it's an alias for /research, but the dashboard
+// dispatcher wires /research (which calls run_research) and not /ask. The
+// auto-detect Oracle gate therefore routes accept-chip through /research,
+// not /ask, to hit the working backend.
 const SLASH_NO_BACKEND = new Set<string>(['/fix', '/config', '/status', '/ask']);
 
 function createCommands() {
@@ -36,6 +61,16 @@ function createCommands() {
   let activeStreamId = $state<string | null>(null);
   // Cleanup fn returned by streamChat — call to unlisten + abort.
   let _streamCleanup: (() => void) | null = null;
+  // Auto-detect Oracle gate. When the classifier returns RESEARCH on a
+  // non-slash submit, we hold the text in this slot and surface a confirm
+  // chip in CommandWindow instead of firing the request. Three resolution
+  // paths: acceptResearchChip / rejectResearchChip / editResearchChip.
+  // Null = no pending chip.
+  let pendingResearchChip = $state<{ text: string } | null>(null);
+  // Signal CommandWindow to refocus the textarea after Edit. Increments on
+  // each editResearchChip call; the window's $effect on this counter calls
+  // textareaEl.focus(). Avoids passing DOM refs through the store.
+  let _refocusInputTick = $state(0);
 
   const isStreaming = $derived(activeStreamId !== null);
 
@@ -198,17 +233,104 @@ function createCommands() {
     });
   }
 
+  async function _runStreamingPath(text: string, intent: IntentType) {
+    logStub('commands.submit', { text, intent });
+
+    const requestId = makeId();
+    activeStreamId = requestId;
+
+    appendCard('response', {
+      kind: 'response',
+      text: '',
+      streaming: true,
+      stream_id: requestId,
+    });
+
+    try {
+      _streamCleanup = await streamChat(
+        text,
+        requestId,
+        (chunk) => _appendToken(requestId, chunk),
+        (_stopReason) => _finalizeStream(requestId),
+        (errMsg, offline) => {
+          _finalizeStream(requestId);
+          cards = cards.filter(
+            (c) => !(c.kind === 'response' && (c.payload as ResponseCardPayload).stream_id === requestId),
+          );
+          appendCard('error', {
+            kind: 'error',
+            message: errMsg || (offline ? 'upstream offline' : 'unknown error'),
+            source: 'sidecar',
+            step_id: undefined,
+            recoverable: true,
+          });
+        },
+      );
+    } catch (err) {
+      _finalizeStream(requestId);
+      appendCard('status', {
+        kind: 'status',
+        message: `Stream error: ${String(err)}`,
+        fsm_state: undefined,
+        step_id: undefined,
+      });
+    }
+  }
+
   async function submit(text: string) {
     if (!text.trim()) return;
 
     const intent = classifyIntent(text);
+    const slash = parseSlashCommand(text);
 
-    // Append user card immediately
+    // Auto-detect Oracle gate. Fires only when ALL hold:
+    //   - non-slash input (slash bypass is the explicit power-user path)
+    //   - classifier inferred RESEARCH from the regex layer
+    //   - no stream is in flight (popping a chip mid-conversation = jarring)
+    //   - no chip already pending (one-at-a-time)
+    // When fired: hold the text on pendingResearchChip and DEFER user-card
+    // append + dispatch until the chip resolves. Editing the chip rolls back
+    // cleanly because nothing was added to the stream yet.
+    if (
+      slash === null
+      && intent === 'RESEARCH'
+      && !isStreaming
+      && pendingResearchChip === null
+    ) {
+      pendingResearchChip = { text };
+      inputValue = '';
+      slashOpen = false;
+      return;
+    }
+
+    // Standard path: user-card first, then slash dispatch or local stream.
     appendCard('user', { kind: 'user', text, intent });
     inputValue = '';
     slashOpen = false;
 
-    const slash = parseSlashCommand(text);
+    // B-24 Phase 4I Group C8: route MEDIA_VALIDATE intent to the
+    // MediaValidationPanel inside MonitorWindow. We refresh the panel's
+    // store so the latest entries are visible, then open the monitor tab.
+    if (intent === 'MEDIA_VALIDATE') {
+      logStub('commands.submit.media_validate', { text });
+      try {
+        await mediaValidation.refresh();
+      } catch (e) {
+        // Non-fatal — the panel renders an error state on its own.
+        logStub('commands.submit.media_validate.refresh_error', { error: String(e) });
+      }
+      workspace.openTab('primary', 'monitor');
+      appendCard('status', {
+        kind: 'status',
+        message:
+          'opened the media validation panel in Monitor. ' +
+          'Pending HumanReview rows are actionable; Tier1/Tier2 results stream live from SSB.',
+        fsm_state: undefined,
+        step_id: undefined,
+      });
+      return;
+    }
+
     if (slash !== null) {
       logStub('commands.submit.slash', { command: slash.command, arg: slash.arg, intent });
       if (slash.unknown === true) {
@@ -225,51 +347,32 @@ function createCommands() {
       return;
     }
 
-    logStub('commands.submit', { text, intent });
+    await _runStreamingPath(text, intent);
+  }
 
-    const requestId = makeId();
-    activeStreamId = requestId;
+  async function acceptResearchChip() {
+    const chip = pendingResearchChip;
+    if (!chip) return;
+    pendingResearchChip = null;
+    appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
+    logStub('commands.submit.slash', { command: '/research', arg: chip.text, intent: 'RESEARCH' });
+    await dispatchSlash('/research', chip.text, 'RESEARCH');
+  }
 
-    // Add a placeholder response card that will accumulate tokens.
-    appendCard('response', {
-      kind: 'response',
-      text: '',
-      streaming: true,
-      stream_id: requestId,
-    });
+  async function rejectResearchChip() {
+    const chip = pendingResearchChip;
+    if (!chip) return;
+    pendingResearchChip = null;
+    appendCard('user', { kind: 'user', text: chip.text, intent: 'RESEARCH' });
+    await _runStreamingPath(chip.text, 'RESEARCH');
+  }
 
-    try {
-      _streamCleanup = await streamChat(
-        text,
-        requestId,
-        (chunk) => _appendToken(requestId, chunk),
-        (_stopReason) => _finalizeStream(requestId),
-        (errMsg, offline) => {
-          _finalizeStream(requestId);
-          // Replace the empty response card with an error message.
-          cards = cards.filter(
-            (c) => !(c.kind === 'response' && (c.payload as ResponseCardPayload).stream_id === requestId),
-          );
-          appendCard('error', {
-            kind: 'error',
-            message: offline
-              ? 'Sidecar offline — start with `elai.bat --remote` to use the friend\'s GPU box'
-              : errMsg,
-            source: 'sidecar',
-            step_id: undefined,
-            recoverable: true,
-          });
-        },
-      );
-    } catch (err) {
-      _finalizeStream(requestId);
-      appendCard('status', {
-        kind: 'status',
-        message: `Stream error: ${String(err)}`,
-        fsm_state: undefined,
-        step_id: undefined,
-      });
-    }
+  function editResearchChip() {
+    const chip = pendingResearchChip;
+    if (!chip) return;
+    inputValue = chip.text;
+    pendingResearchChip = null;
+    _refocusInputTick = _refocusInputTick + 1;
   }
 
   function cancelStream() {
@@ -309,6 +412,8 @@ function createCommands() {
     get slashCommands() { return SLASH_COMMANDS; },
     get isStreaming() { return isStreaming; },
     get activeStreamId() { return activeStreamId; },
+    get pendingResearchChip() { return pendingResearchChip; },
+    get refocusInputTick() { return _refocusInputTick; },
 
     submit,
     appendCard,
@@ -317,6 +422,9 @@ function createCommands() {
     openSlash,
     closeSlash,
     setFocused,
+    acceptResearchChip,
+    rejectResearchChip,
+    editResearchChip,
   };
 }
 

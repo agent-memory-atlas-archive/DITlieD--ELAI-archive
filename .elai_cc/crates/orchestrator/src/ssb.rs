@@ -43,7 +43,10 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 //  regression_detected, evolution_withheld). The 5 batch-3C self-mod variants
 // (proposal_*, msi_update, config_archived) already shipped in v26/v27.
 // B-39 chat reflect pipeline: 4 new SsbActionType variants for per-turn REFLECT events.
-const SCHEMA_VERSION: i64 = 29;
+// B-24 Phase 4I Group C1: bumped 29 -> 30 for 6 new media-validator SSB action types
+// (media_validation_started, media_tier1_complete, media_tier2_complete,
+//  render_complete, visual_feedback_iteration, media_human_review_required).
+const SCHEMA_VERSION: i64 = 30;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -121,7 +124,14 @@ CREATE TABLE IF NOT EXISTS ssb (
         'data_table_grew', 'l3_proposal', 'convergence_stagnant',
         'config_oscillation', 'regression_detected', 'evolution_withheld',
         -- B-39 chat reflect pipeline: per-turn REFLECT stage beacons.
-        'reflect_triaged', 'reflect_candidate', 'reflect_audit_verdict', 'reflect_refined'
+        'reflect_triaged', 'reflect_candidate', 'reflect_audit_verdict', 'reflect_refined',
+        -- B-24 Phase 4I Group C1: media validator subsystem (Tier 1 / Tier 2 /
+        -- Render-Capture-Evaluate / Visual-Feedback / HumanReview branch).
+        -- Payloads ship in Group C4 alongside the dashboard wiring; the
+        -- enum + SQL CHECK + as_sql_str arms are added now so the SCHEMA_VERSION
+        -- bump (29 -> 30) is atomic.
+        'media_validation_started', 'media_tier1_complete', 'media_tier2_complete',
+        'render_complete', 'visual_feedback_iteration', 'media_human_review_required'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -456,6 +466,28 @@ pub enum SsbActionType {
     ReflectAuditVerdict,
     /// B-39: SYNTHESIZE final synthesis. Carries a [`ReflectRefinedPayload`].
     ReflectRefined,
+    // B-24 Phase 4I Group C1: media validator beacons. Payloads land in
+    // Group C4 with the dashboard surface; the enum surface is added now
+    // so the schema bump is atomic and downstream readers (SsbViewer)
+    // can already match on the variant.
+    /// B-24: media validation started for a media artifact. Carries
+    /// [`MediaValidationStartedPayload`] (Group C4).
+    MediaValidationStarted,
+    /// B-24: Tier-1 deterministic checks complete. Carries
+    /// [`MediaTier1CompletePayload`] (Group C4).
+    MediaTier1Complete,
+    /// B-24: Tier-2 (VLM) advisory complete. Carries
+    /// [`MediaTier2CompletePayload`] (Group C4).
+    MediaTier2Complete,
+    /// B-24: render adapter finished producing a captured frame set.
+    /// Carries [`RenderCompletePayload`] (Group C4).
+    RenderComplete,
+    /// B-24: one iteration of the visual-feedback loop completed.
+    /// Carries [`VisualFeedbackIterationPayload`] (Group C4).
+    VisualFeedbackIteration,
+    /// B-24: validator escalates to a human-review verdict. Carries
+    /// [`MediaHumanReviewRequiredPayload`] (Group C4).
+    MediaHumanReviewRequired,
 }
 
 impl SsbActionType {
@@ -566,6 +598,13 @@ impl SsbActionType {
             Self::ReflectCandidate => "reflect_candidate",
             Self::ReflectAuditVerdict => "reflect_audit_verdict",
             Self::ReflectRefined => "reflect_refined",
+            // B-24 Phase 4I Group C1: media validator beacons.
+            Self::MediaValidationStarted => "media_validation_started",
+            Self::MediaTier1Complete => "media_tier1_complete",
+            Self::MediaTier2Complete => "media_tier2_complete",
+            Self::RenderComplete => "render_complete",
+            Self::VisualFeedbackIteration => "visual_feedback_iteration",
+            Self::MediaHumanReviewRequired => "media_human_review_required",
         }
     }
 }
@@ -685,6 +724,13 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "reflect_candidate" => Ok(SsbActionType::ReflectCandidate),
         "reflect_audit_verdict" => Ok(SsbActionType::ReflectAuditVerdict),
         "reflect_refined" => Ok(SsbActionType::ReflectRefined),
+        // B-24 Phase 4I Group C1: media validator beacons.
+        "media_validation_started" => Ok(SsbActionType::MediaValidationStarted),
+        "media_tier1_complete" => Ok(SsbActionType::MediaTier1Complete),
+        "media_tier2_complete" => Ok(SsbActionType::MediaTier2Complete),
+        "render_complete" => Ok(SsbActionType::RenderComplete),
+        "visual_feedback_iteration" => Ok(SsbActionType::VisualFeedbackIteration),
+        "media_human_review_required" => Ok(SsbActionType::MediaHumanReviewRequired),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1404,6 +1450,80 @@ pub struct ReflectRefinedPayload {
     pub turn_id: String,
     pub total_tokens_used: u32,
     pub synthesis: String,
+}
+
+// ---------------------------------------------------------------------------
+// B-24 Phase 4I Group C1: media validator payloads.
+//
+// Minimal structs landed in C1 so the SsbActionType <-> SsbPayload mapping
+// is total. Group C4 expands each payload with the full per-step metadata
+// (Tier1/Tier2 results, captured-frame paths, iteration history, ...).
+// Keeping the surface narrow now means the schema bump is reversible if a
+// downstream change requires renaming a field — Group C4 owns the field
+// stability contract; C1 only owns the action-type names.
+// ---------------------------------------------------------------------------
+
+/// B-24: media validation started for a single media artifact. Emitted on
+/// `MediaValidator::validate` entry. `step_id` ties the row to the
+/// pipeline step that produced the artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MediaValidationStartedPayload {
+    pub step_id: String,
+    pub media_type: String,
+    pub file_path: String,
+}
+
+/// B-24: Tier-1 deterministic checks complete. The full per-check
+/// breakdown is added in Group C4; for now we ship `pass`+`latency_ms`
+/// so the dashboard can aggregate without a payload re-serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MediaTier1CompletePayload {
+    pub step_id: String,
+    pub pass: bool,
+    pub check_count: u32,
+    pub latency_ms: u64,
+}
+
+/// B-24: Tier-2 (VLM) advisory complete.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MediaTier2CompletePayload {
+    pub step_id: String,
+    pub advisory_pass: bool,
+    pub model_used: String,
+    pub latency_ms: u64,
+}
+
+/// B-24: render adapter (web / blender / animation / ui / comfyui)
+/// finished producing a captured-frame set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RenderCompletePayload {
+    pub step_id: String,
+    pub adapter_name: String,
+    pub frame_count: u32,
+    pub latency_ms: u64,
+}
+
+/// B-24: one iteration of the visual-feedback loop completed.
+/// `converged` is true when the issues set stabilized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VisualFeedbackIterationPayload {
+    pub step_id: String,
+    pub iteration: u32,
+    pub issue_count: u32,
+    pub converged: bool,
+}
+
+/// B-24: HumanReview branch — validator could not auto-decide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MediaHumanReviewRequiredPayload {
+    pub step_id: String,
+    pub reason: String,
 }
 
 /// WEB.3: emitted when a dev-server check passes and a preview is available.
@@ -2376,6 +2496,13 @@ pub enum SsbPayload {
     ReflectCandidate(ReflectCandidatePayload),
     ReflectAuditVerdict(ReflectAuditVerdictPayload),
     ReflectRefined(ReflectRefinedPayload),
+    // B-24 Phase 4I Group C1: media validator beacons.
+    MediaValidationStarted(MediaValidationStartedPayload),
+    MediaTier1Complete(MediaTier1CompletePayload),
+    MediaTier2Complete(MediaTier2CompletePayload),
+    RenderComplete(RenderCompletePayload),
+    VisualFeedbackIteration(VisualFeedbackIterationPayload),
+    MediaHumanReviewRequired(MediaHumanReviewRequiredPayload),
 }
 
 impl SsbPayload {
@@ -2487,6 +2614,13 @@ impl SsbPayload {
             Self::ReflectCandidate(_) => SsbActionType::ReflectCandidate,
             Self::ReflectAuditVerdict(_) => SsbActionType::ReflectAuditVerdict,
             Self::ReflectRefined(_) => SsbActionType::ReflectRefined,
+            // B-24 Phase 4I Group C1: media validator beacons.
+            Self::MediaValidationStarted(_) => SsbActionType::MediaValidationStarted,
+            Self::MediaTier1Complete(_) => SsbActionType::MediaTier1Complete,
+            Self::MediaTier2Complete(_) => SsbActionType::MediaTier2Complete,
+            Self::RenderComplete(_) => SsbActionType::RenderComplete,
+            Self::VisualFeedbackIteration(_) => SsbActionType::VisualFeedbackIteration,
+            Self::MediaHumanReviewRequired(_) => SsbActionType::MediaHumanReviewRequired,
         }
     }
 }
@@ -4133,6 +4267,50 @@ mod tests {
                 total_tokens_used: 0,
                 synthesis: "test-synthesis".into(),
             }),
+            // B-24 Phase 4I Group C1: media validator beacons (test fixtures).
+            SsbActionType::MediaValidationStarted => {
+                SsbPayload::MediaValidationStarted(MediaValidationStartedPayload {
+                    step_id: "step-1".into(),
+                    media_type: "image".into(),
+                    file_path: "/tmp/x.png".into(),
+                })
+            }
+            SsbActionType::MediaTier1Complete => {
+                SsbPayload::MediaTier1Complete(MediaTier1CompletePayload {
+                    step_id: "step-1".into(),
+                    pass: true,
+                    check_count: 0,
+                    latency_ms: 0,
+                })
+            }
+            SsbActionType::MediaTier2Complete => {
+                SsbPayload::MediaTier2Complete(MediaTier2CompletePayload {
+                    step_id: "step-1".into(),
+                    advisory_pass: true,
+                    model_used: "mock-vlm".into(),
+                    latency_ms: 0,
+                })
+            }
+            SsbActionType::RenderComplete => SsbPayload::RenderComplete(RenderCompletePayload {
+                step_id: "step-1".into(),
+                adapter_name: "web".into(),
+                frame_count: 1,
+                latency_ms: 0,
+            }),
+            SsbActionType::VisualFeedbackIteration => {
+                SsbPayload::VisualFeedbackIteration(VisualFeedbackIterationPayload {
+                    step_id: "step-1".into(),
+                    iteration: 1,
+                    issue_count: 0,
+                    converged: true,
+                })
+            }
+            SsbActionType::MediaHumanReviewRequired => {
+                SsbPayload::MediaHumanReviewRequired(MediaHumanReviewRequiredPayload {
+                    step_id: "step-1".into(),
+                    reason: "test-reason".into(),
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -5190,6 +5368,40 @@ mod tests {
                 total_tokens_used: 0,
                 synthesis: "test-synthesis".into(),
             }),
+            // B-24 Phase 4I Group C1: media validator beacons.
+            SsbPayload::MediaValidationStarted(MediaValidationStartedPayload {
+                step_id: "step-1".into(),
+                media_type: "image".into(),
+                file_path: "/tmp/x.png".into(),
+            }),
+            SsbPayload::MediaTier1Complete(MediaTier1CompletePayload {
+                step_id: "step-1".into(),
+                pass: true,
+                check_count: 0,
+                latency_ms: 0,
+            }),
+            SsbPayload::MediaTier2Complete(MediaTier2CompletePayload {
+                step_id: "step-1".into(),
+                advisory_pass: true,
+                model_used: "mock-vlm".into(),
+                latency_ms: 0,
+            }),
+            SsbPayload::RenderComplete(RenderCompletePayload {
+                step_id: "step-1".into(),
+                adapter_name: "web".into(),
+                frame_count: 1,
+                latency_ms: 0,
+            }),
+            SsbPayload::VisualFeedbackIteration(VisualFeedbackIterationPayload {
+                step_id: "step-1".into(),
+                iteration: 1,
+                issue_count: 0,
+                converged: true,
+            }),
+            SsbPayload::MediaHumanReviewRequired(MediaHumanReviewRequiredPayload {
+                step_id: "step-1".into(),
+                reason: "test-reason".into(),
+            }),
         ]
     }
 
@@ -5201,8 +5413,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            41,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined)",
+            47,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

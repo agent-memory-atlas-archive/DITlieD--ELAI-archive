@@ -83,6 +83,9 @@ import type {
   SelfModProposalRow,
   SelfModMsiSnapshot,
   ReflectState,
+  MediaValidationEntry,
+  MediaSsbEvent,
+  ReviewDecision,
 } from './types';
 
 import {
@@ -1832,5 +1835,178 @@ export async function bootRemoteSidecar(
   });
 
   await start_remote_sidecar();
+  return unlisten;
+}
+
+// ============================================================
+// B-24 Phase 4I Group C8 — Media validation surface.
+// 4 Tauri commands + 1 event listener helper. Mock fallback
+// returns deterministic in-memory data so the panel renders
+// in browser-only mode without a Tauri shell.
+// ============================================================
+
+// In-memory mock store for browser-only dev mode. Tauri runtime never
+// touches this — `tryInvoke` returns the live entries straight from
+// AppState.media_validation.
+let _mockMediaEntries: MediaValidationEntry[] = [
+  {
+    step_id: 'mock-step-1',
+    request_id: 'mock-step-1',
+    media_type: 'ui_screenshot',
+    file_path: '/tmp/mock/login.png',
+    tier1: {
+      pass: true,
+      check_count: 4,
+      latency_ms: 18,
+      checks: [
+        { name: 'resolution', pass: true, detail: '1440x900', latency_ms: 2 },
+        { name: 'ssim', pass: true, detail: 'score 0.97', latency_ms: 8 },
+        { name: 'visible_pixels', pass: true, detail: '99.4%', latency_ms: 4 },
+        { name: 'color_depth', pass: true, detail: '24-bit', latency_ms: 4 },
+      ],
+    },
+    tier2: {
+      advisory_pass: true,
+      model_used: 'mock-vlm',
+      latency_ms: 920,
+      structured_output: {
+        overall_quality: 0.91,
+        issues: [],
+        confidence: 0.88,
+        reasoning: 'clean layout, no obvious overflow',
+      },
+    },
+    render_frames: [
+      { adapter_name: 'ui_screenshot', frame_count: 1, latency_ms: 14, image_path: null },
+    ],
+    feedback_iterations: [
+      { iteration: 0, issue_count: 0, converged: true, verdict: 'Pass', issues: [] },
+    ],
+    final_verdict: 'Pass',
+    updated_at: Date.now() - 12_000,
+  },
+  {
+    step_id: 'mock-step-2',
+    request_id: 'mock-step-2',
+    media_type: 'image',
+    file_path: '/tmp/mock/hero.png',
+    tier1: {
+      pass: true,
+      check_count: 3,
+      latency_ms: 22,
+      checks: [],
+    },
+    tier2: {
+      advisory_pass: false,
+      model_used: 'mock-vlm',
+      latency_ms: 1340,
+      structured_output: {
+        overall_quality: 0.62,
+        issues: [
+          { severity: 'major', category: 'layout', description: 'CTA button overflows container' },
+        ],
+        confidence: 0.74,
+        reasoning: 'button width exceeds parent at desktop viewport',
+      },
+    },
+    render_frames: [
+      { adapter_name: 'web', frame_count: 2, latency_ms: 480, image_path: null },
+    ],
+    feedback_iterations: [
+      { iteration: 0, issue_count: 1, converged: false, verdict: null, issues: ['button_overflow'] },
+      { iteration: 1, issue_count: 1, converged: true, verdict: 'HumanReview', issues: ['button_overflow'] },
+    ],
+    final_verdict: 'HumanReview',
+    updated_at: Date.now() - 4_000,
+  },
+];
+
+export async function get_media_validations(): Promise<MediaValidationEntry[]> {
+  logStub('get_media_validations');
+  const live = await tryInvoke<MediaValidationEntry[]>('get_media_validations');
+  if (live) return live;
+  await delay();
+  return _mockMediaEntries.slice().sort((a, b) => b.updated_at - a.updated_at);
+}
+
+export async function get_media_validation_by_step(
+  stepId: string,
+): Promise<MediaValidationEntry | null> {
+  logStub('get_media_validation_by_step', { stepId });
+  const live = await tryInvoke<MediaValidationEntry | null>('get_media_validation_by_step', {
+    stepId,
+  });
+  if (live !== undefined) return live;
+  await delay();
+  return _mockMediaEntries.find((e) => e.step_id === stepId) ?? null;
+}
+
+export async function submit_media_validation_for_review(
+  stepId: string,
+  decision: ReviewDecision,
+): Promise<{ ok: boolean; error?: string }> {
+  logStub('submit_media_validation_for_review', { stepId, decision });
+  if (TAURI_AVAILABLE) {
+    const inv = await ensureInvoke();
+    if (inv) {
+      try {
+        await inv<void>('submit_media_validation_for_review', { stepId, decision });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    }
+  }
+  await delay();
+  // Mock: patch the verdict locally so the panel reflects the decision.
+  const label = decision === 'RequestRevalidate' ? 'Degraded' : decision;
+  _mockMediaEntries = _mockMediaEntries.map((e) =>
+    e.step_id === stepId ? { ...e, final_verdict: label, updated_at: Date.now() } : e,
+  );
+  return { ok: true };
+}
+
+export async function subscribe_media_ssb_events(
+  onEvent: (e: MediaSsbEvent) => void,
+): Promise<() => void> {
+  logStub('subscribe_media_ssb_events');
+  if (!TAURI_AVAILABLE) {
+    // Browser-only mode: synthesize a mock event so the panel can demonstrate
+    // its reactive update flow during dev. One event ~5s apart on the second
+    // mock entry, repeats.
+    let cancelled = false;
+    let i = 0;
+    const tick = () => {
+      if (cancelled) return;
+      onEvent({
+        action: i % 2 === 0 ? 'media_tier1_complete' : 'visual_feedback_iteration',
+        step_id: 'mock-step-2',
+        seq: 1000 + i,
+        ts_ms: Date.now(),
+      });
+      i += 1;
+      setTimeout(tick, 5_000);
+    };
+    setTimeout(tick, 1_500);
+    return () => {
+      cancelled = true;
+    };
+  }
+  // Tauri path: ping the backend to confirm subscriber is alive, then
+  // listen on the broadcast event name. The backend already spawned the
+  // SSB subscriber at startup; subscribe_media_ssb_events is a confirm
+  // hook, not the actual subscription.
+  const inv = await ensureInvoke();
+  if (inv) {
+    try {
+      await inv<void>('subscribe_media_ssb_events');
+    } catch (e) {
+      console.warn('[stub] subscribe_media_ssb_events backend confirm failed', e);
+    }
+  }
+  const { listen } = await import('@tauri-apps/api/event');
+  const unlisten = await listen<MediaSsbEvent>('media_ssb', (e) => {
+    onEvent(e.payload);
+  });
   return unlisten;
 }

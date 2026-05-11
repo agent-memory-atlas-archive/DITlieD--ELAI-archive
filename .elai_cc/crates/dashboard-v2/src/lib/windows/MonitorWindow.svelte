@@ -15,6 +15,8 @@
   // B-23 Phase 4H Group F (4H.8) — self-mod surfaces wired into MonitorWindow.
   import ProposalsPanel from '$lib/components/ProposalsPanel.svelte';
   import MsiPanel from '$lib/components/MsiPanel.svelte';
+  // B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
+  import MediaValidationPanel from '$lib/components/MediaValidationPanel.svelte';
 
   // ------------------------------------------------------------------
   // Phase dot model — derived from FSM history when live, static stub otherwise
@@ -215,6 +217,15 @@
   </section>
   <section class="monitor-section self-mod-proposals" aria-label="Layer 1A proposals">
     <ProposalsPanel />
+  </section>
+
+  <!-- B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
+       Surfaces per-step Tier1 results, Tier2 advisory, render preview
+       thumbnails, iteration count, and HumanReview alerts. Mount lives
+       above the auto-advance bar so HumanReview rows are immediately
+       visible when the gate stops the run. -->
+  <section class="monitor-section media-validation" aria-label="Media validation">
+    <MediaValidationPanel />
   </section>
 
   <!-- Section 6: AutoAdvanceStats — always visible (historical totals shown even when idle).

@@ -135,6 +135,16 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::ReflectCandidate,
     SsbActionType::ReflectAuditVerdict,
     SsbActionType::ReflectRefined,
+    // B-24 Phase 4I Group C1 — media validator beacons. Frontend mapping
+    // lands in Group C4 alongside the dashboard wiring; coverage floor
+    // bumped to 88 here so an enum addition without a contract update
+    // surfaces at build time.
+    SsbActionType::MediaValidationStarted,
+    SsbActionType::MediaTier1Complete,
+    SsbActionType::MediaTier2Complete,
+    SsbActionType::RenderComplete,
+    SsbActionType::VisualFeedbackIteration,
+    SsbActionType::MediaHumanReviewRequired,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -392,8 +402,12 @@ fn contract_variant_count_matches_enum_doc() {
     // regression_detected, evolution_withheld) bumping floor to 78.
     // B-39: +4 (reflect_triaged, reflect_candidate, reflect_audit_verdict,
     // reflect_refined) bumping floor to 82.
+    // B-24 Phase 4I Group C1: +6 (media_validation_started,
+    // media_tier1_complete, media_tier2_complete, render_complete,
+    // visual_feedback_iteration, media_human_review_required) bumping
+    // floor to 88.
     assert!(
-        ALL_VARIANTS.len() >= 82,
-        "ALL_VARIANTS shrank below 82 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 88,
+        "ALL_VARIANTS shrank below 88 — review SsbActionType enum"
     );
 }

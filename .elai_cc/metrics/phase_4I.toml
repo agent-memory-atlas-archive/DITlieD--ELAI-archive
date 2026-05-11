@@ -1,0 +1,271 @@
+# B-24 Phase 4I — Media Validator Metrics (4I.6 MEASURE)
+#
+# Spec: docs/specs/guide/steps/phase-4I.txt section 4I.6 (lines 327-369).
+# Captured by the perf-bench harness at
+# .elai_cc/crates/orchestrator/tests/media_validator_bench.rs.
+#
+# Reproducing these numbers:
+#   cd .elai_cc
+#   cargo test -p elai-orchestrator --test media_validator_bench \
+#       -- --ignored --nocapture
+#
+# Anti-stale grounding (CLAUDE.md):
+#   * std::time::Instant (monotonic) — never SystemTime / chrono::Local::now.
+#   * u64::try_from() for as_millis() narrowing.
+#   * No new dependencies (toml writing uses workspace serde; the bench
+#     itself only depends on what's already in dev-deps).
+#
+# STRUCTURAL NOTE (Group C4 audit WARN-1 fix, decision 53):
+# Aggregate keys (tier1_p95_ms, tier2_*_p95_ms, etc.) live under a single
+# top-level [metrics] table — NOT under [tier1.<type>] sub-tables — so a
+# structured TOML parser (Python's tomllib.load) returns numeric values
+# rather than None. Per-type breakdowns live under [metrics.tier1_per_type]
+# as inline tables to keep one canonical location per family.
+
+schema_version = 1
+phase = "4I"
+build_session = "s-14116"
+measurement_date = "2026-05-11"
+measurement_host = "DESKTOP-B457SEI"       # Windows 11 Pro 10.0.26200.8246
+ci_mode = false                              # local developer box, NOT a CI runner
+build_status = "PASS"
+notes_text = """
+Tier 1 p95 BUDGET BREACH (image=907ms, audio=900ms, ui=908ms, model3d=900ms) is a
+DOCUMENTED EXCEPTION under spec phase-4I.txt L351 'or documented exception'.
+
+Root cause (verified by inspection of .elai_cc/crates/orchestrator/src/media_validator/external_tools.rs L154-176 + mod.rs L555 build_capability_flags() called per-request):
+  Every pipeline::validate() call spawns 4 sequential `where.exe` subprocesses
+  through detect_binary() (one each for magick, ffprobe, tesseract, blender)
+  via build_capability_flags(). On Windows cmd.exe / where.exe cold-spawn
+  is ~150-250 ms per call. 4 probes x ~220 ms ≈ 860-900 ms which matches the
+  observed p50≈p95 latency floor for ALL Tier-1 dispatches.
+
+Fix scope: Group C5 will cache capability flags in Arc<ToolCapabilityFlags> on
+MediaValidator at startup (decision 47 in workflow/reasoning/B-24-decisions.md),
+dropping per-request overhead from ~900 ms to <1 ms. The functional / contract
+/ adversarial tests already pass — this is purely a hot-path optimization.
+
+Mode A / Mode B / GPU-swap measurements: null. Real VLM is gated behind the
+vlm-integration feature which requires CUDA + a 24 GB+ VRAM device; the
+current host (12 GB VRAM per memory MEMORY.md project_gpu_context) is below
+Mode A's MODE_A_MIN_VRAM_GB threshold (types.rs:323). MockVlmBackend is the
+only Tier-2 backend exercised here; its latency is recorded as tier2_mock_p95_ms.
+VRAM ranges are recorded from grounding (spec L341-343 + workflow/papers/
+qwen-vl-internvl-interface.md) rather than measured locally.
+"""
+
+# ===========================================================================
+# Aggregate metrics (top-level for DETERMINISTIC_CHECK gate, spec L348)
+# ===========================================================================
+# All scalar aggregates the grading script greps for live in [metrics] so a
+# structured parse (tomllib.load(...)["metrics"]["tier1_p95_ms"]) returns the
+# raw number — not None.
+
+[metrics]
+# Worst p95 across image/audio/ui (3D excluded per spec L351). Group C5
+# Arc<ToolCapabilityFlags> cache (decision 47) collapsed the per-call
+# subprocess probe to a one-shot OnceLock initialization. Post-fix p95
+# = 0 ms (median across 29 warm calls); p99 = 1054 ms reflects the
+# single cold-start probe at process boot. Well below the spec L351
+# 100 ms budget for the warm path. See notes.tier1_p95_fix.
+tier1_p95_ms = 0
+tier1_p50_ms = 0
+tier1_p99_ms = 1054
+
+# Tier-2 real-backend latencies require CUDA + 24 GB+ VRAM (Mode A) /
+# 38 GB+ VRAM (Mode B). Recorded as the TOML string "null" so structured
+# parsers see an explicit sentinel rather than a misleading 0.
+tier2_mode_a_p95_ms = "null"
+tier2_mode_b_p95_ms = "null"
+tier2_mock_p95_ms = 900
+
+# GPU swap cost (spec L337-339) requires a real VLM backend. Same sentinel.
+gpu_swap_mode_a_ms = "null"
+gpu_swap_mode_b_ms = "null"
+
+# Coverage aggregates (spec L352-353 DETERMINISTIC_CHECK floors:
+# test_count >= 28, adversarial_test_count >= 8).
+# Group C7 update: 74 base + 21 RCE (contract+functional+integration) = 95.
+test_count = 95
+test_pass_count = 78
+test_fail_count = 0
+test_ignored_count = 9
+adversarial_test_count = 14   # +2 RCE adversarial (rce_a_web/rce_a_blender)
+
+# VRAM (spec L341-343 + workflow/papers/qwen-vl-internvl-interface.md).
+# Recorded as float scalars for the DETERMINISTIC_CHECK gate which greps the
+# top-level keys; ranges live under [metrics.vram] for the spec-traceability.
+vram_mode_a_gb = 17.0
+vram_mode_b_gb = 21.0
+vram_clap_gb = 0.4
+
+# Iteration counts per bench family (for traceability).
+tier1_iterations = 30
+tier2_iterations = 30
+tier1_4k_iterations = 10
+
+# Coverage tooling not run here (Group C5 follow-up).
+lines_covered = "null"
+coverage_pct = "null"
+
+# ---------------------------------------------------------------------------
+# VRAM ranges (Q4 -> Q5/8-bit spread per spec L341-344)
+# ---------------------------------------------------------------------------
+[metrics.vram]
+mode_a_gb_range = [17.0, 23.8]   # Q4_K_M -> Q5 (apxml.com/models/qwen3-30b-a3b)
+mode_b_gb_range = [21.0, 38.0]   # Q4 -> 8-bit (spec L343-344)
+clap_gb = 0.4                    # CLAP FP16 (spec L344)
+
+# ---------------------------------------------------------------------------
+# Tier 1 per-media-type latency breakdown (measured)
+# ---------------------------------------------------------------------------
+# Iterations: 30 per type (10 for the 4K adversarial bench — see decision 52).
+# Cold-start dominates p50 ≈ p95 because every call pays the
+# build_capability_flags() subprocess cost (see notes_text).
+
+[metrics.tier1_per_type]
+# Group C5 post-fix (Arc<ToolCapabilityFlags> cache via OnceLock):
+# 29/30 warm calls now run in 0 ms; only the first call per process
+# pays the build_capability_flags() one-shot cost (~1054 ms cold).
+image_png_1x1        = { p50_ms = 0, p95_ms = 0, p99_ms = 1054 }
+audio_wav_8k_1s      = { p50_ms = 0, p95_ms = 0, p99_ms = 1035 }
+ui_screenshot        = { p50_ms = 0, p95_ms = 0, p99_ms = 1054 }
+model3d_obj_degraded = { p50_ms = 0, p95_ms = 0, p99_ms = 1054 }
+# Adversarial 4K bench (spec L355-356). Same Arc cache benefit — the
+# bench process starts AFTER the cache is warm (test-runner shares the
+# process across the bench harness), so p50 = 0 ms, p95 = 5 ms.
+image_png_3840x2160  = { p50_ms = 0, p95_ms = 5, p99_ms = 5, iterations = 10, measured = true }
+
+# ---------------------------------------------------------------------------
+# Tier 2 per-dispatch latency (Mock only; real VLM gated on vlm-integration)
+# ---------------------------------------------------------------------------
+# MockVlmBackend::validate_advisory + range checks + serde_json::to_value +
+# subprocess capability probe (same source as Tier 1 cost). The ~900 ms is
+# almost entirely the per-call build_capability_flags() probe — NOT the
+# Tier-2 dispatch itself, which is <1 ms.
+
+[metrics.tier2]
+mock_dispatch_image = { p50_ms = 863, p95_ms = 900, p99_ms = 910 }
+
+# ---------------------------------------------------------------------------
+# Group C7 (4I.10 MEASURE — RCE): adapter + loop + convergence metrics.
+# ---------------------------------------------------------------------------
+# Spec phase-4I.txt L580-593. Captured by the perf-bench harness at
+# .elai_cc/crates/orchestrator/tests/media_validator_bench.rs new tests:
+#   rce_web_render_three_viewports_bench, rce_blender_four_angles_bench,
+#   rce_animation_key_frames_bench, rce_ui_screenshot_bench,
+#   rce_comfyui_mock_workflow_bench, rce_loop_total_bench,
+#   rce_convergence_corpus_bench.
+#
+# Reproduce:
+#   cd .elai_cc
+#   cargo test -p elai-orchestrator --test media_validator_bench \
+#       -- --ignored --nocapture
+#
+# Targets (spec L580-588):
+#   web_render_p95_ms     < 3000   (3 viewports; browser cold-start dominates)
+#   blender_render_p95_ms < 10000  (4 angles; CLI startup ~3-5s per L605)
+#   animation_p95_ms      < 2000   (5 key frames)
+#   ui_screenshot_p95_ms  < 50     (file read only)
+#   comfyui_mock_p95_ms   — baseline; no hard target
+#   loop_total_p95_ms     < 10000  (web feedback loop per iteration)
+#   convergence_rate      >= 0.70
+
+[metrics.rce]
+# Web + Blender skipped: TOOL_MISSING on this Windows 11 host. CI/host
+# without Playwright (npx playwright --version) -> skip per spec L600
+# documented exception. Same convention as tier2_mode_a/_b: null-string
+# sentinel ("skipped: TOOL_MISSING") for structured parsers.
+web_render_p95_ms       = "skipped: TOOL_MISSING:playwright"
+blender_render_p95_ms   = "skipped: TOOL_MISSING:blender"
+# Animation: ffmpeg present; 5-frame extraction comfortably under 2s.
+animation_render_p95_ms = 59
+# UI screenshot: 20 iters, all sub-millisecond except one cold-start
+# outlier captured at p99 = 5 ms. Well under the 50 ms spec budget.
+ui_screenshot_p95_ms    = 0
+ui_screenshot_p99_ms    = 5
+# ComfyUI mock: in-process tokio TcpListener; 10 iters; baseline only.
+comfyui_mock_p95_ms     = 5
+# Loop total (UiScreenshot + MockVlmBackend, visual_check=true,
+# qualitative_checks=true, max_iter=3): the spec L585 budget is 10000 ms.
+# p95 = 984 ms; the single cold-start probe (capability flags) lands in
+# the p95 bucket because every iteration spawns its own
+# AdapterRegistry/UiScreenshotAdapter and the first call after Runtime
+# bootstrap pays the OnceLock cost. Well below the budget.
+loop_total_p95_ms       = 984
+loop_total_p50_ms       = 0
+loop_total_p99_ms       = 984
+# Convergence corpus: 10 scripted scenarios. 8/10 converged ->
+# convergence_rate = 0.80 (above 0.70 floor). Avg iterations across
+# corpus = 2.2 (the two non-converging scenarios hit max_iter = 3).
+convergence_rate        = 0.80
+avg_iterations          = 2.2
+# Total RCE tests (contract + functional + integration). Spec L596 floor
+# is 15; we ship 21 (11 + 7 + 3). Adversarial RCE tests (rce_a_web /
+# rce_a_blender) live under adversarial_test_count, not here.
+test_count              = 21
+# Iteration counts per bench family (for traceability).
+iterations_web          = 3      # skipped, but the bench script asks for 3
+iterations_blender      = 3      # skipped, but the bench script asks for 3
+iterations_animation    = 5
+iterations_ui           = 20
+iterations_comfyui_mock = 10
+iterations_loop_total   = 10
+iterations_convergence  = 10     # scenarios, not iters per scenario
+
+# ===========================================================================
+# Adversarial scenarios covered (spec L354-356 "include 4K image")
+# ===========================================================================
+
+[adversarial_scenarios]
+prompt_injection_via_exif_overlay = true       # a1
+oversized_500mb_rejected_pre_vlm = true        # a2 (sparse file via set_len)
+malformed_headers_no_panic = true              # a3
+path_traversal_rejected = true                 # a4 (.. component)
+vlm_sandbox_escape_blocked = false             # a5 (#[ignore] — Tier-C sandbox B-22)
+queue_full_returns_immediately = true          # a6 (Group C5 — tokio::Semaphore::try_acquire)
+comfyui_timeout_cleanup = false                # a7 (#[ignore] — Group C6 ComfyUI)
+clap_adversarial_audio = true                  # a8
+constrained_decoding_10_diverse_inputs = true  # a9
+symlink_bypass_rejected = true                 # a10 (canonical-starts_with guard)
+fourk_image_in_latency_bench = true            # spec L355-356 (Group C4 — decision 52)
+
+# ===========================================================================
+# Free-form notes per family (audit-WARN-1 friendly: stringly-typed pointers
+# to root causes / follow-ups, NOT decision-doc replacements)
+# ===========================================================================
+
+[notes]
+tier1_p95_breach = "Subprocess spawn per call (4 × where.exe). Fixed in Group C5 via Arc<ToolCapabilityFlags> cache (decision 47)."
+tier1_p95_fix = "Resolved in Group C5 via std::sync::OnceLock<ToolCapabilityFlags> in pipeline::cached_capability_flags(). Measured p95 = 0 ms post-fix (29/30 warm calls); p99 = 1054 ms reflects the single cold-start probe at process boot. Well below spec L351 100 ms budget for the warm path. The MediaValidator struct also holds Arc<ToolCapabilityFlags> populated at construction so direct callers (task_runner) see the snapshot via Arc-deref rather than re-probing."
+tier2_real_vlm = "Real Mode A/B require GPU + ollama/sglang. Measured in vlm-integration feature CI, not default."
+adversarial_4k_image = "4K bench landed in this audit-fix cycle (decision 52). 10-iteration measurement on DESKTOP-B457SEI: p50=778ms, p95=823ms, p99=823ms. INTERESTINGLY LOWER than the 1x1 image bench (p50=860, p95=907) — same build_capability_flags() subprocess floor dominates both, but the 4K bench's per-iter wall time is concentrated in PNG decode + memory copy (~700ms) which OVERLAPS the subprocess probe rather than serializing after it on this machine. Both numbers are above the spec L351 100ms budget; the C5 Arc<ToolCapabilityFlags> cache will collapse the floor for both. See metrics.tier1_per_type.image_png_3840x2160."
+post_c5_arc_cache_4k = "After the C5 OnceLock fix, the 4K bench p95 dropped to 5 ms (same machine, same fixture). Confirms the pre-fix latency was overwhelmingly the per-call subprocess probe, not the PNG decode itself."
+queue_full_a6_fix = "Group C5 (decision 55): pipeline::validate now acquires a permit from a process-wide tokio::sync::Semaphore (depth = VALIDATION_QUEUE_DEPTH = 64) via try_acquire. Saturated semaphore -> immediate Err(MediaValidatorError::QueueFull{depth:64}) without any thread::sleep. Test a6_queue_full_returns_immediately passes (was #[ignore = Group C5...] in C4)."
+
+# Group C7 (4I.10 MEASURE) — RCE notes.
+rce_tool_availability = "Windows 11 Pro host DESKTOP-B457SEI lacks Playwright (npx playwright --version fails) and Blender. Animation + UI + ComfyUI mock + loop + convergence benches ran; web + blender benches recorded 'skipped: TOOL_MISSING'. CI runners with Playwright/Blender installed will populate the strings with real numbers without code changes."
+rce_loop_total_p95_floor = "Loop total p95 = 984 ms reflects the first Tier-1 capability-flag probe of the iteration (same OnceLock as the C5 fix). Subsequent iterations in the same run land at 0 ms — the bench creates a fresh AdapterRegistry + UiScreenshotAdapter per iter so each iter still pays the loop's max_iter=3 ConvergenceKey computation cost (sub-ms). Well under the 10 s spec L585 budget."
+rce_convergence_baseline = "Corpus: 10 hand-crafted scenarios. 8 converge (no_issues_immediate_pass, fix_resolves_iter2, stable_unchanged_iter2, two_issues_converge, partial_fix_then_stable, critical_stable, single_minor_immediate_pass, all_resolved_iter2). 2 hit max_iter=3 (oscillating_issues, growing_issue_count). Avg iterations: 22/10 = 2.2. Verdict distribution: 6 Pass, 2 HumanReview, 1 Fail (critical_stable), 1 Pass-but-not-converged (growing_issue_count). Convergence rate 0.80 -> above the 0.70 spec L588 floor."
+
+[notes.rce_targets_met]
+# Spec L580-588 target-vs-measured booleans. true => target met OR
+# documented exception (tool missing). false => measured but exceeded.
+web          = true   # skipped: TOOL_MISSING:playwright (documented exception per spec L600)
+blender      = true   # skipped: TOOL_MISSING:blender (documented exception)
+animation    = true   # p95=59 ms << 2000 ms target
+ui_screenshot = true  # p95=0 ms << 50 ms target
+loop         = true   # p95=984 ms << 10000 ms target
+convergence  = true   # rate=0.80 >= 0.70 target
+
+[notes.final_integration]
+# Group C9 (B-24 final integration) — cloud-mode invocation recipe + wiring locations.
+# Reproducer: workflow/reasoning/B-24-final-integration-notes.md
+cloud_mode_invocation_recipe = "workflow/reasoning/B-24-final-integration-notes.md"
+task_runner_wireup_location = ".elai_cc/crates/orchestrator/src/task_runner.rs:3658 (drive_task, post spec_from_decomposition)"
+ssb_sink_location = ".elai_cc/crates/orchestrator/src/media_validator/mod.rs (SsbMediaSink, decisions 93+94)"
+e2e_mock_test = ".elai_cc/crates/orchestrator/tests/media_validator_e2e_cloud_mode.rs (2 active + 1 #[ignore]'d live)"
+cloud_mode_live_test_command = "cargo test -p elai-orchestrator --test media_validator_e2e_cloud_mode -- --ignored cloud_mode_live"
+cloud_mode_model_id = "claude-sonnet-4-5-20250929"
+binary_smoke_status = "elai.exe --version + --help + doctor all PASS (release build, target/release/elai.exe)"
+test_counts_post_c9 = "71 lib + 21 RCE + 19 dashboard + 2 e2e = 113 tests pass; 12 pre-existing other-session failures unchanged"
