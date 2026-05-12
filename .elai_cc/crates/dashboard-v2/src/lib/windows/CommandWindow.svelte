@@ -108,6 +108,45 @@
   // ----------------------------------------------------------------
   let textareaEl = $state<HTMLTextAreaElement | undefined>(undefined);
 
+  // ----------------------------------------------------------------
+  // Auto-detect Oracle chip — confirm gate when the classifier infers
+  // RESEARCH on a non-slash submit. Lifecycle owned by commands store
+  // (pendingResearchChip + accept/reject/editResearchChip). Here we
+  // only render, autofocus, and forward Enter/Esc/Tab to the store.
+  // Keybindings are scoped to the chip container; they cannot collide
+  // with the slash palette because the palette closes the moment a
+  // submit fires (which is when the chip can appear), and the textarea
+  // is disabled while the chip is pending so no new '/' opens it.
+  // ----------------------------------------------------------------
+  let chipEl = $state<HTMLDivElement | undefined>(undefined);
+
+  $effect(() => {
+    if (commands.pendingResearchChip && chipEl) {
+      chipEl.focus();
+    }
+  });
+
+  $effect(() => {
+    const _ = commands.refocusInputTick;
+    if (commands.refocusInputTick > 0) {
+      requestAnimationFrame(() => textareaEl?.focus());
+    }
+  });
+
+  function handleChipKeydown(e: KeyboardEvent) {
+    if (!commands.pendingResearchChip) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void commands.acceptResearchChip();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      void commands.rejectResearchChip();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      commands.editResearchChip();
+    }
+  }
+
   function handleInput(e: Event) {
     const t = e.target as HTMLTextAreaElement;
     const v = t.value;
@@ -470,9 +509,68 @@
               </div>
             </div>
 
+          {:else if card.kind === 'code-answer'}
+            <!-- EXPLORE_CODE wire: ranked BM25 hits from the local index. -->
+            {@const p = card.payload as import('../api/types').CodeAnswerCardPayload}
+            <div class="orbit-card orbit-card--response">
+              <div class="card-inner">
+                {#if p.status === 'not_indexed'}
+                  <div class="code-answer-hint mono">project not indexed — reopen it from the picker</div>
+                {:else if p.status === 'error'}
+                  <div class="code-answer-hint mono">{p.message ?? 'knowledge query failed'}</div>
+                {:else if p.hits.length === 0}
+                  <div class="code-answer-hint mono">no matches for "{p.query}"</div>
+                {:else}
+                  <div class="code-answer-header mono">
+                    {p.hits.length} hit{p.hits.length === 1 ? '' : 's'} for "{p.query}"
+                  </div>
+                  <ul class="code-answer-list">
+                    {#each p.hits as h, i (h.path + ':' + h.line_start + ':' + i)}
+                      <li class="code-answer-hit">
+                        <div class="code-answer-meta mono">
+                          <span class="code-answer-path">{h.path}{h.line_start ? ':' + h.line_start : ''}{h.line_end && h.line_end !== h.line_start ? '-' + h.line_end : ''}</span>
+                          <span class="code-answer-score">{h.score.toFixed(2)}</span>
+                          <span class="code-answer-kind">{h.chunk_kind.toLowerCase()}</span>
+                        </div>
+                        {#if h.snippet}
+                          <pre class="code-answer-snippet mono">{h.snippet}</pre>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+
           {/if}
         </div>
       {/each}
+    {/if}
+
+    {#if commands.pendingResearchChip}
+      <div
+        class="card-wrapper anim-enter-lift"
+        bind:this={chipEl}
+        tabindex={-1}
+        onkeydown={handleChipKeydown}
+        role="dialog"
+        aria-label="Confirm Oracle Mode"
+      >
+        <div class="orbit-card orbit-card--intervention research-chip">
+          <div class="card-inner">
+            <div class="card-title-row">
+              <Pulse mode="dot" size={6} />
+              <span class="intervention-title">Looks like a research question. Send to Oracle?</span>
+            </div>
+            <span class="card-body mono">{commands.pendingResearchChip.text}</span>
+            <div class="btn-row">
+              <button class="btn-approve" onclick={() => commands.acceptResearchChip()}>Accept &middot; Enter</button>
+              <button class="btn-outlined" onclick={() => commands.rejectResearchChip()}>Reply locally &middot; Esc</button>
+              <button class="btn-outlined" onclick={() => commands.editResearchChip()}>Edit &middot; Tab</button>
+            </div>
+          </div>
+        </div>
+      </div>
     {/if}
     </div>
   </div>
@@ -535,6 +633,7 @@
           class="slash-toggle"
           class:slash-toggle--active={commands.slashOpen}
           aria-label="Open slash command palette"
+          disabled={!!commands.pendingResearchChip}
           onclick={() => (commands.slashOpen ? closePalette() : openPalette())}
         >
           <Slash size={14} strokeWidth={1.5} />
@@ -546,6 +645,7 @@
           value={commands.inputValue}
           placeholder={placeholder()}
           rows={1}
+          disabled={!!commands.pendingResearchChip}
           oninput={handleInput}
           onkeydown={handleKeydown}
           onfocus={() => commands.setFocused(true)}
@@ -1011,6 +1111,80 @@
   /* ---- Mono utility ---- */
   .mono {
     font-family: var(--font-mono);
+  }
+
+  /* ---- Code-answer card (EXPLORE_CODE wire) ---- */
+  .code-answer-header {
+    font-size: 11px;
+    color: var(--text-ghost);
+    margin-bottom: var(--s-2);
+    letter-spacing: 0.02em;
+  }
+  .code-answer-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  .code-answer-hit {
+    border-left: 2px solid var(--border-subtle);
+    padding-left: var(--s-2);
+    transition: border-color var(--dur-fast) var(--ease-std);
+  }
+  .code-answer-hit:hover { border-left-color: var(--teal-line); }
+  .code-answer-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .code-answer-path { color: var(--teal); }
+  .code-answer-score { color: var(--text-ghost); }
+  .code-answer-kind {
+    color: var(--text-disabled);
+    text-transform: lowercase;
+    font-size: 10px;
+  }
+  .code-answer-snippet {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: rgba(26, 32, 41, 0.45);
+    border-radius: var(--r-xs);
+    padding: var(--s-1) var(--s-2);
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.45;
+    max-height: 9.5em;
+    overflow: hidden;
+  }
+  .code-answer-hint {
+    font-size: 11px;
+    color: var(--text-ghost);
+    font-style: italic;
+  }
+
+  /* ---- Auto-detect Oracle chip ---- */
+  /* Container is focusable (tabindex=-1) for keyboard handling. Hide
+     the default focus ring on the container itself; the inner orbit-card
+     already has its own outline + cardGlow animation that signals focus. */
+  .card-wrapper:focus,
+  .card-wrapper:focus-visible {
+    outline: none;
+  }
+  .research-chip {
+    outline: 1px solid var(--teal-line);
+  }
+
+  /* Disabled input controls go quiet rather than greyed out — matches
+     ExploreWindow's input shell when pending. */
+  .input-textarea:disabled,
+  .slash-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* ---- Input bar — invisible chrome, just a textarea floating at the bottom ---- */

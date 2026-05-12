@@ -426,7 +426,7 @@ export interface InterventionRequest {
   created_ts: number;
 }
 
-export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response';
+export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer';
 
 export interface CommandCard {
   id: string;
@@ -442,7 +442,8 @@ export type CardPayload =
   | DisambiguationCardPayload
   | SteeringCardPayload
   | UserCardPayload
-  | ResponseCardPayload;
+  | ResponseCardPayload
+  | CodeAnswerCardPayload;
 
 export interface StatusCardPayload {
   kind: 'status';
@@ -488,6 +489,23 @@ export interface ResponseCardPayload {
   text: string;
   streaming: boolean;
   stream_id: string;
+}
+
+export interface KnowledgeHit {
+  path: string;
+  line_start: number;
+  line_end: number;
+  score: number;
+  chunk_kind: string;
+  snippet: string;
+}
+
+export interface CodeAnswerCardPayload {
+  kind: 'code-answer';
+  query: string;
+  hits: KnowledgeHit[];
+  status: 'ok' | 'not_indexed' | 'error';
+  message?: string;
 }
 
 // ------------------------------------------------------------------

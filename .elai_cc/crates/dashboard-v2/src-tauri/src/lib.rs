@@ -153,6 +153,7 @@ pub fn run() {
             commands::get_shortcoder_stats,
             // EXPLORE
             commands::run_explore_query,
+            commands::query_knowledge_engine,
             commands::continue_task,
             // SETTINGS
             commands::set_local_max_context,

@@ -2041,6 +2041,90 @@ pub fn get_shortcoder_stats(state: State<'_, AppState>) -> CmdResult<Value> {
 // EXPLORE
 // ---------------------------------------------------------------------------
 
+/// EXPLORE_CODE wire: query the local BM25 index for the currently selected
+/// project. Hits the on-disk index built by `reindex_now` at
+/// `<project_root>/.elai_cc/indexes/projects/default/bm25/`. Vector/cross-
+/// encoder layers are skipped (ONNX models not staged); the doc audit notes
+/// BM25 alone is the practical query path today.
+///
+/// Returns `status="not_indexed"` (not an error) when the index dir is
+/// missing — frontend renders a hint card instead of an error toast.
+#[tauri::command]
+pub fn query_knowledge_engine(state: State<'_, AppState>, query: String) -> CmdResult<Value> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("query cannot be empty".to_owned());
+    }
+    let project_root = state.project_root_snapshot();
+    let indexes_dir = project_root.join(".elai_cc").join("indexes");
+    let id = format!("ke-{}", now_ms(&state));
+    let ts = now_ms(&state);
+
+    let bm25_marker = indexes_dir.join("projects").join("default").join("bm25");
+    if !bm25_marker.exists() {
+        return Ok(json!({
+            "id": id,
+            "query": trimmed,
+            "hits": [],
+            "status": "not_indexed",
+            "message": "project not indexed yet — re-open it from the selector to trigger indexing",
+            "ts": ts,
+        }));
+    }
+
+    // Bm25Index::new is create-or-open; pointing at an existing index dir
+    // returns a reader-backed instance without rebuilding.
+    let bm25 = match elai_knowledge::bm25::Bm25Index::new(&indexes_dir, "default") {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(json!({
+                "id": id,
+                "query": trimmed,
+                "hits": [],
+                "status": "error",
+                "message": format!("failed to open BM25 index: {e}"),
+                "ts": ts,
+            }));
+        }
+    };
+
+    let hits = match bm25.query(trimmed, 10) {
+        Ok(h) => h,
+        Err(e) => {
+            return Ok(json!({
+                "id": id,
+                "query": trimmed,
+                "hits": [],
+                "status": "error",
+                "message": format!("BM25 query failed: {e}"),
+                "ts": ts,
+            }));
+        }
+    };
+
+    let hits_json: Vec<Value> = hits
+        .iter()
+        .map(|h| {
+            json!({
+                "path": h.path,
+                "line_start": h.line_start,
+                "line_end": h.line_end,
+                "score": h.score,
+                "chunk_kind": format!("{:?}", h.chunk_kind),
+                "snippet": h.snippet,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "id": id,
+        "query": trimmed,
+        "hits": hits_json,
+        "status": "ok",
+        "ts": ts,
+    }))
+}
+
 #[tauri::command]
 pub async fn run_explore_query(state: State<'_, AppState>, query: String) -> CmdResult<Value> {
     let url = state

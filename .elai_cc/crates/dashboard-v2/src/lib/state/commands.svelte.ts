@@ -10,6 +10,7 @@ import {
   run_research,
   submit_task,
   run_explore_query,
+  query_knowledge_engine,
   continue_task,
   get_media_validations,
   get_media_validation_by_step,
@@ -307,6 +308,36 @@ function createCommands() {
     appendCard('user', { kind: 'user', text, intent });
     inputValue = '';
     slashOpen = false;
+
+    // EXPLORE_CODE wire (B-explore-code): route codebase questions to the
+    // local BM25 index for the active project. Short-circuit before the
+    // streaming LLM path so "what calls Token::validate?" returns ranked
+    // file hits instead of model hallucination. /explore slash command
+    // takes the same path. Vector/cross-encoder degraded — see knowledge
+    // engine audit (DETAILED_SUMMARY_01 §2 KNOWLEDGE).
+    if (intent === 'EXPLORE_CODE' || (slash !== null && slash.command === '/explore')) {
+      const queryText = slash !== null && slash.arg ? slash.arg : text;
+      logStub('commands.submit.explore_code', { query: queryText });
+      try {
+        const answer = await query_knowledge_engine(queryText);
+        appendCard('code-answer', {
+          kind: 'code-answer',
+          query: answer.query,
+          hits: answer.hits,
+          status: answer.status,
+          message: answer.message,
+        });
+      } catch (e) {
+        appendCard('error', {
+          kind: 'error',
+          message: `knowledge query failed: ${String(e)}`,
+          source: 'sidecar',
+          step_id: undefined,
+          recoverable: true,
+        });
+      }
+      return;
+    }
 
     // B-24 Phase 4I Group C8: route MEDIA_VALIDATE intent to the
     // MediaValidationPanel inside MonitorWindow. We refresh the panel's

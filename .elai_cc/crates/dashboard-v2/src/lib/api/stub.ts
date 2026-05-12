@@ -1051,6 +1051,35 @@ const EXPLORE_MOCK_ANSWERS: Record<string, ExploreAnswer> = {
   },
 };
 
+/** EXPLORE_CODE wire — hits the local BM25 index of the active project root.
+ *  Distinct from `run_explore_query`, which hits SearXNG web search via the
+ *  sidecar (Oracle/RESEARCH path). Returns a typed answer with hits[] and
+ *  a status discriminator the UI can switch on (ok / not_indexed / error).
+ *  Browser-dev fallback returns an empty `error` status so the card still
+ *  renders without crashing. */
+export interface KnowledgeAnswer {
+  id: string;
+  query: string;
+  hits: import('./types').KnowledgeHit[];
+  status: 'ok' | 'not_indexed' | 'error';
+  message?: string;
+  ts: number;
+}
+
+export async function query_knowledge_engine(query: string): Promise<KnowledgeAnswer> {
+  logStub('query_knowledge_engine', { query });
+  const live = await tryInvoke<KnowledgeAnswer>('query_knowledge_engine', { query });
+  if (live) return live;
+  return {
+    id: `ke-${Date.now()}`,
+    query,
+    hits: [],
+    status: 'error',
+    message: 'tauri not available — browser-dev mode',
+    ts: Date.now(),
+  };
+}
+
 export async function run_explore_query(query: string): Promise<ExploreAnswer> {
   logStub('run_explore_query', { query });
   const live = await tryInvoke<ExploreAnswer>('run_explore_query', { query });

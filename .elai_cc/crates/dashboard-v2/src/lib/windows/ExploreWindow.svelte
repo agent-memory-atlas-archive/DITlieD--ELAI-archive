@@ -1,32 +1,23 @@
 <script lang="ts">
   import { Search } from '@lucide/svelte';
   import { workspace } from '../state/workspace.svelte';
-  import { run_explore_query, logStub } from '../api/stub';
-  import type { ExploreAnswer } from '../api/stub';
+  import { query_knowledge_engine, logStub, type KnowledgeAnswer } from '../api/stub';
 
-  // Pre-seeded answers
-  const SEED_QUERIES = [
-    'how does the auth module validate tokens?',
-    'what calls Token::validate?',
-  ];
+  // EXPLORE_CODE wire (B-explore-code): rewired from the SearXNG /search
+  // endpoint to the local BM25 index of the active project root. Same
+  // backend as CommandWindow's auto-detect chip for EXPLORE_CODE intent.
+  // Seed queries removed — they hit nothing useful before a project is
+  // indexed, and the empty state already explains what to type.
 
   // Answers: newest at bottom (chat-style stream, mirrors CommandWindow)
-  let answers = $state<ExploreAnswer[]>([]);
-  let recentQueries = $state<string[]>([...SEED_QUERIES]);
+  let answers = $state<KnowledgeAnswer[]>([]);
+  let recentQueries = $state<string[]>([]);
   let queryText = $state('');
   let pending = $state(false);
   let inputFocused = $state(false);
 
   let streamEl = $state<HTMLElement | undefined>(undefined);
   let inputEl = $state<HTMLInputElement | undefined>(undefined);
-
-  // Seed on mount — preserve original order (oldest first → newest last)
-  $effect(() => {
-    (async () => {
-      const results = await Promise.all(SEED_QUERIES.map((q) => run_explore_query(q)));
-      answers = results;
-    })();
-  });
 
   // Auto-scroll to bottom whenever a new answer lands
   $effect(() => {
@@ -49,8 +40,7 @@
     recentQueries = [trimmed, ...recentQueries.filter((r) => r !== trimmed)].slice(0, 5);
 
     try {
-      const answer = await run_explore_query(trimmed);
-      // Append newest at bottom
+      const answer = await query_knowledge_engine(trimmed);
       answers = [...answers, answer];
     } finally {
       pending = false;
@@ -68,31 +58,6 @@
     workspace.openTab('primary', 'review');
     logStub('open-file', path);
   }
-
-  // Render code blocks: wrap ``` fenced blocks in <pre><code>
-  function renderAnswer(text: string): { html: string } {
-    const parts = text.split(/```(?:\w+)?\n?/);
-    let html = '';
-    parts.forEach((part, i) => {
-      if (i % 2 === 0) {
-        const escaped = part
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-          .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-          .replace(/\n/g, '<br>');
-        html += escaped;
-      } else {
-        const escaped = part
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-        html += `<pre class="code-block"><code>${escaped}</code></pre>`;
-      }
-    });
-    return { html };
-  }
 </script>
 
 <div class="explore-window">
@@ -101,8 +66,8 @@
     <div class="stream-inner">
       {#if answers.length === 0 && !pending}
         <div class="empty-state">
-          <span class="empty-label">ask the oracle</span>
-          <span class="empty-sub">read-only queries · grounded in DKG and the knowledge engine</span>
+          <span class="empty-label">explore the codebase</span>
+          <span class="empty-sub">read-only BM25 queries over the active project's local index</span>
           {#if recentQueries.length > 0}
             <div class="empty-hints">
               {#each recentQueries.slice(0, 3) as q (q)}
@@ -120,36 +85,35 @@
               <span class="answer-query-text">{answer.query}</span>
             </div>
 
-            <!-- Floating prose answer -->
-            <div class="answer-body">
-              {@html renderAnswer(answer.answer).html}
-            </div>
-
-            <!-- File refs as ghost-text underlined-on-hover links -->
-            <!-- WARN: file_refs always [] until DKG enrichment (B-7 follow-up) -->
-            {#if answer.file_refs.length > 0}
-              <div class="file-refs">
-                {#each answer.file_refs as ref (ref.path + (ref.line ?? ''))}
-                  <button
-                    class="file-ref-btn mono"
-                    onclick={() => handleFileRefClick(ref.path)}
-                    title="Open {ref.path} in Review"
-                  >
-                    {ref.path}{ref.line ? ':' + ref.line : ''}{#if ref.symbol}<span class="file-ref-symbol"> — {ref.symbol}</span>{/if}
-                  </button>
+            {#if answer.status === 'not_indexed'}
+              <div class="answer-body answer-hint mono">project not indexed — reopen it from the picker to trigger indexing</div>
+            {:else if answer.status === 'error'}
+              <div class="answer-body answer-hint mono">{answer.message ?? 'knowledge query failed'}</div>
+            {:else if answer.hits.length === 0}
+              <div class="answer-body answer-hint mono">no matches for "{answer.query}"</div>
+            {:else}
+              <ul class="hit-list">
+                {#each answer.hits as h, i (h.path + ':' + h.line_start + ':' + i)}
+                  <li class="hit-row">
+                    <button
+                      class="file-ref-btn mono"
+                      onclick={() => handleFileRefClick(h.path)}
+                      title="Open {h.path} in Review"
+                    >
+                      {h.path}{h.line_start ? ':' + h.line_start : ''}{h.line_end && h.line_end !== h.line_start ? '-' + h.line_end : ''}
+                      <span class="file-ref-symbol"> — {h.score.toFixed(2)} · {h.chunk_kind.toLowerCase()}</span>
+                    </button>
+                    {#if h.snippet}
+                      <pre class="hit-snippet mono">{h.snippet}</pre>
+                    {/if}
+                  </li>
                 {/each}
-              </div>
-            {:else if answer.sources_count > 0}
-              <div class="file-refs-empty mono">no file references · DKG enrichment pending</div>
+              </ul>
             {/if}
 
-            <!-- Citation: dim ghost prose, no border, no chrome -->
+            <!-- Citation: dim ghost prose -->
             <div class="citation-line mono">
-              {#if answer.sources_count > 0}
-                from /search · {answer.sources_count} sources
-              {:else}
-                sidecar offline · no sources
-              {/if}
+              {answer.hits.length} hit{answer.hits.length === 1 ? '' : 's'} · BM25 (vector + reranker degraded — models not staged)
             </div>
           </div>
         {/each}
@@ -312,26 +276,43 @@
     line-height: 1.6;
   }
 
-  .answer-body :global(.inline-code) {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--teal-bright);
-    background: rgba(26, 32, 41, 0.6);
-    padding: 1px 4px;
-    border-radius: var(--r-xs);
+  /* Empty / not-indexed / error inline message inside the answer area */
+  .answer-hint {
+    color: var(--text-ghost);
+    font-style: italic;
+    font-size: 12px;
   }
 
-  .answer-body :global(.code-block) {
-    font-family: var(--font-mono);
+  /* ---- Hit list (BM25 results) ---- */
+  .hit-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  .hit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-left: 2px solid var(--border-subtle);
+    padding-left: var(--s-2);
+    transition: border-color var(--dur-fast) var(--ease-std);
+  }
+  .hit-row:hover { border-left-color: var(--teal-line); }
+  .hit-snippet {
     font-size: 11px;
-    background: rgba(26, 32, 41, 0.6);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-sm);
-    padding: var(--s-2) var(--s-3);
-    margin: var(--s-2) 0;
-    overflow-x: auto;
-    line-height: 1.5;
-    color: var(--text-primary);
+    color: var(--text-secondary);
+    background: rgba(26, 32, 41, 0.45);
+    border-radius: var(--r-xs);
+    padding: var(--s-1) var(--s-2);
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.45;
+    max-height: 10em;
+    overflow: hidden;
   }
 
   /* ---- File refs — ghost text by default; teal underline on hover ---- */
