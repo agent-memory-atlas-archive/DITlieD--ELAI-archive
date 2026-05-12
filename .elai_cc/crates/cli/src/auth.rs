@@ -99,16 +99,29 @@ pub(crate) fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(),
 }
 
 pub(crate) fn default_oauth_config() -> OAuthConfig {
+    // Source of truth: leaked claude-code-main src/constants/oauth.ts
+    // PROD_OAUTH_CONFIG. ELAI uses the Claude.ai-subscriber path so
+    // Pro/Max plans authenticate without API credits, identical to
+    // Claude Code. CLAUDE_AI_AUTHORIZE_URL bounces through claude.com/cai/*
+    // for visit attribution and 307s to claude.ai/oauth/authorize.
+    // Scopes are ALL_OAUTH_SCOPES (union of CONSOLE + Claude.ai sets).
+    // Anthropic's OAuth backend rejects unrecognized scopes; the prior
+    // `user:sessions:elai` was a custom string and silently failed.
     OAuthConfig {
         client_id: String::from("9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
-        authorize_url: String::from("https://claude.ai/oauth/authorize"),
+        authorize_url: String::from("https://claude.com/cai/oauth/authorize"),
         token_url: String::from("https://platform.claude.com/v1/oauth/token"),
         callback_port: None,
-        manual_redirect_url: None,
+        manual_redirect_url: Some(String::from(
+            "https://platform.claude.com/oauth/code/callback",
+        )),
         scopes: vec![
+            String::from("org:create_api_key"),
             String::from("user:profile"),
             String::from("user:inference"),
-            String::from("user:sessions:elai"),
+            String::from("user:sessions:claude_code"),
+            String::from("user:mcp_servers"),
+            String::from("user:file_upload"),
         ],
     }
 }
@@ -122,8 +135,11 @@ pub(crate) fn run_login(output_format: CliOutputFormat) -> Result<(), anyhow::Er
     let redirect_uri = elai_orchestrator::loopback_redirect_uri(callback_port);
     let pkce = generate_pkce_pair()?;
     let state = generate_state()?;
+    // `code=true` matches Claude Code's buildAuthUrl (services/oauth/client.ts:72).
+    // The login page reads it to render the Claude Max upsell variant.
     let authorize_url =
         OAuthAuthorizationRequest::from_config(oauth, redirect_uri.clone(), state.clone(), &pkce)
+            .with_extra_param("code", "true")
             .build_url();
 
     if output_format == CliOutputFormat::Text {
@@ -201,10 +217,14 @@ pub(crate) fn run_logout(output_format: CliOutputFormat) -> Result<(), anyhow::E
 }
 
 pub(crate) fn open_browser(url: &str) -> io::Result<()> {
+    // Windows: rundll32 url,OpenURL — NOT `cmd /C start`. cmd treats `&` as a
+    // command separator, which truncates URLs with query params (e.g. OAuth
+    // URLs) at the first ampersand. Mirrors leaked claude-code-main
+    // src/utils/browser.ts:54-58.
     let commands = if cfg!(target_os = "macos") {
         vec![("open", vec![url])]
     } else if cfg!(target_os = "windows") {
-        vec![("cmd", vec!["/C", "start", "", url])]
+        vec![("rundll32", vec!["url,OpenURL", url])]
     } else {
         vec![("xdg-open", vec![url])]
     };

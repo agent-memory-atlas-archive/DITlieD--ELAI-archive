@@ -9,22 +9,28 @@
 // ============================================================
 
 import type { ProjectSummary, ExecutionMode, GateMode } from '../api/types';
-import { logStub, get_gate_status, set_execution_mode } from '../api/stub';
+import { logStub, get_gate_status, set_execution_mode, get_execution_mode } from '../api/stub';
 import { workspace } from './workspace.svelte';
 
 const RECENTS_STORAGE_KEY = 'elai.dashboard-v2.recent_projects';
 const MODE_STORAGE_KEY = 'elai.dashboard-v2.execution_mode';
 const RECENTS_MAX = 12;
 
-function loadMode(): ExecutionMode {
-  if (typeof localStorage === 'undefined') return 'LOCAL';
+function loadStoredMode(): ExecutionMode | null {
+  if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(MODE_STORAGE_KEY);
     if (raw === 'LOCAL' || raw === 'CLOUD' || raw === 'HYBRID') return raw;
   } catch {
     // SecurityError under file:// — fall through
   }
-  return 'LOCAL';
+  return null;
+}
+
+function loadMode(): ExecutionMode {
+  // First-paint default. reconcileMode() on boot will replace this with
+  // the env-var-resolved backend value if localStorage is empty.
+  return loadStoredMode() ?? 'LOCAL';
 }
 
 function saveMode(m: ExecutionMode) {
@@ -103,15 +109,44 @@ function createSession() {
       saveRecents(recentProjects);
     },
 
-    /** Push the persisted (localStorage) execution mode to the backend
-     *  AppState.execution_mode mirror at boot. Frontend is the source of
-     *  truth across restarts because AppState lives in-process and resets
-     *  to LOCAL (or ELAI_DEFAULT_EXECUTION_MODE) every launch. Best-effort:
-     *  silent no-op on IPC failure so a missing Tauri shell does not block
-     *  the picker. */
+    /** Reconcile frontend mode with backend AppState.execution_mode at boot.
+     *
+     *  Two persistence layers compete:
+     *    (a) Backend AppState resets every launch from
+     *        `ELAI_DEFAULT_EXECUTION_MODE` env var (set by `elai.bat cloud`)
+     *        or "LOCAL" default. In-process only.
+     *    (b) Frontend localStorage carries the user's last UI choice across
+     *        dashboard restarts.
+     *
+     *  Resolution rule: an env-var override (backend != "LOCAL" on first
+     *  read) wins for that session — `elai.bat cloud` users expect their
+     *  one-shot mode flag to take effect even if localStorage still says
+     *  LOCAL from a prior launch. Otherwise localStorage is the source of
+     *  truth and we push it to the backend. */
     async reconcileMode(): Promise<void> {
       try {
-        await set_execution_mode(mode);
+        const stored = loadStoredMode();
+        const backend = await get_execution_mode().catch(() => null);
+        const backendMode =
+          backend && (backend.mode === 'LOCAL' || backend.mode === 'CLOUD' || backend.mode === 'HYBRID')
+            ? (backend.mode as ExecutionMode)
+            : null;
+
+        if (backendMode && backendMode !== 'LOCAL' && stored !== backendMode) {
+          // Env var (ELAI_DEFAULT_EXECUTION_MODE) was set by the launcher —
+          // adopt it for this session without overwriting localStorage so the
+          // user's persistent choice survives the next non-cloud launch.
+          mode = backendMode;
+        } else if (stored !== null) {
+          // Persistent choice wins — sync it to the backend mirror.
+          mode = stored;
+          await set_execution_mode(stored);
+        } else if (backendMode !== null) {
+          // No localStorage yet — seed it from the backend so subsequent
+          // launches without an env var still respect this value.
+          mode = backendMode;
+          saveMode(backendMode);
+        }
       } catch (err) {
         console.warn('[session] reconcileMode failed', err);
       }
