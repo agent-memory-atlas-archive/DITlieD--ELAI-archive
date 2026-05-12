@@ -276,8 +276,9 @@
   $effect(() => {
     const v = executionMode;
     if (_modeInit) { _modeInit = false; return; }
+    // session.setMode now persists to localStorage AND calls set_execution_mode
+    // internally, so no duplicate backend call here.
     session.setMode(v as 'LOCAL' | 'CLOUD' | 'HYBRID');
-    stub.set_execution_mode(v as 'LOCAL' | 'CLOUD' | 'HYBRID').catch(() => {});
   });
 
   let _gateInit = true;

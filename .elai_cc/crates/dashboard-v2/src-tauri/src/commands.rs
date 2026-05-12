@@ -248,7 +248,28 @@ pub fn open_project_from_folder(state: State<'_, AppState>, path: String) -> Cmd
     if !p.exists() {
         return Err(format!("path does not exist: {path}"));
     }
-    let name = p
+    // Canonicalise so the indexer, ensure_within_project_root checks, and
+    // elai_cc.toml writes all key off the same resolved path (no mixed
+    // forward/back-slashes, no symlink ambiguity, no trailing-dot drift).
+    // Fall back to the user-supplied path if canonicalize fails so a
+    // network-mount or junction-point edge case does not break the picker.
+    let resolved = std::fs::canonicalize(&p).unwrap_or(p);
+    // Windows canonicalize emits verbatim paths prefixed with `\\?\` (and
+    // `\\?\UNC\…` for network shares). Strip the drive-letter form so the
+    // recent-projects list shows `D:\foo\bar` rather than `\\?\D:\foo\bar`;
+    // ensure_within_project_root re-canonicalises so the comparison still
+    // works either way. UNC verbatim paths are left as-is — the rarer case
+    // and rewriting `\\?\UNC\` correctly needs care this command doesn't
+    // need to take.
+    #[cfg(windows)]
+    let resolved = {
+        let s = resolved.to_string_lossy().to_string();
+        match s.strip_prefix(r"\\?\") {
+            Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+            _ => resolved,
+        }
+    };
+    let name = resolved
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("project")
@@ -259,9 +280,10 @@ pub fn open_project_from_folder(state: State<'_, AppState>, path: String) -> Cmd
             *g = name.clone();
         }
     }
+    state.set_project_root(resolved.clone());
     Ok(json!({
         "name": name,
-        "path": path,
+        "path": resolved.to_string_lossy().into_owned(),
         "last_opened_iso": now_iso,
     }))
 }
@@ -1580,7 +1602,7 @@ pub async fn get_sidecar_status(state: State<'_, AppState>) -> CmdResult<Value> 
 #[tauri::command]
 pub fn get_rules_lifecycle(state: State<'_, AppState>) -> CmdResult<Value> {
     // Try opening rules.db on the active project root.
-    let rules_db = elai_core::paths::rules_db_path(&state.project_root);
+    let rules_db = elai_core::paths::rules_db_path(&state.project_root_snapshot());
     if rules_db.exists() {
         if let Ok(conn) = rusqlite::Connection::open_with_flags(
             &rules_db,
@@ -1623,7 +1645,7 @@ fn default_lifecycle_counts() -> Value {
 
 #[tauri::command]
 pub fn get_active_rules(state: State<'_, AppState>, fsm_state: String) -> CmdResult<Value> {
-    let rules_db = elai_core::paths::rules_db_path(&state.project_root);
+    let rules_db = elai_core::paths::rules_db_path(&state.project_root_snapshot());
     if !rules_db.exists() {
         return Ok(json!([]));
     }
@@ -1678,7 +1700,7 @@ pub fn get_active_rules(state: State<'_, AppState>, fsm_state: String) -> CmdRes
 
 #[tauri::command]
 pub fn get_deprecated_patterns(state: State<'_, AppState>) -> CmdResult<Value> {
-    let rules_db = elai_core::paths::rules_db_path(&state.project_root);
+    let rules_db = elai_core::paths::rules_db_path(&state.project_root_snapshot());
     if !rules_db.exists() {
         return Ok(json!([]));
     }
@@ -1796,7 +1818,7 @@ pub fn get_project_intelligence(state: State<'_, AppState>) -> CmdResult<Value> 
     // Try to read .elai_cc/profiles/profile.toml on the project root if
     // present; otherwise return a permissive default.
     let profile_path = state
-        .project_root
+        .project_root_snapshot()
         .join(".elai_cc")
         .join("profiles")
         .join("profile.toml");
@@ -3172,7 +3194,7 @@ pub async fn reindex_now(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> CmdResult<Value> {
-    let project_root = (*state.project_root).clone();
+    let project_root = state.project_root_snapshot();
     let app_clone = app.clone();
 
     let _ = app.emit("reindex-progress", json!({ "status": "started" }));
@@ -3532,7 +3554,7 @@ pub async fn cancel_research(
 /// Returns `{"toml": "<raw text>"}` so the frontend can display + edit it.
 #[tauri::command]
 pub fn fetch_settings_get(state: State<'_, AppState>) -> CmdResult<Value> {
-    let config_path = state.project_root.join("elai_cc.toml");
+    let config_path = state.project_root_snapshot().join("elai_cc.toml");
     let toml_text = if config_path.exists() {
         std::fs::read_to_string(&config_path).map_err(|e| {
             format!("failed to read elai_cc.toml: {e}")
@@ -3554,7 +3576,7 @@ pub fn fetch_settings_set(
     toml_text
         .parse::<toml::Value>()
         .map_err(|e| format!("invalid TOML: {e}"))?;
-    let config_path = state.project_root.join("elai_cc.toml");
+    let config_path = state.project_root_snapshot().join("elai_cc.toml");
     std::fs::write(&config_path, toml_text.as_bytes())
         .map_err(|e| format!("failed to write elai_cc.toml: {e}"))?;
     Ok(json!({ "ok": true, "path": config_path.display().to_string() }))
@@ -4532,7 +4554,7 @@ pub fn apply_scaffold_template(
     }
 
     let target =
-        ensure_within_project_root(&target_raw, &state.project_root, "target_dir")?;
+        ensure_within_project_root(&target_raw, &state.project_root_snapshot(), "target_dir")?;
 
     let templates_root = default_templates_dir();
     let vars = scaffold::default_build_vars(
@@ -4560,7 +4582,7 @@ pub async fn fim_fill_section(
 ) -> CmdResult<Value> {
     let canonical = validate_existing_path(&target_path, "target_path")?;
     let canonical =
-        ensure_within_project_root(&canonical, &state.project_root, "target_path")?;
+        ensure_within_project_root(&canonical, &state.project_root_snapshot(), "target_path")?;
 
     let original = tokio::fs::read_to_string(&canonical)
         .await
@@ -4659,7 +4681,7 @@ pub async fn run_web_build_check(
 ) -> CmdResult<Value> {
     let project_path = validate_existing_path(&project_dir, "project_dir")?;
     let project_path =
-        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+        ensure_within_project_root(&project_path, &state.project_root_snapshot(), "project_dir")?;
     let trimmed_cmd = command.trim();
     if trimmed_cmd.is_empty() {
         return Err("command is empty".into());
@@ -4677,7 +4699,7 @@ pub async fn run_web_build_check(
         project_path.join(raw_output)
     };
     let output_path =
-        ensure_within_project_root(&resolved_output, &state.project_root, "output_dir")?;
+        ensure_within_project_root(&resolved_output, &state.project_root_snapshot(), "output_dir")?;
 
     let result = elai_web_validator::run_web_build(&project_path, trimmed_cmd, &output_path)
         .await
@@ -4703,7 +4725,7 @@ pub async fn start_dev_server_for_project(
     }
     let project_path = validate_existing_path(&project_dir, "project_dir")?;
     let project_path =
-        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+        ensure_within_project_root(&project_path, &state.project_root_snapshot(), "project_dir")?;
     let trimmed_cmd = command.trim();
     if trimmed_cmd.is_empty() {
         return Err("command is empty".into());
@@ -4784,7 +4806,7 @@ pub async fn run_web_lint_check(
 ) -> CmdResult<Value> {
     let project_path = validate_existing_path(&project_dir, "project_dir")?;
     let project_path =
-        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+        ensure_within_project_root(&project_path, &state.project_root_snapshot(), "project_dir")?;
     let cfg = elai_web_validator::lint::LintRunnerConfig {
         eslint,
         stylelint,
@@ -4814,7 +4836,7 @@ pub async fn run_lighthouse_audit(
 ) -> CmdResult<Value> {
     let project_path = validate_existing_path(&project_dir, "project_dir")?;
     let project_path =
-        ensure_within_project_root(&project_path, &state.project_root, "project_dir")?;
+        ensure_within_project_root(&project_path, &state.project_root_snapshot(), "project_dir")?;
     let trimmed_url = url.trim();
     if trimmed_url.is_empty() {
         return Err("url is empty".into());

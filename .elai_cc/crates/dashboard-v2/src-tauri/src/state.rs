@@ -201,8 +201,11 @@ pub struct AppState {
     /// `None` when no SSB DB is reachable (commands that write return an
     /// error string).
     pub writer: Option<Arc<Ssb>>,
-    /// Active project root (current working directory at launch).
-    pub project_root: Arc<PathBuf>,
+    /// Active project root. Initialised to the dashboard launch cwd; replaced
+    /// by `open_project_from_folder` when the user picks a project. Reads
+    /// must go through `project_root_snapshot()` so existing call sites do
+    /// not race against a concurrent switch.
+    pub project_root: Arc<Mutex<PathBuf>>,
     /// Active project_id used when emitting `task_submitted` / `chat_message`
     /// / `execution_mode_changed` rows. Defaults to "default".
     pub project_id: Arc<Mutex<String>>,
@@ -382,7 +385,7 @@ impl AppState {
         Self {
             viewer,
             writer,
-            project_root: Arc::new(project_root),
+            project_root: Arc::new(Mutex::new(project_root)),
             project_id: Arc::new(Mutex::new("default".to_owned())),
             gate_mode: Arc::new(Mutex::new("interactive".to_owned())),
             execution_mode: Arc::new(Mutex::new(
@@ -408,6 +411,26 @@ impl AppState {
             dev_servers: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             feasibility_prober,
             media_validation: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Cheap clone of the current project root. Use this in every command
+    /// that reads `state.project_root` — direct `&state.project_root` reads
+    /// no longer compile because the field is `Arc<Mutex<PathBuf>>`. Falls
+    /// back to the dashboard launch cwd if the mutex is poisoned.
+    pub fn project_root_snapshot(&self) -> PathBuf {
+        self.project_root
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| resolve_project_root())
+    }
+
+    /// Replace the active project root. Called by `open_project_from_folder`
+    /// after the picker resolves a directory. Silent no-op on poison so a
+    /// transient lock failure cannot wedge subsequent project switches.
+    pub fn set_project_root(&self, path: PathBuf) {
+        if let Ok(mut g) = self.project_root.lock() {
+            *g = path;
         }
     }
 

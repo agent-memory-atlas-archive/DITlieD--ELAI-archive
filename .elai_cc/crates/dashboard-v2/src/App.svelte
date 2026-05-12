@@ -12,6 +12,11 @@
   // where the 'started' event would fire before the listener registers.
   onMount(() => {
     reindex.bootstrap();
+    // Sync persisted execution mode (localStorage) into the backend mirror —
+    // backend AppState resets to LOCAL on every launch, so without this the
+    // picker shows the saved mode but the provider router would use the
+    // default until the user re-toggled.
+    void session.reconcileMode();
     return () => reindex.teardown();
   });
 </script>

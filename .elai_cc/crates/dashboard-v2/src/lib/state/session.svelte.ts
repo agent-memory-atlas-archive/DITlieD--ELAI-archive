@@ -9,11 +9,32 @@
 // ============================================================
 
 import type { ProjectSummary, ExecutionMode, GateMode } from '../api/types';
-import { logStub, get_gate_status } from '../api/stub';
+import { logStub, get_gate_status, set_execution_mode } from '../api/stub';
 import { workspace } from './workspace.svelte';
 
 const RECENTS_STORAGE_KEY = 'elai.dashboard-v2.recent_projects';
+const MODE_STORAGE_KEY = 'elai.dashboard-v2.execution_mode';
 const RECENTS_MAX = 12;
+
+function loadMode(): ExecutionMode {
+  if (typeof localStorage === 'undefined') return 'LOCAL';
+  try {
+    const raw = localStorage.getItem(MODE_STORAGE_KEY);
+    if (raw === 'LOCAL' || raw === 'CLOUD' || raw === 'HYBRID') return raw;
+  } catch {
+    // SecurityError under file:// — fall through
+  }
+  return 'LOCAL';
+}
+
+function saveMode(m: ExecutionMode) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(MODE_STORAGE_KEY, m);
+  } catch {
+    // QuotaExceeded / SecurityError — degrade silently
+  }
+}
 
 function loadRecents(): ProjectSummary[] {
   if (typeof localStorage === 'undefined') return [];
@@ -47,7 +68,7 @@ function saveRecents(list: ProjectSummary[]) {
 function createSession() {
   let screen = $state<'selector' | 'workspace'>('selector');
   let currentProject = $state<ProjectSummary | null>(null);
-  let mode = $state<ExecutionMode>('LOCAL');
+  let mode = $state<ExecutionMode>(loadMode());
   let gateMode = $state<GateMode>('INTERACTIVE');
   let model = $state<string>('Qwen2.5-Coder-7B-Instruct-abliterated');
   let sessionId = $state<string>(`s-${Date.now()}`);
@@ -82,8 +103,30 @@ function createSession() {
       saveRecents(recentProjects);
     },
 
+    /** Push the persisted (localStorage) execution mode to the backend
+     *  AppState.execution_mode mirror at boot. Frontend is the source of
+     *  truth across restarts because AppState lives in-process and resets
+     *  to LOCAL (or ELAI_DEFAULT_EXECUTION_MODE) every launch. Best-effort:
+     *  silent no-op on IPC failure so a missing Tauri shell does not block
+     *  the picker. */
+    async reconcileMode(): Promise<void> {
+      try {
+        await set_execution_mode(mode);
+      } catch (err) {
+        console.warn('[session] reconcileMode failed', err);
+      }
+    },
+
     setMode(m: ExecutionMode) {
       mode = m;
+      saveMode(m);
+      // Fire-and-forget backend sync so the AppState mirror, SSB
+      // ExecutionModeChanged row, and any future provider-router lookup all
+      // see the same value. Errors are swallowed — the localStorage write
+      // already happened and the UI reflects the new mode regardless.
+      void set_execution_mode(m).catch((err) => {
+        console.warn('[session] set_execution_mode failed', err);
+      });
       logStub('session.setMode', { mode: m });
     },
 
