@@ -3,7 +3,12 @@
   import { Send, Slash } from '@lucide/svelte';
   import { commands } from '../state/commands.svelte';
   import { fsm } from '../state/fsm.svelte';
+  import { session } from '../state/session.svelte';
   import { workspace } from '../state/workspace.svelte';
+
+  // B-39D: ranks for the dotted effort indicator below the input.
+  const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
+  const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
   import { submit_intervention_response, logStub, continue_task, get_recent_tasks } from '../api/stub';
   import type { RecentTask } from '../api/types';
@@ -622,6 +627,44 @@
       </div>
     {/if}
 
+    <!-- B-39D: Thinking + Effort affordances. Compact ghost row above the
+         shell. When thinkingEnabled, the next submit invokes the REFLECT
+         pipeline (TRIAGE → REASONER N → AUDITOR → SYNTHESIZE) instead of
+         streaming. Effort level maps to REASONER best-of-N width. -->
+    <div class="reflect-controls">
+      <button
+        class="reflect-toggle"
+        class:reflect-toggle--on={session.thinkingEnabled}
+        type="button"
+        aria-label={session.thinkingEnabled ? 'Disable Thinking (REFLECT off)' : 'Enable Thinking (REFLECT pipeline)'}
+        title="When ON: chat turn goes through TRIAGE → REASONER best-of-N → AUDITOR → SYNTHESIZE. +5-25s latency per turn; deeper answers."
+        onclick={() => session.toggleThinking()}
+      >
+        <span class="reflect-dot" aria-hidden="true"></span>
+        <span class="reflect-label mono">thinking {session.thinkingEnabled ? 'on' : 'off'}</span>
+      </button>
+      <button
+        class="reflect-effort"
+        class:reflect-effort--dim={!session.thinkingEnabled}
+        type="button"
+        aria-label={`Cycle effort level (current: ${session.effortLevel})`}
+        title="REASONER best-of-N width: low=2 · medium=4 · high=6 · max=8 candidates"
+        disabled={!session.thinkingEnabled}
+        onclick={() => session.cycleEffort()}
+      >
+        <span class="reflect-effort-label mono">effort</span>
+        <span class="reflect-effort-value mono">{session.effortLevel}</span>
+        <span class="reflect-effort-dots" aria-hidden="true">
+          {#each EFFORT_LEVELS as lvl}
+            <span
+              class="reflect-effort-dot"
+              class:reflect-effort-dot--filled={EFFORT_RANK[session.effortLevel] >= EFFORT_RANK[lvl]}
+            ></span>
+          {/each}
+        </span>
+      </button>
+    </div>
+
     <!-- Outlined chat shell. Background lifts to var(--bg-input);
          border accents teal on focus-within. -->
     <div class="input-shell" class:input-shell--focused={commands.inputFocused}>
@@ -1111,6 +1154,95 @@
   /* ---- Mono utility ---- */
   .mono {
     font-family: var(--font-mono);
+  }
+
+  /* ---- B-39D: Thinking + Effort affordances above the chat shell ---- */
+  .reflect-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: 0 var(--s-4) 4px;
+    flex-wrap: wrap;
+  }
+  .reflect-toggle,
+  .reflect-effort {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-pill);
+    padding: 3px 10px;
+    font-size: 10.5px;
+    color: var(--text-ghost);
+    cursor: pointer;
+    outline: none;
+    transition:
+      color var(--dur-fast) var(--ease-std),
+      border-color var(--dur-fast) var(--ease-std),
+      background var(--dur-fast) var(--ease-std);
+  }
+  .reflect-toggle:hover,
+  .reflect-effort:hover:not(:disabled) {
+    color: var(--text-secondary);
+    border-color: var(--border-default);
+  }
+  .reflect-toggle:focus-visible,
+  .reflect-effort:focus-visible {
+    box-shadow: var(--ring);
+  }
+  .reflect-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-disabled);
+    transition: background var(--dur-fast) var(--ease-std), box-shadow var(--dur-fast) var(--ease-std);
+  }
+  .reflect-toggle--on {
+    color: var(--teal);
+    border-color: var(--teal-line);
+    background: var(--teal-ghost);
+  }
+  .reflect-toggle--on .reflect-dot {
+    background: var(--teal);
+    box-shadow: 0 0 4px 0 var(--teal);
+  }
+  .reflect-label {
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+  }
+  .reflect-effort--dim {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .reflect-effort-label {
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    opacity: 0.7;
+  }
+  .reflect-effort-value {
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+    font-size: 10px;
+  }
+  .reflect-effort-dots {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 2px;
+  }
+  .reflect-effort-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-disabled);
+    opacity: 0.55;
+    transition: background var(--dur-fast) var(--ease-std), opacity var(--dur-fast) var(--ease-std);
+  }
+  .reflect-effort-dot--filled {
+    background: var(--teal);
+    opacity: 1;
   }
 
   /* ---- Code-answer card (EXPLORE_CODE wire) ---- */

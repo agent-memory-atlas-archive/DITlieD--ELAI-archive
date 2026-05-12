@@ -28,7 +28,7 @@
   // Both auto-uncollapse the secondary panel as part of the operation.
   const MIME_TAB = 'text/elai-tab';
   const MIME_TAB_TYPE = 'application/x-elai-tab-type';
-  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'explore', 'monitor', 'settings']);
+  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'monitor', 'settings']);
 
   function dropStripAcceptsDrag(e: DragEvent): boolean {
     if (!e.dataTransfer) return false;
@@ -213,29 +213,45 @@
   /*
    * Collapsed-secondary drop target.
    * Visible only while a tab drag is in progress (`workspace.tabDragging`).
-   * Idle: 8px wide ghost strip on the right edge.
-   * Hover: 80px wide with brighter teal border + soft fill.
+   * Idle: 64px wide tinted strip with hint text — wide enough to be
+   * discoverable. 8px was the prior value and users couldn't find it.
+   * Hover: expands to 120px with brighter teal border + soft fill.
    */
   .drop-strip {
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
-    width: 8px;
-    border-left: 1px dashed var(--teal-line);
-    background: transparent;
+    width: 64px;
+    border-left: 2px dashed var(--teal-line);
+    background: var(--teal-soft);
+    opacity: 0.55;
     pointer-events: auto;
     z-index: 8;
-    transition: width 140ms var(--ease-std), background 140ms var(--ease-std), border-color 140ms var(--ease-std);
+    transition: width 140ms var(--ease-std), background 140ms var(--ease-std), border-color 140ms var(--ease-std), opacity 140ms var(--ease-std);
+    cursor: copy;
   }
 
-  .drop-strip:hover {
-    width: 24px;
-    background: var(--teal-soft);
+  .drop-strip::after {
+    content: "Drop here";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-90deg);
+    transform-origin: center;
+    font-family: var(--font-sans, sans-serif);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--teal);
+    white-space: nowrap;
+    pointer-events: none;
+    text-transform: uppercase;
   }
 
+  .drop-strip:hover,
   .drop-strip--hover {
-    width: 80px;
+    width: 120px;
+    opacity: 1;
     background: var(--teal-soft);
     border-left-color: var(--teal);
   }

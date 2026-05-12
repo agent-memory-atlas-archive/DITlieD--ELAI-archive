@@ -1294,6 +1294,7 @@ dependencies = [
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
+ "elai-reasoning",
  "elai-rules",
  "elai-tools",
  "elai-web-validator",

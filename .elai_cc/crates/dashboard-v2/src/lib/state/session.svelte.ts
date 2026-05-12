@@ -14,7 +14,50 @@ import { workspace } from './workspace.svelte';
 
 const RECENTS_STORAGE_KEY = 'elai.dashboard-v2.recent_projects';
 const MODE_STORAGE_KEY = 'elai.dashboard-v2.execution_mode';
+const THINKING_STORAGE_KEY = 'elai.dashboard-v2.thinking_enabled';
+const EFFORT_STORAGE_KEY = 'elai.dashboard-v2.effort_level';
 const RECENTS_MAX = 12;
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'max'] as const;
+
+function loadThinking(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(THINKING_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveThinking(v: boolean) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(THINKING_STORAGE_KEY, v ? '1' : '0');
+  } catch {
+    // QuotaExceeded / SecurityError — degrade silently
+  }
+}
+
+function loadEffort(): EffortLevel {
+  if (typeof localStorage === 'undefined') return 'medium';
+  try {
+    const raw = localStorage.getItem(EFFORT_STORAGE_KEY);
+    if (raw && (EFFORT_LEVELS as readonly string[]).includes(raw)) return raw as EffortLevel;
+  } catch {
+    // fall through
+  }
+  return 'medium';
+}
+
+function saveEffort(v: EffortLevel) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(EFFORT_STORAGE_KEY, v);
+  } catch {
+    // QuotaExceeded / SecurityError — degrade silently
+  }
+}
 
 function loadStoredMode(): ExecutionMode | null {
   if (typeof localStorage === 'undefined') return null;
@@ -79,6 +122,13 @@ function createSession() {
   let model = $state<string>('Qwen2.5-Coder-7B-Instruct-abliterated');
   let sessionId = $state<string>(`s-${Date.now()}`);
   let recentProjects = $state<ProjectSummary[]>(loadRecents());
+  // B-39D: REFLECT pipeline toggle + effort level. Persisted in localStorage.
+  // When `thinkingEnabled` is true, start_chat_stream routes through the
+  // ChatReflectPipeline (TRIAGE→REASONER N→AUDITOR→SYNTHESIZE) instead of
+  // forwarding SSE chunks. `effortLevel` maps to REASONER best-of-N width
+  // (low=2, medium=4, high=6, max=8).
+  let thinkingEnabled = $state<boolean>(loadThinking());
+  let effortLevel = $state<EffortLevel>(loadEffort());
 
   return {
     get screen() { return screen; },
@@ -88,6 +138,8 @@ function createSession() {
     get model() { return model; },
     get sessionId() { return sessionId; },
     get recentProjects() { return recentProjects; },
+    get thinkingEnabled() { return thinkingEnabled; },
+    get effortLevel() { return effortLevel; },
 
     openSelector() {
       screen = 'selector';
@@ -201,6 +253,29 @@ function createSession() {
     setModel(m: string) {
       model = m;
       logStub('session.setModel', { model: m });
+    },
+
+    /** B-39D toggle. When true, the next chat turn submits with
+     *  thinking_enabled=true and the backend invokes ChatReflectPipeline. */
+    setThinking(v: boolean) {
+      thinkingEnabled = v;
+      saveThinking(v);
+      logStub('session.setThinking', { thinkingEnabled: v });
+    },
+    toggleThinking() {
+      this.setThinking(!thinkingEnabled);
+    },
+
+    /** B-39D effort level. Maps to REASONER best-of-N width. */
+    setEffort(level: EffortLevel) {
+      effortLevel = level;
+      saveEffort(level);
+      logStub('session.setEffort', { effortLevel: level });
+    },
+    cycleEffort() {
+      const idx = EFFORT_LEVELS.indexOf(effortLevel);
+      const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+      this.setEffort(next);
     },
   };
 }

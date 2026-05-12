@@ -4,7 +4,6 @@
     Layers,
     Play,
     GitBranch,
-    Search,
     Activity,
     Settings,
     UserRound,
@@ -30,9 +29,8 @@
     { type: 'plan',     label: 'Plan',     shortcut: 'Ctrl+2', Icon: Layers },
     { type: 'activity', label: 'Activity', shortcut: 'Ctrl+3', Icon: Play },
     { type: 'review',   label: 'Review',   shortcut: 'Ctrl+4', Icon: GitBranch },
-    { type: 'explore',  label: 'Explore',  shortcut: 'Ctrl+5', Icon: Search },
-    { type: 'monitor',  label: 'Monitor',  shortcut: 'Ctrl+6', Icon: Activity },
-    { type: 'settings', label: 'Settings', shortcut: 'Ctrl+7', Icon: Settings },
+    { type: 'monitor',  label: 'Monitor',  shortcut: 'Ctrl+5', Icon: Activity },
+    { type: 'settings', label: 'Settings', shortcut: 'Ctrl+6', Icon: Settings },
   ];
 
   // Derive active window type from the workspace primary panel's active tab

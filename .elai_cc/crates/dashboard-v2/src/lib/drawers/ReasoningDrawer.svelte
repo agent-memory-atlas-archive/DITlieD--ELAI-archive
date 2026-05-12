@@ -5,10 +5,76 @@
   import { logStub } from '../api/stub';
   import type { FeasibilityOutcome } from '../api/types';
 
+  // B-39D: live REFLECT pipeline timeline. Subscribes to the singleton
+  // `reflect-progress` Tauri event emitted by TauriEventSink. Each stage
+  // pushes a stamped row; we keep the last 12. Turn boundary is detected
+  // by stream_id change — when a new stream_id appears, clear the buffer.
+  type ReflectStage =
+    | { stage: 'triage'; ts: number; stream_id: string; class: string }
+    | { stage: 'candidate'; ts: number; stream_id: string; candidate_index: number; content_preview: string }
+    | { stage: 'audit_verdict'; ts: number; stream_id: string; best_index: number; rationale_preview: string }
+    | { stage: 'refined'; ts: number; stream_id: string; total_tokens_used: number; synthesis_preview: string };
+
+  let reflectTimeline = $state<ReflectStage[]>([]);
+  let reflectCurrentStream = $state<string | null>(null);
+
   onMount(() => {
     reasoningData.bootstrap();
-    return reasoningData.teardown;
+
+    let unlistenReflect: (() => void) | null = null;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlistenReflect = await listen<ReflectStage>('reflect-progress', (e) => {
+          const incoming = e.payload as ReflectStage & { stream_id?: string };
+          const sid = incoming.stream_id ?? '';
+          // Turn boundary: new stream_id resets the timeline.
+          if (reflectCurrentStream !== sid) {
+            reflectCurrentStream = sid;
+            reflectTimeline = [];
+          }
+          reflectTimeline = [
+            ...reflectTimeline,
+            { ...incoming, ts: Date.now() } as ReflectStage,
+          ].slice(-12);
+        });
+      } catch (err) {
+        console.debug('[ReasoningDrawer] reflect-progress listen failed', err);
+      }
+    })();
+
+    return () => {
+      try { unlistenReflect?.(); } catch (err) { console.debug('reflect unlisten', err); }
+      reasoningData.teardown();
+    };
   });
+
+  function reflectStageLabel(s: ReflectStage): string {
+    switch (s.stage) {
+      case 'triage':        return `triage → ${s.class}`;
+      case 'candidate':     return `reasoner #${s.candidate_index}`;
+      case 'audit_verdict': return `auditor → pick #${s.best_index}`;
+      case 'refined':       return `synthesize · ${s.total_tokens_used}t`;
+    }
+  }
+
+  function reflectStageDetail(s: ReflectStage): string {
+    switch (s.stage) {
+      case 'triage':        return '';
+      case 'candidate':     return s.content_preview;
+      case 'audit_verdict': return s.rationale_preview;
+      case 'refined':       return s.synthesis_preview;
+    }
+  }
+
+  function reflectStageTone(s: ReflectStage): 'teal' | 'steel' | 'warn' | 'neutral' {
+    switch (s.stage) {
+      case 'triage':        return 'steel';
+      case 'candidate':     return 'neutral';
+      case 'audit_verdict': return 'warn';
+      case 'refined':       return 'teal';
+    }
+  }
 
   const d = reasoningData;
 
@@ -256,6 +322,23 @@
   <!-- 7. REFLECT -->
   <Card variant="plain" padding={12}>
     <div class="section-label">REFLECT</div>
+
+    <!-- B-39D live timeline: each stage transition emitted by the
+         ChatReflectPipeline pushes a row here. Cleared on turn boundary
+         (new stream_id from the singleton reflect-progress event). -->
+    {#if reflectTimeline.length > 0}
+      <div class="reflect-timeline" aria-label="Live REFLECT pipeline stages">
+        {#each reflectTimeline as st, i (i + '-' + st.stage + '-' + st.ts)}
+          <div class="reflect-tl-row">
+            <Badge tone={reflectStageTone(st)} size="xs">{reflectStageLabel(st)}</Badge>
+            {#if reflectStageDetail(st)}
+              <span class="reflect-tl-detail">{reflectStageDetail(st)}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     <div class="reflect-rows">
       <div class="reflect-row">
         <span class="reflect-key">Enabled</span>
@@ -603,6 +686,30 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  /* B-39D live timeline rows above the static end-of-turn rows */
+  .reflect-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--border-subtle);
+  }
+  .reflect-tl-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    line-height: 1.4;
+  }
+  .reflect-tl-detail {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
   }
 
   .reflect-row {

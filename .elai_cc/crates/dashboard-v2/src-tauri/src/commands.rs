@@ -2999,8 +2999,11 @@ pub async fn start_chat_stream(
     state: State<'_, AppState>,
     prompt: String,
     request_id: String,
+    thinking_enabled: Option<bool>,
+    effort_level: Option<String>,
 ) -> CmdResult<Value> {
     let stream_id = request_id.clone();
+    let reflect_on = thinking_enabled.unwrap_or(false);
 
     // Resolve the routing target from execution_mode. CLOUD -> api.anthropic.com
     // with OAuth Bearer + selected cloud model. LOCAL / HYBRID / anything else
@@ -3144,6 +3147,69 @@ pub async fn start_chat_stream(
             "messages": [{ "role": "user", "content": prompt }],
         })
     };
+
+    // B-39D — REFLECT branch. When Thinking is on, route the turn through
+    // ChatReflectPipeline (TRIAGE → REASONER best-of-N → AUDITOR → SYNTHESIZE)
+    // instead of forwarding SSE chunks. Stage transitions emit
+    // `reflect-progress:{stream_id}` events for the ReasoningDrawer; the
+    // final reply is delivered as a single `chat-stream:{stream_id}` text
+    // event so the frontend renders it the same way as a streamed reply.
+    if reflect_on {
+        let owned_headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        let client = std::sync::Arc::new(crate::reflect_bridge::HttpInferenceClient::new(
+            state.http.clone(),
+            messages_url.clone(),
+            owned_headers,
+            model_id.clone(),
+        ));
+        let sink = crate::reflect_bridge::TauriEventSink::new(app.clone(), stream_id.clone())
+            .into_arc();
+        let n_candidates = crate::reflect_bridge::effort_to_n_candidates(effort_level.as_deref());
+        let config = elai_reasoning::ChatReflectConfig {
+            enabled: true,
+            n_candidates,
+            budget_cap_tokens: 20_000,
+            max_refine_iterations: elai_reasoning::REFINE_CAP,
+        };
+        let pipeline = elai_reasoning::ChatReflectPipeline::new(config, Some(sink));
+
+        let active_streams = state.active_streams.clone();
+        let stream_id_task = stream_id.clone();
+        let app_task = app.clone();
+        let prompt_owned = prompt.clone();
+
+        let join = tokio::task::spawn(async move {
+            let client_ref: &dyn elai_reasoning::ChatInferenceClient = &*client;
+            let output = pipeline
+                .run(stream_id_task.clone(), &prompt_owned, client_ref)
+                .await;
+            let _ = app_task.emit(
+                &format!("chat-stream:{stream_id_task}"),
+                json!({ "text": output.final_reply, "stream_id": stream_id_task }),
+            );
+            let _ = app_task.emit(
+                &format!("chat-stream-end:{stream_id_task}"),
+                json!({
+                    "stream_id": stream_id_task,
+                    "stop_reason": "end_turn",
+                    "reflect_skipped": output.skipped,
+                    "reflect_class": output.turn_class.as_wire_str(),
+                    "reflect_token_total": output.token_summary.total,
+                }),
+            );
+            if let Ok(mut g) = active_streams.lock() {
+                g.remove(&stream_id_task);
+            }
+        });
+
+        if let Ok(mut guard) = state.active_streams.lock() {
+            guard.insert(stream_id.clone(), join.abort_handle());
+        }
+        return Ok(json!({ "streamId": stream_id, "reflect": true }));
+    }
 
     let streaming_client = state.streaming_http.clone();
     let active_streams = state.active_streams.clone();

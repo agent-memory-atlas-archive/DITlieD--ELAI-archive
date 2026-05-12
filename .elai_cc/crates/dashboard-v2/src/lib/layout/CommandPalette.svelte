@@ -23,13 +23,14 @@
   }
 
   const ALL_ACTIONS: PaletteAction[] = [
+    { id: 'toggle-thinking', label: 'Toggle Thinking (REFLECT pipeline)', handler: () => session.toggleThinking() },
+    { id: 'cycle-effort',    label: 'Cycle Effort Level (low → medium → high → max)', handler: () => session.cycleEffort() },
     { id: 'open-command',   label: 'Open Command',   kbd: 'Ctrl+1', handler: () => workspace.setPrimaryWindow('command') },
     { id: 'open-plan',      label: 'Open Plan',      kbd: 'Ctrl+2', handler: () => workspace.setPrimaryWindow('plan') },
     { id: 'open-activity',  label: 'Open Activity',  kbd: 'Ctrl+3', handler: () => workspace.setPrimaryWindow('activity') },
     { id: 'open-review',    label: 'Open Review',    kbd: 'Ctrl+4', handler: () => workspace.setPrimaryWindow('review') },
-    { id: 'open-explore',   label: 'Open Explore',   kbd: 'Ctrl+5', handler: () => workspace.setPrimaryWindow('explore') },
-    { id: 'open-monitor',   label: 'Open Monitor',   kbd: 'Ctrl+6', handler: () => workspace.setPrimaryWindow('monitor') },
-    { id: 'open-settings',  label: 'Open Settings',  kbd: 'Ctrl+7', handler: () => workspace.setPrimaryWindow('settings') },
+    { id: 'open-monitor',   label: 'Open Monitor',   kbd: 'Ctrl+5', handler: () => workspace.setPrimaryWindow('monitor') },
+    { id: 'open-settings',  label: 'Open Settings',  kbd: 'Ctrl+6', handler: () => workspace.setPrimaryWindow('settings') },
     { id: 'drawer-knowledge',       label: 'Toggle Knowledge Drawer',            handler: () => toggleDrawer('knowledge') },
     { id: 'drawer-reasoning',       label: 'Toggle Reasoning Drawer',            handler: () => toggleDrawer('reasoning') },
     { id: 'drawer-orchestration',   label: 'Toggle Orchestration Drawer',        handler: () => toggleDrawer('orchestration') },

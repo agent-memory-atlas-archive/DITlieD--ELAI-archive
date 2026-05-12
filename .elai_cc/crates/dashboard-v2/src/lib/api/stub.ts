@@ -1364,11 +1364,17 @@ export async function get_recent_tasks(limit: number): Promise<unknown[]> {
 export async function stream_chat(
   message: string,
   requestId: string,
-): Promise<{ streamId: string; offline?: boolean }> {
-  logStub('stream_chat', { message, requestId });
-  const live = await tryInvoke<{ streamId: string; offline?: boolean }>(
+  options?: { thinkingEnabled?: boolean; effortLevel?: string },
+): Promise<{ streamId: string; offline?: boolean; reflect?: boolean }> {
+  logStub('stream_chat', { message, requestId, options });
+  const live = await tryInvoke<{ streamId: string; offline?: boolean; reflect?: boolean }>(
     'start_chat_stream',
-    { prompt: message, requestId },
+    {
+      prompt: message,
+      requestId,
+      thinkingEnabled: options?.thinkingEnabled ?? false,
+      effortLevel: options?.effortLevel ?? null,
+    },
   );
   if (live) return live;
   // Browser-dev mock: simulate streaming via setTimeout token drip.
@@ -1402,6 +1408,7 @@ export async function streamChat(
   onToken: (text: string) => void,
   onEnd: (stopReason: string) => void,
   onError: (message: string, offline: boolean) => void,
+  options?: { thinkingEnabled?: boolean; effortLevel?: string },
 ): Promise<() => void> {
   if (!TAURI_AVAILABLE) {
     // Browser-dev mock: drip tokens with 80ms delay.
@@ -1448,7 +1455,7 @@ export async function streamChat(
   });
 
   // Fire the stream — this returns immediately with { streamId }.
-  const result = await stream_chat(prompt, requestId);
+  const result = await stream_chat(prompt, requestId, options);
   if (result.offline) {
     unlistenToken();
     unlistenEnd();

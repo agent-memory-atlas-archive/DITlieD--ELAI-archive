@@ -20,7 +20,6 @@ const SIDEBAR_WINDOWS: WindowType[] = [
   'plan',
   'activity',
   'review',
-  'explore',
   'monitor',
   'settings',
 ];
@@ -53,18 +52,12 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     id: 'sidebar-5',
     combo: 'Ctrl+5',
-    description: 'Switch to Explore window',
-    action: () => workspace.setPrimaryWindow('explore'),
-  },
-  {
-    id: 'sidebar-6',
-    combo: 'Ctrl+6',
     description: 'Switch to Monitor window',
     action: () => workspace.setPrimaryWindow('monitor'),
   },
   {
-    id: 'sidebar-7',
-    combo: 'Ctrl+7',
+    id: 'sidebar-6',
+    combo: 'Ctrl+6',
     description: 'Switch to Settings window',
     action: () => workspace.setPrimaryWindow('settings'),
   },

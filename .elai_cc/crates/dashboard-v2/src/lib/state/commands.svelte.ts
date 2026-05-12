@@ -9,7 +9,6 @@ import {
   logStub,
   run_research,
   submit_task,
-  run_explore_query,
   query_knowledge_engine,
   continue_task,
   get_media_validations,
@@ -21,6 +20,7 @@ import { classifyIntent } from '../utils/intent';
 import { parseSlashCommand, KNOWN_SLASH_COMMANDS } from '../utils/slash-parse';
 import { workspace } from './workspace.svelte';
 import { mediaValidation } from './media_validation.svelte';
+import { session } from './session.svelte';
 
 // B-24 Phase 4I Group C8 — re-export the 4 media commands so consumers
 // that import from 'state/commands' have a single entry point. The
@@ -160,26 +160,8 @@ function createCommands() {
       return;
     }
 
-    if (command === '/explore') {
-      try {
-        const answer = await run_explore_query(arg);
-        appendCard('response', {
-          kind: 'response',
-          text: answer.answer,
-          streaming: false,
-          stream_id: makeId(),
-        });
-      } catch (err) {
-        appendCard('error', {
-          kind: 'error',
-          message: `run_explore_query failed: ${String(err)}`,
-          source: 'sidecar',
-          step_id: undefined,
-          recoverable: true,
-        });
-      }
-      return;
-    }
+    // /explore handled earlier by the EXPLORE_CODE short-circuit in submit();
+    // that path calls query_knowledge_engine and renders a code-answer card.
 
     if (command === '/continue') {
       try {
@@ -265,6 +247,10 @@ function createCommands() {
             step_id: undefined,
             recoverable: true,
           });
+        },
+        {
+          thinkingEnabled: session.thinkingEnabled,
+          effortLevel: session.effortLevel,
         },
       );
     } catch (err) {

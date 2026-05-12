@@ -3,7 +3,7 @@
   import WindowHost from './WindowHost.svelte';
   import { workspace } from '../state/workspace.svelte';
 
-  type WindowType = 'command' | 'plan' | 'activity' | 'review' | 'explore' | 'monitor' | 'settings';
+  type WindowType = 'command' | 'plan' | 'activity' | 'review' | 'monitor' | 'settings';
 
   interface TabDef {
     id: string;
@@ -22,13 +22,12 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'explore', 'monitor', 'settings'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
     activity: 'Activity',
     review:   'Review',
-    explore:  'Explore',
     monitor:  'Monitor',
     settings: 'Settings',
   };

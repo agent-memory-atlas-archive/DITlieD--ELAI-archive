@@ -8,6 +8,7 @@
 
 mod commands;
 mod media_validation;
+mod reflect_bridge;
 mod remote_sidecar_helpers;
 mod scaffold_applier;
 mod state;

@@ -47,7 +47,6 @@ export type WindowType =
   | 'plan'
   | 'activity'
   | 'review'
-  | 'explore'
   | 'monitor'
   | 'settings';
 

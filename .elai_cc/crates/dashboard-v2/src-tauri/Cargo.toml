@@ -37,6 +37,7 @@ elai-core = { path = "../../core" }
 elai-orchestrator = { path = "../../orchestrator", features = ["sidecar"] }
 elai-providers = { path = "../../providers", features = ["sidecar"] }
 elai-knowledge = { path = "../../knowledge" }
+elai-reasoning = { path = "../../reasoning" }
 elai-rules = { path = "../../rules" }
 elai-plugins = { path = "../../plugins" }
 elai-tools = { path = "../../tools" }

@@ -2,7 +2,6 @@
   import type { WindowType } from '../api/types';
 
   import CommandWindow from '../windows/CommandWindow.svelte';
-  import ExploreWindow from '../windows/ExploreWindow.svelte';
   import ActivityWindow from '../windows/ActivityWindow.svelte';
   import PlanWindow from '../windows/PlanWindow.svelte';
   import ReviewWindow from '../windows/ReviewWindow.svelte';
@@ -20,8 +19,6 @@
 <div class="window-host-container">
   {#if type === 'command'}
     <CommandWindow />
-  {:else if type === 'explore'}
-    <ExploreWindow />
   {:else if type === 'activity'}
     <ActivityWindow />
   {:else if type === 'plan'}
