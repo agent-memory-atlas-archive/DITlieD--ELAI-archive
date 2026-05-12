@@ -87,7 +87,13 @@ pub fn spawn_subscriber(
     media_state: Arc<tokio::sync::RwLock<std::collections::HashMap<String, MediaValidationEntry>>>,
 ) {
     let mut rx = ssb_writer.subscribe();
-    tokio::spawn(async move {
+    // tauri::async_runtime::spawn (not tokio::spawn) because lib.rs
+    // intentionally mem::forget's the runtime used for AppState::new() so the
+    // SSB write_loop survives, but the leaked runtime is not the *current*
+    // runtime when Tauri's .setup() callback fires. Tauri's async_runtime is
+    // tokio-backed by default and provides a spawn that doesn't require a
+    // current-runtime context — see Tauri 2 docs `tauri::async_runtime`.
+    tauri::async_runtime::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(entry) => {
