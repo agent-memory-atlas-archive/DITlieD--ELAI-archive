@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use elai_ipc_types::ToolId;
 use elai_web_validator::{
-    start_dev_server, DevServerHandle, WebValidationTier, WebValidatorError,
+    run_web_build, start_dev_server, DevServerHandle, WebValidationTier, WebValidatorError,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -4449,6 +4449,64 @@ async fn drive_task(
                 bs_id.0, exec_exit_code, exec_stderr_tail
             );
             emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
+        }
+
+        // E1 fix-and-rerun: on a failed baby step in a web project, run
+        // `npm run build` and dispatch up to 5 fixer iterations through the
+        // existing executor. Escalation (RequestHuman GateDecision) is emitted
+        // inside `fix_and_rerun_until_green`, so we only mirror the result
+        // into local `outcome` / `outcome_passed`.
+        if is_web_project && !outcome_passed {
+            if let Some(proj) = project_dir.as_ref() {
+                let proj_for_validator = proj.clone();
+                let validator = move |_dir: &Path| {
+                    let dir = proj_for_validator.clone();
+                    async move {
+                        let out_dir = dir.join("dist");
+                        match run_web_build(&dir, "npm run build", &out_dir).await {
+                            Ok(r) if r.success => FixerValidatorReport::Green,
+                            Ok(r) => FixerValidatorReport::Failed {
+                                summary: r.stderr_errors.join("\n"),
+                            },
+                            Err(e) => FixerValidatorReport::Failed {
+                                summary: e.to_string(),
+                            },
+                        }
+                    }
+                };
+                let fix_outcome = fix_and_rerun_until_green(
+                    proj.clone(),
+                    resolved.baby_step_executor.clone(),
+                    resolved.autonomous_gate.clone(),
+                    Arc::clone(writer),
+                    5,
+                    validator,
+                    &format!("baby_step_{}", bs_id.0),
+                )
+                .await?;
+                match fix_outcome {
+                    FixAndRerunOutcome::Healed { iterations } => {
+                        outcome = BabyStepOutcome::Passed;
+                        outcome_passed = true;
+                        emit_finding(
+                            writer,
+                            "info",
+                            "fix_and_rerun_healed",
+                            &format!("healed in {iterations} iterations"),
+                        )
+                        .await;
+                    }
+                    FixAndRerunOutcome::EscalatedToHuman { iterations } => {
+                        emit_finding(
+                            writer,
+                            "warn",
+                            "fix_and_rerun_escalated",
+                            &format!("escalated after {iterations} iterations"),
+                        )
+                        .await;
+                    }
+                }
+            }
         }
 
         // B-8 Tasks#4 + Tasks#5: PipelineGrc.check_inline_feasibility +
