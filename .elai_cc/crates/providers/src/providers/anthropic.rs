@@ -1192,6 +1192,7 @@ use elai_core::config::OAuthConfig;
             tools: None,
             tool_choice: None,
             stream: false,
+            seed: None,
         };
 
         assert!(request.with_streaming().stream);

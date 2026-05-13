@@ -438,6 +438,7 @@ impl ApiClient for RuntimeClient {
             tool_choice: tool_defs.as_ref().map(|_| ToolChoice::Auto),
             tools: tool_defs,
             stream: true,
+            seed: None,
         };
 
         let use_prompt_cache = matches!(self.backend, BackendMode::Api);

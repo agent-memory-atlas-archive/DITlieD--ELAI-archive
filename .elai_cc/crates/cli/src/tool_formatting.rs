@@ -577,5 +577,8 @@ pub(crate) fn prompt_cache_record_to_runtime_event(
         previous_cache_read_input_tokens: cache_break.previous_cache_read_input_tokens,
         current_cache_read_input_tokens: cache_break.current_cache_read_input_tokens,
         token_drop: cache_break.token_drop,
+        // Phase A6 — fingerprint wiring is opt-in via with_fingerprint_hash;
+        // this emit site does not yet attach the hash (future patch).
+        fingerprint_hash: None,
     })
 }

@@ -1009,6 +1009,7 @@ mod tests {
                 }]),
                 tool_choice: Some(ToolChoice::Auto),
                 stream: false,
+                seed: None,
             },
             OpenAiCompatConfig::xai(),
         );
@@ -1031,6 +1032,7 @@ mod tests {
                 tools: None,
                 tool_choice: None,
                 stream: true,
+                seed: None,
             },
             OpenAiCompatConfig::openai(),
         );
@@ -1049,6 +1051,7 @@ mod tests {
                 tools: None,
                 tool_choice: None,
                 stream: true,
+                seed: None,
             },
             OpenAiCompatConfig::xai(),
         );

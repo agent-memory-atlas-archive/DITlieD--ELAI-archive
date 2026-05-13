@@ -3884,6 +3884,7 @@ impl ApiClient for ProviderRuntimeClient {
             tools: (!tools.is_empty()).then_some(tools),
             tool_choice: (!self.allowed_tools.is_empty()).then_some(ToolChoice::Auto),
             stream: true,
+            seed: None,
         };
 
         self.runtime.block_on(async {
@@ -4126,6 +4127,9 @@ fn prompt_cache_record_to_runtime_event(
         previous_cache_read_input_tokens: cache_break.previous_cache_read_input_tokens,
         current_cache_read_input_tokens: cache_break.current_cache_read_input_tokens,
         token_drop: cache_break.token_drop,
+        // Phase A6 — fingerprint wiring is opt-in via with_fingerprint_hash;
+        // this emit site does not yet attach the hash (future patch).
+        fingerprint_hash: None,
     })
 }
 

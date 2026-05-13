@@ -15,6 +15,16 @@ pub struct MessageRequest {
     pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
+    /// Phase A6 — determinism plumbing. When `Some(n)`, the sidecar invokes
+    /// `transformers.set_seed(n)` + `torch.manual_seed(n)` immediately before
+    /// `model.generate(...)`, making sampled output reproducible across
+    /// identical prompts. `None` (the default) preserves pre-A6 behaviour:
+    /// the wire payload elides the `"seed"` key entirely (serde
+    /// `skip_serializing_if`) and the sidecar follows the model's default
+    /// RNG. At `temperature == 0` (greedy decoding) the seed is a no-op.
+    /// Type is `u64` so the full transformers seed range is representable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl MessageRequest {

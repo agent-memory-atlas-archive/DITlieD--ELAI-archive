@@ -41,6 +41,16 @@ pub enum AssistantEvent {
 }
 
 /// Prompt-cache telemetry captured from the provider response stream.
+///
+/// Phase A6 — determinism plumbing: `fingerprint_hash` exposes the
+/// `RequestFingerprint` digest (providers/src/prompt_cache.rs:273-289) onto the
+/// telemetry surface so downstream consumers (dashboard, audits) can correlate
+/// a `PromptCacheEvent` with the exact request shape that produced it. The
+/// underlying `RequestFingerprint` already mixes model + system + tools +
+/// messages hashes (prompt_cache.rs is LOCKED — A6 does not modify it), so this
+/// field is purely additive: a key the dashboard can group/filter on. Actual
+/// KV-cache REUSE keyed on this hash is deferred (remote-sidecar handoff makes
+/// the cache-locality decision non-trivial). `None` preserves pre-A6 emitters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptCacheEvent {
     pub unexpected: bool,
@@ -48,6 +58,23 @@ pub struct PromptCacheEvent {
     pub previous_cache_read_input_tokens: u32,
     pub current_cache_read_input_tokens: u32,
     pub token_drop: u32,
+    /// Phase A6: optional `RequestFingerprint` digest associated with the
+    /// request that produced this event. Builders set it via
+    /// `with_fingerprint_hash`; pre-A6 emitters leave it `None`. NOT serialised
+    /// to wire (telemetry-only field — `PromptCacheEvent` has no serde derive).
+    pub fingerprint_hash: Option<u64>,
+}
+
+impl PromptCacheEvent {
+    /// Attach a `RequestFingerprint` digest (computed by the caller from the
+    /// LOCKED `providers/src/prompt_cache.rs` machinery) to a freshly built
+    /// `PromptCacheEvent`. Builder-style so existing emitter sites can opt in
+    /// incrementally without refactoring their constructor calls.
+    #[must_use]
+    pub fn with_fingerprint_hash(mut self, hash: u64) -> Self {
+        self.fingerprint_hash = Some(hash);
+        self
+    }
 }
 
 /// Minimal streaming API contract required by [`ConversationRuntime`].
@@ -939,6 +966,7 @@ mod tests {
                             previous_cache_read_input_tokens: 6_000,
                             current_cache_read_input_tokens: 1_000,
                             token_drop: 5_000,
+                            fingerprint_hash: None,
                         }),
                         AssistantEvent::MessageStop,
                     ])

@@ -43,6 +43,7 @@ from transformers import (
     DynamicCache,
     LogitsProcessor,
     TextIteratorStreamer,
+    set_seed as _transformers_set_seed,
 )
 
 # Track C-B: lm-format-enforcer is an OPTIONAL runtime dependency. The
@@ -1638,6 +1639,7 @@ class InferenceEngine:
         temperature: float = 0.0,
         marker_boundary: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
     ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         """Generate text synchronously.
 
@@ -1652,14 +1654,28 @@ class InferenceEngine:
         marker_boundary (Track C-D): optional cap on PrefixKVCache prefix
         match. None = legacy full-prefix behaviour. int = honour Anthropic
         ``cache_control`` marker — cache_read_tokens <= marker_boundary.
+
+        seed (Phase A6): optional reproducibility hint. When set,
+        ``_generate_impl`` calls ``transformers.set_seed`` +
+        ``torch.manual_seed`` immediately before ``model.generate()``, inside
+        the ``torch.inference_mode()`` lock that the existing DoLa / ETC /
+        steering / TQ LogitsProcessors run under — so all four stochastic
+        paths inherit the seed without per-processor wiring. At
+        ``temperature == 0`` (greedy decoding) the seed is a no-op but is
+        still applied so logs record the request shape.
         """
         max_tokens = max_tokens or self.max_new_tokens
 
         with self.lock:
+            # Phase A6: seed is applied INSIDE _generate_impl, after the lock
+            # is acquired and immediately before model.generate, so the RNG
+            # state mutation is bounded by the same lock that already
+            # serialises every other piece of model.generate state.
             return self._generate_impl(
                 prompt, max_tokens, temperature,
                 marker_boundary=marker_boundary,
                 response_format=response_format,
+                seed=seed,
             )
 
     def generate_streaming(
@@ -1668,6 +1684,7 @@ class InferenceEngine:
         max_tokens: int | None = None,
         temperature: float = 0.0,
         response_format: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
     ) -> tuple[TextIteratorStreamer, int]:
         """Start streaming generation in a background thread.
 
@@ -1680,6 +1697,12 @@ class InferenceEngine:
         (LMFE missing, malformed schema, unsupported type) — that case falls
         back to unconstrained streaming silently (warn-and-ignore matches the
         non-stream path's contract and engine.generate semantics).
+
+        seed (Phase A6): optional reproducibility hint. Applied inside the
+        background ``_run`` thread, right before ``model.generate()`` runs
+        under ``torch.inference_mode()``. Errors during ``set_seed`` /
+        ``manual_seed`` propagate via the thread's future (no silent
+        fallback — A6 brief constraint).
         """
         max_tokens = max_tokens or self.max_new_tokens
         formatted = self._format_prompt(prompt)
@@ -1723,6 +1746,21 @@ class InferenceEngine:
         def _run():
             try:
                 with self.lock, torch.inference_mode():
+                    # Phase A6 — seed BOTH transformers and torch RNGs
+                    # immediately before model.generate. Order matters:
+                    # transformers.set_seed sets python/numpy/torch CPU+CUDA
+                    # all in one call (transformers 4.45+ confirmed); the
+                    # explicit torch.manual_seed() afterwards is a belt-and-
+                    # braces guard against future drift in set_seed coverage
+                    # (and is a no-op-fast when seeds match). DoLa, ETC,
+                    # steering and TQ all run as LogitsProcessors inside this
+                    # model.generate() invocation so they inherit the seed
+                    # without per-processor wiring. seed is a no-op at
+                    # temperature == 0 (greedy decoding) but still applied so
+                    # the request log records it.
+                    if seed is not None:
+                        _transformers_set_seed(int(seed))
+                        torch.manual_seed(int(seed))
                     self.model.generate(**generation_kwargs)
             finally:
                 if self._dola_processor is not None:
@@ -1784,6 +1822,7 @@ class InferenceEngine:
         temperature: float,
         marker_boundary: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
     ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         gen_start = time.time()
         formatted = self._format_prompt(prompt)
@@ -1911,6 +1950,18 @@ class InferenceEngine:
 
         try:
             with torch.inference_mode():
+                # Phase A6 — seed BOTH transformers and torch RNGs immediately
+                # before model.generate. Same rationale as generate_streaming's
+                # _run thread: transformers.set_seed handles python/numpy/torch
+                # CPU+CUDA in one call; the explicit torch.manual_seed is a
+                # belt-and-braces guard. DoLa / ETC / steering / TurboQuant
+                # all run as LogitsProcessors inside this model.generate so
+                # they inherit the seed without per-processor wiring.
+                # No-op at temperature == 0 (greedy decoding) but still
+                # applied so the request log records it.
+                if seed is not None:
+                    _transformers_set_seed(int(seed))
+                    torch.manual_seed(int(seed))
                 outputs = self.model.generate(**generation_kwargs)
         finally:
             if self._dola_processor is not None:
@@ -2988,6 +3039,49 @@ async def handle_messages(request: Request):
     model_name = data.get("model", "elai-local")
     temperature = data.get("temperature", 0.0)
 
+    # Phase A6 — determinism plumbing. Optional `seed` reaches engine.generate
+    # as a kwarg; engine.generate calls transformers.set_seed +
+    # torch.manual_seed immediately before model.generate(). Absent key →
+    # None → pre-A6 behaviour (model's default RNG). Type contract:
+    # ``Optional[int]`` only — strings/floats are rejected with a 400
+    # rather than coerced silently. At temperature == 0 (greedy) the seed
+    # is a no-op but still forwarded so the sidecar log records it.
+    seed_raw = data.get("seed")
+    if seed_raw is None:
+        seed = None
+    elif isinstance(seed_raw, bool) or not isinstance(seed_raw, int):
+        # bool is a subclass of int — reject explicitly. Same for float/str.
+        return OrjsonResponse(
+            {
+                "error": "invalid seed type",
+                "detail": (
+                    "field `seed` must be an integer or omitted; got "
+                    f"{type(seed_raw).__name__}={seed_raw!r}"
+                ),
+            },
+            status_code=400,
+        )
+    elif seed_raw < 0:
+        return OrjsonResponse(
+            {
+                "error": "invalid seed value",
+                "detail": (
+                    f"field `seed` must be non-negative; got {seed_raw}"
+                ),
+            },
+            status_code=400,
+        )
+    elif seed_raw > 2**32 - 1:
+        return OrjsonResponse(
+            {
+                "error": "invalid seed value",
+                "detail": "seed must be <= 4294967295 (transformers 32-bit ceiling)",
+            },
+            status_code=400,
+        )
+    else:
+        seed = int(seed_raw)
+
     # Track C-B: extract optional response_format. Validation is lenient by
     # design — invalid types are warned-and-ignored (engine helper handles
     # the inner shape check); only the "library missing while caller asked
@@ -3041,14 +3135,17 @@ async def handle_messages(request: Request):
         # LMFE is available (constrained streaming). _build_constrained_prefix_fn
         # warn-and-ignores any malformed schema; in that case we fall back
         # silently to unconstrained streaming, matching the non-stream path.
+        # Phase A6: forward optional `seed` kwarg.
         return _stream_messages_response(
             prompt, max_tokens, model_name, tools, temperature,
             response_format=response_format,
+            seed=seed,
         )
     return await _non_stream_messages_response(
         prompt, max_tokens, model_name, tools, temperature,
         marker_boundary=marker_boundary,
         response_format=response_format,
+        seed=seed,
     )
 
 
@@ -3390,11 +3487,17 @@ def _stream_messages_response(
     prompt: str, max_tokens: int, model_name: str, tools: list | None,
     temperature: float = 0.0,
     response_format: Optional[Dict[str, Any]] = None,
+    seed: Optional[int] = None,
 ) -> StreamingResponse:
     """Real streaming: tokens are yielded as model.generate() produces them.
 
     Phase B: response_format threads through to generate_streaming so
     LMFE-installed sidecars can emit constrained SSE output.
+
+    Phase A6: optional ``seed`` is forwarded into generate_streaming so the
+    background ``_run`` thread can call transformers.set_seed +
+    torch.manual_seed inside the inference_mode lock right before
+    model.generate() — same point coverage as the non-stream path.
     """
 
     async def event_generator() -> AsyncIterator[bytes]:
@@ -3402,6 +3505,7 @@ def _stream_messages_response(
         streamer, input_token_count = _engine.generate_streaming(
             prompt, max_tokens, temperature,
             response_format=response_format,
+            seed=seed,
         )
 
         # message_start
@@ -3570,6 +3674,7 @@ async def _non_stream_messages_response(
     temperature: float = 0.0,
     marker_boundary: Optional[int] = None,
     response_format: Optional[Dict[str, Any]] = None,
+    seed: Optional[int] = None,
 ) -> OrjsonResponse:
     loop = asyncio.get_running_loop()
     # Track C-D: gg_signals is now surfaced via response.meta (was discarded
@@ -3590,6 +3695,7 @@ async def _non_stream_messages_response(
             prompt, max_tokens, temperature,
             marker_boundary=marker_boundary,
             response_format=response_format,
+            seed=seed,
         ),
     )
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
