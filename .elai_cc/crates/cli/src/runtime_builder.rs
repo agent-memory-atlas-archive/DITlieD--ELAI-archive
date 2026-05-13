@@ -498,3 +498,143 @@ pub(crate) enum BudgetPolicy {
         ceiling: u32,
     },
 }
+
+// ---------------------------------------------------------------------------
+// Phase A1a — production wiring for `elai run`.
+//
+// Closes the gap recorded at `metrics/phase_4F.toml:103`
+// (`production_construction_paths_wired = false`). Mirrors the dashboard's
+// `DefaultFeasibilityProber` construction at
+// `crates/dashboard-v2/src-tauri/src/state.rs:382` and adds the previously
+// missing `DefaultLayer1aProcessor` construction so the new
+// `CliAction::Run` arm can hand both wirings to `start_task_runner` as
+// `Some(...)` instead of `None`.
+//
+// Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
+// ---------------------------------------------------------------------------
+
+/// Production wiring bundle for the `elai run` subcommand. Holds the three
+/// long-lived handles the CLI must construct before spawning the
+/// `start_task_runner` background task: the SSB writer, the feasibility
+/// prober, and the Layer 1A processor. All three are `Arc`'d so the runner
+/// loop and the CLI's signal-handler can share them.
+pub(crate) struct RuntimeWiring {
+    pub ssb: Arc<elai_orchestrator::Ssb>,
+    pub feasibility_prober: Arc<elai_orchestrator::DefaultFeasibilityProber>,
+    pub layer1a_processor: Arc<elai_orchestrator::DefaultLayer1aProcessor>,
+}
+
+/// Build the chokepoint wiring bundle for `elai run`.
+///
+/// Side effects:
+/// - Creates `<project_root>/.elai_cc/` and `<project_root>/.elai_cc/sessions/`
+///   if missing (matches the dashboard's persistence layout).
+/// - Opens the canonical project SSB at
+///   `<project_root>/.elai_cc/sessions/<session_id>/{SSB_DB_FILE_NAME}`.
+/// - Opens (or creates) the project rules.db at
+///   `<project_root>/.elai_cc/rules.db` and runs the standard schema
+///   migrations via `elai_rules::schema::open_rules_db`.
+/// - Calls `DefaultLayer1aProcessor::ensure_tables` exactly once.
+///
+/// Anti-stub: every fallible step bubbles the error as `anyhow::Error`; no
+/// `.unwrap()` / `panic!` / `todo!()` on the hot path.
+pub(crate) async fn build_task_runner_wiring(
+    project_root: &std::path::Path,
+    session_id: &str,
+) -> Result<RuntimeWiring, anyhow::Error> {
+    // 1. Ensure the `.elai_cc/` data directory and its `sessions/` subtree
+    //    exist before we try to open the SQLite files below.
+    let data_dir = project_root.join(elai_core::paths::ELAI_DATA_DIR_NAME);
+    std::fs::create_dir_all(&data_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "build_task_runner_wiring: create {} failed: {e}",
+            data_dir.display()
+        )
+    })?;
+    let sessions_dir = data_dir.join("sessions").join(session_id);
+    std::fs::create_dir_all(&sessions_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "build_task_runner_wiring: create {} failed: {e}",
+            sessions_dir.display()
+        )
+    })?;
+
+    // 2. Open the canonical SSB. Mirrors the writer half of
+    //    `dashboard-v2/src-tauri/src/state.rs::open_pair` (lines 437-462) so
+    //    a CLI-launched runner lands rows in the same bucket the dashboard
+    //    reads from.
+    let ssb_db_path = sessions_dir.join(elai_orchestrator::SSB_DB_FILE_NAME);
+    let project_id = elai_core::project_id_from_cwd()
+        .unwrap_or_else(|| format!("{}unknown", elai_core::PROJECT_ID_PREFIX));
+    let ssb_config = elai_orchestrator::SsbConfig {
+        db_path: ssb_db_path,
+        pool_size: Some(2),
+        project_id,
+        session_id: session_id.to_string(),
+    };
+    let clock_for_ssb: Arc<dyn ClockProvider> = Arc::new(elai_core::OsClock);
+    let ssb = elai_orchestrator::Ssb::new(ssb_config, clock_for_ssb)
+        .map_err(|e| anyhow::anyhow!("build_task_runner_wiring: SSB init failed: {e}"))?;
+    let ssb = Arc::new(ssb);
+
+    // 3. Construct the production feasibility prober. Mirrors
+    //    `dashboard-v2/src-tauri/src/state.rs:381-383`.
+    let feasibility_root = data_dir.join("feasibility");
+    let feasibility_prober = Arc::new(elai_orchestrator::DefaultFeasibilityProber::new(
+        feasibility_root,
+    ));
+
+    // 4. Open the project rules.db via the canonical helper. This runs the
+    //    standard schema migration; the resulting Connection is then wrapped
+    //    in `Arc<tokio::sync::Mutex<_>>` so the async Layer 1A methods can
+    //    take the lock across await boundaries.
+    let rules_db_path = elai_core::paths::rules_db_path(project_root);
+    let clock_for_rules = elai_core::OsClock;
+    let rules_conn = elai_rules::schema::open_rules_db(&rules_db_path, &clock_for_rules)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "build_task_runner_wiring: open rules.db at {} failed: {e}",
+                rules_db_path.display()
+            )
+        })?;
+    let rules_db = Arc::new(tokio::sync::Mutex::new(rules_conn));
+
+    // 5. Build the Layer 1A processor and run `ensure_tables` once. The
+    //    constructor at `self_mod_layer1a.rs:486` is the production entry
+    //    point — no test-only or stub helper is used here.
+    let layer1a = elai_orchestrator::DefaultLayer1aProcessor::new(
+        rules_db,
+        rules_db_path.clone(),
+        ssb.clone(),
+    );
+    layer1a.ensure_tables().await.map_err(|e| {
+        anyhow::anyhow!("build_task_runner_wiring: Layer1A ensure_tables failed: {e}")
+    })?;
+    let layer1a_processor = Arc::new(layer1a);
+
+    Ok(RuntimeWiring {
+        ssb,
+        feasibility_prober,
+        layer1a_processor,
+    })
+}
+
+/// Apply a `RuntimeWiring` bundle to a fresh `TaskRunnerConfig::new_minimal`
+/// without mutating the orchestrator crate. Both fields are exposed `pub`
+/// on `TaskRunnerConfig`, so we set them through struct field assignment;
+/// every other field stays at the `new_minimal` default. This is the single
+/// place that knows the chokepoint contract — the contract test at
+/// `crates/contracts/tests/task_runner_chokepoint_contract.rs` pins it.
+pub(crate) fn apply_task_runner_wiring(
+    cursor_path: std::path::PathBuf,
+    wiring: &RuntimeWiring,
+) -> elai_orchestrator::TaskRunnerConfig {
+    let mut cfg = elai_orchestrator::TaskRunnerConfig::new_minimal(cursor_path);
+    let prober: Arc<dyn elai_orchestrator::FeasibilityProber> =
+        wiring.feasibility_prober.clone();
+    let processor: Arc<dyn elai_orchestrator::Layer1aProcessor> =
+        wiring.layer1a_processor.clone();
+    cfg.feasibility_prober = Some(prober);
+    cfg.layer1a_processor = Some(processor);
+    cfg
+}

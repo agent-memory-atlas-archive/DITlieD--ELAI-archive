@@ -31,8 +31,13 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 syntect = "5"
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "time", "sync"] }
 toml.workspace = true
+# A1a — `run` subcommand opens the project rules.db and wraps the
+# `rusqlite::Connection` in `Arc<tokio::sync::Mutex<_>>` for the
+# `DefaultLayer1aProcessor` constructor (production callsite of
+# `self_mod_layer1a.rs:486`). Workspace pin matches elai-orchestrator.
+rusqlite = { workspace = true }
 
 [features]
 # D4: pass-through to orchestrator's obscura feature (headless-browser fetch via obscura subprocess).

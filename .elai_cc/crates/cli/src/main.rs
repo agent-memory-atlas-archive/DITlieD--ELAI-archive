@@ -28,6 +28,7 @@ mod help;
 mod live_cli;
 mod progress;
 mod resume;
+mod run_subcommand;
 mod runtime_builder;
 mod runtime_client;
 mod tool_executor;
@@ -244,6 +245,11 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::DepAudit { project_dir, output_format } => doctor::run_dep_audit_command(&project_dir, output_format)?,
         CliAction::Local { port } => repl::run_local_repl(port)?,
         CliAction::Dashboard => dashboard::run_dashboard()?,
+        // Phase A1a: production caller of `start_task_runner`. Pinned by
+        // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
+        CliAction::Run { project_root } => {
+            run_subcommand::run_task_runner_subcommand(run_subcommand::RunArgs { project_root })?
+        }
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
         CliAction::HelpTopic(topic) => live_cli::print_help_topic(topic),
         CliAction::Help { output_format } => help::print_help(output_format)?,

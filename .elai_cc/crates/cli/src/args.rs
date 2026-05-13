@@ -154,6 +154,15 @@ pub(crate) enum CliAction {
         port: u16,
     },
     Dashboard,
+    /// Phase A1a: `elai run [--project-root <path>]` — spawn the production
+    /// task_runner with `feasibility_prober` AND `layer1a_processor` both
+    /// wired to `Some(...)` so an SSB `TaskSubmitted` row reaches
+    /// `drive_task` end-to-end. Closes the gap recorded in
+    /// `metrics/phase_4F.toml:103`. Contract pinned by
+    /// `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
+    Run {
+        project_root: PathBuf,
+    },
     /// --remote-sidecar: SSH-boot the GPU box sidecar, start the local tunnel,
     /// health-poll until ready, then launch the V2 dashboard with
     /// ANTHROPIC_BASE_URL=http://localhost:8100.
@@ -446,6 +455,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "login" => Ok(CliAction::Login { output_format }),
         "logout" => Ok(CliAction::Logout { output_format }),
         "init" => Ok(CliAction::Init { output_format }),
+        "run" => parse_run_subcommand_args(&rest[1..]),
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -470,6 +480,42 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
             backend: backend_config,
         }),
     }
+}
+
+/// Phase A1a — parse `run` subcommand args.
+///
+/// Supports `--project-root <path>` and `--project-root=<path>`; defaults to
+/// `std::env::current_dir()` when the flag is absent. Anything else is
+/// rejected with a typed error string so the top-level dispatcher can format
+/// it. Keeping the parser tight here protects the chokepoint contract test
+/// from drift introduced by a future flag.
+pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut project_root: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--project-root" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `run` argument: {other}"));
+            }
+        }
+    }
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir()
+            .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
+    };
+    Ok(CliAction::Run { project_root })
 }
 
 pub(crate) fn parse_local_help_action(rest: &[String]) -> Option<Result<CliAction, String>> {

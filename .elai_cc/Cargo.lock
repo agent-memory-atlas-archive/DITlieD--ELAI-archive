@@ -1257,6 +1257,7 @@ dependencies = [
  "elai-web-search",
  "pulldown-cmark",
  "reqwest 0.12.28",
+ "rusqlite",
  "rustc-hash",
  "rustyline",
  "semver",
