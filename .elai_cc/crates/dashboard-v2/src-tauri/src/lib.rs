@@ -240,14 +240,129 @@ pub fn run() {
                 let media_state = state.media_validation.clone();
                 let handle = app.handle().clone();
                 media_validation::spawn_subscriber(handle, writer, media_state);
+
+                // Phase A1b: spawn `start_task_runner` from the dashboard,
+                // wired with the SAME `RuntimeWiring` chokepoint helpers the
+                // `elai run` CLI uses (orchestrator::runtime_setup). Closes
+                // the gap recorded at `metrics/phase_4F.toml:103`
+                // (`production_construction_paths_wired = false`) on the
+                // dashboard side and pairs with Phase A1a's CLI fix.
+                //
+                // Order of operations:
+                // 1. `build_task_runner_wiring` re-uses the SAME canonical
+                //    flat SSB path the dashboard reader already opened
+                //    (`<project_root>/.elai_cc/sessions/ssb.db`). It opens
+                //    its own writer handle inside the bundle because the
+                //    Layer1A processor needs an Arc<Ssb> that owns the
+                //    project_id/session_id pair used for runner-emitted
+                //    rows. The dashboard `state.writer` and the wiring
+                //    `wiring.ssb` are two writers on the same DB file with
+                //    distinct session_ids — this is the same pattern used
+                //    by CLI + dashboard co-existence and is safe under
+                //    SQLite WAL mode (ssb.rs sets WAL on open).
+                // 2. `apply_task_runner_wiring` produces a TaskRunnerConfig
+                //    with both `feasibility_prober` and `layer1a_processor`
+                //    populated as Some — chokepoint contract pinned in
+                //    `contracts/tests/task_runner_chokepoint_contract.rs`.
+                // 3. `start_task_runner` returns (JoinHandle, CancelHandle);
+                //    we stash both in AppState for the
+                //    `RunEvent::ExitRequested` shutdown closure below.
+                let project_root = state.project_root_snapshot();
+                let session_id = format!("dash-v2-runner-{}", std::process::id());
+                let cursor_path = project_root
+                    .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                    .join("sessions")
+                    .join(&session_id)
+                    .join("cursor.json");
+                // `build_task_runner_wiring` is async (opens SQLite + runs
+                // Layer1A ensure_tables); the leaked tokio runtime created
+                // at `run()` head is the active context, so block_on is
+                // safe here. Failure path is warn-and-continue — the
+                // dashboard remains usable without a runner loop, matching
+                // the existing "writer missing -> skip subscriber" pattern.
+                let wiring_result = tauri::async_runtime::block_on(async {
+                    elai_orchestrator::build_task_runner_wiring(&project_root, &session_id).await
+                });
+                match wiring_result {
+                    Ok(wiring) => {
+                        let runner_ssb = wiring.ssb.clone();
+                        let cfg = elai_orchestrator::apply_task_runner_wiring(
+                            cursor_path,
+                            &wiring,
+                        );
+                        let (join_handle, cancel) =
+                            elai_orchestrator::start_task_runner(runner_ssb, cfg);
+                        match state.runner_join.lock() {
+                            Ok(mut g) => *g = Some(join_handle),
+                            Err(e) => tracing::error!(
+                                error = %e,
+                                "dashboard-v2: runner_join mutex poisoned; runner handle dropped"
+                            ),
+                        }
+                        match state.runner_cancel.lock() {
+                            Ok(mut g) => *g = Some(cancel),
+                            Err(e) => tracing::error!(
+                                error = %e,
+                                "dashboard-v2: runner_cancel mutex poisoned; cancel handle dropped"
+                            ),
+                        }
+                        tracing::info!(
+                            project_root = %project_root.display(),
+                            session_id = %session_id,
+                            "dashboard-v2: spawned start_task_runner with full wiring (feasibility_prober=Some, layer1a_processor=Some)"
+                        );
+                    }
+                    Err(err) => tracing::warn!(
+                        error = %err,
+                        project_root = %project_root.display(),
+                        "dashboard-v2: build_task_runner_wiring failed; runner not started"
+                    ),
+                }
             } else {
                 tracing::warn!(
-                    "dashboard-v2: media SSB subscriber not spawned (no writer); \
+                    "dashboard-v2: media SSB subscriber + task_runner not spawned (no writer); \
                      media validations will be empty until a session writes the db"
                 );
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Phase A1b: graceful task_runner shutdown on app exit.
+            // Tauri 2.11 `RunEvent::ExitRequested` (tauri::app L225 in
+            // tauri-2.11.1/src/app.rs) fires when the user closes the
+            // window OR `AppHandle::exit` is called programmatically.
+            // We take the `CancelHandle` out of AppState and flip its
+            // AtomicBool — the runner loop observes the flip on its next
+            // poll and returns from `start_task_runner` cleanly.
+            // The JoinHandle is intentionally NOT awaited here: the
+            // closure is `FnMut + 'static` and `RunEvent::ExitRequested`
+            // arrives on the main thread without an async context, so
+            // awaiting would block the event loop. Tauri proceeds to
+            // tear down the runtime regardless; the runner has at most
+            // one tick-period to observe the cancel before the process
+            // exits, which is the same shutdown contract `elai run`
+            // uses (run_subcommand.rs ctrl_c arm).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                use tauri::Manager;
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    let cancel_opt = match state.runner_cancel.lock() {
+                        Ok(mut g) => g.take(),
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "dashboard-v2: runner_cancel mutex poisoned on shutdown; \
+                                 task_runner will exit when its tokio runtime is dropped"
+                            );
+                            None
+                        }
+                    };
+                    if let Some(cancel) = cancel_opt {
+                        cancel.cancel();
+                        tracing::info!("dashboard-v2: task_runner cancel signal sent on ExitRequested");
+                    }
+                }
+            }
+        });
 }

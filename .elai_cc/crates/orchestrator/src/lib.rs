@@ -99,6 +99,9 @@ pub mod system_probe;
 pub mod telescope_caller;
 pub mod feasibility_probe;
 pub mod task_runner;
+// Phase A1b — production task_runner wiring helpers (build/apply chokepoint
+// bundle). Used by `elai run` CLI and the dashboard-v2 Tauri setup() callback.
+pub mod runtime_setup;
 pub mod supervision;
 pub mod task_packet;
 pub mod task_registry;
@@ -592,6 +595,11 @@ pub use task_runner::{
     WEB_SCAFFOLD_TEMPLATE_VANILLA,
 };
 pub use rule_loader::load_seed_rules_from_dir;
+// Phase A1b — chokepoint helpers exposed at the orchestrator crate root so
+// the CLI run subcommand and the dashboard-v2 Tauri setup() callback both
+// reach the same RuntimeWiring + apply_task_runner_wiring entry points.
+// Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
+pub use runtime_setup::{apply_task_runner_wiring, build_task_runner_wiring, RuntimeWiring};
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,
 };

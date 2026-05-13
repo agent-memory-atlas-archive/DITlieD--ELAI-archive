@@ -161,26 +161,37 @@ pub enum ReviewDecision {
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::{
-    DefaultFeasibilityProber, FeasibilityProber, Ssb, SsbConfig, SsbViewer,
+    CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Ssb, SsbConfig, SsbViewer,
+    // Phase A1b: chokepoint helpers (moved from cli::runtime_builder into
+    // elai_orchestrator::runtime_setup) used by the Tauri setup() callback
+    // to spawn start_task_runner with both processors as Some(...).
+    TaskRunnerError,
 };
 use elai_web_validator::DevServerHandle;
 
 /// Default SSB database path resolution. We look in this order:
 ///   1. `ELAI_SSB_PATH` env var (explicit override).
-///   2. `elai_core::paths::sessions_dir_path(&cwd)/ssb.db` (canonical: `.elai_cc/sessions/ssb.db`).
-///   3. `<cwd>/.elai/sessions/ssb.db` (legacy path, intentional fallback per B-1 L94-98).
+///   2. `elai_core::paths::sessions_dir_path(project_root)/ssb.db`
+///      (canonical: `<project_root>/.elai_cc/sessions/ssb.db`).
+///   3. `<project_root>/.elai/sessions/ssb.db` (legacy path, intentional
+///      fallback per B-1 L94-98).
 /// Returns `None` if no candidate exists.
-pub(crate) fn resolve_ssb_path() -> Option<PathBuf> {
+///
+/// Phase A1b RISK-1: threads the active `project_root` rather than the
+/// process cwd so that `open_project_from_folder`'s subsequent project
+/// switch resolves to the same path the runner writes to. Today's caller
+/// (`AppState::new()`) passes the launch-cwd project_root, preserving the
+/// current cwd-based behaviour on boot.
+pub(crate) fn resolve_ssb_path(project_root: &Path) -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("ELAI_SSB_PATH") {
         let p = PathBuf::from(env_path);
         if p.exists() {
             return Some(p);
         }
     }
-    let cwd = std::env::current_dir().ok()?;
     let candidates = [
-        sessions_dir_path(&cwd).join("ssb.db"),              // canonical
-        cwd.join(".elai").join("sessions").join("ssb.db"),   // legacy, intentional fallback (B-1 L94-98)
+        sessions_dir_path(project_root).join("ssb.db"),              // canonical
+        project_root.join(".elai").join("sessions").join("ssb.db"),  // legacy, intentional fallback (B-1 L94-98)
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -275,6 +286,20 @@ pub struct AppState {
     /// read it; per CLAUDE.md rule "tokio::sync::Mutex in async (std::sync::
     /// Mutex only if provably sync-only)".
     pub media_validation: Arc<tokio::sync::RwLock<HashMap<String, MediaValidationEntry>>>,
+    /// Phase A1b: live `start_task_runner` join handle. `None` until the
+    /// Tauri `setup()` callback spawns the runner (which it only does when
+    /// `writer.is_some()` — fresh installs without an SSB DB still have a
+    /// usable dashboard, just without a runner loop). `std::sync::Mutex` is
+    /// sufficient because the only writers are the setup() callback and the
+    /// `ExitRequested` callback (both run on the Tauri main thread); no
+    /// async holder ever .awaits while holding the guard.
+    pub runner_join: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), TaskRunnerError>>>>>,
+    /// Phase A1b: live cancellation handle paired with `runner_join`. Taken
+    /// out of the mutex by the Tauri `RunEvent::ExitRequested` callback
+    /// during shutdown so the runner observes the flip and exits its select
+    /// loop cleanly (task_runner.rs:CancelHandle::cancel — flips an
+    /// AtomicBool the runner polls each tick).
+    pub runner_cancel: Arc<Mutex<Option<CancelHandle>>>,
 }
 
 impl AppState {
@@ -282,7 +307,7 @@ impl AppState {
         let project_root = resolve_project_root();
         let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
 
-        let (viewer, writer) = match resolve_ssb_path() {
+        let (viewer, writer) = match resolve_ssb_path(&project_root) {
             Some(db_path) => Self::open_pair(&db_path, clock.clone()),
             None => {
                 tracing::warn!(
@@ -411,6 +436,11 @@ impl AppState {
             dev_servers: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             feasibility_prober,
             media_validation: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            // Phase A1b: runner handles default to None. Populated by the
+            // Tauri setup() callback in lib.rs when writer.is_some(); the
+            // RunEvent::ExitRequested closure takes them back out on shutdown.
+            runner_join: Arc::new(Mutex::new(None)),
+            runner_cancel: Arc::new(Mutex::new(None)),
         }
     }
 

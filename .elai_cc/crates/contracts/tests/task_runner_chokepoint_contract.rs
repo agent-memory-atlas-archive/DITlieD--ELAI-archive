@@ -27,8 +27,9 @@ use elai_orchestrator::ssb::{
     Ssb, SsbActionType, SsbConfig, SsbPayload, SsbReader, TaskSubmittedPayload,
 };
 use elai_orchestrator::{
-    start_task_runner, DefaultFeasibilityProber, DefaultLayer1aProcessor, FeasibilityProber,
-    Layer1aProcessor, TaskRunnerConfig,
+    apply_task_runner_wiring, build_task_runner_wiring, start_task_runner,
+    DefaultFeasibilityProber, DefaultLayer1aProcessor, FeasibilityProber, Layer1aProcessor,
+    RuntimeWiring, TaskRunnerConfig,
 };
 use rusqlite::Connection;
 use tokio::sync::Mutex as AsyncMutex;
@@ -183,6 +184,54 @@ async fn contract_task_submitted_drives_pipeline_with_full_wiring() {
 // at the type level: a closure that consumes both fields confirms they exist
 // and are nameable.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Contract 3 — Phase A1b sibling: the helpers re-exported by
+// `elai_orchestrator` (build_task_runner_wiring / apply_task_runner_wiring)
+// MUST produce a TaskRunnerConfig with BOTH `feasibility_prober` and
+// `layer1a_processor` populated as `Some(...)`. This pins the wiring move
+// from `cli::runtime_builder` into `elai_orchestrator::runtime_setup` so the
+// dashboard Tauri `setup()` callback can call them without re-implementing
+// the wiring locally.
+//
+// Acceptance: cfg.feasibility_prober.is_some() && cfg.layer1a_processor.is_some()
+// after passing the canonical bundle through apply_task_runner_wiring.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn contract_apply_task_runner_wiring_attaches_both_processors() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project_root = tmp.path().to_path_buf();
+    let session_id = "test-a1b-wiring";
+
+    let wiring: RuntimeWiring = build_task_runner_wiring(&project_root, session_id)
+        .await
+        .expect("build_task_runner_wiring");
+
+    let cursor_path = project_root.join(".elai_cc").join("cursor.json");
+    let cfg = apply_task_runner_wiring(cursor_path, &wiring);
+
+    assert!(
+        cfg.feasibility_prober.is_some(),
+        "apply_task_runner_wiring must populate feasibility_prober (production chokepoint)"
+    );
+    assert!(
+        cfg.layer1a_processor.is_some(),
+        "apply_task_runner_wiring must populate layer1a_processor (production chokepoint)"
+    );
+
+    // The canonical SSB path lives at <project_root>/.elai_cc/sessions/ssb.db
+    // (flat, no session_id nesting) — same bucket the dashboard reads via
+    // `state::resolve_ssb_path`. This guards the WARN-1 fix from notes-A1a.md.
+    let canonical_ssb = elai_core::paths::sessions_dir_path(&project_root)
+        .join(elai_orchestrator::SSB_DB_FILE_NAME);
+    assert!(
+        canonical_ssb.exists(),
+        "build_task_runner_wiring must open the canonical flat SSB path at {} \
+         (no session_id sub-directory); got missing file",
+        canonical_ssb.display()
+    );
+}
 
 #[test]
 fn contract_taskrunnerconfig_exposes_both_wiring_fields() {
