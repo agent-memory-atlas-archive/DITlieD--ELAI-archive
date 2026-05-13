@@ -1,6 +1,13 @@
 pub mod agent_pool;
 pub mod agent_role_dispatcher;
 pub mod agent_template;
+// Phase B4 — Artifacts Pipeline (library skeleton). Filesystem-only write
+// helper for context artifacts + JSON manifests. SSB `ArtifactPublished`
+// row emission is INTENTIONALLY deferred to a follow-up patch (see
+// `artifacts.rs` doc-comment) to avoid a concurrent edit to
+// `orchestrator/src/ssb.rs`, which has in-flight B-28 work. Contract:
+// `crates/contracts/tests/artifacts_pipeline_contract.rs`.
+pub mod artifacts;
 pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
 pub mod grc;
@@ -83,6 +90,12 @@ pub use session_dag::{
 // SurgicalTelescope follow-up) can `use elai_orchestrator::{SymbolGraph,
 // ...}` without reaching into the module path.
 pub use symbol_graph::{SymbolGraph, SymbolGraphError, SymbolRecord, SymbolTag};
+// Phase B4 — Artifacts Pipeline public surface. Re-exported at crate root
+// so downstream consumers (contract tests, follow-up SSB emitter) can
+// `use elai_orchestrator::{ArtifactStore, ...}` without reaching into
+// `artifacts::*`. The SSB `ArtifactPublished` payload is NOT here — its
+// emission is deferred to a follow-up patch.
+pub use artifacts::{ArtifactManifest, ArtifactStore, ArtifactsError, ContextArtifact};
 pub mod irreversible_classifier;
 pub mod micro_reflection_emitter;
 pub mod mistake_book;

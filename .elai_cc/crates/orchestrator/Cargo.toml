@@ -14,6 +14,11 @@ elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers" }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
+# B-28 E-1: focus_tunnel/fim.rs reuses Qwen FIM sentinels + strip_fim_artifacts
+# from the scaffold crate (single source of truth for upstream-tokeniser-verified
+# constants — see scaffold/src/fim.rs L38-48). Workspace-internal path dep only;
+# scaffold itself does not depend on orchestrator (no cycle).
+scaffold = { path = "../scaffold" }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
 indexmap = { version = "2", features = ["serde"] }
@@ -56,7 +61,7 @@ thiserror.workspace = true
 # (Cargo.toml L40 — version "1") — no new external crate is introduced.
 anyhow.workspace = true
 serde_json.workspace = true
-blake3 = "1.8"
+blake3 = { workspace = true }
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "time", "sync", "fs"] }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"

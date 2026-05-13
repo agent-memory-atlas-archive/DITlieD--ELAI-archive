@@ -61,6 +61,17 @@ pub const MODELS_DIR_NAME: &str = "models";
 /// pre-B-1; new canonical location is `.elai_cc/rules.db`).
 pub const RULES_DB_FILENAME: &str = "rules.db";
 
+/// Phase B4 — Artifacts Pipeline. Subdirectory under `ELAI_DATA_DIR_NAME`
+/// that holds task-step artifacts (bytes + JSON manifests). Layout:
+/// `<root>/.elai_cc/artifacts/<task_id>/<step_id>/<artifact_id>.<ext>` and
+/// `<artifact_id>.json` sit side-by-side in the same step directory.
+pub const ARTIFACTS_DIR_NAME: &str = "artifacts";
+
+/// Manifest file extension for ArtifactStore-emitted JSON descriptors.
+/// Kept as a constant so callers cannot accidentally drift to `.toml` or
+/// `.yaml`.
+pub const ARTIFACT_MANIFEST_EXT: &str = "json";
+
 // ---------------------------------------------------------------------------
 // Path helpers — pure functions of `project_root`.
 // ---------------------------------------------------------------------------
@@ -129,4 +140,58 @@ pub fn rules_db_path(project_root: &Path) -> PathBuf {
     project_root
         .join(ELAI_DATA_DIR_NAME)
         .join(RULES_DB_FILENAME)
+}
+
+// ---------------------------------------------------------------------------
+// Phase B4 — Artifacts Pipeline helpers.
+//
+// `ArtifactStore::publish` (orchestrator/src/artifacts.rs) routes every
+// on-disk write through these three functions; any other path-construction
+// site for artifacts is forbidden by the same rules that forbid `".elai/"`
+// literals (see path_unification contract test).
+// ---------------------------------------------------------------------------
+
+/// `<project_root>/.elai_cc/artifacts`
+#[inline]
+pub fn artifacts_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(ARTIFACTS_DIR_NAME)
+}
+
+/// `<project_root>/.elai_cc/artifacts/<task_id>/<step_id>/<artifact_id>.<ext>`
+///
+/// All four ID segments are joined as-is — callers are responsible for
+/// validating that task/step/artifact IDs are filesystem-safe (no `/`, no
+/// `..`, no NUL). The orchestrator's `ContextArtifact` constructor performs
+/// that validation; bypassing it is a contract violation.
+#[inline]
+pub fn artifact_path(
+    project_root: &Path,
+    task_id: &str,
+    step_id: &str,
+    artifact_id: &str,
+    ext: &str,
+) -> PathBuf {
+    artifacts_dir_path(project_root)
+        .join(task_id)
+        .join(step_id)
+        .join(format!("{artifact_id}.{ext}"))
+}
+
+/// Sibling JSON manifest for the artifact returned by `artifact_path`.
+/// Lives in the same step directory; extension is always
+/// `ARTIFACT_MANIFEST_EXT` (`"json"`) — never inferred from the artifact's
+/// own extension.
+#[inline]
+pub fn artifact_manifest_path(
+    project_root: &Path,
+    task_id: &str,
+    step_id: &str,
+    artifact_id: &str,
+) -> PathBuf {
+    artifacts_dir_path(project_root)
+        .join(task_id)
+        .join(step_id)
+        .join(format!("{artifact_id}.{ext}", ext = ARTIFACT_MANIFEST_EXT))
 }

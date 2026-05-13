@@ -24,6 +24,11 @@ elai-orchestrator = { path = "../orchestrator", features = ["sidecar"] }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tempfile = "3"
+# Phase B4 artifacts_pipeline_contract: blake3 is already a workspace-pinned
+# dep (root Cargo.toml L41) used by elai-core and elai-orchestrator. Adding
+# it as a dev-dep here just activates the existing pin — no new external
+# crate is introduced (same precedent as `anyhow` in orchestrator/Cargo.toml L62).
+blake3 = { workspace = true }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmp-serde = "1.3"
