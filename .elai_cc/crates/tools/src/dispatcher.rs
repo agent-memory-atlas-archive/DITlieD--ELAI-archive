@@ -33,6 +33,12 @@ use elai_core::tool_dispatcher::{
     SimilarityHint, ToolDispatchError, ToolDispatcher, ToolFailureCategory, ValidateRequest,
     ValidationTierResult,
 };
+// Phase B1 — Tier C Sandbox policy adapter. The dispatcher consults the
+// adapter (when one is wired) before every dispatch entry point and maps
+// `SandboxDenied` into `ToolDispatchError::Denied`. Adapter wiring is
+// optional so callers that have not yet adopted the policy layer remain
+// unaffected (the field defaults to `None`).
+use elai_orchestrator::{SandboxAdapter, SandboxOp};
 use crate::string_similarity::best_line_match;
 // `ValidationTier` is only used inside the test module; exposed here so
 // the `#[cfg(test)]` block below keeps compiling without a separate
@@ -73,6 +79,15 @@ pub struct InProcessToolDispatcher {
     /// When true, every method short-circuits to `NotImplemented`. Set by
     /// `ELAI_DISABLE_TOOL_DISPATCH`.
     disabled: bool,
+    /// Phase B1 — optional sandbox policy adapter. When `None`, the
+    /// policy hook in every dispatch method is a documented no-op (the
+    /// dispatcher behaves exactly as before B1). When `Some`, every
+    /// dispatch entry point calls `enforce_policy` BEFORE the underlying
+    /// work and maps a `SandboxDenied` verdict into
+    /// `ToolDispatchError::Denied`. Provider-source-agnostic: the same
+    /// adapter installed on a local-provider and a cloud-provider
+    /// dispatcher produces identical verdicts.
+    sandbox: Option<Arc<dyn SandboxAdapter>>,
 }
 
 impl InProcessToolDispatcher {
@@ -86,6 +101,7 @@ impl InProcessToolDispatcher {
         Self {
             validator,
             disabled,
+            sandbox: None,
         }
     }
 
@@ -97,6 +113,31 @@ impl InProcessToolDispatcher {
         Self {
             validator,
             disabled: false,
+            sandbox: None,
+        }
+    }
+
+    /// Phase B1 — install a sandbox policy adapter. Returns `self` so
+    /// the caller can chain construction: `InProcessToolDispatcher::new(v).with_sandbox(sb)`.
+    /// Calling this multiple times overwrites the previously-installed
+    /// adapter (the most-recent installation wins).
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn SandboxAdapter>) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Phase B1 — consult the installed sandbox adapter (if any). When
+    /// `self.sandbox` is `None`, this is a documented no-op that returns
+    /// `Ok(())` so the six dispatch entry points can call it
+    /// unconditionally without a per-method branch. When `Some`, the
+    /// adapter's `SandboxDenied` verdict is mapped into
+    /// `ToolDispatchError::Denied { reason }`.
+    fn enforce_policy(&self, op: &SandboxOp) -> Result<(), ToolDispatchError> {
+        match self.sandbox.as_ref() {
+            None => Ok(()),
+            Some(sb) => sb
+                .check_policy(op)
+                .map_err(|denied| ToolDispatchError::Denied { reason: denied.reason }),
         }
     }
 
@@ -644,6 +685,12 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_edit disabled via env".into(),
                 ));
             }
+            // Phase B1 — policy gate. FileWrite is the matching variant
+            // because dispatch_edit ultimately calls `tokio::fs::write`
+            // on `req.file_path` (see L766 below).
+            self.enforce_policy(&SandboxOp::FileWrite {
+                path: req.file_path.as_path(),
+            })?;
             let content = tokio::fs::read_to_string(&req.file_path)
                 .await
                 .map_err(ToolDispatchError::IoError)?;
@@ -709,6 +756,12 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_validate disabled via env".into(),
                 ));
             }
+            // Phase B1 — policy gate. The validator pipeline reads /
+            // writes under `req.project_dir`; FileWrite on the project
+            // dir is the most representative `SandboxOp` variant.
+            self.enforce_policy(&SandboxOp::FileWrite {
+                path: req.project_dir.as_path(),
+            })?;
             let results = self.validator.run_all(&req).await;
             Ok(results)
         })
@@ -721,6 +774,44 @@ impl ToolDispatcher for InProcessToolDispatcher {
         Box::pin(async move {
             if self.disabled {
                 return None;
+            }
+            // Phase B1 — policy gate. classify_failure is pure (no I/O),
+            // so the SandboxOp carries an empty FileWrite path; the
+            // default `PassthroughSandbox` treats an empty path as a
+            // no-op (see sandbox_policy.rs::check_file_write). A custom
+            // adapter that wants to suppress classification entirely
+            // can deny on an empty path.
+            //
+            // WARN-2 (B1 audit): the previous denial path returned `None`
+            // silently, which was indistinguishable from a low-confidence
+            // miss and hid sandbox activity from operators. We now emit a
+            // `tracing::warn!` carrying the denial reason and return a
+            // synthetic `ClassifiedFailure` so the surface signal is "the
+            // sandbox rejected this", not "we don't know what failed".
+            // `ToolFailureCategory::RuntimePanic` is the closest existing
+            // variant for a runtime-level rejection (the enum lives in
+            // `core::tool_dispatcher` and is LOCKED by the B1 fix scope —
+            // adding an `Other` variant requires a separate phase). The
+            // reason string travels in `source` so downstream renderers
+            // surface the sandbox detail verbatim.
+            if let Err(err) = self.enforce_policy(&SandboxOp::FileWrite {
+                path: std::path::Path::new(""),
+            }) {
+                let reason = match &err {
+                    ToolDispatchError::Denied { reason } => reason.clone(),
+                    other => format!("{other:?}"),
+                };
+                tracing::warn!(
+                    target: "elai.sandbox",
+                    step_id = %input.step_id,
+                    reason = %reason,
+                    "sandbox denied dispatch_classify_failure",
+                );
+                return Some(ClassifiedFailure {
+                    category: ToolFailureCategory::RuntimePanic,
+                    confidence: 1.0,
+                    source: format!("sandbox denied: {reason}"),
+                });
             }
             classify_output(&input.raw_output).map(|mut cf| {
                 cf.source = input.source;
@@ -741,6 +832,19 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_git_commit disabled via env".into(),
                 ));
             }
+            // Phase B1 — policy gate. git_commit is the closest analogue
+            // to a shell `git commit -m ...` invocation; expose it to the
+            // adapter as a `BashCommand` so destructive-command and
+            // future allow/deny rules can fire.
+            let git_args: Vec<String> = vec![
+                "commit".to_string(),
+                "-m".to_string(),
+                req.message.clone(),
+            ];
+            self.enforce_policy(&SandboxOp::BashCommand {
+                cmd: "git",
+                args: &git_args,
+            })?;
             // git2 is blocking; run on the blocking pool.
             tokio::task::spawn_blocking(move || git_commit_blocking(&req))
                 .await
@@ -763,6 +867,18 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_file_read_outline disabled via env".into(),
                 ));
             }
+            // Phase B1 — policy gate. dispatch_file_read_outline does
+            // not write to disk, but the policy layer hooks every
+            // dispatch entry point uniformly (spec B1, brief §4). The
+            // `FileWrite` variant is a documented approximation; the
+            // file path is what the operation touches, so the adapter
+            // sees the correct subject. The default
+            // `PassthroughSandbox` policy permits this — only an
+            // explicit deny-all custom adapter (or a `ReadOnlyFs`
+            // profile narrowing) will block reads.
+            self.enforce_policy(&SandboxOp::FileWrite {
+                path: path.as_path(),
+            })?;
             let content = tokio::fs::read_to_string(&path)
                 .await
                 .map_err(ToolDispatchError::IoError)?;
@@ -782,6 +898,12 @@ impl ToolDispatcher for InProcessToolDispatcher {
                     "dispatch_incremental_compile disabled via env".into(),
                 ));
             }
+            // Phase B1 — policy gate. The compile path spawns a child
+            // process under `req.project_dir`; expose that directory as
+            // the FileWrite subject so write-allow-list policies fire.
+            self.enforce_policy(&SandboxOp::FileWrite {
+                path: req.project_dir.as_path(),
+            })?;
             let _clock = OsClock;
             let start = _clock.now();
             let (cmd, args) =

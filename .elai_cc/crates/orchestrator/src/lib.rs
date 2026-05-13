@@ -7,6 +7,12 @@ pub mod grc;
 pub mod anti_spiral;
 pub mod autonomous_gate;
 pub mod sandbox;
+// Phase B1 — Tier C Sandbox policy layer. Sibling of `sandbox` (the
+// per-process AppContainer/user-namespace isolation runtime); the policy
+// module is consulted by the in-process ToolDispatcher BEFORE any
+// bash/file/network operation runs. See `sandbox_policy.rs` for the
+// allow/deny decision matrix.
+pub mod sandbox_policy;
 pub mod bsp;
 mod bash;
 pub mod checkpoint;
@@ -311,6 +317,16 @@ pub use elai_core::sandbox::{
 pub use sandbox::{
     AgentEnvironment, AgentProcess, AgentSandbox, AppContainerConfig, JobObjectLimits,
     PlatformSandboxHandle, SandboxError, SandboxHandle, SelfModificationLocks, create_sandbox,
+};
+// Phase B1 — Tier C Sandbox policy surface. Re-exported at crate root
+// so the in-process ToolDispatcher (lives in `elai-tools`) and contract
+// tests can program against `elai_orchestrator::SandboxAdapter` without
+// the `::sandbox_policy::` path. Distinct from `sandbox::AgentSandbox`
+// (per-process isolation runtime) — see `sandbox_policy.rs` doc-comment
+// for the two-layer split.
+pub use sandbox_policy::{
+    PassthroughSandbox, SandboxAdapter, SandboxDenied, SandboxOp, SandboxPolicy,
+    SandboxProfile,
 };
 #[cfg(target_os = "windows")]
 pub use sandbox::{WindowsAppContainerSandbox, WindowsSandboxHandle};

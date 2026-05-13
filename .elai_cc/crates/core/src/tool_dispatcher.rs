@@ -60,6 +60,17 @@ pub enum ToolDispatchError {
     /// Cargo / PyPI crate could not be reached (incremental compile only).
     #[error("crate unreachable: {0}")]
     CrateUnreachable(String),
+
+    /// Phase B1 — a configured `SandboxAdapter` (see
+    /// `elai_orchestrator::sandbox_policy::SandboxAdapter`) refused the
+    /// operation. Carries the adapter's human-readable reason so the
+    /// caller can surface it to the operator. The variant lives in
+    /// `elai-core` (alongside the other `ToolDispatchError` variants)
+    /// rather than in `elai-orchestrator` because the dispatcher trait
+    /// home crate is `elai-core` and downstream callers match on this
+    /// enum without depending on the orchestrator policy types.
+    #[error("denied by sandbox policy: {reason}")]
+    Denied { reason: String },
 }
 
 // ---------------------------------------------------------------------------
