@@ -82,8 +82,15 @@ pub async fn build_task_runner_wiring(
     //    `dashboard-v2/src-tauri/src/state.rs::resolve_ssb_path` (the
     //    `sessions_dir_path(&cwd).join("ssb.db")` candidate).
     let ssb_db_path = sessions_dir.join(SSB_DB_FILE_NAME);
-    let project_id = elai_core::project_id_from_cwd()
-        .unwrap_or_else(|| format!("{}unknown", elai_core::PROJECT_ID_PREFIX));
+    // Phase A1c: derive the project_id from the caller-supplied
+    // `project_root` (NOT the process CWD). The dashboard Tauri `setup()`
+    // and the `elai run` CLI both pass an explicit `project_root` — using
+    // `project_id_from_cwd()` here meant the CLI launched from one directory
+    // and the dashboard launched from another bucketed their SSB rows under
+    // different `project_id` values for the same on-disk project. The
+    // canonical helper canonicalises the path internally so `./` and the
+    // real path collapse to the same id (see project_id.rs:42-49).
+    let project_id = elai_core::project_id_from_path(project_root);
     let ssb_config = SsbConfig {
         db_path: ssb_db_path,
         pool_size: Some(2),
