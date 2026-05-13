@@ -161,7 +161,8 @@ pub enum ReviewDecision {
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::{
-    CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Ssb, SsbConfig, SsbViewer,
+    CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Layer1aProcessor, Ssb, SsbConfig,
+    SsbViewer,
     // Phase A1b: chokepoint helpers (moved from cli::runtime_builder into
     // elai_orchestrator::runtime_setup) used by the Tauri setup() callback
     // to spawn start_task_runner with both processors as Some(...).
@@ -300,6 +301,15 @@ pub struct AppState {
     /// loop cleanly (task_runner.rs:CancelHandle::cancel — flips an
     /// AtomicBool the runner polls each tick).
     pub runner_cancel: Arc<Mutex<Option<CancelHandle>>>,
+    /// Phase A4: live Layer1A processor handle. `None` until the Tauri
+    /// `setup()` callback wires it from `RuntimeWiring` (same hook that
+    /// populates `runner_join`). Used by `apply_proposal_from_user` and
+    /// `reject_proposal` to delegate to the canonical Layer1A path instead
+    /// of writing decorative SSB rows. `std::sync::Mutex` because the only
+    /// writer is the setup() callback (single thread) and command readers
+    /// take a brief lock + clone the Arc out, never holding the guard
+    /// across `.await`.
+    pub layer1a_processor: Arc<Mutex<Option<Arc<dyn Layer1aProcessor + Send + Sync>>>>,
 }
 
 impl AppState {
@@ -441,7 +451,23 @@ impl AppState {
             // RunEvent::ExitRequested closure takes them back out on shutdown.
             runner_join: Arc::new(Mutex::new(None)),
             runner_cancel: Arc::new(Mutex::new(None)),
+            // Phase A4: layer1a_processor defaults to None. Populated by the
+            // Tauri setup() callback in lib.rs alongside runner_join when
+            // RuntimeWiring resolves; apply_proposal_from_user / reject_proposal
+            // read it via layer1a_processor_snapshot().
+            layer1a_processor: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Phase A4: cheap snapshot of the wired Layer1A processor. Returns
+    /// `None` when the dashboard launched without a runtime wiring (fresh
+    /// install with no SSB) — callers must surface a clear error to the
+    /// UI rather than silently no-op. Locks briefly, clones the Arc, drops
+    /// the guard before any `.await` (commands are async).
+    pub fn layer1a_processor_snapshot(
+        &self,
+    ) -> Option<Arc<dyn Layer1aProcessor + Send + Sync>> {
+        self.layer1a_processor.lock().ok()?.clone()
     }
 
     /// Cheap clone of the current project root. Use this in every command

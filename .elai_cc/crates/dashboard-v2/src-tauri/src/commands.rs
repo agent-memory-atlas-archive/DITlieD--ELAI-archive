@@ -23,8 +23,7 @@ use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry, ModeChangedPayload,
-    NovelStepRow, ProposalAppliedPayload, ProposalRejectedPayload, ReflectState, SsbActionType,
-    SsbPayload, SsbWriteRequest, StubRunRow, TaskSubmittedPayload,
+    NovelStepRow, ReflectState, SsbPayload, StubRunRow, TaskSubmittedPayload,
 };
 use elai_orchestrator::ssb_viewer::{SelfModMsiSnapshotRow, SelfModProposalRow};
 use serde_json::{json, Value};
@@ -600,58 +599,51 @@ pub fn get_applied_proposals(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(rows).map_err(map_err)
 }
 
-/// B-23 Phase 4H Group F — operator confirms a pending proposal. Emits a
-/// best-effort `proposal_applied` SSB row marking it human-applied so the
-/// dashboard renders it as resolved. The actual data-table mutation
-/// remains the responsibility of the orchestrator's Layer 1A processor;
-/// the dashboard does NOT bypass that path.
+/// Phase A4 — operator confirms a pending Layer 1A proposal. Delegates to
+/// `Layer1aProcessor::apply_proposal`, which is the canonical path that
+/// mutates rules.db AND emits the `ProposalApplied` (+ `MsiUpdate` /
+/// `ConfigArchived`) SSB rows internally. The dashboard no longer writes
+/// a decorative SSB row here — that would have produced a duplicate.
+///
+/// v1 reference: `.elai_cc/crates/.bkp_old/dashboard/src/commands.rs:1280-1292`.
+/// Layer1A trait contract: `orchestrator/src/self_mod_layer1a.rs:317-339`.
 #[tauri::command]
 pub async fn apply_proposal_from_user(
     state: State<'_, AppState>,
     proposal_id: String,
 ) -> CmdResult<Value> {
-    let Some(writer) = state.writer.as_ref().cloned() else {
-        return Err("no SSB writer available".into());
-    };
-    let payload = ProposalAppliedPayload {
-        proposal_id: proposal_id.clone(),
-        table: "(operator-applied)".into(),
-        applied_by: "dashboard-v2".into(),
-        commit_sha: None,
-    };
-    let bytes = rmp_serde_to_vec_named(&SsbPayload::ProposalApplied(payload))?;
-    let req = SsbWriteRequest {
-        action_type: SsbActionType::ProposalApplied,
-        agent_id: "dashboard-v2".into(),
-        superstep: 0,
-        payload: bytes,
-        files: vec![],
-    };
-    writer.write(req).await.map_err(map_err)?;
+    let processor = state
+        .layer1a_processor_snapshot()
+        .ok_or_else(|| "layer1a processor not initialized".to_owned())?;
+    // `list_pending` returns `Vec<DataTableProposal>` (not Result) per the
+    // trait signature; .find() locates the one the operator clicked.
+    let pending = processor.list_pending().await;
+    let proposal = pending
+        .into_iter()
+        .find(|p| p.proposal_id == proposal_id)
+        .ok_or_else(|| format!("proposal not found: {proposal_id}"))?;
+    processor
+        .apply_proposal(&proposal)
+        .await
+        .map_err(map_err)?;
     Ok(json!({ "ok": true, "proposal_id": proposal_id }))
 }
 
-/// B-23 Phase 4H Group F — operator rejects a pending proposal. Emits a
-/// `proposal_rejected` SSB row so the dashboard can render it as resolved.
+/// Phase A4 — operator rejects a pending Layer 1A proposal. Delegates to
+/// `Layer1aProcessor::reject_proposal`, which flips status in rules.db and
+/// emits the `ProposalRejected` SSB row internally. No decorative write.
+///
+/// v1 reference: `.elai_cc/crates/.bkp_old/dashboard/src/commands.rs:1297-...`.
+/// Layer1A trait contract: `orchestrator/src/self_mod_layer1a.rs:354-360`.
 #[tauri::command]
 pub async fn reject_proposal(state: State<'_, AppState>, proposal_id: String) -> CmdResult<Value> {
-    let Some(writer) = state.writer.as_ref().cloned() else {
-        return Err("no SSB writer available".into());
-    };
-    let payload = ProposalRejectedPayload {
-        proposal_id: proposal_id.clone(),
-        table: "(operator-rejected)".into(),
-        reason: "rejected by operator".into(),
-    };
-    let bytes = rmp_serde_to_vec_named(&SsbPayload::ProposalRejected(payload))?;
-    let req = SsbWriteRequest {
-        action_type: SsbActionType::ProposalRejected,
-        agent_id: "dashboard-v2".into(),
-        superstep: 0,
-        payload: bytes,
-        files: vec![],
-    };
-    writer.write(req).await.map_err(map_err)?;
+    let processor = state
+        .layer1a_processor_snapshot()
+        .ok_or_else(|| "layer1a processor not initialized".to_owned())?;
+    processor
+        .reject_proposal(&proposal_id, "rejected by operator")
+        .await
+        .map_err(map_err)?;
     Ok(json!({ "ok": true, "proposal_id": proposal_id }))
 }
 
@@ -663,13 +655,6 @@ pub fn get_msi_status(state: State<'_, AppState>) -> CmdResult<Value> {
     };
     let rows: Vec<SelfModMsiSnapshotRow> = viewer.latest_msi_per_mode().unwrap_or_default();
     serde_json::to_value(rows).map_err(map_err)
-}
-
-fn rmp_serde_to_vec_named(payload: &SsbPayload) -> Result<Vec<u8>, String> {
-    // Tiny shim — keeps the rmp_serde dependency confined to orchestrator-
-    // re-exported helpers without forcing dashboard-v2/src-tauri to take a
-    // direct dep on `rmp_serde`. Uses the orchestrator's serde feature.
-    elai_orchestrator::encode_ssb_payload(payload).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

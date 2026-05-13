@@ -286,6 +286,23 @@ pub fn run() {
                 match wiring_result {
                     Ok(wiring) => {
                         let runner_ssb = wiring.ssb.clone();
+                        // Phase A4: publish the Layer1A processor to AppState
+                        // BEFORE apply_task_runner_wiring borrows `wiring`, so
+                        // apply_proposal_from_user / reject_proposal can
+                        // delegate to it. Clone the Arc<DefaultLayer1aProcessor>
+                        // and widen to Arc<dyn Layer1aProcessor + Send + Sync>;
+                        // the trait already requires Send + Sync
+                        // (self_mod_layer1a.rs:317 `trait Layer1aProcessor: Send + Sync`).
+                        let layer1a_for_state: std::sync::Arc<
+                            dyn elai_orchestrator::Layer1aProcessor + Send + Sync,
+                        > = wiring.layer1a_processor.clone();
+                        match state.layer1a_processor.lock() {
+                            Ok(mut g) => *g = Some(layer1a_for_state),
+                            Err(e) => tracing::error!(
+                                error = %e,
+                                "dashboard-v2: layer1a_processor mutex poisoned; processor handle dropped"
+                            ),
+                        }
                         let cfg = elai_orchestrator::apply_task_runner_wiring(
                             cursor_path,
                             &wiring,
