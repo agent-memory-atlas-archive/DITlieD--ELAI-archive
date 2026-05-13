@@ -1,4 +1,5 @@
 pub mod agent_pool;
+pub mod agent_role_dispatcher;
 pub mod agent_template;
 pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
