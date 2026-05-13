@@ -78,6 +78,11 @@ pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
     BranchRef, DagMessageRole, MergeResult, Stub,
 };
+// Phase B2 — Symbol Graph public surface. Re-exported at crate root so
+// downstream consumers (contracts crate, dashboard impact preview,
+// SurgicalTelescope follow-up) can `use elai_orchestrator::{SymbolGraph,
+// ...}` without reaching into the module path.
+pub use symbol_graph::{SymbolGraph, SymbolGraphError, SymbolRecord, SymbolTag};
 pub mod irreversible_classifier;
 pub mod micro_reflection_emitter;
 pub mod mistake_book;
@@ -103,6 +108,11 @@ pub mod ssb_viewer;
 // `media_validator/mod.rs` for the per-group rollout map.
 pub mod media_validator;
 pub mod system_probe;
+// Phase B2 — Symbol Graph Impact runtime (library skeleton). Lazy reader
+// for `.claude/tools/elai.map`; consumed by the SurgicalTelescope blast-radius
+// upgrade in a follow-up phase. See `symbol_graph.rs` for the typed surface
+// and `crates/contracts/tests/symbol_graph_contract.rs` for the contract.
+pub mod symbol_graph;
 pub mod telescope_caller;
 pub mod feasibility_probe;
 pub mod task_runner;
