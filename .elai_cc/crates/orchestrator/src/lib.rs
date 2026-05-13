@@ -574,12 +574,14 @@ pub use ssb_viewer::{
 };
 pub use task_runner::{
     detect_scaffold_template, emit_integration_checkpoint_for_test,
-    enforce_file_read_budget_guard, evaluate_post_execution_block_found, is_web_research_task,
+    enforce_file_read_budget_guard, evaluate_post_execution_block_found,
+    fix_and_rerun_until_green, is_web_research_task,
     is_web_scaffold_task, new_dev_server_registry, project_dir_is_web,
     serialize_decomposition_for_grounding, start_task_runner,
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor,
     CancelHandle, CwdProjectDirResolver, DefaultWebResearchRunner, DevServerLauncher,
-    DevServerRegistry, FileReadBudgetVerdict, LaunchedPreview, ProjectDirResolver,
+    DevServerRegistry, FileReadBudgetVerdict, FixAndRerunOutcome, FixerValidator,
+    FixerValidatorReport, LaunchedPreview, ProjectDirResolver,
     RuleEvaluator, ScaffoldApplier, SsbWebResearchStepEmitter, SyntheticBabyStepExecutor,
     TaskRunnerConfig, TaskRunnerError, WebResearchRunner, WebResearchSummary,
     WebValidatorLauncher, AGENT_FAILED_CATEGORY, BABY_STEP_PRE_GATE_ACTION,

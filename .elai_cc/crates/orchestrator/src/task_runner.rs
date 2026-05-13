@@ -769,6 +769,237 @@ impl BabyStepExecutor for SyntheticBabyStepExecutor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase A3 — fix-and-rerun outer loop
+// ---------------------------------------------------------------------------
+//
+// After a web baby step, when `run_web_build` (or the equivalent validator
+// supplied by the caller) reports `severity >= warn`, the orchestrator must
+// dispatch one fixer turn through the agent loop and re-run the validator.
+// The loop caps at `max_iterations` (default 5 per orchestrator-prompt §10).
+// On cap, the function emits an autonomous-gate escalation row via the
+// existing [`emit_autonomous_decision`] helper, reusing
+// `AutonomyDecision::RequestHuman` so the dashboard's gate-decision surface
+// renders the escalation without a new `SsbActionType` variant.
+//
+// Production wiring: callers pass a closure that invokes
+// `elai_web_validator::run_web_build` against the project dir. Tests pass a
+// deterministic stub. Production callers integrate this via the web baby
+// step path in the main `drive_task` loop; the function is intentionally a
+// free function so the contract test can exercise it in isolation without
+// constructing a full `TaskRunner`.
+
+/// Severity-reduced report from one validator pass. Returned by
+/// [`FixerValidator`] implementations; `Green` means `severity < warn`
+/// (per `web_validator/src/lib.rs:11` comment — Error/Warning both qualify
+/// as `>= warn`).
+#[derive(Debug, Clone)]
+pub enum FixerValidatorReport {
+    /// All validators in this pass produced no findings at severity >= warn.
+    Green,
+    /// At least one finding was severity >= warn. `summary` is folded into
+    /// the next fixer turn's task_summary so the agent has the failure text.
+    Failed { summary: String },
+}
+
+/// Outcome of [`fix_and_rerun_until_green`]. `iterations` is the number of
+/// fixer turns dispatched (NOT the validator passes — the initial validator
+/// pass is iteration 0 if it passes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixAndRerunOutcome {
+    /// Validators converged to `Green` after `iterations` fixer turns.
+    /// `iterations == 0` is possible if the very first validator pass is
+    /// green (no fixing needed).
+    Healed { iterations: u32 },
+    /// Validators stayed `Failed` after the `max_iterations` cap. Caller
+    /// should treat this as a hard halt; the function has already emitted
+    /// the SSB gate-decision row.
+    EscalatedToHuman { iterations: u32 },
+}
+
+/// Closure-style trait alias for a single validator pass. Callable in a
+/// loop; takes the project dir, returns a future yielding the report.
+///
+/// Production wiring example (paraphrased):
+/// ```ignore
+/// let validator = |dir: &Path| async move {
+///     let out_dir = dir.join("dist");
+///     match elai_web_validator::run_web_build(dir, "npm run build", &out_dir).await {
+///         Ok(r) if r.success => FixerValidatorReport::Green,
+///         Ok(r) => FixerValidatorReport::Failed {
+///             summary: r.stderr_errors.join("\n"),
+///         },
+///         Err(e) => FixerValidatorReport::Failed { summary: e.to_string() },
+///     }
+/// };
+/// ```
+pub trait FixerValidator: Send + Sync {
+    type Fut: std::future::Future<Output = FixerValidatorReport> + Send;
+    fn run(&self, project_dir: &Path) -> Self::Fut;
+}
+
+impl<F, Fut> FixerValidator for F
+where
+    F: Fn(&Path) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = FixerValidatorReport> + Send,
+{
+    type Fut = Fut;
+    fn run(&self, project_dir: &Path) -> Self::Fut {
+        (self)(project_dir)
+    }
+}
+
+/// Phase A3 outer loop.
+///
+/// Drives validator -> fixer -> validator until `Green` or `max_iterations`.
+/// On cap, emits an `AutonomyDecision::RequestHuman` SSB row via
+/// [`emit_autonomous_decision`] (reusing the existing GateDecision +
+/// EscalationFired surfaces — no new `SsbActionType` variant).
+///
+/// Inputs:
+/// * `project_root` — the project dir validators run against and fixer turns
+///   reference.
+/// * `fixer_executor` — typically the production [`AgentPoolBabyStepExecutor`];
+///   tests inject a mock that mutates the project filesystem in `execute()`.
+/// * `autonomous_gate` — currently used only as a presence signal; future
+///   wiring may invoke `gate.decide(...)` directly. Kept on the signature so
+///   the integration point at the call site (the main `drive_task` loop)
+///   does not have to be refactored when the gate-driven escalation lands.
+/// * `ssb_writer` — single-writer Ssb handle the gate-decision row is
+///   appended to.
+/// * `max_iterations` — hard cap on fixer turns. `0` means "validate once;
+///   never dispatch a fixer; escalate immediately on failure" — this matches
+///   the principle of explicit caps but is unusual; callers normally pass 5.
+/// * `validator` — see [`FixerValidator`].
+/// * `step_id` — diagnostic label written into the `GateDecision.step_id` SSB
+///   field on cap. Matches the existing call-site convention at
+///   `task_runner.rs:4085`.
+///
+/// Errors: today the function returns `Ok` for every code path (the loop's
+/// failures are surfaced as `EscalatedToHuman`, not `Err`). The `Result`
+/// return type is reserved for future I/O failures (e.g. validator that
+/// itself returns a hard error and we choose to propagate rather than
+/// classify as `Failed`).
+///
+/// Wiring point: callers in the main `drive_task` loop invoke this AFTER
+/// `resolved.baby_step_executor.execute(exec_ctx).await` (task_runner.rs
+/// around line 4208) and BEFORE the `BabyStepResult` construction (around
+/// line 4317), guarded by `is_web_project`. The wiring is intentionally
+/// kept out of this commit per the minimal-diff principle — the function is
+/// already exercised by the contract test in isolation.
+#[allow(clippy::too_many_arguments)]
+pub async fn fix_and_rerun_until_green<V>(
+    project_root: PathBuf,
+    fixer_executor: Arc<dyn BabyStepExecutor>,
+    autonomous_gate: Option<Arc<crate::autonomous_gate::AutonomousGate>>,
+    ssb_writer: Arc<Ssb>,
+    max_iterations: u32,
+    validator: V,
+    step_id: &str,
+) -> Result<FixAndRerunOutcome, TaskRunnerError>
+where
+    V: FixerValidator,
+{
+    // `autonomous_gate` is reserved for follow-on wiring (gate-driven
+    // escalation policy). Today the loop uses emit_autonomous_decision
+    // directly, mirroring the existing call site at task_runner.rs:4085.
+    let _ = autonomous_gate.as_ref();
+
+    let mut iterations: u32 = 0;
+    loop {
+        // ---- Validator pass ----
+        let report = validator.run(&project_root).await;
+        let failure_summary = match report {
+            FixerValidatorReport::Green => {
+                return Ok(FixAndRerunOutcome::Healed { iterations });
+            }
+            FixerValidatorReport::Failed { summary } => summary,
+        };
+
+        // ---- Cap check ----
+        if iterations >= max_iterations {
+            // Emit a request_human GateDecision row so the dashboard
+            // surfaces the escalation. Evidence here is synthetic — the
+            // failed validator output is folded into the `reason` string.
+            // We deliberately do NOT call derive_autonomous_evidence: this
+            // path doesn't have an SsbReader handle on the Arc<Ssb> at this
+            // call site, and the evidence is "the validator failed
+            // max_iterations times in a row" — a structurally simpler
+            // claim than the six-check evidence summary.
+            let evidence = crate::autonomous_gate::Evidence {
+                knowledge_readiness: true,
+                zero_ungrounded: true,
+                tests_fail_correctly: true,
+                test_flipped: false,
+                zero_blocks: false,
+                dkg_and_changelog_present: true,
+            };
+            let reason = format!(
+                "fix_and_rerun cap reached after {max_iterations} iterations; \
+                 last validator summary: {summary}",
+                max_iterations = max_iterations,
+                summary = truncate_summary(&failure_summary, 240),
+            );
+            let decision = crate::autonomous_gate::AutonomyDecision::RequestHuman {
+                reason,
+                risk_level: crate::gate::RiskLevel::High,
+                evidence,
+            };
+            emit_autonomous_decision(&ssb_writer, &decision, step_id, None, "fix_and_rerun")
+                .await;
+            return Ok(FixAndRerunOutcome::EscalatedToHuman { iterations });
+        }
+
+        // ---- Fixer turn ----
+        let fixer_task = format_fixer_prompt(&failure_summary);
+        let exec_ctx = BabyStepExecutionCtx {
+            // baby_step_id `0` is the sentinel used by `feasibility_probe` and
+            // mirror tests when the caller has no concrete BSP id; the fix
+            // loop does not consume the value beyond logging.
+            baby_step_id: 0,
+            task_summary: fixer_task,
+            escalation_message: None,
+        };
+        let _fixer_result = fixer_executor.execute(exec_ctx).await;
+        // We do NOT parse the agent response content. Per the integration
+        // map's "simpler-first path" (workflow/sessions/s-28564/
+        // integration-map-A3.md), the agent mutates files via its tool
+        // channel; the next validator pass observes the side effects.
+        iterations += 1;
+    }
+}
+
+/// Single-purpose helper: build the fixer-turn task_summary from a failed
+/// validator summary. Kept short and predictable so the agent's prompt
+/// budget stays controlled. Per `workflow/papers/agentless-2407.01489-
+/// interface.md`, one validator failure -> one fixer turn (do NOT merge
+/// multiple validator outputs into a multi-fix prompt).
+fn format_fixer_prompt(failure_summary: &str) -> String {
+    format!(
+        "FIX_AND_RERUN: the web validator reported the following failure. \
+         Fix the affected source files so the validator passes on the next \
+         attempt. Do not introduce unrelated changes.\n---\n{}\n---",
+        truncate_summary(failure_summary, 1_800),
+    )
+}
+
+/// Truncate a validator/failure summary to `max` chars to keep SSB rows and
+/// prompts compact. Returns the input unchanged when already <= `max`.
+fn truncate_summary(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_owned()
+    } else {
+        let prefix = s
+            .char_indices()
+            .nth(max)
+            .map_or(s, |(i, _)| &s[..i]);
+        let mut out = String::with_capacity(prefix.len() + 16);
+        out.push_str(prefix);
+        out.push_str("... [truncated]");
+        out
+    }
+}
+
 /// Production [`BabyStepExecutor`] that drives
 /// [`crate::agent_pool::InProcessAgentPool::launch_agent_process`] (Session
 /// wire-4A acceptance criterion 1-4).
