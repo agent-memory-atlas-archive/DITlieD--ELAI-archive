@@ -76,6 +76,34 @@ pub const ARTIFACT_MANIFEST_EXT: &str = "json";
 // Path helpers — pure functions of `project_root`.
 // ---------------------------------------------------------------------------
 
+/// Filename of the per-project index manifest emitted by `IndexManifest`
+/// (C-pack C2). Lives inside `INDEXES_DIR_NAME`.
+pub const INDEX_MANIFEST_FILENAME: &str = "manifest.json";
+
+/// `<project_root>/.elai_cc/indexes`
+///
+/// Canonical home for all on-disk indexes (DKG SQLite, vector JSON, BM25
+/// files, the C-pack `manifest.json`). Identical to `bm25_dir_path` by
+/// construction; kept as a separate helper so non-BM25 callers (e.g. the
+/// IndexManifest loader/saver) don't tunnel through a BM25-flavoured name.
+#[inline]
+pub fn indexes_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(INDEXES_DIR_NAME)
+}
+
+/// `<project_root>/.elai_cc/indexes/manifest.json`
+///
+/// C-pack C2: single source of truth for index manifest location. Callers
+/// must use this helper rather than building the path piecewise — the
+/// path_unification contract test forbids `".elai/"` and ad-hoc segment
+/// concatenation in non-test source.
+#[inline]
+pub fn index_manifest_path(project_root: &Path) -> PathBuf {
+    indexes_dir_path(project_root).join(INDEX_MANIFEST_FILENAME)
+}
+
 /// `<project_root>/.elai_cc/indexes/dkg.db`
 #[inline]
 pub fn dkg_db_path(project_root: &Path) -> PathBuf {

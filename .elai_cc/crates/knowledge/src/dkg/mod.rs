@@ -128,6 +128,12 @@ impl DkgEngine {
             Box::new(GoGrammar),
             Box::new(TypeScriptGrammar),
             Box::new(TsxGrammar),
+            // C-pack C1: Svelte uses tree-sitter-svelte-ng (already a
+            // workspace dep — see knowledge/Cargo.toml L28). The grammar
+            // reuses the TypeScript node-extraction walker because Svelte's
+            // tree-sitter grammar embeds JS/TS declaration nodes inside
+            // `<script>` blocks.
+            Box::new(SvelteGrammar),
             Box::new(JavaGrammar),
             Box::new(CSharpGrammar),
             Box::new(RubyGrammar),
@@ -1377,6 +1383,39 @@ impl LanguageGrammar for TsxGrammar {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SvelteGrammar (C-pack C1)
+// ---------------------------------------------------------------------------
+//
+// Minimal Svelte grammar. tree-sitter-svelte-ng exposes a unified tree where
+// the embedded `<script>` block's children are JS/TS declaration nodes —
+// `function_declaration`, `class_declaration`, etc. — using the same node
+// kind strings as the TypeScript grammar. We can therefore reuse
+// `ts_extract_recursive` and the `TS_KINDS` filter without modification.
+// Files that contain no `<script>` block produce zero `DkgNode`s, which is
+// the correct behaviour (no symbols to extract).
+//
+// Anti-Slopsquatting: `tree_sitter_svelte_ng` is already in
+// `knowledge/Cargo.toml` (workspace dep, verified in s-44680 Phase B). The
+// grammar's `LANGUAGE` constant is the same symbol we register in
+// `ast_adapter.rs` L34-37.
+pub struct SvelteGrammar;
+
+impl LanguageGrammar for SvelteGrammar {
+    fn language_id(&self) -> &'static str { "svelte" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_svelte_ng::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        ts_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
 fn ts_extract_recursive(
     cursor: &mut tree_sitter::TreeCursor,
     source: &[u8],
@@ -2094,7 +2133,7 @@ const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules", "__
 
 /// Extensions that have a registered grammar.
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "go", "ts", "tsx", "java", "cs", "rb",
+    "rs", "py", "go", "ts", "tsx", "svelte", "java", "cs", "rb",
 ];
 
 pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
@@ -2104,6 +2143,11 @@ pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
         "go" => Some("go"),
         "ts" => Some("typescript"),
         "tsx" => Some("tsx"),
+        // C-pack C1: register .svelte alongside .ts/.tsx. The
+        // SvelteGrammar reuses ts_extract_recursive because
+        // tree-sitter-svelte-ng emits JS/TS declaration nodes inside
+        // <script> blocks under the same node-kind strings.
+        "svelte" => Some("svelte"),
         "java" => Some("java"),
         "cs" => Some("csharp"),
         "rb" => Some("ruby"),
