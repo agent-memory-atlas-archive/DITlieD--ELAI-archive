@@ -455,6 +455,28 @@ impl IpcGateway {
                 FrameRouteResult::ReplanRequest { reason, severity }
             }
 
+            // Phase A2: agent emits this when its ReAct loop hits
+            // AGENT_MAX_ITERATIONS. Semantically a terminal frame (no
+            // AgentResponse follows), so route as Response carrying the
+            // variant payload. The conversation layer can `matches!` on the
+            // inner enum if it cares to distinguish; today every consumer
+            // treats Response opaquely.
+            IpcMessageType::AgentMaxIterationsReached {
+                reason,
+                iterations_completed,
+            } => {
+                tracing::warn!(
+                    agent_id = %conn.agent_id,
+                    iterations = iterations_completed,
+                    reason = %reason,
+                    "agent hit max iteration cap"
+                );
+                FrameRouteResult::Response(IpcMessageType::AgentMaxIterationsReached {
+                    reason,
+                    iterations_completed,
+                })
+            }
+
             // Messages that agents should NOT send (orchestrator -> agent only)
             IpcMessageType::AgentRequest { .. }
             | IpcMessageType::InferResponse { .. }

@@ -1567,6 +1567,7 @@ name = "elai_cc_contracts"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "elai-ipc-types",
  "elai-knowledge",
  "elai-orchestrator",
  "elai-plugins",

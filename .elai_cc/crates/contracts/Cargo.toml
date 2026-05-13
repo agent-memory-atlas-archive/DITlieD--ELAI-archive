@@ -31,6 +31,9 @@ rustc-hash.workspace = true
 uuid = { workspace = true }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
+# Phase A2 — agent_loop_contract spawns elai_cc_agent and drives an IPC
+# round-trip; both sides share the wire-protocol types from this crate.
+elai-ipc-types.workspace = true
 # Phase A (s-69820): website-creation pipeline contract test imports
 # scaffold::{fim, build_vars} + apply_template_from_root + load_manifest.
 scaffold = { path = "../scaffold" }

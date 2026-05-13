@@ -21,6 +21,8 @@ use elai_ipc_types::{
 };
 use uuid::Uuid;
 
+mod agent_loop;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -109,31 +111,43 @@ fn send_message(stream: &mut dyn Write, msg: &IpcMessageType) -> Result<(), Agen
 
 fn handle_message(
     msg: IpcMessageType,
-    _agent_id: &Uuid,
+    agent_id: &Uuid,
     writer: &mut dyn Write,
+    reader: &mut dyn Read,
 ) -> Result<bool, AgentError> {
     match msg {
         IpcMessageType::AgentRequest { task, dispatch_config } => {
             tracing::info!(task = %task, role = ?dispatch_config.role, "received agent request");
-            // Process the task and send response
-            // In a full implementation, this would invoke the agent's reasoning loop.
-            // For 4A.5, we send a basic acknowledgment response.
-            let response = IpcMessageType::AgentResponse {
-                content: format!("task acknowledged: {task}"),
-                artifacts: Vec::new(),
-            };
-            send_message(writer, &response)?;
-            Ok(true) // continue loop
+            // Phase A2: dispatch into the real ReAct loop instead of the
+            // ack-only stub that 4A.5 shipped. run_react_turn drives
+            // InferRequest <-> InferResponse <-> ToolRequest <-> ToolResult
+            // and emits a terminal AgentResponse (end_turn) or
+            // AgentMaxIterationsReached (cap) frame.
+            agent_loop::run_react_turn(task, agent_id, writer, reader)?;
+            Ok(true) // continue outer dispatch loop for subsequent requests
         }
 
         IpcMessageType::InferResponse { text: _text, tokens_used } => {
-            tracing::debug!(tokens = tokens_used, "received inference response");
+            // The ReAct loop owns InferResponse handling for in-flight turns.
+            // Stray frames outside an active turn fall through here for
+            // visibility only.
+            tracing::trace!(
+                tokens = tokens_used,
+                "received out-of-turn InferResponse — ignored"
+            );
             Ok(true)
         }
 
         IpcMessageType::ToolResult { tool_id, output, success } => {
-            tracing::debug!(tool = %tool_id.as_str(), success, "received tool result");
-            let _ = output;
+            // Likewise, the ReAct loop consumes ToolResult inline. A
+            // stray ToolResult outside the loop is logged with the byte
+            // length (NOT silently swallowed — that was the A2 stub-ban).
+            tracing::trace!(
+                tool = %tool_id.as_str(),
+                success,
+                output_len = output.len(),
+                "received out-of-turn ToolResult — logged, not consumed"
+            );
             Ok(true)
         }
 
@@ -166,7 +180,8 @@ fn handle_message(
         | IpcMessageType::ThinkStep { .. }
         | IpcMessageType::CheckpointSync { .. }
         | IpcMessageType::AgentHeartbeat { .. }
-        | IpcMessageType::ReplanRequest { .. } => {
+        | IpcMessageType::ReplanRequest { .. }
+        | IpcMessageType::AgentMaxIterationsReached { .. } => {
             tracing::warn!("received unexpected message type from orchestrator");
             Ok(true)
         }
@@ -246,7 +261,7 @@ fn run_message_loop(
         match read_frame(reader) {
             Ok(frame) => {
                 let msg = IpcFrame::decode(&frame.payload).map_err(AgentError::Frame)?;
-                match handle_message(msg, &agent_id, writer)? {
+                match handle_message(msg, &agent_id, writer, reader)? {
                     true => continue,
                     false => break,
                 }

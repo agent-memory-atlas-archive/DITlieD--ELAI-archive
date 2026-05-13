@@ -32,7 +32,10 @@ pub enum AgentRole {
 // ---------------------------------------------------------------------------
 
 /// Wire protocol version. Mismatch between orchestrator and agent -> kill.
-pub const IPC_PROTOCOL_VERSION: u8 = 1;
+///
+/// Bumped to 2 in Phase A2 — added IpcMessageType::AgentMaxIterationsReached
+/// (tag=15). Older binaries (version 1) MUST be rebuilt.
+pub const IPC_PROTOCOL_VERSION: u8 = 2;
 
 /// Hard cap on any single IPC frame payload (10 MiB).
 pub const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
@@ -134,8 +137,11 @@ pub struct AgentDispatchConfig {
 }
 
 // ---------------------------------------------------------------------------
-// IpcMessageType — 15 message variants (LOCKED)
+// IpcMessageType — 16 message variants (LOCKED — see note below)
 // ---------------------------------------------------------------------------
+//
+// Phase A2 added AgentMaxIterationsReached (tag=15); count now 16.
+// Subsequent additions still LOCKED behind explicit decision.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IpcMessageType {
@@ -154,9 +160,14 @@ pub enum IpcMessageType {
     AgentHeartbeat { agent_id: Uuid, uptime_secs: u64 },
     AgentKill { reason: String },
     ReplanRequest { reason: String, severity: String },
+    /// Phase A2 — emitted by the agent's ReAct loop when the iteration cap
+    /// (`AGENT_MAX_ITERATIONS`, default 25) fires. The orchestrator MUST treat
+    /// this as a terminal frame for the current AgentRequest — no
+    /// AgentResponse will follow.
+    AgentMaxIterationsReached { reason: String, iterations_completed: u32 },
 }
 
-// Compile-time assertion: exactly 15 variants.
+// Compile-time assertion: exactly 16 variants.
 #[doc(hidden)]
 pub const fn _ipc_variant_tag(msg: &IpcMessageType) -> u8 {
     match msg {
@@ -175,11 +186,12 @@ pub const fn _ipc_variant_tag(msg: &IpcMessageType) -> u8 {
         IpcMessageType::AgentHeartbeat { .. } => 12,
         IpcMessageType::AgentKill { .. } => 13,
         IpcMessageType::ReplanRequest { .. } => 14,
+        IpcMessageType::AgentMaxIterationsReached { .. } => 15,
     }
 }
 
 /// Number of IpcMessageType variants.
-pub const IPC_MESSAGE_TYPE_VARIANT_COUNT: usize = 15;
+pub const IPC_MESSAGE_TYPE_VARIANT_COUNT: usize = 16;
 
 // ---------------------------------------------------------------------------
 // IpcFrame — wire-level frame
