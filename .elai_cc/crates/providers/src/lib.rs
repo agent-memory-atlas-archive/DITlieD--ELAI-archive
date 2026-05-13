@@ -32,7 +32,9 @@ pub use prompt_cache::{
     PromptCacheStats,
 };
 pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, AuthSource};
-pub use providers::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
+pub use providers::openai_compat::{
+    build_chat_completion_request_for_test, OpenAiCompatClient, OpenAiCompatConfig,
+};
 pub use providers::ollama::{
     probe_speculative_support, LlmFuture, LlmProvider, OllamaConfig, OllamaEmbedder,
     OllamaProvider, ProbeResult, SpeculativeConfig,

@@ -41,6 +41,13 @@ impl MessageRequest {
         self.system = Some(vec![SystemBlock::text(text)]);
         self
     }
+
+    /// Sidecar caps seed at `2^32 - 1`; accept `u32` and widen into the wire `u64`.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.seed = Some(u64::from(seed));
+        self
+    }
 }
 
 /// Anthropic-compatible cache_control marker for prompt-prefix caching.

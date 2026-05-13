@@ -682,8 +682,21 @@ fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatC
     if let Some(tool_choice) = &request.tool_choice {
         payload["tool_choice"] = openai_tool_choice(tool_choice);
     }
+    if let Some(seed) = request.seed {
+        payload["seed"] = json!(seed);
+    }
 
     payload
+}
+
+/// Test-only shim exposing `build_chat_completion_request` to integration
+/// tests in `crates/contracts`. The production function is private; this
+/// wrapper threads a default `OpenAiCompatConfig` so contract tests can
+/// assert seed forwarding without touching the production signature.
+#[doc(hidden)]
+#[must_use]
+pub fn build_chat_completion_request_for_test(request: &MessageRequest) -> Value {
+    build_chat_completion_request(request, OpenAiCompatConfig::openai())
 }
 
 fn translate_message(message: &InputMessage) -> Vec<Value> {
