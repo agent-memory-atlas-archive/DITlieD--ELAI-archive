@@ -43,14 +43,16 @@ echo   [1] Local sidecar  (default - dashboard via local Python sidecar)
 echo   [2] Remote sidecar (friend's GPU box at 192.0.2.10 + dashboard)
 echo   [3] REPL           (no dashboard - terminal interactive, local sidecar)
 echo   [4] UI dev         (Vite dev server only - design preview)
+echo   [5] Cloud          (Anthropic Sonnet/Opus via OAuth - no sidecar)
 echo.
-CHOICE /C 1234 /T 5 /D 1 /N /M "Choose mode (1-4) [default 1, 5s]: "
+CHOICE /C 12345 /T 5 /D 1 /N /M "Choose mode (1-5) [default 1, 5s]: "
 SET _PICK=%ERRORLEVEL%
 
 IF %_PICK%==1 GOTO :mode_local
 IF %_PICK%==2 GOTO :mode_remote
 IF %_PICK%==3 GOTO :mode_repl
 IF %_PICK%==4 GOTO :mode_ui
+IF %_PICK%==5 GOTO :mode_cloud
 GOTO :mode_local
 
 :mode_local
@@ -68,6 +70,22 @@ GOTO :crashcheck
 :mode_ui
 call "%~dp0crates\dashboard-v2\start-stub-ui.bat"
 GOTO :eof
+
+:mode_cloud
+REM Cloud mode: no local sidecar, Anthropic API direct via saved OAuth.
+REM Sign in via the dashboard ("Sign in with Claude") if ~/.elai/credentials.json
+REM is missing or the saved token has expired server-side.
+SET ELAI_NO_SIDECAR=1
+SET ELAI_DEFAULT_EXECUTION_MODE=CLOUD
+SET ANTHROPIC_BASE_URL=
+IF NOT EXIST "%USERPROFILE%\.elai\credentials.json" (
+    echo.
+    echo  No saved OAuth credentials at %USERPROFILE%\.elai\credentials.json.
+    echo  The dashboard will prompt you to "Sign in with Claude" on launch.
+    echo.
+)
+"%~dp0target\release\elai.exe" --dashboard 2>>"%~dp0elai-crash.log"
+GOTO :crashcheck
 
 :default_launch
 "%~dp0target\release\elai.exe" --dashboard %* 2>>"%~dp0elai-crash.log"
