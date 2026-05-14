@@ -217,9 +217,8 @@ pub async fn start_dev_server(
     }
     let (program, args) = split_command(command)?;
 
-    let mut cmd = Command::new(&program);
-    cmd.args(&args)
-        .current_dir(dir)
+    let mut cmd = build_command(&program, &args);
+    cmd.current_dir(dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -341,8 +340,7 @@ pub async fn run_web_build(
 ) -> Result<WebBuildResult, WebValidatorError> {
     let (program, args) = split_command(command)?;
 
-    let output_future = Command::new(&program)
-        .args(&args)
+    let output_future = build_command(&program, &args)
         .current_dir(dir)
         .output();
 
@@ -401,6 +399,34 @@ fn split_command(command: &str) -> Result<(String, Vec<String>), WebValidatorErr
     let program = parts.next().ok_or(WebValidatorError::EmptyCommand)?;
     let args: Vec<String> = parts.collect();
     Ok((program, args))
+}
+
+/// Build a `tokio::process::Command` that works on both Unix and Windows.
+///
+/// On Windows, npm/npx/pnpm/yarn are `.cmd` shims rather than `.exe` binaries.
+/// `Command::new("npm")` will fail with `program not found` because Rust does
+/// not perform the implicit `.cmd`/`.bat` extension lookup that `cmd.exe` does.
+/// Wrapping in `cmd.exe /C "<program> <args...>"` makes the OS handle PATH
+/// resolution and extension fallback. On Unix, no wrapping is needed.
+///
+/// Used by run_web_build / start_dev_server / lint / cwv spawn sites so a
+/// single fix benefits every web-validator entry point.
+pub(crate) fn build_command(program: &str, args: &[String]) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut joined = String::with_capacity(program.len() + 8 * args.len());
+        joined.push_str(program);
+        for a in args {
+            joined.push(' ');
+            joined.push_str(a);
+        }
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(joined);
+        cmd
+    } else {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        cmd
+    }
 }
 
 fn capture_stderr_lines(bytes: &[u8]) -> Vec<String> {

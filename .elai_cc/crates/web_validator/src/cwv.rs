@@ -90,20 +90,22 @@ pub async fn run_lighthouse(
     crate::lint::probe_node().await?;
     probe_chromium().await?;
 
-    let mut cmd = Command::new("npx");
-    cmd.args([
-        "--yes",
-        "lighthouse",
-        url,
-        "--output=json",
-        "--output-path=stdout",
-        "--quiet",
-        "--chrome-flags=--headless=new --no-sandbox",
-    ])
-    .current_dir(project_dir)
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .kill_on_drop(true);
+    // build_command wraps `cmd /C` on Windows so `npx.cmd` resolves; pass-
+    // through on Unix.
+    let lighthouse_args: Vec<String> = vec![
+        "--yes".to_string(),
+        "lighthouse".to_string(),
+        url.to_string(),
+        "--output=json".to_string(),
+        "--output-path=stdout".to_string(),
+        "--quiet".to_string(),
+        "--chrome-flags=--headless=new --no-sandbox".to_string(),
+    ];
+    let mut cmd = crate::build_command("npx", &lighthouse_args);
+    cmd.current_dir(project_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
 
     let output_future = cmd.output();
     let output = match tokio::time::timeout(

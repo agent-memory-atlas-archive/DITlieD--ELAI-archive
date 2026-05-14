@@ -207,9 +207,8 @@ async fn run_one_tool(
     out: &mut Vec<LintFinding>,
 ) -> Result<(), WebValidatorError> {
     let (program, args) = tool.npx_args(project_dir);
-    let mut cmd = Command::new(program);
-    cmd.args(&args)
-        .current_dir(project_dir)
+    let mut cmd = crate::build_command(program, &args);
+    cmd.current_dir(project_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
