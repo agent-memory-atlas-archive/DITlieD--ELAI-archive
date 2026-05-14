@@ -222,13 +222,9 @@ pub fn run() {
             commands::cancel_remote_sidecar,
             // B-39 — REFLECT STATE
             commands::get_reflect_state,
-            // B-28 — FOCUS TUNNEL PANEL (mode / streaming / pre-assembly /
-            // dep resolution / micro-steps).
-            commands::query_focus_tunnel_mode_distribution,
-            commands::query_focus_tunnel_streaming_stats,
-            commands::query_focus_tunnel_pre_assembly_stats,
-            commands::query_focus_tunnel_dep_resolution,
-            commands::query_focus_tunnel_micro_steps,
+            // B-28 follow-up — FOCUS TUNNEL INLINE CHIPS (single per-baby-step
+            // query; the dedicated FocusTunnelPanel surface was retired).
+            commands::query_focus_tunnel_per_baby_step,
             // B-24 Phase 4I Group C8 — MEDIA VALIDATION SURFACE
             media_validation::get_media_validations,
             media_validation::get_media_validation_by_step,

@@ -17,9 +17,8 @@
   import MsiPanel from '$lib/components/MsiPanel.svelte';
   // B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
   import MediaValidationPanel from '$lib/components/MediaValidationPanel.svelte';
-  // B-28 — Focus tunnel surface (mode / streaming / pre-assembly / dep /
-  // micro-step rows).
-  import FocusTunnelPanel from '$lib/components/FocusTunnelPanel.svelte';
+  // B-28 follow-up — Focus tunnel surface moved to inline chips on the
+  // PlanWindow baby-step detail card. No sibling panel is mounted here.
 
   // ------------------------------------------------------------------
   // Phase dot model — derived from FSM history when live, static stub otherwise
@@ -231,13 +230,10 @@
     <MediaValidationPanel />
   </section>
 
-  <!-- B-28 — Focus Tunnel: per-step mode distribution + streaming
-       early-termination + pipeline pre-assembly status + dependency
-       resolution log + micro-step creation log. Polls 5 Tauri commands
-       every 2s; renders zero-state shells when SSB has no rows yet. -->
-  <section class="monitor-section focus-tunnel" aria-label="Focus tunnel">
-    <FocusTunnelPanel />
-  </section>
+  <!-- B-28 follow-up — Focus tunnel signals moved inline onto the PlanWindow
+       baby-step detail card (Mode / Early-term / Micro-steps / Deps chips).
+       The dedicated panel surface was retired because the focus tunnel is
+       middleware and is not user-visible at task submission time. -->
 
   <!-- Section 6: AutoAdvanceStats — always visible (historical totals shown even when idle).
        Phase 4G §4G.6 requires the stats panel to render outside the running gate

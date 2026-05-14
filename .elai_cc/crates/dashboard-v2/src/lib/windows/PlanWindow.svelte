@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { plan } from '$lib/state/plan.svelte';
   import { fsm } from '$lib/state/fsm.svelte';
   import { activity } from '$lib/state/activity.svelte';
@@ -13,6 +14,41 @@
     BabyStepBlock,
     DecompLevel,
   } from '$lib/api/types';
+
+  // ----------------------------------------------------------------
+  // B-28 follow-up — focus-tunnel inline chips per baby-step.
+  // Wire shape returned by `query_focus_tunnel_per_baby_step`:
+  //   { mode: 'FIM'|'DIFF'|'STRUCTURED'|null,
+  //     early_term: { reason: string, tokens_saved: number } | null,
+  //     micro_steps: number,
+  //     deps_auto: number,
+  //     deps_blocked: number }
+  // ----------------------------------------------------------------
+  type EarlyTermSummary = {
+    reason: string;
+    tokens_saved: number;
+  };
+  type FocusTunnelPerStep = {
+    mode: 'FIM' | 'DIFF' | 'STRUCTURED' | null;
+    early_term: EarlyTermSummary | null;
+    micro_steps: number;
+    deps_auto: number;
+    deps_blocked: number;
+  };
+
+  // Extract a numeric baby_step_id from a dashboard node id (e.g. 'bs-1.1.1'
+  // -> last numeric component, 1). Returns `null` if no digits found — chips
+  // then render zeroed/empty state gracefully.
+  function babyStepIdFromNode(nodeId: string): number | null {
+    const segments = nodeId.split(/[^0-9]+/).filter((s) => s.length > 0);
+    if (segments.length === 0) return null;
+    const last = segments[segments.length - 1];
+    const n = Number.parseInt(last, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  let focusTunnel = $state<FocusTunnelPerStep | null>(null);
+  let focusTunnelTimer: ReturnType<typeof setInterval> | null = null;
 
   // Phase D wiring: poll bubble-up events from the backend instead of
   // reading the static mock array. plan + fsm + activity stores already
@@ -110,6 +146,47 @@
   const selectedNode = $derived(
     plan.selectedId ? findNode(plan.tree, plan.selectedId) : null
   );
+
+  // B-28 follow-up — poll focus-tunnel per-baby-step signal every 5s while
+  // a baby-step node is selected. Clears state when selection changes or
+  // the selected node is not a baby-step.
+  $effect(() => {
+    if (focusTunnelTimer) {
+      clearInterval(focusTunnelTimer);
+      focusTunnelTimer = null;
+    }
+    focusTunnel = null;
+    const node = selectedNode;
+    if (!node || node.level !== 'baby-step') {
+      return;
+    }
+    const numericId = babyStepIdFromNode(node.id);
+    if (numericId === null) {
+      return;
+    }
+    let alive = true;
+    async function refresh(): Promise<void> {
+      try {
+        const result = await invoke<FocusTunnelPerStep>(
+          'query_focus_tunnel_per_baby_step',
+          { babyStepId: numericId },
+        );
+        if (alive) focusTunnel = result;
+      } catch (err) {
+        // Tauri reject -> empty chip state; no console noise during dev.
+        if (alive) focusTunnel = null;
+      }
+    }
+    void refresh();
+    focusTunnelTimer = setInterval(() => void refresh(), 5_000);
+    return () => {
+      alive = false;
+      if (focusTunnelTimer) {
+        clearInterval(focusTunnelTimer);
+        focusTunnelTimer = null;
+      }
+    };
+  });
 
   // Hardcoded sample BabyStep detail blocks for active baby step
   const SAMPLE_BLOCKS: { block: BabyStepBlock; status: 'done' | 'active' | 'pending' | 'failed'; detail: string }[] = [
@@ -302,6 +379,39 @@
             {/if}
 
           {:else}
+            <!-- B-28 follow-up: focus-tunnel inline chips. Render only when
+                 the per-baby-step query returned non-trivial data so the
+                 baby-step card stays clean when the step has not yet
+                 emitted any focus-tunnel beacons. -->
+            {#if focusTunnel && (focusTunnel.mode || focusTunnel.early_term || focusTunnel.micro_steps > 0 || focusTunnel.deps_auto > 0 || focusTunnel.deps_blocked > 0)}
+              <div class="focus-chips" aria-label="Focus tunnel signals">
+                {#if focusTunnel.mode}
+                  <span class="chip chip-mode chip-mode-{focusTunnel.mode.toLowerCase()}">
+                    <span class="chip-label">mode</span>
+                    <span class="chip-value">{focusTunnel.mode}</span>
+                  </span>
+                {/if}
+                {#if focusTunnel.early_term}
+                  <span class="chip chip-term" title={`Tokens saved: ${focusTunnel.early_term.tokens_saved}`}>
+                    <span class="chip-label">early-term</span>
+                    <span class="chip-value">{focusTunnel.early_term.reason}</span>
+                  </span>
+                {/if}
+                {#if focusTunnel.micro_steps > 0}
+                  <span class="chip chip-micro">
+                    <span class="chip-label">micro-steps</span>
+                    <span class="chip-value">{focusTunnel.micro_steps}</span>
+                  </span>
+                {/if}
+                {#if focusTunnel.deps_auto > 0 || focusTunnel.deps_blocked > 0}
+                  <span class="chip chip-deps" title="Task-level dependency resolution totals">
+                    <span class="chip-label">deps</span>
+                    <span class="chip-value">{focusTunnel.deps_auto} auto / {focusTunnel.deps_blocked} blocked</span>
+                  </span>
+                {/if}
+              </div>
+            {/if}
+
             <!-- BabyStep detail: 8 block spec sections -->
             {@const blocks = selectedNode.detail?.blocks ?? SAMPLE_BLOCKS.map(b => ({ block: b.block, status: b.status }))}
             <div class="blocks-list">
@@ -623,6 +733,45 @@
     color: var(--text-ghost);
     flex-shrink: 0;
   }
+
+  /* ---- B-28 follow-up: focus-tunnel inline chips ---- */
+  .focus-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1);
+    margin-bottom: var(--s-2);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: var(--r-xs);
+    border: 1px solid var(--border-subtle);
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  .chip-label {
+    color: var(--text-ghost);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .chip-value {
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .chip-mode-fim .chip-value { color: var(--teal); }
+  .chip-mode-diff .chip-value { color: var(--warn); }
+  .chip-mode-structured .chip-value { color: var(--teal-bright); }
+  .chip-term .chip-value { color: var(--warn); }
+  .chip-micro .chip-value { color: var(--teal); }
+  .chip-deps .chip-value { color: var(--text-secondary); }
 
   /* ---- BabyStep blocks ---- */
   .blocks-list {

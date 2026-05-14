@@ -22,16 +22,15 @@ use tauri::Emitter;
 use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
-    InterventionOption, InterventionResponsePayload, InterventionRetry, MicroStepCreatedPayload,
+    InterventionOption, InterventionResponsePayload, InterventionRetry,
     ModeChangedPayload, NovelStepRow, ReflectState, SsbActionType, SsbPayload, StubRunRow,
     TaskSubmittedPayload,
 };
-use elai_orchestrator::focus_tunnel::{
-    dependency_resolution_stats_for_payloads, generation_mode_str,
-    mode_distribution_for_payloads, pre_assembly_stats_for_payloads,
-    streaming_early_termination_stats_for_payloads, DependencyResolutionStats, GenerationMode,
-    PreAssemblyStats, StreamingEarlyTermStats,
-};
+// B-28 follow-up — Focus-tunnel side-panel deleted; only the per-baby-step
+// command remains, and it consumes the mode-distribution aggregator only
+// (early-term + micro-step counts are folded inline here so we don't drag
+// the streaming/pre-assembly/dep aggregators back in).
+use elai_orchestrator::focus_tunnel::{mode_distribution_for_payloads, GenerationMode};
 use elai_orchestrator::ssb_viewer::{SelfModMsiSnapshotRow, SelfModProposalRow};
 use serde_json::{json, Value};
 use tauri::State;
@@ -5023,221 +5022,158 @@ pub async fn get_reflect_state(state: State<'_, AppState>) -> CmdResult<ReflectS
 }
 
 // ---------------------------------------------------------------------------
-// B-28 — FOCUS TUNNEL PANEL (mode distribution / streaming validation /
-// pipeline pre-assembly / dependency resolution / micro-step log).
+// B-28 follow-up — FOCUS TUNNEL INLINE CHIPS (per-baby-step query).
 //
-// Each command opens the existing read-only SsbViewer and queries the new
-// `focus_tunnel_payloads` helper (ssb_viewer.rs) for the relevant action
-// types, then folds the rows through the library-tier aggregators exposed
-// by `elai_orchestrator::focus_tunnel`. Empty SSB returns zeroed shapes —
-// the dashboard renders an "empty state" rather than failing the call.
+// Replaces the 5-command FocusTunnelPanel surface with a single tightly
+// scoped command. The dashboard PlanWindow's baby-step detail view invokes
+// this once per visible step and renders inline chips:
+//   * Mode (FIM / DIFF / STRUCTURED) — first GenerationModeSelected row.
+//   * Early-term yes/no + reason — first StreamingEarlyTerminated row.
+//   * Micro-steps N — sum of MicroStepCreated.count rows.
+//   * Deps N auto / M blocked — DependencyResolved rows (task-level only;
+//     DependencyResolvedPayload carries no step_id field so we surface the
+//     all-step totals; the chip rendering shows them as task-wide.)
 //
-// All five commands accept an optional `session_id` so the panel can scope
-// to the active task. When `None`, rows from every session are aggregated;
-// this matches the panel's "all-time" default.
+// Library-tier aggregators (`mode_distribution_for_payloads`, etc) remain
+// exported by `elai_orchestrator::focus_tunnel` for non-dashboard callers.
 // ---------------------------------------------------------------------------
 
-/// Hard cap on rows scanned per focus_tunnel command. Matches
+/// Hard cap on rows scanned per focus_tunnel query. Matches
 /// `DRAWER_QUERY_HARD_CAP` in `ssb_viewer.rs` so the IPC payload never
 /// balloons past 500 rows even if the SSB has millions.
 const FOCUS_TUNNEL_SCAN_LIMIT: usize = 500;
 
-/// Mode distribution panel — counts of FIM / DIFF / STRUCTURED rows.
-/// Returns a JSON object `{ "fim": u32, "diff": u32, "structured": u32,
-/// "total": u32 }`. Empty SSB returns all zeros.
+/// Per-baby-step focus-tunnel summary. Frontend invokes this once per
+/// visible baby-step detail card with `{ babyStepId: <u64> }` and renders
+/// inline chips/badges. Returns zeroed shape when no SSB viewer is bound.
+///
+/// Field semantics:
+/// * `mode` — first matching GenerationModeSelected row's mode (FIM / DIFF
+///   / STRUCTURED), `None` if the step has not yet picked a mode.
+/// * `early_term` — `Some({reason, tokens_saved})` if at least one
+///   StreamingEarlyTerminated row exists for the step; `None` otherwise.
+/// * `micro_steps` — sum of MicroStepCreated.count for rows whose
+///   parent_step_id equals the requested baby-step id.
+/// * `deps_auto` / `deps_blocked` — task-level totals (the payload type
+///   carries no step_id; this is documented so callers don't display them
+///   as per-step counts).
 #[tauri::command]
-pub async fn query_focus_tunnel_mode_distribution(
+pub async fn query_focus_tunnel_per_baby_step(
     state: State<'_, AppState>,
-    session_id: Option<String>,
+    baby_step_id: u64,
 ) -> CmdResult<Value> {
     let Some(viewer) = state.viewer.as_ref() else {
-        return Ok(json!({ "fim": 0, "diff": 0, "structured": 0, "total": 0 }));
+        return Ok(json!({
+            "mode": Value::Null,
+            "early_term": Value::Null,
+            "micro_steps": 0,
+            "deps_auto": 0,
+            "deps_blocked": 0,
+        }));
     };
-    let owned = viewer
+
+    // Wire-form step_id used by GenerationModeSelected + StreamingEarlyTerminated.
+    let step_id_wire = format!("baby_step_{baby_step_id}");
+
+    // Mode — fetch GenerationModeSelected rows, filter by step_id, then fold
+    // through the library aggregator so we get the canonical FIM/DIFF/STRUCTURED
+    // mapping (in case the wire-form string is renamed upstream).
+    let mode_rows = viewer
         .focus_tunnel_payloads(
             &[SsbActionType::GenerationModeSelected],
-            session_id.as_deref(),
+            None,
             FOCUS_TUNNEL_SCAN_LIMIT,
         )
         .map_err(map_err)?;
-    let refs: Vec<&SsbPayload> = owned.iter().collect();
-    let dist = mode_distribution_for_payloads(&refs);
-    let fim = dist.get(&GenerationMode::Fim).copied().unwrap_or(0);
-    let diff = dist.get(&GenerationMode::Diff).copied().unwrap_or(0);
-    let structured = dist.get(&GenerationMode::Structured).copied().unwrap_or(0);
-    let total = fim
-        .saturating_add(diff)
-        .saturating_add(structured);
-    Ok(json!({
-        "fim": fim,
-        "diff": diff,
-        "structured": structured,
-        "total": total,
-    }))
-}
-
-/// Streaming early-termination rate. Returns
-/// `{ total_terminations, total_tokens_saved, reason_breakdown }`.
-#[tauri::command]
-pub async fn query_focus_tunnel_streaming_stats(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-) -> CmdResult<Value> {
-    let Some(viewer) = state.viewer.as_ref() else {
-        return Ok(json!({
-            "total_terminations": 0,
-            "total_tokens_saved": 0,
-            "reason_breakdown": {},
-        }));
+    let step_mode_refs: Vec<&SsbPayload> = mode_rows
+        .iter()
+        .filter(|p| match p {
+            SsbPayload::GenerationModeSelected(m) => m.step_id == step_id_wire,
+            _ => false,
+        })
+        .collect();
+    let dist = mode_distribution_for_payloads(&step_mode_refs);
+    let mode_str: Option<&'static str> = if dist.get(&GenerationMode::Fim).copied().unwrap_or(0) > 0
+    {
+        Some("FIM")
+    } else if dist.get(&GenerationMode::Diff).copied().unwrap_or(0) > 0 {
+        Some("DIFF")
+    } else if dist
+        .get(&GenerationMode::Structured)
+        .copied()
+        .unwrap_or(0)
+        > 0
+    {
+        Some("STRUCTURED")
+    } else {
+        None
     };
-    let owned = viewer
+
+    // Early-term — first matching row.
+    let term_rows = viewer
         .focus_tunnel_payloads(
             &[SsbActionType::StreamingEarlyTerminated],
-            session_id.as_deref(),
+            None,
             FOCUS_TUNNEL_SCAN_LIMIT,
         )
         .map_err(map_err)?;
-    let refs: Vec<&SsbPayload> = owned.iter().collect();
-    let stats: StreamingEarlyTermStats =
-        streaming_early_termination_stats_for_payloads(&refs);
-    // BTreeMap ordering (not HashMap) for deterministic JSON keys.
-    let reasons: BTreeMap<String, u32> = stats
-        .reason_breakdown
+    let early_term_json: Value = term_rows
         .iter()
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
-    Ok(json!({
-        "total_terminations": stats.total_terminations,
-        "total_tokens_saved": stats.total_tokens_saved,
-        "reason_breakdown": reasons,
-    }))
-}
+        .find_map(|p| match p {
+            SsbPayload::StreamingEarlyTerminated(t) if t.step_id == step_id_wire => Some(json!({
+                "reason": t.reason,
+                "tokens_saved": t.token_count_at_term,
+            })),
+            _ => None,
+        })
+        .unwrap_or(Value::Null);
 
-/// Pipeline pre-assembly stats — depth + waste rate + cumulative bytes.
-/// Returns the full [`PreAssemblyStats`] struct serialised to JSON.
-#[tauri::command]
-pub async fn query_focus_tunnel_pre_assembly_stats(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-) -> CmdResult<Value> {
-    let Some(viewer) = state.viewer.as_ref() else {
-        return Ok(json!({
-            "total_assembled": 0,
-            "total_discarded": 0,
-            "waste_rate": 0.0,
-            "avg_depth": 0.0,
-            "total_bytes_assembled": 0,
-        }));
-    };
-    let owned = viewer
-        .focus_tunnel_payloads(
-            &[SsbActionType::PipelinePreAssembled],
-            session_id.as_deref(),
-            FOCUS_TUNNEL_SCAN_LIMIT,
-        )
-        .map_err(map_err)?;
-    let stats: PreAssemblyStats = pre_assembly_stats_for_payloads(&owned);
-    Ok(json!({
-        "total_assembled": stats.total_assembled,
-        "total_discarded": stats.total_discarded,
-        "waste_rate": stats.waste_rate,
-        "avg_depth": stats.avg_depth,
-        "total_bytes_assembled": stats.total_bytes_assembled,
-    }))
-}
-
-/// Dependency resolution stats + the most recent N raw decision rows so the
-/// panel can render a "recent decisions" log. Returns
-/// `{ stats: DependencyResolutionStats, recent: [DependencyResolvedPayload] }`.
-#[tauri::command]
-pub async fn query_focus_tunnel_dep_resolution(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-) -> CmdResult<Value> {
-    let Some(viewer) = state.viewer.as_ref() else {
-        return Ok(json!({
-            "stats": {
-                "total_proposed": 0,
-                "total_auto_approved": 0,
-                "total_queued": 0,
-                "total_queued_for_human": 0,
-                "total_blocked": 0,
-                "per_language": {},
-            },
-            "recent": [],
-        }));
-    };
-    let owned = viewer
-        .focus_tunnel_payloads(
-            &[SsbActionType::DependencyResolved],
-            session_id.as_deref(),
-            FOCUS_TUNNEL_SCAN_LIMIT,
-        )
-        .map_err(map_err)?;
-    let stats: DependencyResolutionStats = dependency_resolution_stats_for_payloads(&owned);
-    // Recent decisions — keep at most 50 to bound IPC payload.
-    let mut recent: Vec<Value> = Vec::with_capacity(50);
-    for p in owned.iter().take(50) {
-        if let SsbPayload::DependencyResolved(row) = p {
-            recent.push(json!({
-                "language": row.language,
-                "name": row.name,
-                "decision": row.decision,
-                "reason": row.reason,
-                "install_command": row.install_command,
-            }));
-        }
-    }
-    Ok(json!({
-        "stats": {
-            "total_proposed": stats.total_proposed,
-            "total_auto_approved": stats.total_auto_approved,
-            "total_queued": stats.total_queued,
-            "total_queued_for_human": stats.total_queued_for_human,
-            "total_blocked": stats.total_blocked,
-            "per_language": stats.per_language,
-        },
-        "recent": recent,
-    }))
-}
-
-/// Micro-step creation log — recent `micro_step_created` rows. Returns a
-/// JSON array of payloads (parent_step_id, created_path, type_hint, reason,
-/// count) capped at 50 entries.
-#[tauri::command]
-pub async fn query_focus_tunnel_micro_steps(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-) -> CmdResult<Vec<MicroStepCreatedPayload>> {
-    let Some(viewer) = state.viewer.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let owned = viewer
+    // Micro-steps — sum of count for matching parent_step_id.
+    let micro_rows = viewer
         .focus_tunnel_payloads(
             &[SsbActionType::MicroStepCreated],
-            session_id.as_deref(),
+            None,
             FOCUS_TUNNEL_SCAN_LIMIT,
         )
         .map_err(map_err)?;
-    let mut out: Vec<MicroStepCreatedPayload> = Vec::with_capacity(50);
-    for p in owned.into_iter().take(50) {
-        if let SsbPayload::MicroStepCreated(row) = p {
-            out.push(row);
+    let micro_total: u32 = micro_rows
+        .iter()
+        .filter_map(|p| match p {
+            SsbPayload::MicroStepCreated(m) if m.parent_step_id == baby_step_id => {
+                Some(u32::from(m.count))
+            }
+            _ => None,
+        })
+        .sum();
+
+    // Deps — task-level totals; DependencyResolvedPayload has no step_id, so we
+    // simply count auto-approved vs blocked across the cap window.
+    let dep_rows = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::DependencyResolved],
+            None,
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let mut deps_auto: u32 = 0;
+    let mut deps_blocked: u32 = 0;
+    for p in &dep_rows {
+        if let SsbPayload::DependencyResolved(row) = p {
+            match row.decision.as_str() {
+                "auto_approve" => deps_auto = deps_auto.saturating_add(1),
+                "blocked" | "queue_for_human" => deps_blocked = deps_blocked.saturating_add(1),
+                _ => {}
+            }
         }
     }
-    Ok(out)
-}
 
-// Helper exposed only so the lib.rs `invoke_handler!` macro can reference
-// `generation_mode_str` indirectly through wire-form strings used in the
-// frontend. Suppress dead-code if the panel ever drops the mode label.
-#[allow(dead_code)]
-fn _focus_tunnel_keep_mode_strs_alive() -> [&'static str; 3] {
-    [
-        generation_mode_str(GenerationMode::Fim),
-        generation_mode_str(GenerationMode::Diff),
-        generation_mode_str(GenerationMode::Structured),
-    ]
+    Ok(json!({
+        "mode": mode_str,
+        "early_term": early_term_json,
+        "micro_steps": micro_total,
+        "deps_auto": deps_auto,
+        "deps_blocked": deps_blocked,
+    }))
 }
 
 #[cfg(test)]
