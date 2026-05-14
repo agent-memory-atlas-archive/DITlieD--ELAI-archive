@@ -136,6 +136,10 @@ pub mod task_runner;
 // Phase A1b — production task_runner wiring helpers (build/apply chokepoint
 // bundle). Used by `elai run` CLI and the dashboard-v2 Tauri setup() callback.
 pub mod runtime_setup;
+// Phase B2 — IPC accept loop: bind/accept/route cycle for orchestrator-side
+// agent session management. Exposes AgentRpcServer trait + InferOutcome +
+// ToolOutcome + bind_session_listener + accept_one + run_agent_session.
+pub mod ipc_accept;
 pub mod supervision;
 pub mod task_packet;
 pub mod task_registry;
@@ -652,6 +656,12 @@ pub use rule_loader::load_seed_rules_from_dir;
 pub use runtime_setup::{
     apply_task_runner_wiring, build_default_baby_step_executor, build_task_runner_wiring,
     locate_default_agent_binary, RuntimeWiring,
+};
+// Phase B2 — IPC accept-loop public surface.
+pub use ipc_accept::{
+    accept_one, bind_session_listener, run_agent_session, AgentFinalState, AgentRpcServer,
+    AgentSessionOutcome, IpcAcceptError, InferOutcome, PlatformListener, PlatformStream,
+    ToolOutcome,
 };
 pub use task_runner::runtime_model_pool;
 pub use supervision::{
