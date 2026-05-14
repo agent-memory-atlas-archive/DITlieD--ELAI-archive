@@ -324,6 +324,7 @@ impl SidecarProvider {
                 message: None,
                 body,
                 retryable: status.is_server_error(),
+                retry_after: None,
             });
         }
 
@@ -518,6 +519,7 @@ impl LlmProvider for SidecarProvider {
                 message: Some("sidecar does not support embeddings".to_string()),
                 body: String::new(),
                 retryable: false,
+                retry_after: None,
             })
         })
     }

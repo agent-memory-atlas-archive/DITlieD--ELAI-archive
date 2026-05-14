@@ -418,7 +418,11 @@ impl CloudGroundingClient {
         user_prompt: &str,
         system_prompt: Option<&'static str>,
     ) -> elai_providers::MessageRequest {
-        let system = system_prompt.map(|text| vec![elai_providers::SystemBlock::text(text)]);
+        // Mark the system block as ephemeral so Anthropic caches the JSON-only
+        // directive prefix across grounding calls (~5 min TTL) — cuts per-call
+        // input token cost on hot loops and reduces 429 pressure.
+        let system =
+            system_prompt.map(|text| vec![elai_providers::SystemBlock::ephemeral_text(text)]);
         elai_providers::MessageRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,

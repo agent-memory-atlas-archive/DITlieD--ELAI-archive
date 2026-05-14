@@ -507,6 +507,7 @@ async fn ollama_complete(
             message: None,
             body,
             retryable: status.is_server_error(),
+            retry_after: None,
         });
     }
 
@@ -550,6 +551,7 @@ async fn ollama_embed(
             message: None,
             body,
             retryable: status.is_server_error(),
+            retry_after: None,
         });
     }
 
@@ -567,6 +569,7 @@ async fn ollama_embed(
                 "model {model} returned empty embedding vector"
             )),
             body: String::new(),
+            retry_after: None,
             retryable: false,
         });
     }
@@ -681,6 +684,7 @@ impl LlmProvider for OllamaEmbedder {
                 ),
                 body: String::new(),
                 retryable: false,
+                retry_after: None,
             })
         })
     }

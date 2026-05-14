@@ -182,6 +182,7 @@ impl VllmProvider {
                 message: Some("list_models timed out after 5s".to_string()),
                 body: String::new(),
                 retryable: true,
+                retry_after: None,
             })?
             .map_err(ApiError::Http)?;
 
@@ -197,6 +198,7 @@ impl VllmProvider {
                 message: None,
                 body,
                 retryable: status.is_server_error(),
+                retry_after: None,
             });
         }
 
@@ -227,6 +229,7 @@ impl VllmProvider {
             message: Some("completion request timed out after 30s".to_string()),
             body: String::new(),
             retryable: true,
+            retry_after: None,
         })?
         .map_err(ApiError::Http)?;
 
@@ -242,6 +245,7 @@ impl VllmProvider {
                 message: None,
                 body,
                 retryable: status.is_server_error(),
+                retry_after: None,
             });
         }
 
@@ -290,6 +294,7 @@ impl VllmProvider {
                     message: Some("retry loop completed without error or success".to_string()),
                     body: String::new(),
                     retryable: false,
+                    retry_after: None,
                 }),
             }),
         }
@@ -314,6 +319,7 @@ impl VllmProvider {
             message: Some("embedding request timed out after 30s".to_string()),
             body: String::new(),
             retryable: true,
+            retry_after: None,
         })?
         .map_err(ApiError::Http)?;
 
@@ -329,6 +335,7 @@ impl VllmProvider {
                 message: None,
                 body,
                 retryable: status.is_server_error(),
+                retry_after: None,
             });
         }
 
@@ -345,6 +352,7 @@ impl VllmProvider {
                 message: Some("failed to parse embedding response".to_string()),
                 body: String::new(),
                 retryable: false,
+                retry_after: None,
             })?;
 
         Ok(embedding)

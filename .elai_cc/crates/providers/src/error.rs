@@ -27,6 +27,11 @@ pub enum ApiError {
         message: Option<String>,
         body: String,
         retryable: bool,
+        /// When the server returned a `Retry-After` header (typically on
+        /// 429 / 503), the parsed Duration. Callers (e.g. send_with_retry)
+        /// should sleep this long before retrying instead of using
+        /// exponential backoff.
+        retry_after: Option<std::time::Duration>,
     },
     RetriesExhausted {
         attempts: u32,

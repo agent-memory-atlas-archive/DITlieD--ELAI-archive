@@ -21,9 +21,9 @@ use crate::types::{
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
-const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
-const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(2);
-const DEFAULT_MAX_RETRIES: u32 = 2;
+const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(60);
+const DEFAULT_MAX_RETRIES: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthSource {
@@ -408,7 +408,11 @@ impl AnthropicClient {
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
         let mut attempts = 0;
-        let mut last_error: Option<ApiError>;
+        // Always assigned before the loop reads it (via match arms below); the
+        // init exists so the post-loop `last_error.expect(..)` is well-defined
+        // even if the compiler can't prove all paths through the loop.
+        #[allow(unused_assignments)]
+        let mut last_error: Option<ApiError> = None;
 
         loop {
             attempts += 1;
@@ -458,7 +462,13 @@ impl AnthropicClient {
                 break;
             }
 
-            tokio::time::sleep(self.backoff_for_attempt(attempts)?).await;
+            // Honor server-provided Retry-After header on 429/503 in preference
+            // to exponential backoff — cuts 429 cascade duration in cloud_mode.
+            let sleep_duration = match &last_error {
+                Some(ApiError::Api { retry_after: Some(d), .. }) => *d,
+                _ => self.backoff_for_attempt(attempts)?,
+            };
+            tokio::time::sleep(sleep_duration).await;
         }
 
         Err(ApiError::RetriesExhausted {
@@ -848,6 +858,16 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
         return Ok(response);
     }
 
+    // Parse Retry-After BEFORE consuming the body (response.text() takes
+    // ownership). Anthropic returns Retry-After in seconds for 429s and
+    // sometimes for 503s; we accept either.
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+
     let body = response.text().await.unwrap_or_else(|_| String::new());
     let parsed_error = serde_json::from_str::<AnthropicErrorEnvelope>(&body).ok();
     let retryable = is_retryable_status(status);
@@ -862,6 +882,7 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
             .map(|error| error.error.message.clone()),
         body,
         retryable,
+        retry_after,
     })
 }
 

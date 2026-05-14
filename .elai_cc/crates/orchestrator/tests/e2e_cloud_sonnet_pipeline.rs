@@ -285,6 +285,7 @@ impl LlmProvider for AnthropicLlmProviderAdapter {
                 ),
                 body: String::new(),
                 retryable: false,
+                retry_after: None,
             })
         })
     }
