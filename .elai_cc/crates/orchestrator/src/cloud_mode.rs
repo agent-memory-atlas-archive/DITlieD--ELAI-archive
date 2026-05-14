@@ -266,6 +266,34 @@ impl CloudModeRouter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// B-28 WIRING-2 item E — resolve_exec_mode
+// ---------------------------------------------------------------------------
+
+/// Resolve the production [`ExecMode`] from the runner's
+/// [`crate::dispatcher::BackendConfig`].
+///
+/// Mapping (locked B-28 WIRING-2 decision §1):
+///   * [`crate::dispatcher::BackendMode::Local`] -> [`ExecMode::Local`].
+///   * [`crate::dispatcher::BackendMode::Api`]  -> [`ExecMode::Cloud`].
+///
+/// Used by [`crate::task_runner::drive_task`] in place of the hardcoded
+/// `ExecMode::Local` literals previously baked into the ModeSelector beacon
+/// emission path (task_runner.rs L4371 + L4394). Returning `Cloud` here
+/// allows Rule 1 ("CLOUD execution always returns STRUCTURED") to fire in
+/// production once the BackendConfig is wired with `Api` mode.
+///
+/// This function is intentionally sync + pure; the live OAuth + spend-cap
+/// checks remain on [`CloudModeRouter::route`] (which the runner invokes
+/// separately when it actually sends a cloud request).
+#[must_use]
+pub fn resolve_exec_mode(backend: &crate::dispatcher::BackendConfig) -> ExecMode {
+    match backend.mode {
+        crate::dispatcher::BackendMode::Local => ExecMode::Local,
+        crate::dispatcher::BackendMode::Api => ExecMode::Cloud,
+    }
+}
+
 /// Dual-rate per-step spend accumulator (D-4:303-305). Construct one
 /// per task, call `accumulate` after every cloud round-trip, call
 /// `finalize` once at task end and write the resulting
@@ -409,6 +437,10 @@ impl RedactingBabyStepExecutor {
             baby_step_id: ctx.baby_step_id,
             task_summary,
             escalation_message,
+            // B-28 E-3: pass the focus-tunnel ModeSelection through
+            // unchanged. The redactor only touches user-visible string
+            // payloads; the ModeSelection is structural metadata.
+            mode_selection: ctx.mode_selection,
         }
     }
 }

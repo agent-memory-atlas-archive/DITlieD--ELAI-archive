@@ -17,6 +17,9 @@
   import MsiPanel from '$lib/components/MsiPanel.svelte';
   // B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
   import MediaValidationPanel from '$lib/components/MediaValidationPanel.svelte';
+  // B-28 — Focus tunnel surface (mode / streaming / pre-assembly / dep /
+  // micro-step rows).
+  import FocusTunnelPanel from '$lib/components/FocusTunnelPanel.svelte';
 
   // ------------------------------------------------------------------
   // Phase dot model — derived from FSM history when live, static stub otherwise
@@ -226,6 +229,14 @@
        visible when the gate stops the run. -->
   <section class="monitor-section media-validation" aria-label="Media validation">
     <MediaValidationPanel />
+  </section>
+
+  <!-- B-28 — Focus Tunnel: per-step mode distribution + streaming
+       early-termination + pipeline pre-assembly status + dependency
+       resolution log + micro-step creation log. Polls 5 Tauri commands
+       every 2s; renders zero-state shells when SSB has no rows yet. -->
+  <section class="monitor-section focus-tunnel" aria-label="Focus tunnel">
+    <FocusTunnelPanel />
   </section>
 
   <!-- Section 6: AutoAdvanceStats — always visible (historical totals shown even when idle).

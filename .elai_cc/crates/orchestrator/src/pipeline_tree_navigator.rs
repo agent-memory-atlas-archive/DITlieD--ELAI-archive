@@ -1702,6 +1702,9 @@ mod tests {
             grounding: make_grounding(),
             tdd: None,
             acceptance: None,
+            preferred_mode: None,
+            target_file: None,
+            edit_region: None,
         }
     }
 

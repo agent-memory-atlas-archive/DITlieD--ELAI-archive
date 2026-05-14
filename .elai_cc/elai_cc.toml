@@ -288,6 +288,19 @@ tier4_patterns = [
     'content-farm\\.',
 ]
 
+# B-28 E-6: per-ecosystem allowlist consumed by
+# `elai_orchestrator::focus_tunnel::dep_resolver::DependencyResolver`.
+# A name listed here SKIPS the registry probe and is auto-approved by the
+# resolver (operator has pre-vouched). Anti-stale waiver: `ort` is ALWAYS
+# blocked even if allowlisted — see
+# `workflow/reasoning/B-16A-decisions.md`. Empty buckets are legal.
+# Loaded by `dep_resolver::load_allowlist`; absence is non-error.
+[dependencies.allowlist]
+cargo = ["tokio", "serde"]
+pip = ["fastapi"]
+npm = []
+go = []
+
 # B-27: cloud-mode routing + spend caps + privacy profile + air-gapped flag.
 # Consumed by elai_orchestrator::cloud_mode::CloudModeRouter via
 # CloudConfigToml::to_cloud_config(). Missing fields fall back to the

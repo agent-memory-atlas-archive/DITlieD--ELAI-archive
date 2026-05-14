@@ -3636,6 +3636,89 @@ impl SsbViewer {
             last_summary,
         })
     }
+
+    /// B-28 DASHBOARD: read decoded [`SsbPayload`] rows for a set of
+    /// focus-tunnel action types, optionally narrowed to a single
+    /// `session_id`. Returns newest-first, hard-capped at
+    /// [`DRAWER_QUERY_HARD_CAP`] rows total across all requested types.
+    ///
+    /// The caller passes a slice of [`SsbActionType`] discriminants; rows
+    /// whose payload fails to decode are silently skipped (same pattern as
+    /// [`SsbViewer::latest_msi_per_mode`] L3553). When `session_id` is
+    /// `None`, rows from every session are returned (useful when the
+    /// dashboard does not yet know the active task's session_id).
+    pub fn focus_tunnel_payloads(
+        &self,
+        action_types: &[SsbActionType],
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SsbPayload>, SsbViewerError> {
+        if action_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let effective = limit.min(DRAWER_QUERY_HARD_CAP);
+        let effective_i64 = i64::try_from(effective)
+            .map_err(|e| SsbViewerError::OutOfRange(format!("limit: {e}")))?;
+        let placeholders = std::iter::repeat("?")
+            .take(action_types.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let conn = self.lock()?;
+        let mut out: Vec<SsbPayload> = Vec::with_capacity(effective);
+        if let Some(sid) = session_id {
+            let sql = format!(
+                "SELECT payload FROM ssb \
+                 WHERE action_type IN ({placeholders}) AND session_id = ? \
+                 ORDER BY seq DESC LIMIT ?"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = action_types
+                .iter()
+                .map(|at| {
+                    Box::new(at.as_sql_str().to_owned()) as Box<dyn rusqlite::ToSql>
+                })
+                .collect();
+            params_vec.push(Box::new(sid.to_owned()));
+            params_vec.push(Box::new(effective_i64));
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|b| b.as_ref()).collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?;
+            for row in rows {
+                let bytes = row?;
+                if let Ok(p) = rmp_serde::from_slice::<SsbPayload>(&bytes) {
+                    out.push(p);
+                }
+            }
+        } else {
+            let sql = format!(
+                "SELECT payload FROM ssb \
+                 WHERE action_type IN ({placeholders}) \
+                 ORDER BY seq DESC LIMIT ?"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = action_types
+                .iter()
+                .map(|at| {
+                    Box::new(at.as_sql_str().to_owned()) as Box<dyn rusqlite::ToSql>
+                })
+                .collect();
+            params_vec.push(Box::new(effective_i64));
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|b| b.as_ref()).collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?;
+            for row in rows {
+                let bytes = row?;
+                if let Ok(p) = rmp_serde::from_slice::<SsbPayload>(&bytes) {
+                    out.push(p);
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// B-23 Phase 4H Group F — DTO emitted by [`SsbViewer::pending_proposals_layer1a`]

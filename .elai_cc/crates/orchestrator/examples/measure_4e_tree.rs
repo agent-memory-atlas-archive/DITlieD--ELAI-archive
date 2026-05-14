@@ -127,6 +127,9 @@ fn make_baby_step(id: u64, concept_name: &str, phase_name: &str, step_name: &str
         },
         tdd: None,
         acceptance: None,
+        preferred_mode: None,
+        target_file: None,
+        edit_region: None,
     }
 }
 

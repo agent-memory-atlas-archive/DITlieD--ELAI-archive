@@ -350,6 +350,188 @@ impl GroundingClient for SidecarGroundingClient {
 }
 
 // ---------------------------------------------------------------------------
+// CloudGroundingClient — Anthropic /v1/messages backed grounding for cloud
+// mode. Mirrors SidecarGroundingClient's contract: render the level template,
+// send the prompt, parse JSON ResearchReport from the response.
+//
+// Selected via `ELAI_GROUNDING_BACKEND=cloud` at task_runner construction.
+// Default model is `claude-sonnet-4-6`; override via `ELAI_CLOUD_MODEL`.
+// ---------------------------------------------------------------------------
+
+pub const CLOUD_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+pub const CLOUD_GROUNDING_MAX_TOKENS: u32 = 4096;
+#[allow(dead_code)] // exposed for future temperature plumbing; Anthropic call uses
+                    // its server-side default (temperature is not on MessageRequest).
+pub const CLOUD_GROUNDING_TEMPERATURE: f64 = 0.0;
+
+/// System prompt that pushes Sonnet toward bare JSON output for `ground()`.
+/// `synthesize_text()` is free-form prose by contract (mirrors
+/// SidecarGroundingClient) so it intentionally omits this directive.
+const CLOUD_JSON_SYSTEM_PROMPT: &str =
+    "Output ONLY a single valid JSON object that matches the schema in the user message. \
+     Do not wrap in markdown code fences. Do not include any prose before or after the JSON.";
+
+#[derive(Debug, Clone)]
+pub struct CloudGroundingClient {
+    client: elai_providers::AnthropicClient,
+    model: String,
+    max_tokens: u32,
+}
+
+impl CloudGroundingClient {
+    pub fn new(client: elai_providers::AnthropicClient, model: impl Into<String>) -> Self {
+        Self {
+            client,
+            model: model.into(),
+            max_tokens: CLOUD_GROUNDING_MAX_TOKENS,
+        }
+    }
+
+    /// Construct from env: resolves auth via `AuthSource::from_env_or_saved`,
+    /// base URL via `read_base_url`, model from `ELAI_CLOUD_MODEL` (default
+    /// `claude-sonnet-4-6`). Returns `GroundingError::RequestFailed` if no
+    /// auth source is available — matches the failure shape callers already
+    /// handle via `ResearchTreeError::GroundingFailed`.
+    pub fn from_env() -> Result<Self, GroundingError> {
+        let auth = elai_providers::AuthSource::from_env_or_saved().map_err(|e| {
+            GroundingError::RequestFailed {
+                reason: format!("cloud auth: {e}"),
+            }
+        })?;
+        let base_url = elai_providers::read_base_url();
+        let client = elai_providers::AnthropicClient::from_auth(auth).with_base_url(base_url);
+        let model = std::env::var("ELAI_CLOUD_MODEL")
+            .unwrap_or_else(|_| CLOUD_DEFAULT_MODEL.to_string());
+        Ok(Self::new(client, model))
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Build a MessageRequest. When `system_prompt` is `Some`, attach a
+    /// system block — used for `ground()` to force JSON-only output. For
+    /// `synthesize_text()` the system slot stays `None` so the prompt body
+    /// drives the model alone (free-form prose contract).
+    fn build_request(
+        &self,
+        user_prompt: &str,
+        system_prompt: Option<&'static str>,
+    ) -> elai_providers::MessageRequest {
+        let system = system_prompt.map(|text| vec![elai_providers::SystemBlock::text(text)]);
+        elai_providers::MessageRequest {
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            messages: vec![elai_providers::InputMessage::user_text(user_prompt)],
+            system,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+            seed: None,
+        }
+    }
+
+    /// Strip a leading ```json or ``` fence and matching trailing ``` from
+    /// the model's response when present. Returns the trimmed inner content.
+    fn strip_markdown_fences(text: &str) -> &str {
+        let trimmed = text.trim();
+        if let Some(rest) = trimmed.strip_prefix("```json") {
+            let rest = rest.trim_start_matches('\n').trim();
+            return rest.strip_suffix("```").unwrap_or(rest).trim();
+        }
+        if let Some(rest) = trimmed.strip_prefix("```") {
+            let rest = rest.trim_start_matches('\n').trim();
+            return rest.strip_suffix("```").unwrap_or(rest).trim();
+        }
+        trimmed
+    }
+
+    fn extract_text(
+        content: &[elai_providers::OutputContentBlock],
+    ) -> Result<String, GroundingError> {
+        content
+            .iter()
+            .find_map(|block| match block {
+                elai_providers::OutputContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .ok_or(GroundingError::EmptyResponse)
+    }
+}
+
+impl GroundingClient for CloudGroundingClient {
+    async fn ground(
+        &self,
+        prompt: &str,
+        level: ResearchLevel,
+    ) -> Result<ResearchReport, GroundingError> {
+        let rendered = level.render(prompt);
+        let request = self.build_request(&rendered, Some(CLOUD_JSON_SYSTEM_PROMPT));
+        debug!(level = ?level, model = %self.model, "cloud_grounding_request");
+        // Diagnostic stderr — surfaces in test output regardless of RUST_LOG.
+        eprintln!(
+            "[cloud_grounding] -> ground level={:?} model={} prompt_chars={}",
+            level,
+            self.model,
+            rendered.chars().count()
+        );
+        let response = self.client.send_message(&request).await.map_err(|e| {
+            eprintln!("[cloud_grounding] ERR send_message: {e}");
+            GroundingError::RequestFailed {
+                reason: format!("anthropic: {e}"),
+            }
+        })?;
+        let text = match Self::extract_text(&response.content) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "[cloud_grounding] ERR extract_text (no Text block in response): {e}"
+                );
+                return Err(e);
+            }
+        };
+        eprintln!(
+            "[cloud_grounding] <- got text_chars={} first_120={:?}",
+            text.chars().count(),
+            text.chars().take(120).collect::<String>()
+        );
+        let stripped = Self::strip_markdown_fences(&text);
+        match parse_research_report_json(stripped) {
+            Ok(report) => {
+                eprintln!(
+                    "[cloud_grounding] OK parsed level={:?} alternatives={} sub_results={}",
+                    level,
+                    report.alternatives.len(),
+                    report.sub_results.len()
+                );
+                Ok(report)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[cloud_grounding] ERR parse_research_report_json: {e}; \
+                     stripped_first_200={:?}",
+                    stripped.chars().take(200).collect::<String>()
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn synthesize_text(&self, prompt: &str) -> Result<String, GroundingError> {
+        // No system prompt: synthesis output is free-form prose by contract,
+        // matching SidecarGroundingClient::synthesize_text behaviour.
+        let request = self.build_request(prompt, None);
+        debug!(model = %self.model, "cloud_synthesis_request");
+        let response = self.client.send_message(&request).await.map_err(|e| {
+            GroundingError::RequestFailed {
+                reason: format!("anthropic: {e}"),
+            }
+        })?;
+        Self::extract_text(&response.content)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SyntheticGroundingClient — deterministic stub. Intended for tests and the
 // `ExecutionMode::Deterministic` path; never a silent production fallback.
 // ---------------------------------------------------------------------------

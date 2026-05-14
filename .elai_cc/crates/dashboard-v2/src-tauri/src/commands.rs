@@ -22,8 +22,15 @@ use tauri::Emitter;
 use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
-    InterventionOption, InterventionResponsePayload, InterventionRetry, ModeChangedPayload,
-    NovelStepRow, ReflectState, SsbPayload, StubRunRow, TaskSubmittedPayload,
+    InterventionOption, InterventionResponsePayload, InterventionRetry, MicroStepCreatedPayload,
+    ModeChangedPayload, NovelStepRow, ReflectState, SsbActionType, SsbPayload, StubRunRow,
+    TaskSubmittedPayload,
+};
+use elai_orchestrator::focus_tunnel::{
+    dependency_resolution_stats_for_payloads, generation_mode_str,
+    mode_distribution_for_payloads, pre_assembly_stats_for_payloads,
+    streaming_early_termination_stats_for_payloads, DependencyResolutionStats, GenerationMode,
+    PreAssemblyStats, StreamingEarlyTermStats,
 };
 use elai_orchestrator::ssb_viewer::{SelfModMsiSnapshotRow, SelfModProposalRow};
 use serde_json::{json, Value};
@@ -5013,6 +5020,224 @@ pub async fn get_reflect_state(state: State<'_, AppState>) -> CmdResult<ReflectS
         .as_ref()
         .ok_or_else(|| "ssb viewer unavailable; no session db open".to_owned())?;
     viewer.get_reflect_state().map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// B-28 — FOCUS TUNNEL PANEL (mode distribution / streaming validation /
+// pipeline pre-assembly / dependency resolution / micro-step log).
+//
+// Each command opens the existing read-only SsbViewer and queries the new
+// `focus_tunnel_payloads` helper (ssb_viewer.rs) for the relevant action
+// types, then folds the rows through the library-tier aggregators exposed
+// by `elai_orchestrator::focus_tunnel`. Empty SSB returns zeroed shapes —
+// the dashboard renders an "empty state" rather than failing the call.
+//
+// All five commands accept an optional `session_id` so the panel can scope
+// to the active task. When `None`, rows from every session are aggregated;
+// this matches the panel's "all-time" default.
+// ---------------------------------------------------------------------------
+
+/// Hard cap on rows scanned per focus_tunnel command. Matches
+/// `DRAWER_QUERY_HARD_CAP` in `ssb_viewer.rs` so the IPC payload never
+/// balloons past 500 rows even if the SSB has millions.
+const FOCUS_TUNNEL_SCAN_LIMIT: usize = 500;
+
+/// Mode distribution panel — counts of FIM / DIFF / STRUCTURED rows.
+/// Returns a JSON object `{ "fim": u32, "diff": u32, "structured": u32,
+/// "total": u32 }`. Empty SSB returns all zeros.
+#[tauri::command]
+pub async fn query_focus_tunnel_mode_distribution(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({ "fim": 0, "diff": 0, "structured": 0, "total": 0 }));
+    };
+    let owned = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::GenerationModeSelected],
+            session_id.as_deref(),
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let refs: Vec<&SsbPayload> = owned.iter().collect();
+    let dist = mode_distribution_for_payloads(&refs);
+    let fim = dist.get(&GenerationMode::Fim).copied().unwrap_or(0);
+    let diff = dist.get(&GenerationMode::Diff).copied().unwrap_or(0);
+    let structured = dist.get(&GenerationMode::Structured).copied().unwrap_or(0);
+    let total = fim
+        .saturating_add(diff)
+        .saturating_add(structured);
+    Ok(json!({
+        "fim": fim,
+        "diff": diff,
+        "structured": structured,
+        "total": total,
+    }))
+}
+
+/// Streaming early-termination rate. Returns
+/// `{ total_terminations, total_tokens_saved, reason_breakdown }`.
+#[tauri::command]
+pub async fn query_focus_tunnel_streaming_stats(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "total_terminations": 0,
+            "total_tokens_saved": 0,
+            "reason_breakdown": {},
+        }));
+    };
+    let owned = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::StreamingEarlyTerminated],
+            session_id.as_deref(),
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let refs: Vec<&SsbPayload> = owned.iter().collect();
+    let stats: StreamingEarlyTermStats =
+        streaming_early_termination_stats_for_payloads(&refs);
+    // BTreeMap ordering (not HashMap) for deterministic JSON keys.
+    let reasons: BTreeMap<String, u32> = stats
+        .reason_breakdown
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    Ok(json!({
+        "total_terminations": stats.total_terminations,
+        "total_tokens_saved": stats.total_tokens_saved,
+        "reason_breakdown": reasons,
+    }))
+}
+
+/// Pipeline pre-assembly stats — depth + waste rate + cumulative bytes.
+/// Returns the full [`PreAssemblyStats`] struct serialised to JSON.
+#[tauri::command]
+pub async fn query_focus_tunnel_pre_assembly_stats(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "total_assembled": 0,
+            "total_discarded": 0,
+            "waste_rate": 0.0,
+            "avg_depth": 0.0,
+            "total_bytes_assembled": 0,
+        }));
+    };
+    let owned = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::PipelinePreAssembled],
+            session_id.as_deref(),
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let stats: PreAssemblyStats = pre_assembly_stats_for_payloads(&owned);
+    Ok(json!({
+        "total_assembled": stats.total_assembled,
+        "total_discarded": stats.total_discarded,
+        "waste_rate": stats.waste_rate,
+        "avg_depth": stats.avg_depth,
+        "total_bytes_assembled": stats.total_bytes_assembled,
+    }))
+}
+
+/// Dependency resolution stats + the most recent N raw decision rows so the
+/// panel can render a "recent decisions" log. Returns
+/// `{ stats: DependencyResolutionStats, recent: [DependencyResolvedPayload] }`.
+#[tauri::command]
+pub async fn query_focus_tunnel_dep_resolution(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "stats": {
+                "total_proposed": 0,
+                "total_auto_approved": 0,
+                "total_queued": 0,
+                "total_queued_for_human": 0,
+                "total_blocked": 0,
+                "per_language": {},
+            },
+            "recent": [],
+        }));
+    };
+    let owned = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::DependencyResolved],
+            session_id.as_deref(),
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let stats: DependencyResolutionStats = dependency_resolution_stats_for_payloads(&owned);
+    // Recent decisions — keep at most 50 to bound IPC payload.
+    let mut recent: Vec<Value> = Vec::with_capacity(50);
+    for p in owned.iter().take(50) {
+        if let SsbPayload::DependencyResolved(row) = p {
+            recent.push(json!({
+                "language": row.language,
+                "name": row.name,
+                "decision": row.decision,
+                "reason": row.reason,
+                "install_command": row.install_command,
+            }));
+        }
+    }
+    Ok(json!({
+        "stats": {
+            "total_proposed": stats.total_proposed,
+            "total_auto_approved": stats.total_auto_approved,
+            "total_queued": stats.total_queued,
+            "total_queued_for_human": stats.total_queued_for_human,
+            "total_blocked": stats.total_blocked,
+            "per_language": stats.per_language,
+        },
+        "recent": recent,
+    }))
+}
+
+/// Micro-step creation log — recent `micro_step_created` rows. Returns a
+/// JSON array of payloads (parent_step_id, created_path, type_hint, reason,
+/// count) capped at 50 entries.
+#[tauri::command]
+pub async fn query_focus_tunnel_micro_steps(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> CmdResult<Vec<MicroStepCreatedPayload>> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let owned = viewer
+        .focus_tunnel_payloads(
+            &[SsbActionType::MicroStepCreated],
+            session_id.as_deref(),
+            FOCUS_TUNNEL_SCAN_LIMIT,
+        )
+        .map_err(map_err)?;
+    let mut out: Vec<MicroStepCreatedPayload> = Vec::with_capacity(50);
+    for p in owned.into_iter().take(50) {
+        if let SsbPayload::MicroStepCreated(row) = p {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+// Helper exposed only so the lib.rs `invoke_handler!` macro can reference
+// `generation_mode_str` indirectly through wire-form strings used in the
+// frontend. Suppress dead-code if the panel ever drops the mode label.
+#[allow(dead_code)]
+fn _focus_tunnel_keep_mode_strs_alive() -> [&'static str; 3] {
+    [
+        generation_mode_str(GenerationMode::Fim),
+        generation_mode_str(GenerationMode::Diff),
+        generation_mode_str(GenerationMode::Structured),
+    ]
 }
 
 #[cfg(test)]

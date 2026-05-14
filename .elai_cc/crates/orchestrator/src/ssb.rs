@@ -46,7 +46,48 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // B-24 Phase 4I Group C1: bumped 29 -> 30 for 6 new media-validator SSB action types
 // (media_validation_started, media_tier1_complete, media_tier2_complete,
 //  render_complete, visual_feedback_iteration, media_human_review_required).
-const SCHEMA_VERSION: i64 = 30;
+// B-28 E-3 (SCHEMA_VERSION 31): bumped 30 -> 31 for SsbActionType::GenerationModeSelected.
+// Single new action_type added in this bump; the other 3 focus-tunnel beacons
+// (streaming_early_terminated, pipeline_pre_assembled, dependency_resolved) land
+// with their own bumps in E-4..E-7 when their emitters are wired. Co-staging the
+// CHECK list without emitters would create dead schema rows the writer never
+// produces — declined per B-24 4I.1 precedent.
+// B-28 E-4 (SCHEMA_VERSION 32): bumped 31 -> 32 for SsbActionType::StreamingEarlyTerminated.
+// Single new action_type. Emitter is the post-E-7 WIRING phase that plugs the
+// library-tier StreamingValidator (focus_tunnel::streaming) into run_fim_step /
+// run_diff_step; E-4 only defines the library surface + the schema bump. The
+// payload variant lands now (not deferred) because the StreamingValidator's
+// EarlyTermWireForm projection consumes StreamingEarlyTerminatedPayload directly
+// — co-staging is appropriate here even though the live emitter is deferred.
+// DESTRUCTIVE: existing v31 session DBs are DROPped on first read (no migration
+// logic). Matches B-23 / B-24 / B-27 / B-28 E-3 precedent.
+// B-28 WIRING-1 (SCHEMA_VERSION 33 -> 34 -> 35): batched 3-variant bump for the
+// remaining focus_tunnel reader-side beacons. Three serial bumps in one atomic
+// commit:
+//   * 32 -> 33: SsbActionType::PipelinePreAssembled (item A.1). Emitter is the
+//     post-WIRING-2 hook in drive_task that calls
+//     PipelinePreAssembler::on_step_outcome + spawn prepare(). Payload struct
+//     PipelinePreAssembledPayload defined below. Reader aggregator
+//     pre_assembly_stats_for_payloads (pre_assembly.rs:498) wires the match arm
+//     in this commit.
+//   * 33 -> 34: SsbActionType::DependencyResolved (item A.1). Emitter is the
+//     post-execute hook scanning changed_files via plugins::import_extractor +
+//     DependencyResolver::resolve. Payload struct DependencyResolvedPayload
+//     defined below. Reader aggregator dependency_resolution_stats_for_payloads
+//     (dep_resolver.rs:807) wires the match arm in this commit.
+//   * 34 -> 35: SsbActionType::MicroStepCreated (item A.1). Emitter is the
+//     SpeculativeFileRouter::route NeedsMicroStep / MicroStepCapExhausted path.
+//     Payload struct MicroStepCreatedPayload defined below. Reader aggregator
+//     file_router_stats_for_payloads (file_router.rs:881) wires the match arm
+//     in this commit.
+// DESTRUCTIVE: existing v32 session DBs are DROPped on first read (no migration
+// logic). Matches B-23 / B-24 / B-27 / B-28 E-3 / E-4 precedent.
+const SCHEMA_VERSION: i64 = 35;
+
+/// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
+/// outside the orchestrator crate. The const itself stays crate-private so
+/// internal callers cannot drift from the canonical value.
+pub const SCHEMA_VERSION_PUBLIC: i64 = SCHEMA_VERSION;
 
 /// Maximum serialized payload size in bytes (1 MiB).
 /// `write_payload()` rejects payloads exceeding this limit with `SsbError::PayloadTooLarge`.
@@ -131,7 +172,43 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- enum + SQL CHECK + as_sql_str arms are added now so the SCHEMA_VERSION
         -- bump (29 -> 30) is atomic.
         'media_validation_started', 'media_tier1_complete', 'media_tier2_complete',
-        'render_complete', 'visual_feedback_iteration', 'media_human_review_required'
+        'render_complete', 'visual_feedback_iteration', 'media_human_review_required',
+        -- B-28 E-3 (SCHEMA_VERSION 31): focus_tunnel ModeSelector beacon.
+        -- generation_mode_selected — emitted once per baby-step decision in
+        -- drive_task immediately before the executor dispatch. Carries the
+        -- chosen GenerationMode plus the SelectionRule that fired, so the
+        -- dashboard's mode_distribution surface and the auditor's
+        -- first-match-wins check both read from one source.
+        'generation_mode_selected',
+        -- B-28 E-4 (SCHEMA_VERSION 32): focus_tunnel StreamingValidator
+        -- early-termination beacon. Emitted by the post-E-7 WIRING phase
+        -- whenever the library-tier validator returns ValidationDecision
+        -- ::EarlyTerm. Carries the wire-form EarlyTermReason (lazy_pattern /
+        -- unbalanced_braces / output_too_long / deprecated_import /
+        -- unbounded_string_literal) plus the token count at termination so
+        -- the dashboard can render an early-term row keyed by reason.
+        'streaming_early_terminated',
+        -- B-28 WIRING-1 (SCHEMA_VERSION 33): focus_tunnel
+        -- PipelinePreAssembler readiness beacon. One row per
+        -- PipelinePreAssembler::on_step_outcome -> prepare() invocation.
+        -- Carries pass_rate_bp (basis points) + was_discarded + depth +
+        -- bytes_assembled so the dashboard can render the parallelism gauge
+        -- and waste-rate bar without aggregating across multiple rows.
+        'pipeline_pre_assembled',
+        -- B-28 WIRING-1 (SCHEMA_VERSION 34): focus_tunnel DependencyResolver
+        -- decision beacon. Emitted once per ResolutionDecision after the
+        -- post-execute import-scan + resolve cycle. Carries the resolved
+        -- language + name + decision string (AutoApprove / QueueForHuman /
+        -- Blocked) + the reason that gated the decision. install_command
+        -- mirrors the AutoApprove ApplyPlan when present.
+        'dependency_resolved',
+        -- B-28 WIRING-1 (SCHEMA_VERSION 35): focus_tunnel SpeculativeFileRouter
+        -- micro-step creation / cap-exhaustion beacon. Emitted once per
+        -- NeedsMicroStep or MicroStepCapExhausted route decision. Carries
+        -- the parent step id + created_path + type_hint (Module / Struct /
+        -- Function / Const) + reason string (the gating cue) so the
+        -- dashboard can render a per-step expansion trail.
+        'micro_step_created'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -488,6 +565,44 @@ pub enum SsbActionType {
     /// B-24: validator escalates to a human-review verdict. Carries
     /// [`MediaHumanReviewRequiredPayload`] (Group C4).
     MediaHumanReviewRequired,
+    /// B-28 E-3 (SCHEMA_VERSION 31): focus-tunnel ModeSelector decision
+    /// beacon. Emitted once per baby-step in `drive_task` immediately
+    /// before the executor dispatch. Carries a
+    /// [`GenerationModeSelectedPayload`] with the chosen
+    /// `GenerationMode`, the `SelectionRule` that fired, and the active
+    /// execution-mode tag — feeds the dashboard `mode_distribution`
+    /// surface and the auditor's first-match-wins assertion.
+    GenerationModeSelected,
+    /// B-28 E-4 (SCHEMA_VERSION 32): focus-tunnel StreamingValidator
+    /// early-termination beacon. Emitted by the post-E-7 WIRING phase
+    /// whenever the synchronous library-tier validator returns
+    /// `ValidationDecision::EarlyTerm`. Carries a
+    /// [`StreamingEarlyTerminatedPayload`] with the wire-form
+    /// `EarlyTermReason`, the token count at termination, and the active
+    /// generation `mode` — feeds the dashboard's "early-term" surface and
+    /// the auditor's reason-distribution check. The library validator
+    /// itself does NOT emit the row; the wiring layer translates
+    /// `EarlyTermWireForm` into this payload.
+    StreamingEarlyTerminated,
+    /// B-28 WIRING-1 (SCHEMA_VERSION 33): focus-tunnel PipelinePreAssembler
+    /// readiness beacon. One row per `PipelinePreAssembler::on_step_outcome`
+    /// + `prepare()` invocation. Carries a [`PipelinePreAssembledPayload`]
+    /// with `pass_rate_bp` (basis points) + `was_discarded` + `depth_at_time`
+    /// + `bytes_assembled` so the dashboard can render the parallelism gauge
+    /// and waste-rate bar without aggregating across multiple rows.
+    PipelinePreAssembled,
+    /// B-28 WIRING-1 (SCHEMA_VERSION 34): focus-tunnel DependencyResolver
+    /// decision beacon. Emitted once per `ResolutionDecision` after the
+    /// post-execute import-scan + resolve cycle. Carries a
+    /// [`DependencyResolvedPayload`] with the wire-form decision string
+    /// (`auto_approve` / `queue_for_human` / `blocked`) and gating reason.
+    DependencyResolved,
+    /// B-28 WIRING-1 (SCHEMA_VERSION 35): focus-tunnel SpeculativeFileRouter
+    /// micro-step beacon. Emitted once per `NeedsMicroStep` or
+    /// `MicroStepCapExhausted` route decision. Carries a
+    /// [`MicroStepCreatedPayload`] with the parent step id + created path +
+    /// type_hint (Module / Struct / Function / Const) + reason string.
+    MicroStepCreated,
 }
 
 impl SsbActionType {
@@ -605,6 +720,16 @@ impl SsbActionType {
             Self::RenderComplete => "render_complete",
             Self::VisualFeedbackIteration => "visual_feedback_iteration",
             Self::MediaHumanReviewRequired => "media_human_review_required",
+            // B-28 E-3 (SCHEMA_VERSION 31): focus-tunnel ModeSelector beacon.
+            Self::GenerationModeSelected => "generation_mode_selected",
+            // B-28 E-4 (SCHEMA_VERSION 32): focus-tunnel streaming early-term beacon.
+            Self::StreamingEarlyTerminated => "streaming_early_terminated",
+            // B-28 WIRING-1 (SCHEMA_VERSION 33): pre-assembly readiness beacon.
+            Self::PipelinePreAssembled => "pipeline_pre_assembled",
+            // B-28 WIRING-1 (SCHEMA_VERSION 34): dependency-resolver decision beacon.
+            Self::DependencyResolved => "dependency_resolved",
+            // B-28 WIRING-1 (SCHEMA_VERSION 35): micro-step creation beacon.
+            Self::MicroStepCreated => "micro_step_created",
         }
     }
 }
@@ -731,6 +856,14 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "render_complete" => Ok(SsbActionType::RenderComplete),
         "visual_feedback_iteration" => Ok(SsbActionType::VisualFeedbackIteration),
         "media_human_review_required" => Ok(SsbActionType::MediaHumanReviewRequired),
+        // B-28 E-3 (SCHEMA_VERSION 31).
+        "generation_mode_selected" => Ok(SsbActionType::GenerationModeSelected),
+        // B-28 E-4 (SCHEMA_VERSION 32).
+        "streaming_early_terminated" => Ok(SsbActionType::StreamingEarlyTerminated),
+        // B-28 WIRING-1 (SCHEMA_VERSION 33 -> 35).
+        "pipeline_pre_assembled" => Ok(SsbActionType::PipelinePreAssembled),
+        "dependency_resolved" => Ok(SsbActionType::DependencyResolved),
+        "micro_step_created" => Ok(SsbActionType::MicroStepCreated),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -2353,6 +2486,173 @@ pub struct McpServerDisconnectedPayload {
     pub reason: String,
 }
 
+/// B-28 E-3 (SCHEMA_VERSION 31): focus-tunnel ModeSelector decision row.
+///
+/// Emitted by `task_runner::drive_task` immediately before the executor
+/// dispatch at the `baby_step_executor.execute(exec_ctx)` callsite. One
+/// row per baby step. Stays a flat record of strings/bool (no nested enums)
+/// so the dashboard payload_json bridge can render rows without importing
+/// focus_tunnel symbols.
+///
+/// `mode`, `rule_fired`, `exec_mode` are SSB wire-form strings produced via
+/// `crate::focus_tunnel::generation_mode_str` / `selection_rule_str` /
+/// `exec_mode_str` so the names stay locked. The reader-side aggregation
+/// helper `crate::focus_tunnel::mode_distribution_for_payloads` parses
+/// `mode` back into a [`crate::focus_tunnel::GenerationMode`] enum value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationModeSelectedPayload {
+    /// `"baby_step_{id}"` stringified at emit time so the dashboard can
+    /// correlate this row with other beacons keyed by the same step id.
+    pub step_id: String,
+    /// One of `"fim"` / `"diff"` / `"structured"` (snake_case wire form
+    /// matching `GenerationMode` serde).
+    pub mode: String,
+    /// One of `"cloud_override"` / `"create_file_override"` /
+    /// `"fim_all_conditions_met"` / `"multi_region_diff"` /
+    /// `"structured_fallback"` / `"hinted_by_preferred_mode"`.
+    pub rule_fired: String,
+    /// Static label naming the rule body (`"rule_1_cloud_execution"`, ...).
+    pub reason: String,
+    /// The advisory `preferred_mode` hint present on the step at decision
+    /// time, if any.
+    pub preferred_was: Option<String>,
+    /// Snapshot of `ModelFeatures.supports_fim` at decision time. Lets the
+    /// auditor verify that Rule 3 never fires when supports_fim is false.
+    pub supports_fim: bool,
+    /// One of `"local"` / `"cloud"` / `"auto"` per
+    /// `crate::cloud_mode::ExecMode`. Distinct from the
+    /// `execution_mode_changed` LOCAL/CLOUD/HYBRID dashboard surface — this
+    /// is the routing-side enum, not the settings-window one.
+    pub exec_mode: String,
+}
+
+/// B-28 E-4 (SCHEMA_VERSION 32): focus-tunnel StreamingValidator early-term row.
+///
+/// Emitted by the post-E-7 WIRING phase whenever the synchronous
+/// library-tier validator (`crate::focus_tunnel::streaming::StreamingValidator`)
+/// returns `ValidationDecision::EarlyTerm` during a streaming generation
+/// inside `run_fim_step` / `run_diff_step`. The validator itself is
+/// I/O-free; the WIRING phase translates `EarlyTermWireForm` into this
+/// payload and writes it via the SsbWriter.
+///
+/// Flat record of strings + numbers (no nested enums) so the dashboard
+/// `payload_json` bridge can render rows without importing focus_tunnel
+/// symbols. `reason` is the wire-form `EarlyTermReason` (lazy_pattern /
+/// unbalanced_braces / output_too_long / deprecated_import /
+/// unbounded_string_literal); `reason_detail` carries the structured detail
+/// (pattern_id for LazyPattern; depth for UnbalancedBraces; etc).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamingEarlyTerminatedPayload {
+    /// `"baby_step_{id}"` stringified at emit time so the dashboard can
+    /// correlate this row with its originating GenerationModeSelected row
+    /// and BabyStepSpec.
+    pub step_id: String,
+    /// One of `"fim"` / `"diff"` / `"structured"` (snake_case wire form
+    /// matching `GenerationMode` serde). Captured at validator construction
+    /// time so the row remains consistent if the validator outlives the
+    /// step's selection record.
+    pub mode: String,
+    /// Wire-form `EarlyTermReason`. See `EarlyTermReason::ssb_wire_str`.
+    pub reason: String,
+    /// Structured detail string — `pattern_id` for LazyPattern;
+    /// `depth=N` for UnbalancedBraces; `expected=N;actual=M` for
+    /// OutputTooLong; `<name>-><replacement>` for DeprecatedImport;
+    /// `opener_token=N` for UnboundedStringLiteral. None when the variant
+    /// carries no structured detail.
+    pub reason_detail: Option<String>,
+    /// Token count at the moment of termination — proxy for "tokens we
+    /// stopped emitting" telemetry.
+    pub token_count_at_term: u32,
+    /// Total tokens received from the sidecar before the terminate
+    /// decision. Equal to `token_count_at_term` in the E-4 design (no
+    /// in-flight buffer beyond the trigger); reserved for future overlap
+    /// semantics where the validator could buffer ahead.
+    pub total_tokens_received: u32,
+    /// `"rust"` / `"python"` / `"generic"` — informational, drives the
+    /// pattern set the validator applied.
+    pub language_hint: String,
+}
+
+/// B-28 WIRING-1 (SCHEMA_VERSION 33): focus-tunnel PipelinePreAssembler row.
+///
+/// Emitted by the post-execute hook in `task_runner::drive_task` after
+/// `PipelinePreAssembler::on_step_outcome(step_idx, passed, &target_files)`
+/// fires. Carries the rolling pass-rate observed at decision time (in basis
+/// points, 0..=10_000) and whether the pre-assembled context was discarded
+/// because the next step touched different files.
+///
+/// Flat record of primitives (no nested enums) so the dashboard
+/// `payload_json` bridge can render rows without importing focus_tunnel
+/// symbols. `was_discarded == true` and `bytes_assembled == 0` mark a
+/// canceled pre-assembly (the rolling-window discard path).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PipelinePreAssembledPayload {
+    /// Zero-based index of the step whose pre-assembly produced this row.
+    pub step_idx: u64,
+    /// Rolling pass-rate at decision time, in basis points (0..=10_000).
+    /// Stored as integer to avoid float drift across crates and SSB
+    /// payload_json bridges.
+    pub pass_rate_bp: u16,
+    /// True when the pre-assembled context was discarded (rolling-window
+    /// adaptive disable or per-step target-file change).
+    pub was_discarded: bool,
+    /// In-flight depth at decision time. PipelinePreAssembler caps at
+    /// `MAX_DEPTH = 1` today; widened to u8 for future relaxation.
+    pub depth_at_time: u8,
+    /// Bytes assembled into the readiness payload (0 when discarded).
+    pub bytes_assembled: u64,
+}
+
+/// B-28 WIRING-1 (SCHEMA_VERSION 34): focus-tunnel DependencyResolver row.
+///
+/// Emitted once per `ResolutionDecision` after the post-execute import-scan
+/// + resolve cycle. Carries flat strings (decision and reason use String
+/// mirrors instead of nested enums, matching the
+/// `ExecutionModeChangedPayload` precedent — keeps the focus_tunnel ↔ ssb
+/// dependency direction unidirectional).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyResolvedPayload {
+    /// Wire-form import language: `"rust"` / `"python"` / `"typescript"` /
+    /// `"go"` / `"javascript"` (matches `ImportLanguage::wire_str`).
+    pub language: String,
+    /// Dependency name as it appears in the import statement.
+    pub name: String,
+    /// Wire-form decision: `"auto_approve"` / `"queue_for_human"` /
+    /// `"blocked"`.
+    pub decision: String,
+    /// Wire-form reason gating the decision (e.g. `"allowlist_match"`,
+    /// `"not_allowlisted"`, `"anti_stale_waiver"`, `"registry_not_found"`).
+    pub reason: String,
+    /// Install command for AutoApprove decisions. `None` for QueueForHuman
+    /// / Blocked or when the resolver did not propose an install plan.
+    pub install_command: Option<String>,
+}
+
+/// B-28 WIRING-1 (SCHEMA_VERSION 35): focus-tunnel SpeculativeFileRouter row.
+///
+/// Emitted once per `RouteDecision::NeedsMicroStep` or
+/// `RouteDecision::MicroStepCapExhausted`. `reason == "cap_exhausted"` is
+/// the dashboard-side signal for the cap-exhausted branch; any other
+/// `reason` value (e.g. `"undefined_symbol"`) maps to NeedsMicroStep
+/// semantics. `count` is 0 on cap-exhausted rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MicroStepCreatedPayload {
+    /// Baby-step id of the step that triggered the micro-step (the parent).
+    pub parent_step_id: u64,
+    /// Path of the created micro-step target file.
+    pub created_path: String,
+    /// Wire-form symbol kind: `"Module"` / `"Struct"` / `"Function"` /
+    /// `"Const"`. Mirrors `MicroStepType` as a String to keep the focus_tunnel
+    /// ↔ ssb dep direction unidirectional.
+    pub type_hint: String,
+    /// Reason string. Common values: `"undefined_symbol"` (NeedsMicroStep),
+    /// `"cap_exhausted"` (MicroStepCapExhausted), `"parse_skipped"`.
+    pub reason: String,
+    /// Number of micro-steps this row represents (1 for NeedsMicroStep,
+    /// 0 for MicroStepCapExhausted).
+    pub count: u8,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -2503,6 +2803,16 @@ pub enum SsbPayload {
     RenderComplete(RenderCompletePayload),
     VisualFeedbackIteration(VisualFeedbackIterationPayload),
     MediaHumanReviewRequired(MediaHumanReviewRequiredPayload),
+    // B-28 E-3 (SCHEMA_VERSION 31): focus-tunnel ModeSelector decision row.
+    GenerationModeSelected(GenerationModeSelectedPayload),
+    // B-28 E-4 (SCHEMA_VERSION 32): focus-tunnel StreamingValidator early-term row.
+    StreamingEarlyTerminated(StreamingEarlyTerminatedPayload),
+    // B-28 WIRING-1 (SCHEMA_VERSION 33): pre-assembly readiness row.
+    PipelinePreAssembled(PipelinePreAssembledPayload),
+    // B-28 WIRING-1 (SCHEMA_VERSION 34): dependency resolver decision row.
+    DependencyResolved(DependencyResolvedPayload),
+    // B-28 WIRING-1 (SCHEMA_VERSION 35): speculative file-router micro-step row.
+    MicroStepCreated(MicroStepCreatedPayload),
 }
 
 impl SsbPayload {
@@ -2621,6 +2931,14 @@ impl SsbPayload {
             Self::RenderComplete(_) => SsbActionType::RenderComplete,
             Self::VisualFeedbackIteration(_) => SsbActionType::VisualFeedbackIteration,
             Self::MediaHumanReviewRequired(_) => SsbActionType::MediaHumanReviewRequired,
+            // B-28 E-3.
+            Self::GenerationModeSelected(_) => SsbActionType::GenerationModeSelected,
+            // B-28 E-4.
+            Self::StreamingEarlyTerminated(_) => SsbActionType::StreamingEarlyTerminated,
+            // B-28 WIRING-1 (3 new variants).
+            Self::PipelinePreAssembled(_) => SsbActionType::PipelinePreAssembled,
+            Self::DependencyResolved(_) => SsbActionType::DependencyResolved,
+            Self::MicroStepCreated(_) => SsbActionType::MicroStepCreated,
         }
     }
 }
@@ -4311,6 +4629,55 @@ mod tests {
                     reason: "test-reason".into(),
                 })
             }
+            SsbActionType::GenerationModeSelected => {
+                SsbPayload::GenerationModeSelected(GenerationModeSelectedPayload {
+                    step_id: "baby_step_1".into(),
+                    mode: "structured".into(),
+                    rule_fired: "structured_fallback".into(),
+                    reason: "rule_5_structured_fallback".into(),
+                    preferred_was: None,
+                    supports_fim: false,
+                    exec_mode: "local".into(),
+                })
+            }
+            SsbActionType::StreamingEarlyTerminated => {
+                SsbPayload::StreamingEarlyTerminated(StreamingEarlyTerminatedPayload {
+                    step_id: "baby_step_1".into(),
+                    mode: "fim".into(),
+                    reason: "lazy_pattern".into(),
+                    reason_detail: Some("rust_todo_macro".into()),
+                    token_count_at_term: 17,
+                    total_tokens_received: 17,
+                    language_hint: "rust".into(),
+                })
+            }
+            SsbActionType::PipelinePreAssembled => {
+                SsbPayload::PipelinePreAssembled(PipelinePreAssembledPayload {
+                    step_idx: 0,
+                    pass_rate_bp: 10_000,
+                    was_discarded: false,
+                    depth_at_time: 1,
+                    bytes_assembled: 1024,
+                })
+            }
+            SsbActionType::DependencyResolved => {
+                SsbPayload::DependencyResolved(DependencyResolvedPayload {
+                    language: "rust".into(),
+                    name: "tokio".into(),
+                    decision: "auto_approve".into(),
+                    reason: "allowlist_match".into(),
+                    install_command: Some("cargo add tokio".into()),
+                })
+            }
+            SsbActionType::MicroStepCreated => {
+                SsbPayload::MicroStepCreated(MicroStepCreatedPayload {
+                    parent_step_id: 1,
+                    created_path: "crates/foo/src/bar.rs".into(),
+                    type_hint: "Module".into(),
+                    reason: "undefined_symbol".into(),
+                    count: 1,
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -5402,6 +5769,49 @@ mod tests {
                 step_id: "step-1".into(),
                 reason: "test-reason".into(),
             }),
+            SsbPayload::GenerationModeSelected(GenerationModeSelectedPayload {
+                step_id: "baby_step_99".into(),
+                mode: "fim".into(),
+                rule_fired: "fim_all_conditions_met".into(),
+                reason: "rule_3_fim_eligible".into(),
+                preferred_was: None,
+                supports_fim: true,
+                exec_mode: "local".into(),
+            }),
+            // B-28 E-4 (SCHEMA_VERSION 32) — focus-tunnel StreamingValidator early-term.
+            SsbPayload::StreamingEarlyTerminated(StreamingEarlyTerminatedPayload {
+                step_id: "baby_step_77".into(),
+                mode: "fim".into(),
+                reason: "lazy_pattern".into(),
+                reason_detail: Some("rust_todo_macro".into()),
+                token_count_at_term: 17,
+                total_tokens_received: 17,
+                language_hint: "rust".into(),
+            }),
+            // B-28 WIRING-1 (SCHEMA_VERSION 33) — pre-assembly readiness row.
+            SsbPayload::PipelinePreAssembled(PipelinePreAssembledPayload {
+                step_idx: 5,
+                pass_rate_bp: 8500,
+                was_discarded: false,
+                depth_at_time: 1,
+                bytes_assembled: 4096,
+            }),
+            // B-28 WIRING-1 (SCHEMA_VERSION 34) — dep-resolver decision row.
+            SsbPayload::DependencyResolved(DependencyResolvedPayload {
+                language: "rust".into(),
+                name: "tokio".into(),
+                decision: "auto_approve".into(),
+                reason: "allowlist_match".into(),
+                install_command: Some("cargo add tokio".into()),
+            }),
+            // B-28 WIRING-1 (SCHEMA_VERSION 35) — file-router micro-step row.
+            SsbPayload::MicroStepCreated(MicroStepCreatedPayload {
+                parent_step_id: 11,
+                created_path: "crates/foo/src/bar.rs".into(),
+                type_hint: "Module".into(),
+                reason: "undefined_symbol".into(),
+                count: 1,
+            }),
         ]
     }
 
@@ -5413,8 +5823,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            47,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons)",
+            52,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

@@ -198,6 +198,7 @@ async fn contract_missing_binary_surfaces_failed_outcome() {
         baby_step_id: 1,
         task_summary: "dummy".into(),
         escalation_message: None,
+        mode_selection: None,
     };
     let result = exec.execute(ctx).await;
     match result.outcome {
@@ -226,6 +227,7 @@ async fn contract_synthetic_executor_still_works_as_fallback() {
         baby_step_id: 99,
         task_summary: "legacy path".into(),
         escalation_message: None,
+        mode_selection: None,
     };
     let result = exec.execute(ctx).await;
     assert!(matches!(result.outcome, BabyStepOutcome::Passed));

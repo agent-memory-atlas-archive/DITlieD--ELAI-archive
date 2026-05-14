@@ -89,6 +89,14 @@ pub(crate) struct RuntimeClient {
     pub(crate) phase_slot_tokens: usize,
     /// Backend routing config retained for per-turn `build_dispatch_context` calls.
     pub(crate) backend_config: Option<BackendConfig>,
+    /// B-28 WIRING-2 (item G): optional focus-tunnel StreamingValidator.
+    /// When `Some`, the streaming response handler invokes
+    /// [`elai_orchestrator::focus_tunnel::StreamingValidator::on_token`] for
+    /// every `ContentBlockDelta::TextDelta` and short-circuits the stream on
+    /// `ValidationDecision::EarlyTerm`. `None` for callers that do not opt
+    /// into focus-tunnel validation — keeps the legacy fast path unchanged.
+    pub(crate) streaming_validator:
+        Option<Arc<std::sync::Mutex<elai_orchestrator::focus_tunnel::StreamingValidator>>>,
 }
 
 pub(crate) fn resolve_cli_auth_source() -> Result<AuthSource, anyhow::Error> {
@@ -488,12 +496,38 @@ impl ApiClient for RuntimeClient {
                                 if let Some(progress_reporter) = &self.progress_reporter {
                                     progress_reporter.mark_text_phase(&text);
                                 }
+                                // B-28 WIRING-2 (item G): inject the
+                                // focus-tunnel StreamingValidator. On
+                                // EarlyTerm, drop the stream and emit a
+                                // `MessageStop` event so the caller sees a
+                                // clean termination. Validator errors are
+                                // non-fatal (the validator only refuses
+                                // tokens — never the model itself).
+                                let mut early_term: Option<&'static str> = None;
+                                if let Some(validator) = self.streaming_validator.as_ref() {
+                                    if let Ok(mut v) = validator.lock() {
+                                        if let elai_orchestrator::focus_tunnel::ValidationDecision::EarlyTerm { reason, .. } =
+                                            v.on_token(&text)
+                                        {
+                                            early_term = Some(reason.ssb_wire_str());
+                                        }
+                                    }
+                                }
                                 if let Some(rendered) = markdown_stream.push(&renderer, &text) {
                                     write!(out, "{rendered}")
                                         .and_then(|()| out.flush())
                                         .map_err(|error| RuntimeError::new(error.to_string()))?;
                                 }
                                 events.push(AssistantEvent::TextDelta(text));
+                                if let Some(reason) = early_term {
+                                    tracing::warn!(
+                                        reason,
+                                        "runtime_client: focus-tunnel StreamingValidator triggered EarlyTerm — terminating stream"
+                                    );
+                                    events.push(AssistantEvent::MessageStop);
+                                    saw_stop = true;
+                                    break;
+                                }
                             }
                         }
                         ContentBlockDelta::InputJsonDelta { partial_json } => {

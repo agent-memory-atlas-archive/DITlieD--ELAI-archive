@@ -6,6 +6,7 @@
 // citations, and dual-threshold convergence (phi >= phi_min AND psi >= psi_min).
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1512,6 +1513,32 @@ pub struct BabyStepSpec {
     pub grounding: BabyStepGrounding,
     pub tdd: Option<TddSpec>,
     pub acceptance: Option<AcceptanceCriteria>,
+    /// B-28 WIRING-1 item B: optional advisory generation-mode hint
+    /// (`focus_tunnel::GenerationMode`). Stored as `Option<GenerationMode>`
+    /// directly. `#[serde(default)]` keeps every legacy serialized
+    /// BabyStepSpec deserialisable without a schema bump. Read by
+    /// `focus_tunnel::mode::build_step_context_from`; orchestrator
+    /// retains final say per spec L137-138.
+    #[serde(default)]
+    pub preferred_mode: Option<crate::focus_tunnel::GenerationMode>,
+    /// B-28 WIRING-2 fix BLOCK 2: optional target file for FIM mode. When
+    /// `Some`, the task_runner's focus-tunnel pre-executor reads this path
+    /// and splices model output into `edit_region`. When `None`, FIM falls
+    /// back to STRUCTURED via a `StructuredFallback` SSB beacon
+    /// (reason=`missing_target_file`) rather than the legacy
+    /// `UnsupportedMode` error path. `#[serde(default)]` keeps every legacy
+    /// serialized BabyStepSpec deserialisable.
+    #[serde(default)]
+    pub target_file: Option<PathBuf>,
+    /// B-28 WIRING-2 fix BLOCK 2: optional `[start_line, end_line)` region
+    /// the FIM splice will occupy (spec L132 makes this MANDATORY for FIM
+    /// to actually run). When paired with `target_file`, the task_runner
+    /// invokes `run_fim_step_with_provider`. When missing, FIM cannot
+    /// execute and the runner emits a `StructuredFallback` beacon.
+    /// Stored as the focus_tunnel `EditRegion` directly so the spec stays
+    /// the source of truth for the splice boundary.
+    #[serde(default)]
+    pub edit_region: Option<crate::focus_tunnel::EditRegion>,
 }
 
 /// Track A.5: BabyStepGrounding derives Default so that BabyStepSpec.grounding
@@ -2048,6 +2075,9 @@ pub fn decompose_to_baby_steps(
             grounding,
             tdd: None,
             acceptance: None,
+            preferred_mode: None,
+            target_file: None,
+            edit_region: None,
         });
     } else {
         // Split: divide description into chunks that fit within MAX_BABY_STEP_TOKENS
@@ -2085,6 +2115,9 @@ pub fn decompose_to_baby_steps(
                 grounding,
                 tdd: None,
                 acceptance: None,
+                preferred_mode: None,
+                target_file: None,
+                edit_region: None,
             });
             next_id += 1;
         }

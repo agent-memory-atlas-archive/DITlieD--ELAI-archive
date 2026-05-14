@@ -141,6 +141,82 @@ impl InProcessToolDispatcher {
         }
     }
 
+    /// B-28 E-2: apply a batch of edits to an in-memory buffer instead of
+    /// reading from / writing to disk. Mirrors `dispatch_edit` semantics
+    /// (3-tier matcher in declared order: Exact -> WhitespaceNormalized ->
+    /// Ellipsis -> NotMatched) without touching the filesystem.
+    ///
+    /// Returns the post-edit content + per-edit `(tier, similarity_hint?)`
+    /// in input order. Stops at the first `NotMatched` and surfaces
+    /// `DiffApplyError::TierMatcherRejected { hunk_index, file_path,
+    /// similarity_hint }` so the orchestrator's `replay_hunks` coordinator
+    /// can preserve all-or-nothing multi-region atomicity.
+    ///
+    /// The implementation deliberately reuses the private `try_edit_tiers`
+    /// helper so the spec assertion (3-tier order, identical to
+    /// `dispatch_edit`) cannot drift between the disk and buffer paths.
+    pub fn apply_edits_to_buffer(
+        &self,
+        buf: &str,
+        edits: &[EditRequest],
+    ) -> Result<
+        (String, Vec<(EditMatchTier, Option<SimilarityHint>)>),
+        elai_orchestrator::focus_tunnel::DiffApplyError,
+    > {
+        if self.disabled {
+            return Err(
+                elai_orchestrator::focus_tunnel::DiffApplyError::DispatcherFailed {
+                    hunk_index: 0,
+                    source: ToolDispatchError::NotImplemented(
+                        "apply_edits_to_buffer disabled via env".into(),
+                    ),
+                },
+            );
+        }
+        let mut current = buf.to_string();
+        let mut tiers: Vec<(EditMatchTier, Option<SimilarityHint>)> =
+            Vec::with_capacity(edits.len());
+        for (idx, edit) in edits.iter().enumerate() {
+            let (tier, updated) =
+                try_edit_tiers(&current, &edit.old_text, &edit.new_text);
+            match (tier, updated) {
+                (EditMatchTier::NotMatched, _) => {
+                    let similarity_hint = best_line_match(&current, &edit.old_text)
+                        .map(|(text, line, ratio)| {
+                            SimilarityHint::from_ratio(
+                                text,
+                                u32::try_from(line).unwrap_or(u32::MAX),
+                                ratio,
+                            )
+                        });
+                    return Err(
+                        elai_orchestrator::focus_tunnel::DiffApplyError::TierMatcherRejected {
+                            hunk_index: idx,
+                            file_path: edit.file_path.to_string_lossy().to_string(),
+                            similarity_hint,
+                        },
+                    );
+                }
+                (matched_tier, Some(updated_content)) => {
+                    current = updated_content;
+                    tiers.push((matched_tier, None));
+                }
+                (_, None) => {
+                    // Defensive: try_edit_tiers should always return Some on
+                    // a non-NotMatched tier; if it does not, surface as an
+                    // in-memory failure so the caller can re-route.
+                    return Err(
+                        elai_orchestrator::focus_tunnel::DiffApplyError::InMemoryApplyFailed {
+                            hunk_index: idx,
+                            file_path: edit.file_path.to_string_lossy().to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok((current, tiers))
+    }
+
     /// B-20A Task 7: file-read with explicit `force_full` override.
     ///
     /// Decision D (workflow/reasoning/B-20A-decisions.md): the
@@ -671,6 +747,22 @@ fn compiler_command(language: &str) -> Option<(&'static str, Vec<String>)> {
 // ---------------------------------------------------------------------------
 // Trait impl
 // ---------------------------------------------------------------------------
+
+/// B-28 E-2: production wiring for the orchestrator's `BufferEditor` trait.
+/// Delegates straight to the inherent `apply_edits_to_buffer` method so the
+/// trait surface and the inherent method share one code path.
+impl elai_orchestrator::focus_tunnel::BufferEditor for InProcessToolDispatcher {
+    fn apply_edits_to_buffer(
+        &self,
+        buf: &str,
+        edits: &[EditRequest],
+    ) -> Result<
+        (String, Vec<(EditMatchTier, Option<SimilarityHint>)>),
+        elai_orchestrator::focus_tunnel::DiffApplyError,
+    > {
+        InProcessToolDispatcher::apply_edits_to_buffer(self, buf, edits)
+    }
+}
 
 impl ToolDispatcher for InProcessToolDispatcher {
     fn dispatch_edit(

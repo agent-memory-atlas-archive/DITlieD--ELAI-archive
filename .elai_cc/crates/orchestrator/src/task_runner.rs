@@ -85,7 +85,7 @@ use crate::pipeline_tree_navigator::{
     NavigatorTree, NoOpIntegrationRunner, SsbBubbleUpEmitter, SsbIntegrationEmitter,
     TreeNavigator, TreeNavigatorState,
 };
-use crate::grounding_client::SidecarGroundingClient;
+use crate::grounding_client::{CloudGroundingClient, SidecarGroundingClient};
 use crate::hook_dispatcher::{
     emit_hook_events_to_ssb, emit_shortcoder_compression_to_ssb, HookFinding, HookInvocation,
     HookPoint,
@@ -691,6 +691,15 @@ pub struct BabyStepExecutionCtx {
     /// prepended to the agent's next turn input. `None` on the first execution
     /// of any baby step.
     pub escalation_message: Option<String>,
+    /// B-28 E-3: optional focus-tunnel [`ModeSelection`](crate::focus_tunnel::ModeSelection)
+    /// produced by the [`ModeSelector`](crate::focus_tunnel::ModeSelector) call
+    /// in `drive_task` just before the executor dispatch. `None` for synthetic /
+    /// legacy paths (SyntheticBabyStepExecutor, IPC tests, dashboard contract
+    /// fixtures) so existing call sites stay untouched. AgentPoolBabyStepExecutor
+    /// will branch on this in E-4 once the provider client trait lands; in E-3
+    /// the field is informational only and the executor falls back to STRUCTURED
+    /// regardless of the selection (SSB beacon still emitted upstream).
+    pub mode_selection: Option<crate::focus_tunnel::ModeSelection>,
 }
 
 /// Result of one baby-step execution dispatch.
@@ -959,6 +968,10 @@ where
             baby_step_id: 0,
             task_summary: fixer_task,
             escalation_message: None,
+            // Fixer turns reuse the STRUCTURED path unconditionally — focus-
+            // tunnel routing (B-28 E-3) only fires on primary baby-step
+            // dispatch, not on fix-and-rerun retries.
+            mode_selection: None,
         };
         let _fixer_result = fixer_executor.execute(exec_ctx).await;
         // We do NOT parse the agent response content. Per the integration
@@ -2321,6 +2334,16 @@ struct ResolvedConfig {
     /// downstream gated call site sees a single boolean (`is_some()`) and
     /// behaves as pre-B-8 when the bypass is active.
     pipeline_grc: Option<Arc<AsyncMutex<crate::grc::PipelineGrc>>>,
+    /// B-28 WIRING-2 (item H): focus-tunnel adaptive pre-assembler. None
+    /// today (no TaskRunnerConfig construction site); the wiring activates
+    /// when a future patch lands the production Arc.
+    focus_tunnel_pre_assembler:
+        Option<Arc<AsyncMutex<crate::focus_tunnel::PipelinePreAssembler>>>,
+    /// B-28 WIRING-2 (item I): focus-tunnel dependency resolver. None today.
+    focus_tunnel_dep_resolver: Option<Arc<crate::focus_tunnel::DependencyResolver>>,
+    /// B-28 WIRING-2 (item J): speculative file router. None today.
+    focus_tunnel_file_router:
+        Option<Arc<AsyncMutex<crate::focus_tunnel::SpeculativeFileRouter>>>,
     /// B-10 (DECISION-A / DECISION-F): always-Some
     /// [`crate::context_budget::ModelCapabilityProfile`] derived once at
     /// runner construction. Threaded into every `build_dispatch_context` call
@@ -2462,6 +2485,289 @@ impl ResolvedConfig {
             // populates them only when the spec declares non-empty `media`.
             media_validator: AsyncMutex::new(None),
             media_sink: AsyncMutex::new(None),
+            // B-28 WIRING-2 (items H, I, J): focus-tunnel runtime hooks.
+            // Default None — the production TaskRunnerConfig construction
+            // site lands in a follow-up patch.
+            focus_tunnel_pre_assembler: None,
+            focus_tunnel_dep_resolver: None,
+            focus_tunnel_file_router: None,
+        }
+    }
+}
+
+/// B-28 WIRING-2 (items H + I + J): focus-tunnel post-execute hook
+/// dispatcher.
+///
+/// Invoked from `drive_task` after each baby step's executor returns. The
+/// body is a strict no-op when:
+///   * `changed_files` is empty (the synthetic executor / wire-4A agents
+///     that have not yet wired the changed-files protocol), OR
+///   * `resolved.focus_tunnel_pre_assembler / dep_resolver / file_router`
+///     are all `None` (the default — construction sites land in a future
+///     patch that wires production Arcs onto `TaskRunnerConfig`).
+///
+/// Each hook block is independently gated so partial wiring (e.g. only
+/// the PreAssembler) does not require all three Arcs.
+async fn run_focus_tunnel_post_execute_hooks(
+    writer: &Arc<Ssb>,
+    resolved: &ResolvedConfig,
+    baby_step_id: u64,
+    changed_files: &[PathBuf],
+    passed: bool,
+) {
+    // Item H — PipelinePreAssembler: record per-step outcome on the
+    // adaptive rolling window. Pre-assembly of step N+1 is deferred to the
+    // production wiring patch that owns the spec lookup.
+    if let Some(pa) = resolved.focus_tunnel_pre_assembler.as_ref() {
+        let mut guard = pa.lock().await;
+        // B-28 WIRING-2 fix WARN E: was hardcoded `0`. Pass the actual
+        // baby_step_id so the adaptive window records per-step outcomes
+        // (the pre-assembler keys its history on step_idx). usize cast is
+        // saturating — baby_step_ids never exceed usize on a 64-bit target,
+        // and saturating preserves monotonicity on 32-bit builds.
+        let step_idx_usize = usize::try_from(baby_step_id).unwrap_or(usize::MAX);
+        guard.on_step_outcome(step_idx_usize, passed, changed_files);
+        let pass_rate_bp =
+            (guard.current_pass_rate() * 10_000.0).clamp(0.0, 10_000.0) as u16;
+        let depth = guard.current_depth();
+        drop(guard);
+        let payload = SsbPayload::PipelinePreAssembled(
+            crate::ssb::PipelinePreAssembledPayload {
+                step_idx: baby_step_id,
+                pass_rate_bp,
+                was_discarded: false,
+                depth_at_time: depth,
+                bytes_assembled: 0,
+            },
+        );
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                baby_step_id,
+                error = %e,
+                "task_runner: PipelinePreAssembled SSB write failed (non-fatal)"
+            );
+        }
+    }
+
+    // Item I — DependencyResolver: scan changed_files for imports; emit one
+    // SSB row per ResolutionDecision. Guarded by changed_files non-empty so
+    // we don't spawn imports work on a synthetic-executor pass.
+    if let (Some(resolver), false) = (
+        resolved.focus_tunnel_dep_resolver.as_ref(),
+        changed_files.is_empty(),
+    ) {
+        let mut missing: Vec<crate::focus_tunnel::MissingImport> = Vec::new();
+        for path in changed_files {
+            let Some(path_str) = path.to_str() else {
+                continue;
+            };
+            let Some(lang) =
+                elai_plugins::import_extractor::ImportLanguage::from_extension(path_str)
+            else {
+                continue;
+            };
+            // Read the source for import extraction; spawn_blocking keeps
+            // the async runtime live.
+            let path_clone = path.clone();
+            let source = match tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path_clone)
+            })
+            .await
+            {
+                Ok(Ok(s)) => s,
+                _ => continue,
+            };
+            let extracted = match elai_plugins::import_extractor::extract_imports(&source, lang) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            for ext in extracted {
+                missing.push(crate::focus_tunnel::MissingImport {
+                    language: lang,
+                    name: ext.name,
+                    source_span: None,
+                    transitive_of: None,
+                });
+            }
+        }
+
+        if !missing.is_empty() {
+            let plan = match resolver.resolve(missing, &[]).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = ?e, "task_runner: dep_resolver.resolve failed");
+                    return;
+                }
+            };
+            for decision in &plan.decisions {
+                let (decision_str, reason_str, install_command) = match decision {
+                    crate::focus_tunnel::ResolutionDecision::AutoApprove { prop, reason } => (
+                        "auto_approve".to_string(),
+                        match reason {
+                            crate::focus_tunnel::AutoApproveReason::Allowlist => {
+                                "allowlist_match".to_string()
+                            }
+                            crate::focus_tunnel::AutoApproveReason::TransitiveOfApproved => {
+                                "transitive_of_approved".to_string()
+                            }
+                        },
+                        Some(prop.install_command.clone()),
+                    ),
+                    crate::focus_tunnel::ResolutionDecision::QueueForHuman { prop } => (
+                        "queue_for_human".to_string(),
+                        "human_gate".to_string(),
+                        Some(prop.install_command.clone()),
+                    ),
+                    crate::focus_tunnel::ResolutionDecision::Blocked { prop, reason } => (
+                        "blocked".to_string(),
+                        focus_tunnel_blocked_reason_str(reason),
+                        Some(prop.install_command.clone()),
+                    ),
+                };
+                let (lang_str, name) = match decision {
+                    crate::focus_tunnel::ResolutionDecision::AutoApprove { prop, .. }
+                    | crate::focus_tunnel::ResolutionDecision::QueueForHuman { prop }
+                    | crate::focus_tunnel::ResolutionDecision::Blocked { prop, .. } => (
+                        format!("{:?}", prop.language).to_lowercase(),
+                        prop.name.clone(),
+                    ),
+                };
+                let payload = SsbPayload::DependencyResolved(
+                    crate::ssb::DependencyResolvedPayload {
+                        language: lang_str,
+                        name,
+                        decision: decision_str,
+                        reason: reason_str,
+                        install_command,
+                    },
+                );
+                if let Err(e) = writer
+                    .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        baby_step_id,
+                        error = %e,
+                        "task_runner: DependencyResolved SSB write failed (non-fatal)"
+                    );
+                }
+            }
+            // B-28 WIRING-2 fix WARN F: actually invoke
+            // `resolver.apply(&plan, &executor)` so AutoApprove decisions
+            // record an InstallAttempt (the resolver contract pins
+            // install_results.len() == proposals_approved.len()). Production
+            // install is gated behind `ELAI_ENABLE_DEP_INSTALL=1`; when
+            // unset (default) we use a NO-OP executor that records the
+            // attempt as `success=false, stderr="dep_install_disabled"` so
+            // the SSB stream stays observable without spawning real package
+            // managers. If apply panics or errors are surfaced inside
+            // executor.install, this block never crashes the orchestrator —
+            // each InstallAttempt is data, not a `Result`.
+            let install_enabled = std::env::var("ELAI_ENABLE_DEP_INSTALL")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false);
+            // NO-OP installer used as the default production executor until
+            // a real package-manager dispatch lands behind the feature flag.
+            // Mirrors `RecordingInstaller` from the wiring contract tests
+            // but writes a deterministic disabled-marker into `stderr`.
+            struct NoopInstaller {
+                disabled_marker: &'static str,
+            }
+            impl crate::focus_tunnel::DepInstallExecutor for NoopInstaller {
+                fn install(
+                    &self,
+                    proposal: &crate::focus_tunnel::DepProposal,
+                ) -> crate::focus_tunnel::InstallAttempt {
+                    crate::focus_tunnel::InstallAttempt {
+                        proposal: proposal.clone(),
+                        success: false,
+                        stderr: Some(self.disabled_marker.to_string()),
+                    }
+                }
+            }
+            let executor = NoopInstaller {
+                disabled_marker: if install_enabled {
+                    // Real-install path is gated for follow-on patch: today
+                    // we still NO-OP but mark the attempt so logs distinguish
+                    // "feature flag on but no executor wired" from default.
+                    "dep_install_executor_not_wired"
+                } else {
+                    "dep_install_disabled"
+                },
+            };
+            let _outcome = resolver.apply(&plan, &executor);
+            // Outcome.install_results is one row per AutoApprove decision.
+            // We do NOT emit additional SSB rows here — the AutoApprove
+            // beacon above already records the decision; install execution
+            // surfaces will land when the production executor wires the
+            // package-manager dispatcher in a follow-on patch.
+        }
+    }
+
+    // Item J — SpeculativeFileRouter: post-execute route decision. The
+    // router relies on model_output (the agent's emitted text) which is
+    // NOT carried on `BabyStepExecutionResult` today (Gap #9). We emit a
+    // best-effort cap-aware row when the router is wired AND
+    // `changed_files` is non-empty so the wiring is observable. The full
+    // undefined-symbol scan lands when the agent IPC contract grows a
+    // `model_output` field.
+    if let (Some(router), false) = (
+        resolved.focus_tunnel_file_router.as_ref(),
+        changed_files.is_empty(),
+    ) {
+        let guard = router.lock().await;
+        let consumed = guard.micro_steps_consumed();
+        drop(guard);
+        // Emit a "Proceed-shaped" row so the dashboard's micro_step ledger
+        // captures the post-execute boundary. Cap-exhausted rows are
+        // emitted by the production caller that owns model_output once
+        // that signal is plumbed through.
+        let payload = SsbPayload::MicroStepCreated(crate::ssb::MicroStepCreatedPayload {
+            parent_step_id: baby_step_id,
+            created_path: changed_files
+                .first()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            type_hint: "Module".to_string(),
+            reason: "post_execute_observed".to_string(),
+            count: consumed as u8,
+        });
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                baby_step_id,
+                error = %e,
+                "task_runner: MicroStepCreated SSB write failed (non-fatal)"
+            );
+        }
+    }
+}
+
+/// Map a [`crate::focus_tunnel::BlockedReason`] variant to the wire-form
+/// string used in [`crate::ssb::DependencyResolvedPayload::reason`]. Keeps
+/// the focus_tunnel -> ssb dependency direction unidirectional.
+fn focus_tunnel_blocked_reason_str(reason: &crate::focus_tunnel::BlockedReason) -> String {
+    match reason {
+        crate::focus_tunnel::BlockedReason::DeprecatedPattern { .. } => {
+            "deprecated_pattern".to_string()
+        }
+        crate::focus_tunnel::BlockedReason::RegistryNotFound { .. } => {
+            "registry_not_found".to_string()
+        }
+        crate::focus_tunnel::BlockedReason::RegistryUnexpectedStatus { status, .. } => {
+            format!("registry_status_{status}")
+        }
+        crate::focus_tunnel::BlockedReason::AirGapped => "air_gapped".to_string(),
+        crate::focus_tunnel::BlockedReason::AntiStaleWaiverPending { .. } => {
+            "anti_stale_waiver_pending".to_string()
+        }
+        crate::focus_tunnel::BlockedReason::UnsupportedEcosystem { .. } => {
+            "unsupported_ecosystem".to_string()
         }
     }
 }
@@ -3718,20 +4024,45 @@ async fn drive_task(
     }
 
     let mut cache = ResearchCache::new(DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_TTL_SECONDS);
-    let grounding_client = SidecarGroundingClient::default();
     // B-7b: wire tree emitter so each concept/phase/step/baby_step built during
     // decompose surfaces as a `concept_decomposition_node` SSB row in the dashboard.
     let decompose_tree_emitter =
         SsbDecompositionEmitter::new(Arc::clone(writer), RUNNER_AGENT_ID, RUNNER_SUPERSTEP);
-    let decomposition = research_decompose(
-        &task.task,
-        ExecutionMode::Autonomous,
-        &mut cache,
-        &grounding_client,
-        Some(writer), // Track A.6: SSB handle for cache-miss grounding rows.
-        Some(&decompose_tree_emitter), // B-7b: emit concept_decomposition_node rows.
-    )
-    .await?;
+
+    // Backend selection: ELAI_GROUNDING_BACKEND=cloud routes through Anthropic
+    // (CloudGroundingClient). Default and any other value retain the historical
+    // sidecar path. Picked here per-task so the env can be flipped at runtime
+    // without restarting the orchestrator. Cloud-init failure surfaces as a
+    // ResearchTreeError::GroundingFailed via the GroundingClient contract.
+    let grounding_backend = std::env::var("ELAI_GROUNDING_BACKEND").ok();
+    let decomposition = if grounding_backend.as_deref() == Some("cloud") {
+        let grounding_client = CloudGroundingClient::from_env().map_err(|e| {
+            crate::research_tree::ResearchTreeError::GroundingFailed {
+                level: crate::grounding_client::ResearchLevel::Idea,
+                source: e,
+            }
+        })?;
+        research_decompose(
+            &task.task,
+            ExecutionMode::Autonomous,
+            &mut cache,
+            &grounding_client,
+            Some(writer),                  // Track A.6: SSB handle for cache-miss grounding rows.
+            Some(&decompose_tree_emitter), // B-7b: emit concept_decomposition_node rows.
+        )
+        .await?
+    } else {
+        let grounding_client = SidecarGroundingClient::default();
+        research_decompose(
+            &task.task,
+            ExecutionMode::Autonomous,
+            &mut cache,
+            &grounding_client,
+            Some(writer),                  // Track A.6: SSB handle for cache-miss grounding rows.
+            Some(&decompose_tree_emitter), // B-7b: emit concept_decomposition_node rows.
+        )
+        .await?
+    };
     if decomposition.concepts.is_empty() {
         return Err(TaskRunnerError::EmptyDecomposition);
     }
@@ -4330,10 +4661,68 @@ async fn drive_task(
         let escalation_message = spiral_tracker
             .as_mut()
             .and_then(|t| t.take_escalation_message());
+
+        // B-28 E-3 + WIRING-2: focus-tunnel ModeSelector decision + SSB beacon.
+        //
+        // WIRING-2 (item E): the previously-hardcoded `ExecMode::Local` is now
+        // resolved from the runner's BackendConfig via
+        // [`crate::cloud_mode::resolve_exec_mode`]. Rule 1
+        // (CLOUD -> STRUCTURED) now fires in production when the backend
+        // mode is `Api`.
+        let resolved_exec_mode = crate::cloud_mode::resolve_exec_mode(&resolved.backend_config);
+        let mode_selection = {
+            let mode_selector = crate::focus_tunnel::ModeSelector::new();
+            let step_ctx = match tree.find_baby_step(bs_id) {
+                Some(spec) => crate::focus_tunnel::build_step_context_from(spec),
+                None => crate::focus_tunnel::StepContext::empty(),
+            };
+            let selection = mode_selector.select(
+                &step_ctx,
+                &resolved.model_capability_profile.features,
+                resolved_exec_mode,
+            );
+            // Emit the SSB beacon. Best-effort: a write failure does not
+            // abort the baby step (matches AntiSpiralHit emission pattern
+            // at L4070-4083).
+            let mode_payload = SsbPayload::GenerationModeSelected(
+                crate::ssb::GenerationModeSelectedPayload {
+                    step_id: format!("baby_step_{}", bs_id.0),
+                    mode: crate::focus_tunnel::generation_mode_str(selection.mode)
+                        .to_string(),
+                    rule_fired: crate::focus_tunnel::selection_rule_str(
+                        selection.rule_fired,
+                    )
+                    .to_string(),
+                    reason: selection.reason.to_string(),
+                    preferred_was: selection.preferred_was.map(|m| {
+                        crate::focus_tunnel::generation_mode_str(m).to_string()
+                    }),
+                    supports_fim: resolved
+                        .model_capability_profile
+                        .features
+                        .supports_fim,
+                    exec_mode: crate::focus_tunnel::exec_mode_str(resolved_exec_mode)
+                        .to_string(),
+                },
+            );
+            if let Err(e) = writer
+                .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, mode_payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    baby_step = bs_id.0,
+                    error = %e,
+                    "task_runner: GenerationModeSelected SSB write failed (non-fatal)"
+                );
+            }
+            selection
+        };
+
         let exec_ctx = BabyStepExecutionCtx {
             baby_step_id: bs_id.0,
             task_summary: task_summary.clone(),
             escalation_message,
+            mode_selection: Some(mode_selection),
         };
 
         // B-8 Tasks#3: PipelineGrc.generate_csq pre-tool gate.
@@ -4413,6 +4802,202 @@ async fn drive_task(
             }
         }
 
+        // B-28 WIRING-2 (item F): focus-tunnel FIM/DIFF pre-executor branch.
+        //
+        // When the env-var `ELAI_FOCUS_TUNNEL_EXECUTE=1` is set AND a shared
+        // LlmProvider is available AND the ModeSelector chose FIM or DIFF,
+        // route through `run_*_step_with_provider` and synthesize the
+        // executor result from the focus-tunnel outcome. On any Err we fall
+        // through to the legacy executor path (STRUCTURED fallback). This
+        // env-var gate keeps the wiring observable in production without
+        // disturbing existing baby-step behaviour — flipping the variable
+        // off restores the pre-WIRING-2 path verbatim.
+        //
+        // SSB row on fallback: emit a `GenerationModeSelected` beacon with
+        // rule_fired=StructuredFallback so the auditor's mode_distribution
+        // stays accurate.
+        let focus_tunnel_active = std::env::var("ELAI_FOCUS_TUNNEL_EXECUTE")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+        // B-28 WIRING-2 fix BLOCK 2c: pre-fetch the spec's `target_file` /
+        // `edit_region` for the FIM execution branch. When the spec lacks
+        // either field the FIM dispatcher short-circuits to a typed
+        // `StructuredFallback` SSB row with reason="missing_target_file"
+        // (NOT the legacy `UnsupportedMode` error path) so the auditor's
+        // mode_distribution metric reflects the real code path taken.
+        let (spec_target_file, spec_edit_region): (
+            Option<std::path::PathBuf>,
+            Option<crate::focus_tunnel::EditRegion>,
+        ) = match tree.find_baby_step(bs_id) {
+            Some(spec) => (spec.target_file.clone(), spec.edit_region),
+            None => (None, None),
+        };
+        let focus_tunnel_result: Option<BabyStepExecutionResult> = if focus_tunnel_active
+            && !hook_pre_blocked
+            && resolved.llm_provider.is_some()
+            && !matches!(mode_selection.mode, crate::focus_tunnel::GenerationMode::Structured)
+        {
+            let started = std::time::Instant::now();
+            let provider = resolved.llm_provider.clone();
+            // B-28 WIRING-2 fix BLOCK 2c: FIM short-circuit on missing fields.
+            // Returns `(attempted, short_circuit_reason)`. When the
+            // short_circuit_reason is `Some(reason)`, the outer `match` skips
+            // the error-classification branch and emits a clean
+            // `StructuredFallback` beacon carrying that reason verbatim
+            // (no `UnsupportedMode` masquerading as a generic Err).
+            let (attempted, short_circuit_reason): (
+                Result<
+                    Option<BabyStepExecutionResult>,
+                    crate::focus_tunnel::FocusTunnelExecError,
+                >,
+                Option<&'static str>,
+            ) = match mode_selection.mode {
+                crate::focus_tunnel::GenerationMode::Fim => {
+                    match (spec_target_file.as_deref(), spec_edit_region) {
+                        (Some(target), Some(region)) => {
+                            // BLOCK 2c: real FIM splice. Provider is
+                            // guaranteed Some by the outer guard.
+                            let outcome = crate::focus_tunnel::run_fim_step_with_provider(
+                                &exec_ctx,
+                                &mode_selection,
+                                provider,
+                                Some(target),
+                                Some(region),
+                                None,
+                            )
+                            .await;
+                            (
+                                outcome.map(|out| {
+                                    Some(BabyStepExecutionResult {
+                                        outcome: BabyStepOutcome::Passed,
+                                        duration_ms: u64::try_from(
+                                            started.elapsed().as_millis(),
+                                        )
+                                        .unwrap_or(u64::MAX),
+                                        exit_code: Some(0),
+                                        stderr_tail: String::new(),
+                                        changed_files: out.changed_files,
+                                    })
+                                }),
+                                None,
+                            )
+                        }
+                        (None, _) => {
+                            // Missing target_file: emit a typed
+                            // StructuredFallback SSB row (reason as locked
+                            // wire-form string) and skip exec.
+                            (Ok(None), Some("missing_target_file"))
+                        }
+                        (Some(_), None) => {
+                            // target_file present but edit_region missing —
+                            // FIM still unreachable. Same fallback class.
+                            (Ok(None), Some("missing_edit_region"))
+                        }
+                    }
+                }
+                crate::focus_tunnel::GenerationMode::Diff => {
+                    // B-28 WIRING-2 NOTE (deferred): production DIFF
+                    // requires an `Arc<dyn BufferEditor>` threaded through
+                    // ResolvedConfig (no slot exists today; adding one is
+                    // outside the BLOCK 2 CLAIMED_FILES). The wiring
+                    // contract test `run_diff_step_happy_path_applies_hunk_through_replay`
+                    // exercises the editor=Some path with a stub. In
+                    // production the call below returns
+                    // FocusTunnelExecError::UnsupportedMode and the runner
+                    // falls back to STRUCTURED. When the editor slot is
+                    // wired in a follow-on patch, swap `None` for
+                    // `Some(DiffStepIo::new(&*editor, &*fs))`.
+                    let outcome = crate::focus_tunnel::run_diff_step_with_provider(
+                        &exec_ctx, &mode_selection, provider, None,
+                    )
+                    .await;
+                    (
+                        outcome.map(|out| {
+                            Some(BabyStepExecutionResult {
+                                outcome: BabyStepOutcome::Passed,
+                                duration_ms: u64::try_from(started.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX),
+                                exit_code: Some(0),
+                                stderr_tail: String::new(),
+                                changed_files: out.changed_files,
+                            })
+                        }),
+                        None,
+                    )
+                }
+                _ => (Ok(None), None),
+            };
+            // Inline helper: emit one StructuredFallback SSB row with the
+            // given reason. Reused for both short-circuit and error paths
+            // so mode_distribution stays consistent regardless of which
+            // branch surfaced the fallback.
+            let emit_fallback = |reason: &str| {
+                let payload = SsbPayload::GenerationModeSelected(
+                    crate::ssb::GenerationModeSelectedPayload {
+                        step_id: format!("baby_step_{}", bs_id.0),
+                        mode: crate::focus_tunnel::generation_mode_str(
+                            crate::focus_tunnel::GenerationMode::Structured,
+                        )
+                        .to_string(),
+                        rule_fired: crate::focus_tunnel::selection_rule_str(
+                            crate::focus_tunnel::SelectionRule::StructuredFallback,
+                        )
+                        .to_string(),
+                        reason: reason.to_string(),
+                        preferred_was: None,
+                        supports_fim: resolved
+                            .model_capability_profile
+                            .features
+                            .supports_fim,
+                        exec_mode: crate::focus_tunnel::exec_mode_str(resolved_exec_mode)
+                            .to_string(),
+                    },
+                );
+                payload
+            };
+            match (attempted, short_circuit_reason) {
+                (Ok(Some(result)), _) => Some(result),
+                (Ok(None), Some(reason)) => {
+                    // Short-circuit (missing field): emit fallback beacon
+                    // and let the STRUCTURED executor handle the step.
+                    let payload = emit_fallback(reason);
+                    if let Err(e) = writer
+                        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                        .await
+                    {
+                        tracing::warn!(
+                            baby_step = bs_id.0,
+                            error = %e,
+                            "task_runner: StructuredFallback SSB write failed (non-fatal)"
+                        );
+                    }
+                    None
+                }
+                (Ok(None), None) => None,
+                (Err(e), _) => {
+                    tracing::warn!(
+                        baby_step = bs_id.0,
+                        error = %e,
+                        "task_runner: focus-tunnel execution failed; falling back to STRUCTURED executor"
+                    );
+                    let payload = emit_fallback("focus_tunnel_exec_failed");
+                    if let Err(e) = writer
+                        .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+                        .await
+                    {
+                        tracing::warn!(
+                            baby_step = bs_id.0,
+                            error = %e,
+                            "task_runner: StructuredFallback SSB write failed (non-fatal)"
+                        );
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Batch 1A: if PreToolUse blocked, skip the executor entirely with a
         // synthetic Failed result — the rest of the loop (integration
         // checkpoint, TestOutcome emission, MistakeBook, bubble-up) runs as if
@@ -4424,7 +5009,9 @@ async fn drive_task(
         // CSQ Critical-without-guard branch today — once additional
         // PreToolUse-style gates land they should pass their own reason
         // string forward instead of overloading this default.
-        let exec_result = if hook_pre_blocked {
+        let exec_result = if let Some(result) = focus_tunnel_result {
+            result
+        } else if hook_pre_blocked {
             BabyStepExecutionResult {
                 outcome: BabyStepOutcome::Failed {
                     reason: "CSQ Critical-without-guard blocked baby step"
@@ -4450,6 +5037,23 @@ async fn drive_task(
             );
             emit_finding(writer, "error", AGENT_FAILED_CATEGORY, &msg).await;
         }
+
+        // B-28 WIRING-2 items H + I + J: focus-tunnel post-execute hooks.
+        //
+        // Each hook is invoked only when the corresponding Arc field on
+        // ResolvedConfig is Some AND the agent reported changed_files. The
+        // Arc fields default to None today (no construction site) so this
+        // block is a strict no-op for every existing caller. The wiring is
+        // contract-tested via `focus_tunnel_wiring_contract.rs` against the
+        // library-tier surfaces (resolver / router / pre-assembler).
+        run_focus_tunnel_post_execute_hooks(
+            writer,
+            &resolved,
+            bs_id.0,
+            &exec_result.changed_files,
+            outcome_passed,
+        )
+        .await;
 
         // E1 fix-and-rerun: on a failed baby step in a web project, run
         // `npm run build` and dispatch up to 5 fixer iterations through the
@@ -8521,6 +9125,9 @@ mod tests {
             grounding: make_grounding(),
             tdd: None,
             acceptance: None,
+            preferred_mode: None,
+            target_file: None,
+            edit_region: None,
         }
     }
 

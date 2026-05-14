@@ -242,6 +242,13 @@ pub struct ModelFeatures {
     pub supports_stop_sequences: bool,
     pub chunked_prefill: bool,
     pub kv_compression: bool,
+    /// B-28 E-1: native Fill-In-the-Middle support via `<|fim_prefix|>` /
+    /// `<|fim_suffix|>` / `<|fim_middle|>` sentinel tokens. true for Qwen2.5-Coder
+    /// (and StarCoder / DeepSeek-Coder by extension); false for all cloud models
+    /// and any sidecar model whose tokenizer does not register the FIM specials.
+    /// Queried at registration time, never at runtime — see
+    /// `workflow/papers/focus-tunnel-design-interface.md` L21-24.
+    pub supports_fim: bool,
 }
 
 impl ModelFeatures {
@@ -253,6 +260,7 @@ impl ModelFeatures {
             supports_stop_sequences: false,
             chunked_prefill: false,
             kv_compression: false,
+            supports_fim: false,
         }
     }
 }
@@ -321,7 +329,10 @@ impl ModelCapabilityProfile {
                 grc_history: 0.083,
             },
             fixed_slot_targets: [330, 400, 800],
-            features: ModelFeatures::none(),
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
             pass_at_1: 0.65,
             optimal_retries: 3,
             kv_quant_bits: 0,
@@ -361,7 +372,10 @@ impl ModelCapabilityProfile {
                 grc_history: 0.091,
             },
             fixed_slot_targets: [330, 500, 1500],
-            features: ModelFeatures::none(),
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
             pass_at_1: 0.72,
             optimal_retries: 3,
             kv_quant_bits: 0,
@@ -410,6 +424,7 @@ impl ModelCapabilityProfile {
                 supports_stop_sequences: true,
                 chunked_prefill: false,
                 kv_compression: false,
+                supports_fim: false,
             },
             pass_at_1: 0.85,
             optimal_retries: 2,
@@ -456,6 +471,7 @@ impl ModelCapabilityProfile {
                 supports_stop_sequences: false,
                 chunked_prefill: true,
                 kv_compression: true,
+                supports_fim: true,
             },
             pass_at_1: 0.927,
             optimal_retries: 2,
@@ -496,7 +512,10 @@ impl ModelCapabilityProfile {
                 grc_history: 0.083,
             },
             fixed_slot_targets: [200, 300, 600],
-            features: ModelFeatures::none(),
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
             pass_at_1: 0.72,
             optimal_retries: 3,
             kv_quant_bits: 0,

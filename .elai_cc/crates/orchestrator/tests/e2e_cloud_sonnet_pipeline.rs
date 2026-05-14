@@ -191,6 +191,9 @@ const ALL_ACTION_TYPES: &[SsbActionType] = &[
     SsbActionType::MediaHumanReviewRequired,
     SsbActionType::GenerationModeSelected,
     SsbActionType::StreamingEarlyTerminated,
+    SsbActionType::PipelinePreAssembled,
+    SsbActionType::DependencyResolved,
+    SsbActionType::MicroStepCreated,
 ];
 
 // ---------------------------------------------------------------------------

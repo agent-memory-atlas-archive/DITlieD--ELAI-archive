@@ -300,6 +300,10 @@ pub(crate) fn build_runtime_with_plugin_state(
         compiled_rules,
         phase_slot_tokens,
         backend_config: backend_config_owned,
+        // B-28 WIRING-2 (item G): focus-tunnel StreamingValidator is opt-in;
+        // None preserves the legacy fast path. Production wire-up lands
+        // when `drive_task` plumbs the validator through.
+        streaming_validator: None,
     };
 
     // Load elai_cc.toml from the working directory. Defaults are used when absent.

@@ -33,6 +33,10 @@ pub mod branch_lock;
 mod compact;
 mod conversation;
 pub mod evidence;
+// B-28 E-1 added the focus_tunnel namespace (FIM prompt assembler + DIFF
+// parser/replayer + ModeSelector). E-3 extends it with the mode selector
+// and per-mode execution wrappers — see focus_tunnel/mod.rs.
+pub mod focus_tunnel;
 pub mod fsm;
 pub mod gate;
 pub mod hooks;
@@ -453,6 +457,10 @@ pub use ssb::{
     MediaValidationStartedPayload, MediaTier1CompletePayload,
     MediaTier2CompletePayload, RenderCompletePayload,
     VisualFeedbackIterationPayload, MediaHumanReviewRequiredPayload,
+    // B-28 focus-tunnel beacons (re-exported so dashboard-v2 commands can
+    // decode SSB rows without pulling in `orchestrator::ssb` directly).
+    GenerationModeSelectedPayload, StreamingEarlyTerminatedPayload,
+    PipelinePreAssembledPayload, DependencyResolvedPayload, MicroStepCreatedPayload,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
