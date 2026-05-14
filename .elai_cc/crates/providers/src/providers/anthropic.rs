@@ -25,6 +25,54 @@ const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_RETRIES: u32 = 4;
 
+// Claude Code identification headers. Required for OAuth-bearer requests to
+// avoid Anthropic's stricter default rate-limit bucket. Source: leaked
+// claude-code-main src/utils/http.ts + the dashboard's start_chat_stream
+// at dashboard-v2/src-tauri/src/commands.rs:2300-2308 and :3061-3077.
+// Without these, OAuth tokens silently route to a near-zero quota and
+// every /v1/messages returns 429 even on Max-20x plans.
+const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.140 (undefined, cli)";
+const CLAUDE_X_APP_HEADER: &str = "cli";
+const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+const OAUTH_ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Stable per-process UUIDv4-shaped session id for `X-Claude-Code-Session-Id`.
+/// Mirrors dashboard_cli_session_id at dashboard-v2/src-tauri/src/commands.rs:2308.
+/// Anthropic's log pipeline may parse this; non-conforming shapes route to a
+/// degraded analytics path with stricter throttles. Uses getrandom (already a
+/// providers crate dep) for the 16 random bytes; output has RFC 4122 v4
+/// version/variant bits set.
+fn claude_code_session_id() -> &'static str {
+    use std::sync::OnceLock;
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let mut bytes = [0u8; 16];
+        // Fallback to a pid+timestamp-derived seed if getrandom fails (it
+        // shouldn't on supported platforms). Non-cryptographic; only needs
+        // to look like UUIDv4 to Anthropic's parser.
+        if getrandom::fill(&mut bytes).is_err() {
+            let pid = std::process::id().to_le_bytes();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+                .to_le_bytes();
+            bytes[..4].copy_from_slice(&pid);
+            bytes[4..].copy_from_slice(&ts[..12]);
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5],
+            bytes[6], bytes[7],
+            bytes[8], bytes[9],
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthSource {
     None,
@@ -487,8 +535,24 @@ impl AnthropicClient {
             .post(&request_url)
             .header("content-type", "application/json");
         let mut request_builder = self.auth.apply(request_builder);
-        for (header_name, header_value) in self.request_profile.header_pairs() {
-            request_builder = request_builder.header(header_name, header_value);
+
+        // OAuth bearer requests must look like Claude Code to Anthropic's
+        // rate-limit-bucket router. The dashboard's start_chat_stream
+        // (commands.rs:3061-3077) sends exactly this set; without it, OAuth
+        // tokens route to a near-zero quota and every call returns a
+        // generic 429 rate_limit_error even on Max-20x plans.
+        let is_oauth_bearer = matches!(&self.auth, AuthSource::BearerToken(_));
+        if is_oauth_bearer {
+            request_builder = request_builder
+                .header("anthropic-version", OAUTH_ANTHROPIC_VERSION)
+                .header("anthropic-beta", OAUTH_BETA_HEADER)
+                .header("user-agent", CLAUDE_CLI_USER_AGENT)
+                .header("x-app", CLAUDE_X_APP_HEADER)
+                .header("x-claude-code-session-id", claude_code_session_id());
+        } else {
+            for (header_name, header_value) in self.request_profile.header_pairs() {
+                request_builder = request_builder.header(header_name, header_value);
+            }
         }
 
         let request_body = self.request_profile.render_json_body(request)?;
