@@ -35,10 +35,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use elai_core::SeededRng;
 use elai_orchestrator::ssb::{SsbActionType, SsbPayload, SsbReader, TaskSubmittedPayload};
 use elai_orchestrator::{
-    apply_task_runner_wiring, build_task_runner_wiring, start_task_runner, ProjectDirResolver,
-    RuntimeWiring, ScaffoldApplier,
+    apply_task_runner_wiring, build_default_baby_step_executor, build_task_runner_wiring,
+    locate_default_agent_binary, start_task_runner, ProjectDirResolver, RuntimeWiring,
+    ScaffoldApplier,
 };
 
 /// Poll the SSB until at least one row matching ANY of `targets` is present,
@@ -400,10 +402,38 @@ async fn e2e_real_sidecar_full_build() {
 
         // 2. Build the production wiring bundle — same chokepoint helper the
         //    always-run test exercises. A failure here is an A1c regression.
-        let wiring: RuntimeWiring = build_task_runner_wiring(&project_root, session_id)
+        let mut wiring: RuntimeWiring = build_task_runner_wiring(&project_root, session_id)
             .await
             .expect("build_task_runner_wiring(project_root) succeeds");
         step("03_wiring_built");
+
+        // B1: inject the production AgentPoolBabyStepExecutor when the agent
+        // binary is locatable. The ELAI_AGENT_BIN env var overrides the
+        // probe path so CI can point at a pre-built binary. Falls back
+        // silently to the synthetic executor so the rest of the test still
+        // runs without the binary present.
+        {
+            let ipc_dir = project_root
+                .join(".elai_cc")
+                .join("sessions")
+                .join(session_id)
+                .join("ipc");
+            if std::fs::create_dir_all(&ipc_dir).is_ok() {
+                match locate_default_agent_binary() {
+                    Ok(agent_bin) => {
+                        wiring.baby_step_executor = Some(build_default_baby_step_executor(
+                            SeededRng::new(0xD1_5EED),
+                            agent_bin,
+                            ipc_dir,
+                        ));
+                        step("03b_agent_pool_executor_installed");
+                    }
+                    Err(_) => {
+                        step("03b_agent_binary_not_found_synthetic_fallback");
+                    }
+                }
+            }
+        }
 
         let project_id = elai_core::project_id_from_path(&project_root);
 

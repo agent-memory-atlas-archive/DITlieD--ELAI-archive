@@ -13,6 +13,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use elai_core::OsEntropy;
 use elai_orchestrator::start_task_runner;
 
 use crate::runtime_builder::{apply_task_runner_wiring, build_task_runner_wiring};
@@ -53,7 +54,7 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         "elai run: starting task_runner"
     );
 
-    let wiring = build_task_runner_wiring(&project_root, &session_id).await?;
+    let mut wiring = build_task_runner_wiring(&project_root, &session_id).await?;
 
     // Cursor lives under <project_root>/.elai_cc/sessions/<sid>/cursor.json
     // so the runner can resume across CLI invocations from the same
@@ -64,6 +65,43 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
         .join("sessions")
         .join(&session_id)
         .join("cursor.json");
+
+    // Attempt to install the production agent-pool executor. The IPC socket
+    // directory lives alongside the cursor so all runner artefacts are
+    // co-located under the session subtree.
+    let ipc_dir = project_root
+        .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+        .join("sessions")
+        .join(&session_id)
+        .join("ipc");
+    if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
+        tracing::warn!(
+            path = %ipc_dir.display(),
+            error = %e,
+            "elai run: failed to create IPC socket dir; executor will fall back to synthetic"
+        );
+    } else {
+        match elai_orchestrator::locate_default_agent_binary() {
+            Ok(agent_bin) => {
+                let executor = elai_orchestrator::build_default_baby_step_executor(
+                    OsEntropy,
+                    agent_bin.clone(),
+                    ipc_dir.clone(),
+                );
+                wiring.baby_step_executor = Some(executor);
+                tracing::info!(
+                    agent_bin = %agent_bin.display(),
+                    "elai run: production AgentPoolBabyStepExecutor installed"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "elai run: agent binary not found; using synthetic fallback executor"
+                );
+            }
+        }
+    }
 
     let ssb_writer: Arc<elai_orchestrator::Ssb> = wiring.ssb.clone();
     let cfg = apply_task_runner_wiring(cursor_path, &wiring);

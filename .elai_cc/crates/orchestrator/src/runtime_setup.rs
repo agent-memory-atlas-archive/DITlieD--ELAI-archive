@@ -24,19 +24,40 @@ use std::sync::Arc;
 use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::{
+    agent_pool::{AgentPoolConfig, InProcessAgentPool},
+    task_runner::{AgentPoolBabyStepExecutor, BabyStepExecutor},
     DefaultFeasibilityProber, DefaultLayer1aProcessor, FeasibilityProber, Layer1aProcessor, Ssb,
     SsbConfig, TaskRunnerConfig, SSB_DB_FILE_NAME,
 };
 
-/// Production wiring bundle for `start_task_runner` callers. Holds the three
+/// Name of the agent binary that `AgentPoolBabyStepExecutor` spawns.
+/// Includes the `.exe` suffix on Windows; bare on other platforms.
+#[cfg(windows)]
+const AGENT_BINARY_NAME: &str = "elai_cc_agent.exe";
+#[cfg(not(windows))]
+const AGENT_BINARY_NAME: &str = "elai_cc_agent";
+
+/// Environment variable that overrides the agent binary path.
+const ELAI_AGENT_BIN_ENV: &str = "ELAI_AGENT_BIN";
+
+/// Production wiring bundle for `start_task_runner` callers. Holds the four
 /// long-lived handles the chokepoint must construct before spawning the
-/// background runner task: the SSB writer, the feasibility prober, and the
-/// Layer 1A processor. All three are `Arc`'d so the runner loop and the
-/// caller's shutdown path can share them.
+/// background runner task: the SSB writer, the feasibility prober, the
+/// Layer 1A processor, and the optional baby-step executor. All are `Arc`'d
+/// so the runner loop and the caller's shutdown path can share them.
+///
+/// `baby_step_executor` defaults to `None` (synthetic / legacy fallback).
+/// Callers that want the production agent-pool path call
+/// [`build_default_baby_step_executor`] and assign the result before calling
+/// [`apply_task_runner_wiring`].
 pub struct RuntimeWiring {
     pub ssb: Arc<Ssb>,
     pub feasibility_prober: Arc<DefaultFeasibilityProber>,
     pub layer1a_processor: Arc<DefaultLayer1aProcessor>,
+    /// Optional production baby-step executor. `None` keeps the legacy
+    /// synthetic path. Set to `Some(build_default_baby_step_executor(...))`
+    /// for the real agent-pool path.
+    pub baby_step_executor: Option<Arc<dyn BabyStepExecutor>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -136,6 +157,7 @@ pub async fn build_task_runner_wiring(
         ssb,
         feasibility_prober,
         layer1a_processor,
+        baby_step_executor: None,
     })
 }
 
@@ -154,5 +176,101 @@ pub fn apply_task_runner_wiring(
     let processor: Arc<dyn Layer1aProcessor> = wiring.layer1a_processor.clone();
     cfg.feasibility_prober = Some(prober);
     cfg.layer1a_processor = Some(processor);
+    cfg.baby_step_executor = wiring.baby_step_executor.clone();
     cfg
+}
+
+/// Construct the production [`AgentPoolBabyStepExecutor`] for callers that
+/// want to install the real agent-pool path rather than the synthetic
+/// fallback.
+///
+/// The returned `Arc<dyn BabyStepExecutor>` wraps an
+/// [`AgentPoolBabyStepExecutor`] backed by:
+/// - an [`InProcessAgentPool`] seeded with `entropy` and configured with
+///   [`AgentPoolConfig::default()`],
+/// - the production [`runtime_model_pool()`] (reports `u64::MAX` VRAM),
+/// - the caller-supplied `agent_binary_path` and `socket_dir`.
+///
+/// Pass the result as `wiring.baby_step_executor = Some(executor)` before
+/// calling [`apply_task_runner_wiring`].
+///
+/// Anti-stub: no `.unwrap()` / `.expect()` / `panic!` — the pool constructor
+/// is infallible; the executor is created but never run here.
+pub fn build_default_baby_step_executor<E>(
+    entropy: E,
+    agent_binary_path: std::path::PathBuf,
+    socket_dir: std::path::PathBuf,
+) -> Arc<dyn BabyStepExecutor>
+where
+    E: elai_core::EntropySource + Send + 'static,
+{
+    let model_pool = crate::task_runner::runtime_model_pool();
+    let pool = Arc::new(tokio::sync::Mutex::new(InProcessAgentPool::new(
+        AgentPoolConfig::default(),
+        entropy,
+        model_pool,
+    )));
+    Arc::new(AgentPoolBabyStepExecutor::new(pool, agent_binary_path, socket_dir))
+}
+
+/// Locate the `elai_cc_agent[.exe]` binary.
+///
+/// Resolution order (first found wins):
+/// 1. `ELAI_AGENT_BIN` environment variable — returned verbatim as a
+///    [`PathBuf`] (file existence is NOT checked, so callers can use this for
+///    out-of-process testing).
+/// 2. Same directory as the current executable
+///    (`std::env::current_exe()?.parent()/elai_cc_agent[.exe]`).
+/// 3. `target/debug/elai_cc_agent[.exe]` and
+///    `target/release/elai_cc_agent[.exe]` reachable by walking up from the
+///    current executable's directory until a `target/{debug,release}` subtree
+///    is found or the filesystem root is reached.
+///
+/// Returns `Err` with a descriptive message listing all probed paths if the
+/// binary cannot be located.
+pub fn locate_default_agent_binary() -> Result<std::path::PathBuf, anyhow::Error> {
+    // 1. Env-var override.
+    if let Ok(env_val) = std::env::var(ELAI_AGENT_BIN_ENV) {
+        return Ok(std::path::PathBuf::from(env_val));
+    }
+
+    let mut probed: Vec<std::path::PathBuf> = Vec::new();
+
+    // 2. Sibling of current_exe.
+    let current_exe = std::env::current_exe().map_err(|e| {
+        anyhow::anyhow!("locate_default_agent_binary: current_exe() failed: {e}")
+    })?;
+    if let Some(exe_dir) = current_exe.parent() {
+        let candidate = exe_dir.join(AGENT_BINARY_NAME);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        probed.push(candidate);
+
+        // 3. Walk up looking for target/{debug,release}.
+        let mut dir = exe_dir.to_path_buf();
+        loop {
+            for profile in &["debug", "release"] {
+                let candidate = dir.join("target").join(profile).join(AGENT_BINARY_NAME);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+                probed.push(candidate);
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "locate_default_agent_binary: binary '{}' not found. Checked:\n  {}",
+        AGENT_BINARY_NAME,
+        probed
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n  "),
+    ))
 }

@@ -287,7 +287,7 @@ pub fn run() {
                     elai_orchestrator::build_task_runner_wiring(&project_root, &session_id).await
                 });
                 match wiring_result {
-                    Ok(wiring) => {
+                    Ok(mut wiring) => {
                         let runner_ssb = wiring.ssb.clone();
                         // Phase A4: publish the Layer1A processor to AppState
                         // BEFORE apply_task_runner_wiring borrows `wiring`, so
@@ -305,6 +305,42 @@ pub fn run() {
                                 error = %e,
                                 "dashboard-v2: layer1a_processor mutex poisoned; processor handle dropped"
                             ),
+                        }
+                        // B1: attempt to install the production
+                        // AgentPoolBabyStepExecutor. IPC socket dir lives
+                        // under the session subtree so artefacts are co-located.
+                        let ipc_dir = project_root
+                            .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                            .join("sessions")
+                            .join(&session_id)
+                            .join("ipc");
+                        if std::fs::create_dir_all(&ipc_dir).is_ok() {
+                            match elai_orchestrator::locate_default_agent_binary() {
+                                Ok(agent_bin) => {
+                                    let executor =
+                                        elai_orchestrator::build_default_baby_step_executor(
+                                            elai_core::OsEntropy,
+                                            agent_bin.clone(),
+                                            ipc_dir,
+                                        );
+                                    wiring.baby_step_executor = Some(executor);
+                                    tracing::info!(
+                                        agent_bin = %agent_bin.display(),
+                                        "dashboard-v2: production AgentPoolBabyStepExecutor installed"
+                                    );
+                                }
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "dashboard-v2: agent binary not found; \
+                                     using synthetic fallback executor"
+                                ),
+                            }
+                        } else {
+                            tracing::warn!(
+                                path = %ipc_dir.display(),
+                                "dashboard-v2: failed to create IPC socket dir; \
+                                 using synthetic fallback executor"
+                            );
                         }
                         let cfg = elai_orchestrator::apply_task_runner_wiring(
                             cursor_path,
@@ -329,7 +365,9 @@ pub fn run() {
                         tracing::info!(
                             project_root = %project_root.display(),
                             session_id = %session_id,
-                            "dashboard-v2: spawned start_task_runner with full wiring (feasibility_prober=Some, layer1a_processor=Some)"
+                            baby_step_executor = wiring.baby_step_executor.is_some(),
+                            "dashboard-v2: spawned start_task_runner with full wiring \
+                             (feasibility_prober=Some, layer1a_processor=Some)"
                         );
                     }
                     Err(err) => tracing::warn!(

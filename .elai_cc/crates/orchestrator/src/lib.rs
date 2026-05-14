@@ -649,7 +649,11 @@ pub use rule_loader::load_seed_rules_from_dir;
 // the CLI run subcommand and the dashboard-v2 Tauri setup() callback both
 // reach the same RuntimeWiring + apply_task_runner_wiring entry points.
 // Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-pub use runtime_setup::{apply_task_runner_wiring, build_task_runner_wiring, RuntimeWiring};
+pub use runtime_setup::{
+    apply_task_runner_wiring, build_default_baby_step_executor, build_task_runner_wiring,
+    locate_default_agent_binary, RuntimeWiring,
+};
+pub use task_runner::runtime_model_pool;
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,
 };

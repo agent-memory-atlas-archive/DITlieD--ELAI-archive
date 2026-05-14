@@ -564,6 +564,18 @@ impl ModelPool for RuntimeModelPool {
     }
 }
 
+/// Return the production [`ModelPool`] instance used by the task-runner.
+///
+/// The returned pool always reports `u64::MAX` available VRAM so the
+/// orchestration layer never rejects steps on resource grounds; the real
+/// hardware floor is enforced inside [`agent_pool::AgentPool`] before any
+/// subprocess is spawned. Exposed as a factory so `runtime_setup.rs` can
+/// construct a production [`AgentPoolBabyStepExecutor`] without needing
+/// direct access to the private [`RuntimeModelPool`] struct.
+pub fn runtime_model_pool() -> std::sync::Arc<dyn crate::agent_pool::ModelPool> {
+    std::sync::Arc::new(RuntimeModelPool)
+}
+
 // ---------------------------------------------------------------------------
 // Runtime rule evaluation (Session 4E.14)
 // ---------------------------------------------------------------------------
