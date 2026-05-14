@@ -422,6 +422,8 @@ async fn e2e_cloud_sonnet_pipeline() {
         std::env::set_var("ELAI_NO_SIDECAR", "1");
         std::env::set_var("ELAI_STUB_SEARCH", "1");
         std::env::set_var("ELAI_GATE_MODE", "autonomous");
+        std::env::set_var("ELAI_GROUNDING_BACKEND", "cloud");
+        std::env::set_var("ELAI_CLOUD_MODEL", "claude-sonnet-4-6");
         // Deliberately DO NOT touch ANTHROPIC_BASE_URL — let
         // read_base_url() default to https://api.anthropic.com so the
         // adapter hits the real cloud endpoint.

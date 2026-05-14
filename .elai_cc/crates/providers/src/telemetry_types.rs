@@ -115,12 +115,13 @@ impl AnthropicRequestProfile {
         for (key, value) in &self.extra_body {
             object.insert(key.clone(), value.clone());
         }
-        if !self.betas.is_empty() {
-            object.insert(
-                "betas".to_string(),
-                Value::Array(self.betas.iter().cloned().map(Value::String).collect()),
-            );
-        }
+        // betas live in the `anthropic-beta` header (header_pairs), not the
+        // request body. /v1/messages rejects extra body fields with
+        // `invalid_request_error: betas: Extra inputs are not permitted`,
+        // so do NOT mirror them into the body here. The /v1/messages/batches
+        // path is the only legacy site that accepted `betas` in body, and
+        // it constructs its own payload separately.
+        let _ = &self.betas;
         Ok(body)
     }
 }
@@ -463,13 +464,15 @@ mod tests {
             body["metadata"]["source"],
             Value::String("test".to_string())
         );
-        assert_eq!(
-            body["betas"],
-            serde_json::json!([
-                "claude-code-20250219",
-                "prompt-caching-scope-2026-01-05",
-                "tools-2026-04-01"
-            ])
+        // betas are carried by the `anthropic-beta` header only (see
+        // header_pairs assertion above). /v1/messages rejects extra body
+        // fields, so render_json_body MUST NOT mirror `betas` into the
+        // body. The body should contain only the original request fields
+        // plus extra_body merges (e.g. metadata).
+        assert!(
+            body.get("betas").is_none(),
+            "render_json_body must not insert `betas` into the request body \
+             (rejected by /v1/messages); got: {body:?}"
         );
     }
 
