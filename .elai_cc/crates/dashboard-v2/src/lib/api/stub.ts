@@ -226,6 +226,37 @@ export async function get_system_status(): Promise<SystemStatus> {
 }
 
 // ------------------------------------------------------------------
+// B-29 Phase 5: IMPACT ANALYSIS (symbol-graph blast radius)
+// ------------------------------------------------------------------
+
+/**
+ * Most recent symbol_query SSB row reshaped for the KnowledgeDrawer panel.
+ * Backed by the `get_impact_analysis` Tauri command (see
+ * crates/dashboard-v2/src-tauri/src/commands.rs:932).
+ */
+export interface ImpactAnalysis {
+  target: string;
+  total_files: number;
+  hop_bands: { depth: number; files: string[] }[];
+  unresolved_pct: number;
+}
+
+const EMPTY_IMPACT_ANALYSIS: ImpactAnalysis = {
+  target: '',
+  total_files: 0,
+  hop_bands: [],
+  unresolved_pct: 0.0,
+};
+
+export async function get_impact_analysis(): Promise<ImpactAnalysis> {
+  logStub('get_impact_analysis');
+  const live = await tryInvoke<ImpactAnalysis>('get_impact_analysis');
+  if (live) return live;
+  await delay();
+  return { ...EMPTY_IMPACT_ANALYSIS };
+}
+
+// ------------------------------------------------------------------
 // TASK / WORKFLOW
 // ------------------------------------------------------------------
 

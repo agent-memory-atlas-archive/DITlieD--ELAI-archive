@@ -66,5 +66,17 @@ tempfile = "3"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
 
+[[bench]]
+name = "symbol_graph_scale"
+harness = false
+
+[[bench]]
+name = "scale_memory"
+harness = false
+
+[[bench]]
+name = "workload"
+harness = false
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -24,8 +24,15 @@ use elai_core::tool_dispatcher::{
     ToolDispatcher, ValidateRequest,
 };
 use elai_ipc_types::{
+    SymbolContextRequest, SymbolFlowRequest, SymbolImpactRequest, SymbolListRequest,
     TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_EDIT, TOOL_FILE_READ, TOOL_GIT_BRANCH,
-    TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_VALIDATE,
+    TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW,
+    TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
+};
+use elai_knowledge::symbol_graph::{
+    cache::SymbolGraphCache,
+    sharding::SYMBOL_FILE_LRU_SIZE,
+    traversal::{compute_call_flow, compute_impact_radius, compute_symbol_context, list_symbols, SymbolFilter},
 };
 use elai_providers::{AnthropicClient, InputMessage, MessageRequest, OutputContentBlock};
 
@@ -63,6 +70,10 @@ pub struct ProductionAgentRpcServer {
     dispatcher: Arc<dyn ToolDispatcher>,
     model: String,
     max_tokens: u32,
+    /// Optional SSB handle used by the B-29 Phase 5 symbol-graph tools to
+    /// append SymbolQuery action rows for the dashboard ActivityFeed.
+    /// `None` for harness/test paths that do not wire an SSB instance.
+    ssb: Option<Arc<crate::ssb::Ssb>>,
 }
 
 impl ProductionAgentRpcServer {
@@ -78,7 +89,15 @@ impl ProductionAgentRpcServer {
             dispatcher,
             model,
             max_tokens,
+            ssb: None,
         }
+    }
+
+    /// Builder-style setter for the SSB writer used by symbol-graph tool arms.
+    /// Returns `self` so call sites can chain.
+    pub fn with_ssb(mut self, ssb: Arc<crate::ssb::Ssb>) -> Self {
+        self.ssb = Some(ssb);
+        self
     }
 
     /// Construct from environment variables, mirroring the `task_runner.rs`
@@ -174,7 +193,14 @@ impl AgentRpcServer for ProductionAgentRpcServer {
         arguments: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            match translate_tool_request(&tool_id, &arguments, self.dispatcher.as_ref()).await {
+            match translate_tool_request(
+                &tool_id,
+                &arguments,
+                self.dispatcher.as_ref(),
+                self.ssb.as_ref(),
+            )
+            .await
+            {
                 Ok(bytes) => ToolOutcome::Result(bytes),
                 Err(reason) => ToolOutcome::Failed(reason),
             }
@@ -195,10 +221,46 @@ impl AgentRpcServer for ProductionAgentRpcServer {
 ///   - postcard decode failure
 ///   - dispatcher error
 ///   - JSON serialisation failure
+/// Symbol-graph tool agent_id used when appending SymbolQuery SSB rows.
+/// Distinct from per-baby-step agent IDs so dashboard filters can isolate
+/// symbol-graph activity from regular agent tool calls.
+const SSB_AGENT_SYMBOL_GRAPH: &str = "symbol_graph_tool";
+
+/// Best-effort SSB write — never fails the tool call. Logs a warn on error.
+async fn emit_symbol_query(
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    tool_id: &str,
+    target: String,
+    hop_count: u32,
+    total_files: u32,
+    latency_ms: u32,
+) {
+    let Some(ssb) = ssb else { return };
+    use crate::ssb::{SsbPayload, SymbolQueryPayload};
+    let payload = SsbPayload::SymbolQuery(SymbolQueryPayload {
+        tool: tool_id.to_string(),
+        target,
+        hop_count,
+        total_files,
+        latency_ms,
+    });
+    if let Err(e) = ssb
+        .write_payload(SSB_AGENT_SYMBOL_GRAPH, 0, payload, Vec::new())
+        .await
+    {
+        tracing::warn!(
+            tool = tool_id,
+            error = %e,
+            "symbol_query SSB write failed (continuing tool result)"
+        );
+    }
+}
+
 async fn translate_tool_request(
     tool_id: &str,
     arguments: &[u8],
     dispatcher: &dyn ToolDispatcher,
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
 ) -> Result<Vec<u8>, String> {
     match tool_id {
         TOOL_EDIT => {
@@ -375,6 +437,178 @@ async fn translate_tool_request(
             });
             serde_json::to_vec(&value)
                 .map_err(|e| format!("tool compile_check: serialise error: {e}"))
+        }
+
+        // B-29 Phase 5 — Symbol-graph traversal tools.
+        // Arguments are postcard-encoded typed request structs from ipc-types.
+        // Each arm: open SymbolGraphCache, call the matching traversal fn,
+        // serialize the result as JSON.
+
+        TOOL_SYMBOL_IMPACT => {
+            let wire: SymbolImpactRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_impact: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            let project_id = project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "tool symbol_impact: cannot derive project_id from project_root={:?}",
+                        wire.project_root
+                    )
+                })?
+                .to_string();
+            let db_path = elai_core::paths::dkg_db_path(&project_root);
+            let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+                .map_err(|e| format!("tool symbol_impact: cache open failed: {e}"))?;
+            let t0 = std::time::Instant::now();
+            let result = compute_impact_radius(&mut cache, &wire.target, wire.depth)
+                .map_err(|e| format!("tool symbol_impact: traversal error: {e}"))?;
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let total_files_u32: u32 = result.total_files.try_into().unwrap_or(u32::MAX);
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_IMPACT,
+                wire.target.clone(),
+                wire.depth,
+                total_files_u32,
+                latency_ms,
+            )
+            .await;
+            serde_json::to_vec(&result)
+                .map_err(|e| format!("tool symbol_impact: serialise error: {e}"))
+        }
+
+        TOOL_SYMBOL_FLOW => {
+            let wire: SymbolFlowRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_flow: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            let project_id = project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "tool symbol_flow: cannot derive project_id from project_root={:?}",
+                        wire.project_root
+                    )
+                })?
+                .to_string();
+            let db_path = elai_core::paths::dkg_db_path(&project_root);
+            let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+                .map_err(|e| format!("tool symbol_flow: cache open failed: {e}"))?;
+            let t0 = std::time::Instant::now();
+            let result = compute_call_flow(&mut cache, &wire.entrypoint_id, wire.depth)
+                .map_err(|e| format!("tool symbol_flow: traversal error: {e}"))?;
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            // For flow queries, total_files is set to the number of unique files
+            // referenced in the flow tree (root + descendants); 0 if Option<FlowNode> is None.
+            let total_files_u32: u32 = match &result {
+                Some(_root) => 1u32, // Flow tree starts at one entrypoint file; deeper count via traversal optional in v1
+                None => 0u32,
+            };
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_FLOW,
+                wire.entrypoint_id.clone(),
+                wire.depth,
+                total_files_u32,
+                latency_ms,
+            )
+            .await;
+            serde_json::to_vec(&result)
+                .map_err(|e| format!("tool symbol_flow: serialise error: {e}"))
+        }
+
+        TOOL_SYMBOL_CONTEXT => {
+            let wire: SymbolContextRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_context: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            let project_id = project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "tool symbol_context: cannot derive project_id from project_root={:?}",
+                        wire.project_root
+                    )
+                })?
+                .to_string();
+            let db_path = elai_core::paths::dkg_db_path(&project_root);
+            let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+                .map_err(|e| format!("tool symbol_context: cache open failed: {e}"))?;
+            let t0 = std::time::Instant::now();
+            let contexts = compute_symbol_context(
+                &mut cache,
+                &wire.name,
+                wire.file_hint.as_deref(),
+            )
+            .map_err(|e| format!("tool symbol_context: traversal error: {e}"))?;
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let total_files_u32: u32 = contexts.len().try_into().unwrap_or(u32::MAX);
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_CONTEXT,
+                wire.name.clone(),
+                0,
+                total_files_u32,
+                latency_ms,
+            )
+            .await;
+            serde_json::to_vec(&contexts)
+                .map_err(|e| format!("tool symbol_context: serialise error: {e}"))
+        }
+
+        TOOL_SYMBOL_LIST => {
+            let wire: SymbolListRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool symbol_list: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            let project_id = project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "tool symbol_list: cannot derive project_id from project_root={:?}",
+                        wire.project_root
+                    )
+                })?
+                .to_string();
+            let db_path = elai_core::paths::dkg_db_path(&project_root);
+            let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+                .map_err(|e| format!("tool symbol_list: cache open failed: {e}"))?;
+            // Bound the limit defensively — agents must not be able to force an
+            // unbounded scan of every symbol in the cache.
+            const MAX_SYMBOL_LIST_LIMIT: u32 = 500;
+            let capped_limit = wire.limit.min(MAX_SYMBOL_LIST_LIMIT);
+            let filter = SymbolFilter {
+                file: wire.file.clone(),
+                query: wire.query.clone(),
+                limit: capped_limit as usize,
+            };
+            let t0 = std::time::Instant::now();
+            let symbols = list_symbols(&mut cache, filter)
+                .map_err(|e| format!("tool symbol_list: traversal error: {e}"))?;
+            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let total_files_u32: u32 = symbols.len().try_into().unwrap_or(u32::MAX);
+            let target_label = wire
+                .query
+                .clone()
+                .or(wire.file.clone())
+                .unwrap_or_else(|| "<all>".to_string());
+            emit_symbol_query(
+                ssb,
+                TOOL_SYMBOL_LIST,
+                target_label,
+                0,
+                total_files_u32,
+                latency_ms,
+            )
+            .await;
+            serde_json::to_vec(&symbols)
+                .map_err(|e| format!("tool symbol_list: serialise error: {e}"))
         }
 
         TOOL_GIT_UNDO | TOOL_GIT_BRANCH => {

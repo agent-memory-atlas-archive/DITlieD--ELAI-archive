@@ -3483,6 +3483,7 @@ pub async fn reindex_now(
 ) -> CmdResult<Value> {
     let project_root = state.project_root_snapshot();
     let app_clone = app.clone();
+    let ssb_writer = state.writer.clone();
 
     let _ = app.emit("reindex-progress", json!({ "status": "started" }));
 
@@ -3495,6 +3496,11 @@ pub async fn reindex_now(
             project_root.clone(),
             indexes_dir,
         );
+        // B-32 Step B: surface MinifiedFileChunked SSB rows to the dashboard
+        // when the user kicks off a reindex.
+        if let Some(writer) = ssb_writer.as_ref() {
+            svc = svc.with_ssb_writer(std::sync::Arc::clone(writer));
+        }
         let index_result = svc.run_full_index();
 
         // Tier-1 ProjectProfile: idempotent load_or_detect. Persist on first detect
@@ -3591,11 +3597,17 @@ pub async fn reindex_now(
 pub async fn cancel_indexing(
     _app: tauri::AppHandle,
     state: State<'_, AppState>,
-    project_id: Option<String>,
 ) -> CmdResult<Value> {
+    // SECURITY (B-31 Cycle B DECISION-18, Cycle B audit BLOCK-2):
+    // project_id is ALWAYS recomputed from the dashboard's persisted
+    // project_root snapshot. The frontend can no longer pass an arbitrary
+    // project_id and cancel a foreign project's run — a hostile webview
+    // exploit cannot escalate by supplying a crafted string. If multi-
+    // project support is added later, expose a deliberately-scoped command
+    // that validates the project_id against an allowed-projects set.
     let project_root = state.project_root_snapshot();
-    let resolved_project_id = project_id
-        .unwrap_or_else(|| elai_knowledge::metadata::project_id_from_path(&project_root));
+    let resolved_project_id =
+        elai_knowledge::metadata::project_id_from_path(&project_root);
 
     let was_running = tokio::task::spawn_blocking(move || {
         let indexes_dir = project_root
@@ -3620,12 +3632,14 @@ pub async fn cancel_indexing(
 pub async fn get_indexing_progress(
     _app: tauri::AppHandle,
     state: State<'_, AppState>,
-    project_id: Option<String>,
 ) -> CmdResult<Value> {
+    // SECURITY: same trust-boundary fix as `cancel_indexing` above. The
+    // frontend cannot select which project's progress to read — it always
+    // sees the dashboard's currently-bound project. (Cycle B audit BLOCK-2)
     let project_root = state.project_root_snapshot();
     let clock = state.clock.clone();
-    let resolved_project_id = project_id
-        .unwrap_or_else(|| elai_knowledge::metadata::project_id_from_path(&project_root));
+    let resolved_project_id =
+        elai_knowledge::metadata::project_id_from_path(&project_root);
 
     let snapshot = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let indexes_dir = project_root

@@ -5,6 +5,7 @@ pub mod ast_adapter;
 pub mod bm25;
 pub mod catrag;
 pub mod chunk_strategy;
+pub mod chunking;
 pub mod conventions;
 pub mod degradation;
 pub mod dkg;
@@ -29,6 +30,11 @@ pub mod shortcoder;
 pub mod splade;
 pub mod startup;
 pub mod symbol_graph;
+// B-33 — visualization module (VizData + Mermaid generator).
+// Pure std + serde + crate-local types; no new Cargo deps (knowledge/Cargo.toml
+// is owned by s-22200). Do NOT re-export from this module's contents at the
+// crate root (collision avoidance with `crate::SymbolKind`).
+pub mod visualization;
 pub mod telescope;
 pub mod tier3;
 pub mod benchmark;

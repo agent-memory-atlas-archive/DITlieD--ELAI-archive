@@ -145,7 +145,31 @@ impl VectorIndexer {
 
         for chunk in &chunks {
             let key = chunk_key(&chunk.path, chunk.line_start, chunk.line_end);
-            let content_bytes = chunk.content.as_bytes();
+            // B-32 D4 / GAP-1: provider-boundary defensive cap. Dispatch is
+            // expected to have already capped each chunk via apply_char_cap,
+            // but a regression at any producer site (bm25/vector/literal)
+            // would otherwise leak oversized content into the embedding
+            // provider. Truncate here as defence-in-depth and warn so the
+            // regression is observable. File-kind chunks are exempt (D10).
+            let embed_content: std::borrow::Cow<'_, str> = if chunk.kind != crate::bm25::ChunkKind::File
+                && chunk.content.len() > crate::chunking::constants::MAX_CHUNK_CHARS
+            {
+                tracing::warn!(
+                    target: "knowledge::vector::indexer",
+                    path = %chunk.path.display(),
+                    chars = chunk.content.len(),
+                    cap = crate::chunking::constants::MAX_CHUNK_CHARS,
+                    "MAX_CHUNK_CHARS regression — apply_char_cap missed a chunk; truncating at provider boundary"
+                );
+                let end = crate::chunking::cap::floor_char_boundary(
+                    &chunk.content,
+                    crate::chunking::constants::MAX_CHUNK_CHARS,
+                );
+                std::borrow::Cow::Owned(chunk.content[..end].to_string())
+            } else {
+                std::borrow::Cow::Borrowed(chunk.content.as_str())
+            };
+            let content_bytes = embed_content.as_bytes();
             let content_hash = VectorCache::content_hash(content_bytes);
 
             // Check cache first.
@@ -165,11 +189,11 @@ impl VectorIndexer {
                 Some(e) => (e, cached_code_vec),
                 None => {
                     // Embed the chunk content.
-                    match vector_module.embed_text(&chunk.content) {
+                    match vector_module.embed_text(&embed_content) {
                         Ok(vec) => {
                             stats.chunks_embedded += 1;
                             // Compute code embedding; store dual in cache if available.
-                            let code_vec_opt = match vector_module.embed_code(&chunk.content) {
+                            let code_vec_opt = match vector_module.embed_code(&embed_content) {
                                 Ok(code_vec) => {
                                     if let Some(c) = cache {
                                         if let Ok(dual) = crate::vector::DualVector::new(code_vec.clone(), vec.clone()) {
@@ -329,6 +353,8 @@ fn code_index_path_for(text_index_path: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 fn chunk_file(path: &Path) -> Result<Vec<BM25Chunk>, KnowledgeError> {
+    use crate::chunking;
+
     let data = std::fs::read(path)?;
     let check_len = data.len().min(BINARY_DETECT_BYTES);
     if data[..check_len].contains(&0) {
@@ -339,6 +365,33 @@ fn chunk_file(path: &Path) -> Result<Vec<BM25Chunk>, KnowledgeError> {
 
     if lines.is_empty() {
         return Ok(Vec::new());
+    }
+
+    // B-32 D1: minified-first short-circuit. Mirrors bm25::Bm25Index::chunk_file.
+    // tracing::info! is the Step A observable trigger (D3).
+    //
+    // Note: vector indexer (semantic embedding path) does not emit
+    // ChunkKind::File chunks here — that is bm25's zero-orphan invariant
+    // (see bm25.rs:411-417 and 522-528). The vector minified path mirrors
+    // the vector normal path below (lines 388-408), which also produces no
+    // File-kind chunk. The asymmetry between bm25 (emits File) and vector
+    // (does not) is intentional: embedding a full-file blob would waste a
+    // provider call on content already covered by the dispatch chunks. The
+    // zero-orphan guarantee is upheld at the bm25 layer only.
+    if chunking::detect::is_minified(&content, lines.len()) {
+        let avg_line_length = content.len() / lines.len().max(1);
+        let chunks = chunking::cap::apply_char_cap(
+            chunking::character::chunk_by_characters(path, &content),
+        );
+        tracing::info!(
+            target: "knowledge::chunking",
+            path = %path.display(),
+            char_count = content.len(),
+            chunk_count = chunks.len(),
+            avg_line_length = avg_line_length,
+            "minified chunked"
+        );
+        return Ok(chunks);
     }
 
     let mut chunks = Vec::new();
@@ -360,7 +413,8 @@ fn chunk_file(path: &Path) -> Result<Vec<BM25Chunk>, KnowledgeError> {
         start += step;
     }
 
-    Ok(chunks)
+    // B-32 D1: apply_char_cap as the LAST step (D10 exempts File-kind, none here).
+    Ok(chunking::cap::apply_char_cap(chunks))
 }
 
 /// Deterministic key from (path, line_start, line_end).

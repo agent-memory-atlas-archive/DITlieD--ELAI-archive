@@ -803,13 +803,15 @@ mod tests {
     /// BM25 canary query for "main" returns hits.
     fn make_bm25_with_canary(dir: &Path) -> Bm25Index {
         let mut bm25 = Bm25Index::new(dir, "canary_test").expect("bm25 init");
-        let chunks = vec![BM25Chunk {
+        // B-32 D2: literal BM25Chunk constructions wrapped with apply_char_cap
+        // so the universal cap invariant holds even for hand-rolled chunks.
+        let chunks = crate::chunking::cap::apply_char_cap(vec![BM25Chunk {
             path: PathBuf::from("canary.rs"),
             content: "fn main() { println!(\"hello\"); }".to_string(),
             line_start: 1,
             line_end: 5,
             kind: ChunkKind::Function,
-        }];
+        }]);
         bm25.index_file(Path::new("canary.rs"), Some(chunks))
             .expect("index canary chunk");
         bm25
@@ -985,20 +987,22 @@ mod tests {
 
         // Index two documents: one "fresh", one "stale"
         let mut bm25 = Bm25Index::new(tmp.path(), "freshness_test").expect("bm25 init");
-        let fresh_chunks = vec![BM25Chunk {
+        // B-32 D2: literal BM25Chunk constructions wrapped with apply_char_cap
+        // so the universal cap invariant holds even for hand-rolled chunks.
+        let fresh_chunks = crate::chunking::cap::apply_char_cap(vec![BM25Chunk {
             path: PathBuf::from("fresh.rs"),
             content: "fn query_handler() { search() }".to_string(),
             line_start: 1,
             line_end: 5,
             kind: ChunkKind::Function,
-        }];
-        let stale_chunks = vec![BM25Chunk {
+        }]);
+        let stale_chunks = crate::chunking::cap::apply_char_cap(vec![BM25Chunk {
             path: PathBuf::from("stale.rs"),
             content: "fn query_handler() { search() }".to_string(),
             line_start: 1,
             line_end: 5,
             kind: ChunkKind::Function,
-        }];
+        }]);
         bm25.index_file(Path::new("fresh.rs"), Some(fresh_chunks)).unwrap();
         bm25.index_file(Path::new("stale.rs"), Some(stale_chunks)).unwrap();
 

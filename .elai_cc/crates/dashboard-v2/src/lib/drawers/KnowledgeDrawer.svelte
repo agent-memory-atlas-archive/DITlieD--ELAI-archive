@@ -4,10 +4,31 @@
   import { Card, Badge, Toggle, UnwiredNote } from '$lib/ui';
   import IndexingProgressPanel from '../components/IndexingProgressPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
+  import { get_impact_analysis, type ImpactAnalysis } from '../api/stub';
+
+  let impact = $state<ImpactAnalysis>({ target: '', total_files: 0, hop_bands: [], unresolved_pct: 0.0 });
+  let impactLoaded = $state(false);
 
   onMount(() => {
     knowledgeData.bootstrap();
-    return knowledgeData.teardown;
+    // B-29 Phase 5: poll the most recent symbol_query SSB row every 5s
+    // so the IMPACT ANALYSIS panel reflects fresh tool output without
+    // forcing the user to reload the drawer.
+    const refresh = async () => {
+      try {
+        impact = await get_impact_analysis();
+      } catch (e) {
+        // get_impact_analysis falls back to empty shape; no console spam.
+      } finally {
+        impactLoaded = true;
+      }
+    };
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => {
+      clearInterval(interval);
+      knowledgeData.teardown();
+    };
   });
 
   const d = knowledgeData;
@@ -251,11 +272,46 @@
   <!-- B-29 Phase 5: IMPACT ANALYSIS panel -->
   <Card variant="plain" padding={12}>
     <div class="section-label">IMPACT ANALYSIS</div>
-    <UnwiredNote
-      phase="B-29"
-      feature="symbol-graph impact analysis (BFS reverse-dependency traversal)"
-      note="get_impact_analysis Tauri command wired in B-29 Phase 5; submit_task delegation pending B-29 Phase 6"
-    />
+    {#if !impactLoaded}
+      <div class="muted-small">loading...</div>
+    {:else if !impact.target}
+      <div class="muted-small">No symbol_query rows yet — run /symbol_impact via task agent or `elai symbol_graph build` first.</div>
+    {:else}
+      <div class="impact-summary">
+        <div class="impact-row">
+          <span class="impact-label">Target</span>
+          <span class="impact-value mono">{impact.target}</span>
+        </div>
+        <div class="impact-row">
+          <span class="impact-label">Total files impacted</span>
+          <span class="impact-value">{impact.total_files}</span>
+        </div>
+        <div class="impact-row">
+          <span class="impact-label">Unresolved edges</span>
+          <span class="impact-value">{impact.unresolved_pct.toFixed(1)}%</span>
+        </div>
+        {#if impact.hop_bands.length > 0}
+          <div class="impact-hop-table">
+            <div class="hop-header">
+              <span>Hop</span>
+              <span>Files</span>
+            </div>
+            {#each impact.hop_bands as band}
+              <div class="hop-row">
+                <span class="hop-depth">{band.depth}</span>
+                <span class="hop-files">
+                  {#if band.files.length === 0}
+                    <span class="muted-small">(per-band file list materialised via /symbol_impact tool)</span>
+                  {:else}
+                    {band.files.length} file{band.files.length === 1 ? '' : 's'}
+                  {/if}
+                </span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
   </Card>
 
 </div>
@@ -265,6 +321,62 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .impact-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .impact-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 12px;
+  }
+  .impact-label {
+    color: var(--text-secondary);
+  }
+  .impact-value {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .impact-value.mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .impact-hop-table {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-top: 1px solid var(--surface-divider);
+    padding-top: 6px;
+  }
+  .hop-header {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+  }
+  .hop-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+  }
+  .hop-depth {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+  }
+  .hop-files {
+    color: var(--text-primary);
+  }
+  .muted-small {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-style: italic;
   }
 
   .section-label {

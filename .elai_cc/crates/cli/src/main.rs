@@ -26,6 +26,7 @@ mod args;
 mod auth;
 mod help;
 mod live_cli;
+mod symbol_graph;
 mod progress;
 mod resume;
 mod run_subcommand;
@@ -253,6 +254,13 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
         CliAction::HelpTopic(topic) => live_cli::print_help_topic(topic),
         CliAction::Help { output_format } => help::print_help(output_format)?,
+        // B-29 Phase 4: symbol graph CLI subcommands.
+        CliAction::SymbolGraphBuild { project_root } => {
+            symbol_graph::run_symbol_graph_build(project_root)?
+        }
+        CliAction::SymbolGraphStats { project_root } => {
+            symbol_graph::run_symbol_graph_stats(project_root)?
+        }
     }
     Ok(())
 }

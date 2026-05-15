@@ -11,7 +11,8 @@ use crate::vector::{CODE_VEC_DIM, TEXT_VEC_DIM};
 
 /// Current schema version. Bump when DKG columns, vector dims, or other
 /// structural changes require a full rebuild from source.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+// v2 reserved per B-29 plan terminology; jumped 1->3 (B-29 Phase 1 symbol graph tables).
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Current index format version. Tracks the overall index layout; a change
 /// here triggers at minimum a BM25-only rebuild.

@@ -69,6 +69,21 @@ tree-sitter-python = "0.25"
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 walkdir = "2"
+# B-31 Phase 2 (Cycle A): resumable BM25 indexing reuses the ignore-aware
+# walker pattern from elai-knowledge::bm25 (the workspace already pulls in
+# `ignore` 0.4 via the knowledge crate — see Cargo.lock; this is NOT a new
+# external dependency, only a re-declaration so the orchestrator crate can
+# import `ignore::WalkBuilder` directly). See workflow/reasoning/B-31-decisions.md
+# DECISION-5 + DECISION-9.
+ignore = "0.4"
+# B-31 Phase 3 (Cycle B, DECISION-11): cross-process file lock primitive.
+# fd-lock 4.0.4 is already present in Cargo.lock as a transitive dependency
+# of `rustyline` (see Cargo.lock L1733-1741). Declaring it directly here adds
+# no new compiled code to the build graph — the crate was already resolved
+# at the same version. Backed by POSIX flock() on Unix and LockFileEx on
+# Windows via windows-sys (already a workspace transitive). See
+# workflow/reasoning/B-31-decisions.md DECISION-11 + DECISION-13.
+fd-lock = "4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -79,8 +94,15 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
+# B-31 Phase 3 (Cycle B): libc::kill(pid, 0) is the POSIX liveness check used
+# by IndexLock::try_acquire to detect stale lock holders. libc was already
+# declared for Linux only via the explicit linux block below; the unix block
+# extends coverage to macOS/BSD so the cross-platform IndexLock compiles
+# wherever fd-lock works. libc is already in the workspace graph.
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"
 nix = { version = "0.31", features = ["fs", "mount", "sched", "signal"] }
 

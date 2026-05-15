@@ -172,6 +172,16 @@ pub(crate) enum CliAction {
     Help {
         output_format: CliOutputFormat,
     },
+    /// B-29 Phase 4: `elai symbol_graph build [--project-root <path>]`
+    /// Runs a full symbol-graph build for the given project root.
+    SymbolGraphBuild {
+        project_root: PathBuf,
+    },
+    /// B-29 Phase 4: `elai symbol_graph stats [--project-root <path>]`
+    /// Prints SymbolGraphMeta (symbol_count, edge_count, unresolved_edge_pct, …).
+    SymbolGraphStats {
+        project_root: PathBuf,
+    },
 }
 
 /// 1.1 — Minimal PartialEq-capable carrier for a local-backend URL.
@@ -456,6 +466,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "logout" => Ok(CliAction::Logout { output_format }),
         "init" => Ok(CliAction::Init { output_format }),
         "run" => parse_run_subcommand_args(&rest[1..]),
+        "symbol_graph" | "symbol-graph" => parse_symbol_graph_args(&rest[1..]),
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -516,6 +527,52 @@ pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, St
             .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
     };
     Ok(CliAction::Run { project_root })
+}
+
+/// B-29 Phase 4 — parse `symbol_graph` / `symbol-graph` subcommand args.
+///
+/// Usage:
+///   elai symbol_graph build [--project-root <path>]
+///   elai symbol_graph stats [--project-root <path>]
+pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    let flag_rest = if rest.is_empty() { &rest[..] } else { &rest[1..] };
+
+    let mut project_root: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < flag_rest.len() {
+        match flag_rest[i].as_str() {
+            "--project-root" => {
+                let value = flag_rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `symbol_graph` argument: {other}"));
+            }
+        }
+    }
+
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| {
+            format!("`symbol_graph` cannot determine cwd for --project-root default: {e}")
+        })?,
+    };
+
+    match sub {
+        "build" => Ok(CliAction::SymbolGraphBuild { project_root }),
+        "stats" => Ok(CliAction::SymbolGraphStats { project_root }),
+        other => Err(format!(
+            "unknown `symbol_graph` sub-command: '{other}' (expected 'build' or 'stats')"
+        )),
+    }
 }
 
 pub(crate) fn parse_local_help_action(rest: &[String]) -> Option<Result<CliAction, String>> {

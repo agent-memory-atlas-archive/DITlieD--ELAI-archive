@@ -267,13 +267,14 @@ mod tests {
 
     fn make_bm25_with_canary(dir: &Path) -> Bm25Index {
         let mut bm25 = Bm25Index::new(dir, "startup_test").expect("bm25 init");
-        let chunks = vec![BM25Chunk {
+        // B-32 D2: wrap literal chunk with apply_char_cap to honor invariant.
+        let chunks = crate::chunking::cap::apply_char_cap(vec![BM25Chunk {
             path: PathBuf::from("canary.rs"),
             content: "fn main() { println!(\"hello\"); }".to_string(),
             line_start: 1,
             line_end: 5,
             kind: ChunkKind::Function,
-        }];
+        }]);
         bm25.index_file(Path::new("canary.rs"), Some(chunks))
             .expect("index canary chunk");
         bm25

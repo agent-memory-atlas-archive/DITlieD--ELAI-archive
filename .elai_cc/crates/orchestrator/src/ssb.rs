@@ -90,7 +90,21 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // B-29 Phase 5 (SCHEMA_VERSION 37): SymbolQuery action type — one row per
 // symbol_impact / symbol_flow / symbol_context / symbol_list tool call.
 // Carries SymbolQueryPayload { tool, target, hop_count, total_files, latency_ms }.
-const SCHEMA_VERSION: i64 = 37;
+// B-32 (SCHEMA_VERSION 38): MinifiedFileChunked variant for the adaptive
+// character-based chunker. Emitted by IndexingService once per minified file
+// after the BM25 batch loop. Carries MinifiedFileChunkedPayload { relative_path,
+// char_count, chunk_count, avg_line_length }. Defense-in-depth alongside the
+// `tracing::info!(target="knowledge::chunking", ..., "minified chunked")` emit
+// at bm25.rs:412/523 (kept so dev console retains visibility).
+// B-31.5 (SCHEMA_VERSION 39): bumped 38 -> 39 for the 5 deferred B-31 SSB
+// variants — IndexCheckpoint / IndexResume / IndexCancel / LockAcquired /
+// LockContested. These replace the `tracing::info!(target="ssb_pending", ...)`
+// placeholders left by Cycle B in startup.rs (and the new per-batch /
+// per-lock writer call-sites added to indexing_service.rs + lock.rs in
+// Cycle C). 14-site lockstep documented at
+// `workflow/reasoning/B-31.5-decisions.md` DECISION-B31.5-7. DESTRUCTIVE:
+// existing v38 session DBs are DROPped on first read (no migration logic).
+const SCHEMA_VERSION: i64 = 39;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -224,7 +238,21 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- B-29 Phase 5 (SCHEMA_VERSION 37): symbol_query action for per-tool
         -- symbol_impact / symbol_flow / symbol_context / symbol_list calls.
         -- Consumer: dashboard KnowledgeDrawer Impact Analysis panel + ActivityFeed.
-        'symbol_query'
+        'symbol_query',
+        -- B-32 (SCHEMA_VERSION 38): minified_file_chunked action emitted once
+        -- per minified file by IndexingService after the BM25 batch loop.
+        -- Producer: IndexingService::build_index_resumable post-DKG walkback.
+        -- Consumer: dashboard KnowledgeDrawer minified-file surface.
+        'minified_file_chunked',
+        -- B-31.5 (SCHEMA_VERSION 39): the 5 deferred B-31 SSB variants.
+        -- index_checkpoint  -- per-batch checkpoint emitted by build_index_resumable
+        -- index_resume      -- emitted when build_index_resumable returns Resumed
+        -- index_cancel      -- emitted when build_index_resumable returns Cancelled
+        --                       OR when graceful_shutdown signals a project to cancel
+        -- lock_acquired     -- IndexLock::try_acquire success
+        -- lock_contested    -- IndexLock::try_acquire AlreadyHeld
+        'index_checkpoint', 'index_resume', 'index_cancel',
+        'lock_acquired', 'lock_contested'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -633,6 +661,46 @@ pub enum SsbActionType {
     /// symbol_context / symbol_list tool IDs.
     /// Consumers: dashboard KnowledgeDrawer Impact Analysis panel + ActivityFeed.
     SymbolQuery,
+    /// B-32 (SCHEMA_VERSION 38): one row per minified file detected during
+    /// indexing. Emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
+    /// after the BM25 batch loop completes (post-DKG walkback over indexed
+    /// candidates). Carries a [`MinifiedFileChunkedPayload`] with the
+    /// relative path, byte count, chunk count, and computed average line
+    /// length. Defense-in-depth alongside the bm25.rs `tracing::info!`
+    /// emit — the SSB row persists for dashboard surfacing, the tracing
+    /// log keeps dev-console visibility.
+    MinifiedFileChunked,
+    /// B-31.5 (SCHEMA_VERSION 39): per-batch checkpoint emitted by
+    /// [`crate::indexing_service::IndexingService::build_index_resumable`].
+    /// Carries an [`IndexCheckpointPayload`] with the project_id, current
+    /// batch counters, file count, and last_checkpoint_at. Replaces the
+    /// `tracing::info!(target="ssb_pending", ...)` placeholders from
+    /// Cycle B.
+    IndexCheckpoint,
+    /// B-31.5 (SCHEMA_VERSION 39): emitted by `build_index_resumable` when it
+    /// returns [`crate::indexing_service::IndexResult::Resumed`], or by
+    /// [`crate::startup::auto_resume_indexed_projects`] when a resumed run
+    /// completes. Carries an [`IndexResumePayload`] with the project_id,
+    /// `resumed_from_batch`, and `files_skipped` counters.
+    IndexResume,
+    /// B-31.5 (SCHEMA_VERSION 39): emitted by `build_index_resumable` when it
+    /// returns [`crate::indexing_service::IndexResult::Cancelled`], or by
+    /// [`crate::startup::graceful_shutdown`] when it requests cancellation
+    /// of an in-progress project. Carries an [`IndexCancelPayload`] with
+    /// the project_id and partial-state counters.
+    IndexCancel,
+    /// B-31.5 (SCHEMA_VERSION 39): emitted by `IndexLock::try_acquire` (when
+    /// invoked through the optional SSB-writer path) on successful
+    /// acquisition. Carries a [`LockAcquiredPayload`] with the project_id,
+    /// scope, and `holder_pid`.
+    LockAcquired,
+    /// B-31.5 (SCHEMA_VERSION 39): emitted by `IndexLock::try_acquire` (when
+    /// invoked through the optional SSB-writer path) on
+    /// [`crate::lock::IndexLockError::AlreadyHeld`]. Carries a
+    /// [`LockContestedPayload`] mirroring the AlreadyHeld error payload —
+    /// the contender pid is the current process; `holder_pid` is the live
+    /// holder.
+    LockContested,
 }
 
 impl SsbActionType {
@@ -764,6 +832,14 @@ impl SsbActionType {
             Self::LanguageGrammarStatus => "language_grammar_status",
             // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
             Self::SymbolQuery => "symbol_query",
+            // B-32 (SCHEMA_VERSION 38): minified-file chunking SSB row.
+            Self::MinifiedFileChunked => "minified_file_chunked",
+            // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB variants.
+            Self::IndexCheckpoint => "index_checkpoint",
+            Self::IndexResume => "index_resume",
+            Self::IndexCancel => "index_cancel",
+            Self::LockAcquired => "lock_acquired",
+            Self::LockContested => "lock_contested",
         }
     }
 }
@@ -902,6 +978,14 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "language_grammar_status" => Ok(SsbActionType::LanguageGrammarStatus),
         // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
         "symbol_query" => Ok(SsbActionType::SymbolQuery),
+        // B-32 (SCHEMA_VERSION 38): minified-file chunking SSB row.
+        "minified_file_chunked" => Ok(SsbActionType::MinifiedFileChunked),
+        // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB variants.
+        "index_checkpoint" => Ok(SsbActionType::IndexCheckpoint),
+        "index_resume" => Ok(SsbActionType::IndexResume),
+        "index_cancel" => Ok(SsbActionType::IndexCancel),
+        "lock_acquired" => Ok(SsbActionType::LockAcquired),
+        "lock_contested" => Ok(SsbActionType::LockContested),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -1982,6 +2066,123 @@ pub struct IndexingProgressPayload {
     pub error_message: Option<String>,
 }
 
+/// B-32 (SCHEMA_VERSION 38) — payload for the
+/// [`SsbActionType::MinifiedFileChunked`] one-row-per-minified-file emission.
+///
+/// Emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
+/// after the BM25 batch loop completes, once per file whose content satisfies
+/// `elai_knowledge::chunking::detect::is_minified` (average line length >
+/// `MAX_AVG_LINE_LENGTH = 500` chars). Mirrors the tracing line emitted at
+/// `bm25.rs:412/523` so the dashboard can surface minified files (vendored
+/// bundles, generated protobuf go, minified CSS) without having to parse
+/// tracing output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MinifiedFileChunkedPayload {
+    /// Path relative to the project root, e.g. `vendor/bundle.min.js`.
+    /// Stable across machines (no absolute prefix).
+    pub relative_path: String,
+    /// Raw byte length of the file content. Persisted as `u64` to match the
+    /// `metadata.indexed_files` column shape; minified bundles routinely
+    /// exceed `u32::MAX` chars after concatenation.
+    pub char_count: u64,
+    /// Number of chunks emitted by the character-based chunker (does NOT
+    /// include the zero-orphan `ChunkKind::File` chunk that bm25 always
+    /// appends).
+    pub chunk_count: u32,
+    /// Computed `content.len() / line_count` average. The detector's
+    /// threshold is `MAX_AVG_LINE_LENGTH = 500`; values below 500 will never
+    /// produce this row.
+    pub avg_line_length: u32,
+}
+
+/// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::IndexCheckpoint`].
+///
+/// Emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
+/// after each successful batch is persisted via `ProjectMetadataStore::save`.
+/// `batches_total` is `None` when the work queue was empty up-front (no
+/// candidates) or could not be sized cheaply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexCheckpointPayload {
+    /// BLAKE3-derived per-project identifier (matches
+    /// `metadata::project_id_from_path`).
+    pub project_id: String,
+    /// Number of completed batches at the time of this checkpoint row.
+    pub batches_processed: u32,
+    /// Total batch count when computable. `None` when `total_files == 0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batches_total: Option<u32>,
+    /// Cumulative count of files actually indexed (i.e. handed to
+    /// `Bm25Index::index_file`) since the run started. Skipped/resumed files
+    /// are NOT counted here.
+    pub files_processed: u64,
+    /// Unix-seconds timestamp of the checkpoint, sourced from the injected
+    /// [`elai_core::ClockProvider`].
+    pub last_checkpoint_at: i64,
+}
+
+/// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::IndexResume`].
+///
+/// Emitted in two contexts:
+/// * `build_index_resumable` returning [`crate::indexing_service::IndexResult::Resumed`].
+/// * `auto_resume_indexed_projects` after a resumed run completes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexResumePayload {
+    /// BLAKE3-derived per-project identifier.
+    pub project_id: String,
+    /// Value of `batches_processed` at the moment the run resumed.
+    pub resumed_from_batch: u32,
+    /// Number of candidate files whose stored BLAKE3 hash matched the
+    /// on-disk content and were therefore skipped.
+    pub files_skipped: u64,
+}
+
+/// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::IndexCancel`].
+///
+/// Emitted when the in-process cancellation flag is observed by
+/// `build_index_resumable`, OR when `graceful_shutdown` signals a project
+/// during the SHUTTING_DOWN cancellation pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexCancelPayload {
+    /// BLAKE3-derived per-project identifier.
+    pub project_id: String,
+    /// Number of completed + checkpointed batches at abort time.
+    pub batches_completed: u32,
+    /// Cumulative count of files indexed before the abort.
+    pub files_indexed: u64,
+}
+
+/// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::LockAcquired`].
+///
+/// Emitted by `IndexLock::try_acquire` when the process-global SSB writer
+/// has been installed via `lock::install_ssb_writer`. The `scope` field
+/// uses the same lowercase string as `LockScope::as_str` (`"index"` or
+/// `"watch"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockAcquiredPayload {
+    /// BLAKE3-derived per-project identifier.
+    pub project_id: String,
+    /// Lockscope discriminant string — `"index"` or `"watch"`.
+    pub scope: String,
+    /// OS process ID of the holder (== this process at acquire time).
+    pub holder_pid: u32,
+}
+
+/// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::LockContested`].
+///
+/// Emitted on
+/// [`crate::lock::IndexLockError::AlreadyHeld`] when the process-global
+/// SSB writer is installed. `holder_pid` is the LIVE holder (not the
+/// contender — the contender is the process emitting the row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockContestedPayload {
+    /// BLAKE3-derived per-project identifier.
+    pub project_id: String,
+    /// Lockscope discriminant string — `"index"` or `"watch"`.
+    pub scope: String,
+    /// OS process ID of the live holder that blocked acquisition.
+    pub holder_pid: u32,
+}
+
 /// Batch 1C — payload for the one-shot DKG-ready announcement.
 ///
 /// Emitted once per project per runner lifetime, immediately after the
@@ -2941,6 +3142,17 @@ pub enum SsbPayload {
     LanguageGrammarStatus(LanguageGrammarStatusPayload),
     // B-29 Phase 5 (SCHEMA_VERSION 37): one row per symbol_* tool call.
     SymbolQuery(SymbolQueryPayload),
+    // B-32 (SCHEMA_VERSION 38): one row per minified file detected by the
+    // adaptive character chunker.
+    MinifiedFileChunked(MinifiedFileChunkedPayload),
+    // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB variants — replaces
+    // the `tracing::info!(target="ssb_pending", ...)` placeholders from
+    // Cycle B.
+    IndexCheckpoint(IndexCheckpointPayload),
+    IndexResume(IndexResumePayload),
+    IndexCancel(IndexCancelPayload),
+    LockAcquired(LockAcquiredPayload),
+    LockContested(LockContestedPayload),
 }
 
 impl SsbPayload {
@@ -3071,6 +3283,14 @@ impl SsbPayload {
             Self::LanguageGrammarStatus(_) => SsbActionType::LanguageGrammarStatus,
             // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
             Self::SymbolQuery(_) => SsbActionType::SymbolQuery,
+            // B-32 (SCHEMA_VERSION 38): minified-file chunking row.
+            Self::MinifiedFileChunked(_) => SsbActionType::MinifiedFileChunked,
+            // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB variants.
+            Self::IndexCheckpoint(_) => SsbActionType::IndexCheckpoint,
+            Self::IndexResume(_) => SsbActionType::IndexResume,
+            Self::IndexCancel(_) => SsbActionType::IndexCancel,
+            Self::LockAcquired(_) => SsbActionType::LockAcquired,
+            Self::LockContested(_) => SsbActionType::LockContested,
         }
     }
 }
@@ -4817,6 +5037,55 @@ mod tests {
                     failed: vec![],
                 })
             }
+            // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
+            SsbActionType::SymbolQuery => {
+                SsbPayload::SymbolQuery(SymbolQueryPayload {
+                    tool: "symbol_impact".into(),
+                    target: "src/lib.rs".into(),
+                    hop_count: 2,
+                    total_files: 3,
+                    latency_ms: 5,
+                })
+            }
+            // B-32 (SCHEMA_VERSION 38): minified-file chunking row.
+            SsbActionType::MinifiedFileChunked => {
+                SsbPayload::MinifiedFileChunked(MinifiedFileChunkedPayload {
+                    relative_path: "vendor/bundle.min.js".into(),
+                    char_count: 50_000,
+                    chunk_count: 25,
+                    avg_line_length: 50_000,
+                })
+            }
+            // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB variants.
+            SsbActionType::IndexCheckpoint => {
+                SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
+                    project_id: "p".into(),
+                    batches_processed: 1,
+                    batches_total: Some(4),
+                    files_processed: 10,
+                    last_checkpoint_at: 0,
+                })
+            }
+            SsbActionType::IndexResume => SsbPayload::IndexResume(IndexResumePayload {
+                project_id: "p".into(),
+                resumed_from_batch: 1,
+                files_skipped: 20,
+            }),
+            SsbActionType::IndexCancel => SsbPayload::IndexCancel(IndexCancelPayload {
+                project_id: "p".into(),
+                batches_completed: 1,
+                files_indexed: 5,
+            }),
+            SsbActionType::LockAcquired => SsbPayload::LockAcquired(LockAcquiredPayload {
+                project_id: "p".into(),
+                scope: "index".into(),
+                holder_pid: 12345,
+            }),
+            SsbActionType::LockContested => SsbPayload::LockContested(LockContestedPayload {
+                project_id: "p".into(),
+                scope: "index".into(),
+                holder_pid: 12345,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -5964,6 +6233,34 @@ mod tests {
                 total_files: 7,
                 latency_ms: 3,
             }),
+            // B-31.5 (SCHEMA_VERSION 39) — 5 deferred B-31 SSB variants.
+            SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
+                project_id: "abc123def4567890".into(),
+                batches_processed: 2,
+                batches_total: Some(4),
+                files_processed: 100,
+                last_checkpoint_at: 1_700_000_000,
+            }),
+            SsbPayload::IndexResume(IndexResumePayload {
+                project_id: "abc123def4567890".into(),
+                resumed_from_batch: 1,
+                files_skipped: 20,
+            }),
+            SsbPayload::IndexCancel(IndexCancelPayload {
+                project_id: "abc123def4567890".into(),
+                batches_completed: 1,
+                files_indexed: 50,
+            }),
+            SsbPayload::LockAcquired(LockAcquiredPayload {
+                project_id: "abc123def4567890".into(),
+                scope: "index".into(),
+                holder_pid: 12345,
+            }),
+            SsbPayload::LockContested(LockContestedPayload {
+                project_id: "abc123def4567890".into(),
+                scope: "index".into(),
+                holder_pid: 99999,
+            }),
         ]
     }
 
@@ -5975,8 +6272,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            54,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery)",
+            59,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
@@ -6326,6 +6623,49 @@ mod tests {
                             turn_id,
                             total_tokens_used,
                             synthesis,
+                        })
+                    ),
+                // B-31.5 (SCHEMA_VERSION 39) — 5 deferred B-31 SSB variants.
+                ("[a-f0-9]{16}", 0u32..1000, any::<Option<u32>>(), 0u64..100_000, 0i64..2_000_000_000)
+                    .prop_map(|(project_id, batches_processed, batches_total, files_processed, last_checkpoint_at)|
+                        SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
+                            project_id,
+                            batches_processed,
+                            batches_total,
+                            files_processed,
+                            last_checkpoint_at,
+                        })
+                    ),
+                ("[a-f0-9]{16}", 0u32..1000, 0u64..100_000)
+                    .prop_map(|(project_id, resumed_from_batch, files_skipped)|
+                        SsbPayload::IndexResume(IndexResumePayload {
+                            project_id,
+                            resumed_from_batch,
+                            files_skipped,
+                        })
+                    ),
+                ("[a-f0-9]{16}", 0u32..1000, 0u64..100_000)
+                    .prop_map(|(project_id, batches_completed, files_indexed)|
+                        SsbPayload::IndexCancel(IndexCancelPayload {
+                            project_id,
+                            batches_completed,
+                            files_indexed,
+                        })
+                    ),
+                ("[a-f0-9]{16}", "(index|watch)", 1u32..1_000_000)
+                    .prop_map(|(project_id, scope, holder_pid)|
+                        SsbPayload::LockAcquired(LockAcquiredPayload {
+                            project_id,
+                            scope: scope.to_string(),
+                            holder_pid,
+                        })
+                    ),
+                ("[a-f0-9]{16}", "(index|watch)", 1u32..1_000_000)
+                    .prop_map(|(project_id, scope, holder_pid)|
+                        SsbPayload::LockContested(LockContestedPayload {
+                            project_id,
+                            scope: scope.to_string(),
+                            holder_pid,
                         })
                     ),
             ]

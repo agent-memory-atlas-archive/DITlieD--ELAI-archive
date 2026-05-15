@@ -16,12 +16,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use elai_core::{ClockProvider, OsClock};
 use elai_knowledge::bm25::Bm25Index;
+use elai_knowledge::chunking;
 use elai_knowledge::index_version::{self, UpgradeAction};
 use elai_knowledge::metadata::{
     self, IndexingStatus, MetadataError, ProjectMetadata, ProjectMetadataStore,
     DEFAULT_BATCH_SIZE, METADATA_DB_FILENAME, METADATA_SCHEMA_VERSION,
 };
 use elai_knowledge::{DkgEngine, KnowledgeError};
+
+use crate::ssb::{
+    IndexCancelPayload, IndexCheckpointPayload, IndexResumePayload,
+    MinifiedFileChunkedPayload, Ssb, SsbPayload,
+};
 
 // ---------------------------------------------------------------------------
 // Named constants (no magic numbers)
@@ -89,6 +95,30 @@ const DEFAULT_EXCLUDED_PREFIXES: &[&str] = &[
 /// the service mutex. Mirrors the `ELAI_HOOKS_DISABLED` / `ELAI_DISABLE_
 /// PROVIDER_SIGNALS` pattern from Batch 1A/1B.
 pub const ELAI_DISABLE_INDEXING_ENV: &str = "ELAI_DISABLE_INDEXING";
+
+/// B-31.5 (DECISION-B31.5-3): synchronous per-batch sleep hook used by the
+/// Tier D scale benchmark to simulate a "stuck batch" so we can verify that
+/// `graceful_shutdown` honours its deadline and force-releases the lock.
+///
+/// When the env var is set to a positive integer, `build_index_resumable`
+/// invokes `std::thread::sleep(Duration::from_secs(v))` at the TOP of each
+/// batch iteration (before the cancellation check, so the sleeping batch
+/// blocks the shutdown wait loop until the deadline expires). Zero / unset /
+/// unparseable values are treated as "no delay".
+///
+/// Mirrors the [`ELAI_DISABLE_INDEXING_ENV`] named-constant pattern.
+pub const ELAI_DEBUG_BATCH_DELAY_SECS_ENV: &str = "ELAI_DEBUG_BATCH_DELAY_SECS";
+
+/// Read the per-batch debug delay from the environment. Returns `0` when
+/// the env var is unset, empty, zero, or unparseable — guarantees the hot
+/// path is a single `Atomic`-free read with no allocation in the common
+/// case.
+fn debug_batch_delay_secs() -> u64 {
+    std::env::var(ELAI_DEBUG_BATCH_DELAY_SECS_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
 
 /// Batch 1C (A-44): freshness window for the per-project indexing marker.
 /// When a project's cached `indexed_at` is older than this many seconds, the
@@ -238,6 +268,12 @@ pub struct IndexingService {
     bm25: Option<Bm25Index>,
     dkg_db_path: PathBuf,
     initialized: bool,
+    /// B-32: optional SSB writer used to emit one
+    /// [`MinifiedFileChunkedPayload`] row per minified file detected during
+    /// `build_index_resumable`. Callers that don't have an SSB writer (tests,
+    /// cold-start contract checks) leave this as `None` — the post-build
+    /// walkback then becomes a no-op so existing call sites are unaffected.
+    ssb_writer: Option<Arc<Ssb>>,
 }
 
 impl IndexingService {
@@ -251,7 +287,17 @@ impl IndexingService {
             bm25: None,
             dkg_db_path,
             initialized: false,
+            ssb_writer: None,
         }
+    }
+
+    /// B-32: attach an SSB writer so `build_index_resumable` can emit
+    /// [`crate::ssb::SsbActionType::MinifiedFileChunked`] rows after the BM25
+    /// batch loop completes. Additive builder — existing
+    /// [`IndexingService::new`] callers keep the no-op behaviour.
+    pub fn with_ssb_writer(mut self, ssb: Arc<Ssb>) -> Self {
+        self.ssb_writer = Some(ssb);
+        self
     }
 
     /// Whether any index artifacts exist on disk.
@@ -405,14 +451,29 @@ impl IndexingService {
         let mut indexed_files_total: u64 = 0;
 
         for chunk in work_queue.chunks(batch_size as usize) {
+            // B-31.5 (DECISION-B31.5-3): debug-mode hook for the Tier D
+            // "graceful-shutdown forced-release" benchmark. Reads the env
+            // var once per batch; zero / unset is the hot-path no-op.
+            let delay_secs = debug_batch_delay_secs();
+            if delay_secs > 0 {
+                tracing::debug!(
+                    target = "indexing_service",
+                    delay_secs,
+                    batches_processed,
+                    "B-31.5: per-batch debug delay engaged",
+                );
+                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+            }
+
             if cancel.load(Ordering::SeqCst) {
+                let cancel_checkpoint_at = clock_unix_secs(&clock)?;
                 let cancelled_meta = ProjectMetadata {
                     project_id: project_id.to_string(),
                     project_path: self.project_root.clone(),
                     indexed_files: indexed_files_total,
                     total_files: total_work_u64,
                     indexing_status: IndexingStatus::Cancelled,
-                    last_checkpoint_at: clock_unix_secs(&clock)?,
+                    last_checkpoint_at: cancel_checkpoint_at,
                     batch_size,
                     batches_processed,
                     batches_total: Some(batches_total),
@@ -421,6 +482,14 @@ impl IndexingService {
                 store.save(&cancelled_meta)?;
                 // Clear so a follow-up call doesn't immediately re-trip.
                 cancel.store(false, Ordering::SeqCst);
+
+                // B-31.5: emit IndexCancel SSB row with partial-state counters.
+                self.emit_ssb_payload(SsbPayload::IndexCancel(IndexCancelPayload {
+                    project_id: project_id.to_string(),
+                    batches_completed: batches_processed,
+                    files_indexed: indexed_files_total,
+                }));
+
                 return Ok(IndexResult::Cancelled {
                     batches_completed: batches_processed,
                     files_indexed: indexed_files_total,
@@ -453,19 +522,29 @@ impl IndexingService {
             }
 
             batches_processed = batches_processed.saturating_add(1);
+            let checkpoint_at = clock_unix_secs(&clock)?;
             let checkpoint_meta = ProjectMetadata {
                 project_id: project_id.to_string(),
                 project_path: self.project_root.clone(),
                 indexed_files: indexed_files_total,
                 total_files: total_work_u64,
                 indexing_status: IndexingStatus::InProgress,
-                last_checkpoint_at: clock_unix_secs(&clock)?,
+                last_checkpoint_at: checkpoint_at,
                 batch_size,
                 batches_processed,
                 batches_total: Some(batches_total),
                 schema_version: METADATA_SCHEMA_VERSION,
             };
             store.save(&checkpoint_meta)?;
+
+            // B-31.5: emit IndexCheckpoint SSB row after every persisted batch.
+            self.emit_ssb_payload(SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
+                project_id: project_id.to_string(),
+                batches_processed,
+                batches_total: Some(batches_total),
+                files_processed: indexed_files_total,
+                last_checkpoint_at: checkpoint_at,
+            }));
         }
 
         // 7. Build DKG graph once after BM25 batches.
@@ -513,6 +592,24 @@ impl IndexingService {
             ),
         }
 
+        // 7c. B-32: walk the indexed candidates once more and emit one
+        //     SsbPayload::MinifiedFileChunked row per file that the
+        //     `elai_knowledge::chunking::detect::is_minified` heuristic
+        //     flags. The bm25 path already emits a `tracing::info!` on
+        //     detection (defense-in-depth — see bm25.rs:412/523); the SSB
+        //     row persists the same signal so the dashboard
+        //     KnowledgeDrawer can surface minified files without parsing
+        //     tracing output. No-op when `ssb_writer` is `None` (tests,
+        //     cold-start) or when no candidate matches `is_minified`.
+        //
+        //     This is the "less invasive" strategy from the B-32 synthesis:
+        //     a second O(n) read over the candidate set instead of
+        //     threading a side-channel through Bm25Index. The cost is
+        //     bounded by the candidate count and runs once per index
+        //     build (not per query), so the slowdown is acceptable for
+        //     the dashboard observability gain.
+        self.emit_minified_chunked_rows(&candidates);
+
         // 8. Mark completed.
         let completed_meta = ProjectMetadata {
             project_id: project_id.to_string(),
@@ -549,6 +646,12 @@ impl IndexingService {
         };
 
         if is_resume {
+            // B-31.5: emit IndexResume SSB row with resume counters.
+            self.emit_ssb_payload(SsbPayload::IndexResume(IndexResumePayload {
+                project_id: project_id.to_string(),
+                resumed_from_batch,
+                files_skipped,
+            }));
             Ok(IndexResult::Resumed {
                 summary,
                 resumed_from_batch,
@@ -556,6 +659,263 @@ impl IndexingService {
             })
         } else {
             Ok(IndexResult::Completed { summary })
+        }
+    }
+
+    /// B-31.5: emit a single [`SsbPayload`] via the optional SSB writer.
+    ///
+    /// No-op when `ssb_writer` is `None` — preserves the contract that
+    /// callers (cold-start CLI, contract tests) without an Ssb in scope
+    /// keep working unchanged. On SSB-side failure the error is logged via
+    /// `tracing::warn!` and swallowed — SSB emission is observability
+    /// scaffolding, never a load-bearing pipeline stage.
+    ///
+    /// Uses the same async-bridge pattern as `emit_minified_chunked_rows`
+    /// (cf. `ssb.rs:3653-3714`): multi-thread runtime → `block_in_place +
+    /// Handle::block_on`; current-thread / no-runtime → transient
+    /// current-thread runtime on a worker OS thread.
+    fn emit_ssb_payload(&self, payload: SsbPayload) {
+        let Some(writer) = self.ssb_writer.as_ref() else {
+            tracing::debug!(
+                action_type = payload.action_type().as_sql_str(),
+                "B-31.5: ssb_writer absent — payload dropped",
+            );
+            return;
+        };
+
+        let agent_id = "indexing_service";
+        let superstep: i64 = 0;
+        let writer = Arc::clone(writer);
+        let action_label = payload.action_type().as_sql_str();
+        let files: Vec<String> = Vec::new();
+
+        let drive = move |writer: Arc<Ssb>, payload: SsbPayload| async move {
+            if let Err(e) = writer
+                .write_payload(agent_id, superstep, payload, files)
+                .await
+            {
+                tracing::warn!(
+                    target = "indexing_service",
+                    action_type = action_label,
+                    error = %e,
+                    "B-31.5: SSB write_payload failed",
+                );
+            }
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(drive(writer, payload));
+                    });
+                }
+                _ => {
+                    let join = std::thread::spawn(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                tracing::warn!(
+                                    target = "indexing_service",
+                                    error = %e,
+                                    "B-31.5: failed to build transient runtime for SSB emit",
+                                );
+                                return;
+                            }
+                        };
+                        rt.block_on(drive(writer, payload));
+                    });
+                    if let Err(_panic) = join.join() {
+                        tracing::warn!(
+                            target = "indexing_service",
+                            "B-31.5: ssb-emit worker thread panicked",
+                        );
+                    }
+                }
+            },
+            Err(_) => {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::warn!(
+                            target = "indexing_service",
+                            error = %e,
+                            "B-31.5: failed to build transient runtime for SSB emit",
+                        );
+                        return;
+                    }
+                };
+                rt.block_on(drive(writer, payload));
+            }
+        }
+    }
+
+    /// B-32: post-build walkback that emits one
+    /// [`crate::ssb::SsbActionType::MinifiedFileChunked`] row per minified
+    /// candidate file. No-op when `ssb_writer` is `None` or when no
+    /// candidate matches `chunking::detect::is_minified`.
+    ///
+    /// Failures are best-effort logged via `tracing::warn!` and never
+    /// propagated — minified-row emission is observability scaffolding,
+    /// not a load-bearing pipeline stage, so an SSB hiccup must not abort
+    /// a successful index build.
+    fn emit_minified_chunked_rows(&self, candidates: &[PathBuf]) {
+        let Some(writer) = self.ssb_writer.as_ref() else {
+            return;
+        };
+
+        // Collect (relative_path, payload) pairs first, then drain in a single
+        // async-bridge block so we pay the runtime-handle lookup once per
+        // build instead of once per file.
+        let mut payloads: Vec<MinifiedFileChunkedPayload> = Vec::new();
+        for abs_path in candidates {
+            if is_binary_file(abs_path) || is_excluded_path(abs_path) {
+                continue;
+            }
+            let content = match std::fs::read_to_string(abs_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::debug!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "B-32: skipping minified-detection read",
+                    );
+                    continue;
+                }
+            };
+            let line_count = content.lines().count();
+            if !chunking::detect::is_minified(&content, line_count) {
+                continue;
+            }
+            let rel_path = relative_path(&self.project_root, abs_path);
+            let char_count: u64 = content.len().try_into().unwrap_or(u64::MAX);
+            // chunk_count = ceil(char_count / MAX_CHUNK_CHARS). The actual
+            // chunker may emit fewer when content tail is shorter than a
+            // full window, but this matches the bm25.rs `chunks.len()` value
+            // logged in the `tracing::info!` defense-in-depth emit.
+            let max_chunk_chars =
+                u64::try_from(chunking::constants::MAX_CHUNK_CHARS).unwrap_or(u64::MAX);
+            let chunk_count_u64 = if max_chunk_chars == 0 {
+                0
+            } else {
+                // ceil-div via saturating math
+                char_count
+                    .saturating_add(max_chunk_chars.saturating_sub(1))
+                    / max_chunk_chars
+            };
+            let chunk_count: u32 = chunk_count_u64.try_into().unwrap_or(u32::MAX);
+            let avg_line_length_usize = if line_count == 0 {
+                content.len()
+            } else {
+                content.len() / line_count
+            };
+            let avg_line_length: u32 = avg_line_length_usize.try_into().unwrap_or(u32::MAX);
+
+            payloads.push(MinifiedFileChunkedPayload {
+                relative_path: rel_path.to_string_lossy().to_string(),
+                char_count,
+                chunk_count,
+                avg_line_length,
+            });
+        }
+
+        if payloads.is_empty() {
+            return;
+        }
+
+        // Async-bridge: `Ssb::write_payload` is async, but
+        // `build_index_resumable` is sync (mirrors the pattern at
+        // `ssb.rs:3653-3714`). On a multi-thread runtime we use
+        // `block_in_place + Handle::block_on`; on a current-thread runtime
+        // (or no runtime at all) we spin a transient runtime on an OS
+        // thread to drive the writes without dead-locking the caller.
+        let agent_id = "indexing_service";
+        let superstep: i64 = 0;
+        let writer = Arc::clone(writer);
+
+        let drive = move |writer: Arc<Ssb>, payloads: Vec<MinifiedFileChunkedPayload>| async move {
+            for payload in payloads {
+                let files = vec![payload.relative_path.clone()];
+                if let Err(e) = writer
+                    .write_payload(
+                        agent_id,
+                        superstep,
+                        SsbPayload::MinifiedFileChunked(payload),
+                        files,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        target = "knowledge::chunking",
+                        error = %e,
+                        "B-32: SSB write_payload(MinifiedFileChunked) failed",
+                    );
+                }
+            }
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(drive(writer, payloads));
+                    });
+                }
+                _ => {
+                    // CurrentThread runtime: cannot re-enter; spin a
+                    // transient current-thread runtime on a worker OS
+                    // thread.
+                    let join = std::thread::spawn(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                tracing::warn!(
+                                    target = "knowledge::chunking",
+                                    error = %e,
+                                    "B-32: failed to build transient runtime for SSB emit",
+                                );
+                                return;
+                            }
+                        };
+                        rt.block_on(drive(writer, payloads));
+                    });
+                    if let Err(_panic) = join.join() {
+                        tracing::warn!(
+                            target = "knowledge::chunking",
+                            "B-32: minified-emit worker thread panicked",
+                        );
+                    }
+                }
+            },
+            Err(_) => {
+                // No runtime at all (sync caller, e.g. CLI cold start
+                // before tokio is initialized). Spin a transient
+                // current-thread runtime in-line.
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::warn!(
+                            target = "knowledge::chunking",
+                            error = %e,
+                            "B-32: failed to build transient runtime for SSB emit",
+                        );
+                        return;
+                    }
+                };
+                rt.block_on(drive(writer, payloads));
+            }
         }
     }
 

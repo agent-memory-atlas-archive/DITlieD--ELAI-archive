@@ -481,6 +481,13 @@ pub use ssb::{
     LanguageGrammarStatusPayload,
     // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call beacon.
     SymbolQueryPayload,
+    // B-32 (SCHEMA_VERSION 38): minified-file chunking beacon.
+    MinifiedFileChunkedPayload,
+    // B-31.5 (SCHEMA_VERSION 39): 5 deferred B-31 SSB beacons. Re-exported
+    // so dashboard-v2 commands + tests outside the orchestrator crate can
+    // decode SSB rows without reaching into `orchestrator::ssb::*` directly.
+    IndexCheckpointPayload, IndexResumePayload, IndexCancelPayload,
+    LockAcquiredPayload, LockContestedPayload,
     // SSB schema version + string-to-enum helper (used by contract tests).
     SCHEMA_VERSION_PUBLIC, ssb_action_type_from_str_public,
 };

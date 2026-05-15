@@ -7,6 +7,7 @@ use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use crate::LanguageGrammar;
 use crate::dkg::{ext_to_lang_id, RustGrammar, PythonGrammar, GoGrammar, TypeScriptGrammar, JavaGrammar, CSharpGrammar, RubyGrammar};
+use crate::chunking;
 use crate::error::KnowledgeError;
 
 /// Index format version for tantivy 0.26.0 (verified from tantivy src/lib.rs).
@@ -54,10 +55,15 @@ pub enum ChunkKind {
     Trait,
     LineBlock,
     File,
+    /// B-32: chunks produced by the character-based chunker for minified
+    /// files (avg line length > MAX_AVG_LINE_LENGTH). Persists as
+    /// "minified"; old indexes lacking this variant fall back to File via
+    /// the from_str default arm.
+    Minified,
 }
 
 impl ChunkKind {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             ChunkKind::Function => "function",
             ChunkKind::Struct => "struct",
@@ -68,10 +74,11 @@ impl ChunkKind {
             ChunkKind::Trait => "trait",
             ChunkKind::LineBlock => "line_block",
             ChunkKind::File => "file",
+            ChunkKind::Minified => "minified",
         }
     }
 
-    fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s {
             "function" => ChunkKind::Function,
             "struct" => ChunkKind::Struct,
@@ -81,6 +88,7 @@ impl ChunkKind {
             "module" => ChunkKind::Module,
             "trait" => ChunkKind::Trait,
             "line_block" => ChunkKind::LineBlock,
+            "minified" => ChunkKind::Minified,
             _ => ChunkKind::File,
         }
     }
@@ -381,10 +389,44 @@ impl Bm25Index {
             }]);
         }
 
+        // B-32 D1: minified-first short-circuit. Avg line length > 500 chars
+        // routes through the character-based chunker; apply_char_cap is the
+        // last step. tracing::info! is the Step A observable trigger (D3) —
+        // Step B will replace this with an SSB row once the lock releases.
+        if chunking::detect::is_minified(&content, lines.len()) {
+            let avg_line_length = content.len() / lines.len().max(1);
+            let char_count = content.len();
+            let line_count_u32 = u32::try_from(lines.len()).unwrap_or(u32::MAX);
+            drop(lines);
+            let mut chunks = chunking::cap::apply_char_cap(
+                chunking::character::chunk_by_characters(path, &content),
+            );
+            // Zero-orphan File chunk (exempt from cap per D10).
+            chunks.push(BM25Chunk {
+                path: path.to_path_buf(),
+                content,
+                line_start: 1,
+                line_end: line_count_u32,
+                kind: ChunkKind::File,
+            });
+            tracing::info!(
+                target: "knowledge::chunking",
+                path = %path.display(),
+                char_count = char_count,
+                chunk_count = chunks.len(),
+                avg_line_length = avg_line_length,
+                "minified chunked"
+            );
+            return Ok(chunks);
+        }
+
         let mut chunks = Self::try_ast_chunk(path, content.as_bytes(), &lines);
         if chunks.is_empty() {
             chunks = Self::line_block_chunks(path, &lines);
         }
+
+        // B-32 D1: apply_char_cap as the LAST step (excludes File-kind per D10).
+        chunks = chunking::cap::apply_char_cap(chunks);
 
         // Zero-orphan invariant: every non-binary file gets at least one File-kind chunk
         let line_count = u32::try_from(lines.len()).unwrap_or(u32::MAX);
@@ -465,10 +507,37 @@ impl Bm25Index {
             }];
         }
 
+        // B-32 D1: minified-first short-circuit (mirrors chunk_file).
+        if chunking::detect::is_minified(full_content, lines.len()) {
+            let avg_line_length = full_content.len() / lines.len().max(1);
+            let mut chunks = chunking::cap::apply_char_cap(
+                chunking::character::chunk_by_characters(path, full_content),
+            );
+            chunks.push(BM25Chunk {
+                path: path.to_path_buf(),
+                content: full_content.to_string(),
+                line_start: 1,
+                line_end: u32::try_from(lines.len()).unwrap_or(u32::MAX),
+                kind: ChunkKind::File,
+            });
+            tracing::info!(
+                target: "knowledge::chunking",
+                path = %path.display(),
+                char_count = full_content.len(),
+                chunk_count = chunks.len(),
+                avg_line_length = avg_line_length,
+                "minified chunked"
+            );
+            return chunks;
+        }
+
         let mut chunks = Self::try_ast_chunk(path, full_content.as_bytes(), lines);
         if chunks.is_empty() {
             chunks = Self::line_block_chunks(path, lines);
         }
+
+        // B-32 D1: apply_char_cap as the LAST step (excludes File-kind per D10).
+        chunks = chunking::cap::apply_char_cap(chunks);
 
         // Zero-orphan invariant
         chunks.push(BM25Chunk {

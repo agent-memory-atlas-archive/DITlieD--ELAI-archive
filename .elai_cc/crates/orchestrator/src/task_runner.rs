@@ -281,7 +281,16 @@ const DISPATCH_CONTEXT_BASELINE_TOOLS: &[&str] = &[
     "grep_search",
     "web_fetch",
     "web_search",
+    // B-29 Phase 5: symbol-graph traversal tools.
+    "symbol_impact",
+    "symbol_flow",
+    "symbol_context",
+    "symbol_list",
 ];
+
+/// Public re-export of `DISPATCH_CONTEXT_BASELINE_TOOLS` for contract tests
+/// that verify symbol_* tool names are present.
+pub const DISPATCH_CONTEXT_BASELINE_TOOLS_PUBLIC: &[&str] = DISPATCH_CONTEXT_BASELINE_TOOLS;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -5652,6 +5661,25 @@ async fn drive_task(
                 &exec_result.changed_files,
             )
             .await;
+
+            // B-29 Phase 5: PostToolUse IMPACT_SUMMARY injection.
+            // Compute impact radius for each changed file at depth=2 and append
+            // the IMPACT_SUMMARY block to the auditor briefing log.
+            // Symbol-graph ops are sync (knowledge crate uses tokio features=["sync"]).
+            // Wrap in spawn_blocking so we do NOT block the tokio runtime — file
+            // I/O + rusqlite reads + traversal may exceed the per-task latency
+            // budget on large projects.
+            let impact_seq = seq;
+            let impact_changed = exec_result.changed_files.clone();
+            let impact_dir = project_dir.as_ref().map(|p| p.to_path_buf());
+            let _ = tokio::task::spawn_blocking(move || {
+                write_impact_summary_to_log(
+                    impact_seq,
+                    &impact_changed,
+                    impact_dir.as_deref(),
+                );
+            })
+            .await;
         }
 
         // Gap #9 (MVP audit 2026-04-18 section 4 item 9): post-execution
@@ -8187,6 +8215,159 @@ async fn run_post_step_deterministic_audit(
             ),
         )
         .await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-29 Phase 5 — IMPACT_SUMMARY block formatter + auditor-briefing log writer
+// ---------------------------------------------------------------------------
+
+/// Default BFS depth for the PostToolUse impact-radius annotation.
+///
+/// Spec-locked (B-29 Phase 5 plan L249): do not change without updating
+/// the contract test `format_impact_summary_block_shape`.
+const DEFAULT_IMPACT_DEPTH: u32 = 2;
+
+/// Maximum files to list inline per hop band (top-N, sorted).
+const IMPACT_SUMMARY_TOP_N: usize = 5;
+
+/// Format an IMPACT_SUMMARY block string for the auditor briefing log.
+///
+/// Shape (locked by contract test C12):
+/// ```text
+/// IMPACT_SUMMARY:
+///   Changed: <file>
+///   Hop 1: <N> files: [<top 5 paths>]
+///   Hop 2: <N> files: [<top 5 paths>]
+///   Truncated: <bool>
+/// ```
+///
+/// Depth-0 (seed layer, the file itself) is omitted — only Hop 1+ bands
+/// are shown so the reader immediately sees the blast radius beyond the
+/// changed file.
+pub fn format_impact_summary(
+    changed_file: &str,
+    result: &elai_knowledge::symbol_graph::traversal::ImpactResult,
+) -> String {
+    let mut out = String::from("IMPACT_SUMMARY:\n");
+    out.push_str(&format!("  Changed: {changed_file}\n"));
+
+    // Hop bands (skip depth 0 = seed layer = the changed file itself).
+    let mut sorted_depths: Vec<u32> = result.files_by_depth.keys().copied().collect();
+    sorted_depths.sort();
+    for hop in sorted_depths {
+        if hop == 0 {
+            continue;
+        }
+        let files = &result.files_by_depth[&hop];
+        let top: Vec<&str> = files.iter().take(IMPACT_SUMMARY_TOP_N).map(|s| s.as_str()).collect();
+        out.push_str(&format!(
+            "  Hop {hop}: {} files: [{}]\n",
+            files.len(),
+            top.join(", "),
+        ));
+    }
+
+    out.push_str(&format!("  Truncated: {}\n", result.truncated));
+    out
+}
+
+/// Append IMPACT_SUMMARY blocks for each changed file to the auditor briefing
+/// log for the current task sequence.
+///
+/// - Opens `workflow/sessions/task_seq_{seq}/auditor-briefing.log` in append mode.
+/// - Silently skips files where the symbol graph is not built or has 0 symbols.
+/// - One append call per changed file (atomic per-file, not per-task).
+pub(crate) fn write_impact_summary_to_log(
+    seq: i64,
+    changed_files: &[std::path::PathBuf],
+    project_root: Option<&std::path::Path>,
+) {
+    use elai_core::paths::dkg_db_path;
+    use elai_knowledge::symbol_graph::{
+        cache::SymbolGraphCache,
+        sharding::SYMBOL_FILE_LRU_SIZE,
+        traversal::compute_impact_radius,
+    };
+
+    let Some(root) = project_root else { return };
+
+    let project_id = match root.file_name().and_then(|n| n.to_str()) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => return,
+    };
+
+    let db_path = dkg_db_path(root);
+    if !db_path.exists() {
+        tracing::debug!(
+            "write_impact_summary_to_log: symbol graph DB not found at {db_path:?}, skipping"
+        );
+        return;
+    }
+
+    let mut cache = match SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(
+                "write_impact_summary_to_log: SymbolGraphCache::new failed ({e}), skipping"
+            );
+            return;
+        }
+    };
+
+    // If the symbol graph has 0 symbols, skip silently.
+    if cache.meta().symbol_count == 0 {
+        tracing::debug!("write_impact_summary_to_log: symbol_count == 0, skipping");
+        return;
+    }
+
+    // Determine the log path: workflow/sessions/task_seq_{seq}/auditor-briefing.log.
+    // Uses a relative path anchored to the process CWD (standard for ELAI workflow logs).
+    let log_dir = std::path::PathBuf::from("workflow")
+        .join("sessions")
+        .join(format!("task_seq_{seq}"));
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        tracing::warn!("write_impact_summary_to_log: create_dir_all({log_dir:?}) failed: {e}");
+        return;
+    }
+    let log_path = log_dir.join("auditor-briefing.log");
+
+    for changed in changed_files {
+        let changed_str = changed.to_string_lossy();
+        match compute_impact_radius(&mut cache, changed_str.as_ref(), DEFAULT_IMPACT_DEPTH) {
+            Ok(result) if result.total_files > 0 => {
+                let block = format_impact_summary(changed_str.as_ref(), &result);
+                use std::io::Write;
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
+                    Ok(mut file) => {
+                        if let Err(e) = file.write_all(block.as_bytes()) {
+                            tracing::warn!(
+                                "write_impact_summary_to_log: write to {log_path:?} failed: {e}"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "write_impact_summary_to_log: open {log_path:?} failed: {e}"
+                        );
+                    }
+                }
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    "write_impact_summary_to_log: {changed_str} has 0 impact files, skipping"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "write_impact_summary_to_log: compute_impact_radius({changed_str}) failed: {e}"
+                );
+            }
+        }
     }
 }
 

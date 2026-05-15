@@ -432,6 +432,12 @@ pub const TOOL_SEARCH_REQUEST: &str = "search_request";
 pub const TOOL_FETCH_REQUEST: &str = "fetch_request";
 pub const TOOL_EMBED_REQUEST: &str = "embed_request";
 
+// B-29 Phase 5 — Symbol-graph tool IDs.
+pub const TOOL_SYMBOL_IMPACT: &str = "symbol_impact";
+pub const TOOL_SYMBOL_FLOW: &str = "symbol_flow";
+pub const TOOL_SYMBOL_CONTEXT: &str = "symbol_context";
+pub const TOOL_SYMBOL_LIST: &str = "symbol_list";
+
 // ---------------------------------------------------------------------------
 // Web research typed request structs (postcard-serialized in ToolRequest.arguments)
 // ---------------------------------------------------------------------------
@@ -452,4 +458,42 @@ pub struct WebFetchRequest {
 pub struct EmbedRequest {
     pub texts: Vec<String>,
     pub model: String,
+}
+
+// ---------------------------------------------------------------------------
+// B-29 Phase 5 — Symbol-graph typed request structs
+// (postcard-serialized in ToolRequest.arguments)
+// ---------------------------------------------------------------------------
+
+/// Request for `symbol_impact` tool — BFS reverse-dependency traversal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolImpactRequest {
+    pub project_root: String,
+    pub target: String,
+    pub depth: u32,
+}
+
+/// Request for `symbol_flow` tool — DFS call-flow traversal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolFlowRequest {
+    pub project_root: String,
+    pub entrypoint_id: String,
+    pub depth: u32,
+}
+
+/// Request for `symbol_context` tool — 360° view of a symbol definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolContextRequest {
+    pub project_root: String,
+    pub name: String,
+    pub file_hint: Option<String>,
+}
+
+/// Request for `symbol_list` tool — list symbols with optional filters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolListRequest {
+    pub project_root: String,
+    pub file: Option<String>,
+    pub query: Option<String>,
+    pub limit: u32,
 }

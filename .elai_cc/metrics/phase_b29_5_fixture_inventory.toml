@@ -1,0 +1,27 @@
+# B-29.5 fixture inventory.
+# Records the four pinned codebases used for scale benchmarking.
+# loc_total values are approximate; exact LOC is measured by `cloc` during indexing.
+
+[tier1_linux]
+path = "linux"
+commit = "v6.7"
+loc_total = 36_000_000
+languages = ["c", "asm", "shell", "python", "perl", "rust", "make"]
+
+[tier2_chromium]
+path = "chromium"
+commit = "121.0.6167.184"
+loc_total = 35_000_000
+languages = ["cpp", "javascript", "typescript", "python", "objc", "java", "html", "css"]
+
+[tier3_vscode]
+path = "vscode"
+commit = "1.94.2"
+loc_total = 2_450_000
+languages = ["typescript", "javascript", "css", "html", "json"]
+
+[tier4_postgres]
+path = "postgres"
+commit = "REL_17_0"
+loc_total = 1_500_000
+languages = ["c", "perl", "tcl", "sql", "shell", "make"]

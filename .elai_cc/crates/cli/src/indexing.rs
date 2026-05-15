@@ -184,6 +184,9 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
 
     let indexes_dir = project_root.join(ELAI_DATA_DIR_NAME).join(INDEXES_DIR_NAME);
     let mut svc = IndexingService::new(project_root.clone(), indexes_dir);
+    if let Some(writer) = ssb {
+        svc = svc.with_ssb_writer(Arc::clone(writer));
+    }
     if !svc.indexes_exist() {
         // Fresh index path: emit start, run, emit complete + DkgReady.
         let start_ms = now_unix_ms();

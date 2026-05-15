@@ -32,6 +32,10 @@ blake3 = { workspace = true }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmp-serde = "1.3"
+# B-29 Phase 1 contract test (symbol_graph_b29_phase1_contract): postcard is
+# the canonical encoder for symbol_graph blob columns; workspace dep already
+# pinned at root Cargo.toml. No new external crate introduced.
+postcard.workspace = true
 rustc-hash.workspace = true
 uuid = { workspace = true }
 elai-web-search = { path = "../web_search" }

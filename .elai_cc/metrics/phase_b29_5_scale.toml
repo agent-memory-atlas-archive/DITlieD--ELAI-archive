@@ -1,0 +1,34 @@
+# --- elai_self populated by populate_elai_self_metrics test ---
+# Measured on synthetic 3-file Rust fixture (ClockProvider/Scheduler/main).
+# Hardware: see workflow/reasoning/B-29.5-decisions.md.
+
+[meta]
+schema_version = 1
+populated_at = "2026-05-16T00:00:00Z"
+hardware = "synthetic-3file-fixture"
+
+[elai_self]
+queries = 60
+peak_rss_mb_during_workload = 0
+cache_lru_hit_rate = 0.0
+cache_lru_size_at_end = 0
+
+[elai_self.workload.impact_radius]
+p50_ms = 13.438
+p95_ms = 25.811
+p99_ms = 28.948
+
+[elai_self.workload.call_flow]
+p50_ms = 0.001
+p95_ms = 0.003
+p99_ms = 0.005
+
+[elai_self.workload.symbol_context]
+p50_ms = 9.905
+p95_ms = 12.644
+p99_ms = 16.540
+
+[elai_self.workload.list_symbols]
+p50_ms = 0.006
+p95_ms = 18.020
+p99_ms = 18.020
