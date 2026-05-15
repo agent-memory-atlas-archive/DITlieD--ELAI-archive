@@ -67,6 +67,7 @@ pub fn run() {
             commands::submit_task,
             commands::submit_intervention_response,
             commands::respond_to_confirmation,
+            commands::submit_credential_response,
             commands::open_project_from_folder,
             commands::get_feasibility_report,
             // GATE

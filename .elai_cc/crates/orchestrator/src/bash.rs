@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::process::{Command, Stdio};
@@ -32,6 +33,15 @@ pub struct BashCommandInput {
     pub filesystem_mode: Option<FilesystemIsolationMode>,
     #[serde(rename = "allowedMounts")]
     pub allowed_mounts: Option<Vec<String>>,
+    /// C2: per-command env-var overrides injected from a credential gate.
+    ///
+    /// Keys must already be sanitized to `[A-Z0-9_]+` by the caller
+    /// (`sanitize_credential_id` in task_runner.rs). Applied via
+    /// `Command::env()` / `TokioCommand::env()` calls — NEVER via
+    /// `std::env::set_var` (deprecated multi-threaded UB in Rust edition 2024).
+    /// When `None` or empty, no additional env vars are set.
+    #[serde(rename = "envOverrides", default, skip_serializing_if = "Option::is_none")]
+    pub env_overrides: Option<BTreeMap<String, String>>,
 }
 
 /// Output returned from a bash tool invocation.
@@ -73,6 +83,12 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
 
     if input.run_in_background.unwrap_or(false) {
         let mut child = prepare_command(&input.command, &cwd, &sandbox_status, false);
+        // C2: apply per-command credential env overrides (never via set_var).
+        if let Some(overrides) = input.env_overrides.as_ref() {
+            for (k, v) in overrides {
+                child.env(k, v);
+            }
+        }
         let child = child
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -108,6 +124,12 @@ async fn execute_bash_async(
     cwd: std::path::PathBuf,
 ) -> io::Result<BashCommandOutput> {
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
+    // C2: apply per-command credential env overrides (never via set_var).
+    if let Some(overrides) = input.env_overrides.as_ref() {
+        for (k, v) in overrides {
+            command.env(k, v);
+        }
+    }
 
     let output_result = if let Some(timeout_ms) = input.timeout {
         match timeout(Duration::from_millis(timeout_ms), command.output()).await {
@@ -294,6 +316,7 @@ mod tests {
             isolate_network: Some(false),
             filesystem_mode: Some(FilesystemIsolationMode::WorkspaceOnly),
             allowed_mounts: None,
+            env_overrides: None,
         })
         .expect("bash command should execute");
 
@@ -314,6 +337,7 @@ mod tests {
             isolate_network: None,
             filesystem_mode: None,
             allowed_mounts: None,
+            env_overrides: None,
         })
         .expect("bash command should execute");
 

@@ -64,6 +64,7 @@ fn make_ctx(id: u64) -> BabyStepExecutionCtx {
         task_summary: "contract-test".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     }
 }
 

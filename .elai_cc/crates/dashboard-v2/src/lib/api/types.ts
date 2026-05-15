@@ -416,6 +416,21 @@ export interface SourceTierDistribution {
 // ------------------------------------------------------------------
 export type InterventionAction = 'approve' | 'reject' | 'modify' | 'redirect' | 'takeover';
 
+// C2: credential form field definition (mirrors Rust CredentialField struct).
+export interface CredentialField {
+  id: string;
+  label: string;
+  secret: boolean;
+  default?: string;
+}
+
+// C2: intervention type string union (snake_case matches Rust serde rename_all).
+export type InterventionTypeName =
+  | 'approve_change'
+  | 'replan_approval'
+  | 'error_recovery'
+  | 'request_credential';
+
 export interface InterventionRequest {
   id: string;
   title: string;
@@ -423,9 +438,12 @@ export interface InterventionRequest {
   file?: string;
   diff_summary?: string;
   created_ts: number;
+  // C2: present when intervention_type === 'request_credential'.
+  intervention_type?: InterventionTypeName;
+  credential_fields?: CredentialField[];
 }
 
-export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer';
+export type CardKind = 'status' | 'intervention' | 'error' | 'disambiguation' | 'steering' | 'user' | 'response' | 'code-answer' | 'credential-request';
 
 export interface CommandCard {
   id: string;
@@ -437,6 +455,7 @@ export interface CommandCard {
 export type CardPayload =
   | StatusCardPayload
   | InterventionCardPayload
+  | CredentialRequestCardPayload
   | ErrorCardPayload
   | DisambiguationCardPayload
   | SteeringCardPayload
@@ -454,6 +473,15 @@ export interface StatusCardPayload {
 export interface InterventionCardPayload {
   kind: 'intervention';
   request: InterventionRequest;
+}
+
+// C2: credential request card — separate CardKind so the render branch is
+// unambiguous (avoids sub-branching inside the 'intervention' block).
+export interface CredentialRequestCardPayload {
+  kind: 'credential-request';
+  request_id: string;
+  description: string;
+  fields: CredentialField[];
 }
 
 export interface ErrorCardPayload {

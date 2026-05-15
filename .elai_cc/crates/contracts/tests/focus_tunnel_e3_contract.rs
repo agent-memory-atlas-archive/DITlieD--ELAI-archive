@@ -434,6 +434,7 @@ fn baby_step_execution_ctx_carries_mode_selection() {
         task_summary: "task".to_string(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     assert!(ctx_none.mode_selection.is_none());
 
@@ -447,6 +448,7 @@ fn baby_step_execution_ctx_carries_mode_selection() {
             reason: "rule_3",
             preferred_was: None,
         }),
+        session_credentials: std::collections::BTreeMap::new(),
     };
     assert_eq!(
         ctx_some.mode_selection.as_ref().unwrap().mode,
@@ -618,6 +620,7 @@ async fn run_fim_step_returns_unsupported_mode_in_e3() {
         task_summary: "edit fn foo".to_string(),
         escalation_message: None,
         mode_selection: Some(sel),
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let err = run_fim_step(&ctx, &sel).await.expect_err("E-3 returns unsupported");
     // B-28 WIRING-2: the legacy 2-arg entry point now returns
@@ -642,6 +645,7 @@ async fn run_diff_step_returns_unsupported_mode_in_e3() {
         task_summary: "multi-region edit".to_string(),
         escalation_message: None,
         mode_selection: Some(sel),
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let err = run_diff_step(&ctx, &sel).await.expect_err("E-3 returns unsupported");
     // B-28 WIRING-2: see run_fim_step_returns_unsupported_mode_in_e3 note.

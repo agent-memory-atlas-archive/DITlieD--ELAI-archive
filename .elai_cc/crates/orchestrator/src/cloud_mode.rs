@@ -441,6 +441,9 @@ impl RedactingBabyStepExecutor {
             // unchanged. The redactor only touches user-visible string
             // payloads; the ModeSelection is structural metadata.
             mode_selection: ctx.mode_selection,
+            // C2: pass session_credentials through unchanged — the redactor
+            // does not touch credential values (they are not user-visible text).
+            session_credentials: ctx.session_credentials,
         }
     }
 }

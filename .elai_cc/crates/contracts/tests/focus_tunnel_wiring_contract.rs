@@ -268,6 +268,7 @@ fn ctx_for(id: u64) -> BabyStepExecutionCtx {
         task_summary: "wiring test".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     }
 }
 

@@ -10,7 +10,7 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, logStub, continue_task, get_recent_tasks } from '../api/stub';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks } from '../api/stub';
   import type { RecentTask } from '../api/types';
 
   // Live recent-tasks list (was a mock import). Polled every 10s.
@@ -270,6 +270,36 @@
   }
 
   // ----------------------------------------------------------------
+  // C2: Credential form handler
+  // ----------------------------------------------------------------
+  // Per-card credential value map keyed by card.id -> field.id -> value.
+  let credentialValues = $state<Record<string, Record<string, string>>>({});
+
+  function handleCredentialInput(cardId: string, fieldId: string, value: string) {
+    credentialValues = {
+      ...credentialValues,
+      [cardId]: {
+        ...(credentialValues[cardId] ?? {}),
+        [fieldId]: value,
+      },
+    };
+  }
+
+  async function handleCredentialSubmit(requestId: string, cardId: string) {
+    const values = credentialValues[cardId] ?? {};
+    await submit_credential_response(requestId, values);
+    commands.appendCard('status', {
+      kind: 'status',
+      message: `Credentials submitted. FSM resuming execution.`,
+      fsm_state: 'EXECUTING',
+      step_id: undefined,
+    });
+    // Clear submitted values so they don't persist in memory.
+    const { [cardId]: _removed, ...rest } = credentialValues;
+    credentialValues = rest;
+  }
+
+  // ----------------------------------------------------------------
   // Error action handlers
   // ----------------------------------------------------------------
   function handleRetry(stepId?: string) {
@@ -443,6 +473,44 @@
                     class="btn-outlined"
                     onclick={() => handleIntervention(p.request.id, 'redirect')}
                   >Redirect</button>
+                </div>
+              </div>
+            </div>
+
+          {:else if card.kind === 'credential-request'}
+            <!-- C2: Credential request card — password-masked form fields -->
+            {@const p = card.payload as import('../api/types').CredentialRequestCardPayload}
+            <div class="orbit-card orbit-card--intervention">
+              <div class="card-top-edge" aria-hidden="true"></div>
+              <div class="card-inner">
+                <div class="card-title-row">
+                  <Pulse mode="dot" size={6} />
+                  <span class="intervention-title">Credentials required</span>
+                </div>
+                <span class="card-body">{p.description}</span>
+                <div class="credential-fields">
+                  {#each p.fields as field (field.id)}
+                    <div class="credential-field-row">
+                      <label class="credential-label" for="cred-{card.id}-{field.id}">
+                        {field.label}
+                      </label>
+                      <input
+                        id="cred-{card.id}-{field.id}"
+                        class="credential-input mono"
+                        type={field.secret ? 'password' : 'text'}
+                        value={credentialValues[card.id]?.[field.id] ?? (field.default ?? '')}
+                        oninput={(e) => handleCredentialInput(card.id, field.id, (e.target as HTMLInputElement).value)}
+                        autocomplete="off"
+                        spellcheck={false}
+                      />
+                    </div>
+                  {/each}
+                </div>
+                <div class="btn-row">
+                  <button
+                    class="btn-approve"
+                    onclick={() => handleCredentialSubmit(p.request_id, card.id)}
+                  >Submit</button>
                 </div>
               </div>
             </div>

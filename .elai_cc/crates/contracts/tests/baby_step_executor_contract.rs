@@ -95,6 +95,7 @@ async fn contract_synthetic_executor_returns_passed_1ms() {
         task_summary: "print hello".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let result = exec.execute(ctx).await;
     assert!(matches!(result.outcome, BabyStepOutcome::Passed));
@@ -120,6 +121,7 @@ async fn contract_agent_pool_executor_missing_binary_reports_failed() {
         task_summary: "noop".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let result = exec.execute(ctx).await;
     assert!(matches!(result.outcome, BabyStepOutcome::Failed { .. }));
@@ -147,6 +149,7 @@ async fn contract_agent_pool_executor_vram_error_reports_failed() {
         task_summary: "vram-starved".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let result = exec.execute(ctx).await;
     assert!(matches!(result.outcome, BabyStepOutcome::Failed { .. }));

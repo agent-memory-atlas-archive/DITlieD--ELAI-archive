@@ -197,6 +197,7 @@ async fn contract_listen_before_spawn_passes_and_routes_infer_request() {
         task_summary: "b2b-listen-before-spawn-contract".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
 
     let result = executor.execute(ctx).await;

@@ -21,7 +21,8 @@ use tauri::Emitter;
 
 use elai_orchestrator::{
     ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
-    ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary, InterventionKeyword,
+    ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary,
+    InterventionCredentials, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry,
     ModeChangedPayload, NovelStepRow, ReflectState, SsbActionType, SsbPayload, StubRunRow,
     TaskSubmittedPayload,
@@ -240,6 +241,43 @@ pub async fn respond_to_confirmation(
     // No SSB action_type for generic confirmations; emit nothing — the
     // frontend treats `ok` as success.
     let _ = (confirmation_id, decision);
+    Ok(json!({ "ok": true }))
+}
+
+/// C2: submit credential form values back to the orchestrator's
+/// `run_confirmation_gate` by writing an `InterventionResponse` row carrying
+/// `InterventionOption::Credentials(credentials)`.
+///
+/// `action_id` must be the string form of the `InterventionRequest.seq` from
+/// the SSB (same contract as `submit_intervention_response`).
+/// `credentials` is a `{"key": "value"}` JSON object whose keys are field ids.
+///
+/// Values are written to SSB as-is — the orchestrator sanitizes keys before
+/// using them as env-var names.
+#[tauri::command]
+pub async fn submit_credential_response(
+    state: State<'_, AppState>,
+    action_id: String,
+    credentials: BTreeMap<String, String>,
+) -> CmdResult<Value> {
+    let writer = state
+        .writer
+        .as_ref()
+        .ok_or_else(|| "ssb writer unavailable".to_owned())?;
+    let request_id = action_id
+        .parse::<i64>()
+        .map_err(|_| format!("submit_credential_response: invalid action_id: {action_id}"))?;
+    let payload = SsbPayload::InterventionResponse(InterventionResponsePayload {
+        request_id,
+        chosen: InterventionOption::Credentials(InterventionCredentials {
+            credentials,
+        }),
+        user_note: None,
+    });
+    writer
+        .write_payload("dashboard-v2", 0, payload, vec![])
+        .await
+        .map_err(map_err)?;
     Ok(json!({ "ok": true }))
 }
 

@@ -255,6 +255,21 @@ export async function submit_intervention_response(
   return { ok: true };
 }
 
+// C2: submit credential form values to the orchestrator's credential gate.
+export async function submit_credential_response(
+  actionId: string,
+  credentials: Record<string, string>,
+): Promise<{ ok: boolean }> {
+  logStub('submit_credential_response', { actionId, fieldCount: Object.keys(credentials).length });
+  const live = await tryInvoke<{ ok: boolean }>('submit_credential_response', {
+    actionId,
+    credentials,
+  });
+  if (live) return live;
+  await delay();
+  return { ok: true };
+}
+
 export async function open_project_from_folder(path: string): Promise<ProjectSummary> {
   logStub('open_project_from_folder', { path });
   const live = await tryInvoke<ProjectSummary>('open_project_from_folder', { path });

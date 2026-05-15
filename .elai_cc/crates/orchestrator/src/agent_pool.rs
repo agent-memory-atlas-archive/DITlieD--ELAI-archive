@@ -313,6 +313,7 @@ impl<E: EntropySource> InProcessAgentPool<E> {
         agent_id: &Uuid,
         agent_binary_path: &std::path::Path,
         socket_path: &std::path::Path,
+        session_credentials: &std::collections::BTreeMap<String, String>,
     ) -> Result<(), AgentPoolError> {
         let handle = self.agents.get_mut(agent_id).ok_or_else(|| {
             AgentPoolError::AgentNotFound(*agent_id)
@@ -362,11 +363,26 @@ impl<E: EntropySource> InProcessAgentPool<E> {
             // Fallback path (Linux until B-18B, or Windows when sandbox creation
             // failed): plain Command::spawn with sanitized env.
             let env = crate::sandbox::AgentEnvironment::new(scratch_dir);
-            let child = std::process::Command::new(agent_binary_path)
-                .arg(socket_path.to_string_lossy().as_ref())
+            let mut cmd = std::process::Command::new(agent_binary_path);
+            cmd.arg(socket_path.to_string_lossy().as_ref())
                 .arg(agent_id.to_string())
                 .env_clear()
-                .envs(env.as_env_map())
+                .envs(env.as_env_map());
+            // C2: inject session credentials as additional env vars. Keys are
+            // already sanitized to [A-Z0-9_]+ by sanitize_credential_id in
+            // task_runner.rs. Credentials overlay the base AgentEnvironment;
+            // on collision credentials win (sanitized ids are unique by design).
+            // Values are NEVER logged — only key names and value lengths.
+            for (key, value) in session_credentials {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    credential_key = %key,
+                    value_len = value.len(),
+                    "agent spawn: injecting session credential into env"
+                );
+                cmd.env(key, value);
+            }
+            let child = cmd
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

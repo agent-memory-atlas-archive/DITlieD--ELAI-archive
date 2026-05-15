@@ -372,6 +372,7 @@ mod tests {
             task_summary: "x".to_string(),
             escalation_message: None,
             mode_selection: Some(sel),
+            session_credentials: std::collections::BTreeMap::new(),
         };
         let err = run_fim_step(&ctx, &sel).await.expect_err("legacy");
         assert!(matches!(err, FocusTunnelExecError::MissingProvider));
@@ -385,6 +386,7 @@ mod tests {
             task_summary: "x".to_string(),
             escalation_message: None,
             mode_selection: Some(sel),
+            session_credentials: std::collections::BTreeMap::new(),
         };
         let err = run_diff_step(&ctx, &sel).await.expect_err("legacy");
         assert!(matches!(err, FocusTunnelExecError::MissingProvider));
@@ -401,6 +403,7 @@ mod tests {
             task_summary: "x".to_string(),
             escalation_message: None,
             mode_selection: Some(sel),
+            session_credentials: std::collections::BTreeMap::new(),
         };
         let err = run_fim_step_with_provider(&ctx, &sel, None, None, None, None)
             .await

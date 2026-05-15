@@ -413,7 +413,8 @@ pub use worker_boot::{
 pub use ssb::{
     default_ssb_path, default_ssb_path_for_base, DairaTracePayload, DiffSummary, DkgReadyPayload,
     FailureClassifiedPayload, FeasibilityReportPayload, GitCommitPayload, HookEventPayload,
-    IndexingProgressPayload, InterventionKeyword, InterventionOption, InterventionRequestPayload,
+    IndexingProgressPayload, CredentialField, InterventionCredentials,
+    InterventionKeyword, InterventionOption, InterventionRequestPayload,
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
     NovelStepDetectedPayload, PhaseCompletePayload, PreviewAvailablePayload, ProviderSignalsPayload,
     SearchTriggerFiredPayload, Ssb, SsbActionType, SsbConfig, SsbEntry, SsbError, SsbFileEntry,
@@ -631,7 +632,7 @@ pub use ssb_viewer::{
 pub use task_runner::{
     detect_scaffold_template, emit_integration_checkpoint_for_test,
     enforce_file_read_budget_guard, evaluate_post_execution_block_found,
-    fix_and_rerun_until_green, is_web_research_task,
+    fix_and_rerun_until_green, is_web_research_task, run_confirmation_gate,
     is_web_scaffold_task, new_dev_server_registry, project_dir_is_web,
     serialize_decomposition_for_grounding, start_task_runner,
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor,

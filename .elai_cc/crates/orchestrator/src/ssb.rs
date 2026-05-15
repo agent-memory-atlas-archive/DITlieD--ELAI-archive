@@ -7,6 +7,7 @@
 //! A single [`Ssb`] instance is permanently bound to one `(project_id, session_id)` pair.
 //! Multi-session scenarios require separate instances.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -1686,23 +1687,53 @@ pub struct ResearchDecomposeLevelPayload {
 // Intervention payloads (4K.1 — dashboard human-in-the-loop gates)
 // ---------------------------------------------------------------------------
 
+/// One field in a credential request form.
+///
+/// `id` becomes the env-var name (uppercased, sanitized to `[A-Z0-9_]+`).
+/// `secret` controls whether the dashboard renders the input as type="password".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialField {
+    /// Identifier for the field; becomes the env-var name after sanitization.
+    pub id: String,
+    /// Human-readable label shown in the credential form.
+    pub label: String,
+    /// When true the dashboard renders the input as a masked password field.
+    pub secret: bool,
+    /// Optional pre-filled default value shown in the form.
+    pub default: Option<String>,
+}
+
 /// Category of human intervention being requested (4K.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `RequestCredential` carries the form fields the dashboard must render.
+/// Adding this variant requires removing `Copy` from the enum because
+/// `Vec<CredentialField>` is not `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InterventionType {
     ApproveChange,
     ReplanApproval,
     ErrorRecovery,
+    /// C2: request the user to supply one or more credential values.
+    RequestCredential { fields: Vec<CredentialField> },
 }
 
 /// One option presented to the user when an intervention is raised.
 ///
-/// The `Retry(String)` variant carries a freeform message; all others are unit.
-/// `#[serde(untagged)]` renders enum-less JSON: `"accept"`, `"decline"`, `"skip"`,
-/// or `{"retry": "message"}` — matching what the dashboard frontend emits.
+/// The `Retry(String)` variant carries a freeform message; `Keyword` variants
+/// are unit. `#[serde(untagged)]` renders enum-less JSON: `"accept"`,
+/// `"decline"`, `"skip"`, or `{"retry": "message"}`, or
+/// `{"credentials": {"KEY": "value", ...}}` — matching what the dashboard
+/// frontend emits.
+///
+/// `Credentials` is the C2 variant: carries an `InterventionCredentials` whose
+/// `credentials` map is keyed by `CredentialField.id`. The untagged representation
+/// is `{"credentials": {"KEY": "VALUE"}}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InterventionOption {
+    /// C2: credential form submission from the dashboard.
+    Credentials(InterventionCredentials),
     Retry(InterventionRetry),
     Keyword(InterventionKeyword),
 }
@@ -1720,6 +1751,15 @@ pub enum InterventionKeyword {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterventionRetry {
     pub retry: String,
+}
+
+/// C2: structured form of the `credentials` option.
+///
+/// Serializes as `{"credentials": {"KEY": "VALUE", ...}}` so the untagged
+/// `InterventionOption` enum can distinguish it from `Keyword` and `Retry`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionCredentials {
+    pub credentials: BTreeMap<String, String>,
 }
 
 /// Short diff summary attached to an intervention request.

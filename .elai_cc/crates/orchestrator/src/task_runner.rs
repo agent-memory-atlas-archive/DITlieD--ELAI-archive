@@ -713,6 +713,13 @@ pub struct BabyStepExecutionCtx {
     /// the field is informational only and the executor falls back to STRUCTURED
     /// regardless of the selection (SSB beacon still emitted upstream).
     pub mode_selection: Option<crate::focus_tunnel::ModeSelection>,
+    /// C2: session-scoped credential map accumulated from RequestCredential gates.
+    ///
+    /// Keys are sanitized env-var names (`[A-Z0-9_]+`); values are user-supplied
+    /// strings. Injected into the agent subprocess environment via `Command::env()`
+    /// at spawn time. Empty on the fix-and-rerun path and on synthetic executors.
+    /// Values are NEVER logged.
+    pub session_credentials: std::collections::BTreeMap<String, String>,
 }
 
 /// Result of one baby-step execution dispatch.
@@ -1040,6 +1047,9 @@ where
             // tunnel routing (B-28 E-3) only fires on primary baby-step
             // dispatch, not on fix-and-rerun retries.
             mode_selection: None,
+            // fix_and_rerun_until_green has no ResolvedConfig access; credentials
+            // are not propagated on this path. Empty default preserves prior behavior.
+            session_credentials: std::collections::BTreeMap::new(),
         };
         let _fixer_result = fixer_executor.execute(exec_ctx).await;
         // We do NOT parse the agent response content. Per the integration
@@ -1292,6 +1302,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     &agent_id,
                     &self.agent_binary_path,
                     &socket_path,
+                    &ctx.session_credentials,
                 )
                 .err()
                 .map(|e| format!("launch_agent_process failed: {e}"))
@@ -2496,6 +2507,14 @@ struct ResolvedConfig {
     /// B-28 WIRING-2 (item J): speculative file router. None today.
     focus_tunnel_file_router:
         Option<Arc<AsyncMutex<crate::focus_tunnel::SpeculativeFileRouter>>>,
+    /// C2: per-session credential map accumulated from RequestCredential gates.
+    ///
+    /// Keys are sanitized env-var names (`[A-Z0-9_]+`); values are user-supplied
+    /// strings. Populated by `run_confirmation_gate` when the user submits a
+    /// credential form; applied via `Command::env()` calls at subprocess spawn
+    /// time. Values are NEVER logged. Guarded by `std::sync::Mutex` because the
+    /// update happens inside the async `drive_task` body without awaiting the lock.
+    session_credentials: Mutex<BTreeMap<String, String>>,
     /// B-10 (DECISION-A / DECISION-F): always-Some
     /// [`crate::context_budget::ModelCapabilityProfile`] derived once at
     /// runner construction. Threaded into every `build_dispatch_context` call
@@ -2643,6 +2662,9 @@ impl ResolvedConfig {
             focus_tunnel_pre_assembler: None,
             focus_tunnel_dep_resolver: None,
             focus_tunnel_file_router: None,
+            // C2: credential map starts empty; populated by run_confirmation_gate
+            // on RequestCredential responses.
+            session_credentials: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -4739,14 +4761,21 @@ async fn drive_task(
                 let verdict =
                     classifier.classify(BABY_STEP_PRE_GATE_ACTION, &task_summary);
                 if let crate::IrreversibleVerdict::ConfirmationRequired { reason } = &verdict {
-                    classifier_rejected = run_confirmation_gate(
+                    let (rejected, new_creds) = run_confirmation_gate(
                         writer,
                         reason,
                         &task_summary,
                         bs_id.0,
                         cancel,
+                        crate::ssb::InterventionType::ApproveChange,
                     )
                     .await;
+                    classifier_rejected = rejected;
+                    if !new_creds.is_empty() {
+                        if let Ok(mut guard) = resolved.session_credentials.lock() {
+                            guard.extend(new_creds);
+                        }
+                    }
                 }
             }
         }
@@ -4875,6 +4904,13 @@ async fn drive_task(
             task_summary: task_summary.clone(),
             escalation_message,
             mode_selection: Some(mode_selection),
+            // C2: snapshot current credentials under the lock and release
+            // immediately; the executor's Command::env() calls use the clone.
+            session_credentials: resolved
+                .session_credentials
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default(),
         };
 
         // B-8 Tasks#3: PipelineGrc.generate_csq pre-tool gate.
@@ -7577,9 +7613,35 @@ async fn record_mistake_on_failure(
     }
 }
 
+/// C2: sanitize a credential field id to a valid env-var name.
+///
+/// Uppercases the id and replaces any character outside `[A-Z0-9_]` with `_`.
+/// An empty id becomes `CREDENTIAL`.
+fn sanitize_credential_id(id: &str) -> String {
+    let upper = id.to_ascii_uppercase();
+    let sanitized: String = upper
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if sanitized.is_empty() {
+        "CREDENTIAL".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 /// Batch-fu (FU.5 / A-31): emit an `InterventionRequest` row, block until a
 /// matching `InterventionResponse` arrives on the SSB broadcast channel, then
-/// emit an `InterventionResolved` row. Returns `true` when the user rejected.
+/// emit an `InterventionResolved` row.
+///
+/// Returns `(rejected, credentials)`:
+/// - `rejected`: `true` when the user declined; `false` when approved or credentials submitted.
+/// - `credentials`: populated only for `RequestCredential` intervention types; empty otherwise.
+///   Keys are sanitized env-var names (`[A-Z0-9_]+`); values are user-supplied strings.
+///
+/// For `RequestCredential`, the response is matched on
+/// `InterventionOption::Credentials(...)` instead of `Keyword(Accept)`.
+/// Credential values are NEVER logged — only field id and value length.
 ///
 /// The intervention is identified by a UUID rendered into both the
 /// `InterventionRequestPayload.step_id` (prefixed with `intervention:`) and
@@ -7587,13 +7649,22 @@ async fn record_mistake_on_failure(
 /// two rows without walking the seq column. The `reason` and `summary` land
 /// on the request `description` as a single line so the frontend can render
 /// them without deserializing the classifier's internal state.
-async fn run_confirmation_gate(
+/// C2 — public for integration tests. Writes an InterventionRequest to SSB,
+/// waits for the matching InterventionResponse, and returns (rejected, credentials).
+/// `rejected` is true when the user declined; `credentials` is non-empty only
+/// for RequestCredential gates.
+pub async fn run_confirmation_gate(
     writer: &Arc<Ssb>,
     reason: &str,
     summary: &str,
     baby_step_id: u64,
     cancel: &CancelHandle,
-) -> bool {
+    intervention_type: crate::ssb::InterventionType,
+) -> (bool, BTreeMap<String, String>) {
+    let is_credential = matches!(
+        &intervention_type,
+        crate::ssb::InterventionType::RequestCredential { .. }
+    );
     let intervention_id = {
         let mut b = [0u8; 16];
         getrandom::fill(&mut b)
@@ -7608,14 +7679,19 @@ async fn run_confirmation_gate(
         reason,
         truncate_for_log(summary, 160)
     );
-    let options = vec![
-        crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Accept),
-        crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Decline),
-    ];
+    let options = if is_credential {
+        // Credential requests have no keyword options — the form submit IS the response.
+        vec![]
+    } else {
+        vec![
+            crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Accept),
+            crate::ssb::InterventionOption::Keyword(crate::ssb::InterventionKeyword::Decline),
+        ]
+    };
     let request_payload = crate::ssb::SsbPayload::InterventionRequest(
         crate::ssb::InterventionRequestPayload {
             step_id: format!("intervention:{}", id_str),
-            intervention_type: crate::ssb::InterventionType::ApproveChange,
+            intervention_type,
             description,
             diff_summary: None,
             options,
@@ -7637,7 +7713,7 @@ async fn run_confirmation_gate(
                 baby_step_id,
                 "task_runner: InterventionRequest write failed; proceeding without gate",
             );
-            return false;
+            return (false, BTreeMap::new());
         }
     };
     // B-19 W2 DEFERRED: confirmation gate uses Instant for loop-termination
@@ -7655,6 +7731,9 @@ async fn run_confirmation_gate(
     // `is_cancelled` check so runner shutdown does not deadlock on a
     // pending prompt.
     const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+    // `approved` is true when the user accepts (or submits credentials).
+    // `captured_credentials` is populated only for RequestCredential gates.
+    let mut captured_credentials: BTreeMap<String, String> = BTreeMap::new();
     let approved = loop {
         if cancel.is_cancelled() {
             warn!(
@@ -7680,13 +7759,27 @@ async fn run_confirmation_gate(
                 if resp.request_id != request_seq {
                     continue;
                 }
-                let ok = matches!(
-                    resp.chosen,
+                match resp.chosen {
                     crate::ssb::InterventionOption::Keyword(
                         crate::ssb::InterventionKeyword::Accept,
-                    ),
-                );
-                break ok;
+                    ) => break true,
+                    crate::ssb::InterventionOption::Credentials(ref creds) => {
+                        // C2: credential submission counts as approval.
+                        // Store credentials with sanitized env-var keys.
+                        // Values are NEVER logged — only id + length.
+                        for (raw_id, value) in &creds.credentials {
+                            let env_name = sanitize_credential_id(raw_id);
+                            tracing::info!(
+                                field_id = %env_name,
+                                value_len = value.len(),
+                                "task_runner: credential captured",
+                            );
+                            captured_credentials.insert(env_name, value.clone());
+                        }
+                        break true;
+                    }
+                    _ => break false,
+                }
             }
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
@@ -7723,7 +7816,7 @@ async fn run_confirmation_gate(
             "task_runner: InterventionResolved write failed",
         );
     }
-    !approved
+    (!approved, captured_credentials)
 }
 
 /// Batch-fu (FU.6 / A-46): invoke the ContextTelescope on a repair snippet.

@@ -215,6 +215,7 @@ async fn contract_missing_binary_surfaces_failed_outcome() {
         task_summary: "dummy".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let result = exec.execute(ctx).await;
     match result.outcome {
@@ -244,6 +245,7 @@ async fn contract_synthetic_executor_still_works_as_fallback() {
         task_summary: "legacy path".into(),
         escalation_message: None,
         mode_selection: None,
+        session_credentials: std::collections::BTreeMap::new(),
     };
     let result = exec.execute(ctx).await;
     assert!(matches!(result.outcome, BabyStepOutcome::Passed));
