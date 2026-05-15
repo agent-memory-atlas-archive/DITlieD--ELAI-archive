@@ -140,6 +140,10 @@ pub mod runtime_setup;
 // agent session management. Exposes AgentRpcServer trait + InferOutcome +
 // ToolOutcome + bind_session_listener + accept_one + run_agent_session.
 pub mod ipc_accept;
+// Phase B2c — ProductionAgentRpcServer: impls AgentRpcServer wrapping
+// AnthropicClient (sidecar or cloud via ELAI_GROUNDING_BACKEND) and
+// InProcessToolDispatcher.
+pub mod production_agent_rpc;
 pub mod supervision;
 pub mod task_packet;
 pub mod task_registry;
@@ -663,6 +667,10 @@ pub use ipc_accept::{
     AgentSessionOutcome, IpcAcceptError, InferOutcome, NoOpAgentRpcServer, PlatformListener,
     PlatformStream, ToolOutcome,
 };
+// Phase B2c — ProductionAgentRpcServer public surface.
+// NullToolDispatcher removed (B2c fix): CLI/dashboard build the real InProcessToolDispatcher
+// directly via elai_tools::dispatcher (they have elai-tools as a regular dep).
+pub use production_agent_rpc::ProductionAgentRpcServer;
 pub use task_runner::runtime_model_pool;
 pub use supervision::{
     EscalationAction, SupervisionError, SupervisionManager, SupervisionOutcome, SupervisionPolicy,

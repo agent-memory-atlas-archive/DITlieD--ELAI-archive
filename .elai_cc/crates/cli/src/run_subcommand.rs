@@ -91,7 +91,142 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
                 ));
                 let rpc_server: std::sync::Arc<
                     dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
-                > = std::sync::Arc::new(elai_orchestrator::NoOpAgentRpcServer);
+                > = if std::env::var("ELAI_GROUNDING_BACKEND").as_deref()
+                    == Ok("cloud")
+                {
+                    // Cloud path: AnthropicClient reads ANTHROPIC_BASE_URL +
+                    // auth from env. If credentials are absent, fall back to
+                    // NoOp so the executor still starts (inference will fail
+                    // gracefully per InferOutcome::Failed).
+                    match elai_providers::AnthropicClient::from_env() {
+                        Ok(client) => {
+                            let model = std::env::var("ELAI_MODEL")
+                                .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+                            let max_tokens = std::env::var("ELAI_MAX_TOKENS")
+                                .ok()
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .unwrap_or(4096);
+                            // Build a real InProcessToolDispatcher via elai-tools.
+                            // NoOpIntegrationCommandRunner returns honest "not wired" failures
+                            // for the integration tier; the 4 other dispatch methods are real.
+                            let dispatcher: std::sync::Arc<
+                                dyn elai_core::tool_dispatcher::ToolDispatcher,
+                            > = {
+                                struct NoOpIntegrationRunner;
+                                impl elai_tools::tiered_validation::IntegrationCommandRunner
+                                    for NoOpIntegrationRunner
+                                {
+                                    fn run_integration<'a>(
+                                        &'a self,
+                                        _level: &'a str,
+                                        _dir: &'a std::path::Path,
+                                    ) -> std::pin::Pin<
+                                        Box<
+                                            dyn std::future::Future<
+                                                    Output = elai_tools::tiered_validation::IntegrationRunOutcome,
+                                                > + Send
+                                                + 'a,
+                                        >,
+                                    > {
+                                        Box::pin(async {
+                                            elai_tools::tiered_validation::IntegrationRunOutcome {
+                                                passed: false,
+                                                rules_fired: 0,
+                                                stderr_snippet: Some(
+                                                    "integration tier not wired \
+                                                     (NoOpIntegrationRunner in CLI)"
+                                                        .to_string(),
+                                                ),
+                                            }
+                                        })
+                                    }
+                                }
+                                let validator = elai_tools::dispatcher::default_validator(
+                                    std::sync::Arc::new(NoOpIntegrationRunner),
+                                    "rust",
+                                );
+                                std::sync::Arc::new(
+                                    elai_tools::dispatcher::InProcessToolDispatcher::new(
+                                        std::sync::Arc::new(validator),
+                                    ),
+                                )
+                            };
+                            std::sync::Arc::new(
+                                elai_orchestrator::ProductionAgentRpcServer::new(
+                                    client, dispatcher, model, max_tokens,
+                                ),
+                            )
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "elai run: cloud credentials unavailable; \
+                                 using NoOpAgentRpcServer"
+                            );
+                            std::sync::Arc::new(elai_orchestrator::NoOpAgentRpcServer)
+                        }
+                    }
+                } else {
+                    // Sidecar path (default).
+                    let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                        .unwrap_or_else(|_| "http://localhost:8100".to_string());
+                    let client = elai_providers::AnthropicClient::new("local-dummy")
+                        .with_base_url(base_url);
+                    let model = std::env::var("ELAI_MODEL")
+                        .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+                    let max_tokens = std::env::var("ELAI_MAX_TOKENS")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(4096);
+                    // Build a real InProcessToolDispatcher via elai-tools.
+                    // NoOpIntegrationCommandRunner returns honest "not wired" failures
+                    // for the integration tier; the 4 other dispatch methods are real.
+                    let dispatcher: std::sync::Arc<
+                        dyn elai_core::tool_dispatcher::ToolDispatcher,
+                    > = {
+                        struct NoOpIntegrationRunner;
+                        impl elai_tools::tiered_validation::IntegrationCommandRunner
+                            for NoOpIntegrationRunner
+                        {
+                            fn run_integration<'a>(
+                                &'a self,
+                                _level: &'a str,
+                                _dir: &'a std::path::Path,
+                            ) -> std::pin::Pin<
+                                Box<
+                                    dyn std::future::Future<
+                                            Output = elai_tools::tiered_validation::IntegrationRunOutcome,
+                                        > + Send
+                                        + 'a,
+                                >,
+                            > {
+                                Box::pin(async {
+                                    elai_tools::tiered_validation::IntegrationRunOutcome {
+                                        passed: false,
+                                        rules_fired: 0,
+                                        stderr_snippet: Some(
+                                            "integration tier not wired \
+                                             (NoOpIntegrationRunner in CLI sidecar path)"
+                                                .to_string(),
+                                        ),
+                                    }
+                                })
+                            }
+                        }
+                        let validator = elai_tools::dispatcher::default_validator(
+                            std::sync::Arc::new(NoOpIntegrationRunner),
+                            "rust",
+                        );
+                        std::sync::Arc::new(
+                            elai_tools::dispatcher::InProcessToolDispatcher::new(
+                                std::sync::Arc::new(validator),
+                            ),
+                        )
+                    };
+                    std::sync::Arc::new(elai_orchestrator::ProductionAgentRpcServer::new(
+                        client, dispatcher, model, max_tokens,
+                    ))
+                };
                 let executor = elai_orchestrator::build_default_baby_step_executor(
                     OsEntropy,
                     agent_bin.clone(),
