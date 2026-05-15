@@ -14,7 +14,7 @@
 //! when neither is on PATH so the orchestrator can degrade the
 //! `WebPerformance` tier gracefully.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,105 @@ pub struct LighthouseReport {
     pub inp_ms: u32,
     /// Performance score in [0, 1] (higher is better).
     pub perf_score: f64,
+}
+
+/// Performance and accessibility scores extracted from a single Lighthouse run.
+///
+/// Both fields are in [0, 1] (higher is better). Parsed from
+/// `/categories/performance/score` and `/categories/accessibility/score` in
+/// the Lighthouse JSON output. Lighthouse runs axe-core internally so the
+/// accessibility score here is equivalent to an axe audit; no separate
+/// axe-core subprocess is required.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LighthouseScores {
+    /// Overall Lighthouse performance score in [0, 1].
+    pub performance: f64,
+    /// Overall Lighthouse accessibility score (axe-core based) in [0, 1].
+    pub accessibility: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Windows chrome.exe path probe.
+// ---------------------------------------------------------------------------
+
+/// Standard Windows installation paths for Google Chrome, in probe order.
+///
+/// Uses environment variable expansion at call time so that user-specific
+/// install paths (`%LOCALAPPDATA%`) are resolved correctly for the running
+/// process.
+#[cfg(windows)]
+const CHROME_PATHS_WIN: &[&str] = &[
+    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+    r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
+    r"%LocalAppData%\Programs\Google\Chrome\Application\chrome.exe",
+];
+
+/// Attempt to find a Google Chrome executable on Windows by probing the four
+/// standard installation locations.
+///
+/// Returns `Some(path)` for the first path that resolves to an existing file.
+/// Returns `None` if Chrome is not found at any of the probed locations.
+///
+/// On non-Windows platforms this function always returns `None` — callers
+/// should rely on `probe_chromium()` (PATH-based) on those platforms.
+pub fn find_chrome_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        expand_and_probe_chrome_paths()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn expand_and_probe_chrome_paths() -> Option<PathBuf> {
+    for template in CHROME_PATHS_WIN {
+        let expanded = expand_env_vars_windows(template);
+        let p = PathBuf::from(&expanded);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Minimal `%VAR%`-style environment variable expander for Windows path
+/// templates. Only expands variables that are actually set; unknown variables
+/// are left as-is.
+#[cfg(windows)]
+fn expand_env_vars_windows(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 64);
+    let mut rest = s;
+    while let Some(start) = rest.find('%') {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 1..];
+        if let Some(end) = rest.find('%') {
+            let var_name = &rest[..end];
+            if var_name.is_empty() {
+                result.push('%');
+            } else {
+                match std::env::var(var_name) {
+                    Ok(val) => result.push_str(&val),
+                    Err(_) => {
+                        result.push('%');
+                        result.push_str(var_name);
+                        result.push('%');
+                    }
+                }
+            }
+            rest = &rest[end + 1..];
+        } else {
+            result.push('%');
+            // No closing % — treat remainder as literal.
+            result.push_str(rest);
+            return result;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +239,123 @@ pub async fn run_lighthouse(
     }
 
     parse_lighthouse_report(&stdout)
+}
+
+/// Run Lighthouse against `url` and return both performance and accessibility
+/// scores from the same JSON document.
+///
+/// `chrome_path`: when `Some`, passes `--chrome-path=<p>` to the Lighthouse
+/// CLI, enabling Windows Chrome installs that are not on PATH. When `None`,
+/// the function relies on `probe_chromium()` (PATH-based) as before. If
+/// neither resolves a browser, returns `Err(ChromiumMissing)`.
+///
+/// Unlike `run_lighthouse`, this function does NOT probe chromium via the
+/// PATH-based `probe_chromium()` when `chrome_path` is provided — the caller
+/// is responsible for ensuring the path points to a valid Chrome/Chromium
+/// binary.
+pub async fn run_lighthouse_scores(
+    project_dir: &Path,
+    url: &str,
+    chrome_path: Option<&Path>,
+) -> Result<LighthouseScores, WebValidatorError> {
+    crate::lint::probe_node().await?;
+
+    if chrome_path.is_none() {
+        // No explicit path supplied — fall back to the PATH-based probe so
+        // that Unix/devcontainer environments continue to work.
+        probe_chromium().await?;
+    }
+
+    let mut lighthouse_args: Vec<String> = vec![
+        "--yes".to_string(),
+        "lighthouse".to_string(),
+        url.to_string(),
+        "--output=json".to_string(),
+        "--output-path=stdout".to_string(),
+        "--quiet".to_string(),
+        "--chrome-flags=--headless=new --no-sandbox".to_string(),
+    ];
+
+    if let Some(cp) = chrome_path {
+        lighthouse_args.push(format!("--chrome-path={}", cp.display()));
+    }
+
+    let mut cmd = crate::build_command("npx", &lighthouse_args);
+    cmd.current_dir(project_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output_future = cmd.output();
+    let output = match tokio::time::timeout(
+        Duration::from_secs(LIGHTHOUSE_DEFAULT_TIMEOUT_SECS),
+        output_future,
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(source)) => {
+            return Err(WebValidatorError::ProcessSpawn {
+                command: "npx --yes lighthouse (scores)".into(),
+                source,
+            });
+        }
+        Err(_) => {
+            return Err(WebValidatorError::Timeout {
+                what: "lighthouse (scores)".into(),
+                after_secs: LIGHTHOUSE_DEFAULT_TIMEOUT_SECS,
+            });
+        }
+    };
+
+    let limit = output.stdout.len().min(LIGHTHOUSE_MAX_STDOUT_BYTES);
+    let stdout = String::from_utf8_lossy(&output.stdout[..limit]).into_owned();
+
+    if stdout.trim().is_empty() {
+        return Err(WebValidatorError::ToolOutputInvalid {
+            tool: "lighthouse (scores)".into(),
+            reason: "empty stdout — likely chromium spawn failure".into(),
+        });
+    }
+
+    parse_lighthouse_scores(&stdout)
+}
+
+/// Public for testing: parse `performance` and `accessibility` scores from
+/// a Lighthouse JSON document.
+///
+/// `accessibility` is treated as optional (missing or null maps to `0.0` with
+/// a `warn` log) because older Lighthouse versions may omit the category.
+/// `performance` is required; its absence returns `ToolOutputInvalid`.
+pub fn parse_lighthouse_scores(json: &str) -> Result<LighthouseScores, WebValidatorError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| WebValidatorError::ToolOutputInvalid {
+            tool: "lighthouse".into(),
+            reason: format!("json parse: {e}"),
+        })?;
+
+    let performance = v
+        .pointer("/categories/performance/score")
+        .and_then(|s| s.as_f64())
+        .ok_or_else(|| WebValidatorError::ToolOutputInvalid {
+            tool: "lighthouse".into(),
+            reason: "missing categories.performance.score".into(),
+        })?;
+
+    let accessibility = v
+        .pointer("/categories/accessibility/score")
+        .and_then(|s| s.as_f64())
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "lighthouse JSON missing categories.accessibility.score; defaulting to 0.0"
+            );
+            0.0
+        });
+
+    Ok(LighthouseScores {
+        performance,
+        accessibility,
+    })
 }
 
 /// Public for testing: parse a Lighthouse JSON document into a distilled

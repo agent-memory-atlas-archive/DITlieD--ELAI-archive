@@ -41,6 +41,7 @@ use elai_ipc_types::ToolId;
 use elai_web_validator::{
     run_web_build, start_dev_server, DevServerHandle, WebValidationTier, WebValidatorError,
 };
+use elai_web_validator::cwv::{find_chrome_path, run_lighthouse_scores, LighthouseScores};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
@@ -809,6 +810,61 @@ impl BabyStepExecutor for SyntheticBabyStepExecutor {
 // step path in the main `drive_task` loop; the function is intentionally a
 // free function so the contract test can exercise it in isolation without
 // constructing a full `TaskRunner`.
+
+// ---------------------------------------------------------------------------
+// C1 — Lighthouse threshold constants.
+// ---------------------------------------------------------------------------
+
+/// Minimum acceptable Lighthouse performance score (0.0–1.0). Below this the
+/// validator closure reports `Failed` and the fixer is dispatched.
+pub const MIN_PERF_SCORE: f64 = 0.80;
+
+/// Minimum acceptable Lighthouse accessibility score (0.0–1.0). Lighthouse
+/// runs axe-core internally; no separate axe spawn is needed.
+pub const MIN_A11Y_SCORE: f64 = 0.90;
+
+/// Pure threshold check used by the validator closure and by contract tests.
+///
+/// Returns `Green` when both scores meet or exceed the named thresholds.
+/// Returns `Failed` with a diagnostic summary otherwise. `chrome_path = None`
+/// short-circuits to a `Failed("chrome.exe not detected …")` result before
+/// any score inspection.
+pub fn lighthouse_validator_report(
+    chrome_path: Option<&Path>,
+    scores: &LighthouseScores,
+) -> FixerValidatorReport {
+    if chrome_path.is_none() {
+        return FixerValidatorReport::Failed {
+            summary: "chrome.exe not detected; install Chrome or set CHROME_PATH env var \
+                      before running Lighthouse"
+                .to_string(),
+        };
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+
+    if scores.performance < MIN_PERF_SCORE {
+        failures.push(format!(
+            "lighthouse_perf: score {:.3} below threshold {:.2}",
+            scores.performance, MIN_PERF_SCORE
+        ));
+    }
+
+    if scores.accessibility < MIN_A11Y_SCORE {
+        failures.push(format!(
+            "lighthouse_a11y: accessibility score {:.3} below threshold {:.2}",
+            scores.accessibility, MIN_A11Y_SCORE
+        ));
+    }
+
+    if failures.is_empty() {
+        FixerValidatorReport::Green
+    } else {
+        FixerValidatorReport::Failed {
+            summary: failures.join("; "),
+        }
+    }
+}
 
 /// Severity-reduced report from one validator pass. Returned by
 /// [`FixerValidator`] implementations; `Green` means `severity < warn`
@@ -5151,27 +5207,110 @@ async fn drive_task(
         )
         .await;
 
-        // E1 fix-and-rerun: on a failed baby step in a web project, run
-        // `npm run build` and dispatch up to 5 fixer iterations through the
-        // existing executor. Escalation (RequestHuman GateDecision) is emitted
-        // inside `fix_and_rerun_until_green`, so we only mirror the result
-        // into local `outcome` / `outcome_passed`.
+        // C1 fix-and-rerun: on a failed baby step in a web project, run
+        // `npm run build` then (when Chrome is available) start a dev server,
+        // run Lighthouse to collect perf+a11y scores from a single JSON
+        // document, and check thresholds (perf >= MIN_PERF_SCORE, a11y >=
+        // MIN_A11Y_SCORE). Chrome absent -> Failed immediately. Scores below
+        // threshold -> Failed so the fixer loop iterates. Escalation
+        // (RequestHuman GateDecision) is emitted inside
+        // `fix_and_rerun_until_green`, so we only mirror the result into
+        // local `outcome` / `outcome_passed`.
         if is_web_project && !outcome_passed {
             if let Some(proj) = project_dir.as_ref() {
                 let proj_for_validator = proj.clone();
+                let bs_id_for_validator = bs_id.0;
                 let validator = move |_dir: &Path| {
                     let dir = proj_for_validator.clone();
                     async move {
+                        // Step 1: build must succeed before Lighthouse runs.
                         let out_dir = dir.join("dist");
                         match run_web_build(&dir, "npm run build", &out_dir).await {
-                            Ok(r) if r.success => FixerValidatorReport::Green,
-                            Ok(r) => FixerValidatorReport::Failed {
-                                summary: r.stderr_errors.join("\n"),
-                            },
-                            Err(e) => FixerValidatorReport::Failed {
-                                summary: e.to_string(),
-                            },
+                            Ok(r) if r.success => {}
+                            Ok(r) => {
+                                return FixerValidatorReport::Failed {
+                                    summary: r.stderr_errors.join("\n"),
+                                };
+                            }
+                            Err(e) => {
+                                return FixerValidatorReport::Failed {
+                                    summary: e.to_string(),
+                                };
+                            }
                         }
+
+                        // Step 2: probe for Chrome. No silent skip — absent
+                        // Chrome is an explicit failure.
+                        let chrome_path = find_chrome_path();
+
+                        // Step 3: if Chrome is missing and PATH probe also
+                        // fails, surface ChromiumMissing as Failed.
+                        if chrome_path.is_none() {
+                            // Try PATH-based probe as final fallback (covers
+                            // Unix/devcontainer with `chromium` on PATH).
+                            if let Err(probe_err) =
+                                elai_web_validator::cwv::probe_chromium().await
+                            {
+                                tracing::warn!(
+                                    baby_step = bs_id_for_validator,
+                                    "lighthouse validator: chrome absent — {}",
+                                    probe_err
+                                );
+                                return lighthouse_validator_report(None, &LighthouseScores {
+                                    performance: 0.0,
+                                    accessibility: 0.0,
+                                });
+                            }
+                            // PATH probe succeeded (e.g. `chromium` on Unix);
+                            // proceed with chrome_path=None — run_lighthouse_scores
+                            // will use probe_chromium() internally.
+                        }
+
+                        // Step 4: start a dev server for Lighthouse to audit.
+                        let preview_port = DEFAULT_DEV_SERVER_PORT;
+                        let dev_handle = match start_dev_server(
+                            &dir,
+                            DEFAULT_DEV_SERVER_COMMAND,
+                            preview_port,
+                        )
+                        .await
+                        {
+                            Ok(h) => h,
+                            Err(e) => {
+                                return FixerValidatorReport::Failed {
+                                    summary: format!("dev server failed to start: {e}"),
+                                };
+                            }
+                        };
+                        let preview_url =
+                            format!("http://127.0.0.1:{}/", dev_handle.port());
+
+                        // Step 5: run Lighthouse. Dev server is dropped
+                        // (killed) after this block regardless of outcome.
+                        let scores_result = run_lighthouse_scores(
+                            &dir,
+                            &preview_url,
+                            chrome_path.as_deref(),
+                        )
+                        .await;
+                        // Explicitly drop to kill the dev server process before
+                        // returning so we don't leave stray children alive.
+                        drop(dev_handle);
+
+                        let scores = match scores_result {
+                            Ok(s) => s,
+                            Err(e) => {
+                                return FixerValidatorReport::Failed {
+                                    summary: format!("lighthouse failed: {e}"),
+                                };
+                            }
+                        };
+
+                        // Step 6: threshold check.
+                        lighthouse_validator_report(
+                            Some(std::path::Path::new("probe-ok")),
+                            &scores,
+                        )
                     }
                 };
                 let fix_outcome = fix_and_rerun_until_green(
