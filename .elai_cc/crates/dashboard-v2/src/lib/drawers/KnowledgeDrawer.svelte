@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { knowledgeData } from '../state/drawers.svelte';
   import { Card, Badge, Toggle, UnwiredNote } from '$lib/ui';
+  import IndexingProgressPanel from '../components/IndexingProgressPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
 
   onMount(() => {
@@ -10,6 +11,9 @@
   });
 
   const d = knowledgeData;
+
+  // Maximum grammar entries to display inline before showing "+N more".
+  const MAX_DISPLAY_LANGUAGES = 8;
 
   // Freshness decay enabled (from mock: no dedicated freshness store key, use dkgStats)
   let freshnessEnabled = $state(true);
@@ -83,7 +87,49 @@
     </div>
   </Card>
 
-  <!-- 2. QUERY TRACE (most recent) -->
+  <!-- B-31 Phase 4 (Cycle B): indexing progress + cancel surface. -->
+  <IndexingProgressPanel />
+
+  <!-- 2. LANGUAGES LOADED -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">LANGUAGES LOADED</div>
+    {#if d.unwired.languageStatus}
+      <UnwiredNote
+        phase="B-30"
+        feature="per-grammar load status (loaded / failed grammar list)"
+        note="get_language_grammar_status not yet wired; LanguageRegistry emitter lands with B-30 Pass A.2"
+      />
+    {:else if d.languageStatus}
+      {@const ls = d.languageStatus}
+      {@const displayLoaded = ls.loaded.slice(0, MAX_DISPLAY_LANGUAGES)}
+      {@const hiddenCount = ls.loaded.length - displayLoaded.length}
+      <div class="lang-summary">
+        <span class="lang-count">{ls.loaded.length} loaded</span>
+        {#if ls.failed.length > 0}
+          <span class="lang-failed">{ls.failed.length} failed</span>
+        {/if}
+      </div>
+      <div class="lang-list">
+        {#each displayLoaded as lang}
+          <span class="lang-chip">{lang}</span>
+        {/each}
+        {#if hiddenCount > 0}
+          <span class="lang-chip lang-chip--more">+{hiddenCount} more</span>
+        {/if}
+      </div>
+      {#if ls.failed.length > 0}
+        <div class="lang-list lang-list--failed">
+          {#each ls.failed as [langId, errMsg]}
+            <span class="lang-chip lang-chip--failed" title={errMsg}>{langId}</span>
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      <span class="ghost-text">no grammar status yet</span>
+    {/if}
+  </Card>
+
+  <!-- 3. QUERY TRACE (most recent) -->
   <Card variant="plain" padding={12}>
     <div class="section-label">QUERY TRACE (most recent)</div>
     {#if d.unwired.recentTraces}
@@ -200,6 +246,16 @@
         {/each}
       </div>
     {/if}
+  </Card>
+
+  <!-- B-29 Phase 5: IMPACT ANALYSIS panel -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">IMPACT ANALYSIS</div>
+    <UnwiredNote
+      phase="B-29"
+      feature="symbol-graph impact analysis (BFS reverse-dependency traversal)"
+      note="get_impact_analysis Tauri command wired in B-29 Phase 5; submit_task delegation pending B-29 Phase 6"
+    />
   </Card>
 
 </div>
@@ -410,6 +466,55 @@
     margin-top: 6px;
     font-family: var(--font-mono);
     font-size: 10px;
+  }
+
+  /* Languages loaded */
+  .lang-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .lang-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+  }
+
+  .lang-failed {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fail);
+  }
+
+  .lang-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+
+  .lang-list--failed {
+    margin-top: 4px;
+  }
+
+  .lang-chip {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border-radius: var(--r-xs);
+    padding: 1px 5px;
+  }
+
+  .lang-chip--more {
+    color: var(--text-ghost);
+  }
+
+  .lang-chip--failed {
+    color: var(--fail);
+    border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent);
   }
 
   /* Shared */

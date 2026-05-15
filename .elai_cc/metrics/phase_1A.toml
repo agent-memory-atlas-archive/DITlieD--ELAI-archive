@@ -11,3 +11,25 @@ edges_imports = 249
 edges_contains = 3830
 edges_implements = 69
 signatures_populated = 8075
+
+# Per-language node counts (Pass D schema addition).
+# Zero values are honest — the Phase 1A fixture was Rust-only (.elai_cc source).
+# These update after the next full-codebase smoke run.
+[per_language_node_counts]
+rust = 8075
+python = 0
+go = 0
+typescript = 0
+tsx = 0
+svelte = 0
+vue = 0
+java = 0
+csharp = 0
+ruby = 0
+javascript = 0
+c = 0
+cpp = 0
+scala = 0
+php = 0
+swift = 0
+bash = 0

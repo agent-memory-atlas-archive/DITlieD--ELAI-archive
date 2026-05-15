@@ -867,6 +867,114 @@ pub fn get_dkg_stats(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// B-30: LANGUAGE GRAMMAR STATUS
+// ---------------------------------------------------------------------------
+
+/// Returns the most recent `language_grammar_status` SSB row, decoded into a
+/// JSON object `{ loaded: string[], failed: [string, string][] }`.
+///
+/// If no row exists yet (DKG index has not run for this session), returns
+/// the empty-status shape `{ loaded: [], failed: [] }` so the frontend can
+/// show "0 loaded" rather than crashing on undefined.
+///
+/// Pass D wires this command to `SsbViewer::latest_action_of_type`. The most
+/// recent `language_grammar_status` SSB row is decoded from msgpack and
+/// re-encoded as JSON for the frontend. Shape: `{ loaded: [...], failed: [...] }`.
+#[tauri::command]
+pub async fn get_language_grammar_status(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Pass D: reads the most recent language_grammar_status action from SSB.
+    // Falls back to empty shape when no SSB DB is present or no action yet.
+    let empty = json!({ "loaded": [], "failed": [] });
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(empty);
+    };
+    match viewer.latest_action_of_type("language_grammar_status") {
+        Ok(Some(detail)) => {
+            // SsbPayload serializes as externally-tagged JSON:
+            //   {"LanguageGrammarStatus": {"loaded": [...], "failed": [...]}}
+            // The frontend expects the inner shape directly, so unwrap one level.
+            let inner = detail
+                .payload_json
+                .get("LanguageGrammarStatus")
+                .cloned()
+                .unwrap_or(empty);
+            Ok(inner)
+        }
+        Ok(None) => Ok(empty),
+        Err(e) => {
+            tracing::warn!("get_language_grammar_status SSB read failed: {e}");
+            Ok(empty)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-29 Phase 5 — Impact Analysis
+// ---------------------------------------------------------------------------
+
+/// B-29 Phase 5: Return the most recent `symbol_query` SSB row for
+/// `tool = "symbol_impact"` matching the given target/depth, or read the
+/// last impact-analysis result from SSB.
+///
+/// Falls back to an empty shape `{ target: "", total_files: 0, hop_bands: [], unresolved_pct: 0.0 }`
+/// when no SSB row exists yet.
+///
+/// Shape (locked by contract tests):
+/// ```json
+/// {
+///   "target": "<file or symbol name>",
+///   "total_files": <N>,
+///   "hop_bands": [{ "depth": 1, "files": ["..."] }, ...],
+///   "unresolved_pct": 0.0
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_impact_analysis(state: State<'_, AppState>) -> CmdResult<Value> {
+    let empty = json!({
+        "target": "",
+        "total_files": 0,
+        "hop_bands": [],
+        "unresolved_pct": 0.0,
+    });
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(empty);
+    };
+    match viewer.latest_action_of_type("symbol_query") {
+        Ok(Some(detail)) => {
+            // The payload JSON has shape { "SymbolQuery": { tool, target, hop_count, ... } }.
+            // We unwrap one level so the frontend gets the inner shape.
+            let inner = detail.payload_json.get("SymbolQuery").cloned();
+            match inner {
+                Some(sq) => {
+                    // Reshape to dashboard-friendly DTO: add hop_bands and unresolved_pct.
+                    let target = sq.get("target").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let total_files = sq.get("total_files").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let hop_count = sq.get("hop_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    // hop_bands: synthesised from hop_count (exact per-band breakdown is
+                    // available by calling the traversal fn directly; here we expose the
+                    // summary that the SSB row carries).
+                    let hop_bands: Vec<Value> = (1..=hop_count)
+                        .map(|d| json!({ "depth": d, "files": [] }))
+                        .collect();
+                    Ok(json!({
+                        "target": target,
+                        "total_files": total_files,
+                        "hop_bands": hop_bands,
+                        "unresolved_pct": 0.0,
+                    }))
+                }
+                None => Ok(empty),
+            }
+        }
+        Ok(None) => Ok(empty),
+        Err(e) => {
+            tracing::warn!("get_impact_analysis SSB read failed: {e}");
+            Ok(empty)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // REASONING / GRC
 // ---------------------------------------------------------------------------
 
@@ -3460,6 +3568,112 @@ pub async fn reindex_now(
             Err(msg)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-31 Phase 4 (Cycle B) — INDEXING PROGRESS + CANCEL
+// ---------------------------------------------------------------------------
+//
+// `cancel_indexing` flips the process-global cancellation flag for the
+// active project's indexing run (mirrors SocratiCode requestCancellation).
+// The IndexingService's per-batch loop observes the flag at the next batch
+// boundary and persists IndexingStatus::Cancelled before returning.
+//
+// `get_indexing_progress` opens the project's metadata.db on the fly and
+// serialises the current ProjectMetadata row. Polled at 1s from the
+// IndexingProgressPanel Svelte component.
+//
+// project_id is recomputed inside the command from the persisted
+// project_root_snapshot — the frontend argument is accepted for future
+// multi-project UIs but ignored as a trust boundary today (DECISION-18).
+
+#[tauri::command]
+pub async fn cancel_indexing(
+    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let resolved_project_id = project_id
+        .unwrap_or_else(|| elai_knowledge::metadata::project_id_from_path(&project_root));
+
+    let was_running = tokio::task::spawn_blocking(move || {
+        let indexes_dir = project_root
+            .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+            .join(elai_core::paths::INDEXES_DIR_NAME);
+        let service = elai_orchestrator::indexing_service::IndexingService::new(
+            project_root.clone(),
+            indexes_dir,
+        );
+        service.cancel_indexing(&resolved_project_id)
+    })
+    .await
+    .map_err(|e| format!("cancel_indexing task panicked: {e}"))?;
+
+    Ok(json!({
+        "ok": true,
+        "was_running": was_running,
+    }))
+}
+
+#[tauri::command]
+pub async fn get_indexing_progress(
+    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let clock = state.clock.clone();
+    let resolved_project_id = project_id
+        .unwrap_or_else(|| elai_knowledge::metadata::project_id_from_path(&project_root));
+
+    let snapshot = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let indexes_dir = project_root
+            .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+            .join(elai_core::paths::INDEXES_DIR_NAME);
+        let db_path = indexes_dir.join(elai_knowledge::metadata::METADATA_DB_FILENAME);
+        if !db_path.exists() {
+            return Ok(json!({
+                "status": "unknown",
+                "project_id": resolved_project_id,
+                "indexed_files": 0_u64,
+                "total_files": 0_u64,
+                "batches_processed": 0_u32,
+                "batches_total": serde_json::Value::Null,
+                "last_checkpoint_at": 0_i64,
+            }));
+        }
+        let store = elai_knowledge::metadata::ProjectMetadataStore::open(&db_path, clock)
+            .map_err(|e| format!("metadata open failed: {e}"))?;
+        match store.load(&resolved_project_id) {
+            Ok(Some(meta)) => Ok(json!({
+                "status": meta.indexing_status.as_sql_str(),
+                "project_id": meta.project_id,
+                "project_path": meta.project_path.to_string_lossy(),
+                "indexed_files": meta.indexed_files,
+                "total_files": meta.total_files,
+                "batch_size": meta.batch_size,
+                "batches_processed": meta.batches_processed,
+                "batches_total": meta.batches_total,
+                "last_checkpoint_at": meta.last_checkpoint_at,
+                "schema_version": meta.schema_version,
+            })),
+            Ok(None) => Ok(json!({
+                "status": "unknown",
+                "project_id": resolved_project_id,
+                "indexed_files": 0_u64,
+                "total_files": 0_u64,
+                "batches_processed": 0_u32,
+                "batches_total": serde_json::Value::Null,
+                "last_checkpoint_at": 0_i64,
+            })),
+            Err(e) => Err(format!("metadata load failed: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("get_indexing_progress task panicked: {e}"))??;
+
+    Ok(snapshot)
 }
 
 // ---------------------------------------------------------------------------

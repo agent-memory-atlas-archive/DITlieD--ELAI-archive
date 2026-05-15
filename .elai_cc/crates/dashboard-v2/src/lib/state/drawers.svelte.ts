@@ -95,12 +95,20 @@ function makeRefCounted(refresh: () => Promise<void>): {
 // ------------------------------------------------------------------
 // KNOWLEDGE drawer
 // ------------------------------------------------------------------
+// B-30: LanguageRegistry status shape from get_language_grammar_status Tauri command.
+interface LanguageStatus {
+  loaded: string[];
+  failed: [string, string][];
+}
+
 function createKnowledge() {
   let dkgStats = $state<DkgStats>({ nodes: 0, edges: 0, bm25_chunks: 0, vector_status: 'BUILDING', freshness_decay_pct: 0 });
   let recentTraces = $state<QueryTrace[]>([]);
   let breakers = $state<EmbeddingBreaker[]>([]);
   let recallMetrics = $state<RecallMetrics[]>([]);
   let searchMode = $state<SearchMode>('HYBRID');
+  // B-30: language grammar registry status (undefined until Tauri command is wired).
+  let languageStatus = $state<LanguageStatus | undefined>(undefined);
 
   async function refresh() {
     try {
@@ -116,6 +124,11 @@ function createKnowledge() {
       breakers = brk;
       recallMetrics = recall;
       searchMode = sm.mode;
+      // Pass D: get_language_grammar_status wired — reads most recent SSB
+      // language_grammar_status row via SsbViewer::latest_action_of_type.
+      await stub.get_language_grammar_status()
+        .then(r => { languageStatus = r; })
+        .catch(() => { languageStatus = { loaded: [], failed: [] }; });
     } catch (err) {
       console.debug('[knowledgeData] refresh failed', err);
     }
@@ -129,11 +142,14 @@ function createKnowledge() {
     get breakers() { return breakers; },
     get recallMetrics() { return recallMetrics; },
     get searchMode() { return searchMode; },
+    /** B-30 Pass D: language grammar registry status. Wired in Pass D. */
+    get languageStatus() { return languageStatus; },
     /** Bucket-B sections — backend producer not yet wired. */
     unwired: {
-      recentTraces: true, // get_query_trace_recent returns []
-      searchMode: true,   // get_search_mode returns hardcoded HYBRID
-      recallMetrics: false, // wired in PART11; commands.rs:614 returns measured constants from baseline toml
+      recentTraces: true,    // get_query_trace_recent returns []
+      searchMode: true,      // get_search_mode returns hardcoded HYBRID
+      recallMetrics: false,  // wired in PART11; commands.rs:614 returns measured constants from baseline toml
+      languageStatus: false, // wired in Pass D; SsbViewer::latest_action_of_type reads SSB
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

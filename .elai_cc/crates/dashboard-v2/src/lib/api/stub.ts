@@ -491,6 +491,14 @@ export async function get_dkg_stats(): Promise<DkgStats> {
   return DKG_STATS;
 }
 
+export async function get_language_grammar_status(): Promise<{ loaded: string[], failed: [string, string][] }> {
+  logStub('get_language_grammar_status');
+  const live = await tryInvoke<{ loaded: string[], failed: [string, string][] }>('get_language_grammar_status');
+  if (live) return live;
+  await delay();
+  return { loaded: [], failed: [] };
+}
+
 // ------------------------------------------------------------------
 // REASONING
 // ------------------------------------------------------------------

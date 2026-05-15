@@ -93,6 +93,8 @@ pub fn run() {
             commands::get_embedding_breakers,
             commands::get_recall_metrics,
             commands::get_dkg_stats,
+            // B-30: language grammar registry status
+            commands::get_language_grammar_status,
             // REASONING / GRC
             commands::get_grc_budgets,
             commands::get_grounding_sweep,
@@ -192,6 +194,11 @@ pub fn run() {
             commands::cancel_chat_stream,
             // D.1 — REINDEX NOW
             commands::reindex_now,
+            // B-31 Phase 4 (Cycle B) — INDEXING PROGRESS + CANCEL
+            commands::cancel_indexing,
+            commands::get_indexing_progress,
+            // B-29 Phase 5 — IMPACT ANALYSIS
+            commands::get_impact_analysis,
             // D.2 — PLANNING TASK (SSB-actuated)
             commands::run_planning_task,
             commands::cancel_planning_task,
@@ -515,6 +522,29 @@ pub fn run() {
                             "dashboard-v2: spawned start_task_runner with full wiring \
                              (feasibility_prober=Some, layer1a_processor=Some)"
                         );
+
+                        // B-31 Phase 4 (Cycle B): fire-and-forget auto-resume
+                        // of any project whose persisted indexing_status is
+                        // InProgress. Mirrors SocratiCode startup.ts:37-150.
+                        // Non-blocking: per-project tasks fan out under
+                        // spawn_blocking; setup() returns immediately so the
+                        // first window paints without waiting.
+                        let auto_resume_indexes_root = project_root
+                            .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                            .join(elai_core::paths::INDEXES_DIR_NAME);
+                        let auto_resume_clock = state.clock.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let report =
+                                elai_orchestrator::startup::auto_resume_indexed_projects(
+                                    auto_resume_indexes_root,
+                                    auto_resume_clock,
+                                )
+                                .await;
+                            tracing::info!(
+                                ?report,
+                                "dashboard-v2: auto_resume_indexed_projects completed"
+                            );
+                        });
                     }
                     Err(err) => tracing::warn!(
                         error = %err,
@@ -566,6 +596,36 @@ pub fn run() {
                         cancel.cancel();
                         tracing::info!("dashboard-v2: task_runner cancel signal sent on ExitRequested");
                     }
+
+                    // B-31 Phase 4 (Cycle B): graceful shutdown of any active
+                    // indexing run. Flips the process-global SHUTTING_DOWN
+                    // flag, requests cancellation for every InProgress
+                    // project, waits up to STARTUP_SHUTDOWN_DEADLINE_SECS,
+                    // and force-releases any orphan locks on deadline expiry.
+                    // RunEvent closure runs on the main thread with no async
+                    // context; tauri::async_runtime::block_on is the only way
+                    // to await here. The leaked tokio runtime from run()
+                    // head (mem::forget(rt)) provides the active reactor.
+                    let shutdown_indexes_root = state
+                        .project_root_snapshot()
+                        .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                        .join(elai_core::paths::INDEXES_DIR_NAME);
+                    let shutdown_clock = state.clock.clone();
+                    let shutdown_deadline = std::time::Duration::from_secs(
+                        elai_orchestrator::startup::STARTUP_SHUTDOWN_DEADLINE_SECS,
+                    );
+                    let shutdown_report = tauri::async_runtime::block_on(async move {
+                        elai_orchestrator::startup::graceful_shutdown(
+                            shutdown_indexes_root,
+                            shutdown_deadline,
+                            shutdown_clock,
+                        )
+                        .await
+                    });
+                    tracing::info!(
+                        ?shutdown_report,
+                        "dashboard-v2: graceful_shutdown completed on ExitRequested"
+                    );
                 }
             }
         });

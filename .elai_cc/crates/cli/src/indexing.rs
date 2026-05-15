@@ -11,8 +11,9 @@ use elai_core::paths::{
 };
 use elai_knowledge::index_version::LogNotifier;
 use elai_orchestrator::indexing_service::IndexingService;
+use elai_knowledge::LanguageRegistryStatus;
 use elai_orchestrator::ssb::{
-    DkgReadyPayload, IndexingProgressPayload, Ssb, SsbPayload,
+    DkgReadyPayload, IndexingProgressPayload, LanguageGrammarStatusPayload, Ssb, SsbPayload,
 };
 
 /// Agent-id stamped on CLI-path SSB rows (distinguishes from task_runner rows).
@@ -50,6 +51,9 @@ fn emit_indexing_ssb(
     message: Option<String>,
     // DkgReady fields — None means: do not emit DkgReady row.
     dkg: Option<(u32, u32)>, // (node_count, edge_count)
+    // B-30 Pass C: LanguageGrammarStatus payload — emitted BEFORE DkgReady.
+    // None when grammar status is unavailable (e.g. indexing failed).
+    grammar_status: Option<LanguageRegistryStatus>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -100,6 +104,23 @@ fn emit_indexing_ssb(
                 "cli_indexing: write IndexingProgress failed"
             );
             eprintln!("WARN cli_indexing: write IndexingProgress failed (stage={stage}): {e}");
+        }
+
+        // B-30 Pass C: emit LanguageGrammarStatus BEFORE DkgReady.
+        if let Some(status) = grammar_status {
+            let grammar_payload = SsbPayload::LanguageGrammarStatus(
+                LanguageGrammarStatusPayload::from(status),
+            );
+            if let Err(e) = writer
+                .write_payload("dkg_indexing", 0, grammar_payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "cli_indexing: write LanguageGrammarStatus failed"
+                );
+                eprintln!("WARN cli_indexing: write LanguageGrammarStatus failed: {e}");
+            }
         }
 
         if let Some((node_count, edge_count)) = dkg {
@@ -167,7 +188,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
         // Fresh index path: emit start, run, emit complete + DkgReady.
         let start_ms = now_unix_ms();
         if let Some(writer) = ssb {
-            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None);
+            emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None);
         }
         match svc.run_full_index() {
             Ok(summary) => {
@@ -191,6 +212,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         elapsed_ms,
                         None,
                         Some((node_count, edge_count)),
+                        summary.registry_status,
                     );
                 }
             }
@@ -207,6 +229,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                         elapsed_ms,
                         Some(e.to_string()),
                         None,
+                        None,
                     );
                 }
             }
@@ -222,7 +245,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                 // Schema-rebuild path: emit start, run, emit complete + DkgReady.
                 let start_ms = now_unix_ms();
                 if let Some(writer) = ssb {
-                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None);
+                    emit_indexing_ssb(writer, &project_id, INDEXING_STAGE_START, 0, 0, None, None, None);
                 }
                 match svc.run_full_index() {
                     Ok(summary) => {
@@ -244,6 +267,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 elapsed_ms,
                                 None,
                                 Some((node_count, edge_count)),
+                                summary.registry_status,
                             );
                         }
                     }
@@ -258,6 +282,7 @@ pub(crate) fn init_indexing_service(ssb: Option<&Arc<Ssb>>) -> Option<IndexingSe
                                 0,
                                 elapsed_ms,
                                 Some(e.to_string()),
+                                None,
                                 None,
                             );
                         }

@@ -16,6 +16,7 @@ pub mod hyde;
 pub mod incremental_profile;
 pub mod index_manifest;
 pub mod index_version;
+pub mod metadata;
 pub mod pagerank;
 pub mod pipeline;
 pub mod project_profile;
@@ -27,6 +28,7 @@ pub mod shortcoder;
 #[cfg(feature = "splade")]
 pub mod splade;
 pub mod startup;
+pub mod symbol_graph;
 pub mod telescope;
 pub mod tier3;
 pub mod benchmark;
@@ -260,8 +262,11 @@ pub trait KnowledgeEngine {
     fn readiness_check(&self) -> ReadinessStatus;
 }
 
-// Re-export DkgEngine at crate root for convenience.
+// Re-export DkgEngine and language registry types at crate root for convenience.
 pub use dkg::DkgEngine;
+pub use dkg::{LanguageRegistry, LanguageRegistryStatus, GrammarLoadError};
+// B-30 Pass C: re-export ImportResolver trait so external tests can use it.
+pub use dkg::resolution::ImportResolver;
 pub use ast_adapter::TreeSitterAstEvaluator;
 pub use dkg_adapter::DkgQuerierAdapter;
 pub use error::KnowledgeError;

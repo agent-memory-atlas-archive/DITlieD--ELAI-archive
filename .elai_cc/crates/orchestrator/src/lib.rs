@@ -44,6 +44,13 @@ pub mod hook_dispatcher;
 pub mod shortcoder_hook;
 pub mod provider_signals;
 pub mod indexing_service;
+// B-31 Phase 3 (Cycle B): cross-process IndexLock primitive (lock.rs) and
+// startup auto-resume + graceful_shutdown (startup.rs). Both are free
+// functions/types with no dependency on `ssb.rs` (SSB variant emission is
+// deferred to PATCH-2 — see workflow/reasoning/B-31-decisions.md CYCLE B
+// DECISIONS / OUT-OF-SCOPE).
+pub mod lock;
+pub mod startup;
 pub mod ipc;
 pub mod ipc_gateway;
 pub mod ipc_types;
@@ -470,6 +477,12 @@ pub use ssb::{
     // decode SSB rows without pulling in `orchestrator::ssb` directly).
     GenerationModeSelectedPayload, StreamingEarlyTerminatedPayload,
     PipelinePreAssembledPayload, DependencyResolvedPayload, MicroStepCreatedPayload,
+    // B-30 (SCHEMA_VERSION 36): language grammar registry status beacon.
+    LanguageGrammarStatusPayload,
+    // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call beacon.
+    SymbolQueryPayload,
+    // SSB schema version + string-to-enum helper (used by contract tests).
+    SCHEMA_VERSION_PUBLIC, ssb_action_type_from_str_public,
 };
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -652,6 +665,8 @@ pub use task_runner::{
     SPIRAL_HARDSTOP_CATEGORY, WEB_RESEARCH_FAILED_CATEGORY, WEB_SCAFFOLD_FAILED_CATEGORY,
     WEB_SCAFFOLD_TEMPLATE_ASTRO, WEB_SCAFFOLD_TEMPLATE_REACT, WEB_SCAFFOLD_TEMPLATE_SVELTE,
     WEB_SCAFFOLD_TEMPLATE_VANILLA,
+    // B-29 Phase 5: IMPACT_SUMMARY formatter + baseline tools constant.
+    format_impact_summary, DISPATCH_CONTEXT_BASELINE_TOOLS_PUBLIC,
 };
 pub use rule_loader::load_seed_rules_from_dir;
 // Phase A1b — chokepoint helpers exposed at the orchestrator crate root so

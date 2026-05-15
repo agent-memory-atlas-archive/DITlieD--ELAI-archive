@@ -1565,6 +1565,55 @@ impl SsbViewer {
         })
     }
 
+    /// Return the most recent SSB row with the given `action_type`, or `None`
+    /// if no such row exists. Decodes the msgpack payload and re-encodes as
+    /// JSON for frontend consumption, matching [`get_action_detail`] semantics.
+    ///
+    /// Used by the dashboard `get_language_grammar_status` command (Pass D).
+    pub fn latest_action_of_type(
+        &self,
+        action_type: &str,
+    ) -> Result<Option<SsbActionDetail>, SsbViewerError> {
+        let conn = self.lock()?;
+        let row = conn
+            .query_row(
+                "SELECT seq, created_at, action_type, agent_id, payload \
+                 FROM ssb WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+                params![action_type],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+
+        let Some((seq, ts, at, agent_id, payload_bytes)) = row else {
+            return Ok(None);
+        };
+
+        let typed: SsbPayload = rmp_serde::from_slice(&payload_bytes)?;
+        let payload_json = serde_json::to_value(&typed)
+            .map_err(|e| SsbViewerError::Validation(format!("payload json encode: {e}")))?;
+
+        Ok(Some(SsbActionDetail {
+            seq,
+            ts,
+            action_type: at,
+            agent_id,
+            payload_json,
+            files: Vec::new(),
+        }))
+    }
+
     /// All `reasoning_trace` rows that reference a given `step_id`, ordered
     /// by `seq` ascending. `step_id` matches `topic` in the stored payload
     /// (the orchestrator writes the plan step into `topic`).

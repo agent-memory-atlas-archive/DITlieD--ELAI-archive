@@ -9,6 +9,7 @@ publish.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+postcard.workspace = true
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
@@ -17,6 +18,13 @@ tree-sitter-typescript = "0.23"
 tree-sitter-java = "0.23"
 tree-sitter-c-sharp = "0.23"
 tree-sitter-ruby = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-scala = "0.26"
+tree-sitter-php = "0.24"
+tree-sitter-swift = "0.7"
+tree-sitter-bash = "0.25"
 # Phase B (s-44680): web-domain grammars for Tier-2 AST predicates in
 # data/rules/web.toml (WEB-013..WEB-023). Anti-slopsquatting verified
 # via `cargo info` (2026-05-08): tree-sitter-html / tree-sitter-css are

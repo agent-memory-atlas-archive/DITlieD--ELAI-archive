@@ -1,11 +1,26 @@
 //! A-44: IndexingService — coordinates DKG + BM25 index building and
 //! incremental updates for the project knowledge pipeline.
+//!
+//! B-31 Phase 2 (Cycle A) added resumable, batched BM25 indexing on top of
+//! the existing single-shot path. See `workflow/reasoning/B-31-decisions.md`
+//! for the locked design choices. The new entrypoint is
+//! [`IndexingService::build_index_resumable`]; the legacy
+//! [`IndexingService::run_full_index`] now wraps it so its public signature
+//! (`-> Result<IndexingSummary, IndexingServiceError>`) stays contract-stable
+//! for `crates/contracts/tests/task_runner_indexing_service_contract.rs`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use elai_core::{ClockProvider as _, OsClock};
+use elai_core::{ClockProvider, OsClock};
 use elai_knowledge::bm25::Bm25Index;
 use elai_knowledge::index_version::{self, UpgradeAction};
+use elai_knowledge::metadata::{
+    self, IndexingStatus, MetadataError, ProjectMetadata, ProjectMetadataStore,
+    DEFAULT_BATCH_SIZE, METADATA_DB_FILENAME, METADATA_SCHEMA_VERSION,
+};
 use elai_knowledge::{DkgEngine, KnowledgeError};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +49,11 @@ const DKG_DB_FILENAME: &str = elai_core::paths::DKG_DB_FILENAME;
 
 /// BM25 project ID used when creating the BM25 index inside indexes_dir.
 const BM25_PROJECT_ID: &str = "default";
+
+/// Buffer size (bytes) for the streaming BLAKE3 hasher used in
+/// [`hash_file_contents`]. 64 KiB keeps the call-count low without
+/// ballooning per-file allocations.
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Directories excluded from indexing by default.
 const DEFAULT_EXCLUDED_DIRS: &[&str] = &[
@@ -110,6 +130,96 @@ pub enum IndexingServiceError {
 
     #[error("service not initialized — run run_full_index first")]
     NotInitialized,
+
+    /// B-31 Phase 2: indexing was cancelled via [`IndexingService::cancel_indexing`].
+    /// Partial state is preserved; subsequent runs resume from the last
+    /// checkpoint.
+    #[error("indexing cancelled (batches_completed={batches_completed}, files_indexed={files_indexed})")]
+    Cancelled {
+        batches_completed: u32,
+        files_indexed: u64,
+    },
+
+    /// B-31 Phase 3 (placeholder for Cycle B): another process already holds
+    /// the index lock. Not constructible from Cycle A code paths; the variant
+    /// exists so [`IndexResult::AlreadyLocked`] has a corresponding error
+    /// shape when [`run_full_index`] unwraps it.
+    #[allow(dead_code)]
+    #[error("indexing lock already held by pid={holder_pid}")]
+    AlreadyLocked { holder_pid: u32 },
+
+    /// B-31 Phase 1: metadata-store failure (open/load/save/upsert/migrate).
+    #[error("metadata error: {0}")]
+    Metadata(#[from] MetadataError),
+}
+
+// ---------------------------------------------------------------------------
+// IndexResult (B-31 Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Outcome of [`IndexingService::build_index_resumable`].
+///
+/// `Completed` and `Resumed` both wrap an [`IndexingSummary`] so callers that
+/// only want the aggregate counts can ignore the variant. `Cancelled` and
+/// `AlreadyLocked` are exceptional paths — they MAY be mapped to
+/// [`IndexingServiceError`] variants by the legacy [`run_full_index`] wrapper.
+#[derive(Debug, Clone)]
+pub enum IndexResult {
+    /// Fresh first run finished without prior state.
+    Completed { summary: IndexingSummary },
+    /// Cancellation flag was set mid-batch. `batches_completed` is the number
+    /// of batches that finished and were checkpointed before the abort.
+    Cancelled {
+        batches_completed: u32,
+        files_indexed: u64,
+    },
+    /// Run found existing `file_hashes` rows and reused them. `resumed_from_batch`
+    /// is the value of `batches_processed` at resume time; `files_skipped` is
+    /// the number of files whose stored hash matched the current content.
+    Resumed {
+        summary: IndexingSummary,
+        resumed_from_batch: u32,
+        files_skipped: u64,
+    },
+    /// Cross-process lock contention — Phase 3 will populate this. Skeleton
+    /// only in Cycle A; suppressed from clippy so the workspace builds clean
+    /// until [`crate::lock::IndexLock`] arrives.
+    #[allow(dead_code)]
+    AlreadyLocked { holder_pid: u32 },
+}
+
+// ---------------------------------------------------------------------------
+// In-process cancellation registry
+// ---------------------------------------------------------------------------
+
+/// Global, per-project cancellation flags. `IndexingService::cancel_indexing`
+/// sets the flag; `build_index_resumable` checks it at every batch boundary.
+///
+/// Living in a `OnceLock` rather than as an instance field on
+/// [`IndexingService`] mirrors `setIndexingProgress` / `cancellationRequested`
+/// from the SocratiCode reference (`indexer.ts:95-145`) — multiple `&mut`
+/// callers and a separate `&` canceller need access to the same flag without
+/// constructor changes.
+fn cancellation_registry() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static REG: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancellation_flag_for(project_id: &str) -> Arc<AtomicBool> {
+    let mut reg = match cancellation_registry().lock() {
+        Ok(g) => g,
+        // Poison is recovered by clearing the map — losing in-flight flags is
+        // safer than panicking the indexing thread.
+        Err(poison) => poison.into_inner(),
+    };
+    reg.entry(project_id.to_string())
+        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+        .clone()
+}
+
+fn take_cancellation_flag(project_id: &str) -> Option<Arc<AtomicBool>> {
+    let reg = cancellation_registry().lock().ok()?;
+    reg.get(project_id).cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -151,25 +261,223 @@ impl IndexingService {
 
     /// Build DKG graph and BM25 index from scratch.
     ///
-    /// Creates the indexes directory if it does not exist.
-    /// On error, returns `Err` — the caller (CLI startup) is responsible for
-    /// degrading gracefully (logging + continuing without indexes).
+    /// Thin wrapper over [`Self::build_index_resumable`] preserving the
+    /// pre-B-31 return signature. Internally opens the per-project
+    /// [`ProjectMetadataStore`] alongside `dkg.db` and threads an `OsClock`
+    /// through. `IndexResult::{Completed, Resumed}` map to `Ok`;
+    /// `Cancelled` / `AlreadyLocked` map to `IndexingServiceError` so legacy
+    /// callers see exactly the same shape they used to.
     pub fn run_full_index(&mut self) -> Result<IndexingSummary, IndexingServiceError> {
         std::fs::create_dir_all(&self.indexes_dir)?;
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let metadata_db_path = self.indexes_dir.join(METADATA_DB_FILENAME);
+        let store = ProjectMetadataStore::open(&metadata_db_path, Arc::clone(&clock))?;
+        let project_id = metadata::project_id_from_path(&self.project_root);
+        match self.build_index_resumable(&project_id, &store, clock)? {
+            IndexResult::Completed { summary } | IndexResult::Resumed { summary, .. } => {
+                Ok(summary)
+            }
+            IndexResult::Cancelled {
+                batches_completed,
+                files_indexed,
+            } => Err(IndexingServiceError::Cancelled {
+                batches_completed,
+                files_indexed,
+            }),
+            IndexResult::AlreadyLocked { holder_pid } => {
+                Err(IndexingServiceError::AlreadyLocked { holder_pid })
+            }
+        }
+    }
 
-        let now = OsClock
-            .system_now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+    /// B-31 Phase 2: resumable, batched BM25 indexing with per-batch
+    /// checkpointing into [`ProjectMetadataStore`].
+    ///
+    /// Walks the project tree once (ignore-aware), hashes every candidate
+    /// file with BLAKE3, skips files whose stored hash matches the on-disk
+    /// content (resume path), and indexes the remaining files in batches of
+    /// [`DEFAULT_BATCH_SIZE`]. After each batch the file-hash rows are
+    /// upserted and `project_metadata.batches_processed` /
+    /// `last_checkpoint_at` are bumped.
+    ///
+    /// Cancellation: between batches the routine consults the in-process
+    /// [`cancellation_registry`]. If set, it persists
+    /// `IndexingStatus::Cancelled` and returns [`IndexResult::Cancelled`]
+    /// with the counters at the time of abort.
+    ///
+    /// DKG: built once at the end after all BM25 batches complete (per
+    /// DECISION-5 — DkgEngine has no per-file API today; a single full pass
+    /// is acceptable since DKG dominates a much smaller fraction of wall time
+    /// than BM25).
+    pub fn build_index_resumable(
+        &mut self,
+        project_id: &str,
+        store: &ProjectMetadataStore,
+        clock: Arc<dyn ClockProvider>,
+    ) -> Result<IndexResult, IndexingServiceError> {
+        std::fs::create_dir_all(&self.indexes_dir)?;
+
+        // Cancellation: a caller may have invoked `cancel_indexing` BEFORE
+        // the run started (race-on-start, mirroring SocratiCode's
+        // `requestCancellation` semantic at indexer.ts:134). The flag is
+        // checked at every batch boundary and cleared whether the run
+        // completes normally or returns `Cancelled`, so a follow-up call
+        // starts clean.
+        let cancel = cancellation_flag_for(project_id);
+
+        // 1. Collect candidate files (ignore-aware walk + binary/exclusion filters).
+        let candidates = collect_candidate_files(&self.project_root)?;
+
+        // 2. Load prior file hashes (resume cursor). BTreeMap key = relative path.
+        let prior_hashes = store.get_file_hashes(project_id)?;
+
+        // 3. Partition: changed/new go to the work queue, unchanged stay.
+        let mut work_queue: Vec<(PathBuf, PathBuf, blake3::Hash)> =
+            Vec::with_capacity(candidates.len());
+        let mut files_skipped: u64 = 0;
+        let mut seen_rel_paths: HashSet<PathBuf> = HashSet::with_capacity(candidates.len());
+
+        for abs_path in &candidates {
+            let rel_path = relative_path(&self.project_root, abs_path);
+            seen_rel_paths.insert(rel_path.clone());
+            let current_hash = hash_file_contents(abs_path)?;
+            match prior_hashes.get(&rel_path) {
+                Some(stored) if stored == &current_hash => {
+                    files_skipped += 1;
+                }
+                _ => {
+                    work_queue.push((abs_path.clone(), rel_path, current_hash));
+                }
+            }
+        }
+
+        // Prune stale rows: any prior hash whose file no longer exists.
+        for stale in prior_hashes.keys() {
+            if !seen_rel_paths.contains(stale) {
+                store.delete_file_hash(project_id, stale)?;
+            }
+        }
+
+        // 4. Open/create the BM25 index (must outlive the batch loop).
+        let mut bm25 = Bm25Index::new(&self.indexes_dir, BM25_PROJECT_ID)
+            .map_err(|e| IndexingServiceError::Bm25(e.to_string()))?;
+
+        // 5. Resume metadata: load existing row (if any) to expose `resumed_from_batch`.
+        let prior_meta = store.load(project_id)?;
+        let resumed_from_batch = prior_meta
+            .as_ref()
+            .map(|m| m.batches_processed)
             .unwrap_or(0);
+        let is_resume = files_skipped > 0 || resumed_from_batch > 0;
 
-        // Build DKG graph.
+        let batch_size = DEFAULT_BATCH_SIZE;
+        let total_work = work_queue.len();
+        let total_work_u64: u64 = total_work.try_into().unwrap_or(u64::MAX);
+        let batches_total: u32 = if total_work == 0 {
+            0
+        } else {
+            let bs = batch_size as usize;
+            // ceil(total / batch_size) — kept in usize to avoid an extra cast.
+            let n = (total_work + bs - 1) / bs;
+            n.try_into().unwrap_or(u32::MAX)
+        };
+
+        // Seed `project_metadata` with the in-progress row before any work.
+        let initial_meta = ProjectMetadata {
+            project_id: project_id.to_string(),
+            project_path: self.project_root.clone(),
+            indexed_files: 0,
+            total_files: total_work_u64,
+            indexing_status: IndexingStatus::InProgress,
+            last_checkpoint_at: clock_unix_secs(&clock)?,
+            batch_size,
+            batches_processed: 0,
+            batches_total: Some(batches_total),
+            schema_version: METADATA_SCHEMA_VERSION,
+        };
+        store.save(&initial_meta)?;
+
+        // 6. Batched loop with cancellation check + per-batch checkpoint.
+        let mut bm25_files: usize = 0;
+        let mut bm25_chunks: usize = 0;
+        let mut bm25_skipped_binary: usize = 0;
+        let mut batches_processed: u32 = 0;
+        let mut indexed_files_total: u64 = 0;
+
+        for chunk in work_queue.chunks(batch_size as usize) {
+            if cancel.load(Ordering::SeqCst) {
+                let cancelled_meta = ProjectMetadata {
+                    project_id: project_id.to_string(),
+                    project_path: self.project_root.clone(),
+                    indexed_files: indexed_files_total,
+                    total_files: total_work_u64,
+                    indexing_status: IndexingStatus::Cancelled,
+                    last_checkpoint_at: clock_unix_secs(&clock)?,
+                    batch_size,
+                    batches_processed,
+                    batches_total: Some(batches_total),
+                    schema_version: METADATA_SCHEMA_VERSION,
+                };
+                store.save(&cancelled_meta)?;
+                // Clear so a follow-up call doesn't immediately re-trip.
+                cancel.store(false, Ordering::SeqCst);
+                return Ok(IndexResult::Cancelled {
+                    batches_completed: batches_processed,
+                    files_indexed: indexed_files_total,
+                });
+            }
+
+            for (abs_path, rel_path, hash) in chunk {
+                if is_binary_file(abs_path) {
+                    bm25_skipped_binary += 1;
+                    continue;
+                }
+                if is_excluded_path(abs_path) {
+                    continue;
+                }
+                match bm25.index_file(abs_path, None) {
+                    Ok(n) => {
+                        bm25_chunks = bm25_chunks.saturating_add(n);
+                        bm25_files = bm25_files.saturating_add(1);
+                        indexed_files_total = indexed_files_total.saturating_add(1);
+                        store.set_file_hash(project_id, rel_path, *hash)?;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %abs_path.display(),
+                            error = %e,
+                            "skipping file: BM25 index_file failed"
+                        );
+                    }
+                }
+            }
+
+            batches_processed = batches_processed.saturating_add(1);
+            let checkpoint_meta = ProjectMetadata {
+                project_id: project_id.to_string(),
+                project_path: self.project_root.clone(),
+                indexed_files: indexed_files_total,
+                total_files: total_work_u64,
+                indexing_status: IndexingStatus::InProgress,
+                last_checkpoint_at: clock_unix_secs(&clock)?,
+                batch_size,
+                batches_processed,
+                batches_total: Some(batches_total),
+                schema_version: METADATA_SCHEMA_VERSION,
+            };
+            store.save(&checkpoint_meta)?;
+        }
+
+        // 7. Build DKG graph once after BM25 batches.
+        let now_for_dkg = clock_unix_secs(&clock)?;
         let index_version_path = self.indexes_dir.join("index_version.toml");
         let mut dkg = DkgEngine::new(
             &self.dkg_db_path,
             Some(index_version_path.as_path()),
-            now,
+            now_for_dkg,
         )?;
+        // B-30 Pass C: capture grammar load status before build_graph runs.
+        let dkg_registry_status = dkg.registry_status();
         let graph = dkg.build_graph(&self.project_root)?;
         tracing::info!(
             files_parsed = graph.files_parsed,
@@ -177,33 +485,103 @@ impl IndexingService {
             edges = graph.edge_count,
             "DKG graph built"
         );
-        // DkgEngine is dropped here — its Connection closes. Re-opened for queries separately.
         drop(dkg);
 
-        // Build BM25 index.
-        let mut bm25 = Bm25Index::new(&self.indexes_dir, BM25_PROJECT_ID)
-            .map_err(|e| IndexingServiceError::Bm25(e.to_string()))?;
-        let stats = bm25
-            .index_directory(&self.project_root)
-            .map_err(|e| IndexingServiceError::Bm25(e.to_string()))?;
-        tracing::info!(
-            files = stats.files_indexed,
-            chunks = stats.chunks_indexed,
-            skipped_binary = stats.files_skipped_binary,
-            "BM25 index built"
-        );
+        // 7b. B-29 Phase 4: build the symbol graph (sharded callee/caller
+        //     payloads + name index) on top of the just-built DKG. Best-effort —
+        //     a symbol-graph failure must NOT break the DKG pipeline, since the
+        //     DKG is the source of truth and the symbol graph is a derived layer.
+        let symbol_clock_ms = clock_unix_millis(&clock).unwrap_or(0);
+        match elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph(
+            project_id,
+            &self.project_root,
+            &self.dkg_db_path,
+            symbol_clock_ms,
+        ) {
+            Ok(summary) => tracing::info!(
+                target = "symbol_graph",
+                files = summary.files,
+                symbols = summary.symbols,
+                edges = summary.edges,
+                unresolved_pct = summary.unresolved_pct,
+                "symbol_graph build complete"
+            ),
+            Err(e) => tracing::warn!(
+                target = "symbol_graph",
+                error = %e,
+                "symbol_graph build failed (DKG remains functional)"
+            ),
+        }
+
+        // 8. Mark completed.
+        let completed_meta = ProjectMetadata {
+            project_id: project_id.to_string(),
+            project_path: self.project_root.clone(),
+            indexed_files: indexed_files_total,
+            total_files: total_work_u64,
+            indexing_status: IndexingStatus::Completed,
+            last_checkpoint_at: clock_unix_secs(&clock)?,
+            batch_size,
+            batches_processed,
+            batches_total: Some(batches_total),
+            schema_version: METADATA_SCHEMA_VERSION,
+        };
+        store.save(&completed_meta)?;
+
+        // Clear the cancellation flag on successful completion so a future
+        // run on the same project starts clean. The Cancelled-return path
+        // above also clears the flag — the persisted `IndexingStatus::Cancelled`
+        // row is the durable signal; the in-memory flag is just a fast-path
+        // for the active loop.
+        cancel.store(false, Ordering::SeqCst);
 
         self.bm25 = Some(bm25);
         self.initialized = true;
 
-        Ok(IndexingSummary {
+        let summary = IndexingSummary {
             dkg_files_parsed: graph.files_parsed,
             dkg_nodes: graph.node_count,
             dkg_edges: graph.edge_count,
-            bm25_files: stats.files_indexed,
-            bm25_chunks: stats.chunks_indexed,
-            bm25_skipped_binary: stats.files_skipped_binary,
-        })
+            bm25_files,
+            bm25_chunks,
+            bm25_skipped_binary,
+            registry_status: Some(dkg_registry_status),
+        };
+
+        if is_resume {
+            Ok(IndexResult::Resumed {
+                summary,
+                resumed_from_batch,
+                files_skipped,
+            })
+        } else {
+            Ok(IndexResult::Completed { summary })
+        }
+    }
+
+    /// Request cancellation of an in-flight resumable indexing run for
+    /// `project_id`.
+    ///
+    /// Returns `true` only when a prior run was actively tracked (i.e. an
+    /// `Arc<AtomicBool>` already existed in the registry for `project_id`)
+    /// and the cancellation flag has been set on it. Returns `false` when
+    /// there is no active run; in that case we still seed a fresh flag so a
+    /// run that starts moments later observes the request at its first
+    /// batch boundary (mirrors the SocratiCode pre-start race semantics from
+    /// `indexer.ts:134`). The boolean lets dashboard callers distinguish
+    /// "cancelled an in-flight run" from "no run was running" without
+    /// having to poll the registry.
+    pub fn cancel_indexing(&self, project_id: &str) -> bool {
+        match take_cancellation_flag(project_id) {
+            Some(flag) => {
+                flag.store(true, Ordering::SeqCst);
+                true
+            }
+            None => {
+                cancellation_flag_for(project_id).store(true, Ordering::SeqCst);
+                false
+            }
+        }
     }
 
     /// Incrementally re-index a single changed file.
@@ -287,6 +665,9 @@ pub struct IndexingSummary {
     pub bm25_files: usize,
     pub bm25_chunks: usize,
     pub bm25_skipped_binary: usize,
+    /// B-30 Pass C: grammar load status captured after DkgEngine construction.
+    /// None when DkgEngine construction failed before status could be read.
+    pub registry_status: Option<elai_knowledge::LanguageRegistryStatus>,
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +722,96 @@ fn is_excluded_path(path: &Path) -> bool {
     }
 
     false
+}
+
+/// Convert an absolute project-tree path into a project-relative path,
+/// falling back to the absolute form if `strip_prefix` fails (e.g. on
+/// symlinked walks where the path is not lexically under `root`).
+fn relative_path(root: &Path, abs: &Path) -> PathBuf {
+    abs.strip_prefix(root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| abs.to_path_buf())
+}
+
+/// Walk the project tree honouring `.gitignore` and the default exclusion
+/// rules. Returns every candidate file path in deterministic
+/// (`ignore::WalkBuilder::sort_by_file_path`) order so resume runs see the
+/// same batch boundaries.
+fn collect_candidate_files(root: &Path) -> Result<Vec<PathBuf>, IndexingServiceError> {
+    let mut out = Vec::new();
+    let walker = ignore::WalkBuilder::new(root)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .hidden(false)
+        .sort_by_file_path(|a, b| a.cmp(b))
+        .build();
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                tracing::warn!(error = %err, "ignore walker entry error");
+                continue;
+            }
+        };
+        let Some(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        if is_excluded_path(&path) {
+            continue;
+        }
+        if is_binary_file(&path) {
+            continue;
+        }
+        out.push(path);
+    }
+
+    Ok(out)
+}
+
+/// Stream-hash a file with BLAKE3 (`HASH_BUFFER_BYTES` per read). Avoids
+/// loading large files entirely into memory.
+fn hash_file_contents(path: &Path) -> Result<blake3::Hash, IndexingServiceError> {
+    use std::io::Read;
+    let mut hasher = blake3::Hasher::new();
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; HASH_BUFFER_BYTES];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize())
+}
+
+/// Read unix-seconds from an injected clock. Surfaces a `Metadata` error on
+/// pre-epoch values so the indexing path uses the same error variant as the
+/// store itself.
+fn clock_unix_secs(clock: &Arc<dyn ClockProvider>) -> Result<i64, IndexingServiceError> {
+    let now = clock.system_now();
+    let dur = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| IndexingServiceError::Metadata(MetadataError::Clock(e.to_string())))?;
+    i64::try_from(dur.as_secs())
+        .map_err(|_| IndexingServiceError::Metadata(MetadataError::Clock("epoch overflow".into())))
+}
+
+/// Read unix-millis from an injected clock. Used by the B-29 symbol-graph
+/// build path which needs millisecond resolution for the `built_at` column.
+fn clock_unix_millis(clock: &Arc<dyn ClockProvider>) -> Result<i64, IndexingServiceError> {
+    let now = clock.system_now();
+    let dur = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| IndexingServiceError::Metadata(MetadataError::Clock(e.to_string())))?;
+    i64::try_from(dur.as_millis())
+        .map_err(|_| IndexingServiceError::Metadata(MetadataError::Clock("epoch overflow".into())))
 }
 
 #[cfg(test)]

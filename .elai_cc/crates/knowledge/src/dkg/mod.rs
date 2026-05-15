@@ -1,7 +1,14 @@
-use rustc_hash::FxHashMap;
+pub mod language_registry;
+pub use language_registry::{LanguageRegistry, LanguageRegistryStatus, GrammarLoadError};
+
+pub mod resolution;
+pub use resolution::{ImportResolver, JvmResolver, CsNamespaceResolver, GoModuleResolver, TsPathAliasResolver};
+
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use blake3;
+use regex::Regex;
 use rusqlite::Connection;
 
 use crate::{
@@ -69,6 +76,82 @@ CREATE INDEX IF NOT EXISTS idx_data_flow_target ON dkg_data_flow(target_node_id)
 ";
 
 // ---------------------------------------------------------------------------
+// Schema SQL v3 — B-29 Phase 1: symbol graph tables
+// ---------------------------------------------------------------------------
+// v2 was reserved per B-29 plan terminology; schema jumps 1->3.
+// Column names use *_msgpack convention per spec contract; blobs are
+// encoded/decoded via postcard (not rmp-serde — postcard is already a
+// workspace dep, keeping zero new external dependencies).
+// All statements are idempotent (CREATE TABLE IF NOT EXISTS).
+
+const SCHEMA_SQL_V3: &str = "
+CREATE TABLE IF NOT EXISTS symbol_name_index (
+    shard_key    TEXT    NOT NULL,
+    symbol_name  TEXT    NOT NULL,
+    refs_msgpack BLOB    NOT NULL,
+    PRIMARY KEY (shard_key, symbol_name)
+);
+
+CREATE TABLE IF NOT EXISTS symbol_reverse_index (
+    shard_bucket         INTEGER NOT NULL,
+    callee_file          TEXT    NOT NULL,
+    caller_files_msgpack BLOB    NOT NULL,
+    PRIMARY KEY (shard_bucket, callee_file)
+);
+
+CREATE TABLE IF NOT EXISTS symbol_file_payload (
+    file             TEXT PRIMARY KEY,
+    language         TEXT NOT NULL,
+    content_hash     TEXT NOT NULL,
+    symbols_msgpack  BLOB NOT NULL,
+    edges_msgpack    BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symbol_graph_meta (
+    project_id          TEXT PRIMARY KEY,
+    symbol_count        INTEGER NOT NULL,
+    edge_count          INTEGER NOT NULL,
+    file_count          INTEGER NOT NULL,
+    unresolved_edge_pct REAL    NOT NULL,
+    built_at            INTEGER NOT NULL,
+    schema_version      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_name_shard    ON symbol_name_index(shard_key);
+CREATE INDEX IF NOT EXISTS idx_symbol_reverse_shard ON symbol_reverse_index(shard_bucket);
+";
+
+// ---------------------------------------------------------------------------
+// Schema v4 migration — adds `language` column to dkg_nodes
+// ---------------------------------------------------------------------------
+
+/// Apply the v4 schema migration idempotently.
+///
+/// SQLite's `ALTER TABLE ADD COLUMN` is not idempotent — running it twice raises
+/// "duplicate column name". We guard with a `pragma_table_info` check first.
+fn apply_v4_migration(conn: &Connection) -> Result<(), KnowledgeError> {
+    let col_exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dkg_nodes') WHERE name='language'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+
+    if !col_exists {
+        conn.execute_batch("ALTER TABLE dkg_nodes ADD COLUMN language TEXT DEFAULT NULL;")?;
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO dkg_meta (key, value) VALUES ('schema_version', '4')",
+        [],
+    )?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Edge-type constants
 // ---------------------------------------------------------------------------
 
@@ -88,7 +171,7 @@ pub const FLOW_FIELD_ACCESS: &str = "FIELD_ACCESS";
 
 pub struct DkgEngine {
     conn: Connection,
-    grammars: FxHashMap<&'static str, Box<dyn LanguageGrammar>>,
+    registry: LanguageRegistry,
     build_graph_called: bool,
     index_version_path: Option<PathBuf>,
     created_at: i64,
@@ -105,11 +188,13 @@ impl DkgEngine {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        // B-29 Phase 1: apply v3 tables (idempotent; safe to run on every open).
+        // v2 was reserved per plan terminology; this jumps 1->3.
+        conn.execute_batch(SCHEMA_SQL_V3)?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO dkg_meta (key, value) VALUES ('schema_version', '1')",
-            [],
-        )?;
+        // v2 reserved; v3 added symbol graph tables (B-29); v4 adds `language` column
+        // to dkg_nodes. apply_v4_migration is idempotent and bumps schema_version to '4'.
+        apply_v4_migration(&conn)?;
         conn.execute(
             "INSERT OR IGNORE INTO dkg_meta (key, value) VALUES ('created_at', ?1)",
             [created_at.to_string()],
@@ -121,30 +206,42 @@ impl DkgEngine {
                 .map_err(|e| KnowledgeError::Graph(format!("index_version write: {e}")))?;
         }
 
-        let mut grammars: FxHashMap<&'static str, Box<dyn LanguageGrammar>> = FxHashMap::default();
-        let langs: Vec<Box<dyn LanguageGrammar>> = vec![
-            Box::new(RustGrammar),
-            Box::new(PythonGrammar),
-            Box::new(GoGrammar),
-            Box::new(TypeScriptGrammar),
-            Box::new(TsxGrammar),
-            // C-pack C1: Svelte uses tree-sitter-svelte-ng (already a
-            // workspace dep — see knowledge/Cargo.toml L28). The grammar
-            // reuses the TypeScript node-extraction walker because Svelte's
-            // tree-sitter grammar embeds JS/TS declaration nodes inside
-            // `<script>` blocks.
-            Box::new(SvelteGrammar),
-            Box::new(JavaGrammar),
-            Box::new(CSharpGrammar),
-            Box::new(RubyGrammar),
-        ];
-        for g in langs {
-            grammars.insert(g.language_id(), g);
-        }
+        let mut registry = LanguageRegistry::new();
+        let _ = registry.try_register("rust", || Box::new(RustGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("python", || Box::new(PythonGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("go", || Box::new(GoGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("typescript", || Box::new(TypeScriptGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("tsx", || Box::new(TsxGrammar) as Box<dyn LanguageGrammar>);
+        // C-pack C1: Svelte uses tree-sitter-svelte-ng. The grammar reuses the
+        // TypeScript node-extraction walker because Svelte's tree-sitter grammar
+        // embeds JS/TS declaration nodes inside `<script>` blocks.
+        let _ = registry.try_register("svelte", || Box::new(SvelteGrammar) as Box<dyn LanguageGrammar>);
+        // Pass D: Vue SFC composite — outer HTML parse + TS reparse of <script>
+        // blocks + CSS @import extraction from <style> blocks.
+        let _ = registry.try_register("vue", || Box::new(VueGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("java", || Box::new(JavaGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("csharp", || Box::new(CSharpGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("ruby", || Box::new(RubyGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("javascript", || Box::new(JavaScriptGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("c", || Box::new(CGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("cpp", || Box::new(CppGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("scala", || Box::new(ScalaGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("php", || Box::new(PhpGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("swift", || Box::new(SwiftGrammar) as Box<dyn LanguageGrammar>);
+        let _ = registry.try_register("bash", || Box::new(BashGrammar) as Box<dyn LanguageGrammar>);
+
+        let status = registry.status();
+        tracing::info!(
+            loaded = ?status.loaded,
+            failed = ?status.failed,
+            "LanguageRegistry initialized: {}/{} grammars loaded",
+            status.loaded.len(),
+            status.loaded.len() + status.failed.len()
+        );
 
         Ok(Self {
             conn,
-            grammars,
+            registry,
             build_graph_called: false,
             index_version_path: index_version_path.map(|p| p.to_path_buf()),
             created_at,
@@ -167,7 +264,7 @@ impl DkgEngine {
                 Some(id) => id,
                 None => { continue; }
             };
-            let grammar = match self.grammars.get(lang_id) {
+            let grammar = match self.registry.get(lang_id) {
                 Some(g) => g,
                 None => { continue; }
             };
@@ -265,8 +362,9 @@ impl DkgEngine {
             for node in &nodes {
                 let kind_str = symbol_kind_to_str(node.kind);
                 self.conn.execute(
-                    "INSERT INTO dkg_nodes (file_path, name, kind, signature, start_line, end_line, concept_stale) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+                    "INSERT INTO dkg_nodes \
+                     (file_path, name, kind, signature, start_line, end_line, concept_stale, language) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
                     rusqlite::params![
                         file_path_str,
                         node.name,
@@ -274,6 +372,7 @@ impl DkgEngine {
                         node.signature,
                         node.start_line,
                         node.end_line,
+                        lang_id,
                     ],
                 )?;
                 node_db_ids.push(self.conn.last_insert_rowid());
@@ -296,6 +395,9 @@ impl DkgEngine {
             total_node_count += nodes.len();
             files_parsed += 1;
         }
+
+        // B-30 Pass C: resolve non-Rust module imports to cross-file edges.
+        self.resolve_multi_module_imports(project_root)?;
 
         // Generate cross-file edges: "imports" and "implements"
         self.generate_cross_edges()?;
@@ -386,6 +488,100 @@ impl DkgEngine {
                     )?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Post-extraction pass: resolve module/import nodes for non-Rust languages
+    /// to their target file paths and insert `imports` edges.
+    ///
+    /// Called inside build_graph immediately before generate_cross_edges().
+    /// Builds all four resolvers lazily (each takes <100ms on typical projects).
+    /// Rows for each resolved import produce a dkg_edges (source_id, target_id, 'imports') row.
+    ///
+    /// Name cleaning: dkg_nodes.name holds the raw AST text for import nodes
+    /// (e.g. "import com.example.Foo;" for Java). This method strips language-
+    /// specific prefixes/suffixes before calling the resolver.
+    fn resolve_multi_module_imports(&self, project_root: &Path) -> Result<(), KnowledgeError> {
+        let jvm = JvmResolver::new(project_root);
+        let csharp = CsNamespaceResolver::new(project_root);
+        let go = GoModuleResolver::new(project_root);
+        let ts = TsPathAliasResolver::new(project_root);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, language FROM dkg_nodes \
+             WHERE kind='module' \
+             AND language IN ('java','kotlin','scala','csharp','go','typescript','tsx','javascript','svelte','vue')"
+        )?;
+
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let mut edge_inserts: Vec<(i64, i64)> = Vec::new();
+
+        for (src_id, raw_name, lang) in &rows {
+            let cleaned = clean_import_name(raw_name, lang);
+            for import_str in cleaned {
+                let resolved = match lang.as_str() {
+                    "java" | "kotlin" | "scala" => jvm.resolve(&import_str),
+                    "csharp" => csharp.resolve(&import_str),
+                    "go" => go.resolve(&import_str),
+                    "typescript" | "tsx" | "javascript" | "svelte" | "vue" => ts.resolve(&import_str),
+                    _ => None,
+                };
+
+                if let Some(target_path) = resolved {
+                    // For Go imports the resolver returns a directory PathBuf, not
+                    // an individual file. Enumerate .go files in that directory and
+                    // use the first one that has an entry in dkg_nodes.
+                    // For all other languages the resolved path is a file path.
+                    let target_ids: Vec<i64> = if lang == "go" {
+                        let go_files: Vec<PathBuf> = std::fs::read_dir(&target_path)
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .filter(|e| {
+                                e.path().extension().map_or(false, |x| x == "go")
+                            })
+                            .map(|e| e.path())
+                            .collect();
+                        go_files
+                            .iter()
+                            .filter_map(|gf| {
+                                let gf_str = gf.to_string_lossy().to_string();
+                                self.conn.query_row(
+                                    "SELECT id FROM dkg_nodes WHERE file_path = ?1 AND kind='module' LIMIT 1",
+                                    rusqlite::params![gf_str],
+                                    |r| r.get::<_, i64>(0),
+                                ).ok()
+                            })
+                            .take(1)
+                            .collect()
+                    } else {
+                        let target_path_str = target_path.to_string_lossy().to_string();
+                        self.conn.query_row(
+                            "SELECT id FROM dkg_nodes WHERE file_path = ?1 AND kind='module' LIMIT 1",
+                            rusqlite::params![target_path_str],
+                            |r| r.get::<_, i64>(0),
+                        ).ok().into_iter().collect()
+                    };
+                    for t in target_ids {
+                        edge_inserts.push((*src_id, t));
+                    }
+                }
+            }
+        }
+
+        for (src, dst) in edge_inserts {
+            let _ = self.conn.execute(
+                "INSERT OR IGNORE INTO dkg_edges (source_id, target_id, edge_type) VALUES (?1, ?2, 'imports')",
+                rusqlite::params![src, dst],
+            );
         }
 
         Ok(())
@@ -492,6 +688,14 @@ impl DkgEngine {
             result.push(r?);
         }
         Ok(result)
+    }
+
+    /// Return a snapshot of the language registry status (loaded + failed grammars).
+    ///
+    /// Callers (e.g. indexing_service) can convert this to `LanguageGrammarStatusPayload`
+    /// via the `From` impl in the orchestrator crate for SSB emission.
+    pub fn registry_status(&self) -> LanguageRegistryStatus {
+        self.registry.status()
     }
 
     // -----------------------------------------------------------------------
@@ -601,7 +805,7 @@ impl DkgEngine {
                 continue;
             }
 
-            let grammar = match self.grammars.get(lang_id) {
+            let grammar = match self.registry.get(lang_id) {
                 Some(g) => g,
                 None => continue,
             };
@@ -1412,7 +1616,169 @@ impl LanguageGrammar for SvelteGrammar {
         let mut nodes = Vec::new();
         let mut cursor = tree.root_node().walk();
         ts_extract_recursive(&mut cursor, source, &mut nodes, None);
+        // Pass D: also extract CSS @import paths from <style> blocks.
+        extract_css_at_imports(tree.root_node(), source, &mut nodes);
         nodes
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CSS @import extraction (shared by SvelteGrammar and VueGrammar, Pass D)
+// ---------------------------------------------------------------------------
+
+static CSS_AT_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn css_at_import_regex() -> &'static Regex {
+    CSS_AT_IMPORT_REGEX.get_or_init(|| {
+        // Matches: @import "foo" | @import 'foo' | @import url("foo") | @import url('foo')
+        Regex::new(r#"@import\s+(?:url\s*\(\s*)?["']([^"']+)["']"#)
+            .expect("CSS_AT_IMPORT_REGEX is a valid static literal")
+    })
+}
+
+/// Walk the tree recursively for `style_element` nodes, extract raw_text,
+/// and push one `DkgNode` per CSS @import path (excluding http/https URLs).
+fn extract_css_at_imports(
+    root: tree_sitter::Node<'_>,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+) {
+    let mut cursor = root.walk();
+    extract_css_at_imports_recursive(&mut cursor, source, nodes);
+}
+
+fn extract_css_at_imports_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+) {
+    loop {
+        let node = cursor.node();
+        if node.kind() == "style_element" {
+            // Walk immediate children to find raw_text; do not recurse deeper.
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "raw_text" {
+                        if let Ok(text) = child.utf8_text(source) {
+                            let base_line = u32::try_from(child.start_position().row)
+                                .unwrap_or(0)
+                                .saturating_add(1);
+                            for cap in css_at_import_regex().captures_iter(text) {
+                                let path = &cap[1];
+                                // Skip absolute URLs — they are external resources.
+                                if path.starts_with("http:") || path.starts_with("https:") {
+                                    continue;
+                                }
+                                nodes.push(DkgNode {
+                                    name: path.to_string(),
+                                    kind: SymbolKind::Module,
+                                    signature: format!("css:@import {path}"),
+                                    start_line: base_line,
+                                    end_line: base_line,
+                                    parent_idx: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Do not recurse into style_element children.
+        } else if cursor.goto_first_child() {
+            extract_css_at_imports_recursive(cursor, source, nodes);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VueGrammar (Pass D)
+// ---------------------------------------------------------------------------
+//
+// Vue SFCs (Single File Components) are parsed in two passes:
+//   1. tree-sitter-html parses the outer structure exposing `script_element`
+//      and `style_element` top-level nodes.
+//   2. For each `script_element`, the raw_text child is extracted and
+//      re-parsed with tree-sitter-typescript::LANGUAGE_TYPESCRIPT. The
+//      resulting TS tree is walked with ts_extract_recursive to extract
+//      function/class/interface/etc. nodes.
+//   3. CSS @import paths inside `style_element` blocks are extracted via
+//      extract_css_at_imports.
+//
+// Line numbers are relative to the extracted script/style block content
+// (offset from the original .vue file — acceptable approximation for Pass D).
+pub struct VueGrammar;
+
+impl LanguageGrammar for VueGrammar {
+    fn language_id(&self) -> &'static str { "vue" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        // The HTML grammar is used as the outer parser; the extract_nodes method
+        // creates a secondary TS parser for <script> content.
+        tree_sitter_html::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let root = tree.root_node();
+
+        // Pass 1: extract TypeScript symbols from <script> blocks.
+        let mut cursor = root.walk();
+        vue_extract_script_recursive(&mut cursor, source, &mut nodes);
+
+        // Pass 2: extract CSS @import paths from <style> blocks.
+        extract_css_at_imports(root, source, &mut nodes);
+
+        nodes
+    }
+}
+
+/// Recursively walk an HTML tree (tree-sitter-html) looking for
+/// `script_element` nodes. For each one found, extract the `raw_text` child
+/// and re-parse it with the TypeScript grammar. Ignores other node kinds.
+fn vue_extract_script_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+) {
+    loop {
+        let node = cursor.node();
+        if node.kind() == "script_element" {
+            // Find the raw_text child and re-parse as TypeScript.
+            for i in 0..u32::try_from(node.child_count()).unwrap_or(u32::MAX) {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "raw_text" {
+                        if let Ok(script_text) = child.utf8_text(source) {
+                            let script_bytes = script_text.as_bytes();
+                            let mut ts_parser = tree_sitter::Parser::new();
+                            if ts_parser
+                                .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+                                .is_ok()
+                            {
+                                if let Some(ts_tree) = ts_parser.parse(script_bytes, None) {
+                                    let mut ts_cursor = ts_tree.root_node().walk();
+                                    ts_extract_recursive(
+                                        &mut ts_cursor,
+                                        script_bytes,
+                                        nodes,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Do not recurse into script_element children.
+        } else if cursor.goto_first_child() {
+            vue_extract_script_recursive(cursor, source, nodes);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
     }
 }
 
@@ -1949,6 +2315,733 @@ fn ruby_kind_to_symbol(kind: &str) -> SymbolKind {
     }
 }
 
+// ---------------------------------------------------------------------------
+// JavaScriptGrammar
+// ---------------------------------------------------------------------------
+
+pub struct JavaScriptGrammar;
+
+const JS_KINDS: &[&str] = &[
+    "function_declaration",
+    "class_declaration",
+    "method_definition",
+    "import_statement",
+    "export_statement",
+];
+
+impl LanguageGrammar for JavaScriptGrammar {
+    fn language_id(&self) -> &'static str { "javascript" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_javascript::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        js_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn js_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if JS_KINDS.contains(&kind) {
+            let name = js_extract_name(&node, source, kind);
+            let signature = js_build_signature(kind, &name);
+            let symbol_kind = js_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            js_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn js_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_statement" | "export_statement" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn js_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_declaration" => format!("function {}", name),
+        "class_declaration" => format!("class {}", name),
+        "method_definition" => format!("method {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn js_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_declaration" | "method_definition" => SymbolKind::Function,
+        "class_declaration" => SymbolKind::Struct,
+        "import_statement" | "export_statement" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CGrammar
+// ---------------------------------------------------------------------------
+
+pub struct CGrammar;
+
+const C_KINDS: &[&str] = &[
+    "function_definition",
+    "struct_specifier",
+    "enum_specifier",
+    "preproc_include",
+];
+
+impl LanguageGrammar for CGrammar {
+    fn language_id(&self) -> &'static str { "c" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_c::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        c_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn c_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if C_KINDS.contains(&kind) {
+            let name = c_extract_name(&node, source, kind);
+            let signature = c_build_signature(kind, &name);
+            let symbol_kind = c_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            c_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn c_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "function_definition" => {
+            // function_definition -> declarator (function_declarator) -> declarator (identifier)
+            let declarator = node.child_by_field_name("declarator");
+            let name = declarator
+                .and_then(|d| {
+                    // May be a pointer_declarator wrapping function_declarator
+                    let fd = if d.kind() == "function_declarator" {
+                        Some(d)
+                    } else {
+                        d.child_by_field_name("declarator")
+                    };
+                    fd.and_then(|fd| fd.child_by_field_name("declarator"))
+                        .and_then(|id| id.utf8_text(source).ok())
+                })
+                .unwrap_or("?");
+            name.to_string()
+        }
+        "struct_specifier" | "enum_specifier" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "preproc_include" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => "?".to_string(),
+    }
+}
+
+fn c_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_definition" => format!("fn {}", name),
+        "struct_specifier" => format!("struct {}", name),
+        "enum_specifier" => format!("enum {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn c_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_definition" => SymbolKind::Function,
+        "struct_specifier" => SymbolKind::Struct,
+        "enum_specifier" => SymbolKind::Enum,
+        "preproc_include" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CppGrammar
+// ---------------------------------------------------------------------------
+
+pub struct CppGrammar;
+
+const CPP_KINDS: &[&str] = &[
+    "function_definition",
+    "class_specifier",
+    "struct_specifier",
+    "namespace_definition",
+    "preproc_include",
+];
+
+impl LanguageGrammar for CppGrammar {
+    fn language_id(&self) -> &'static str { "cpp" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_cpp::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        cpp_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn cpp_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if CPP_KINDS.contains(&kind) {
+            let name = cpp_extract_name(&node, source, kind);
+            let signature = cpp_build_signature(kind, &name);
+            let symbol_kind = cpp_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            cpp_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn cpp_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "function_definition" => {
+            // Descend: function_definition -> declarator -> (function_declarator) -> declarator
+            let declarator = node.child_by_field_name("declarator");
+            // Could be function_declarator directly or pointer_declarator wrapping it
+            let fn_decl = declarator.and_then(|d| {
+                if d.kind() == "function_declarator" {
+                    Some(d)
+                } else {
+                    d.child_by_field_name("declarator")
+                }
+            });
+            let inner = fn_decl.and_then(|fd| fd.child_by_field_name("declarator"));
+            inner
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "class_specifier" | "struct_specifier" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        "namespace_definition" => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(anonymous)")
+                .to_string()
+        }
+        "preproc_include" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => "?".to_string(),
+    }
+}
+
+fn cpp_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_definition" => format!("fn {}", name),
+        "class_specifier" => format!("class {}", name),
+        "struct_specifier" => format!("struct {}", name),
+        "namespace_definition" => format!("namespace {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn cpp_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_definition" => SymbolKind::Function,
+        "class_specifier" => SymbolKind::Struct,
+        "struct_specifier" => SymbolKind::Struct,
+        "namespace_definition" => SymbolKind::Module,
+        "preproc_include" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ScalaGrammar
+// ---------------------------------------------------------------------------
+
+pub struct ScalaGrammar;
+
+const SCALA_KINDS: &[&str] = &[
+    "class_definition",
+    "object_definition",
+    "trait_definition",
+    "function_definition",
+    "import_declaration",
+];
+
+impl LanguageGrammar for ScalaGrammar {
+    fn language_id(&self) -> &'static str { "scala" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_scala::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        scala_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn scala_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if SCALA_KINDS.contains(&kind) {
+            let name = scala_extract_name(&node, source, kind);
+            let signature = scala_build_signature(kind, &name);
+            let symbol_kind = scala_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            scala_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn scala_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_declaration" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn scala_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "class_definition" => format!("class {}", name),
+        "object_definition" => format!("object {}", name),
+        "trait_definition" => format!("trait {}", name),
+        "function_definition" => format!("def {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn scala_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "class_definition" => SymbolKind::Struct,
+        "object_definition" => SymbolKind::Module,
+        "trait_definition" => SymbolKind::Trait,
+        "function_definition" => SymbolKind::Function,
+        "import_declaration" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PhpGrammar
+// ---------------------------------------------------------------------------
+
+pub struct PhpGrammar;
+
+const PHP_KINDS: &[&str] = &[
+    "function_definition",
+    "method_declaration",
+    "class_declaration",
+    "interface_declaration",
+    "trait_declaration",
+    "namespace_use_clause",
+];
+
+impl LanguageGrammar for PhpGrammar {
+    fn language_id(&self) -> &'static str { "php" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_php::LANGUAGE_PHP.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        php_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn php_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if PHP_KINDS.contains(&kind) {
+            let name = php_extract_name(&node, source, kind);
+            let signature = php_build_signature(kind, &name);
+            let symbol_kind = php_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            php_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn php_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "namespace_use_clause" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        _ => {
+            // PHP grammar uses `name` node kind (not `identifier`) for names.
+            // child_by_field_name("name") returns the correct node regardless of its kind string.
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn php_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_definition" => format!("function {}", name),
+        "method_declaration" => format!("method {}", name),
+        "class_declaration" => format!("class {}", name),
+        "interface_declaration" => format!("interface {}", name),
+        "trait_declaration" => format!("trait {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn php_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_definition" | "method_declaration" => SymbolKind::Function,
+        "class_declaration" => SymbolKind::Struct,
+        "interface_declaration" => SymbolKind::Trait,
+        "trait_declaration" => SymbolKind::Trait,
+        "namespace_use_clause" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SwiftGrammar
+// ---------------------------------------------------------------------------
+
+pub struct SwiftGrammar;
+
+const SWIFT_KINDS: &[&str] = &[
+    "function_declaration",
+    "class_declaration",
+    "struct_declaration",
+    "protocol_declaration",
+    "enum_declaration",
+    "import_declaration",
+];
+
+impl LanguageGrammar for SwiftGrammar {
+    fn language_id(&self) -> &'static str { "swift" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_swift::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        swift_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn swift_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if SWIFT_KINDS.contains(&kind) {
+            let name = swift_extract_name(&node, source, kind);
+            let signature = swift_build_signature(kind, &name);
+            let symbol_kind = swift_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let idx = nodes.len();
+            nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            swift_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn swift_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_declaration" => {
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "function_declaration" => {
+            // Swift uses `simple_identifier` as the preferred name child; fallback to `name`.
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+        _ => {
+            // class/struct/protocol/enum: `type_identifier` child or `name` field
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn swift_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_declaration" => format!("func {}", name),
+        "class_declaration" => format!("class {}", name),
+        "struct_declaration" => format!("struct {}", name),
+        "protocol_declaration" => format!("protocol {}", name),
+        "enum_declaration" => format!("enum {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn swift_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_declaration" => SymbolKind::Function,
+        "class_declaration" => SymbolKind::Struct,
+        "struct_declaration" => SymbolKind::Struct,
+        // protocol maps to Trait for cross-language uniformity (per context package)
+        "protocol_declaration" => SymbolKind::Trait,
+        "enum_declaration" => SymbolKind::Enum,
+        "import_declaration" => SymbolKind::Module,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BashGrammar
+// ---------------------------------------------------------------------------
+
+pub struct BashGrammar;
+
+const BASH_KINDS: &[&str] = &[
+    "function_definition",
+    "command",
+];
+
+/// Identifier-like regex pattern for Bash command names (avoids shell builtins/paths).
+///
+/// A "word" node whose text matches this pattern is treated as a function call name.
+/// Shell built-ins (if, for, while, [, etc.) are filtered by this pattern.
+fn bash_is_identifier_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+impl LanguageGrammar for BashGrammar {
+    fn language_id(&self) -> &'static str { "bash" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_bash::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        bash_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn bash_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if BASH_KINDS.contains(&kind) {
+            let name_opt = bash_extract_name(&node, source, kind);
+            if let Some(name) = name_opt {
+                let signature = bash_build_signature(kind, &name);
+                let symbol_kind = bash_kind_to_symbol(kind);
+                let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+                let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+                let idx = nodes.len();
+                nodes.push(DkgNode { name, kind: symbol_kind, signature, start_line, end_line, parent_idx });
+                current_parent = Some(idx);
+            }
+        }
+
+        if cursor.goto_first_child() {
+            bash_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn bash_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> Option<String> {
+    match kind {
+        "function_definition" => {
+            // function_definition -> name field -> word node
+            let name = node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?");
+            Some(name.to_string())
+        }
+        "command" => {
+            // command -> command_name child -> word; filter to identifier-like names only
+            let name = node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("");
+            if bash_is_identifier_like(name) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn bash_build_signature(kind: &str, name: &str) -> String {
+    match kind {
+        "function_definition" => format!("function {}", name),
+        "command" => format!("cmd {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn bash_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_definition" => SymbolKind::Function,
+        "command" => SymbolKind::Function,
+        _ => SymbolKind::Function,
+    }
+}
+
 const EXTRACTED_KINDS: &[&str] = &[
     "function_item",
     "struct_item",
@@ -2133,7 +3226,8 @@ const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules", "__
 
 /// Extensions that have a registered grammar.
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "go", "ts", "tsx", "svelte", "java", "cs", "rb",
+    "rs", "py", "go", "ts", "tsx", "svelte", "vue", "java", "cs", "rb",
+    "js", "c", "cpp", "cc", "cxx", "scala", "php", "swift", "sh",
 ];
 
 pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
@@ -2148,10 +3242,171 @@ pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
         // tree-sitter-svelte-ng emits JS/TS declaration nodes inside
         // <script> blocks under the same node-kind strings.
         "svelte" => Some("svelte"),
+        // Pass D: Vue SFC — HTML parse for structure + TS re-parse + CSS @import.
+        "vue" => Some("vue"),
         "java" => Some("java"),
         "cs" => Some("csharp"),
         "rb" => Some("ruby"),
+        "js" => Some("javascript"),
+        "c" => Some("c"),
+        "cpp" | "cc" | "cxx" => Some("cpp"),
+        "scala" => Some("scala"),
+        "php" => Some("php"),
+        "swift" => Some("swift"),
+        "sh" => Some("bash"),
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import name cleaning (B-30 Pass C)
+// ---------------------------------------------------------------------------
+
+/// Clean a raw dkg_nodes.name import string to user-visible import path(s).
+///
+/// Grammars store the full raw AST text in `name` for import nodes:
+///   Java:  "import com.example.Foo;"   -> ["com.example.Foo"]
+///   C#:    "using App.Models;"         -> ["App.Models"]
+///   Go:    `import "fmt"` (or grouped) -> ["fmt"] (or multiple paths)
+///   TS/JS: `import { Foo } from './bar'` -> ["./bar"]
+///   Scala: "import com.example.{A, B}" -> ["com.example.A", "com.example.B"]
+///          "import com.example._"      -> [] (wildcard, skip)
+///
+/// Returns 0..N cleaned strings. Callers pass each to the resolver.
+fn clean_import_name(raw: &str, lang: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    match lang {
+        "java" | "kotlin" | "scala" => {
+            // Java: "import com.example.Foo;" or "import static com.example.Util;"
+            // Kotlin: "import com.example.Foo" or "import com.example.*"
+            // Scala: "import com.example.Foo" or "import com.example.{A, B}"
+            let after_import = trimmed
+                .strip_prefix("import static ")
+                .or_else(|| trimmed.strip_prefix("import "))
+                .unwrap_or(trimmed)
+                .trim()
+                .trim_end_matches(';')
+                .trim();
+
+            if after_import.is_empty() {
+                return Vec::new();
+            }
+
+            // Scala group import: "com.example.{Foo, Bar}"
+            if let Some(brace_pos) = after_import.find('{') {
+                let prefix = after_import[..brace_pos].trim_end_matches('.').trim();
+                let inner = &after_import[brace_pos + 1..];
+                let inner = inner.trim_end_matches('}').trim();
+                // Wildcard inside braces: skip.
+                if inner == "_" || inner == "*" {
+                    return Vec::new();
+                }
+                return inner
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty() && *s != "_" && *s != "*")
+                    .map(|s| format!("{prefix}.{s}"))
+                    .collect();
+            }
+
+            // Wildcard: "com.example.*" or "com.example._"
+            if after_import.ends_with(".*") || after_import.ends_with("._") {
+                return Vec::new();
+            }
+
+            vec![after_import.to_string()]
+        }
+
+        "csharp" => {
+            // C# using_directive: "using App.Models;" or "using static App.Util;"
+            // namespace_declaration: just the namespace name (no "using" prefix).
+            // Skip namespace declarations (they are not imports to resolve).
+            if !trimmed.starts_with("using ") {
+                return Vec::new();
+            }
+            let after_using = trimmed
+                .strip_prefix("using static ")
+                .or_else(|| trimmed.strip_prefix("using "))
+                .unwrap_or(trimmed)
+                .trim()
+                .trim_end_matches(';')
+                .trim();
+
+            // Skip using aliases: "using Foo = App.Bar;"
+            if after_using.contains(" = ") || after_using.contains('=') {
+                return Vec::new();
+            }
+
+            if after_using.is_empty() {
+                return Vec::new();
+            }
+            vec![after_using.to_string()]
+        }
+
+        "go" => {
+            // Go import_declaration: raw node text.
+            // Single: `import "github.com/foo/bar"` or `import _ "fmt"`
+            // Grouped: `import (\n\t"fmt"\n\t"os"\n)`
+            // Extract all double-quoted strings.
+            let mut paths = Vec::new();
+            let mut remaining = trimmed;
+            while let Some(q1) = remaining.find('"') {
+                remaining = &remaining[q1 + 1..];
+                if let Some(q2) = remaining.find('"') {
+                    let path = &remaining[..q2];
+                    // Skip blank-identifier side-effect imports (still record the path).
+                    if !path.is_empty() {
+                        paths.push(path.to_string());
+                    }
+                    remaining = &remaining[q2 + 1..];
+                } else {
+                    break;
+                }
+            }
+            paths
+        }
+
+        "typescript" | "tsx" | "javascript" | "svelte" => {
+            // TypeScript/JS import_statement: `import { Foo } from './bar'`
+            // or `import './bar'` (side-effect import).
+            // Extract the `from '...'` or `from "..."` path, or bare string.
+            let lower = trimmed.to_lowercase();
+            if let Some(from_pos) = lower.rfind(" from ") {
+                // " from " is 6 bytes (ASCII); skip past it.
+                let after_from = trimmed[from_pos + " from ".len()..].trim();
+                let path = after_from
+                    .trim_start_matches('"')
+                    .trim_start_matches('\'')
+                    .trim_end_matches('"')
+                    .trim_end_matches('\'')
+                    .trim_end_matches(';');
+                if !path.is_empty() {
+                    return vec![path.to_string()];
+                }
+            }
+            // Bare import (no `from`): `import './polyfill'` or `require('./foo')`
+            // Try to find a quoted string. Use byte-safe indexing (import paths are ASCII).
+            let dq = trimmed.find('"');
+            let sq = trimmed.find('\'');
+            let q1 = match (dq, sq) {
+                (Some(d), Some(s)) => Some((d.min(s), if d < s { '"' } else { '\'' })),
+                (Some(d), None) => Some((d, '"')),
+                (None, Some(s)) => Some((s, '\'')),
+                (None, None) => None,
+            };
+            if let Some((start, close)) = q1 {
+                let after = &trimmed[start + 1..];
+                if let Some(end) = after.find(close) {
+                    let path = after[..end].trim();
+                    if !path.is_empty() {
+                        return vec![path.to_string()];
+                    }
+                }
+            }
+            Vec::new()
+        }
+
+        _ => Vec::new(),
     }
 }
 

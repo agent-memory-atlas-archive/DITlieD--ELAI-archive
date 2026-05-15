@@ -83,7 +83,14 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 //     in this commit.
 // DESTRUCTIVE: existing v32 session DBs are DROPped on first read (no migration
 // logic). Matches B-23 / B-24 / B-27 / B-28 E-3 / E-4 precedent.
-const SCHEMA_VERSION: i64 = 35;
+// B-30 (SCHEMA_VERSION 36): LanguageGrammarStatus action type for one-shot
+// LanguageRegistry startup publication. Emitter: dkg index init after
+// LanguageRegistry::new() + per-grammar register() cycle. Consumer:
+// dashboard KnowledgeDrawer LANGUAGES LOADED card.
+// B-29 Phase 5 (SCHEMA_VERSION 37): SymbolQuery action type — one row per
+// symbol_impact / symbol_flow / symbol_context / symbol_list tool call.
+// Carries SymbolQueryPayload { tool, target, hop_count, total_files, latency_ms }.
+const SCHEMA_VERSION: i64 = 37;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -209,7 +216,15 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- the parent step id + created_path + type_hint (Module / Struct /
         -- Function / Const) + reason string (the gating cue) so the
         -- dashboard can render a per-step expansion trail.
-        'micro_step_created'
+        'micro_step_created',
+        -- B-30 (SCHEMA_VERSION 36): one-shot LanguageRegistry status emitted
+        -- at DKG engine startup. Carries loaded + failed grammar lists so
+        -- the dashboard KnowledgeDrawer can render the LANGUAGES LOADED card.
+        'language_grammar_status',
+        -- B-29 Phase 5 (SCHEMA_VERSION 37): symbol_query action for per-tool
+        -- symbol_impact / symbol_flow / symbol_context / symbol_list calls.
+        -- Consumer: dashboard KnowledgeDrawer Impact Analysis panel + ActivityFeed.
+        'symbol_query'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -604,6 +619,20 @@ pub enum SsbActionType {
     /// [`MicroStepCreatedPayload`] with the parent step id + created path +
     /// type_hint (Module / Struct / Function / Const) + reason string.
     MicroStepCreated,
+    /// B-30 (SCHEMA_VERSION 36): one-shot LanguageRegistry status emitted at
+    /// DKG engine startup, immediately after the per-grammar `catch_unwind`
+    /// registration cycle completes. Carries a
+    /// [`LanguageGrammarStatusPayload`] with the full loaded + failed lists.
+    /// Producers: dkg index init (LanguageRegistry::new() + register() loop).
+    /// Consumers: dashboard KnowledgeDrawer LANGUAGES LOADED card.
+    LanguageGrammarStatus,
+    /// B-29 Phase 5 (SCHEMA_VERSION 37): one row per symbol_* tool call.
+    /// Carries a [`SymbolQueryPayload`] with the tool name, target, hop count,
+    /// total files reached, and latency in ms.
+    /// Producers: translate_tool_request() for symbol_impact / symbol_flow /
+    /// symbol_context / symbol_list tool IDs.
+    /// Consumers: dashboard KnowledgeDrawer Impact Analysis panel + ActivityFeed.
+    SymbolQuery,
 }
 
 impl SsbActionType {
@@ -731,6 +760,10 @@ impl SsbActionType {
             Self::DependencyResolved => "dependency_resolved",
             // B-28 WIRING-1 (SCHEMA_VERSION 35): micro-step creation beacon.
             Self::MicroStepCreated => "micro_step_created",
+            // B-30 (SCHEMA_VERSION 36): language grammar registry status.
+            Self::LanguageGrammarStatus => "language_grammar_status",
+            // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
+            Self::SymbolQuery => "symbol_query",
         }
     }
 }
@@ -865,6 +898,10 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "pipeline_pre_assembled" => Ok(SsbActionType::PipelinePreAssembled),
         "dependency_resolved" => Ok(SsbActionType::DependencyResolved),
         "micro_step_created" => Ok(SsbActionType::MicroStepCreated),
+        // B-30 (SCHEMA_VERSION 36): language grammar registry status.
+        "language_grammar_status" => Ok(SsbActionType::LanguageGrammarStatus),
+        // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
+        "symbol_query" => Ok(SsbActionType::SymbolQuery),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -2693,6 +2730,53 @@ pub struct MicroStepCreatedPayload {
     pub count: u8,
 }
 
+/// B-30 (SCHEMA_VERSION 36): one-shot LanguageRegistry status row.
+///
+/// Emitted once at DKG engine startup, after the per-grammar `catch_unwind`
+/// registration cycle completes. The `loaded` list contains language IDs of
+/// successfully initialized grammars in alphabetical order. The `failed` list
+/// contains `(language_id, error_message)` pairs in alphabetical order of
+/// language ID.
+///
+/// Both lists are deterministically sorted — derived from a `BTreeMap` source —
+/// so downstream consumers can rely on stable ordering without sorting themselves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanguageGrammarStatusPayload {
+    /// Language IDs successfully loaded, in alphabetical order.
+    pub loaded: Vec<String>,
+    /// Language IDs that failed to load, paired with the error message,
+    /// in alphabetical order of language ID.
+    pub failed: Vec<(String, String)>,
+}
+
+impl From<elai_knowledge::dkg::LanguageRegistryStatus> for LanguageGrammarStatusPayload {
+    fn from(s: elai_knowledge::dkg::LanguageRegistryStatus) -> Self {
+        Self { loaded: s.loaded, failed: s.failed }
+    }
+}
+
+/// B-29 Phase 5 (SCHEMA_VERSION 37): payload for one symbol_* tool call.
+///
+/// Emitted by `translate_tool_request` in `production_agent_rpc.rs` for
+/// `symbol_impact`, `symbol_flow`, `symbol_context`, and `symbol_list` tool IDs.
+/// Consumed by the dashboard KnowledgeDrawer Impact Analysis panel and
+/// the ActivityFeed via `SsbViewer::latest_action_of_type("symbol_query")`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolQueryPayload {
+    /// The tool that was invoked ("symbol_impact" / "symbol_flow" / etc.).
+    pub tool: String,
+    /// The primary target string (file path or symbol name for impact/context;
+    /// entrypoint_id for flow; optional file for list).
+    pub target: String,
+    /// Depth parameter from the request (0 if not applicable).
+    pub hop_count: u32,
+    /// Number of files in the result set (total_files for impact;
+    /// symbols.len() for context/list; depth for flow).
+    pub total_files: u32,
+    /// Wall-clock latency for the traversal in milliseconds.
+    pub latency_ms: u32,
+}
+
 // ---------------------------------------------------------------------------
 // SsbPayload enum (typed wrapper over all action-type payloads)
 // ---------------------------------------------------------------------------
@@ -2853,6 +2937,10 @@ pub enum SsbPayload {
     DependencyResolved(DependencyResolvedPayload),
     // B-28 WIRING-1 (SCHEMA_VERSION 35): speculative file-router micro-step row.
     MicroStepCreated(MicroStepCreatedPayload),
+    // B-30 (SCHEMA_VERSION 36): one-shot language grammar registry status row.
+    LanguageGrammarStatus(LanguageGrammarStatusPayload),
+    // B-29 Phase 5 (SCHEMA_VERSION 37): one row per symbol_* tool call.
+    SymbolQuery(SymbolQueryPayload),
 }
 
 impl SsbPayload {
@@ -2979,6 +3067,10 @@ impl SsbPayload {
             Self::PipelinePreAssembled(_) => SsbActionType::PipelinePreAssembled,
             Self::DependencyResolved(_) => SsbActionType::DependencyResolved,
             Self::MicroStepCreated(_) => SsbActionType::MicroStepCreated,
+            // B-30 (SCHEMA_VERSION 36): language grammar registry status.
+            Self::LanguageGrammarStatus(_) => SsbActionType::LanguageGrammarStatus,
+            // B-29 Phase 5 (SCHEMA_VERSION 37): symbol-graph tool call row.
+            Self::SymbolQuery(_) => SsbActionType::SymbolQuery,
         }
     }
 }
@@ -4718,6 +4810,13 @@ mod tests {
                     count: 1,
                 })
             }
+            // B-30 (SCHEMA_VERSION 36): language grammar registry status.
+            SsbActionType::LanguageGrammarStatus => {
+                SsbPayload::LanguageGrammarStatus(LanguageGrammarStatusPayload {
+                    loaded: vec!["go".into(), "python".into(), "rust".into()],
+                    failed: vec![],
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -5852,6 +5951,19 @@ mod tests {
                 reason: "undefined_symbol".into(),
                 count: 1,
             }),
+            // B-30 (SCHEMA_VERSION 36) — language grammar registry status row.
+            SsbPayload::LanguageGrammarStatus(LanguageGrammarStatusPayload {
+                loaded: vec!["go".into(), "python".into(), "rust".into()],
+                failed: vec![("kotlin".into(), "ABI mismatch".into())],
+            }),
+            // B-29 Phase 5 (SCHEMA_VERSION 37) — symbol-graph tool call row.
+            SsbPayload::SymbolQuery(SymbolQueryPayload {
+                tool: "symbol_impact".into(),
+                target: "crates/knowledge/src/symbol_graph/traversal.rs".into(),
+                hop_count: 2,
+                total_files: 7,
+                latency_ms: 3,
+            }),
         ]
     }
 
@@ -5863,8 +5975,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            52,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated)",
+            54,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
