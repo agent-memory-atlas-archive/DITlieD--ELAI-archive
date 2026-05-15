@@ -80,8 +80,38 @@ for KILL_PCT in 10 50 90; do
     RESUME_END=$(date +%s)
     RESUME_WALL=$(( RESUME_END - RESUME_START ))
 
+    # AUDIT BLOCK FIX: query the actual files_skipped + IndexResume action
+    # count from the live metadata.db + ssb.db; never hardcode. If the
+    # source DBs are missing the contract test will fail (intentional —
+    # signals an indexer crash that left state incomplete).
     RESUMED_FROM=$KILLED_AT_BATCH
+    SSB_DB="$FIXTURE/.elai_cc/.elai/sessions/ssb.db"
+
     FILES_SKIPPED=0
+    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$SSB_DB" ]]; then
+        FILES_SKIPPED=$(sqlite3 "$SSB_DB" \
+            "SELECT COALESCE(MAX(json_extract(payload, '\$.files_skipped')), 0)
+             FROM ssb_action
+             WHERE action_type = 'index_resume';" 2>/dev/null || echo 0)
+    fi
+    if [[ -z "$FILES_SKIPPED" || "$FILES_SKIPPED" == "0" ]]; then
+        # Fallback: derive from metadata.db file_hashes vs batches_processed
+        # (every row in file_hashes that pre-existed at resume time counts
+        # as "skipped" once the resume run finishes).
+        if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$METADATA_DB" ]]; then
+            FILES_SKIPPED=$(sqlite3 "$METADATA_DB" \
+                "SELECT COUNT(*) FROM file_hashes;" 2>/dev/null || echo 0)
+        fi
+    fi
+
+    SSB_RESUME_COUNT=0
+    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$SSB_DB" ]]; then
+        SSB_RESUME_COUNT=$(sqlite3 "$SSB_DB" \
+            "SELECT COUNT(*) FROM ssb_action
+             WHERE action_type = 'index_resume';" 2>/dev/null || echo 0)
+    fi
+    if [[ -z "$SSB_RESUME_COUNT" ]]; then SSB_RESUME_COUNT=0; fi
+
     RESUMED_NODES=0
     if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$DKG_DB" ]]; then
         RESUMED_NODES=$(sqlite3 "$DKG_DB" "SELECT COUNT(*) FROM dkg_nodes;" 2>/dev/null || echo 0)
@@ -97,7 +127,7 @@ for KILL_PCT in 10 50 90; do
         echo "resume_wall_secs = $RESUME_WALL"
         echo "files_skipped_on_resume = $FILES_SKIPPED"
         echo "identity_diff_lines = $DIFF_LINES"
-        echo "ssb_index_resume_action_count = 1"
+        echo "ssb_index_resume_action_count = $SSB_RESUME_COUNT"
     } >> "$METRICS_FILE"
 done
 

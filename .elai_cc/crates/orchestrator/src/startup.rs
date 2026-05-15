@@ -442,7 +442,14 @@ fn resume_db(
         );
 
         // Resume the indexing run synchronously (we're in spawn_blocking).
+        // AUDIT WARN FIX: attach the process-global Ssb writer (when
+        // installed) so per-batch IndexCheckpoint / IndexResume / IndexCancel
+        // rows are actually persisted instead of silently dropped on the
+        // auto-resume path. Mirrors how the dashboard plumbs its writer.
         let mut service = IndexingService::new(project_root.clone(), project_indexes_dir.to_path_buf());
+        if let Some(writer) = current_ssb_writer() {
+            service = service.with_ssb_writer(writer);
+        }
         let resume_outcome = service.build_index_resumable(&project_id, &store, Arc::clone(&clock));
 
         match resume_outcome {
