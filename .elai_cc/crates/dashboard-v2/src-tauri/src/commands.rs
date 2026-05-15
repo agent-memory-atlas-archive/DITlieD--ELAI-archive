@@ -975,6 +975,504 @@ pub async fn get_impact_analysis(state: State<'_, AppState>) -> CmdResult<Value>
 }
 
 // ---------------------------------------------------------------------------
+// B-33 — INTERACTIVE GRAPH VIEWER
+//
+// Three commands wire the dashboard's GraphWindow to the live SymbolGraphCache
+// + DkgEngine + DecompositionTree. We construct caches per-call (production
+// _agent_rpc.rs:463 pattern) — AppState carries no SymbolGraphCache field
+// (B-36 Session 2 deferred). Per-call open is microseconds on SSD.
+//
+// All three commands NEVER unwrap; missing dkg.db / no project_id row both
+// return a populated SymbolMode::Omitted{reason} so the dashboard renders an
+// "empty/no-index" placeholder instead of crashing.
+// ---------------------------------------------------------------------------
+
+/// Maximum sidecar BFS depth surfaced to the dashboard. Matches MAX_IMPACT_DEPTH
+/// in symbol_graph::sharding (10) but kept as a local const so this command
+/// surface is readable without cross-crate constants.
+const B33_DEFAULT_IMPACT_DEPTH: u32 = 3;
+
+/// Default truncation cap for Mermaid export when the caller passes None.
+const B33_DEFAULT_MERMAID_MAX_NODES: usize = 200;
+
+/// Internal helper: produce an empty VizData payload with a reason-bearing
+/// SymbolMode::Omitted. Centralising this guarantees the stub_ban contract
+/// (no non-Full SymbolMode without a populated reason).
+fn b33_empty_viz(project_id: &str, reason: &str) -> elai_knowledge::visualization::types::VizData {
+    elai_knowledge::visualization::types::VizData::empty(
+        project_id.to_string(),
+        elai_knowledge::visualization::types::SymbolMode::Omitted {
+            reason: reason.to_string(),
+        },
+    )
+}
+
+/// Build the `file` mode VizData by walking DkgEngine nodes + edges.
+/// Per-file symbol_count is filled from SymbolGraphCache.meta when available.
+fn b33_build_file_view(
+    project_root: &std::path::Path,
+    project_id: &str,
+) -> CmdResult<elai_knowledge::visualization::types::VizData> {
+    use elai_knowledge::visualization::types::{
+        SymbolMode, VizData, VizEdgeKind, VizFile, VizFileEdge, VizProject,
+        MAX_VIZ_SYMBOLS,
+    };
+    use std::collections::BTreeMap;
+
+    let dkg_path = elai_core::paths::dkg_db_path(project_root);
+    if !dkg_path.exists() {
+        return Ok(b33_empty_viz(project_id, "no index yet — run /index"));
+    }
+
+    // Open DkgEngine in read mode (now_secs unused on read-only paths).
+    let engine = elai_knowledge::DkgEngine::new(&dkg_path, None, 0)
+        .map_err(|e| format!("DkgEngine open failed: {e}"))?;
+    let nodes = engine
+        .nodes()
+        .map_err(|e| format!("DkgEngine::nodes failed: {e}"))?;
+    let edges_raw = engine
+        .edges()
+        .map_err(|e| format!("DkgEngine::edges failed: {e}"))?;
+
+    // Aggregate file -> { language, symbol_count, in/out counts } via BTreeMap
+    // (deterministic iteration; C2 BTREEMAP gotcha).
+    let mut by_file: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    let mut node_to_file: BTreeMap<i64, String> = BTreeMap::new();
+
+    for n in &nodes {
+        let path_str = n.file_path.to_string_lossy().to_string();
+        node_to_file.insert(n.node_id, path_str.clone());
+        let lang = n
+            .file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(elai_knowledge::dkg::ext_to_lang_id)
+            .unwrap_or("other")
+            .to_string();
+        let entry = by_file.entry(path_str).or_insert((lang, 0));
+        entry.1 += 1;
+    }
+
+    // File-import edges (filter by edge_type=="imports") and per-file dep counts.
+    let mut deps_count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut dependents_count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut file_edges: Vec<VizFileEdge> = Vec::new();
+    let mut seen_edges: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for (src_id, tgt_id, kind) in &edges_raw {
+        if kind != "imports" {
+            continue;
+        }
+        let (src_file, tgt_file) = match (node_to_file.get(src_id), node_to_file.get(tgt_id)) {
+            (Some(s), Some(t)) => (s.clone(), t.clone()),
+            _ => continue,
+        };
+        if src_file == tgt_file {
+            continue;
+        }
+        if !seen_edges.insert((src_file.clone(), tgt_file.clone())) {
+            continue;
+        }
+        *deps_count.entry(src_file.clone()).or_insert(0) += 1;
+        *dependents_count.entry(tgt_file.clone()).or_insert(0) += 1;
+        file_edges.push(VizFileEdge {
+            source: src_file,
+            target: tgt_file,
+            kind: VizEdgeKind::Import,
+            cyclic: false,
+        });
+    }
+
+    // Try to attach SymbolGraphCache meta for symbol mode resolution + symbol_count fields.
+    let mut symbol_mode = SymbolMode::Full;
+    let mut total_symbols: Option<usize> = None;
+    let mut total_call_edges: Option<usize> = None;
+    let mut built_at: Option<i64> = None;
+    if let Ok(cache) = elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
+        &dkg_path,
+        project_id,
+        elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
+    ) {
+        let meta = cache.meta();
+        let symbol_count = usize::try_from(meta.symbol_count).unwrap_or(usize::MAX);
+        if symbol_count > MAX_VIZ_SYMBOLS {
+            symbol_mode = SymbolMode::Omitted {
+                reason: format!(
+                    "symbol count {symbol_count} exceeds {MAX_VIZ_SYMBOLS} cap; symbol mode disabled"
+                ),
+            };
+        }
+        total_symbols = Some(symbol_count);
+        total_call_edges = Some(usize::try_from(meta.edge_count).unwrap_or(usize::MAX));
+        built_at = Some(meta.built_at);
+    } else {
+        // No symbol_graph_meta row yet — surface as Omitted with an actionable reason.
+        symbol_mode = SymbolMode::Omitted {
+            reason: "symbol graph not built yet — symbol mode disabled".to_string(),
+        };
+    }
+
+    let files: Vec<VizFile> = by_file
+        .iter()
+        .map(|(path, (lang, sym_count))| {
+            let basename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(path)
+                .to_string();
+            VizFile {
+                id: path.clone(),
+                label: basename,
+                language: lang.clone(),
+                deps: deps_count.get(path).copied().unwrap_or(0),
+                dependents: dependents_count.get(path).copied().unwrap_or(0),
+                symbol_count: *sym_count,
+            }
+        })
+        .collect();
+
+    Ok(VizData {
+        project: VizProject {
+            name: project_id.to_string(),
+            files: files.len(),
+            edges: file_edges.len(),
+            symbols: total_symbols,
+            call_edges: total_call_edges,
+            built_at,
+        },
+        files,
+        file_edges,
+        symbols: Vec::new(),
+        symbol_edges: Vec::new(),
+        symbols_by_file: std::collections::BTreeMap::new(),
+        symbol_mode,
+    })
+}
+
+/// Build the `symbol` mode VizData by walking SymbolGraphCache file payloads.
+/// Falls back to file mode + Capped reason when total edge count exceeds the cap.
+fn b33_build_symbol_view(
+    project_root: &std::path::Path,
+    project_id: &str,
+) -> CmdResult<elai_knowledge::visualization::types::VizData> {
+    use elai_knowledge::visualization::types::{
+        SymbolMode, VizSymbol, VizSymbolEdge, MAX_VIZ_EDGES, MAX_VIZ_SYMS_PER_FILE,
+    };
+    use std::collections::BTreeMap;
+
+    let mut data = b33_build_file_view(project_root, project_id)?;
+    // If file mode already returned an Omitted reason (no index), short-circuit.
+    if matches!(data.symbol_mode, SymbolMode::Omitted { .. }) {
+        return Ok(data);
+    }
+
+    let dkg_path = elai_core::paths::dkg_db_path(project_root);
+    let mut cache = match elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
+        &dkg_path,
+        project_id,
+        elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            data.symbol_mode = SymbolMode::Omitted {
+                reason: "symbol graph not built yet — symbol mode disabled".to_string(),
+            };
+            return Ok(data);
+        }
+    };
+
+    // Iterate file ids from the file-mode payload and load per-file symbol payloads.
+    let file_ids: Vec<String> = data.files.iter().map(|f| f.id.clone()).collect();
+    let mut total_edges = 0usize;
+    let mut symbols_by_file: BTreeMap<String, Vec<VizSymbol>> = BTreeMap::new();
+    let mut all_symbols: Vec<VizSymbol> = Vec::new();
+    let mut symbol_edges: Vec<VizSymbolEdge> = Vec::new();
+
+    for fid in &file_ids {
+        let payload = match cache.get_or_load_payload(fid) {
+            Ok(Some(p)) => p,
+            Ok(None) | Err(_) => continue,
+        };
+        let mut file_symbols: Vec<VizSymbol> = Vec::new();
+        for s in &payload.symbols {
+            if file_symbols.len() >= MAX_VIZ_SYMS_PER_FILE {
+                break;
+            }
+            let viz = VizSymbol {
+                id: s.id.clone(),
+                file: s.file.clone(),
+                name: s.name.clone(),
+                qualified_name: s.qualified_name.clone(),
+                kind: format!("{:?}", s.kind),
+                line: s.line,
+            };
+            file_symbols.push(viz.clone());
+            all_symbols.push(viz);
+        }
+        for e in &payload.outgoing_calls {
+            if total_edges >= MAX_VIZ_EDGES {
+                break;
+            }
+            // Only emit edges with at least one resolved candidate.
+            for callee in &e.callee_candidates {
+                symbol_edges.push(VizSymbolEdge {
+                    source: e.caller_id.clone(),
+                    target: callee.clone(),
+                    confidence: e.confidence,
+                });
+                total_edges += 1;
+                if total_edges >= MAX_VIZ_EDGES {
+                    break;
+                }
+            }
+        }
+        if !file_symbols.is_empty() {
+            symbols_by_file.insert(fid.clone(), file_symbols);
+        }
+    }
+
+    if total_edges >= MAX_VIZ_EDGES {
+        data.symbol_mode = SymbolMode::Capped {
+            reason: format!("edge count reached {MAX_VIZ_EDGES} cap; symbol mode capped"),
+        };
+    }
+    data.symbols = all_symbols;
+    data.symbol_edges = symbol_edges;
+    data.symbols_by_file = symbols_by_file;
+    Ok(data)
+}
+
+/// Build the `decomposition` mode VizData by reshaping the live decomposition
+/// tree (Concept -> Phase -> Step -> BabyStep) into VizFile/VizFileEdge nodes.
+fn b33_build_decomposition_view(
+    state: &AppState,
+    project_id: &str,
+) -> elai_knowledge::visualization::types::VizData {
+    use elai_knowledge::visualization::types::{
+        SymbolMode, VizData, VizEdgeKind, VizFile, VizFileEdge, VizProject,
+    };
+    use std::collections::BTreeMap;
+
+    // FIX-A3 (B-33 follow-up): typed reshape over the orchestrator DTOs
+    // (`DecompositionTreeSnapshot` -> `ConceptNodeRef` -> `PhaseNodeRef` ->
+    // `StepNodeRef` -> `BabyStepRef`) instead of the previous
+    // `serde_json::to_value` + string-key fallback. The auditor flagged the
+    // old shape as fragile because the dead `concept_id`/`name`/`task`
+    // fallbacks would silently render placeholder strings ("Concept",
+    // "Phase") if upstream renamed a field. The actual fields are `id` +
+    // `title` (verified at orchestrator/src/ssb_viewer.rs:258-285); a
+    // typed iteration breaks the build at compile-time on rename instead.
+    let snap: elai_orchestrator::DecompositionTreeSnapshot = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.decomposition_tree(None).ok())
+        .unwrap_or_default();
+
+    let mut files: Vec<VizFile> = Vec::new();
+    let mut file_edges: Vec<VizFileEdge> = Vec::new();
+
+    fn push_node(
+        files: &mut Vec<VizFile>,
+        id: &str,
+        label: &str,
+        level: &str,
+        parent: Option<&str>,
+        edges: &mut Vec<VizFileEdge>,
+    ) {
+        files.push(VizFile {
+            id: id.to_string(),
+            label: format!("{level}: {label}"),
+            language: "decomposition".to_string(),
+            deps: 0,
+            dependents: 0,
+            symbol_count: 0,
+        });
+        if let Some(p) = parent {
+            edges.push(VizFileEdge {
+                source: p.to_string(),
+                target: id.to_string(),
+                kind: VizEdgeKind::Import,
+                cyclic: false,
+            });
+        }
+    }
+
+    for concept in &snap.concepts {
+        push_node(
+            &mut files,
+            &concept.id,
+            &concept.title,
+            "concept",
+            None,
+            &mut file_edges,
+        );
+        for phase in &concept.phases {
+            push_node(
+                &mut files,
+                &phase.id,
+                &phase.title,
+                "phase",
+                Some(&concept.id),
+                &mut file_edges,
+            );
+            for step in &phase.steps {
+                push_node(
+                    &mut files,
+                    &step.id,
+                    &step.title,
+                    "step",
+                    Some(&phase.id),
+                    &mut file_edges,
+                );
+                for baby in &step.baby_steps {
+                    push_node(
+                        &mut files,
+                        &baby.id,
+                        &baby.title,
+                        "baby_step",
+                        Some(&step.id),
+                        &mut file_edges,
+                    );
+                }
+            }
+        }
+    }
+
+    VizData {
+        project: VizProject {
+            name: project_id.to_string(),
+            files: files.len(),
+            edges: file_edges.len(),
+            symbols: None,
+            call_edges: None,
+            built_at: None,
+        },
+        files,
+        file_edges,
+        symbols: Vec::new(),
+        symbol_edges: Vec::new(),
+        symbols_by_file: BTreeMap::new(),
+        symbol_mode: SymbolMode::Omitted {
+            reason: "decomposition mode does not surface call-graph symbols".to_string(),
+        },
+    }
+}
+
+/// Resolve the active project_id from AppState. Held briefly under the
+/// std::sync::Mutex (no `.await` while held).
+fn b33_resolve_project_id(state: &AppState) -> String {
+    match state.project_id.lock() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// `get_graph_view_data` — build a VizData payload for the dashboard's
+/// GraphWindow. `mode` ∈ { "file", "symbol", "decomposition" }.
+///
+/// `project_id` is optional from the frontend; when omitted (or empty) we
+/// fall back to AppState.project_id (defaulted to "default").
+///
+/// Returns an empty payload + `SymbolMode::Omitted{reason}` when no index
+/// exists yet rather than erroring (frontend renders a placeholder).
+#[tauri::command]
+pub async fn get_graph_view_data(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    mode: String,
+) -> CmdResult<elai_knowledge::visualization::types::VizData> {
+    let project_root = state.project_root_snapshot();
+    let pid = project_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| b33_resolve_project_id(&state));
+    let result = match mode.as_str() {
+        "file" => b33_build_file_view(&project_root, &pid),
+        "symbol" => b33_build_symbol_view(&project_root, &pid),
+        "decomposition" => Ok(b33_build_decomposition_view(&state, &pid)),
+        other => Err(format!(
+            "unknown mode `{other}`; expected file/symbol/decomposition"
+        )),
+    };
+    result
+}
+
+/// `get_impact_overlay` — call traversal::compute_impact_radius and reshape
+/// the ImpactResult into a JSON shape the frontend can consume directly.
+#[tauri::command]
+pub async fn get_impact_overlay(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    target: String,
+    depth: u32,
+) -> CmdResult<Value> {
+    let empty = json!({
+        "files": [],
+        "by_depth": {},
+        "total_files": 0,
+        "max_depth_reached": 0,
+        "truncated": false,
+    });
+    let project_root = state.project_root_snapshot();
+    let pid = project_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| b33_resolve_project_id(&state));
+    let dkg_path = elai_core::paths::dkg_db_path(&project_root);
+    if !dkg_path.exists() {
+        return Ok(empty);
+    }
+    let mut cache = match elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
+        &dkg_path,
+        &pid,
+        elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
+    ) {
+        Ok(c) => c,
+        Err(_) => return Ok(empty),
+    };
+    let depth = if depth == 0 { B33_DEFAULT_IMPACT_DEPTH } else { depth };
+    let impact = elai_knowledge::symbol_graph::traversal::compute_impact_radius(
+        &mut cache, &target, depth,
+    )
+    .map_err(|e| format!("compute_impact_radius failed: {e}"))?;
+    Ok(json!({
+        "files": impact.resolved_files,
+        "by_depth": impact.files_by_depth,
+        "total_files": impact.total_files,
+        "max_depth_reached": impact.max_depth_reached,
+        "truncated": impact.truncated,
+    }))
+}
+
+/// `export_graph_mermaid` — render the same VizData payload as a Mermaid
+/// flowchart string. Always returns a non-empty string (header + classDef
+/// block on empty input — see knowledge::visualization::mermaid).
+#[tauri::command]
+pub async fn export_graph_mermaid(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    mode: String,
+    max_nodes: Option<usize>,
+) -> CmdResult<String> {
+    let project_root = state.project_root_snapshot();
+    let pid = project_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| b33_resolve_project_id(&state));
+    let data = match mode.as_str() {
+        "file" => b33_build_file_view(&project_root, &pid)?,
+        "symbol" => b33_build_symbol_view(&project_root, &pid)?,
+        "decomposition" => b33_build_decomposition_view(&state, &pid),
+        other => {
+            return Err(format!(
+                "unknown mode `{other}`; expected file/symbol/decomposition"
+            ));
+        }
+    };
+    let cap = max_nodes.unwrap_or(B33_DEFAULT_MERMAID_MAX_NODES);
+    Ok(elai_knowledge::visualization::mermaid::generate_mermaid(
+        &data, cap,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // REASONING / GRC
 // ---------------------------------------------------------------------------
 

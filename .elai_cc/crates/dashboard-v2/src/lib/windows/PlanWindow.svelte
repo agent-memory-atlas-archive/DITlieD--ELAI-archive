@@ -5,6 +5,7 @@
   import { fsm } from '$lib/state/fsm.svelte';
   import { activity } from '$lib/state/activity.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
+  import { graph } from '$lib/state/graph.svelte';
   import { get_bubble_up_events } from '$lib/api/stub';
   import { Tree, Badge, Button, Empty, Card, Scrollbar } from '$lib/ui';
   import type { TreeNode } from '$lib/ui';
@@ -335,6 +336,13 @@
             {#if selectedNode.elapsed_ms && selectedNode.elapsed_ms > 0}
               <span class="detail-elapsed">{formatElapsed(selectedNode.elapsed_ms)}</span>
             {/if}
+            <!-- B-33: cross-window link → focus this decomposition node in GraphWindow -->
+            <button
+              class="text-btn graph-link"
+              type="button"
+              title="Show this node in the Graph window"
+              onclick={() => { graph.set_mode('decomposition'); graph.focus_node(selectedNode.id); workspace.openTab('primary', 'graph'); }}
+            >Show in Graph</button>
           </div>
 
           {#if selectedNode.level !== 'baby-step'}

@@ -488,6 +488,15 @@ pub use ssb::{
     // decode SSB rows without reaching into `orchestrator::ssb::*` directly.
     IndexCheckpointPayload, IndexResumePayload, IndexCancelPayload,
     LockAcquiredPayload, LockContestedPayload,
+    // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+    // Re-exported so dashboard-v2 GraphWindow listener + contracts crate
+    // tests can reach the payload struct without `::ssb::*` paths.
+    SymbolGraphUpdatedPayload,
+    // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons. Re-exported so
+    // dashboard-v2 IdeaFramingWindow + MonitorWindow critic-rounds badge +
+    // contract tests can decode SSB rows without `::ssb::*` paths.
+    IdeaFramingStartedPayload, ProjectClassClassifiedPayload,
+    CriticRoundCompletePayload, IdeaFramedPayload, TradeoffCardEmittedPayload,
     // SSB schema version + string-to-enum helper (used by contract tests).
     SCHEMA_VERSION_PUBLIC, ssb_action_type_from_str_public,
 };

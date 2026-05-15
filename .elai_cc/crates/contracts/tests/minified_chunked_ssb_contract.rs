@@ -56,12 +56,26 @@ fn test_minified_file_chunked_action_round_trips() {
 
 #[test]
 fn test_schema_version_bumped_to_38() {
+    // Updated to 40 by B-33 follow-up (SymbolGraphUpdated, 39 -> 40).
+    // Previous bumps that touched this test: 37 -> 38 (B-32, this variant)
+    // and 38 -> 39 (B-31.5, 5 deferred B-31 SSB beacons).
+    // The MinifiedFileChunked invariants (round-trip + payload schema)
+    // remain pinned by the other two tests in this file; this test only
+    // anchors the floor — SCHEMA_VERSION must never regress below 38.
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 38,
+        "B-32: SCHEMA_VERSION must be at least 38 (the bump that gated the \
+         MinifiedFileChunked enum + CHECK constraint addition). Got {}.",
+        SCHEMA_VERSION_PUBLIC,
+    );
+    // Defense-in-depth: pin the current expected value so any future bump
+    // is intentional, not accidental. Update both this constant and the
+    // ledger comment in ssb.rs when bumping.
     assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 38,
-        "B-32: SCHEMA_VERSION must be bumped from 37 to 38 to gate the additive \
-         MinifiedFileChunked enum + CHECK constraint change. If this fires after a \
-         later batch bump (39+), update the constant here AND verify the B-32 ledger \
-         comment in ssb.rs is still present.",
+        SCHEMA_VERSION_PUBLIC, 40,
+        "B-33 follow-up: SCHEMA_VERSION expected 40 after the SymbolGraphUpdated \
+         variant landed. If this fires after another batch bump (41+), update both \
+         constants AND verify the relevant ledger comments in ssb.rs are still present.",
     );
 }
 

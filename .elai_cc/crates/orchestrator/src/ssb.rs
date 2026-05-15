@@ -96,6 +96,12 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // char_count, chunk_count, avg_line_length }. Defense-in-depth alongside the
 // `tracing::info!(target="knowledge::chunking", ..., "minified chunked")` emit
 // at bm25.rs:412/523 (kept so dev console retains visibility).
+// B-33 follow-up (SCHEMA_VERSION 40): SymbolGraphUpdated variant emitted
+// by IndexingService after build_symbol_graph() success. Carries
+// SymbolGraphUpdatedPayload { project_id, file_count, symbol_count,
+// edge_count, built_ms } for the dashboard GraphWindow refresh path.
+// Replaces the 30s setInterval fallback that B-33 shipped while ssb.rs
+// was locked.
 // B-31.5 (SCHEMA_VERSION 39): bumped 38 -> 39 for the 5 deferred B-31 SSB
 // variants — IndexCheckpoint / IndexResume / IndexCancel / LockAcquired /
 // LockContested. These replace the `tracing::info!(target="ssb_pending", ...)`
@@ -104,7 +110,29 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // Cycle C). 14-site lockstep documented at
 // `workflow/reasoning/B-31.5-decisions.md` DECISION-B31.5-7. DESTRUCTIVE:
 // existing v38 session DBs are DROPped on first read (no migration logic).
-const SCHEMA_VERSION: i64 = 39;
+// B-33 follow-up (SCHEMA_VERSION 40): bumped 39 -> 40 for the previously
+// DEFERRED SymbolGraphUpdated variant. This replaces the 30s setInterval
+// fallback in dashboard-v2 GraphWindow.svelte (B-33 D3) with a real
+// per-build event. Producer: IndexingService::build_index_resumable
+// after build_symbol_graph() returns Ok and reports >0 files. Consumer:
+// dashboard-v2 GraphWindow event listener + KnowledgeDrawer refresh.
+// 7-site lockstep (enum / CHECK / as_sql_str / from_str / SsbPayload
+// variant / action_type mapper / test_payload reconstructor) documented
+// at workflow/reasoning/B-33-decisions.md DEFERRED items 1+2.
+// B-40 (SCHEMA_VERSION 41): bumped 40 -> 41 for 5 new SSB action types
+// powering the FRAMING substate (Idea-Framer + Critic Loop + Domain
+// Research Presets). Variants: IdeaFramingStarted /
+// ProjectClassClassified / CriticRoundComplete / IdeaFramed /
+// TradeoffCardEmitted. Producers: orchestrator::idea_framing module.
+// Consumers: dashboard-v2 IdeaFramingWindow + MonitorWindow critic-rounds
+// badge + task_runner::derive_framing_evidence (7th AutoAdvanceEvaluator
+// check, gated on FRAMING substate). DESTRUCTIVE migration per
+// systemPatterns 2026-05-10 — pragma user_version mismatch drops + recreates
+// the ssb table. 5x4=20 lockstep sites: enum L314, SQL CHECK L140-285,
+// as_sql_str L742, ssb_action_type_from_str L889, SsbPayload variant L3068
+// + action_type() match arm L3231 + 5 payload structs at L2247+. Documented
+// at workflow/reasoning/B-40-decisions.md DECISION-SSB-BIJECTION.
+const SCHEMA_VERSION: i64 = 41;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -252,7 +280,31 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- lock_acquired     -- IndexLock::try_acquire success
         -- lock_contested    -- IndexLock::try_acquire AlreadyHeld
         'index_checkpoint', 'index_resume', 'index_cancel',
-        'lock_acquired', 'lock_contested'
+        'lock_acquired', 'lock_contested',
+        -- B-33 follow-up (SCHEMA_VERSION 40): SymbolGraphUpdated. One row
+        -- per successful symbol-graph build emitted by IndexingService
+        -- after build_pipeline::build_symbol_graph() returns Ok. Carries
+        -- SymbolGraphUpdatedPayload { project_id, file_count, symbol_count,
+        -- edge_count, built_ms } so the dashboard GraphWindow can refresh
+        -- without polling. Replaces the 30s setInterval fallback shipped
+        -- in B-33 (D3) which was DEFERRED at session time because
+        -- ssb.rs was locked by s-40304.
+        'symbol_graph_updated',
+        -- B-40 (SCHEMA_VERSION 41): FRAMING substate beacons emitted by
+        -- orchestrator::idea_framing during the pre-decomposition pass.
+        -- idea_framing_started     -- one row on FRAMING substate entry
+        -- project_class_classified -- one row when classify_project_class
+        --                             returns; carries ProjectClass + confidence
+        -- critic_round_complete    -- one row per CriticLoop round (1-3);
+        --                             carries round_index + finding counts
+        --                             grouped by 10 CriticCategory variants
+        -- idea_framed              -- one row when frame_idea() persists
+        --                             framed-idea.toml under
+        --                             workflow/sessions/{sid}/idea-framing/
+        -- tradeoff_card_emitted    -- one row when TradeoffCard is surfaced
+        --                             to the dashboard for user response
+        'idea_framing_started', 'project_class_classified',
+        'critic_round_complete', 'idea_framed', 'tradeoff_card_emitted'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -701,6 +753,46 @@ pub enum SsbActionType {
     /// the contender pid is the current process; `holder_pid` is the live
     /// holder.
     LockContested,
+    /// B-33 follow-up (SCHEMA_VERSION 40): one row per successful symbol-graph
+    /// build emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
+    /// after [`elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph`]
+    /// returns Ok with a non-empty file count. Carries a
+    /// [`SymbolGraphUpdatedPayload`] with the project id, file/symbol/edge
+    /// counts, and the build wall-clock millisecond timestamp.
+    /// Producers: IndexingService post-DKG symbol-graph build branch.
+    /// Consumers: dashboard-v2 GraphWindow event listener (replaces the
+    /// 30s polling fallback shipped in B-33 D3).
+    SymbolGraphUpdated,
+    /// B-40 (SCHEMA_VERSION 41): emitted once when the FRAMING substate is
+    /// entered (PLANNING + agent_substate=Framing). Carries an
+    /// [`IdeaFramingStartedPayload`] with the raw user prompt + session
+    /// timestamp. Producer: [`crate::idea_framing::frame_idea`].
+    /// Consumer: dashboard-v2 IdeaFramingWindow.svelte initial render.
+    IdeaFramingStarted,
+    /// B-40 (SCHEMA_VERSION 41): emitted by
+    /// [`crate::idea_framing::classify_project_class`] after the regex
+    /// classifier returns a [`crate::idea_framing::ProjectClass`].
+    /// Carries a [`ProjectClassClassifiedPayload`] with the snake_case class
+    /// name + matched_pattern hint (None for `Other`).
+    ProjectClassClassified,
+    /// B-40 (SCHEMA_VERSION 41): emitted by
+    /// [`crate::idea_framing::run_critic_loop`] at the end of each round
+    /// (1..=3). Carries a [`CriticRoundCompletePayload`] with round_index
+    /// + per-category finding counts + total BLOCK/WARN/INFO tallies +
+    /// converged flag (true when zero BLOCK findings remain).
+    CriticRoundComplete,
+    /// B-40 (SCHEMA_VERSION 41): emitted by
+    /// [`crate::idea_framing::frame_idea`] after persisting framed-idea.toml.
+    /// Carries an [`IdeaFramedPayload`] with the artifact path + project_class
+    /// + rounds_used + tradeoff_count. Consumed by the 7th AutoAdvanceEvaluator
+    /// evidence check `derive_framing_evidence`.
+    IdeaFramed,
+    /// B-40 (SCHEMA_VERSION 41): emitted by
+    /// [`crate::idea_framing::frame_idea`] when the TradeoffCard is ready
+    /// for user response (surfaced to dashboard IdeaFramingWindow).
+    /// Carries a [`TradeoffCardEmittedPayload`] with tradeoff names +
+    /// option counts.
+    TradeoffCardEmitted,
 }
 
 impl SsbActionType {
@@ -840,6 +932,14 @@ impl SsbActionType {
             Self::IndexCancel => "index_cancel",
             Self::LockAcquired => "lock_acquired",
             Self::LockContested => "lock_contested",
+            // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+            Self::SymbolGraphUpdated => "symbol_graph_updated",
+            // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
+            Self::IdeaFramingStarted => "idea_framing_started",
+            Self::ProjectClassClassified => "project_class_classified",
+            Self::CriticRoundComplete => "critic_round_complete",
+            Self::IdeaFramed => "idea_framed",
+            Self::TradeoffCardEmitted => "tradeoff_card_emitted",
         }
     }
 }
@@ -986,6 +1086,14 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "index_cancel" => Ok(SsbActionType::IndexCancel),
         "lock_acquired" => Ok(SsbActionType::LockAcquired),
         "lock_contested" => Ok(SsbActionType::LockContested),
+        // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+        "symbol_graph_updated" => Ok(SsbActionType::SymbolGraphUpdated),
+        // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
+        "idea_framing_started" => Ok(SsbActionType::IdeaFramingStarted),
+        "project_class_classified" => Ok(SsbActionType::ProjectClassClassified),
+        "critic_round_complete" => Ok(SsbActionType::CriticRoundComplete),
+        "idea_framed" => Ok(SsbActionType::IdeaFramed),
+        "tradeoff_card_emitted" => Ok(SsbActionType::TradeoffCardEmitted),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -2095,6 +2203,124 @@ pub struct MinifiedFileChunkedPayload {
     pub avg_line_length: u32,
 }
 
+/// B-33 follow-up (SCHEMA_VERSION 40) — payload for the
+/// [`SsbActionType::SymbolGraphUpdated`] one-row-per-build emission.
+///
+/// Emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
+/// after [`elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph`]
+/// returns Ok with `BuildSummary { files > 0, ... }`. Replaces the 30s
+/// `setInterval` polling fallback that B-33 dashboard-v2 GraphWindow shipped
+/// while `ssb.rs` was locked. Consumers (GraphWindow event listener,
+/// KnowledgeDrawer refresh hook) drive UI invalidation on receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolGraphUpdatedPayload {
+    /// BLAKE3-derived per-project identifier (matches
+    /// `metadata::project_id_from_path`).
+    pub project_id: String,
+    /// Number of source files indexed by the symbol-graph build.
+    /// `u32` is sufficient for any project size we ship to (>4G files
+    /// would imply a multi-TB corpus).
+    pub file_count: u32,
+    /// Total number of `SymbolNode` rows persisted by the build.
+    /// `u64` matches the `metadata.symbol_count` column shape.
+    pub symbol_count: u64,
+    /// Total number of `SymbolEdge` rows persisted by the build.
+    /// `u64` matches the `metadata.edge_count` column shape.
+    pub edge_count: u64,
+    /// Wall-clock UTC milliseconds when the build completed (sourced from
+    /// the injected `ClockProvider`). Used by the dashboard for "fetched
+    /// X ms ago" timestamps.
+    pub built_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// B-40 (SCHEMA_VERSION 41) — FRAMING substate payloads
+// ---------------------------------------------------------------------------
+
+/// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::IdeaFramingStarted`].
+///
+/// Emitted once when the FRAMING substate is entered. `prompt` is the raw
+/// user input (trimmed). `session_id` is provided redundantly so dashboard
+/// consumers that subscribe to a global SSB stream can scope per-task without
+/// reading the SsbEntry envelope. `started_at_ms` is the wall-clock unix-ms
+/// timestamp sourced from the injected [`elai_core::ClockProvider`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdeaFramingStartedPayload {
+    pub session_id: String,
+    pub prompt: String,
+    pub started_at_ms: i64,
+}
+
+/// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::ProjectClassClassified`].
+///
+/// `project_class` is the snake_case discriminant of
+/// [`crate::idea_framing::ProjectClass`] (one of 9 variants). `matched_pattern`
+/// records the regex / keyword that fired in the classifier; `None` when the
+/// fallback `Other` arm matched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectClassClassifiedPayload {
+    pub session_id: String,
+    pub project_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_pattern: Option<String>,
+}
+
+/// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::CriticRoundComplete`].
+///
+/// Emitted at the end of each [`crate::idea_framing::run_critic_loop`] round.
+/// `round_index` is 1-based (rounds 1..=3). `category_counts` maps each of the
+/// 10 [`crate::idea_framing::CriticCategory`] discriminants (snake_case) to
+/// the number of findings emitted in that round. `block_count` / `warn_count` /
+/// `info_count` are the per-severity totals. `converged` is true when
+/// `block_count == 0` (loop exits early).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriticRoundCompletePayload {
+    pub session_id: String,
+    pub round_index: u32,
+    pub block_count: u32,
+    pub warn_count: u32,
+    pub info_count: u32,
+    pub converged: bool,
+    /// snake_case CriticCategory name → finding count for that round.
+    pub category_counts: Vec<(String, u32)>,
+}
+
+/// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::IdeaFramed`].
+///
+/// Emitted by [`crate::idea_framing::frame_idea`] after framed-idea.toml is
+/// persisted. `artifact_path` is the absolute path
+/// `workflow/sessions/{sid}/idea-framing/framed-idea.toml`. `rounds_used` is
+/// the count of critic rounds actually executed (1..=3). `tradeoff_count` is
+/// the number of tradeoffs on the TradeoffCard. Consumed by
+/// [`crate::task_runner::derive_framing_evidence`] (the 7th
+/// AutoAdvanceEvaluator check, gated on FRAMING substate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdeaFramedPayload {
+    pub session_id: String,
+    pub artifact_path: String,
+    pub project_class: String,
+    pub rounds_used: u32,
+    pub tradeoff_count: u32,
+    /// True when the critic loop converged (zero BLOCK findings) within
+    /// `rounds_used` rounds. False indicates an idea_framing_block
+    /// condition (FRAMING substate refuses to advance).
+    pub converged: bool,
+}
+
+/// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::TradeoffCardEmitted`].
+///
+/// Emitted by [`crate::idea_framing::frame_idea`] when the TradeoffCard is
+/// surfaced to the dashboard. `tradeoff_names` is the ordered list of
+/// `Tradeoff.name` strings; `option_counts` is the parallel ordered list of
+/// per-tradeoff option-list lengths (for dashboard validation that responses
+/// reference valid options).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradeoffCardEmittedPayload {
+    pub session_id: String,
+    pub tradeoff_names: Vec<String>,
+    pub option_counts: Vec<u32>,
+}
+
 /// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::IndexCheckpoint`].
 ///
 /// Emitted by [`crate::indexing_service::IndexingService::build_index_resumable`]
@@ -3153,6 +3379,14 @@ pub enum SsbPayload {
     IndexCancel(IndexCancelPayload),
     LockAcquired(LockAcquiredPayload),
     LockContested(LockContestedPayload),
+    // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+    SymbolGraphUpdated(SymbolGraphUpdatedPayload),
+    // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
+    IdeaFramingStarted(IdeaFramingStartedPayload),
+    ProjectClassClassified(ProjectClassClassifiedPayload),
+    CriticRoundComplete(CriticRoundCompletePayload),
+    IdeaFramed(IdeaFramedPayload),
+    TradeoffCardEmitted(TradeoffCardEmittedPayload),
 }
 
 impl SsbPayload {
@@ -3291,6 +3525,14 @@ impl SsbPayload {
             Self::IndexCancel(_) => SsbActionType::IndexCancel,
             Self::LockAcquired(_) => SsbActionType::LockAcquired,
             Self::LockContested(_) => SsbActionType::LockContested,
+            // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+            Self::SymbolGraphUpdated(_) => SsbActionType::SymbolGraphUpdated,
+            // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
+            Self::IdeaFramingStarted(_) => SsbActionType::IdeaFramingStarted,
+            Self::ProjectClassClassified(_) => SsbActionType::ProjectClassClassified,
+            Self::CriticRoundComplete(_) => SsbActionType::CriticRoundComplete,
+            Self::IdeaFramed(_) => SsbActionType::IdeaFramed,
+            Self::TradeoffCardEmitted(_) => SsbActionType::TradeoffCardEmitted,
         }
     }
 }
@@ -5086,6 +5328,16 @@ mod tests {
                 scope: "index".into(),
                 holder_pid: 12345,
             }),
+            // B-33 follow-up (SCHEMA_VERSION 40): symbol-graph build event row.
+            SsbActionType::SymbolGraphUpdated => {
+                SsbPayload::SymbolGraphUpdated(SymbolGraphUpdatedPayload {
+                    project_id: "p".into(),
+                    file_count: 16,
+                    symbol_count: 1_024,
+                    edge_count: 4_096,
+                    built_ms: 0,
+                })
+            }
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }

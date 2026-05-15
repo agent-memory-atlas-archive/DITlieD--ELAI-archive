@@ -28,7 +28,7 @@
   // Both auto-uncollapse the secondary panel as part of the operation.
   const MIME_TAB = 'text/elai-tab';
   const MIME_TAB_TYPE = 'application/x-elai-tab-type';
-  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'monitor', 'settings']);
+  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph']);
 
   function dropStripAcceptsDrag(e: DragEvent): boolean {
     if (!e.dataTransfer) return false;

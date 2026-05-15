@@ -22,6 +22,7 @@ const SIDEBAR_WINDOWS: WindowType[] = [
   'review',
   'monitor',
   'settings',
+  'graph',
 ];
 
 export const SHORTCUTS: ShortcutDef[] = [
@@ -60,6 +61,18 @@ export const SHORTCUTS: ShortcutDef[] = [
     combo: 'Ctrl+6',
     description: 'Switch to Settings window',
     action: () => workspace.setPrimaryWindow('settings'),
+  },
+  {
+    id: 'sidebar-7',
+    combo: 'Ctrl+7',
+    description: 'Switch to Graph window',
+    action: () => workspace.setPrimaryWindow('graph'),
+  },
+  {
+    id: 'open-graph',
+    combo: 'Ctrl+G',
+    description: 'Open Graph window in primary panel (B-33)',
+    action: () => workspace.openTab('primary', 'graph'),
   },
   {
     id: 'new-tab',

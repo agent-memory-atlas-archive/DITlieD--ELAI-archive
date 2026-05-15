@@ -5,6 +5,16 @@
   import IndexingProgressPanel from '../components/IndexingProgressPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
   import { get_impact_analysis, type ImpactAnalysis } from '../api/stub';
+  // B-33 — Visualize button cross-link: open GraphWindow + push impact target.
+  import { graph } from '../state/graph.svelte';
+  import { workspace } from '../state/workspace.svelte';
+
+  function visualizeImpact(target: string) {
+    if (!target) return;
+    graph.set_mode('file');
+    graph.request_impact(target);
+    workspace.openTab('primary', 'graph');
+  }
 
   let impact = $state<ImpactAnalysis>({ target: '', total_files: 0, hop_bands: [], unresolved_pct: 0.0 });
   let impactLoaded = $state(false);
@@ -283,6 +293,14 @@
           <span class="impact-value mono">{impact.target}</span>
         </div>
         <div class="impact-row">
+          <button
+            class="b33-visualize"
+            type="button"
+            onclick={() => visualizeImpact(impact.target)}
+            title="Open in Graph window with red-gradient blast-radius overlay"
+          >Visualize blast radius</button>
+        </div>
+        <div class="impact-row">
           <span class="impact-label">Total files impacted</span>
           <span class="impact-value">{impact.total_files}</span>
         </div>
@@ -336,6 +354,20 @@
   }
   .impact-label {
     color: var(--text-secondary);
+  }
+  .b33-visualize {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--teal-line);
+    color: var(--teal);
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .b33-visualize:hover {
+    background: var(--teal-ghost);
+    color: var(--teal-bright);
   }
   .impact-value {
     color: var(--text-primary);

@@ -31,6 +31,7 @@
     { id: 'open-review',    label: 'Open Review',    kbd: 'Ctrl+4', handler: () => workspace.setPrimaryWindow('review') },
     { id: 'open-monitor',   label: 'Open Monitor',   kbd: 'Ctrl+5', handler: () => workspace.setPrimaryWindow('monitor') },
     { id: 'open-settings',  label: 'Open Settings',  kbd: 'Ctrl+6', handler: () => workspace.setPrimaryWindow('settings') },
+    { id: 'open-graph',     label: 'Open Graph Window', kbd: 'Ctrl+7', handler: () => workspace.setPrimaryWindow('graph') },
     { id: 'drawer-knowledge',       label: 'Toggle Knowledge Drawer',            handler: () => toggleDrawer('knowledge') },
     { id: 'drawer-reasoning',       label: 'Toggle Reasoning Drawer',            handler: () => toggleDrawer('reasoning') },
     { id: 'drawer-orchestration',   label: 'Toggle Orchestration Drawer',        handler: () => toggleDrawer('orchestration') },

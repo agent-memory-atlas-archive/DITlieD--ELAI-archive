@@ -21,6 +21,20 @@ declare module '*.jpg' {
 // Declare a minimal surface so svelte-check is happy; runtime behaviour
 // is unaffected (the module's actual exports are richer, but anything
 // not declared here is intentionally out of scope for this codebase).
+// B-33 — cytoscape-dagre + cytoscape-fcose ship runtime extensions but no
+// .d.ts. Both register themselves via `cytoscape.use()` and are otherwise
+// invoked by name through `cy.layout({ name: 'dagre' | 'fcose' })`. A
+// minimal `default any` declaration is sufficient — we don't access
+// extension internals from TypeScript.
+declare module 'cytoscape-dagre' {
+  const ext: any;
+  export default ext;
+}
+declare module 'cytoscape-fcose' {
+  const ext: any;
+  export default ext;
+}
+
 declare module 'troika-three-text' {
   import * as THREE from 'three';
   export class Text extends THREE.Mesh {

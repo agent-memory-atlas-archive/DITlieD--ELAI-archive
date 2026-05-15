@@ -26,7 +26,7 @@ use elai_knowledge::{DkgEngine, KnowledgeError};
 
 use crate::ssb::{
     IndexCancelPayload, IndexCheckpointPayload, IndexResumePayload,
-    MinifiedFileChunkedPayload, Ssb, SsbPayload,
+    MinifiedFileChunkedPayload, Ssb, SsbPayload, SymbolGraphUpdatedPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -577,14 +577,39 @@ impl IndexingService {
             &self.dkg_db_path,
             symbol_clock_ms,
         ) {
-            Ok(summary) => tracing::info!(
-                target = "symbol_graph",
-                files = summary.files,
-                symbols = summary.symbols,
-                edges = summary.edges,
-                unresolved_pct = summary.unresolved_pct,
-                "symbol_graph build complete"
-            ),
+            Ok(summary) => {
+                tracing::info!(
+                    target = "symbol_graph",
+                    files = summary.files,
+                    symbols = summary.symbols,
+                    edges = summary.edges,
+                    unresolved_pct = summary.unresolved_pct,
+                    "symbol_graph build complete"
+                );
+                // B-33 follow-up (SCHEMA_VERSION 40): emit SymbolGraphUpdated
+                // SSB row exactly once per successful symbol-graph build with
+                // a non-empty file count. Replaces the 30s setInterval poll
+                // fallback that B-33 GraphWindow shipped while ssb.rs was
+                // locked. Empty-file builds are intentionally skipped: they
+                // happen when the project has no parseable source under
+                // project_root, and emitting a row would just spam the
+                // dashboard with noise. Best-effort: failures are logged
+                // by `emit_ssb_payload` and never propagated.
+                if summary.files > 0 {
+                    let file_count: u32 = u32::try_from(summary.files).unwrap_or(u32::MAX);
+                    let symbol_count: u64 = u64::try_from(summary.symbols).unwrap_or(u64::MAX);
+                    let edge_count: u64 = u64::try_from(summary.edges).unwrap_or(u64::MAX);
+                    self.emit_ssb_payload(SsbPayload::SymbolGraphUpdated(
+                        SymbolGraphUpdatedPayload {
+                            project_id: project_id.to_string(),
+                            file_count,
+                            symbol_count,
+                            edge_count,
+                            built_ms: symbol_clock_ms,
+                        },
+                    ));
+                }
+            }
             Err(e) => tracing::warn!(
                 target = "symbol_graph",
                 error = %e,

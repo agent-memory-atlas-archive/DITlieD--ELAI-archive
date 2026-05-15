@@ -7,6 +7,7 @@
     Activity,
     Settings,
     UserRound,
+    Network,
   } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
@@ -31,6 +32,7 @@
     { type: 'review',   label: 'Review',   shortcut: 'Ctrl+4', Icon: GitBranch },
     { type: 'monitor',  label: 'Monitor',  shortcut: 'Ctrl+5', Icon: Activity },
     { type: 'settings', label: 'Settings', shortcut: 'Ctrl+6', Icon: Settings },
+    { type: 'graph',    label: 'Graph',    shortcut: 'Ctrl+7', Icon: Network },
   ];
 
   // Derive active window type from the workspace primary panel's active tab

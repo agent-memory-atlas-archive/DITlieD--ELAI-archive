@@ -48,7 +48,80 @@ export type WindowType =
   | 'activity'
   | 'review'
   | 'monitor'
-  | 'settings';
+  | 'settings'
+  | 'graph';
+
+// ------------------------------------------------------------------
+// B-33 — Graph viewer (mirror of Rust visualization::types)
+// All field names match the serde JSON output of the Rust types so
+// invoke('get_graph_view_data') deserialises directly into VizData.
+// ------------------------------------------------------------------
+
+export type VizEdgeKind = 'Import' | 'DynamicImport' | 'ReExport';
+
+export type SymbolMode =
+  | 'Full'
+  | { Capped: { reason: string } }
+  | { Omitted: { reason: string } };
+
+export interface VizProject {
+  name: string;
+  files: number;
+  edges: number;
+  symbols: number | null;
+  call_edges: number | null;
+  built_at: number | null;
+}
+
+export interface VizFile {
+  id: string;
+  label: string;
+  language: string;
+  deps: number;
+  dependents: number;
+  symbol_count: number;
+}
+
+export interface VizFileEdge {
+  source: string;
+  target: string;
+  kind: VizEdgeKind;
+  cyclic: boolean;
+}
+
+export interface VizSymbol {
+  id: string;
+  file: string;
+  name: string;
+  qualified_name: string;
+  kind: string;
+  line: number;
+}
+
+export interface VizSymbolEdge {
+  source: string;
+  target: string;
+  /** elai_knowledge::symbol_graph::types::Confidence (Local|Unique|MultipleCandidates|Unresolved) */
+  confidence: 'Local' | 'Unique' | 'MultipleCandidates' | 'Unresolved';
+}
+
+export interface VizData {
+  project: VizProject;
+  files: VizFile[];
+  file_edges: VizFileEdge[];
+  symbols: VizSymbol[];
+  symbol_edges: VizSymbolEdge[];
+  symbols_by_file: Record<string, VizSymbol[]>;
+  symbol_mode: SymbolMode;
+}
+
+export interface ImpactOverlay {
+  files: string[];
+  by_depth: Record<string, string[]>;
+  total_files: number;
+  max_depth_reached: number;
+  truncated: boolean;
+}
 
 export type DrawerKey =
   | 'knowledge'

@@ -233,6 +233,10 @@ pub fn run() {
             // B-28 follow-up — FOCUS TUNNEL INLINE CHIPS (single per-baby-step
             // query; the dedicated FocusTunnelPanel surface was retired).
             commands::query_focus_tunnel_per_baby_step,
+            // B-33 — INTERACTIVE GRAPH VIEWER (3 commands)
+            commands::get_graph_view_data,
+            commands::get_impact_overlay,
+            commands::export_graph_mermaid,
             // B-24 Phase 4I Group C8 — MEDIA VALIDATION SURFACE
             media_validation::get_media_validations,
             media_validation::get_media_validation_by_step,
@@ -250,7 +254,16 @@ pub fn run() {
             if let Some(writer) = state.writer.clone() {
                 let media_state = state.media_validation.clone();
                 let handle = app.handle().clone();
-                media_validation::spawn_subscriber(handle, writer, media_state);
+                media_validation::spawn_subscriber(handle.clone(), writer.clone(), media_state);
+
+                // B-33 follow-up (SCHEMA_VERSION 40): tap the SSB broadcast
+                // for SymbolGraphUpdated rows and re-emit them as a Tauri
+                // event named "symbol_graph_updated" so dashboard-v2
+                // GraphWindow can refresh without polling. Replaces the 30s
+                // setInterval fallback that B-33 D3 shipped while ssb.rs
+                // was locked. Defense-in-depth: GraphWindow keeps the 30s
+                // poll as a backstop for hot-reload + dropped-event cases.
+                spawn_symbol_graph_subscriber(handle.clone(), writer);
 
                 // Phase A1b: spawn `start_task_runner` from the dashboard,
                 // wired with the SAME `RuntimeWiring` chokepoint helpers the
@@ -629,4 +642,105 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// B-33 follow-up (SCHEMA_VERSION 40): SSB broadcast subscriber that taps
+/// `SymbolGraphUpdated` rows and re-emits them as a Tauri event named
+/// `symbol_graph_updated`. The frontend `GraphWindow.svelte` listens for
+/// this event via `@tauri-apps/api/event::listen` and refreshes its view
+/// without waiting for the 30 s polling fallback.
+///
+/// The pattern intentionally mirrors `media_validation::spawn_subscriber`:
+/// tap the broadcast, filter by action_type, decode the payload, and emit
+/// a small JSON event back to the webview. Decoding goes through
+/// `decode_ssb_payload_bytes::<SsbPayload>` (Decision 92, B-24 audit) so
+/// the externally-tagged enum variant is correctly matched.
+///
+/// `Lagged` is logged + skipped — falling behind a few rows is acceptable
+/// for a refresh hint. `Closed` exits the loop cleanly (Ssb shutdown).
+fn spawn_symbol_graph_subscriber(
+    app: tauri::AppHandle,
+    ssb_writer: std::sync::Arc<elai_orchestrator::ssb::Ssb>,
+) {
+    use tauri::Emitter;
+    use tokio::sync::broadcast::error::RecvError;
+
+    /// Tauri event name. Must match `GraphWindow.svelte` listener.
+    const SYMBOL_GRAPH_UPDATED_EVENT: &str = "symbol_graph_updated";
+
+    /// Compact event payload re-broadcast to the frontend. Carries the same
+    /// 5 fields as `SymbolGraphUpdatedPayload` plus the SSB row sequence so
+    /// the frontend can dedupe across rapid back-to-back rebuilds.
+    #[derive(serde::Serialize, Clone)]
+    struct SymbolGraphUpdatedEvent {
+        seq: i64,
+        ts_ms: i64,
+        project_id: String,
+        file_count: u32,
+        symbol_count: u64,
+        edge_count: u64,
+        built_ms: i64,
+    }
+
+    let mut rx = ssb_writer.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(entry) => {
+                    if entry.action_type != elai_orchestrator::SsbActionType::SymbolGraphUpdated {
+                        continue;
+                    }
+                    let payload: elai_orchestrator::SsbPayload =
+                        match elai_orchestrator::decode_ssb_payload_bytes(&entry.payload) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "dashboard-v2: symbol_graph_updated payload decode failed"
+                                );
+                                continue;
+                            }
+                        };
+                    let inner = match payload {
+                        elai_orchestrator::SsbPayload::SymbolGraphUpdated(p) => p,
+                        other => {
+                            tracing::warn!(
+                                actual = other.action_type().as_sql_str(),
+                                "dashboard-v2: symbol_graph_updated action_type / payload mismatch"
+                            );
+                            continue;
+                        }
+                    };
+                    let event = SymbolGraphUpdatedEvent {
+                        seq: entry.seq,
+                        ts_ms: entry.created_at,
+                        project_id: inner.project_id,
+                        file_count: inner.file_count,
+                        symbol_count: inner.symbol_count,
+                        edge_count: inner.edge_count,
+                        built_ms: inner.built_ms,
+                    };
+                    if let Err(e) = app.emit(SYMBOL_GRAPH_UPDATED_EVENT, &event) {
+                        tracing::warn!(
+                            error = %e,
+                            "dashboard-v2: emit symbol_graph_updated failed"
+                        );
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        skipped = n,
+                        "dashboard-v2: symbol_graph SSB subscriber lagged"
+                    );
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    tracing::debug!(
+                        "dashboard-v2: symbol_graph SSB subscriber channel closed; exiting"
+                    );
+                    return;
+                }
+            }
+        }
+    });
 }

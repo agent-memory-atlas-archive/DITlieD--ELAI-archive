@@ -3,7 +3,7 @@
   import WindowHost from './WindowHost.svelte';
   import { workspace } from '../state/workspace.svelte';
 
-  type WindowType = 'command' | 'plan' | 'activity' | 'review' | 'monitor' | 'settings';
+  type WindowType = 'command' | 'plan' | 'activity' | 'review' | 'monitor' | 'settings' | 'graph';
 
   interface TabDef {
     id: string;
@@ -22,7 +22,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -30,6 +30,7 @@
     review:   'Review',
     monitor:  'Monitor',
     settings: 'Settings',
+    graph:    'Graph',
   };
 
   let dragOverTabId = $state<string | null>(null);

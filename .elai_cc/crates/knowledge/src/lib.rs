@@ -1,5 +1,10 @@
 use std::path::{Path, PathBuf};
 
+// B-35 Phase A: context artifacts pipeline
+pub mod artifacts;
+// B-35 Phase A: knowledge-crate runtime config (ArtifactsConfig, KnowledgeRuntimeConfig)
+pub mod runtime_config;
+
 pub mod arag;
 pub mod ast_adapter;
 pub mod bm25;

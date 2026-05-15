@@ -7,6 +7,7 @@
   import ReviewWindow from '../windows/ReviewWindow.svelte';
   import MonitorWindow from '../windows/MonitorWindow.svelte';
   import SettingsWindow from '../windows/SettingsWindow.svelte';
+  import GraphWindow from '../windows/GraphWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
 
   interface Props {
@@ -29,6 +30,8 @@
     <MonitorWindow />
   {:else if type === 'settings'}
     <SettingsWindow />
+  {:else if type === 'graph'}
+    <GraphWindow />
   {:else}
     <FallbackWindow {type} />
   {/if}
