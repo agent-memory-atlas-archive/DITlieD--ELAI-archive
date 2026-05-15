@@ -25,6 +25,8 @@ use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::{
     agent_pool::{AgentPoolConfig, InProcessAgentPool},
+    ipc_accept::AgentRpcServer,
+    ipc_gateway::IpcGateway,
     task_runner::{AgentPoolBabyStepExecutor, BabyStepExecutor},
     DefaultFeasibilityProber, DefaultLayer1aProcessor, FeasibilityProber, Layer1aProcessor, Ssb,
     SsbConfig, TaskRunnerConfig, SSB_DB_FILE_NAME,
@@ -189,7 +191,8 @@ pub fn apply_task_runner_wiring(
 /// - an [`InProcessAgentPool`] seeded with `entropy` and configured with
 ///   [`AgentPoolConfig::default()`],
 /// - the production [`runtime_model_pool()`] (reports `u64::MAX` VRAM),
-/// - the caller-supplied `agent_binary_path` and `socket_dir`.
+/// - the caller-supplied `agent_binary_path`, `socket_dir`, `gateway`, and
+///   `rpc_server`.
 ///
 /// Pass the result as `wiring.baby_step_executor = Some(executor)` before
 /// calling [`apply_task_runner_wiring`].
@@ -200,6 +203,8 @@ pub fn build_default_baby_step_executor<E>(
     entropy: E,
     agent_binary_path: std::path::PathBuf,
     socket_dir: std::path::PathBuf,
+    gateway: Arc<tokio::sync::Mutex<IpcGateway>>,
+    rpc_server: Arc<dyn AgentRpcServer + Send + Sync + 'static>,
 ) -> Arc<dyn BabyStepExecutor>
 where
     E: elai_core::EntropySource + Send + 'static,
@@ -210,7 +215,13 @@ where
         entropy,
         model_pool,
     )));
-    Arc::new(AgentPoolBabyStepExecutor::new(pool, agent_binary_path, socket_dir))
+    Arc::new(AgentPoolBabyStepExecutor::new(
+        pool,
+        agent_binary_path,
+        socket_dir,
+        gateway,
+        rpc_server,
+    ))
 }
 
 /// Locate the `elai_cc_agent[.exe]` binary.

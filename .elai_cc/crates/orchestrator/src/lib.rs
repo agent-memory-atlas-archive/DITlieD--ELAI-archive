@@ -660,8 +660,8 @@ pub use runtime_setup::{
 // Phase B2 — IPC accept-loop public surface.
 pub use ipc_accept::{
     accept_one, bind_session_listener, run_agent_session, AgentFinalState, AgentRpcServer,
-    AgentSessionOutcome, IpcAcceptError, InferOutcome, PlatformListener, PlatformStream,
-    ToolOutcome,
+    AgentSessionOutcome, IpcAcceptError, InferOutcome, NoOpAgentRpcServer, PlatformListener,
+    PlatformStream, ToolOutcome,
 };
 pub use task_runner::runtime_model_pool;
 pub use supervision::{

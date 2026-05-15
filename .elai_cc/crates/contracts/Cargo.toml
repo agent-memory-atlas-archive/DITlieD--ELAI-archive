@@ -15,7 +15,7 @@ elai-tools = { path = "../tools" }
 elai-plugins = { path = "../plugins" }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
-elai-orchestrator = { path = "../orchestrator", features = ["sidecar"] }
+elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-support"] }
 # Tier 2 Track B: dashboard contract test imports `elai_dashboard_lib::commands::*`
 # to assert the public surface of the 8 new tauri commands + DTOs.
 # DISABLED in s-1430428: crates/dashboard moved to crates/.bkp_old/dashboard.

@@ -27,12 +27,14 @@ use elai_core::GitBranchPolicy;
 use elai_orchestrator::agent_pool::{
     AgentPoolConfig, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
+use elai_orchestrator::ipc_gateway::IpcGateway;
 use elai_orchestrator::pipeline_tree_navigator::BabyStepOutcome;
+use elai_orchestrator::sandbox::SelfModificationLocks;
 use elai_orchestrator::task_runner::{
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutor, SyntheticBabyStepExecutor,
     DEFAULT_BABY_STEP_TIMEOUT_MS,
 };
-use elai_orchestrator::TaskRunnerConfig;
+use elai_orchestrator::{NoOpAgentRpcServer, TaskRunnerConfig};
 use tokio::sync::Mutex as AsyncMutex;
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,17 @@ fn make_pool() -> Arc<AsyncMutex<InProcessAgentPool<SeededRng>>> {
     )))
 }
 
+fn make_gateway(socket_dir: &std::path::Path) -> Arc<AsyncMutex<IpcGateway>> {
+    Arc::new(AsyncMutex::new(IpcGateway::with_os_clock(
+        socket_dir.to_path_buf(),
+        SelfModificationLocks::new(),
+    )))
+}
+
+fn make_noop_rpc() -> Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static> {
+    Arc::new(NoOpAgentRpcServer)
+}
+
 // ---------------------------------------------------------------------------
 // Contract 1: AgentPoolBabyStepExecutor construction + coercion to trait
 // object. Proves the dashboard's
@@ -69,7 +82,8 @@ fn contract_agent_pool_executor_constructs_with_arbitrary_binary() {
     let binary = tmp.path().join("does-not-exist-on-disk.exe");
     let socket_dir = tmp.path().join("sockets");
 
-    let exec = AgentPoolBabyStepExecutor::new(make_pool(), binary, socket_dir)
+    let gateway = make_gateway(&socket_dir);
+    let exec = AgentPoolBabyStepExecutor::new(make_pool(), binary, socket_dir, gateway, make_noop_rpc())
         .with_timeout_ms(DEFAULT_BABY_STEP_TIMEOUT_MS);
     let _boxed: Arc<dyn BabyStepExecutor> = Arc::new(exec);
 }
@@ -88,8 +102,9 @@ fn contract_task_runner_config_accepts_real_executor_and_antispiral() {
     std::fs::write(&binary, b"stub").expect("write stub binary");
     let socket_dir = tmp.path().join("sockets");
 
+    let gateway = make_gateway(&socket_dir);
     let exec: Arc<dyn BabyStepExecutor> = Arc::new(
-        AgentPoolBabyStepExecutor::new(make_pool(), binary.clone(), socket_dir)
+        AgentPoolBabyStepExecutor::new(make_pool(), binary.clone(), socket_dir, gateway, make_noop_rpc())
             .with_timeout_ms(DEFAULT_BABY_STEP_TIMEOUT_MS),
     );
 
@@ -191,7 +206,8 @@ async fn contract_missing_binary_surfaces_failed_outcome() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let binary = tmp.path().join("no-such-agent.exe");
     let socket_dir = tmp.path().join("sockets");
-    let exec = AgentPoolBabyStepExecutor::new(make_pool(), binary, socket_dir)
+    let gateway = make_gateway(&socket_dir);
+    let exec = AgentPoolBabyStepExecutor::new(make_pool(), binary, socket_dir, gateway, make_noop_rpc())
         .with_timeout_ms(1_000);
 
     let ctx = BabyStepExecutionCtx {

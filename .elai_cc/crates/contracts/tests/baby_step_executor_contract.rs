@@ -28,12 +28,14 @@ use elai_core::SeededRng;
 use elai_orchestrator::agent_pool::{
     AgentPoolConfig, InProcessAgentPool, ModelPool, VRAM_MIN_BYTES,
 };
+use elai_orchestrator::ipc_gateway::IpcGateway;
 use elai_orchestrator::pipeline_tree_navigator::BabyStepOutcome;
+use elai_orchestrator::sandbox::SelfModificationLocks;
 use elai_orchestrator::task_runner::{
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutionResult, BabyStepExecutor,
     SyntheticBabyStepExecutor, DEFAULT_BABY_STEP_TIMEOUT_MS,
 };
-use elai_orchestrator::{TaskRunnerConfig, RUNNER_AGENT_ID};
+use elai_orchestrator::{NoOpAgentRpcServer, TaskRunnerConfig, RUNNER_AGENT_ID};
 use tokio::sync::Mutex as AsyncMutex;
 
 struct InfiniteVramPool;
@@ -58,6 +60,17 @@ fn make_pool(
         SeededRng::new(42),
         vram,
     )))
+}
+
+fn make_gateway(socket_dir: &std::path::Path) -> Arc<AsyncMutex<IpcGateway>> {
+    Arc::new(AsyncMutex::new(IpcGateway::with_os_clock(
+        socket_dir.to_path_buf(),
+        SelfModificationLocks::new(),
+    )))
+}
+
+fn make_noop_rpc() -> Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static> {
+    Arc::new(NoOpAgentRpcServer)
 }
 
 // Contract 1: TaskRunnerConfig::new_minimal leaves baby_step_executor = None.
@@ -98,7 +111,8 @@ async fn contract_agent_pool_executor_missing_binary_reports_failed() {
     let socket_dir = tmp.path().join("sockets");
 
     let pool = make_pool(Arc::new(InfiniteVramPool));
-    let exec = AgentPoolBabyStepExecutor::new(pool, binary, socket_dir)
+    let gateway = make_gateway(&socket_dir);
+    let exec = AgentPoolBabyStepExecutor::new(pool, binary, socket_dir, gateway, make_noop_rpc())
         .with_timeout_ms(5_000);
 
     let ctx = BabyStepExecutionCtx {
@@ -125,7 +139,8 @@ async fn contract_agent_pool_executor_vram_error_reports_failed() {
     let socket_dir = tmp.path().join("sockets");
 
     let pool = make_pool(Arc::new(TightVramPool));
-    let exec = AgentPoolBabyStepExecutor::new(pool, binary, socket_dir);
+    let gateway = make_gateway(&socket_dir);
+    let exec = AgentPoolBabyStepExecutor::new(pool, binary, socket_dir, gateway, make_noop_rpc());
 
     let ctx = BabyStepExecutionCtx {
         baby_step_id: 2,

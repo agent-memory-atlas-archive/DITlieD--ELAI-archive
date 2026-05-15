@@ -118,6 +118,12 @@ pub enum PlatformListener {
     WindowsPipe {
         /// The named-pipe path (e.g. `\\.\pipe\elai-<uuid>.sock`).
         pipe_path: String,
+        /// The live server handle. MUST remain open: on Windows, closing all
+        /// server handles destroys the named-pipe endpoint (per MSDN —
+        /// https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-instances).
+        /// `accept_one` swaps this out for a fresh instance before calling
+        /// `connect()`, keeping the endpoint alive across multiple accepts.
+        server: tokio::net::windows::named_pipe::NamedPipeServer,
     },
 }
 
@@ -170,17 +176,15 @@ pub async fn bind_session_listener(socket_path: &Path) -> Result<PlatformListene
     {
         let _ = socket_path; // used via pipe_path below
         let pipe_path = socket_path_to_pipe_name(socket_path);
-        // Eagerly verify the ServerOptions call succeeds (creates the first
-        // instance). We keep the path in PlatformListener so accept_one can
-        // create a fresh server for each connection attempt.
-        tokio::net::windows::named_pipe::ServerOptions::new()
+        // Create the first server instance with first_pipe_instance(true) and
+        // KEEP it alive in PlatformListener. Per MSDN, when all server handles
+        // are closed the named-pipe endpoint is destroyed and clients receive
+        // ERROR_FILE_NOT_FOUND. Storing the handle here prevents that race.
+        let server = tokio::net::windows::named_pipe::ServerOptions::new()
             .first_pipe_instance(true)
             .create(&pipe_path)
             .map_err(|e| IpcAcceptError::BindFailed(format!("NamedPipeServer::create: {e}")))?;
-        // Drop the server immediately — accept_one creates a new one.
-        // This is safe: on Windows the pipe name persists in the kernel until
-        // all handles are closed; the first instance just validates the name.
-        return Ok(PlatformListener::WindowsPipe { pipe_path });
+        return Ok(PlatformListener::WindowsPipe { pipe_path, server });
     }
 
     #[allow(unreachable_code)]
@@ -204,17 +208,23 @@ pub async fn accept_one(listener: &mut PlatformListener) -> Result<PlatformStrea
             Ok(PlatformStream::Unix(stream))
         }
         #[cfg(windows)]
-        PlatformListener::WindowsPipe { pipe_path } => {
-            let server = tokio::net::windows::named_pipe::ServerOptions::new()
+        PlatformListener::WindowsPipe { pipe_path, server } => {
+            // Create the next server instance BEFORE taking the current one.
+            // This keeps at least one server handle open at all times, so the
+            // pipe endpoint is never destroyed between accepts (MSDN invariant).
+            let next_server = tokio::net::windows::named_pipe::ServerOptions::new()
                 .create(pipe_path)
                 .map_err(|e| {
-                    IpcAcceptError::AcceptFailed(format!("NamedPipeServer::create: {e}"))
+                    IpcAcceptError::AcceptFailed(format!("NamedPipeServer::create (next): {e}"))
                 })?;
-            server
+            // Swap: replace the stored handle with the fresh one, take the
+            // previous handle to drive connect() on.
+            let current_server = std::mem::replace(server, next_server);
+            current_server
                 .connect()
                 .await
                 .map_err(|e| IpcAcceptError::AcceptFailed(format!("NamedPipeServer::connect: {e}")))?;
-            Ok(PlatformStream::WindowsPipe(server))
+            Ok(PlatformStream::WindowsPipe(current_server))
         }
     }
 }
@@ -317,15 +327,13 @@ where
 ///
 /// The caller is responsible for registering the `AgentConnection` in the
 /// gateway BEFORE calling this function, and for removing it afterwards.
-pub async fn run_agent_session<S>(
+pub async fn run_agent_session(
     gateway: Arc<AsyncMutex<IpcGateway>>,
-    rpc: Arc<S>,
+    rpc: Arc<dyn AgentRpcServer + Send + Sync + 'static>,
     agent_id: Uuid,
     mut stream: PlatformStream,
     timeout_ms: u64,
 ) -> AgentSessionOutcome
-where
-    S: AgentRpcServer + 'static,
 {
     let session_deadline = std::time::Instant::now()
         + std::time::Duration::from_millis(timeout_ms);
@@ -560,6 +568,99 @@ fn socket_path_to_pipe_name(path: &Path) -> String {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "elai-ipc".to_string());
     format!(r"\\.\pipe\elai-{stem}")
+}
+
+// ---------------------------------------------------------------------------
+// NoOpAgentRpcServer
+// ---------------------------------------------------------------------------
+
+/// Placeholder `AgentRpcServer` that returns `InferOutcome::Failed("unsupported")`
+/// and `ToolOutcome::Failed("unsupported")` for all requests. Used by CLI and
+/// dashboard call sites until B2c wires the real LLM + tool dispatch.
+///
+/// No `.unwrap()` / `panic!` / `todo!()` — all methods return graceful
+/// failure outcomes that `run_agent_session` treats as failed frames.
+pub struct NoOpAgentRpcServer;
+
+impl AgentRpcServer for NoOpAgentRpcServer {
+    fn handle_infer_request<'a>(
+        &'a self,
+        _prompt: String,
+        _max_tokens: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            tracing::warn!("NoOpAgentRpcServer: InferRequest received but not wired (B2c pending)");
+            InferOutcome::Failed("InferRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string())
+        })
+    }
+
+    fn handle_tool_request<'a>(
+        &'a self,
+        _tool_id: String,
+        _arguments: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            tracing::warn!("NoOpAgentRpcServer: ToolRequest received but not wired (B2c pending)");
+            ToolOutcome::Failed("ToolRequest not wired: NoOpAgentRpcServer (B2c pending)".to_string())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// test_support — ScriptedAgentRpcServer (cfg-gated)
+// ---------------------------------------------------------------------------
+
+/// Test-support helpers for contract tests that need a canned `AgentRpcServer`.
+/// Gated on `#[cfg(any(test, feature = "test-support"))]` so this code never
+/// compiles into production builds.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{AgentRpcServer, InferOutcome, ToolOutcome};
+
+    /// Scripted RPC server that records call counts and returns canned responses.
+    /// Used by `ipc_accept_loop_contract` and `agent_pool_listen_before_spawn_contract`.
+    pub struct ScriptedAgentRpcServer {
+        pub infer_calls: AtomicU32,
+        pub tool_calls: AtomicU32,
+        /// Canned text returned for every `InferRequest`.
+        pub canned_infer_text: String,
+    }
+
+    impl ScriptedAgentRpcServer {
+        pub fn new(canned_infer_text: impl Into<String>) -> Self {
+            Self {
+                infer_calls: AtomicU32::new(0),
+                tool_calls: AtomicU32::new(0),
+                canned_infer_text: canned_infer_text.into(),
+            }
+        }
+    }
+
+    impl AgentRpcServer for ScriptedAgentRpcServer {
+        fn handle_infer_request<'a>(
+            &'a self,
+            _prompt: String,
+            _max_tokens: u32,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = InferOutcome> + Send + 'a>> {
+            Box::pin(async move {
+                self.infer_calls.fetch_add(1, Ordering::Relaxed);
+                InferOutcome::Response(self.canned_infer_text.clone())
+            })
+        }
+
+        fn handle_tool_request<'a>(
+            &'a self,
+            _tool_id: String,
+            _arguments: Vec<u8>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
+            Box::pin(async move {
+                self.tool_calls.fetch_add(1, Ordering::Relaxed);
+                ToolOutcome::Result(b"scripted_ok".to_vec())
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

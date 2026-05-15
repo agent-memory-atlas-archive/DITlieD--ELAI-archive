@@ -39,9 +39,11 @@ use elai_core::SeededRng;
 use elai_orchestrator::ssb::{SsbActionType, SsbPayload, SsbReader, TaskSubmittedPayload};
 use elai_orchestrator::{
     apply_task_runner_wiring, build_default_baby_step_executor, build_task_runner_wiring,
-    locate_default_agent_binary, start_task_runner, ProjectDirResolver, RuntimeWiring,
-    ScaffoldApplier,
+    locate_default_agent_binary, start_task_runner, NoOpAgentRpcServer, ProjectDirResolver,
+    RuntimeWiring, ScaffoldApplier,
 };
+use elai_orchestrator::ipc_gateway::IpcGateway;
+use elai_orchestrator::sandbox::SelfModificationLocks;
 
 /// Poll the SSB until at least one row matching ANY of `targets` is present,
 /// or `timeout` elapses. Returns the first variant that matched so the
@@ -421,10 +423,21 @@ async fn e2e_real_sidecar_full_build() {
             if std::fs::create_dir_all(&ipc_dir).is_ok() {
                 match locate_default_agent_binary() {
                     Ok(agent_bin) => {
+                        let gateway = std::sync::Arc::new(tokio::sync::Mutex::new(
+                            IpcGateway::with_os_clock(
+                                ipc_dir.clone(),
+                                SelfModificationLocks::new(),
+                            ),
+                        ));
+                        let rpc_server: std::sync::Arc<
+                            dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
+                        > = std::sync::Arc::new(NoOpAgentRpcServer);
                         wiring.baby_step_executor = Some(build_default_baby_step_executor(
                             SeededRng::new(0xD1_5EED),
                             agent_bin,
                             ipc_dir,
+                            gateway,
+                            rpc_server,
                         ));
                         step("03b_agent_pool_executor_installed");
                     }

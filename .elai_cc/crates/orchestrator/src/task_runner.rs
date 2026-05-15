@@ -1061,17 +1061,34 @@ pub struct AgentPoolBabyStepExecutor<E: elai_core::EntropySource + Send + 'stati
     timeout_ms: u64,
     /// Role passed to `pool.spawn`. Default `Executor`.
     role: crate::agent_pool::AgentRole,
+    /// IPC gateway for frame routing. Shared with the orchestrator's session manager.
+    gateway: Arc<AsyncMutex<crate::ipc_gateway::IpcGateway>>,
+    /// RPC server that handles InferRequest / ToolRequest frames from the agent.
+    rpc_server: Arc<dyn crate::ipc_accept::AgentRpcServer + Send + Sync + 'static>,
+    /// Test-only: when set, the executor sends the socket path through this
+    /// channel after bind_session_listener completes (proving listen-before-spawn
+    /// ordering). The receiver is in the test's stub agent task.
+    /// Wrapped in Mutex so execute(&self) can take the sender without &mut self.
+    #[cfg(any(test, feature = "test-support"))]
+    socket_path_notifier: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PathBuf>>>,
 }
 
 /// Default timeout for a single baby-step agent execution (matches
 /// `deterministic_auditor::BUILD_CMD_TIMEOUT_S`).
 pub const DEFAULT_BABY_STEP_TIMEOUT_MS: u64 = 120_000;
 
+/// Maximum GRC call budget passed to `AgentConnection::new` for each
+/// agent IPC session. Kept as a named constant to avoid magic-number
+/// literals in the executor body.
+pub const DEFAULT_AGENT_GRC_MAX_CALLS: u32 = 5;
+
 impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> {
     pub fn new(
         pool: Arc<AsyncMutex<crate::agent_pool::InProcessAgentPool<E>>>,
         agent_binary_path: PathBuf,
         socket_dir: PathBuf,
+        gateway: Arc<AsyncMutex<crate::ipc_gateway::IpcGateway>>,
+        rpc_server: Arc<dyn crate::ipc_accept::AgentRpcServer + Send + Sync + 'static>,
     ) -> Self {
         Self {
             pool,
@@ -1079,6 +1096,10 @@ impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> 
             socket_dir,
             timeout_ms: DEFAULT_BABY_STEP_TIMEOUT_MS,
             role: crate::agent_pool::AgentRole::Executor,
+            gateway,
+            rpc_server,
+            #[cfg(any(test, feature = "test-support"))]
+            socket_path_notifier: std::sync::Mutex::new(None),
         }
     }
 
@@ -1089,6 +1110,18 @@ impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> 
 
     pub fn with_role(mut self, role: crate::agent_pool::AgentRole) -> Self {
         self.role = role;
+        self
+    }
+
+    /// Test-only: install a one-shot sender that receives the socket path after
+    /// `bind_session_listener` completes. The receiving end lives in the stub
+    /// agent task; receiving the path proves the listen-before-spawn ordering.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_socket_path_notifier(
+        mut self,
+        tx: tokio::sync::oneshot::Sender<PathBuf>,
+    ) -> Self {
+        self.socket_path_notifier = std::sync::Mutex::new(Some(tx));
         self
     }
 }
@@ -1140,7 +1173,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 }
             };
 
-            // Ensure socket directory exists; launch the agent process.
+            // Ensure socket directory exists.
             if let Err(e) = std::fs::create_dir_all(&self.socket_dir) {
                 let reason = format!("socket_dir create failed: {e}");
                 return BabyStepExecutionResult {
@@ -1155,7 +1188,49 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 .socket_dir
                 .join(format!("agent-{}.sock", agent_id));
 
-            let launch_err = {
+            // B2b listen-before-spawn invariant: bind the listener BEFORE
+            // spawning the agent process so the socket endpoint exists when
+            // the agent's connect() call fires.
+            let mut listener =
+                match crate::ipc_accept::bind_session_listener(&socket_path).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let reason = format!("bind_session_listener failed: {e}");
+                        return BabyStepExecutionResult {
+                            outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                            duration_ms: u64::try_from(start.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                            exit_code: None,
+                            stderr_tail: reason,
+                            changed_files: Vec::new(),
+                        };
+                    }
+                };
+
+            // Test hook: notify the stub agent of the socket path so it can
+            // connect. Fires AFTER bind (proving listen-before-spawn ordering).
+            // Also captures whether a stub was installed so the short-circuit
+            // below can distinguish "test with stub" from "no stub at all".
+            #[cfg(any(test, feature = "test-support"))]
+            let stub_installed: bool;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                if let Ok(mut guard) = self.socket_path_notifier.lock() {
+                    stub_installed = guard.is_some();
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(socket_path.clone());
+                    }
+                } else {
+                    stub_installed = false;
+                }
+            }
+
+            // Spawn the agent process. A failure here is recorded but does
+            // NOT abort the session: if a caller (e.g. a test's stub task)
+            // has already connected to the socket, accept_one will succeed
+            // and the session outcome governs the result. Only when both
+            // the spawn AND the subsequent accept_one fail do we return Failed.
+            let process_launch_err = {
                 let mut pool = self.pool.lock().await;
                 pool.launch_agent_process(
                     &agent_id,
@@ -1163,33 +1238,148 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     &socket_path,
                 )
                 .err()
+                .map(|e| format!("launch_agent_process failed: {e}"))
             };
-            if let Some(e) = launch_err {
-                let reason = format!("launch_agent_process failed: {e}");
+
+            // Short-circuit: if the process failed to launch AND no in-process
+            // stub is connected (i.e. no test hook), there is nobody to accept
+            // the IPC connection. Waiting the full timeout (120 s) would be
+            // wasteful. Return Failed immediately.
+            //
+            // In test/test-support builds we only skip accept_one when no stub
+            // was installed; when a stub IS installed it will connect and the
+            // session should proceed normally.
+            #[cfg(any(test, feature = "test-support"))]
+            if process_launch_err.is_some() && !stub_installed {
+                let reason = process_launch_err.as_deref().unwrap_or("launch_agent_process failed").to_string();
                 return BabyStepExecutionResult {
                     outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                    duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    duration_ms: u64::try_from(start.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                    exit_code: None,
+                    stderr_tail: reason,
+                    changed_files: Vec::new(),
+                };
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            if process_launch_err.is_some() {
+                let reason = process_launch_err.as_deref().unwrap_or("launch_agent_process failed").to_string();
+                return BabyStepExecutionResult {
+                    outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                    duration_ms: u64::try_from(start.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
                     exit_code: None,
                     stderr_tail: reason,
                     changed_files: Vec::new(),
                 };
             }
 
-            // Wait on the child process with timeout. `wait_for_agent_exit`
-            // reads stdout/stderr to completion to avoid the child blocking
-            // on a full pipe buffer.
-            let outcome = wait_for_agent_exit(
-                Arc::clone(&self.pool),
+            // Accept one connection from the agent (or the test stub).
+            let accept_timeout = std::time::Duration::from_millis(self.timeout_ms);
+            let stream = match tokio::time::timeout(
+                accept_timeout,
+                crate::ipc_accept::accept_one(&mut listener),
+            )
+            .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    let reason = match process_launch_err {
+                        Some(launch_msg) => format!("{launch_msg}; accept_one failed: {e}"),
+                        None => format!("accept_one failed: {e}"),
+                    };
+                    return BabyStepExecutionResult {
+                        outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                        duration_ms: u64::try_from(start.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                        exit_code: None,
+                        stderr_tail: reason,
+                        changed_files: Vec::new(),
+                    };
+                }
+                Err(_) => {
+                    let reason = match process_launch_err {
+                        Some(launch_msg) => {
+                            format!("{launch_msg}; accept_one timed out after {}ms", self.timeout_ms)
+                        }
+                        None => format!("accept_one timed out after {}ms", self.timeout_ms),
+                    };
+                    return BabyStepExecutionResult {
+                        outcome: BabyStepOutcome::Failed { reason: reason.clone() },
+                        duration_ms: u64::try_from(start.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                        exit_code: None,
+                        stderr_tail: reason,
+                        changed_files: Vec::new(),
+                    };
+                }
+            };
+
+            // Register the agent connection in the gateway before driving the
+            // session so route_frame can look up the connection record.
+            let process_id: u32 = {
+                let pool = self.pool.lock().await;
+                pool.get_agent(&agent_id)
+                    .and_then(|h| h.child_process.as_ref())
+                    .map(|child| child.id())
+                    .unwrap_or(0)
+            };
+            {
+                let conn = crate::ipc_gateway::AgentConnection::new(
+                    agent_id,
+                    self.role,
+                    process_id,
+                    socket_path.clone(),
+                    DEFAULT_AGENT_GRC_MAX_CALLS,
+                    &elai_core::clock::OsClock,
+                );
+                let mut gw = self.gateway.lock().await;
+                gw.register_agent(conn);
+            }
+
+            // Drive the IPC session: read frames, route via gateway, call the
+            // RPC server for InferRequest / ToolRequest, write responses.
+            let remaining_ms = self.timeout_ms.saturating_sub(
+                u64::try_from(start.elapsed().as_millis()).unwrap_or(0),
+            );
+            let session_outcome = crate::ipc_accept::run_agent_session(
+                Arc::clone(&self.gateway),
+                Arc::clone(&self.rpc_server),
                 agent_id,
-                std::time::Duration::from_millis(self.timeout_ms),
+                stream,
+                remaining_ms,
             )
             .await;
 
+            // Deregister the agent from the gateway (cleans up socket on Unix).
+            {
+                let mut gw = self.gateway.lock().await;
+                gw.remove_agent(&agent_id);
+            }
+
+            // Map session outcome to baby-step outcome.
+            let (outcome, session_err) = match session_outcome.final_state {
+                crate::ipc_accept::AgentFinalState::Passed => {
+                    (BabyStepOutcome::Passed, None)
+                }
+                crate::ipc_accept::AgentFinalState::Failed { reason } => {
+                    (BabyStepOutcome::Failed { reason: reason.clone() }, Some(reason))
+                }
+            };
+
+            // Combine any spawn/session error messages into stderr_tail.
+            let stderr_tail = match (process_launch_err, session_err) {
+                (Some(l), Some(s)) => format!("{l}; session: {s}"),
+                (Some(l), None) => l,
+                (None, Some(s)) => s,
+                (None, None) => String::new(),
+            };
+
             BabyStepExecutionResult {
-                outcome: outcome.outcome,
+                outcome,
                 duration_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                exit_code: outcome.exit_code,
-                stderr_tail: outcome.stderr_tail,
+                exit_code: None,
+                stderr_tail,
                 // Gap #9: real agents will populate this via an out-of-band
                 // diff reporter once wire-4A's changed-files protocol lands.
                 // Until then we default to empty so the post-execution rule
@@ -1198,112 +1388,6 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
             }
         })
     }
-}
-
-struct ProcessWaitOutcome {
-    outcome: BabyStepOutcome,
-    exit_code: Option<i32>,
-    stderr_tail: String,
-}
-
-/// Wait on the agent process owned by `pool[agent_id]`. Drives the child to
-/// completion within `timeout`; on timeout, calls `pool.kill_agent_process`
-/// and returns `Failed`. Reads stderr to a bounded tail (last 2 KiB).
-async fn wait_for_agent_exit<E: elai_core::EntropySource + Send + 'static>(
-    pool: Arc<AsyncMutex<crate::agent_pool::InProcessAgentPool<E>>>,
-    agent_id: Uuid,
-    timeout: std::time::Duration,
-) -> ProcessWaitOutcome {
-    const STDERR_TAIL_MAX: usize = 2 * 1024;
-
-    // Take ownership of the child out of the pool so we don't hold the pool
-    // lock during the entire wait (other baby steps could queue up).
-    let mut child = {
-        let mut pool = pool.lock().await;
-        match pool
-            .get_agent_mut(&agent_id)
-            .and_then(|h| h.child_process.take())
-        {
-            Some(child) => child,
-            None => {
-                let reason = "child_process handle missing after launch".to_string();
-                return ProcessWaitOutcome {
-                    outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                    exit_code: None,
-                    stderr_tail: reason,
-                };
-            }
-        }
-    };
-
-    let pool_for_kill = Arc::clone(&pool);
-    let wait_result = tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_end(&mut stderr_buf);
-        }
-        // drain stdout so the child doesn't block on a full pipe
-        if let Some(mut stdout) = child.stdout.take() {
-            let mut sink = Vec::new();
-            let _ = stdout.read_to_end(&mut sink);
-        }
-        let status = child.wait();
-        (status, stderr_buf)
-    });
-
-    match tokio::time::timeout(timeout, wait_result).await {
-        Ok(Ok((Ok(status), stderr))) => {
-            let exit_code = status.code();
-            let tail = tail_lossy(&stderr, STDERR_TAIL_MAX);
-            let outcome = if status.success() {
-                BabyStepOutcome::Passed
-            } else {
-                BabyStepOutcome::Failed {
-                    reason: format!(
-                        "agent exit_code={:?} stderr_tail={}",
-                        exit_code, tail
-                    ),
-                }
-            };
-            ProcessWaitOutcome {
-                outcome,
-                exit_code,
-                stderr_tail: tail,
-            }
-        }
-        Ok(Ok((Err(e), stderr))) => {
-            let tail = tail_lossy(&stderr, STDERR_TAIL_MAX);
-            let reason = format!("child.wait() error: {e} | stderr_tail={}", tail);
-            ProcessWaitOutcome {
-                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                exit_code: None,
-                stderr_tail: reason,
-            }
-        }
-        Ok(Err(join_err)) => {
-            let reason = format!("agent wait join error: {join_err}");
-            ProcessWaitOutcome {
-                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                exit_code: None,
-                stderr_tail: reason,
-            }
-        }
-        Err(_elapsed) => {
-            let _ = pool_for_kill.lock().await.kill_agent_process(&agent_id);
-            let reason = "agent process timed out".to_string();
-            ProcessWaitOutcome {
-                outcome: BabyStepOutcome::Failed { reason: reason.clone() },
-                exit_code: None,
-                stderr_tail: reason,
-            }
-        }
-    }
-}
-
-fn tail_lossy(buf: &[u8], max: usize) -> String {
-    let start = buf.len().saturating_sub(max);
-    String::from_utf8_lossy(&buf[start..]).into_owned()
 }
 
 // ---------------------------------------------------------------------------

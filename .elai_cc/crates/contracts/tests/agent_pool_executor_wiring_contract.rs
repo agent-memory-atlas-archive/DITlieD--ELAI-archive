@@ -16,13 +16,15 @@ use std::sync::Arc;
 
 use elai_core::SeededRng;
 use elai_orchestrator::agent_pool::{AgentPoolConfig, InProcessAgentPool, ModelPool};
+use elai_orchestrator::ipc_gateway::IpcGateway;
 use elai_orchestrator::pipeline_tree_navigator::BabyStepOutcome;
+use elai_orchestrator::sandbox::SelfModificationLocks;
 use elai_orchestrator::task_runner::{
     AgentPoolBabyStepExecutor, BabyStepExecutionCtx, BabyStepExecutor,
 };
 use elai_orchestrator::{
     apply_task_runner_wiring, build_default_baby_step_executor, locate_default_agent_binary,
-    RuntimeWiring,
+    NoOpAgentRpcServer, RuntimeWiring,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -43,6 +45,17 @@ fn make_pool() -> Arc<AsyncMutex<InProcessAgentPool<SeededRng>>> {
         SeededRng::new(0xB1_C0FFEE),
         Arc::new(InfiniteVramPool),
     )))
+}
+
+fn make_gateway(socket_dir: &std::path::Path) -> Arc<AsyncMutex<IpcGateway>> {
+    Arc::new(AsyncMutex::new(IpcGateway::with_os_clock(
+        socket_dir.to_path_buf(),
+        SelfModificationLocks::new(),
+    )))
+}
+
+fn make_noop_rpc() -> Arc<dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static> {
+    Arc::new(NoOpAgentRpcServer)
 }
 
 fn make_ctx(id: u64) -> BabyStepExecutionCtx {
@@ -71,8 +84,9 @@ async fn contract_apply_task_runner_wiring_forwards_some_executor() {
     let socket_dir = tmp.path().join("sockets");
 
     let pool = make_pool();
+    let gateway = make_gateway(&socket_dir);
     let executor_arc: Arc<dyn BabyStepExecutor> =
-        Arc::new(AgentPoolBabyStepExecutor::new(pool, binary, socket_dir));
+        Arc::new(AgentPoolBabyStepExecutor::new(pool, binary, socket_dir, gateway, make_noop_rpc()));
 
     // Build a minimal wiring with the executor pre-populated.
     // We create a minimal Ssb-less wiring via the public fields — this is the
@@ -127,8 +141,14 @@ async fn contract_build_default_baby_step_executor_is_agent_pool_variant() {
     let binary = tmp.path().join("nonexistent-elai_cc_agent.exe");
     let socket_dir = tmp.path().join("ipc");
 
-    let executor =
-        build_default_baby_step_executor(SeededRng::new(0xDEAD_B1), binary, socket_dir);
+    let gateway = make_gateway(&socket_dir);
+    let executor = build_default_baby_step_executor(
+        SeededRng::new(0xDEAD_B1),
+        binary,
+        socket_dir.clone(),
+        gateway,
+        make_noop_rpc(),
+    );
 
     let ctx = make_ctx(99);
     let result = executor.execute(ctx).await;

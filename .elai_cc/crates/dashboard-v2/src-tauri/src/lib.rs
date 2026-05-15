@@ -317,11 +317,24 @@ pub fn run() {
                         if std::fs::create_dir_all(&ipc_dir).is_ok() {
                             match elai_orchestrator::locate_default_agent_binary() {
                                 Ok(agent_bin) => {
+                                    let gateway = std::sync::Arc::new(tokio::sync::Mutex::new(
+                                        elai_orchestrator::ipc_gateway::IpcGateway::with_os_clock(
+                                            ipc_dir.clone(),
+                                            elai_orchestrator::sandbox::SelfModificationLocks::new(),
+                                        ),
+                                    ));
+                                    let rpc_server: std::sync::Arc<
+                                        dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
+                                    > = std::sync::Arc::new(
+                                        elai_orchestrator::NoOpAgentRpcServer,
+                                    );
                                     let executor =
                                         elai_orchestrator::build_default_baby_step_executor(
                                             elai_core::OsEntropy,
                                             agent_bin.clone(),
                                             ipc_dir,
+                                            gateway,
+                                            rpc_server,
                                         );
                                     wiring.baby_step_executor = Some(executor);
                                     tracing::info!(

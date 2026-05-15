@@ -1377,6 +1377,7 @@ dependencies = [
  "elai-core",
  "elai-ipc-types",
  "elai-knowledge",
+ "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
  "elai-reasoning",
