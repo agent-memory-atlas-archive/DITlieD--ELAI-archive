@@ -330,14 +330,40 @@ async fn e2e_full_pipeline_local() {
         return;
     }
 
-    // B. Set env vars for the sidecar path. These are read by task_runner.rs
-    //    (ELAI_GROUNDING_BACKEND -> SidecarGroundingClient) and by our inline
-    //    ProductionAgentRpcServer construction below.
-    let base_url = std::env::var("ANTHROPIC_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:8100".to_string());
-    // ELAI_GROUNDING_BACKEND unset -> SidecarGroundingClient (task_runner.rs:4128-4161).
-    // Do not set it here; the default already picks the sidecar path.
-    std::env::set_var("ANTHROPIC_API_KEY", "local-dummy");
+    // B. Detect cloud-vs-sidecar mode. Cloud mode is triggered by
+    //    ELAI_E2E_FULL_PIPELINE_CLOUD=1 (test-local) OR by ANTHROPIC_BASE_URL
+    //    matching api.anthropic.com (user override). Cloud mode uses
+    //    resolve_auth_with_auto_refresh -> BearerToken; sidecar uses
+    //    "local-dummy" placeholder against http://localhost:8100.
+    let cloud_mode = std::env::var("ELAI_E2E_FULL_PIPELINE_CLOUD").as_deref() == Ok("1")
+        || std::env::var("ANTHROPIC_BASE_URL")
+            .map(|u| u.contains("api.anthropic.com"))
+            .unwrap_or(false);
+    let base_url = if cloud_mode {
+        std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "https://api.anthropic.com".to_string())
+    } else {
+        std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8100".to_string())
+    };
+    eprintln!(
+        "[setup] mode={} base_url={}",
+        if cloud_mode { "cloud" } else { "sidecar" },
+        base_url
+    );
+    if cloud_mode {
+        // Route the orchestrator's decomposition path through
+        // CloudGroundingClient instead of SidecarGroundingClient.
+        // (task_runner.rs:4134 reads this env var.)
+        std::env::set_var("ELAI_GROUNDING_BACKEND", "cloud");
+        // Cloud auth comes from saved OAuth (auto-refreshed via patch-R1).
+        // Do NOT set ANTHROPIC_API_KEY in cloud mode — that would route to
+        // AuthSource::ApiKey and bypass the BearerToken (OAuth) headers
+        // d063f97 requires for the Claude Code rate-limit bucket.
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    } else {
+        std::env::set_var("ANTHROPIC_API_KEY", "local-dummy");
+    }
     if std::env::var("ELAI_LOCAL_MIN_PROMPT").is_err() {
         std::env::set_var("ELAI_LOCAL_MIN_PROMPT", "1");
     }
@@ -345,9 +371,50 @@ async fn e2e_full_pipeline_local() {
         std::env::set_var("ELAI_LOCAL_MAX_CONTEXT", "20000");
     }
 
-    // C. Sidecar health-check BEFORE starting the test timer. A failed health
-    //    check panics immediately rather than silently burning 15 min of budget.
-    {
+    // C. Health-check BEFORE starting the test timer. Bad auth or
+    //    unreachable endpoint panics fast rather than burning 15 min.
+    //    cloud_mode: resolve OAuth -> tiny send_message -> assert 200.
+    //    sidecar:    send dummy 4-token request to the local tunnel.
+    let resolved_auth = if cloud_mode {
+        use elai_providers::{AuthSource, InputMessage, MessageRequest};
+        // resolve_saved_oauth_token_set internally uses Runtime::new()::block_on,
+        // which collides with our #[tokio::test] runtime; bounce through
+        // spawn_blocking (mirrors providers/tests/anthropic_oauth_live_smoke.rs).
+        let auth = tokio::task::spawn_blocking(elai_providers::resolve_auth_with_auto_refresh)
+            .await
+            .expect("spawn_blocking join")
+            .expect(
+                "cloud mode: resolve_auth_with_auto_refresh must produce a credential. \
+                 Run `elai login` first if ~/.elai/credentials.json is missing.",
+            );
+        let health_client = elai_providers::AnthropicClient::from_auth(auth.clone())
+            .with_base_url(base_url.clone());
+        let health_req = MessageRequest {
+            model: std::env::var("ELAI_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
+            max_tokens: 4,
+            messages: vec![InputMessage::user_text("ok")],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+            seed: None,
+        };
+        let response = health_client
+            .send_message(&health_req)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "cloud health-check failed against {base_url}: {e}. \
+                     Run `elai login` to refresh OAuth, or check `/api/oauth/usage`."
+                )
+            });
+        eprintln!(
+            "[health] cloud OK model={} usage_in={} usage_out={}",
+            response.model, response.usage.input_tokens, response.usage.output_tokens
+        );
+        Some(auth)
+    } else {
         use elai_providers::{InputMessage, MessageRequest};
         let health_client = elai_providers::AnthropicClient::new("local-dummy")
             .with_base_url(base_url.clone());
@@ -370,7 +437,8 @@ async fn e2e_full_pipeline_local() {
                      Error: {e}"
                 )
             });
-    }
+        None
+    };
 
     // 20-minute outer wallclock (15 min LLM/decomposition + 5 min build/preview).
     tokio::time::timeout(Duration::from_secs(1200), async {
@@ -426,11 +494,18 @@ async fn e2e_full_pipeline_local() {
                         ))
                     };
 
+                    // cloud_mode uses the resolved OAuth BearerToken from step
+                    // C; sidecar mode uses the local-dummy placeholder.
+                    let anthropic_client = match &resolved_auth {
+                        Some(auth) => elai_providers::AnthropicClient::from_auth(auth.clone())
+                            .with_base_url(base_url.clone()),
+                        None => elai_providers::AnthropicClient::new("local-dummy")
+                            .with_base_url(base_url.clone()),
+                    };
                     let rpc_server: Arc<
                         dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
                     > = Arc::new(elai_orchestrator::ProductionAgentRpcServer::new(
-                        elai_providers::AnthropicClient::new("local-dummy")
-                            .with_base_url(base_url.clone()),
+                        anthropic_client,
                         dispatcher,
                         model,
                         max_tokens,

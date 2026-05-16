@@ -487,11 +487,19 @@ async fn run_inner() {
     //    auto-refreshed via the bundled Claude Code OAuth config, NOT
     //    surfaced as an unrefreshable Auth error. Refreshed token persists
     //    to ELAI_CONFIG_HOME for future use.
-    let auth = elai_providers::resolve_auth_with_auto_refresh().expect(
-        "resolve_auth_with_auto_refresh must resolve a credential; \
-         expected saved OAuth at ~/.elai/credentials.json. Run \
-         `elai login` (or set ANTHROPIC_API_KEY) before running this test.",
-    );
+    // resolve_saved_oauth_token_set internally uses Runtime::new().block_on()
+    // for the refresh HTTP call, which conflicts with our #[tokio::test]
+    // runtime ("Cannot start a runtime from within a runtime"). Bounce
+    // through spawn_blocking to give it its own thread (mirrors the pattern
+    // in providers/tests/anthropic_oauth_live_smoke.rs).
+    let auth = tokio::task::spawn_blocking(elai_providers::resolve_auth_with_auto_refresh)
+        .await
+        .expect("spawn_blocking join")
+        .expect(
+            "resolve_auth_with_auto_refresh must resolve a credential; \
+             expected saved OAuth at ~/.elai/credentials.json. Run \
+             `elai login` (or set ANTHROPIC_API_KEY) before running this test.",
+        );
     let base_url = elai_providers::read_base_url();
     eprintln!(
         "[setup] AnthropicClient base_url={} auth_kind={}",

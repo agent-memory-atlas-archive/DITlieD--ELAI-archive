@@ -4244,7 +4244,12 @@ async fn drive_task(
 
     let grounding_backend = std::env::var("ELAI_GROUNDING_BACKEND").ok();
     let decomposition = if grounding_backend.as_deref() == Some("cloud") {
-        let grounding_client = CloudGroundingClient::from_env().map_err(|e| {
+        // patch-R2: switched from sync from_env() -> async from_env_async() so
+        // an expired saved OAuth (expiresAt elapsed OR null + refresh_token
+        // present) is auto-refreshed via resolve_auth_with_auto_refresh.
+        // Without this the cloud path would Err with "saved OAuth token is
+        // expired" after ~1 hour of orchestrator uptime.
+        let grounding_client = CloudGroundingClient::from_env_async().await.map_err(|e| {
             crate::research_tree::ResearchTreeError::GroundingFailed {
                 level: crate::grounding_client::ResearchLevel::Idea,
                 source: e,

@@ -392,12 +392,46 @@ impl CloudGroundingClient {
     /// `claude-sonnet-4-6`). Returns `GroundingError::RequestFailed` if no
     /// auth source is available — matches the failure shape callers already
     /// handle via `ResearchTreeError::GroundingFailed`.
+    ///
+    /// NOTE: this sync constructor does NOT trigger OAuth refresh on expired
+    /// saved tokens (refresh requires an HTTP call wrapped in a tokio runtime
+    /// which conflicts when called from async context). Prefer
+    /// `from_env_async()` from inside `.await` chains — it auto-refreshes via
+    /// `resolve_auth_with_auto_refresh` and bounces through `spawn_blocking`
+    /// to side-step the nested-runtime panic.
     pub fn from_env() -> Result<Self, GroundingError> {
         let auth = elai_providers::AuthSource::from_env_or_saved().map_err(|e| {
             GroundingError::RequestFailed {
                 reason: format!("cloud auth: {e}"),
             }
         })?;
+        let base_url = elai_providers::read_base_url();
+        let client = elai_providers::AnthropicClient::from_auth(auth).with_base_url(base_url);
+        let model = std::env::var("ELAI_CLOUD_MODEL")
+            .unwrap_or_else(|_| CLOUD_DEFAULT_MODEL.to_string());
+        Ok(Self::new(client, model))
+    }
+
+    /// Async constructor that auto-refreshes the saved OAuth token when
+    /// expired (patch-R1). Internally:
+    ///   1. spawn_blocking(resolve_auth_with_auto_refresh) — the auto-refresh
+    ///      path calls `Runtime::new().block_on()` for its HTTP refresh,
+    ///      which cannot run on the same thread as the caller's tokio
+    ///      runtime. spawn_blocking gives it a dedicated thread.
+    ///   2. Build AnthropicClient with the (possibly refreshed) BearerToken.
+    ///
+    /// Call this from `drive_task` (or any async grounding setup) when
+    /// `ELAI_GROUNDING_BACKEND=cloud` — keeps the cloud path usable across
+    /// long-running orchestrator runs that outlive an access-token TTL.
+    pub async fn from_env_async() -> Result<Self, GroundingError> {
+        let auth = tokio::task::spawn_blocking(elai_providers::resolve_auth_with_auto_refresh)
+            .await
+            .map_err(|e| GroundingError::RequestFailed {
+                reason: format!("cloud auth resolve join: {e}"),
+            })?
+            .map_err(|e| GroundingError::RequestFailed {
+                reason: format!("cloud auth: {e}"),
+            })?;
         let base_url = elai_providers::read_base_url();
         let client = elai_providers::AnthropicClient::from_auth(auth).with_base_url(base_url);
         let model = std::env::var("ELAI_CLOUD_MODEL")
