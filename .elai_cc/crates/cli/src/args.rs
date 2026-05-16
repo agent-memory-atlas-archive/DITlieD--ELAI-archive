@@ -87,6 +87,16 @@ pub(crate) enum CliAction {
         args: Option<String>,
         output_format: CliOutputFormat,
     },
+    /// B-37D Phase 4M: direct (non-REPL) invocation of `/runtime`.
+    /// Carries the three parser-string fields verbatim — validation
+    /// lives in the runtime_cmd handler so the args layer stays free of
+    /// any providers/orchestrator type dependency.
+    Runtime {
+        action: Option<String>,
+        role: Option<String>,
+        target: Option<String>,
+        output_format: CliOutputFormat,
+    },
     Skills {
         args: Option<String>,
         output_format: CliOutputFormat,
@@ -446,6 +456,29 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
             args: join_optional_args(&rest[1..]),
             output_format,
         }),
+        // B-37D Phase 4M: route `elai runtime …` through the slash-command
+        // parser so the strict grammar (list / test <backend> /
+        // set --role <r> --backend <b> / help) stays a single source of truth.
+        "runtime" => {
+            let raw = std::iter::once("/runtime".to_string())
+                .chain(rest[1..].iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            match SlashCommand::parse(&raw) {
+                Ok(Some(SlashCommand::Runtime {
+                    action,
+                    role,
+                    target,
+                })) => Ok(CliAction::Runtime {
+                    action,
+                    role,
+                    target,
+                    output_format,
+                }),
+                Ok(_) => Err(format!("unexpected slash command: {raw}")),
+                Err(error) => Err(error.to_string()),
+            }
+        }
         "skills" => Ok(CliAction::Skills {
             args: join_optional_args(&rest[1..]),
             output_format,
@@ -673,6 +706,16 @@ pub(crate) fn parse_direct_slash_cli_action(
                 (Some(action), Some(target)) => Some(format!("{action} {target}")),
                 (None, Some(target)) => Some(target),
             },
+            output_format,
+        }),
+        Ok(Some(SlashCommand::Runtime {
+            action,
+            role,
+            target,
+        })) => Ok(CliAction::Runtime {
+            action,
+            role,
+            target,
             output_format,
         }),
         Ok(Some(SlashCommand::Skills { args })) => Ok(CliAction::Skills {

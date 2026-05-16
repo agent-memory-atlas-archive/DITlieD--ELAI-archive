@@ -12,7 +12,7 @@
 //!     the `PhaseSlot` (the telescope invocation lives at the call site,
 //!     not inside `build_dispatch_context`).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use elai_orchestrator::{
     build_dispatch_context, BackendConfig, BackendMode, PhaseSlot, CONSTRAINTS_BLOCK_HEADER,
@@ -34,7 +34,7 @@ fn sample_config() -> BackendConfig {
 fn contract_none_phase_slot_preserves_pre_batch_fu_behaviour() {
     let cfg = sample_config();
     let tools: Vec<String> = vec!["read_file".into()];
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
 
     let ctx = build_dispatch_context(FsmState::Planning, &cfg, &tools, &prio, None, None)
         .expect("build_dispatch_context");
@@ -49,7 +49,7 @@ fn contract_none_phase_slot_preserves_pre_batch_fu_behaviour() {
 fn contract_populated_constraints_render_as_bulleted_block() {
     let cfg = sample_config();
     let tools: Vec<String> = vec!["read_file".into()];
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
 
     let slot = PhaseSlot {
         goal: "ship the baby step".into(),
@@ -84,7 +84,7 @@ fn contract_populated_constraints_render_as_bulleted_block() {
 fn contract_empty_constraints_and_goal_yields_none() {
     let cfg = sample_config();
     let tools: Vec<String> = vec!["read_file".into()];
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
     let slot = PhaseSlot::default();
     let ctx = build_dispatch_context(
         FsmState::Executing,

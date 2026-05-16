@@ -93,6 +93,11 @@ import type {
   CosmosArtifactStatus,
   // B-41 — Per-level audit timeline.
   LevelAuditVerdictJson,
+  // B-37 Phase 4M — Multi-runtime adapter surface.
+  RuntimeInfo,
+  RuntimeBackendId,
+  RuntimeAgentRole,
+  TestReport,
 } from './types';
 
 import {
@@ -2298,4 +2303,158 @@ export async function getPerLevelVerdicts(
     taskId,
   });
   return live ?? [];
+}
+
+// ------------------------------------------------------------------
+// B-37 Phase 4M — Multi-runtime adapter surface.
+//
+// Three Tauri commands surfaced by RuntimePanel:
+//   - list_runtimes() -> RuntimeInfo[]            (poll cadence ~10s)
+//   - test_runtime(backend) -> TestReport         (on-demand probe)
+//   - set_role_runtime(role, backend) -> void     (routing mutation)
+//
+// Browser-mode fallback returns a deterministic synthetic set so the
+// panel renders during `pnpm dev` (no Tauri shell). The mock set
+// reports `is_stub: true` for the nine adapters that report
+// Unavailable in B-37A/B and `ready` for sidecar+anthropic_api.
+// ------------------------------------------------------------------
+
+const MOCK_RUNTIMES: RuntimeInfo[] = [
+  {
+    backend: 'sidecar',
+    canonical_name: 'sidecar',
+    roles: ['executor', 'researcher'],
+    health: { status: 'ready' },
+    is_stub: false,
+    latency_ms: 42,
+  },
+  {
+    backend: 'anthropic_api',
+    canonical_name: 'anthropic_api',
+    roles: ['designer', 'auditor'],
+    health: { status: 'ready' },
+    is_stub: false,
+    latency_ms: 380,
+  },
+  {
+    backend: 'claude_code',
+    canonical_name: 'claude_code',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'codex_cli',
+    canonical_name: 'codex_cli',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'opencode',
+    canonical_name: 'opencode',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'hermes',
+    canonical_name: 'hermes',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'gemini_cli',
+    canonical_name: 'gemini_cli',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'kiro_cli',
+    canonical_name: 'kiro_cli',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'copilot_cli',
+    canonical_name: 'copilot_cli',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'ollama',
+    canonical_name: 'ollama',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+  {
+    backend: 'vllm',
+    canonical_name: 'vllm',
+    roles: [],
+    health: { status: 'unavailable', reason: 'stub: B-37 not implemented' },
+    is_stub: true,
+  },
+];
+
+export async function listRuntimes(): Promise<RuntimeInfo[]> {
+  logStub('listRuntimes');
+  const live = await tryInvoke<RuntimeInfo[]>('list_runtimes');
+  if (live) return live;
+  await delay();
+  return MOCK_RUNTIMES.map((r) => ({ ...r, roles: [...r.roles] }));
+}
+
+export async function testRuntime(backend: RuntimeBackendId): Promise<TestReport> {
+  logStub('testRuntime', { backend });
+  const live = await tryInvoke<TestReport>('test_runtime', { backend });
+  if (live) return live;
+  await delay(120, 240);
+  // Mock fallback: sidecar+anthropic_api report ready; stubs report
+  // unavailable to stay honest about the B-37A/B state.
+  const mock = MOCK_RUNTIMES.find((r) => r.canonical_name === backend);
+  if (!mock) {
+    return {
+      backend,
+      ok: false,
+      health: { status: 'unavailable', reason: `unknown backend: ${backend}` },
+      latency_ms: 0,
+      error: `unknown backend: ${backend}`,
+    };
+  }
+  const ok = mock.health.status === 'ready';
+  return {
+    backend,
+    ok,
+    health: mock.health,
+    latency_ms: mock.latency_ms ?? 0,
+    error: ok ? undefined : mock.health.reason,
+  };
+}
+
+export async function setRoleRuntime(
+  role: RuntimeAgentRole,
+  backend: RuntimeBackendId,
+): Promise<void> {
+  logStub('setRoleRuntime', { role, backend });
+  if (!TAURI_AVAILABLE) {
+    await delay(60, 120);
+    // Mutate the in-memory mock so subsequent listRuntimes() reflects
+    // the change. Remove the role from every other backend first to
+    // preserve the "one backend per role" invariant the Rust side
+    // enforces via AppState.runtime_routing.
+    for (const r of MOCK_RUNTIMES) {
+      r.roles = r.roles.filter((x) => x !== role);
+    }
+    const target = MOCK_RUNTIMES.find((r) => r.canonical_name === backend);
+    if (target && !target.roles.includes(role)) target.roles.push(role);
+    return;
+  }
+  const inv = await ensureInvoke();
+  if (!inv) throw new Error('tauri invoke unavailable');
+  await inv<void>('set_role_runtime', { role, backend });
 }

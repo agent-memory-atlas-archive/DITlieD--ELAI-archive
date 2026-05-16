@@ -4,7 +4,7 @@
 //! paths, evaluation ordering contract, get_active_rules filtering, and
 //! Warn accumulation before Block short-circuit.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use elai_rules::predicate::{
     AstError, AstEvaluator, AstMatch, DkgError, DkgQuerier, EscalationTarget, QueryFormat,
@@ -291,7 +291,7 @@ fn contract_evaluate_short_circuits_block_before_ast() {
         source: "DANGER code",
         file_path: "src/main.py",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     // If this panics, short-circuit is broken.
@@ -348,7 +348,7 @@ fn contract_evaluate_accumulates_warns_then_blocks() {
         source: "TODO: fix\nFIXME: urgent",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -431,7 +431,7 @@ fn contract_schema_on_non_json_does_not_abort() {
         source: "fn main() { DANGER }",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -476,7 +476,7 @@ fn contract_and_composite_fires_on_all_children_match() {
         source: "TODO FIXME",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -501,7 +501,7 @@ fn contract_metric_gate_lt_fires_when_value_below_threshold() {
         source: "",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::from([("loc".into(), 50.0)]),
+        metric_values: FxHashMap::from_iter([("loc".into(), 50.0)]),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -526,7 +526,7 @@ fn contract_metric_gate_gt_does_not_fire_when_below() {
         source: "",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::from([("loc".into(), 50.0)]),
+        metric_values: FxHashMap::from_iter([("loc".into(), 50.0)]),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -553,7 +553,7 @@ fn contract_metric_gate_between_fires_in_range() {
         source: "",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::from([("cc".into(), 5.0)]),
+        metric_values: FxHashMap::from_iter([("cc".into(), 5.0)]),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -578,7 +578,7 @@ fn contract_metric_gate_missing_key_returns_allow() {
         source: "",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -614,7 +614,7 @@ fn contract_escalate_verdict_routes_to_auditor() {
         source: "DANGER code",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
@@ -651,7 +651,7 @@ fn contract_escalate_verdict_routes_to_human() {
         source: "DANGER code",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();
@@ -679,7 +679,7 @@ fn contract_evidence_grep_match_non_empty() {
         source: "DANGER code",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -710,7 +710,7 @@ fn contract_evidence_metric_gate_contains_value() {
         source: "",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::from([("cc".into(), 10.0)]),
+        metric_values: FxHashMap::from_iter([("cc".into(), 10.0)]),
     };
 
     let result = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -737,7 +737,7 @@ fn contract_determinism_100x() {
         source: "DANGER code here",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let first = e.evaluate(&rules_with_compiled, &context).unwrap();
@@ -800,7 +800,7 @@ fn contract_escalate_composite_routes_to_target() {
         source: "TODO FIXME",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&[(rule, composite)], &context).unwrap();
@@ -837,7 +837,7 @@ fn contract_escalate_routes_to_next_tier_rule() {
         source: "DANGER code",
         file_path: "src/main.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
 
     let result = e.evaluate(&[(rule, compiled)], &context).unwrap();

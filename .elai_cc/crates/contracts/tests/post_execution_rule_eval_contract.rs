@@ -27,9 +27,11 @@
 //! placement, Block-flips-passed semantics, Warn-preserves-passed semantics,
 //! and the absence path.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use elai_core::project_profile::ProjectProfile;
 use elai_orchestrator::{
@@ -180,7 +182,7 @@ fn contract_source_is_file_content_not_task_text() {
         source: task_text,
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
     let pre = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &pre_ctx);
     assert!(
@@ -267,7 +269,7 @@ fn contract_project_profile_constraints_round_trip() {
         languages: LanguageProfile {
             primary: Language::Rust,
             secondary: Vec::new(),
-            distribution: HashMap::new(),
+            distribution: BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         },
         frameworks: Vec::new(),

@@ -143,6 +143,17 @@ export type DrawerKey =
 
 // ------------------------------------------------------------------
 // Agent roles
+//
+// NOTE: this TS type uses kebab-case identifiers (`'prompt-engineer'`)
+// for historical reasons across 31+ usages. The Rust enum
+// `ipc_types::AgentRole` uses `#[serde(rename_all = "snake_case")]`,
+// so the wire format is snake_case (`'prompt_engineer'`).
+//
+// AgentRole intentionally stays at 8 variants because every consumer
+// (ModelRouting, mock-data, SettingsWindow.modelRouting Record) was
+// authored against this shape. The full 16-variant Rust enum (B-40
+// idea-framer, B-41 per-level auditors) is mirrored separately by
+// `RuntimeAgentRole` below for the multi-runtime adapter surface.
 // ------------------------------------------------------------------
 export type AgentRole =
   | 'executor'
@@ -153,6 +164,47 @@ export type AgentRole =
   | 'context-compiler'
   | 'memory-writer'
   | 'media-validator';
+
+/** Full 16-variant agent role list mirroring `ipc_types::AgentRole`.
+ *  Used by RuntimePanel + the `set_role_runtime` / `list_runtimes`
+ *  Tauri commands. Wire format on the Rust side is snake_case
+ *  (`'prompt_engineer'`); the resolver accepts both this kebab-case
+ *  spelling and the canonical snake_case spelling so the dashboard
+ *  can keep its historical formatting. */
+export type RuntimeAgentRole =
+  | AgentRole
+  // B-40 pre-decomposition framing roles.
+  | 'idea-framer'
+  | 'idea-critic'
+  // B-41 per-level auditor tiers.
+  | 'auditor-concepts'
+  | 'auditor-phases'
+  | 'auditor-steps'
+  | 'auditor-baby-steps'
+  | 'auditor-baby-step-detail'
+  // Plan-mode shim (sometimes surfaced separately by the orchestrator).
+  | 'plan-auditor';
+
+/** Stable iteration order matching `ipc_types::AgentRole`. RuntimePanel
+ *  uses this to populate the per-role dropdown. */
+export const RUNTIME_AGENT_ROLES: readonly RuntimeAgentRole[] = [
+  'executor',
+  'auditor',
+  'researcher',
+  'designer',
+  'prompt-engineer',
+  'context-compiler',
+  'memory-writer',
+  'media-validator',
+  'idea-framer',
+  'idea-critic',
+  'auditor-concepts',
+  'auditor-phases',
+  'auditor-steps',
+  'auditor-baby-steps',
+  'auditor-baby-step-detail',
+  'plan-auditor',
+] as const;
 
 export type AgentLifecycle = 'STARTING' | 'RUNNING' | 'IDLE' | 'DEAD' | 'RESTARTING';
 
@@ -1685,4 +1737,110 @@ export interface LevelAuditVerdictJson {
   verdict: AuditVerdict;
   respawned_once: boolean;
   cascade_to_parent: boolean;
+}
+
+// ------------------------------------------------------------------
+// B-37 Phase 4M — Multi-runtime backend abstraction.
+//
+// Mirrors `providers::runtime::RuntimeBackend` (snake_case via serde
+// rename_all="snake_case"), `RuntimeHealth` (tag="status",
+// rename_all="snake_case"), `RuntimeCapabilities`, plus the
+// dashboard-side DTOs `RuntimeInfo` / `TestReport` defined in
+// crates/dashboard-v2/src-tauri/src/commands.rs (B-37D wave-2A).
+//
+// Field names use snake_case to match the Rust serde wire format —
+// every other dashboard type follows the same convention (see
+// SidecarStatus, AmbiguityState, CosmosArtifactStatus).
+// ------------------------------------------------------------------
+
+/** Canonical snake_case identifier for a runtime backend. The 11
+ *  variants match `RuntimeBackend::canonical_name()` in
+ *  providers/src/runtime/types.rs. */
+export type RuntimeBackendId =
+  | 'sidecar'
+  | 'anthropic_api'
+  | 'claude_code'
+  | 'codex_cli'
+  | 'opencode'
+  | 'hermes'
+  | 'gemini_cli'
+  | 'kiro_cli'
+  | 'copilot_cli'
+  | 'ollama'
+  | 'vllm';
+
+/** Stable iteration order matching `RuntimeBackend::all()`. */
+export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
+  'sidecar',
+  'anthropic_api',
+  'claude_code',
+  'codex_cli',
+  'opencode',
+  'hermes',
+  'gemini_cli',
+  'kiro_cli',
+  'copilot_cli',
+  'ollama',
+  'vllm',
+] as const;
+
+/** Discriminator for the `RuntimeHealth` serde tag. */
+export type RuntimeHealthStatus = 'ready' | 'degraded' | 'unavailable';
+
+/** Mirror of `RuntimeHealth` (tag="status"). `reason` is populated
+ *  only for `degraded` and `unavailable`. */
+export interface RuntimeHealthJson {
+  status: RuntimeHealthStatus;
+  reason?: string;
+}
+
+/** Mirror of `providers::runtime::RuntimeCapabilities`. All-false is
+ *  the conservative default surfaced by stub adapters. */
+export interface RuntimeCapabilitiesJson {
+  supports_tools: boolean;
+  supports_streaming: boolean;
+  supports_vision: boolean;
+  max_context: number;
+  max_output: number;
+  json_schema_mode: boolean;
+  supports_prefill: boolean;
+  supports_caching: boolean;
+  native_thinking_budget: boolean;
+}
+
+/** Wire shape returned by the `list_runtimes` Tauri command.
+ *  `is_stub` distinguishes adapters whose `health_check` returns
+ *  `Unavailable` because the underlying CLI/runtime isn't wired yet
+ *  (B-37 stubs) from adapters that probed and failed at runtime. */
+export interface RuntimeInfo {
+  /** Display label; usually equal to `canonical_name`. */
+  backend: string;
+  /** Canonical snake_case identifier (RuntimeBackendId). */
+  canonical_name: RuntimeBackendId;
+  /** RuntimeAgentRoles currently routed to this backend. Empty when
+   *  no role is mapped to it. Uses the 16-variant superset
+   *  (RuntimeAgentRole) so B-40 idea-framer + B-41 per-level auditors
+   *  surface alongside the historical 8 AgentRole variants. */
+  roles: RuntimeAgentRole[];
+  /** Last-known health probe. Stub adapters report
+   *  `{ status: 'unavailable', reason: 'not implemented' }`. */
+  health: RuntimeHealthJson;
+  /** True when the adapter is a B-37 stub (not yet wired). */
+  is_stub: boolean;
+  /** Most recent probe round-trip in ms, if measured. */
+  latency_ms?: number | null;
+  /** Capability advertisement (optional — older builds may omit it). */
+  capabilities?: RuntimeCapabilitiesJson;
+}
+
+/** Wire shape returned by the `test_runtime` Tauri command.
+ *  `ok` is true only when health probed as `ready`. `error` carries
+ *  the `reason` string from `degraded` / `unavailable` outcomes (and
+ *  NEVER serialised SecretString — see providers/src/runtime/secret.rs). */
+export interface TestReport {
+  backend: RuntimeBackendId;
+  ok: boolean;
+  health: RuntimeHealthJson;
+  latency_ms: number;
+  error?: string;
 }

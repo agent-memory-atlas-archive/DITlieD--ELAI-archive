@@ -129,6 +129,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "runtime",
+        aliases: &[],
+        summary: "Show, list, set, or test a runtime backend (Phase 4M)",
+        argument_hint: Some("[list|test <backend>|set --role <name> --backend <name>|help]"),
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "memory",
         aliases: &[],
         summary: "Inspect loaded ELAI instruction memory files",
@@ -1142,6 +1149,18 @@ pub enum SlashCommand {
         action: Option<String>,
         target: Option<String>,
     },
+    /// B-37D Phase 4M: inspect, test, or set runtime-backend routing.
+    /// `action` is the lower-cased subcommand string (`"list"` | `"show"` |
+    /// `"test"` | `"set"` | `"help"`). `role` is set only by `set` (the
+    /// `AgentRole` snake_case identifier). `target` is the canonical backend
+    /// name used by `test` and `set`. Validation lives in the runtime_cmd
+    /// handler so the parser stays string-typed and dep-light, mirroring the
+    /// `Mcp` / `Mode` / `Reason` shape.
+    Runtime {
+        action: Option<String>,
+        role: Option<String>,
+        target: Option<String>,
+    },
     Memory,
     Init,
     Diff,
@@ -1391,6 +1410,7 @@ pub fn validate_slash_command_input(
             section: parse_config_section(&args)?,
         },
         "mcp" => parse_mcp_command(&args)?,
+        "runtime" => parse_runtime_command(&args)?,
         "memory" => {
             validate_no_args(command, &args)?;
             SlashCommand::Memory
@@ -1725,6 +1745,132 @@ fn parse_mcp_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseErr
     }
 }
 
+/// B-37D Phase 4M: parse `/runtime [list|show|test|set|help]`.
+///
+/// Recognized grammars (validation strictly enforced; bad shape returns
+/// usage_error so the user sees the Usage line plus help-detail):
+///
+/// - `/runtime`                 -> action=None (handler will render `list`)
+/// - `/runtime list`            -> action=Some("list")
+/// - `/runtime show`            -> action=Some("show")   (alias of list)
+/// - `/runtime test <backend>`  -> action=Some("test"), target=Some(backend)
+/// - `/runtime set --role <name> --backend <name>` -> action=Some("set"),
+///   role=Some(name), target=Some(backend)
+/// - `/runtime help`            -> action=Some("help")
+///
+/// String validation (canonical_name resolution, AgentRole parsing) lives
+/// in the runtime_cmd handler so the parser keeps zero hard deps on
+/// providers/orchestrator types.
+fn parse_runtime_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    match args {
+        [] => Ok(SlashCommand::Runtime {
+            action: None,
+            role: None,
+            target: None,
+        }),
+        ["list" | "show"] => Ok(SlashCommand::Runtime {
+            action: Some("list".to_string()),
+            role: None,
+            target: None,
+        }),
+        ["list" | "show", ..] => Err(usage_error("runtime list", "")),
+        ["test"] => Err(usage_error("runtime test", "<backend>")),
+        ["test", backend] => Ok(SlashCommand::Runtime {
+            action: Some("test".to_string()),
+            role: None,
+            target: Some((*backend).to_string()),
+        }),
+        ["test", ..] => Err(command_error(
+            "Unexpected arguments for /runtime test.",
+            "runtime",
+            "/runtime test <backend>",
+        )),
+        ["set", rest @ ..] => parse_runtime_set_flags(rest),
+        ["help" | "-h" | "--help"] => Ok(SlashCommand::Runtime {
+            action: Some("help".to_string()),
+            role: None,
+            target: None,
+        }),
+        [action, ..] => Err(command_error(
+            &format!(
+                "Unknown /runtime action '{action}'. Use list, test <backend>, set --role <name> --backend <name>, or help."
+            ),
+            "runtime",
+            "/runtime [list|test <backend>|set --role <name> --backend <name>|help]",
+        )),
+    }
+}
+
+/// B-37D Phase 4M: parse the `--role <name> --backend <name>` flag pair
+/// for `/runtime set`. Order-insensitive; both flags mandatory; rejects
+/// duplicate flags and missing values.
+fn parse_runtime_set_flags(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    let mut role: Option<String> = None;
+    let mut backend: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "--role" => {
+                if role.is_some() {
+                    return Err(command_error(
+                        "Duplicate --role flag for /runtime set.",
+                        "runtime",
+                        "/runtime set --role <name> --backend <name>",
+                    ));
+                }
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error("runtime set", "--role <name> --backend <name>"));
+                };
+                if value.starts_with("--") {
+                    return Err(command_error(
+                        "Missing value for --role.",
+                        "runtime",
+                        "/runtime set --role <name> --backend <name>",
+                    ));
+                }
+                role = Some((*value).to_string());
+                i += 2;
+            }
+            "--backend" => {
+                if backend.is_some() {
+                    return Err(command_error(
+                        "Duplicate --backend flag for /runtime set.",
+                        "runtime",
+                        "/runtime set --role <name> --backend <name>",
+                    ));
+                }
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error("runtime set", "--role <name> --backend <name>"));
+                };
+                if value.starts_with("--") {
+                    return Err(command_error(
+                        "Missing value for --backend.",
+                        "runtime",
+                        "/runtime set --role <name> --backend <name>",
+                    ));
+                }
+                backend = Some((*value).to_string());
+                i += 2;
+            }
+            other => {
+                return Err(command_error(
+                    &format!("Unknown argument '{other}' for /runtime set."),
+                    "runtime",
+                    "/runtime set --role <name> --backend <name>",
+                ));
+            }
+        }
+    }
+    match (role, backend) {
+        (Some(role), Some(backend)) => Ok(SlashCommand::Runtime {
+            action: Some("set".to_string()),
+            role: Some(role),
+            target: Some(backend),
+        }),
+        _ => Err(usage_error("runtime set", "--role <name> --backend <name>")),
+    }
+}
+
 fn parse_plugin_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
     match args {
         [] => Ok(SlashCommand::Plugins {
@@ -1971,7 +2117,9 @@ fn slash_command_category(name: &str) -> &'static str {
         }
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
-        "research" | "ask" | "explore" | "task" | "mode" | "entry_points" => "Routing & modes",
+        "research" | "ask" | "explore" | "task" | "mode" | "entry_points" | "runtime" => {
+            "Routing & modes"
+        }
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -3802,6 +3950,7 @@ pub fn handle_slash_command(
         | SlashCommand::Continue { .. }
         | SlashCommand::Config { .. }
         | SlashCommand::Mcp { .. }
+        | SlashCommand::Runtime { .. }
         | SlashCommand::Memory
         | SlashCommand::Init
         | SlashCommand::Diff
@@ -4311,7 +4460,8 @@ mod tests {
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|install <path>|help]"));
         // B-39 bumped 146 -> 147 (added /reason).
-        assert_eq!(slash_command_specs().len(), 147);
+        // B-37 bumped 147 -> 149 (added /runtime + 1 follow-on spec in Wave-1C).
+        assert_eq!(slash_command_specs().len(), 149);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

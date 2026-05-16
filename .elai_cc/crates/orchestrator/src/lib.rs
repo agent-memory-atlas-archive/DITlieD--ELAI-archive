@@ -141,6 +141,15 @@ pub mod self_mod_types;
 pub mod ssb;
 pub mod staged_eval;
 pub mod ssb_viewer;
+// B-37C Phase 4M.5 — per-AgentRole runtime backend mapping +
+// `RuntimeOrchestrator` with lazy adapter cache + fallback chain. The
+// production wiring into `task_runner.rs` is deferred to B-37D; the
+// library surface ships now so dashboards / CLI commands have a stable
+// target to program against.
+pub mod per_role_runtime;
+pub mod runtime_config;
+pub mod runtime_event_sink_ssb;
+pub mod runtime_orchestrator;
 // B-24 Phase 4I (Group C1): media validator skeleton. See
 // `media_validator/mod.rs` for the per-group rollout map.
 pub mod media_validator;
@@ -530,9 +539,24 @@ pub use ssb::{
     // contract tests can decode SSB rows without `::ssb::*` paths.
     IdeaFramingStartedPayload, ProjectClassClassifiedPayload,
     CriticRoundCompletePayload, IdeaFramedPayload, TradeoffCardEmittedPayload,
+    // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons. Re-exported
+    // so dashboard-v2 RuntimePanel + contract tests can decode rows
+    // without `::ssb::*` paths.
+    RuntimeFallbackPayload, RuntimeHealthChangedPayload,
+    CliSubprocessSpawnedPayload, CliSubprocessKilledPayload,
     // SSB schema version + string-to-enum helper (used by contract tests).
     SCHEMA_VERSION_PUBLIC, ssb_action_type_from_str_public,
 };
+// B-37C — multi-runtime orchestration public surfaces.
+pub use per_role_runtime::PerRoleRuntime;
+pub use runtime_config::{
+    default_fallback_chain, RuntimeConfig as RuntimeBackendConfig, RuntimeConfigPolicyView,
+};
+pub use runtime_orchestrator::{
+    CompleteOutcome, RuntimeOrchestrator, RuntimeOrchestratorError, RuntimeOrchestratorEvent,
+};
+pub use runtime_event_sink_ssb::{install_runtime_event_sink_ssb, SsbRuntimeEventSink};
+
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
     emit_profile_selected, profile_name, DefaultGenerationProfileSelector, DispatchRole,

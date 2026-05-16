@@ -11,7 +11,7 @@
 //!   * crates/orchestrator/src/dispatcher.rs build_dispatch_context surface
 //!   * crates/orchestrator/src/context_budget.rs ModelCapabilityProfile
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use elai_orchestrator::context_budget::ModelCapabilityProfile;
 use elai_orchestrator::dispatcher::{
@@ -32,7 +32,7 @@ fn contract_taskrunner_repl_compute_with_profile_parity() {
         fallback_url: None,
     };
     let tools: Vec<String> = vec!["edit".into(), "validate".into()];
-    let mut prio = HashMap::new();
+    let mut prio = BTreeMap::new();
     prio.insert("edit".to_string(), 1u8);
     prio.insert("validate".to_string(), 2u8);
 
@@ -91,7 +91,7 @@ fn contract_compute_with_profile_disallows_zeroed_stub_in_production() {
     let fsm = FsmState::Executing;
     let cfg = BackendConfig::default();
     let tools: Vec<String> = vec![];
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
     let profile = ModelCapabilityProfile::micro_7b_12gb();
     let phase_slot = PhaseSlot::default();
 

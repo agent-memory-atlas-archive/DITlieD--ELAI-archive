@@ -6,6 +6,7 @@
 
 use elai_core::{ResearchQuery, parse_source_tier_config};
 use elai_orchestrator::{FsmState, StubSearchBackend, run_research_pipeline};
+use elai_orchestrator::grounding_client::SyntheticGroundingClient;
 
 /// Minimal source-tiers TOML (mirrors EMPTY_TIER_TOML in cli/main.rs).
 const EMPTY_TIER_TOML: &str = "\
@@ -48,8 +49,9 @@ fn research_pipeline_stub_returns_no_usable_sources_error() {
     let tier_cfg = parse_source_tier_config(EMPTY_TIER_TOML)
         .expect("empty tier config must parse");
     let backend = StubSearchBackend::new();
+    let grounding = SyntheticGroundingClient::new();
 
-    let result = run_research_pipeline(&query, &tier_cfg, &backend);
+    let result = run_research_pipeline(&query, &tier_cfg, &backend, &grounding);
     assert!(result.is_err(), "stub backend with no results should produce an error");
 }
 

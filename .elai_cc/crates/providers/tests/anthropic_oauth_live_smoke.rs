@@ -83,12 +83,13 @@ async fn anthropic_oauth_live_smoke_after_patch_r1() {
     let usage_result = client.fetch_oauth_usage().await;
     match usage_result {
         Ok(usage) => {
+            let five_hour = usage.five_hour().unwrap_or(0.0);
+            let seven_day = usage.seven_day().unwrap_or(0.0);
             eprintln!(
-                "[step 2] OK five_hour={:.1}% seven_day={:.1}%",
-                usage.five_hour, usage.seven_day
+                "[step 2] OK five_hour={five_hour:.1}% seven_day={seven_day:.1}%"
             );
             assert!(
-                usage.five_hour <= 100.0 && usage.seven_day <= 100.0,
+                five_hour <= 100.0 && seven_day <= 100.0,
                 "usage percentages must be in [0,100]: got {usage:?}"
             );
             if usage.should_throttle(80.0) {

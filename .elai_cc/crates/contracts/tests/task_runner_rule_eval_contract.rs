@@ -24,8 +24,9 @@
 //   4. A BLOCK verdict short-circuits evaluation of remaining rules (first
 //      BLOCK stops the loop, matching the rules-engine spec in phase-3F).
 
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use elai_orchestrator::{
     load_seed_rules_from_dir, RuleEvaluator, TaskRunnerConfig, BABY_STEP_PRE_GATE_ACTION,
@@ -85,7 +86,7 @@ fn ctx<'a>(
         source,
         file_path,
         fsm_phase: phase,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     }
 }
 

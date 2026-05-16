@@ -19,8 +19,9 @@
 //!      `rule_violation` so the frontend can filter the two surfaces
 //!      independently.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use elai_orchestrator::{
     BABY_STEP_PRE_GATE_ACTION, RULE_VIOLATION_CATEGORY, RULE_VIOLATION_POST_CATEGORY, RuleEvaluator,
@@ -111,7 +112,7 @@ fn grep_rule_matches_file_content_but_not_task_text() {
         source: task_text,
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
     let pre_verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &pre_ctx);
     let pre_non_allow = non_allow(&pre_verdicts);
@@ -127,7 +128,7 @@ fn grep_rule_matches_file_content_but_not_task_text() {
         source: file_source,
         file_path: "src/foo.rs",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
     let post_verdicts =
         evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &post_ctx);
@@ -175,7 +176,7 @@ fn missing_file_is_skipped_not_a_violation() {
         source: "",
         file_path: "",
         fsm_phase: FsmPhaseBit::EXECUTING,
-        metric_values: HashMap::new(),
+        metric_values: FxHashMap::default(),
     };
     let verdicts = evaluator.evaluate_at_pre_gate(FsmPhaseBit::EXECUTING, &[], &ctx);
     let non_allow: Vec<_> = verdicts

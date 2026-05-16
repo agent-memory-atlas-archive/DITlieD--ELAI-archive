@@ -28,7 +28,7 @@ fn rust_profile() -> ProjectProfile {
         languages: LanguageProfile {
             primary: Language::Rust,
             secondary: Vec::new(),
-            distribution: HashMap::new(),
+            distribution: std::collections::BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         },
         frameworks: Vec::new(),
@@ -62,7 +62,7 @@ fn rust_profile() -> ProjectProfile {
             build: vec![BuildCommand {
                 cmd: "cargo build".to_owned(),
                 working_dir: PathBuf::from("."),
-                env: HashMap::new(),
+                env: std::collections::BTreeMap::new(),
                 timeout_s: 120,
                 scope: CommandScope::Full,
                 verified: false,
@@ -70,7 +70,7 @@ fn rust_profile() -> ProjectProfile {
             test: vec![BuildCommand {
                 cmd: "cargo test".to_owned(),
                 working_dir: PathBuf::from("."),
-                env: HashMap::new(),
+                env: std::collections::BTreeMap::new(),
                 timeout_s: 120,
                 scope: CommandScope::Full,
                 verified: false,

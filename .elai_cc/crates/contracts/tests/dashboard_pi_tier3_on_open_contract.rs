@@ -53,7 +53,7 @@ fn tier12_only_profile() -> ProjectProfile {
         languages: LanguageProfile {
             primary: Language::Rust,
             secondary: Vec::new(),
-            distribution: std::collections::HashMap::new(),
+            distribution: std::collections::BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         },
         // Axum (+0.5) + server entry point (+0.3) = 0.8, comfortably above

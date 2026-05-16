@@ -17,9 +17,10 @@
 //!   8. TieredAnalysis + ShortCoderCompression SSB action types round-trip
 //!      via msgpack + SQL CHECK constraint.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use rustc_hash::FxHashMap;
 
 use elai_core::clock::OsClock;
 use elai_knowledge::shortcoder::ShortCoder;
@@ -68,11 +69,11 @@ fn contract_t1_under_1ms_budget_small_file() {
     let t1 = T1Hook::new(Box::new(make_engine()), FsmPhaseBit::EXECUTING);
     let src = "fn hello() { println!(\"hi\"); let x = 3; }";
     // Warm up the regex LazyLocks + rule engine caches.
-    let _ = t1.evaluate("file_write", src, "src/lib.rs", HashMap::new());
+    let _ = t1.evaluate("file_write", src, "src/lib.rs", FxHashMap::default());
 
     let start = Instant::now();
     let verdict = t1
-        .evaluate("file_write", src, "src/lib.rs", HashMap::new())
+        .evaluate("file_write", src, "src/lib.rs", FxHashMap::default())
         .expect("t1 eval");
     let elapsed = start.elapsed();
     // Spec budget is <1ms. Give a 5x margin on CI VMs. The
@@ -270,7 +271,7 @@ fn contract_env_disable_t2_short_circuits() {
     // T2 verdict MUST be None.
     let broken = "fn broken( { not valid syntax";
     let result = tiered
-        .analyze("file_write", Some(broken), Some("src/x.rs"), HashMap::new())
+        .analyze("file_write", Some(broken), Some("src/x.rs"), FxHashMap::default())
         .expect("analyze");
     assert!(
         result.t2_verdict.is_none(),
@@ -294,7 +295,7 @@ fn contract_env_disable_t3_short_circuits() {
     // tiers produce a WARN.
     let src = "// TODO: fix\npub fn camelCase() {}\n";
     let result = tiered
-        .analyze("file_write", Some(src), Some("src/x.rs"), HashMap::new())
+        .analyze("file_write", Some(src), Some("src/x.rs"), FxHashMap::default())
         .expect("analyze");
     assert!(
         result.t3_verdict.is_none(),

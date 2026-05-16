@@ -169,7 +169,19 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 //   - per_level_audit_cascade (one row when a 2nd BLOCK forces parent cascade)
 // Producers: orchestrator::pipeline_tree_navigator (per-level audit hooks).
 // Additive only — no existing variants renumbered.
-const SCHEMA_VERSION: i64 = 45;
+//
+// B-37C (SCHEMA_VERSION 46): bumped 45 -> 46 for 4 new SSB action types
+// tied to the Phase 4M multi-runtime backend abstraction:
+//   - runtime_fallback         (per-step in RuntimeOrchestrator chain walk)
+//   - runtime_health_changed   (per backend health transition observed)
+//   - cli_subprocess_spawned   (per spawn() in CLI adapters)
+//   - cli_subprocess_killed    (per kill_and_wait() in CLI adapters)
+// Producers: orchestrator::runtime_orchestrator (fallback / health),
+//            providers::runtime::cli_common (subprocess spawn/kill).
+// The pinned-schema-version contract tests from B-34 (idea_framing_contract /
+// minified_chunked_ssb_contract) intentionally stay at 42 floor — they
+// guard against regressions, not floor advancement. Additive only.
+const SCHEMA_VERSION: i64 = 46;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -384,7 +396,14 @@ CREATE TABLE IF NOT EXISTS ssb (
         --                            bubbles up to the parent decomposer
         --                            (mode + tier + node_id + parent_tier).
         'per_level_audit_started', 'per_level_audit_verdict',
-        'per_level_audit_cascade'
+        'per_level_audit_cascade',
+        -- B-37C (SCHEMA_VERSION 46): multi-runtime backend abstraction beacons.
+        -- runtime_fallback         -- one row per fallback chain step (primary -> next backend)
+        -- runtime_health_changed   -- one row per per-backend RuntimeHealth transition
+        -- cli_subprocess_spawned   -- one row per CLI adapter subprocess spawn
+        -- cli_subprocess_killed    -- one row per CLI adapter subprocess kill / exit
+        'runtime_fallback', 'runtime_health_changed',
+        'cli_subprocess_spawned', 'cli_subprocess_killed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -922,6 +941,23 @@ pub enum SsbActionType {
     /// B-41 (SCHEMA_VERSION 45): per-level auditor cascade (2nd BLOCK at a
     /// tier forces parent-tier respawn). Carries a [`PerLevelAuditCascadePayload`].
     PerLevelAuditCascade,
+    /// B-37C (SCHEMA_VERSION 46): one row per runtime fallback chain step
+    /// emitted by the `RuntimeOrchestrator` when a primary backend is
+    /// unavailable / fails. Orthogonal to `ModelSwap` (which records model
+    /// substitution within a backend). Carries a [`RuntimeFallbackPayload`].
+    RuntimeFallback,
+    /// B-37C (SCHEMA_VERSION 46): one row per per-backend `RuntimeHealth`
+    /// transition observed by `RuntimeOrchestrator::health_snapshot`.
+    /// Carries a [`RuntimeHealthChangedPayload`].
+    RuntimeHealthChanged,
+    /// B-37C (SCHEMA_VERSION 46): one row per CLI adapter subprocess spawn
+    /// (B-37B cli_common::spawn). Carries a [`CliSubprocessSpawnedPayload`]
+    /// with the redacted argv (secrets stripped).
+    CliSubprocessSpawned,
+    /// B-37C (SCHEMA_VERSION 46): one row per CLI adapter subprocess kill
+    /// (B-37B cli_common::kill_and_wait, idle timeout, or natural exit).
+    /// Carries a [`CliSubprocessKilledPayload`] with exit code + reason.
+    CliSubprocessKilled,
 }
 
 impl SsbActionType {
@@ -1087,6 +1123,11 @@ impl SsbActionType {
             Self::PerLevelAuditStarted => "per_level_audit_started",
             Self::PerLevelAuditVerdict => "per_level_audit_verdict",
             Self::PerLevelAuditCascade => "per_level_audit_cascade",
+            // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons.
+            Self::RuntimeFallback => "runtime_fallback",
+            Self::RuntimeHealthChanged => "runtime_health_changed",
+            Self::CliSubprocessSpawned => "cli_subprocess_spawned",
+            Self::CliSubprocessKilled => "cli_subprocess_killed",
         }
     }
 }
@@ -1259,6 +1300,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "per_level_audit_started" => Ok(SsbActionType::PerLevelAuditStarted),
         "per_level_audit_verdict" => Ok(SsbActionType::PerLevelAuditVerdict),
         "per_level_audit_cascade" => Ok(SsbActionType::PerLevelAuditCascade),
+        // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons.
+        "runtime_fallback"        => Ok(SsbActionType::RuntimeFallback),
+        "runtime_health_changed"  => Ok(SsbActionType::RuntimeHealthChanged),
+        "cli_subprocess_spawned"  => Ok(SsbActionType::CliSubprocessSpawned),
+        "cli_subprocess_killed"   => Ok(SsbActionType::CliSubprocessKilled),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -3634,6 +3680,11 @@ pub enum SsbPayload {
     PerLevelAuditStarted(PerLevelAuditStartedPayload),
     PerLevelAuditVerdict(PerLevelAuditVerdictPayload),
     PerLevelAuditCascade(PerLevelAuditCascadePayload),
+    // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons.
+    RuntimeFallback(RuntimeFallbackPayload),
+    RuntimeHealthChanged(RuntimeHealthChangedPayload),
+    CliSubprocessSpawned(CliSubprocessSpawnedPayload),
+    CliSubprocessKilled(CliSubprocessKilledPayload),
 }
 
 impl SsbPayload {
@@ -3798,6 +3849,11 @@ impl SsbPayload {
             Self::PerLevelAuditStarted(_) => SsbActionType::PerLevelAuditStarted,
             Self::PerLevelAuditVerdict(_) => SsbActionType::PerLevelAuditVerdict,
             Self::PerLevelAuditCascade(_) => SsbActionType::PerLevelAuditCascade,
+            // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons.
+            Self::RuntimeFallback(_) => SsbActionType::RuntimeFallback,
+            Self::RuntimeHealthChanged(_) => SsbActionType::RuntimeHealthChanged,
+            Self::CliSubprocessSpawned(_) => SsbActionType::CliSubprocessSpawned,
+            Self::CliSubprocessKilled(_) => SsbActionType::CliSubprocessKilled,
         }
     }
 }
@@ -4947,6 +5003,67 @@ pub struct PerLevelAuditCascadePayload {
     pub parent_tier: String,
 }
 
+/// B-37C — payload for [`SsbActionType::RuntimeFallback`].
+///
+/// Emitted by `runtime_orchestrator::RuntimeOrchestrator::try_complete`
+/// once per fallback chain step. `role` is the agent role being served,
+/// `primary` the originally-configured backend, `attempted` the ordered
+/// list of backends tried so far (including the one this row records),
+/// `succeeded` is `Some(backend)` on a successful step or `None` for a
+/// failure step that triggers chain advancement. `reason` is a short
+/// human-readable explanation surfaced from the underlying
+/// `RuntimeAdapterError` or success message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeFallbackPayload {
+    pub role: elai_ipc_types::AgentRole,
+    pub primary: elai_providers::runtime::RuntimeBackend,
+    pub attempted: Vec<elai_providers::runtime::RuntimeBackend>,
+    pub succeeded: Option<elai_providers::runtime::RuntimeBackend>,
+    pub reason: String,
+}
+
+/// B-37C — payload for [`SsbActionType::RuntimeHealthChanged`].
+///
+/// Emitted by `runtime_orchestrator::RuntimeOrchestrator::health_snapshot`
+/// when a backend's `RuntimeHealth` transitions to a different variant
+/// vs the previously cached snapshot. Backed by the `RuntimeHealth`
+/// serde shape (tag = "status") so dashboard renderers can decode
+/// without reaching into the providers crate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeHealthChangedPayload {
+    pub backend: elai_providers::runtime::RuntimeBackend,
+    pub prev: elai_providers::runtime::RuntimeHealth,
+    pub next: elai_providers::runtime::RuntimeHealth,
+}
+
+/// B-37C — payload for [`SsbActionType::CliSubprocessSpawned`].
+///
+/// Emitted by CLI adapters (B-37B `cli_common::spawn`) on every
+/// `tokio::process::Command::spawn` call. `argv_redacted` MUST have
+/// secret arguments stripped — see `cli_common::redact_argv` — before
+/// the row is written; the writer is the last line of defence against
+/// accidental secret leakage into the SSB store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliSubprocessSpawnedPayload {
+    pub backend: elai_providers::runtime::RuntimeBackend,
+    pub pid: u32,
+    pub argv_redacted: Vec<String>,
+}
+
+/// B-37C — payload for [`SsbActionType::CliSubprocessKilled`].
+///
+/// Emitted by CLI adapters on subprocess termination — either
+/// natural exit, `cli_common::kill_and_wait` (idle/startup timeout),
+/// or user-driven cancel. `exit_code` is None when the process was
+/// signalled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliSubprocessKilledPayload {
+    pub backend: elai_providers::runtime::RuntimeBackend,
+    pub pid: u32,
+    pub exit_code: Option<i32>,
+    pub reason: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -5920,6 +6037,43 @@ mod tests {
                     tier: "baby_step".into(),
                     node_id: 0,
                     parent_tier: "baby_step".into(),
+                },
+            ),
+            // B-37C (SCHEMA_VERSION 46): multi-runtime backend beacons.
+            SsbActionType::RuntimeFallback => SsbPayload::RuntimeFallback(
+                RuntimeFallbackPayload {
+                    role: elai_ipc_types::AgentRole::Executor,
+                    primary: elai_providers::runtime::RuntimeBackend::Sidecar,
+                    attempted: vec![
+                        elai_providers::runtime::RuntimeBackend::Sidecar,
+                        elai_providers::runtime::RuntimeBackend::AnthropicApi,
+                    ],
+                    succeeded: Some(elai_providers::runtime::RuntimeBackend::AnthropicApi),
+                    reason: "sidecar unavailable, anthropic_api succeeded".into(),
+                },
+            ),
+            SsbActionType::RuntimeHealthChanged => SsbPayload::RuntimeHealthChanged(
+                RuntimeHealthChangedPayload {
+                    backend: elai_providers::runtime::RuntimeBackend::Sidecar,
+                    prev: elai_providers::runtime::RuntimeHealth::Unavailable {
+                        reason: "first observation".into(),
+                    },
+                    next: elai_providers::runtime::RuntimeHealth::Ready,
+                },
+            ),
+            SsbActionType::CliSubprocessSpawned => SsbPayload::CliSubprocessSpawned(
+                CliSubprocessSpawnedPayload {
+                    backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
+                    pid: 12345,
+                    argv_redacted: vec!["claude".into(), "-p".into(), "[REDACTED]".into()],
+                },
+            ),
+            SsbActionType::CliSubprocessKilled => SsbPayload::CliSubprocessKilled(
+                CliSubprocessKilledPayload {
+                    backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
+                    pid: 12345,
+                    exit_code: Some(0),
+                    reason: "normal exit".into(),
                 },
             ),
         };
@@ -7229,6 +7383,35 @@ mod tests {
                 node_id: 42,
                 parent_tier: "baby_step".into(),
             }),
+            // B-37C (SCHEMA_VERSION 46) — multi-runtime backend beacons.
+            SsbPayload::RuntimeFallback(RuntimeFallbackPayload {
+                role: elai_ipc_types::AgentRole::Executor,
+                primary: elai_providers::runtime::RuntimeBackend::Sidecar,
+                attempted: vec![
+                    elai_providers::runtime::RuntimeBackend::Sidecar,
+                    elai_providers::runtime::RuntimeBackend::AnthropicApi,
+                ],
+                succeeded: Some(elai_providers::runtime::RuntimeBackend::AnthropicApi),
+                reason: "sidecar unavailable, fell through to anthropic_api".into(),
+            }),
+            SsbPayload::RuntimeHealthChanged(RuntimeHealthChangedPayload {
+                backend: elai_providers::runtime::RuntimeBackend::Sidecar,
+                prev: elai_providers::runtime::RuntimeHealth::Unavailable {
+                    reason: "first observation".into(),
+                },
+                next: elai_providers::runtime::RuntimeHealth::Ready,
+            }),
+            SsbPayload::CliSubprocessSpawned(CliSubprocessSpawnedPayload {
+                backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
+                pid: 12345,
+                argv_redacted: vec!["claude".into(), "-p".into(), "[REDACTED]".into()],
+            }),
+            SsbPayload::CliSubprocessKilled(CliSubprocessKilledPayload {
+                backend: elai_providers::runtime::RuntimeBackend::ClaudeCode,
+                pid: 12345,
+                exit_code: Some(0),
+                reason: "normal exit".into(),
+            }),
         ]
     }
 
@@ -7240,8 +7423,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            79,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade)",
+            83,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade) + 4 B-37C (RuntimeFallback/RuntimeHealthChanged/CliSubprocessSpawned/CliSubprocessKilled)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

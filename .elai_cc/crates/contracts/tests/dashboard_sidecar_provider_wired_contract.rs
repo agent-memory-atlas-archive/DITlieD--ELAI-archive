@@ -173,7 +173,7 @@ fn contract_build_dispatch_context_with_dashboard_config() {
         "bash".into(),
         "web_search".into(),
     ];
-    let priority: HashMap<String, u8> = HashMap::new();
+    let priority: std::collections::BTreeMap<String, u8> = std::collections::BTreeMap::new();
 
     // Planning allows read_file + web_search; blocks write/bash. The exact
     // filter is orchestrator-internal — the contract only requires that

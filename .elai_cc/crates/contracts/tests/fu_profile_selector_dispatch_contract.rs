@@ -8,7 +8,7 @@
 //!     `PhaseSlot.profile_hint`.
 //!   * The `ProfileSelected` SSB row is registered and round-trips.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use elai_orchestrator::{
     build_dispatch_context, BackendConfig, BackendMode, DefaultGenerationProfileSelector,
@@ -36,7 +36,7 @@ fn contract_dispatch_context_records_profile_from_phase_slot() {
         max_tools_local: 4,
         fallback_url: None,
     };
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
     let tools: Vec<String> = vec!["read_file".into()];
     let selector = DefaultGenerationProfileSelector;
     let profile = selector.select(DispatchRole::Repair, FsmState::Executing);

@@ -30,6 +30,7 @@ semver = "1"
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 syntect = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "time", "sync"] }
 toml.workspace = true

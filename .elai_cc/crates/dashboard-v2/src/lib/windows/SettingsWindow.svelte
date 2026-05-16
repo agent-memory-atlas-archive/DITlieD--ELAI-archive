@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Select, SegmentedControl, Scrollbar, UnwiredNote } from '$lib/ui';
+  import RuntimePanel from '$lib/components/RuntimePanel.svelte';
   import { session } from '$lib/state/session.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import * as stub from '$lib/api/stub';
@@ -715,6 +716,16 @@
           />
         </div>
       </div>
+    </section>
+
+    <!-- Section: RUNTIME BACKENDS (B-37 Phase 4M)
+         11-backend RuntimeAdapter table + per-role backend picker.
+         Panel polls list_runtimes every 10s and surfaces stub badges
+         for adapters still pending B-37C wiring (Ollama/Vllm) plus the
+         seven CLI ports whose binaries may not be on PATH. -->
+    <section class="s-section">
+      <div class="s-header">runtime backends</div>
+      <RuntimePanel />
     </section>
 
     <!-- Section: CLOUD PANEL (B-27) — privacy + air-gapped + redaction profile.

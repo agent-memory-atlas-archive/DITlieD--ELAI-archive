@@ -205,7 +205,6 @@ fn scaffold_profile() -> elai_core::project_profile::ProjectProfile {
         ErrorHandlingProfile, Language, LanguageProfile, ModuleOrganization, NamingConventions,
         ProjectProfile, TestProfile, PROFILE_SCHEMA_VERSION,
     };
-    use std::collections::HashMap;
     ProjectProfile {
         schema_version: PROFILE_SCHEMA_VERSION,
         generated_at: "2026-04-19T00:00:00Z".to_owned(),
@@ -220,7 +219,7 @@ fn scaffold_profile() -> elai_core::project_profile::ProjectProfile {
         languages: LanguageProfile {
             primary: Language::Rust,
             secondary: Vec::new(),
-            distribution: HashMap::new(),
+            distribution: std::collections::BTreeMap::new(),
             tree_sitter_coverage: 0.0,
         },
         frameworks: Vec::new(),

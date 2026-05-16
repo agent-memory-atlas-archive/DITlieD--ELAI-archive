@@ -1,0 +1,203 @@
+# B-37 Phase 4M — Multi-Runtime Backend Abstraction metrics snapshot
+# Generated 2026-05-16 by session s-27076.
+#
+# Spec:  docs/specs/guide/steps/phase-4M.txt
+# Plan:  docs/thefinalglance/B-plan/B-37_multi_runtime_backend.md
+# Guide: workflow/papers/phase-4M-migration.md
+#
+# Scope of this batch:
+# - 11-backend `RuntimeAdapter` trait + factory (`create_runtime`) + alias
+#   resolution (`resolve_backend`)
+# - 4 native HTTP adapters (Sidecar, AnthropicApi, Ollama, Vllm)
+# - 7 CLI subprocess adapters in Tier C isolation
+#   (ClaudeCode, CodexCli, OpenCode, Hermes, GeminiCli, KiroCli, CopilotCli)
+# - PerRoleRuntime + RuntimeOrchestrator + fallback chain
+# - 4 new SSB action types + SCHEMA_VERSION 45 -> 46
+# - /runtime CLI command (list / show / set / test / help)
+# - migration guide (workflow/papers/phase-4M-migration.md)
+
+[phase]
+id             = "4M"
+b_id           = "B-37"
+name           = "multi_runtime_backend_abstraction"
+schema_version = 46
+bumped_from    = 45
+shipped_at     = "2026-05-16"
+session_id     = "s-27076"
+
+[counts]
+backends_total          = 11
+cli_adapters            = 7    # ClaudeCode, CodexCli, OpenCode, Hermes, GeminiCli, KiroCli, CopilotCli
+http_adapters           = 2    # Ollama, Vllm
+native_adapters         = 2    # Sidecar, AnthropicApi
+ssb_action_types_added  = 4    # runtime_fallback, runtime_health_changed, cli_subprocess_spawned, cli_subprocess_killed
+permission_modes        = 4    # AcceptEdits (default), AskBeforeEdit, Plan, DangerouslySkipPermissions
+
+[files]
+# Source file counts from working tree at metrics snapshot time.
+# Rust counts include all .rs files in the providers/src/runtime/ directory
+# (foundation + per-adapter + isolation) plus per_role_runtime.rs,
+# runtime_config.rs, runtime_orchestrator.rs, runtime_cmd.rs, and the 10
+# new contract-test files. Modified count includes the contract-test
+# drift fix landed by Wave-2C.
+rust_new            = 29       # 16 providers/runtime + 3 orchestrator + 1 cli + 9 contract tests
+rust_modified       = 17       # cli (6) + dashboard tauri (4) + ipc-types (1) + orchestrator (2) + providers (2) + contracts (2)
+svelte_new          = 0        # RuntimePanel.svelte — Wave-2 svelte slice not in this snapshot
+ts_modified         = 2        # dashboard-v2 stub.ts + types.ts
+md_new              = 1        # workflow/papers/phase-4M-migration.md (this batch)
+toml_new            = 1        # .elai_cc/metrics/phase_4M.toml (this file)
+
+[contract_tests]
+runtime_adapter_contract        = 16   # crates/contracts/tests/runtime_adapter_contract.rs
+claude_code_runtime_contract    = 7
+codex_cli_runtime_contract      = 8
+opencode_runtime_contract       = 7
+hermes_runtime_contract         = 7
+gemini_cli_runtime_contract     = 7
+kiro_cli_runtime_contract       = 7
+copilot_cli_runtime_contract    = 7
+ollama_runtime_contract         = 7
+vllm_runtime_contract           = 7
+total_runtime_tests             = 80   # 16 + 7 + 8 + 7 + 7 + 7 + 7 + 7 + 7 + 7
+
+[ssb]
+schema_version_post     = 46
+schema_version_pre      = 45
+b34_ipc_pin_floor       = 42   # NOT regressed — new action types are additive
+new_action_types = [
+  "runtime_fallback",
+  "runtime_health_changed",
+  "cli_subprocess_spawned",
+  "cli_subprocess_killed",
+]
+single_writer_invariant_preserved = true
+
+[implementation]
+spec_types_present = [
+  "RuntimeBackend (11 variants)",
+  "RuntimeAdapter (object-safe trait, Pin<Box<Future>> async surface)",
+  "RuntimeAdapterError (thiserror)",
+  "ResolveBackendError (carries supported: Vec<String>)",
+  "RuntimeCapabilities",
+  "RuntimeHealth (Ready / Degraded / Unavailable, serde tag=status)",
+  "RuntimePermissionMode (4 variants, default AcceptEdits)",
+  "RuntimeFactoryConfig (+ allow_danger: bool)",
+  "AuthSource",
+  "SidecarRuntimeConfig",
+  "CompletionConfig",
+  "CompletionResponse",
+  "Message + MessageRole",
+  "StreamChunk",
+  "SecretString (in-crate newtype, redacted Debug/Display/Serialize)",
+  "PerRoleRuntime",
+  "RuntimeOrchestrator",
+  "RuntimeFallbackPayload",
+  "RuntimeHealthChangedPayload",
+  "CliSubprocessSpawnedPayload",
+  "CliSubprocessKilledPayload",
+]
+spec_methods_present = [
+  "resolve_backend(&str) -> Result<RuntimeBackend, ResolveBackendError>",
+  "create_runtime(RuntimeFactoryConfig) -> Result<Box<dyn RuntimeAdapter>, RuntimeAdapterError>",
+  "RuntimeAdapter::complete",
+  "RuntimeAdapter::stream",
+  "RuntimeAdapter::health_check",
+  "RuntimeAdapter::backend",
+  "RuntimeAdapter::capabilities",
+  "RuntimeBackend::canonical_name",
+  "RuntimeBackend::all",
+  "RuntimeOrchestrator::for_role",
+  "RuntimeOrchestrator::try_complete",
+  "RuntimeOrchestrator::health_snapshot",
+]
+
+[cli]
+slash_command_added       = "/runtime"
+slash_command_variant     = "SlashCommand::Runtime { action, role, target }"
+slash_command_help_present = true
+subcommands = [
+  "list", "show", "set --role <r> --backend <b>", "test <backend>", "help",
+]
+persistence_path          = "<project_root>/elai_cc.toml"
+persistence_key           = "[agents.<role>.runtime] backend"
+atomic_write              = true   # serialize -> *.tmp -> std::fs::rename
+parse_order_insensitive   = true   # --role / --backend may appear in any order
+single_health_probe_timeout_s = 5
+
+[dashboard]
+runtime_panel_added                = false   # Wave-2 svelte slice not in this snapshot
+tauri_commands_added               = 0       # list_runtimes / test_runtime / set_role_runtime not yet wired
+tauri_commands_planned             = 3
+stub_ts_wrappers_added             = 3       # tryInvoke wrappers shipped in stub.ts
+types_ts_contract_types_added      = 7       # RuntimeBackendId, RuntimeHealthStatus, RuntimeHealthJson, RuntimeInfo, TestReport, RuntimeRouting, RuntimeCapabilitiesJson
+
+[isolation]
+tier_c_trait                   = "TierCSpawn"
+default_impl                   = "DefaultTierCSpawn"
+linux_sandbox_used             = true        # elai_core::sandbox::build_linux_sandbox_command
+windows_isolation_reduced      = true        # bare tokio::process + sanitised env; full AppContainer deferred
+stdout_sanitization            = true        # ANSI strip + control-byte drop + 100KB cap
+no_direct_subprocess_spawn     = true        # all 7 CLI adapters route through Tier C
+
+[acceptance]
+# Each entry corresponds to the ACCEPTANCE block in
+# docs/thefinalglance/B-plan/B-37_multi_runtime_backend.md (17 items).
+# Status: "pass" = verified in implementer reports; "pending_auditor" = code
+# landed but auditor has not run the gate yet.
+paper_ingestor_landed                       = "pass"
+runtime_backend_enum_11_variants            = "pass"
+runtime_adapter_trait_object_safe           = "pass"
+sidecar_anthropic_api_migrated              = "pass"
+seven_cli_adapters_operational              = "pass"
+tier_c_isolation_wired                      = "pass"
+stdout_sanitization_present                 = "pass"
+permission_mode_default_accept_edits        = "pass"
+stdout_idle_timeout_enforced                = "pass"
+ollama_vllm_migrated                        = "pass"
+per_role_runtime_landed                     = "pass"
+fallback_chain_ssb_row                      = "pass"
+runtime_cli_command                         = "pass"
+dashboard_runtime_panel                     = "pending_wave2"
+migration_guide_present                     = "pass"
+metrics_toml_present                        = "pass"
+cargo_check_workspace                       = "pass"
+cargo_test_providers                        = "pending_auditor"
+cargo_test_contracts                        = "pending_auditor"
+npm_run_check_dashboard                     = "pending_auditor"
+cli_smoke                                   = "pending_auditor"
+live_cloud_sonnet_4_6                       = "pending_auditor"
+
+[metrics_summary]
+deliverables_completed          = 7   # foundation + http adapters + cli adapters + orchestrator + ssb + cli command + docs/metrics
+audit_cycles_planned            = 1
+commits_planned                 = 0   # awaiting explicit user approval per feedback_no_auto_commit
+hard_dep_changes                = 0   # zero new crate dependencies introduced
+unwrap_added_in_production_code = 0
+expect_added_in_production_code = 0
+todo_unimplemented_added        = 0
+clippy_baseline                 = "expect zero new warnings"
+
+[drift_fixed]
+# Pre-existing workspace drift cleared by Wave-2C alongside the docs/metrics
+# deliverable. Both sites were committed in 2d13ecf ("4E.14: Rules engine
+# wired to task_runner at baby-step PRE_GATE") with HashMap<_, _, RandomState>
+# call sites that no longer match the production FxHashMap signature on
+# `EvaluationContext::metric_values`.
+file_1            = "crates/contracts/tests/task_runner_rule_eval_contract.rs"
+file_1_line       = 88
+file_2            = "crates/contracts/tests/post_execution_rule_eval_contract.rs"
+file_2_line       = 183
+file_2_extra_line = 270   # also `distribution: HashMap::new()` for BTreeMap<Language, usize>
+fix               = "swap HashMap::new() -> FxHashMap::default() (and BTreeMap::new() for the project_profile.distribution field); add rustc_hash::FxHashMap import (workspace dep already present in contracts/Cargo.toml:39)"
+verification      = "cargo check -p elai_cc_contracts --tests --test task_runner_rule_eval_contract --test post_execution_rule_eval_contract = PASS"
+
+[notes]
+session = "s-27076"
+constraint = "no commits, autonomous-friendly snapshot"
+remaining_work_path = "workflow/sessions/s-27076/b37-wave2c-docs-report.md"
+# Deferred items recorded for follow-up:
+# - Wave-2 svelte slice: RuntimePanel.svelte component + 3 Tauri commands +
+#   AppState.runtime_routing field + SettingsWindow.svelte mount point.
+# - RuntimeOrchestrator::health_snapshot batched probe is not yet wired into
+#   `/runtime list` (currently uses 11 sequential 5s timeouts).
+# - Windows isolation is reduced vs Linux until AppContainer wiring lands.

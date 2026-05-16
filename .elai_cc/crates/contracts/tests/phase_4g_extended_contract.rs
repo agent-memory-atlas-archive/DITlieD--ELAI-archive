@@ -38,6 +38,9 @@ fn all_pass() -> AutonomousEvidence {
         dkg_and_changelog_present: true,
         // B-40: 7th check vacuous-default true for non-FRAMING contexts.
         framing_converged: true,
+        // B-41: 5 per-level audit zero-blocks checks; vacuous-default true
+        // for non-per-level contexts (Default impl flips these to true).
+        ..AutonomousEvidence::default()
     }
 }
 

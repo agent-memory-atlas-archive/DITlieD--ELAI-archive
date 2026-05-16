@@ -6672,3 +6672,433 @@ pub async fn get_per_level_verdicts(
 ) -> Result<Vec<LevelAuditVerdictJson>, String> {
     Ok(Vec::new())
 }
+
+// ---------------------------------------------------------------------------
+// B-37D — MULTI-RUNTIME BACKEND ABSTRACTION (Phase 4M)
+// ---------------------------------------------------------------------------
+//
+// Three Tauri commands surface the multi-runtime layer to the dashboard:
+//
+//   - `list_runtimes()`             -> per-backend RuntimeInfo (canonical name,
+//                                      roles mapped to it, health, stub flag,
+//                                      latency_ms).
+//   - `test_runtime(backend)`       -> live health-probe report (ok, latency,
+//                                      optional error). NEVER serializes
+//                                      SecretString content (B-37 locked
+//                                      decision DECISION-3).
+//   - `set_role_runtime(role, b)`   -> mutate AppState's RuntimeOrchestrator
+//                                      mapping AND atomically persist to
+//                                      `elai_cc.toml` (mirrors CLI
+//                                      runtime_cmd.rs::handle_runtime_set).
+//
+// Mirroring DECISION-2: stub adapters return RuntimeAdapterError::NotImplemented
+// from complete; their health_check yields Unavailable with reason carrying
+// "not implemented" / "stub". We classify those rows as `stub=true` so the
+// frontend renders the "stub adapter" pill distinct from a missing-binary
+// row.
+//
+// IPC v2 envelope: these DTOs are command request/response shapes (NOT SSB
+// rows), so no SCHEMA_VERSION field is added (B-34 floor at 42 unchanged).
+// JSON keys use snake_case to mirror serde rename_all="snake_case" on
+// RuntimeBackend + RuntimeHealth in providers::runtime::types — consistent
+// with LevelAuditVerdictJson above.
+
+/// Snake-case identifiers for every `AgentRole` discriminant in
+/// `elai_ipc_types`. Used by `set_role_runtime` for argument validation and
+/// by `list_runtimes` to render role labels. Mirrors `runtime_cmd.rs`'s
+/// SUPPORTED_ROLES list (same source of truth, copied to avoid a path-dep
+/// on the cli crate from dashboard-v2).
+const RUNTIME_SUPPORTED_ROLES: &[&str] = &[
+    "executor",
+    "auditor",
+    "researcher",
+    "designer",
+    "prompt_engineer",
+    "context_compiler",
+    "memory_writer",
+    "media_validator",
+    "idea_framer",
+    "idea_critic",
+    "auditor_concepts",
+    "auditor_phases",
+    "auditor_steps",
+    "auditor_baby_steps",
+    "auditor_baby_step_detail",
+];
+
+/// Per-backend snapshot returned by `list_runtimes`. Field names use
+/// snake_case to match the rest of the dashboard DTO surface (e.g.
+/// LevelAuditVerdictJson above) and the serde rename_all="snake_case" on
+/// `RuntimeBackend`/`RuntimeHealth` in providers::runtime.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RuntimeInfo {
+    /// Canonical backend identifier (snake_case, e.g. "sidecar",
+    /// "anthropic_api"). Round-trips through `resolve_backend`.
+    pub backend: String,
+    /// AgentRole canonical names (snake_case) currently routed to this
+    /// backend. Empty when no role maps here.
+    pub roles: Vec<String>,
+    /// One of "healthy" / "degraded" / "unavailable". Derived from the
+    /// `RuntimeHealth` tag.
+    pub health: String,
+    /// Reason string from `Degraded` / `Unavailable`. `None` for `Ready`.
+    pub health_reason: Option<String>,
+    /// True when the backend is a stub adapter — `Unavailable` with a
+    /// reason mentioning "not implemented" / "stub" (per B-37 DECISION-8).
+    pub stub: bool,
+    /// Health-probe latency in milliseconds (None if the snapshot path did
+    /// not measure per-row latency).
+    pub latency_ms: Option<u32>,
+}
+
+/// Live health-probe report returned by `test_runtime`.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TestReport {
+    /// True iff the backend reports `RuntimeHealth::Ready` within the
+    /// 5-second timeout. `Degraded` and `Unavailable` both yield false.
+    pub ok: bool,
+    /// Elapsed wall-clock milliseconds from probe start to outcome.
+    pub latency_ms: u32,
+    /// Failure reason. `None` on success. SecretString contents are
+    /// redacted to "<redacted>" before populating this field per
+    /// B-37 DECISION-3 (SecretString never serialized).
+    pub error: Option<String>,
+}
+
+/// List every runtime backend with its current role-mapping, health,
+/// stub-flag, and probe latency. Per-backend probes are wrapped in a 5s
+/// timeout so a hung adapter cannot stall the UI.
+///
+/// Mirrors the CLI's `/runtime list` table (cli/src/runtime_cmd.rs) but
+/// returns structured JSON for the dashboard. The orchestrator's
+/// `health_snapshot()` is the canonical source for the health column;
+/// per-row latency is measured inline because `health_snapshot` does not
+/// expose timings (and adding that surface would change the public API).
+#[tauri::command]
+pub async fn list_runtimes(
+    state: State<'_, AppState>,
+) -> Result<Vec<RuntimeInfo>, String> {
+    use elai_providers::runtime::{RuntimeBackend, RuntimeHealth};
+
+    // Snapshot the per-role mapping under the orchestrator's config lock.
+    let cfg = state.runtime_orchestrator.snapshot_config().await;
+    let per_role = cfg.per_role.list(); // Vec<(AgentRole, RuntimeBackend)>
+
+    // Pre-compute roles per backend so the dashboard can render the
+    // "this backend serves these roles" column without a second pass.
+    let mut roles_by_backend: BTreeMap<RuntimeBackend, Vec<String>> = BTreeMap::new();
+    for (role, backend) in per_role {
+        // AgentRole serializes as snake_case via serde rename_all; round
+        // through serde_json to get the canonical string without depending
+        // on a FromStr impl that ipc-types does not provide.
+        let role_label = serde_json::to_value(&role)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| format!("{role:?}").to_ascii_lowercase());
+        roles_by_backend.entry(backend).or_default().push(role_label);
+    }
+
+    // Use RuntimeOrchestrator::health_snapshot to probe every backend's
+    // cached/lazy-instantiated adapter in one shot. The snapshot covers
+    // every backend in `cfg.factory_cfg` (defaulted to all 11). We
+    // measure total elapsed and report it on every row — health_snapshot
+    // does not expose per-row timings and we want to avoid an additional
+    // sequential probe loop (11 separate 5s timeouts).
+    let probe_start = std::time::Instant::now();
+    let snapshot = state.runtime_orchestrator.health_snapshot().await;
+    let total_latency_ms = u32::try_from(probe_start.elapsed().as_millis()).ok();
+    let by_backend: BTreeMap<RuntimeBackend, RuntimeHealth> = snapshot.into_iter().collect();
+
+    // Iterate `RuntimeBackend::all()` so the rendered order is stable
+    // regardless of BTreeMap key ordering inside the snapshot.
+    let mut out: Vec<RuntimeInfo> = Vec::with_capacity(RuntimeBackend::all().len());
+    for backend in RuntimeBackend::all().iter().copied() {
+        let health = by_backend
+            .get(&backend)
+            .cloned()
+            .unwrap_or_else(|| RuntimeHealth::Unavailable {
+                reason: "backend missing from snapshot".to_string(),
+            });
+
+        let (health_label, health_reason, is_stub) = match &health {
+            RuntimeHealth::Ready => ("healthy".to_string(), None, false),
+            RuntimeHealth::Degraded { reason } => {
+                ("degraded".to_string(), Some(reason.clone()), false)
+            }
+            RuntimeHealth::Unavailable { reason } => {
+                let stub_marker = reason.contains("not implemented") || reason.contains("stub");
+                ("unavailable".to_string(), Some(reason.clone()), stub_marker)
+            }
+        };
+
+        let roles = roles_by_backend
+            .get(&backend)
+            .cloned()
+            .unwrap_or_default();
+
+        out.push(RuntimeInfo {
+            backend: backend.canonical_name().to_string(),
+            roles,
+            health: health_label,
+            health_reason,
+            stub: is_stub,
+            latency_ms: total_latency_ms,
+        });
+    }
+    Ok(out)
+}
+
+/// Probe a single backend's health by canonical name (or any alias
+/// accepted by `resolve_backend`). Wraps the adapter's `health_check`
+/// future in a 5-second timeout so a hung CLI subprocess cannot stall
+/// the dashboard UI.
+///
+/// SECURITY (locked decision DECISION-3): the returned `TestReport.error`
+/// field MUST NOT carry SecretString contents. Adapter constructor
+/// failures (e.g. AnthropicApiRuntime missing auth) surface
+/// `RuntimeAdapterError::MissingField` whose Display trait does not
+/// reveal the secret value — but we still pass every error string
+/// through `redact_secret_substrings` defensively before emitting.
+#[tauri::command]
+pub async fn test_runtime(backend: String) -> Result<TestReport, String> {
+    use elai_providers::runtime::{
+        create_runtime, resolve_backend, RuntimeFactoryConfig, RuntimeHealth,
+    };
+
+    let probe_start = std::time::Instant::now();
+    let resolved = match resolve_backend(&backend) {
+        Ok(b) => b,
+        Err(err) => {
+            return Ok(TestReport {
+                ok: false,
+                latency_ms: u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX),
+                error: Some(redact_secret_substrings(&err.to_string())),
+            });
+        }
+    };
+
+    let cfg = RuntimeFactoryConfig::for_backend(resolved);
+    let adapter = match create_runtime(cfg) {
+        Ok(a) => a,
+        Err(err) => {
+            return Ok(TestReport {
+                ok: false,
+                latency_ms: u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX),
+                error: Some(redact_secret_substrings(&err.to_string())),
+            });
+        }
+    };
+
+    let health = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        adapter.health_check(),
+    )
+    .await
+    .unwrap_or(RuntimeHealth::Unavailable {
+        reason: "health probe timeout (>5s)".to_string(),
+    });
+
+    let latency_ms = u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    let (ok, error) = match health {
+        RuntimeHealth::Ready => (true, None),
+        RuntimeHealth::Degraded { reason } => {
+            (false, Some(redact_secret_substrings(&reason)))
+        }
+        RuntimeHealth::Unavailable { reason } => {
+            (false, Some(redact_secret_substrings(&reason)))
+        }
+    };
+    Ok(TestReport { ok, latency_ms, error })
+}
+
+/// Persist a new (`AgentRole` -> `RuntimeBackend`) mapping. Mutates the
+/// in-memory `RuntimeOrchestrator` config and atomically rewrites
+/// `<project_root>/elai_cc.toml` so the choice survives a restart.
+///
+/// The atomic-write pattern mirrors
+/// `cli/src/runtime_cmd.rs::atomic_write` — write to `<path>.tmp`, then
+/// rename. This avoids partial writes on Windows + Linux.
+#[tauri::command]
+pub async fn set_role_runtime(
+    state: State<'_, AppState>,
+    role: String,
+    backend: String,
+) -> Result<(), String> {
+    use elai_providers::runtime::resolve_backend;
+
+    // Validate + canonicalise role.
+    let role_normalised = role.trim().to_ascii_lowercase();
+    if !RUNTIME_SUPPORTED_ROLES.iter().any(|r| *r == role_normalised) {
+        return Err(format!(
+            "unknown agent role '{role_normalised}'. Supported: {}",
+            RUNTIME_SUPPORTED_ROLES.join(", ")
+        ));
+    }
+    let role_canonical = role_normalised; // already snake_case
+
+    // Validate + canonicalise backend (any documented alias is accepted).
+    let resolved = resolve_backend(&backend).map_err(|e| {
+        format!(
+            "unknown backend '{}'. Supported: {}",
+            e.candidate,
+            e.supported.join(", ")
+        )
+    })?;
+    let backend_canonical = resolved.canonical_name();
+
+    // Parse role string back into AgentRole via serde so we don't depend
+    // on a FromStr impl (ipc-types::AgentRole does not provide one). The
+    // wire format is snake_case per `#[serde(rename_all = "snake_case")]`.
+    let role_enum: elai_ipc_types::AgentRole =
+        serde_json::from_value(serde_json::Value::String(role_canonical.clone()))
+            .map_err(|e| format!("failed to parse role '{role_canonical}': {e}"))?;
+
+    // Mutate the orchestrator's RuntimeBackendConfig in place. We clone,
+    // override, then `set_config` so the adapter cache is cleared (per
+    // RuntimeOrchestrator::set_config docs — adapters for the old mapping
+    // would otherwise still be cached).
+    let mut cfg = state.runtime_orchestrator.snapshot_config().await;
+    cfg.per_role.set(role_enum, resolved);
+    state.runtime_orchestrator.set_config(cfg).await;
+
+    // Persist to elai_cc.toml. Failure to write is reported back to the
+    // frontend so the user can retry; the in-memory mapping has already
+    // been updated either way.
+    let project_root = state.project_root_snapshot();
+    persist_role_runtime_toml(&project_root, &role_canonical, backend_canonical)
+        .map_err(|e| format!("persist elai_cc.toml: {e}"))?;
+    Ok(())
+}
+
+/// Atomic-write helper for `set_role_runtime`. Mirrors
+/// `cli/src/runtime_cmd.rs::atomic_write` + `set_role_runtime_in_toml`.
+/// Reads the TOML, mutates `[agents.<role>.runtime] backend = "<name>"`
+/// (creating intermediate tables), serialises back, writes via `<tmp>`
+/// + rename.
+fn persist_role_runtime_toml(
+    project_root: &std::path::Path,
+    role_canonical: &str,
+    backend_canonical: &str,
+) -> Result<(), String> {
+    let config_path = project_root.join("elai_cc.toml");
+    let original = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc: toml::Value = if original.trim().is_empty() {
+        toml::Value::Table(toml::value::Table::new())
+    } else {
+        toml::from_str(&original)
+            .map_err(|e| format!("parse {}: {e}", config_path.display()))?
+    };
+    set_role_runtime_in_toml_doc(&mut doc, role_canonical, backend_canonical);
+    let rendered = toml::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+
+    let tmp_path = {
+        let mut p = config_path.clone();
+        let new_name = match p.file_name() {
+            Some(name) => {
+                let mut s = name.to_os_string();
+                s.push(".tmp");
+                s
+            }
+            None => return Err(format!("config path has no filename: {}", p.display())),
+        };
+        p.set_file_name(new_name);
+        p
+    };
+    std::fs::write(&tmp_path, rendered.as_bytes())
+        .map_err(|e| format!("temp write {}: {e}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &config_path).map_err(|e| {
+        format!(
+            "rename {} -> {}: {e}",
+            tmp_path.display(),
+            config_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Walk `[agents.<role>.runtime]` tables, creating intermediate tables
+/// as needed. Mirrors the CLI helper of the same shape in runtime_cmd.rs;
+/// duplicated (small, ~30 LOC) because the CLI crate is not a dependency
+/// of dashboard-v2.
+fn set_role_runtime_in_toml_doc(doc: &mut toml::Value, role: &str, backend_name: &str) {
+    let Some(root_table) = doc.as_table_mut() else {
+        // Caller passed a non-table root. Rewrite into a fresh table.
+        *doc = toml::Value::Table(toml::value::Table::new());
+        if let Some(t) = doc.as_table_mut() {
+            install_runtime_backend(t, role, backend_name);
+        }
+        return;
+    };
+    install_runtime_backend(root_table, role, backend_name);
+}
+
+fn install_runtime_backend(
+    root: &mut toml::value::Table,
+    role: &str,
+    backend_name: &str,
+) {
+    let agents = root
+        .entry("agents".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    if !agents.is_table() {
+        *agents = toml::Value::Table(toml::value::Table::new());
+    }
+    let Some(agents_table) = agents.as_table_mut() else {
+        return;
+    };
+
+    let role_entry = agents_table
+        .entry(role.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    if !role_entry.is_table() {
+        *role_entry = toml::Value::Table(toml::value::Table::new());
+    }
+    let Some(role_table) = role_entry.as_table_mut() else {
+        return;
+    };
+
+    let runtime_entry = role_table
+        .entry("runtime".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    if !runtime_entry.is_table() {
+        *runtime_entry = toml::Value::Table(toml::value::Table::new());
+    }
+    let Some(runtime_table) = runtime_entry.as_table_mut() else {
+        return;
+    };
+
+    runtime_table.insert(
+        "backend".to_string(),
+        toml::Value::String(backend_name.to_string()),
+    );
+}
+
+/// Defensive redaction. SecretString's Display impl already renders
+/// "<redacted: N bytes>", so an accidental `{secret}` in an error
+/// message never leaks the value. This helper exists as a defence in
+/// depth: should an adapter error string ever concatenate the inner
+/// SecretString (via `.expose_secret()`), we replace common bearer-
+/// token / API-key prefixes with "<redacted>". Per B-37 DECISION-3 the
+/// adapter layer is the primary line of defence; this is the secondary.
+fn redact_secret_substrings(input: &str) -> String {
+    // Anthropic OAuth bearer tokens start with `sk-ant-` (api key) or
+    // a long base64-like string for OAuth. Replace any obvious token
+    // shape inline. Conservative: never alter normal prose.
+    let mut out = String::with_capacity(input.len());
+    for token in input.split_whitespace() {
+        let candidate = token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.' | ';' | ':'));
+        let looks_like_key = candidate.starts_with("sk-ant-")
+            || candidate.starts_with("sk-")
+            || (candidate.len() >= 32
+                && candidate.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'
+                }));
+        if looks_like_key {
+            out.push_str("<redacted>");
+        } else {
+            out.push_str(token);
+        }
+        out.push(' ');
+    }
+    out.trim_end().to_string()
+}

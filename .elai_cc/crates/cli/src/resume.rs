@@ -610,6 +610,29 @@ pub(crate) fn run_resume_command(
                 message: Some(handle_mcp_slash_command(args.as_deref(), &cwd)?),
             })
         }
+        SlashCommand::Runtime {
+            action,
+            role,
+            target,
+        } => {
+            let cwd = env::current_dir()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let message = match runtime.block_on(crate::runtime_cmd::handle_runtime_slash_command(
+                action.as_deref(),
+                role.as_deref(),
+                target.as_deref(),
+                &cwd,
+            )) {
+                Ok(out) => out,
+                Err(e) => format!("[FAIL] {e}"),
+            };
+            Ok(ResumeCommandOutcome {
+                session: session.clone(),
+                message: Some(message),
+            })
+        }
         SlashCommand::Memory => Ok(ResumeCommandOutcome {
             session: session.clone(),
             message: Some(render_memory_report()?),

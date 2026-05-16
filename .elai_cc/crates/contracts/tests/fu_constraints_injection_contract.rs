@@ -9,7 +9,7 @@
 //!   * Empty constraints yields no CONSTRAINTS block (non-injection is the
 //!     pre-batch-fu default).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use elai_orchestrator::{
     build_dispatch_context, BackendConfig, BackendMode, ConstraintsInjectedPayload, PhaseSlot,
@@ -55,7 +55,7 @@ fn contract_constraints_injected_payload_roundtrips() {
 #[test]
 fn contract_constraints_block_rendered_in_phase_content() {
     let c = cfg();
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
     let tools: Vec<String> = vec!["read_file".into()];
     let slot = PhaseSlot {
         goal: String::new(),
@@ -75,7 +75,7 @@ fn contract_constraints_block_rendered_in_phase_content() {
 #[test]
 fn contract_empty_constraints_produce_no_block() {
     let c = cfg();
-    let prio: HashMap<String, u8> = HashMap::new();
+    let prio: BTreeMap<String, u8> = BTreeMap::new();
     let tools: Vec<String> = vec!["read_file".into()];
     let slot = PhaseSlot {
         goal: "goal only".into(),

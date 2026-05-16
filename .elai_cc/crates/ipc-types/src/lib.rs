@@ -41,7 +41,11 @@ use uuid::Uuid;
 // IPC_PROTOCOL_VERSION stays at 2: same soft-compat rationale as B-40 (snake_case
 // string variants, no IpcMessageType tag change).
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// B-37C: added PartialOrd + Ord so AgentRole can key a deterministic
+// BTreeMap (PerRoleRuntime). Soft-compat: ordering is by declaration
+// position and does not affect wire format (Serialize/Deserialize go
+// via the `rename_all = "snake_case"` string tags, not the discriminant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
     Executor,

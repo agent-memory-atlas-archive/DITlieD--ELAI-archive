@@ -263,6 +263,16 @@ pub fn run() {
             // B-41 — Per-level auditor verdicts feed for AuditTimelineWindow.
             // cross-lang-pair: dashboard/tauri/api
             commands::get_per_level_verdicts,
+            // B-37D — MULTI-RUNTIME BACKEND ABSTRACTION (Phase 4M, Wave-2A).
+            // list_runtimes / test_runtime / set_role_runtime surface the
+            // 11-backend RuntimeOrchestrator (per-role mapping + fallback
+            // chain + per-backend health). set_role_runtime atomically
+            // persists to elai_cc.toml via the same shape used by the CLI
+            // `/runtime set` handler (cli/src/runtime_cmd.rs).
+            // cross-lang-pair: dashboard/tauri/api
+            commands::list_runtimes,
+            commands::test_runtime,
+            commands::set_role_runtime,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

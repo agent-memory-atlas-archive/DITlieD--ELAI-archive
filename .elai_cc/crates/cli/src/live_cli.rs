@@ -1981,6 +1981,18 @@ impl LiveCli {
                 Self::print_mcp(args.as_deref(), CliOutputFormat::Text)?;
                 false
             }
+            SlashCommand::Runtime {
+                action,
+                role,
+                target,
+            } => {
+                Self::print_runtime(
+                    action.as_deref(),
+                    role.as_deref(),
+                    target.as_deref(),
+                )?;
+                false
+            }
             SlashCommand::Memory => {
                 Self::print_memory()?;
                 false
@@ -2772,6 +2784,30 @@ impl LiveCli {
                 "{}",
                 serde_json::to_string_pretty(&handle_mcp_slash_command_json(args, &cwd)?)?
             ),
+        }
+        Ok(())
+    }
+
+    /// B-37D Phase 4M: render `/runtime` output to stdout. The handler
+    /// is async because the `test` and `list` paths await
+    /// `RuntimeAdapter::health_check` futures; we spin up a Tokio
+    /// current-thread runtime locally to keep this helper callable
+    /// from the sync REPL turn loop.
+    pub(crate) fn print_runtime(
+        action: Option<&str>,
+        role: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<(), anyhow::Error> {
+        let cwd = env::current_dir()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let result = runtime.block_on(crate::runtime_cmd::handle_runtime_slash_command(
+            action, role, target, &cwd,
+        ));
+        match result {
+            Ok(out) => println!("{out}"),
+            Err(e) => println!("[FAIL] {e}"),
         }
         Ok(())
     }

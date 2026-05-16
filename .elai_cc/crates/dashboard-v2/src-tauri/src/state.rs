@@ -161,8 +161,13 @@ pub enum ReviewDecision {
 use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::sessions_dir_path;
 use elai_orchestrator::{
-    CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Layer1aProcessor, Ssb, SsbConfig,
-    SsbViewer,
+    CancelHandle, DefaultFeasibilityProber, FeasibilityProber, Layer1aProcessor,
+    // B-37D Phase 4M (Wave-2A): the multi-runtime backend abstraction. Lives
+    // in AppState so the 3 Tauri commands (list_runtimes / test_runtime /
+    // set_role_runtime) operate against the same per-role mapping the
+    // (future) task_runner consults. Default config maps the 15 AgentRoles
+    // per B-37-decisions.md DECISION-8.
+    RuntimeBackendConfig, RuntimeOrchestrator, Ssb, SsbConfig, SsbViewer,
     // Phase A1b: chokepoint helpers (moved from cli::runtime_builder into
     // elai_orchestrator::runtime_setup) used by the Tauri setup() callback
     // to spawn start_task_runner with both processors as Some(...).
@@ -310,6 +315,24 @@ pub struct AppState {
     /// take a brief lock + clone the Arc out, never holding the guard
     /// across `.await`.
     pub layer1a_processor: Arc<Mutex<Option<Arc<dyn Layer1aProcessor + Send + Sync>>>>,
+    /// B-37D Phase 4M (Wave-2A): per-role runtime orchestrator. Owns the
+    /// PerRoleRuntime mapping (15 AgentRoles -> RuntimeBackend), the
+    /// fallback chain, and per-backend factory configs. Constructed at
+    /// startup with `RuntimeBackendConfig::default()` (per-role defaults
+    /// per B-37 plan lines 104-110 — designer/auditor/researcher/
+    /// media_validator and the 5 B-41 per-level auditor siblings map to
+    /// AnthropicApi; executor/context_compiler/memory_writer/
+    /// prompt_engineer/idea_framer/idea_critic map to Sidecar).
+    ///
+    /// Mutated by the `set_role_runtime` Tauri command (commands.rs).
+    /// Read by `list_runtimes` (per-backend health snapshot) and
+    /// indirectly by future task_runner integration (Wave-3, out of
+    /// B-37D scope).
+    ///
+    /// Wrapped in `Arc` so command handlers can clone the handle cheaply.
+    /// `RuntimeOrchestrator` is internally `RwLock`-guarded, so no
+    /// outer `Mutex` is needed at this layer.
+    pub runtime_orchestrator: Arc<RuntimeOrchestrator>,
 }
 
 impl AppState {
@@ -456,6 +479,15 @@ impl AppState {
             // RuntimeWiring resolves; apply_proposal_from_user / reject_proposal
             // read it via layer1a_processor_snapshot().
             layer1a_processor: Arc::new(Mutex::new(None)),
+            // B-37D Wave-2A: per-role runtime orchestrator. Default config
+            // pre-populates factory_cfg for every backend and the
+            // PerRoleRuntime map for every AgentRole, so `list_runtimes` /
+            // `set_role_runtime` work immediately on a fresh install.
+            // The orchestrator does not instantiate adapters until first
+            // use (lazy cache), so this constructor remains cheap.
+            runtime_orchestrator: Arc::new(RuntimeOrchestrator::new(
+                RuntimeBackendConfig::default(),
+            )),
         }
     }
 

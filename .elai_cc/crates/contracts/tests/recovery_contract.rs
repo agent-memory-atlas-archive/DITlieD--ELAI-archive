@@ -48,6 +48,8 @@ fn test_handle(scratch_dir: &std::path::Path) -> AgentHandle {
         sandbox_handle: None,
         child_process: None,
         socket_path: None,
+        appcontainer_profile_id: None,
+        allowed_paths: vec![],
     }
 }
 

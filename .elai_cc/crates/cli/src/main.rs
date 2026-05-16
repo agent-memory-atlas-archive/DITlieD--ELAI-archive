@@ -32,6 +32,7 @@ mod resume;
 mod run_subcommand;
 mod runtime_builder;
 mod runtime_client;
+mod runtime_cmd;
 mod tool_executor;
 mod tool_formatting;
 
@@ -228,6 +229,11 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::BootstrapPlan { output_format } => auth::print_bootstrap_plan(output_format)?,
         CliAction::Agents { args, output_format } => LiveCli::print_agents(args.as_deref(), output_format)?,
         CliAction::Mcp { args, output_format } => LiveCli::print_mcp(args.as_deref(), output_format)?,
+        CliAction::Runtime { action, role, target, output_format: _ } => {
+            // B-37D Phase 4M: text-only output for now; JSON shaping deferred to
+            // when RuntimeOrchestrator::health_snapshot lands (Wave-1B).
+            LiveCli::print_runtime(action.as_deref(), role.as_deref(), target.as_deref())?;
+        }
         CliAction::Skills { args, output_format } => LiveCli::print_skills(args.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt { cwd, date, output_format } => print_system_prompt(cwd, date, output_format)?,
         CliAction::Version { output_format } => print_version(output_format)?,
