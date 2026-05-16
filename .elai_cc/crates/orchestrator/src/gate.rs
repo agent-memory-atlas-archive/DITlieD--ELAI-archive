@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 
 /// Human decision at an interactive gate pause point.
 /// Source: architecture-overview.txt §6 L215 (approve, modify, reject, redirect).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// B-38: `Eq` removed because `TransitionContext.ambiguity_score: Option<AmbiguityScore>`
+// contains `f32` fields. No existing call sites compare `GateDecision` for
+// equality with `Eq` semantics (only `PartialEq` is used).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GateDecision {
     /// Advance FSM to the proposed target state.
     Approve,

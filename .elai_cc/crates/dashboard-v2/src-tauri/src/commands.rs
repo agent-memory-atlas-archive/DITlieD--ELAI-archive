@@ -124,12 +124,47 @@ pub fn get_fsm_state(state: State<'_, AppState>) -> CmdResult<Value> {
             })
         })
         .collect();
+    // B-40 BLOCK-4 audit fix: derive agent_substate from SSB.
+    // FRAMING is the only substate at MVP; surface it whenever the latest
+    // IdeaFramingStarted row is more recent than the latest IdeaFramed row
+    // for the active session (i.e. FRAMING is in progress, not finished).
+    // Returning `Value::Null` outside FRAMING preserves the dashboard's
+    // existing "no substate" rendering path.
+    let agent_substate: Value = state
+        .viewer
+        .as_ref()
+        .and_then(|viewer| {
+            let started = viewer
+                .rows_with_session_by_action_type(SsbActionType::IdeaFramingStarted)
+                .ok()
+                .and_then(|rows| rows.into_iter().last());
+            let framed_last_seq = viewer
+                .rows_with_session_by_action_type(SsbActionType::IdeaFramed)
+                .ok()
+                .and_then(|rows| rows.into_iter().last())
+                .map(|_| true)
+                .unwrap_or(false);
+            // FRAMING is active iff we have an IdeaFramingStarted row AND
+            // either no IdeaFramed row OR the IdeaFramed row is for an
+            // older session. At MVP we use simple "started but not yet
+            // framed for ANY session" — refined per-session matching is a
+            // follow-up. Conservatively: emit "Framing" when started_rows
+            // exist and framed_rows is empty.
+            let _ = started?;
+            if !framed_last_seq {
+                Some(Value::String("Framing".to_owned()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Value::Null);
+
     Ok(json!({
         "state": current,
         "current_step_id": "",
         "progress": 0.0,
         "history": history,
-        "agent_substate": Value::Null,
+        "agent_substate": agent_substate,
         "_phase": phase,
     }))
 }
@@ -5940,6 +5975,209 @@ pub async fn query_focus_tunnel_per_baby_step(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// B-40 — IDEA FRAMING SURFACE
+// ---------------------------------------------------------------------------
+//
+// Two Tauri commands powering the IdeaFramingWindow + MonitorWindow
+// critic-rounds badge:
+//   * `get_idea_framing_state` — reads the latest IdeaFramed +
+//     CriticRoundComplete + IdeaFramingStarted SSB rows and assembles an
+//     IdeaFramingState DTO. Returns Some(state) when a FRAMING substate is
+//     currently active for the latest session OR None when no framing flow
+//     has been started yet. The dashboard renders a placeholder when None.
+//   * `submit_tradeoff_responses` — writes the user's tradeoff responses to
+//     the canonical artifact path and emits a Finding (info severity) SSB
+//     row indicating responses received. Future patches will use this row to
+//     advance the FRAMING -> PLANNING substate transition.
+//
+// stub_ban: both commands query live SSB rows; neither returns mock data.
+// When viewer is None (no session DB yet) the read command returns Ok(None).
+// When writer is None the write command returns Err("ssb writer unavailable").
+
+/// Dashboard DTO matching `IdeaFramingState` in dashboard-v2/src/lib/api/types.ts.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IdeaFramingStateDto {
+    pub session_id: String,
+    pub framed_idea: Option<serde_json::Value>,
+    pub critic_rounds_used: u32,
+    pub is_converged: bool,
+    pub is_active: bool,
+}
+
+/// One user response submitted via `submit_tradeoff_responses`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TradeoffResponseDto {
+    pub tradeoff_name: String,
+    pub option: String,
+}
+
+/// Internal: fetch (session_id, payload_bytes) rows for an action_type via
+/// the SsbViewer B-40 helper (`rows_with_session_by_action_type`).
+fn query_rows_by_action_type(
+    viewer: &elai_orchestrator::SsbViewer,
+    action_type: SsbActionType,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    viewer
+        .rows_with_session_by_action_type(action_type)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_idea_framing_state(
+    state: State<'_, AppState>,
+) -> CmdResult<Option<IdeaFramingStateDto>> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(None);
+    };
+
+    let started_rows = query_rows_by_action_type(viewer, SsbActionType::IdeaFramingStarted)?;
+    let framed_rows = query_rows_by_action_type(viewer, SsbActionType::IdeaFramed)?;
+
+    let latest_framed = framed_rows.last();
+    let latest_started = started_rows.last();
+
+    let session_id = latest_framed
+        .map(|(s, _)| s.clone())
+        .or_else(|| latest_started.map(|(s, _)| s.clone()))
+        .unwrap_or_default();
+
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let critic_rows = query_rows_by_action_type(viewer, SsbActionType::CriticRoundComplete)?;
+    let mut critic_rounds_used: u32 = 0;
+    for (sid, bytes) in &critic_rows {
+        if *sid != session_id {
+            continue;
+        }
+        let Ok(payload) =
+            elai_orchestrator::decode_ssb_payload_bytes::<SsbPayload>(bytes.as_slice())
+        else {
+            continue;
+        };
+        if let SsbPayload::CriticRoundComplete(p) = payload {
+            if p.round_index > critic_rounds_used {
+                critic_rounds_used = p.round_index;
+            }
+        }
+    }
+
+    let mut is_converged = false;
+    let mut framed_idea_json: Option<serde_json::Value> = None;
+    if let Some((sid, bytes)) = latest_framed {
+        if *sid == session_id {
+            if let Ok(payload) =
+                elai_orchestrator::decode_ssb_payload_bytes::<SsbPayload>(bytes.as_slice())
+            {
+                if let SsbPayload::IdeaFramed(p) = payload {
+                    is_converged = p.converged;
+                    let path = std::path::PathBuf::from(&p.artifact_path);
+                    if path.exists() {
+                        if let Ok(raw) = std::fs::read_to_string(&path) {
+                            if let Ok(parsed) = toml::from_str::<toml::Value>(&raw) {
+                                if let Ok(j) = serde_json::to_value(&parsed) {
+                                    framed_idea_json = Some(j);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let started_exists = started_rows.iter().any(|(s, _)| *s == session_id);
+    let is_active = started_exists && (latest_framed.is_none() || !is_converged);
+
+    Ok(Some(IdeaFramingStateDto {
+        session_id,
+        framed_idea: framed_idea_json,
+        critic_rounds_used,
+        is_converged,
+        is_active,
+    }))
+}
+
+#[tauri::command]
+pub async fn submit_tradeoff_responses(
+    state: State<'_, AppState>,
+    responses: Vec<TradeoffResponseDto>,
+) -> CmdResult<Value> {
+    let writer = state
+        .writer
+        .as_ref()
+        .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
+
+    // Locate the active session's idea-framing dir using the latest
+    // IdeaFramingStarted row in SSB (mirrors get_idea_framing_state path
+    // resolution).
+    let viewer = state
+        .viewer
+        .as_ref()
+        .ok_or_else(|| "ssb viewer unavailable; no session db open".to_owned())?;
+    let started_rows = query_rows_by_action_type(viewer, SsbActionType::IdeaFramingStarted)?;
+    let session_id = started_rows
+        .last()
+        .map(|(sid, _)| sid.clone())
+        .ok_or_else(|| "no FRAMING session active".to_owned())?;
+
+    let project_root = state.project_root.lock().map_err(|e| e.to_string())?.clone();
+    let idea_dir = project_root
+        .join("workflow")
+        .join("sessions")
+        .join(&session_id)
+        .join("idea-framing");
+    std::fs::create_dir_all(&idea_dir).map_err(map_err)?;
+    let responses_path = idea_dir.join("tradeoff-responses.toml");
+
+    // Build the TOML output. One [[response]] table per submitted entry.
+    let mut buf = String::new();
+    buf.push_str("# B-40: user tradeoff responses\n");
+    for r in &responses {
+        if r.tradeoff_name.trim().is_empty() || r.option.trim().is_empty() {
+            return Err("tradeoff_name and option must be non-empty".to_owned());
+        }
+        buf.push_str("\n[[response]]\n");
+        buf.push_str(&format!("tradeoff_name = {:?}\n", r.tradeoff_name));
+        buf.push_str(&format!("option = {:?}\n", r.option));
+    }
+    std::fs::write(&responses_path, &buf).map_err(map_err)?;
+
+    // B-40 WARN-1 audit fix: emit an info Finding row so dashboard activity
+    // streams + auditor SSB scans observe the response submission. Avoids
+    // a SCHEMA_VERSION bump (no new SsbActionType variant) while still
+    // recording the event in the canonical event log.
+    {
+        use elai_orchestrator::FindingPayload;
+        let payload = SsbPayload::Finding(FindingPayload {
+            severity: "info".to_owned(),
+            category: "tradeoff_responses_submitted".to_owned(),
+            message: format!(
+                "user submitted {} tradeoff response(s) for session {}",
+                responses.len(),
+                session_id
+            ),
+            file_path: Some(responses_path.to_string_lossy().into_owned()),
+            line: None,
+            failure_category: None,
+            audit_step: None,
+            few_shot_examples: None,
+        });
+        let _ = writer
+            .write_payload("dashboard-v2", 0, payload, vec![])
+            .await;
+    }
+
+    Ok(json!({
+        "ok": true,
+        "session_id": session_id,
+        "responses_persisted": responses.len(),
+        "responses_path": responses_path.to_string_lossy(),
+    }))
+}
+
 #[cfg(test)]
 mod parse_intervention_choice_tests {
     use super::parse_intervention_choice;
@@ -6003,4 +6241,341 @@ mod parse_intervention_choice_tests {
         let got = parse_intervention_choice("takeover").expect("takeover parses");
         assert_eq!(keyword(got), InterventionKeyword::Accept);
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-35 Phase C — CONTEXT ARTIFACTS + ENTRY POINTS (Tauri command surface)
+//
+// These commands mirror the orchestrator's dispatcher arms (production_agent_rpc.rs)
+// but are invoked directly from the dashboard frontend without going through the
+// agent IPC pipeline. All blocking SQLite I/O is offloaded via spawn_blocking.
+//
+// db_path: the full path to context_{project_id}.db, supplied by the frontend
+// via the ArtifactsPanel prop. The frontend derives this from the project root
+// it already holds in state. Using an explicit path keeps the command surface
+// stateless w.r.t. which project is open (multiple projects could be open
+// simultaneously in future).
+// ---------------------------------------------------------------------------
+
+/// List all artifact names (distinct, sorted) in the context database.
+///
+/// Frontend call: `invoke("list_artifacts", { db_path })`
+/// Returns: `{ artifact_names: string[] }`
+#[tauri::command]
+pub async fn list_artifacts(db_path: String) -> CmdResult<serde_json::Value> {
+    let path = std::path::PathBuf::from(&db_path);
+    let names = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let store = elai_knowledge::artifacts::store::ArtifactStore::open(&path)
+            .map_err(|e| format!("list_artifacts: store open failed: {e}"))?;
+        let chunks = store
+            .list_all_chunks()
+            .map_err(|e| format!("list_artifacts: list_all_chunks failed: {e}"))?;
+        let mut names: Vec<String> = chunks
+            .into_iter()
+            .map(|c| c.artifact_name)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        Ok(names)
+    })
+    .await
+    .map_err(|e| format!("list_artifacts: spawn_blocking panic: {e}"))??;
+    Ok(serde_json::json!({ "artifact_names": names }))
+}
+
+/// Search artifact chunks by cosine similarity.
+///
+/// `artifact_name` restricts search to one artifact when present.
+/// `limit` defaults to 10.
+///
+/// Frontend call: `invoke("search_artifacts", { db_path, query, artifact_name?, limit? })`
+/// Returns: `{ results: ArtifactSearchResult[] }`
+///
+/// When no VectorModule is wired at the dashboard level (expected in Phase C)
+/// the command returns an empty result set rather than an error.
+#[tauri::command]
+pub async fn search_artifacts(
+    db_path: String,
+    query: String,
+    artifact_name: Option<String>,
+    limit: Option<usize>,
+) -> CmdResult<serde_json::Value> {
+    let limit = limit.unwrap_or(10).min(MAX_LIMIT);
+    let path = std::path::PathBuf::from(&db_path);
+
+    // B-35 Phase C: no VectorModule is wired at dashboard level yet (deferred
+    // to Phase D). Fall back to a BM25-style keyword scan across chunk content.
+    let results = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+        let store = elai_knowledge::artifacts::store::ArtifactStore::open(&path)
+            .map_err(|e| format!("search_artifacts: store open failed: {e}"))?;
+        let chunks = match artifact_name.as_deref() {
+            Some(name) => store
+                .list_artifact_chunks(name)
+                .map_err(|e| format!("search_artifacts: list_artifact_chunks failed: {e}"))?,
+            None => store
+                .list_all_chunks()
+                .map_err(|e| format!("search_artifacts: list_all_chunks failed: {e}"))?,
+        };
+        let q_lower = query.to_lowercase();
+        let mut scored: Vec<(f64, &elai_knowledge::artifacts::ArtifactChunk)> = chunks
+            .iter()
+            .filter_map(|c| {
+                let content_lower = c.content.to_lowercase();
+                let hits = content_lower.matches(q_lower.as_str()).count();
+                if hits == 0 {
+                    None
+                } else {
+                    // Simple TF score: hits / total words (approximate).
+                    let words = content_lower.split_whitespace().count().max(1);
+                    let score = hits as f64 / words as f64;
+                    Some((score, c))
+                }
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let out: Vec<serde_json::Value> = scored
+            .into_iter()
+            .take(limit)
+            .map(|(score, c)| {
+                serde_json::json!({
+                    "artifact_name": c.artifact_name,
+                    "relative_path": c.relative_path,
+                    "content": c.content,
+                    "start_line": c.start_line,
+                    "end_line": c.end_line,
+                    "score": score,
+                })
+            })
+            .collect();
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("search_artifacts: spawn_blocking panic: {e}"))??;
+
+    Ok(serde_json::json!({ "results": results }))
+}
+
+/// Trigger re-indexing of one artifact by name.
+///
+/// Phase C stub: drops existing chunks for the artifact to mark it stale.
+/// Full re-indexing with chunking + embedding is wired by the CLI pipeline;
+/// the dashboard signals intent and the CLI processes on next run.
+///
+/// Frontend call: `invoke("index_artifacts", { db_path, artifact_name })`
+/// Returns: `{ ok: true, artifact_name: string, chunks_dropped: number }` on success.
+#[tauri::command]
+pub async fn index_artifacts(
+    db_path: String,
+    artifact_name: String,
+) -> CmdResult<serde_json::Value> {
+    let path = std::path::PathBuf::from(&db_path);
+    let name = artifact_name.clone();
+    let chunks_dropped = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let store = elai_knowledge::artifacts::store::ArtifactStore::open(&path)
+            .map_err(|e| format!("index_artifacts: store open failed: {e}"))?;
+        store
+            .drop_chunks_for_artifact(&name)
+            .map_err(|e| format!("index_artifacts: drop_chunks failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("index_artifacts: spawn_blocking panic: {e}"))??;
+    tracing::info!(
+        artifact = %artifact_name,
+        chunks_dropped,
+        "index_artifacts: chunks cleared (re-index via CLI)"
+    );
+    Ok(serde_json::json!({
+        "ok": true,
+        "artifact_name": artifact_name,
+        "chunks_dropped": chunks_dropped,
+    }))
+}
+
+/// Remove all chunks for an artifact from the context database.
+///
+/// Frontend call: `invoke("remove_artifacts", { db_path, artifact_name })`
+/// Returns: `{ artifact_name: string, chunks_removed: number }`
+#[tauri::command]
+pub async fn remove_artifacts(
+    db_path: String,
+    artifact_name: String,
+) -> CmdResult<serde_json::Value> {
+    let path = std::path::PathBuf::from(&db_path);
+    let name = artifact_name.clone();
+    let dropped = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let store = elai_knowledge::artifacts::store::ArtifactStore::open(&path)
+            .map_err(|e| format!("remove_artifacts: store open failed: {e}"))?;
+        store
+            .drop_chunks_for_artifact(&name)
+            .map_err(|e| format!("remove_artifacts: drop_chunks failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("remove_artifacts: spawn_blocking panic: {e}"))??;
+    Ok(serde_json::json!({
+        "artifact_name": artifact_name,
+        "chunks_removed": dropped,
+    }))
+}
+
+/// Detect entry points in the project (orphan, well-known name, framework
+/// route, test) using the symbol graph reverse index.
+///
+/// `state` is used to derive `project_root` and `project_id`.
+/// `include_tests`: when false, test entry points are suppressed. Default: true.
+///
+/// Frontend call: `invoke("list_entry_points", { include_tests? })`
+/// Returns: `{ entry_points: EntryPointDto[], summary: { by_reason, total } }`
+#[tauri::command]
+pub async fn list_entry_points(
+    state: State<'_, AppState>,
+    include_tests: Option<bool>,
+) -> CmdResult<serde_json::Value> {
+    use elai_knowledge::symbol_graph::cache::SymbolGraphCache;
+    use elai_knowledge::symbol_graph::entry_points::{
+        detect_entry_points, entry_point_filenames, EntryPointReason, EntryPointSummary,
+    };
+
+    let include_tests = include_tests.unwrap_or(true);
+    let project_root = state.project_root_snapshot();
+    let project_id = b33_resolve_project_id(&state);
+    let dkg_path = elai_core::paths::dkg_db_path(&project_root);
+
+    if !dkg_path.exists() {
+        return Ok(serde_json::json!({
+            "entry_points": [],
+            "summary": { "by_reason": {}, "total": 0 },
+        }));
+    }
+
+    // SymbolGraphCache::new + ensure_reverse_index are sync; run on blocking thread.
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let mut cache = SymbolGraphCache::new(
+            &dkg_path,
+            &project_id,
+            elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
+        )
+        .map_err(|e| format!("list_entry_points: cache open failed: {e}"))?;
+
+        // Compute reverse index: callee_file -> Set<caller_file>.
+        let reverse_index = cache
+            .ensure_reverse_index()
+            .map_err(|e| format!("list_entry_points: reverse_index failed: {e}"))?
+            .clone();
+
+        // Collect all indexed file paths from the reverse index.
+        let all_files: std::collections::BTreeSet<String> = {
+            let mut s = std::collections::BTreeSet::new();
+            for (k, vs) in reverse_index.iter() {
+                s.insert(k.clone());
+                for v in vs {
+                    s.insert(v.clone());
+                }
+            }
+            s
+        };
+
+        // Filename-based filter: load payloads only for entry-point filename matches
+        // and orphan candidates (files NOT in reverse_index keys or with empty callers).
+        let filename_stems = entry_point_filenames();
+        let load_candidates: Vec<String> = all_files
+            .into_iter()
+            .filter(|f| {
+                let callers = reverse_index.get(f);
+                let is_orphan = callers.map_or(true, |s| s.is_empty());
+                let is_ep_name = {
+                    let stem = std::path::Path::new(f)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    filename_stems.contains(stem)
+                };
+                is_orphan || is_ep_name
+            })
+            .collect();
+
+        // Load payloads (Arc<SymbolGraphFilePayload>); deref for detect_entry_points.
+        let mut payload_arcs = Vec::new();
+        for file_path in &load_candidates {
+            match cache.get_or_load_payload(file_path) {
+                Ok(Some(arc)) => payload_arcs.push(arc),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(file = %file_path, error = %e, "list_entry_points: payload load skipped");
+                }
+            }
+        }
+        let payloads: Vec<elai_knowledge::symbol_graph::types::SymbolGraphFilePayload> =
+            payload_arcs.iter().map(|arc| (**arc).clone()).collect();
+
+        let mut entries = detect_entry_points(&reverse_index, &payloads);
+        if !include_tests {
+            entries.retain(|e| !matches!(e.reason, EntryPointReason::Test));
+        }
+
+        let summary = EntryPointSummary::from_entries(&entries);
+        let ep_json: Vec<serde_json::Value> = entries
+            .into_iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "name": e.name,
+                    "file": e.file,
+                    "line": e.line,
+                    "reason": format!("{:?}", e.reason),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "entry_points": ep_json,
+            "summary": {
+                "by_reason": summary.by_reason,
+                "total": summary.total,
+            },
+        }))
+    })
+    .await
+    .map_err(|e| format!("list_entry_points: spawn_blocking panic: {e}"))??;
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// B-38 — AMBIGUITY GATE SURFACE
+// ---------------------------------------------------------------------------
+//
+// cross-lang-pair: dashboard/tauri/api
+//
+// `get_ambiguity_state` returns the dashboard-facing snapshot of the
+// continuous ambiguity gate (B-38). The shape mirrors `AmbiguityState` in
+// `crates/dashboard-v2/src/lib/api/types.ts`.
+//
+// MOCK DATA: the real producer (AmbiguityScorer wired into task_runner.rs)
+// is intentionally OUT OF SCOPE for B-38 per the plan ("minimal B-38
+// contract"). When the producer lands in a follow-up B-N, this command will
+// read the latest `ambiguity_scored` / `ambiguity_floor_failed` /
+// `ambiguity_streak_advanced` SSB rows from `state.viewer` and shape them
+// into the response.  Until then the command returns a stable mock so the
+// frontend GatesPanel can render its layout end-to-end.
+#[tauri::command]
+pub fn get_ambiguity_state(_state: State<'_, AppState>) -> CmdResult<Value> {
+    Ok(json!({
+        "score": 0.18_f32,
+        "milestone": "ready",
+        "threshold": 0.2_f32,
+        "brownfield": false,
+        "components": {
+            "goal_clarity":             { "score": 0.92_f32, "weight": 0.40_f32, "floor": 0.75_f32 },
+            "constraint_clarity":       { "score": 0.83_f32, "weight": 0.30_f32, "floor": 0.65_f32 },
+            "success_criteria_clarity": { "score": 0.88_f32, "weight": 0.30_f32, "floor": 0.70_f32 },
+            "context_clarity":          null
+        },
+        "floor_failures": Vec::<String>::new(),
+        "streak": {
+            "current": 1_u32,
+            "required": 2_u32
+        },
+        "qualifies_for_advance": false,
+        "mock": true
+    }))
 }

@@ -224,6 +224,12 @@ pub fn run() {
             commands::restart_sidecar,
             // D.12 — SIDECAR SEARCH
             commands::sidecar_search,
+            // B-35 Phase C — CONTEXT ARTIFACTS + ENTRY POINTS
+            commands::list_artifacts,
+            commands::search_artifacts,
+            commands::index_artifacts,
+            commands::remove_artifacts,
+            commands::list_entry_points,
             // REMOTE SIDECAR BOOT OVERLAY
             commands::start_remote_sidecar,
             commands::get_remote_sidecar_progress,
@@ -242,6 +248,12 @@ pub fn run() {
             media_validation::get_media_validation_by_step,
             media_validation::submit_media_validation_for_review,
             media_validation::subscribe_media_ssb_events,
+            // B-40 — IDEA FRAMING SURFACE
+            commands::get_idea_framing_state,
+            commands::submit_tradeoff_responses,
+            // B-38 — AMBIGUITY GATE SURFACE (mock data; real producer in follow-up).
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_ambiguity_state,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

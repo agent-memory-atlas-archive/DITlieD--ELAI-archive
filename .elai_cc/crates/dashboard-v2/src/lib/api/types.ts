@@ -49,7 +49,9 @@ export type WindowType =
   | 'review'
   | 'monitor'
   | 'settings'
-  | 'graph';
+  | 'graph'
+  // B-40: Idea-Framer pre-decomposition surface (FRAMING substate).
+  | 'idea_framing';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -1480,4 +1482,150 @@ export interface MediaSsbEvent {
   step_id: string;
   seq: number;
   ts_ms: number;
+}
+
+// ------------------------------------------------------------------
+// B-40 — Idea-Framer / Domain Research Presets / Critic Loop types.
+// Mirror of the Rust serde-tagged types in
+// elai_orchestrator::idea_framing (snake_case discriminants).
+// ------------------------------------------------------------------
+export type ProjectClass =
+  | 'consumer_mobile_app'
+  | 'web_app'
+  | 'saas_dashboard'
+  | 'desktop_app'
+  | 'game_mod'
+  | 'research_tool'
+  | 'library_or_sdk'
+  | 'cli_tool'
+  | 'other';
+
+export type CriticCategory =
+  | 'stale'
+  | 'slop'
+  | 'policy'
+  | 'feasibility'
+  | 'market'
+  | 'scope'
+  | 'contradiction'
+  | 'design_hard'
+  | 'vague'
+  | 'missing';
+
+export type CriticSeverity = 'block' | 'warn' | 'info';
+
+export interface CriticFinding {
+  category: CriticCategory;
+  severity: CriticSeverity;
+  evidence_ref?: number | null;
+  proposed_fix: string;
+}
+
+export interface CriticRound {
+  round_index: number;
+  findings: CriticFinding[];
+}
+
+export interface Tradeoff {
+  name: string;
+  options: string[];
+  default: string;
+  user_facing_question: string;
+}
+
+export interface TradeoffCard {
+  tradeoffs: Tradeoff[];
+}
+
+export interface StreamSummary {
+  stream_name: string;
+  stream_root: number;
+  convergence: string;
+  converged: boolean;
+}
+
+export interface ResearchSummary {
+  streams: StreamSummary[];
+  degraded_streams: string[];
+}
+
+export interface KeyDecision {
+  name: string;
+  rationale: string;
+  source_refs: string[];
+}
+
+export interface FramedIdea {
+  project_class: ProjectClass;
+  raw_prompt: string;
+  research_summary: ResearchSummary;
+  key_decisions: KeyDecision[];
+  known_unknowns: string[];
+  tradeoff_card: TradeoffCard;
+  critic_rounds: CriticRound[];
+}
+
+/// User response to a Tradeoff (one entry per Tradeoff.name). `option`
+/// must match an entry in the corresponding Tradeoff.options array.
+export interface TradeoffResponse {
+  tradeoff_name: string;
+  option: string;
+}
+
+/// State surfaced by the Tauri `get_idea_framing_state` command. `null`
+/// when no FRAMING substate is active for the current session.
+export interface IdeaFramingState {
+  session_id: string;
+  framed_idea: FramedIdea | null;
+  /// Highest round_index emitted so far (0..=3). Used by MonitorWindow
+  /// for the "Critic rounds: N/3" badge.
+  critic_rounds_used: number;
+  /// True when an IdeaFramed row with converged=true has been emitted.
+  is_converged: boolean;
+  /// True when the FRAMING substate is currently active (FSM PLANNING +
+  /// agent_substate=Framing).
+  is_active: boolean;
+}
+
+// ------------------------------------------------------------------
+// B-38 — Ambiguity gate (continuous metric)
+//
+// cross-lang-pair: dashboard/tauri/api
+// Mirrors `get_ambiguity_state` in src-tauri/src/commands.rs which currently
+// returns mock data; the real producer wires AmbiguityScorer into the gate
+// in a follow-up B-N.
+// ------------------------------------------------------------------
+export type AmbiguityMilestone = 'initial' | 'progress' | 'refined' | 'ready';
+
+export interface AmbiguityComponent {
+  score: number;
+  weight: number;
+  floor: number;
+}
+
+export interface AmbiguityComponents {
+  goal_clarity: AmbiguityComponent;
+  constraint_clarity: AmbiguityComponent;
+  success_criteria_clarity: AmbiguityComponent;
+  context_clarity: AmbiguityComponent | null; // brownfield-only
+}
+
+export interface AmbiguityStreak {
+  current: number;
+  required: number;
+}
+
+export interface AmbiguityState {
+  /// 0.0..1.0, rounded to 4 dp by the scorer.
+  score: number;
+  milestone: AmbiguityMilestone;
+  threshold: number;
+  brownfield: boolean;
+  components: AmbiguityComponents;
+  /// Per-dimension component names that breached their floor.
+  floor_failures: string[];
+  streak: AmbiguityStreak;
+  qualifies_for_advance: boolean;
+  /// True when the backend returned the placeholder shape (real producer not yet wired).
+  mock: boolean;
 }

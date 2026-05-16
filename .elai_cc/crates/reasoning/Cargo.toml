@@ -7,9 +7,11 @@ publish.workspace = true
 
 [dependencies]
 elai-core = { path = "../core" }
+elai-providers = { path = "../providers" }
 rustc-hash.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 regex = "1"
 tracing.workspace = true
 

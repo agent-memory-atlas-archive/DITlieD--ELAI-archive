@@ -132,7 +132,35 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // as_sql_str L742, ssb_action_type_from_str L889, SsbPayload variant L3068
 // + action_type() match arm L3231 + 5 payload structs at L2247+. Documented
 // at workflow/reasoning/B-40-decisions.md DECISION-SSB-BIJECTION.
-const SCHEMA_VERSION: i64 = 41;
+// B-34 (SCHEMA_VERSION 42): bumped 41 -> 42 for 4 new SSB action types for
+// the entry-point detection + artifact pipeline:
+//   entry_points_detected  -- emitted by the entry_points tool dispatcher arm
+//                              after detect_entry_points() returns.
+//   artifacts_indexed      -- emitted by Phase C artifact indexer wiring.
+//   artifact_searched      -- emitted by search_artifacts dispatcher arm.
+//   artifact_stale         -- emitted when ArtifactIndexer detects changed files.
+// Producers: production_agent_rpc.rs entry_points arm (entry_points_detected);
+//            indexing_service.rs (artifacts_indexed, artifact_stale);
+//            search_artifacts arm (artifact_searched).
+// 4x5=20 lockstep sites: enum / CHECK / as_sql_str / from_str / SsbPayload
+// (payload structs land with the indexing_service wiring in Phase C2).
+// B-38 (SCHEMA_VERSION 43): bumped 42 -> 43 for 3 new SSB action types tied
+// to the ambiguity-score continuous metric gate:
+//   - ambiguity_scored          (one row per AmbiguityScorer.score() result)
+//   - ambiguity_floor_failed    (one row per gate verdict where a floor was
+//                                breached even with overall <= 0.2)
+//   - ambiguity_streak_advanced (one row per qualifying-but-streak-incomplete
+//                                gate verdict; carries current/required streak)
+// Additive only — no existing variants renumbered or removed.
+// B-42 (SCHEMA_VERSION 44): bumped 43 -> 44 for 4 new SSB action types
+// tied to the cosmos tier knowledge worker:
+//   - cosmos_refresh_started   (one row per CosmosWorker::tick refresh start)
+//   - cosmos_artifact_updated  (one row per successful artifact refresh)
+//   - cosmos_artifact_decayed  (one row when age > 3 * cadence_interval)
+//   - cosmos_grounding_used    (one row per CosmosCheck verifier dispatch)
+// Producers: knowledge::cosmos_worker (refresh / decay), reasoning::verification
+// (grounding_used). Additive only — no existing variants renumbered.
+const SCHEMA_VERSION: i64 = 44;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -304,7 +332,36 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- tradeoff_card_emitted    -- one row when TradeoffCard is surfaced
         --                             to the dashboard for user response
         'idea_framing_started', 'project_class_classified',
-        'critic_round_complete', 'idea_framed', 'tradeoff_card_emitted'
+        'critic_round_complete', 'idea_framed', 'tradeoff_card_emitted',
+        -- B-34 (SCHEMA_VERSION 42): entry-point detection + artifact pipeline beacons.
+        -- entry_points_detected -- one row per entry_points tool call; carries project_id,
+        --                          count, and by_reason breakdown.
+        -- artifacts_indexed     -- one row per ArtifactIndexer completion; carries indexed
+        --                          names, up_to_date names, total_chunks, latency_ms.
+        -- artifact_searched     -- one row per search_artifacts tool call; carries query,
+        --                          optional artifact_name filter, result_count, latency_ms.
+        -- artifact_stale        -- one row per stale artifact detection (content_hash mismatch);
+        --                          carries artifact_name + changed_files list.
+        'entry_points_detected', 'artifacts_indexed', 'artifact_searched', 'artifact_stale',
+        -- B-38 (SCHEMA_VERSION 43): ambiguity-score continuous-metric gate beacons.
+        -- ambiguity_scored          -- one row per AmbiguityScorer.score() result;
+        --                              carries overall score, milestone, per-dimension
+        --                              clarity scores, optional context clarity, and the
+        --                              brownfield flag.
+        -- ambiguity_floor_failed    -- one row per gate verdict where a per-dimension floor
+        --                              was breached even with overall <= 0.2; carries the
+        --                              score and the failed-dimension names.
+        -- ambiguity_streak_advanced -- one row per qualifying-but-streak-incomplete gate
+        --                              verdict; carries the score plus current/required
+        --                              streak counts.
+        'ambiguity_scored', 'ambiguity_floor_failed', 'ambiguity_streak_advanced',
+        -- B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+        -- cosmos_refresh_started   -- one row per refresh tick start (CosmosWorker)
+        -- cosmos_artifact_updated  -- one row per successful refresh
+        -- cosmos_artifact_decayed  -- one row when artifact exceeds 3 * cadence
+        -- cosmos_grounding_used    -- one row per CosmosCheck verifier dispatch
+        'cosmos_refresh_started', 'cosmos_artifact_updated',
+        'cosmos_artifact_decayed', 'cosmos_grounding_used'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -793,6 +850,46 @@ pub enum SsbActionType {
     /// Carries a [`TradeoffCardEmittedPayload`] with tradeoff names +
     /// option counts.
     TradeoffCardEmitted,
+    /// B-34 (SCHEMA_VERSION 42): one row per `entry_points` tool call.
+    /// Carries an [`EntryPointsDetectedPayload`] with the project_id, total
+    /// count, and per-reason breakdown so the dashboard can render an
+    /// entry-point summary card without re-running detection.
+    EntryPointsDetected,
+    /// B-34 (SCHEMA_VERSION 42): one row per ArtifactIndexer completion.
+    /// Carries an [`ArtifactsIndexedPayload`] with indexed/up_to_date artifact
+    /// names, total_chunks, and latency_ms. Produced by Phase C indexer wiring.
+    ArtifactsIndexed,
+    /// B-34 (SCHEMA_VERSION 42): one row per `search_artifacts` tool call.
+    /// Carries an [`ArtifactSearchedPayload`] with the query, optional
+    /// artifact_name filter, result_count, and latency_ms.
+    ArtifactSearched,
+    /// B-34 (SCHEMA_VERSION 42): one row per stale artifact detected by the
+    /// ArtifactIndexer content-hash check. Carries an [`ArtifactStalePayload`]
+    /// with artifact_name and the list of changed files.
+    ArtifactStale,
+    /// B-38 (SCHEMA_VERSION 43): one row per `AmbiguityScorer.score()`
+    /// completion. Carries an [`AmbiguityScoredPayload`].
+    AmbiguityScored,
+    /// B-38 (SCHEMA_VERSION 43): one row per GroundingSweepGate verdict
+    /// where one or more per-dimension floors were breached. Carries an
+    /// [`AmbiguityFloorFailedPayload`].
+    AmbiguityFloorFailed,
+    /// B-38 (SCHEMA_VERSION 43): one row per qualifying-but-streak-incomplete
+    /// gate verdict. Carries an [`AmbiguityStreakAdvancedPayload`].
+    AmbiguityStreakAdvanced,
+    /// B-42 (SCHEMA_VERSION 44): one row per cosmos refresh-loop tick start.
+    /// Carries a [`CosmosRefreshStartedPayload`].
+    CosmosRefreshStarted,
+    /// B-42 (SCHEMA_VERSION 44): one row per successful cosmos artifact refresh.
+    /// Carries a [`CosmosArtifactUpdatedPayload`].
+    CosmosArtifactUpdated,
+    /// B-42 (SCHEMA_VERSION 44): one row when a cosmos artifact exceeds
+    /// 3 * cadence_interval since last refresh. Carries a
+    /// [`CosmosArtifactDecayedPayload`].
+    CosmosArtifactDecayed,
+    /// B-42 (SCHEMA_VERSION 44): one row per `CosmosCheck` verifier dispatch.
+    /// Carries a [`CosmosGroundingUsedPayload`].
+    CosmosGroundingUsed,
 }
 
 impl SsbActionType {
@@ -940,6 +1037,20 @@ impl SsbActionType {
             Self::CriticRoundComplete => "critic_round_complete",
             Self::IdeaFramed => "idea_framed",
             Self::TradeoffCardEmitted => "tradeoff_card_emitted",
+            // B-34 (SCHEMA_VERSION 42)
+            Self::EntryPointsDetected => "entry_points_detected",
+            Self::ArtifactsIndexed => "artifacts_indexed",
+            Self::ArtifactSearched => "artifact_searched",
+            Self::ArtifactStale => "artifact_stale",
+            // B-38 (SCHEMA_VERSION 43): ambiguity gate beacons.
+            Self::AmbiguityScored => "ambiguity_scored",
+            Self::AmbiguityFloorFailed => "ambiguity_floor_failed",
+            Self::AmbiguityStreakAdvanced => "ambiguity_streak_advanced",
+            // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+            Self::CosmosRefreshStarted => "cosmos_refresh_started",
+            Self::CosmosArtifactUpdated => "cosmos_artifact_updated",
+            Self::CosmosArtifactDecayed => "cosmos_artifact_decayed",
+            Self::CosmosGroundingUsed => "cosmos_grounding_used",
         }
     }
 }
@@ -1094,6 +1205,20 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "critic_round_complete" => Ok(SsbActionType::CriticRoundComplete),
         "idea_framed" => Ok(SsbActionType::IdeaFramed),
         "tradeoff_card_emitted" => Ok(SsbActionType::TradeoffCardEmitted),
+        // B-34 (SCHEMA_VERSION 42): entry-point detection + artifact pipeline beacons.
+        "entry_points_detected" => Ok(SsbActionType::EntryPointsDetected),
+        "artifacts_indexed"     => Ok(SsbActionType::ArtifactsIndexed),
+        "artifact_searched"     => Ok(SsbActionType::ArtifactSearched),
+        "artifact_stale"        => Ok(SsbActionType::ArtifactStale),
+        // B-38 (SCHEMA_VERSION 43): ambiguity gate beacons.
+        "ambiguity_scored"            => Ok(SsbActionType::AmbiguityScored),
+        "ambiguity_floor_failed"      => Ok(SsbActionType::AmbiguityFloorFailed),
+        "ambiguity_streak_advanced"   => Ok(SsbActionType::AmbiguityStreakAdvanced),
+        // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+        "cosmos_refresh_started"  => Ok(SsbActionType::CosmosRefreshStarted),
+        "cosmos_artifact_updated" => Ok(SsbActionType::CosmosArtifactUpdated),
+        "cosmos_artifact_decayed" => Ok(SsbActionType::CosmosArtifactDecayed),
+        "cosmos_grounding_used"   => Ok(SsbActionType::CosmosGroundingUsed),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -2307,6 +2432,70 @@ pub struct IdeaFramedPayload {
     pub converged: bool,
 }
 
+// ---------------------------------------------------------------------------
+// B-34 (SCHEMA_VERSION 42) payload structs
+// ---------------------------------------------------------------------------
+
+/// B-34 — payload for [`SsbActionType::EntryPointsDetected`].
+///
+/// Emitted by the `entry_points` dispatcher arm after `detect_entry_points`
+/// returns. Lets the dashboard render an entry-point summary card without
+/// re-running detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPointsDetectedPayload {
+    pub project_id: String,
+    /// Total detected entry points (including tests if include_tests=true).
+    pub count: u32,
+    /// Per-reason breakdown (e.g. "orphan" -> 3, "well_known:main" -> 2).
+    pub by_reason: std::collections::BTreeMap<String, u32>,
+}
+
+/// B-34 — payload for [`SsbActionType::ArtifactsIndexed`].
+///
+/// Emitted by the Phase C artifact indexer wiring after a complete
+/// (re)indexing run finishes. Carries the partition of artifacts that were
+/// freshly indexed vs. already up-to-date.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactsIndexedPayload {
+    pub project_id: String,
+    /// Artifact names freshly (re)indexed in this run.
+    pub indexed: Vec<String>,
+    /// Artifact names whose content hash matched — skipped as up-to-date.
+    pub up_to_date: Vec<String>,
+    /// Total chunk count across all indexed artifacts after this run.
+    pub total_chunks: usize,
+    /// Wall-clock time for the full indexing run in milliseconds.
+    pub latency_ms: u64,
+}
+
+/// B-34 — payload for [`SsbActionType::ArtifactSearched`].
+///
+/// Emitted by the `search_artifacts` dispatcher arm after each query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSearchedPayload {
+    pub project_id: String,
+    /// Optional artifact name filter applied to the query (None = all).
+    pub artifact_name: Option<String>,
+    /// The natural-language query string.
+    pub query: String,
+    /// Number of results returned (after limit clamping).
+    pub result_count: usize,
+    /// Wall-clock query latency in milliseconds.
+    pub latency_ms: u64,
+}
+
+/// B-34 — payload for [`SsbActionType::ArtifactStale`].
+///
+/// Emitted when the ArtifactIndexer detects that an artifact's content has
+/// changed (blake3 hash mismatch). Triggers a dashboard staleness badge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactStalePayload {
+    pub project_id: String,
+    pub artifact_name: String,
+    /// Repo-relative paths of files whose content hash changed.
+    pub changed_files: Vec<String>,
+}
+
 /// B-40 (SCHEMA_VERSION 41) — payload for [`SsbActionType::TradeoffCardEmitted`].
 ///
 /// Emitted by [`crate::idea_framing::frame_idea`] when the TradeoffCard is
@@ -3387,6 +3576,20 @@ pub enum SsbPayload {
     CriticRoundComplete(CriticRoundCompletePayload),
     IdeaFramed(IdeaFramedPayload),
     TradeoffCardEmitted(TradeoffCardEmittedPayload),
+    // B-34 (SCHEMA_VERSION 42): entry-point detection + artifact pipeline beacons.
+    EntryPointsDetected(EntryPointsDetectedPayload),
+    ArtifactsIndexed(ArtifactsIndexedPayload),
+    ArtifactSearched(ArtifactSearchedPayload),
+    ArtifactStale(ArtifactStalePayload),
+    // B-38 (SCHEMA_VERSION 43): ambiguity gate beacons.
+    AmbiguityScored(AmbiguityScoredPayload),
+    AmbiguityFloorFailed(AmbiguityFloorFailedPayload),
+    AmbiguityStreakAdvanced(AmbiguityStreakAdvancedPayload),
+    // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+    CosmosRefreshStarted(CosmosRefreshStartedPayload),
+    CosmosArtifactUpdated(CosmosArtifactUpdatedPayload),
+    CosmosArtifactDecayed(CosmosArtifactDecayedPayload),
+    CosmosGroundingUsed(CosmosGroundingUsedPayload),
 }
 
 impl SsbPayload {
@@ -3533,6 +3736,20 @@ impl SsbPayload {
             Self::CriticRoundComplete(_) => SsbActionType::CriticRoundComplete,
             Self::IdeaFramed(_) => SsbActionType::IdeaFramed,
             Self::TradeoffCardEmitted(_) => SsbActionType::TradeoffCardEmitted,
+            // B-34 (SCHEMA_VERSION 42): entry-point detection + artifact pipeline beacons.
+            Self::EntryPointsDetected(_) => SsbActionType::EntryPointsDetected,
+            Self::ArtifactsIndexed(_) => SsbActionType::ArtifactsIndexed,
+            Self::ArtifactSearched(_) => SsbActionType::ArtifactSearched,
+            Self::ArtifactStale(_) => SsbActionType::ArtifactStale,
+            // B-38 (SCHEMA_VERSION 43): ambiguity gate beacons.
+            Self::AmbiguityScored(_) => SsbActionType::AmbiguityScored,
+            Self::AmbiguityFloorFailed(_) => SsbActionType::AmbiguityFloorFailed,
+            Self::AmbiguityStreakAdvanced(_) => SsbActionType::AmbiguityStreakAdvanced,
+            // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+            Self::CosmosRefreshStarted(_) => SsbActionType::CosmosRefreshStarted,
+            Self::CosmosArtifactUpdated(_) => SsbActionType::CosmosArtifactUpdated,
+            Self::CosmosArtifactDecayed(_) => SsbActionType::CosmosArtifactDecayed,
+            Self::CosmosGroundingUsed(_) => SsbActionType::CosmosGroundingUsed,
         }
     }
 }
@@ -4516,6 +4733,120 @@ impl ReflectEventSink for Ssb {
 }
 
 // ---------------------------------------------------------------------------
+// B-38 (SCHEMA_VERSION 43) payload structs — appended at end of payloads region.
+// Additive only. Existing payload structs are not renumbered or modified.
+// ---------------------------------------------------------------------------
+
+/// B-38 — payload for [`SsbActionType::AmbiguityScored`].
+///
+/// Emitted by the GroundingSweepGate when a non-`None` `AmbiguityScore` is
+/// supplied via `TransitionContext.ambiguity_score`. Mirrors the
+/// `AmbiguityScore.breakdown` shape but flattened to avoid pulling the
+/// `elai-reasoning` crate type into the SSB schema surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbiguityScoredPayload {
+    /// Overall ambiguity score, in `[0.0, 1.0]`, rounded to 4 dp.
+    pub score: f32,
+    /// Milestone label (`"initial"`, `"progress"`, `"refined"`, `"ready"`).
+    pub milestone: String,
+    pub goal: f32,
+    pub constraint: f32,
+    pub success: f32,
+    /// `None` for greenfield; `Some(_)` for brownfield.
+    pub context: Option<f32>,
+    pub brownfield: bool,
+}
+
+/// B-38 — payload for [`SsbActionType::AmbiguityFloorFailed`].
+///
+/// Emitted by the GroundingSweepGate when one or more per-dimension floors
+/// were breached even when `overall_score <= AMBIGUITY_THRESHOLD`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbiguityFloorFailedPayload {
+    pub score: f32,
+    /// Component names that fell below their floor (e.g. `"goal_clarity"`).
+    pub failed_dimensions: Vec<String>,
+}
+
+/// B-38 — payload for [`SsbActionType::AmbiguityStreakAdvanced`].
+///
+/// Emitted by the GroundingSweepGate when the score qualifies but the
+/// auto-complete streak hasn't yet reached the required count. The gate
+/// itself returns BLOCK on this case; the row is purely informational so
+/// the dashboard can show 1/2 → 2/2 progress.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbiguityStreakAdvancedPayload {
+    pub score: f32,
+    /// The streak count INCLUDING this snapshot (e.g. 1 means the snapshot
+    /// is the first ready one in a row).
+    pub current_streak: u32,
+    /// Required streak count (mirrors
+    /// [`elai_reasoning::AUTO_COMPLETE_STREAK_REQUIRED`] cast to u32).
+    pub required: u32,
+}
+
+/// B-42 — payload for [`SsbActionType::CosmosRefreshStarted`].
+///
+/// Emitted by `knowledge::cosmos_worker::CosmosWorker::tick` at the start
+/// of a refresh sweep. Carries the count of artifacts queued for refresh
+/// and the manifest size so the dashboard can render a "N/M refreshing"
+/// progress card.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CosmosRefreshStartedPayload {
+    /// Number of artifacts identified as stale/missing for this refresh sweep.
+    pub queued: u32,
+    /// Total number of artifacts in the manifest.
+    pub total: u32,
+}
+
+/// B-42 — payload for [`SsbActionType::CosmosArtifactUpdated`].
+///
+/// Emitted by `knowledge::cosmos_worker::CosmosWorker` after a successful
+/// artifact refresh (network fetch + body hash + manifest write).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CosmosArtifactUpdatedPayload {
+    /// Logical artifact name (e.g. `"saas_pricing_patterns"`).
+    pub name: String,
+    /// blake3 content hash of the refreshed body.
+    pub blake3: String,
+    /// Body length in bytes.
+    pub body_bytes: u32,
+    /// Wall-clock latency in milliseconds for the refresh operation.
+    pub latency_ms: u32,
+}
+
+/// B-42 — payload for [`SsbActionType::CosmosArtifactDecayed`].
+///
+/// Emitted when a `cosmos_get(name)` call surfaces an artifact whose age
+/// exceeds `3 * cadence_interval`. The artifact is still served; the
+/// row is informational so the dashboard can render a DECAYED badge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CosmosArtifactDecayedPayload {
+    /// Logical artifact name.
+    pub name: String,
+    /// Age in seconds at the time of the decay observation.
+    pub age_secs: u64,
+    /// Configured cadence (`"daily"`, `"weekly"`, `"monthly"`, `"quarterly"`).
+    pub cadence: String,
+}
+
+/// B-42 — payload for [`SsbActionType::CosmosGroundingUsed`].
+///
+/// Emitted by `reasoning::verification::LocalVerifier` whenever a
+/// `VerificationMethod::CosmosCheck` dispatch resolves a claim against
+/// the cosmos store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CosmosGroundingUsedPayload {
+    /// Claim category (e.g. `"design"`, `"ip_boundary"`, `"monetization"`).
+    pub claim_category: String,
+    /// Logical artifact name resolved from the lookup.
+    pub artifact_name: String,
+    /// True when the lookup returned a Fresh-or-Stale artifact (i.e. used
+    /// for grounding). False when the lookup returned no matching artifact.
+    pub matched: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -5338,6 +5669,131 @@ mod tests {
                     built_ms: 0,
                 })
             }
+            // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
+            SsbActionType::IdeaFramingStarted => SsbPayload::IdeaFramingStarted(
+                IdeaFramingStartedPayload {
+                    session_id: "s".into(),
+                    prompt: "p".into(),
+                    started_at_ms: 0,
+                },
+            ),
+            SsbActionType::ProjectClassClassified => SsbPayload::ProjectClassClassified(
+                ProjectClassClassifiedPayload {
+                    session_id: "s".into(),
+                    project_class: "other".into(),
+                    matched_pattern: None,
+                },
+            ),
+            SsbActionType::CriticRoundComplete => SsbPayload::CriticRoundComplete(
+                CriticRoundCompletePayload {
+                    session_id: "s".into(),
+                    round_index: 1,
+                    block_count: 0,
+                    warn_count: 0,
+                    info_count: 0,
+                    converged: true,
+                    category_counts: Vec::new(),
+                },
+            ),
+            SsbActionType::IdeaFramed => SsbPayload::IdeaFramed(IdeaFramedPayload {
+                session_id: "s".into(),
+                artifact_path: "framed-idea.toml".into(),
+                project_class: "other".into(),
+                rounds_used: 1,
+                tradeoff_count: 2,
+                converged: true,
+            }),
+            SsbActionType::TradeoffCardEmitted => SsbPayload::TradeoffCardEmitted(
+                TradeoffCardEmittedPayload {
+                    session_id: "s".into(),
+                    tradeoff_names: Vec::new(),
+                    option_counts: Vec::new(),
+                },
+            ),
+            // B-34 (SCHEMA_VERSION 42)
+            SsbActionType::EntryPointsDetected => SsbPayload::EntryPointsDetected(
+                EntryPointsDetectedPayload {
+                    project_id: "p".into(),
+                    count: 0,
+                    by_reason: std::collections::BTreeMap::new(),
+                },
+            ),
+            SsbActionType::ArtifactsIndexed => SsbPayload::ArtifactsIndexed(
+                ArtifactsIndexedPayload {
+                    project_id: "p".into(),
+                    indexed: Vec::new(),
+                    up_to_date: Vec::new(),
+                    total_chunks: 0,
+                    latency_ms: 0,
+                },
+            ),
+            SsbActionType::ArtifactSearched => SsbPayload::ArtifactSearched(
+                ArtifactSearchedPayload {
+                    project_id: "p".into(),
+                    artifact_name: None,
+                    query: "q".into(),
+                    result_count: 0,
+                    latency_ms: 0,
+                },
+            ),
+            SsbActionType::ArtifactStale => SsbPayload::ArtifactStale(
+                ArtifactStalePayload {
+                    project_id: "p".into(),
+                    artifact_name: "a".into(),
+                    changed_files: Vec::new(),
+                },
+            ),
+            // B-38 (SCHEMA_VERSION 43)
+            SsbActionType::AmbiguityScored => SsbPayload::AmbiguityScored(
+                AmbiguityScoredPayload {
+                    score: 0.15,
+                    milestone: "ready".into(),
+                    goal: 0.9,
+                    constraint: 0.85,
+                    success: 0.85,
+                    context: None,
+                    brownfield: false,
+                },
+            ),
+            SsbActionType::AmbiguityFloorFailed => SsbPayload::AmbiguityFloorFailed(
+                AmbiguityFloorFailedPayload {
+                    score: 0.1,
+                    failed_dimensions: vec!["goal_clarity".into()],
+                },
+            ),
+            SsbActionType::AmbiguityStreakAdvanced => SsbPayload::AmbiguityStreakAdvanced(
+                AmbiguityStreakAdvancedPayload {
+                    score: 0.18,
+                    current_streak: 1,
+                    required: 2,
+                },
+            ),
+            // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+            SsbActionType::CosmosRefreshStarted => SsbPayload::CosmosRefreshStarted(
+                CosmosRefreshStartedPayload { queued: 0, total: 0 },
+            ),
+            SsbActionType::CosmosArtifactUpdated => SsbPayload::CosmosArtifactUpdated(
+                CosmosArtifactUpdatedPayload {
+                    name: "a".into(),
+                    blake3: "0".into(),
+                    body_bytes: 0,
+                    latency_ms: 0,
+                },
+            ),
+            SsbActionType::CosmosArtifactDecayed => SsbPayload::CosmosArtifactDecayed(
+                CosmosArtifactDecayedPayload {
+                    name: "a".into(),
+                    age_secs: 0,
+                    cadence: "daily".into(),
+                },
+            ),
+            SsbActionType::CosmosGroundingUsed => SsbPayload::CosmosGroundingUsed(
+                CosmosGroundingUsedPayload {
+                    claim_category: "design".into(),
+                    artifact_name: "a".into(),
+                    matched: true,
+                },
+            ),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }

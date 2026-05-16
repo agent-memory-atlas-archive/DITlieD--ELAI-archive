@@ -94,7 +94,12 @@ pub struct AuditFinding {
 /// All evidence data a caller can provide for gate evaluation.
 /// Each gate reads only the fields it needs; unset fields are None.
 /// Source: phase-3A.txt L164.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// B-38: added `ambiguity_score`, `streak_count`, `brownfield`,
+/// `is_plan_revision`. `Eq` was dropped because [`AmbiguityScore`] carries
+/// `f32` fields. No existing call site compared `TransitionContext` for
+/// equality, so the change is non-breaking.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TransitionContext {
     pub source: Option<FsmState>,
     pub target: Option<FsmState>,
@@ -126,6 +131,23 @@ pub struct TransitionContext {
 
     // DAIRA: token budget for adaptive scope
     pub token_budget: Option<usize>,
+
+    // B-38: continuous-ambiguity gate inputs.
+    // When `ambiguity_score` is `None` the gate gracefully degrades to B-17
+    // behaviour (zero-ungrounded -> ALLOW).
+    pub ambiguity_score: Option<elai_reasoning::AmbiguityScore>,
+    /// Number of consecutive prior READY snapshots. The gate uses
+    /// `streak_count + 1` against [`elai_reasoning::AUTO_COMPLETE_STREAK_REQUIRED`].
+    /// Reset-on-plan-revision is the caller's responsibility (see
+    /// `is_plan_revision` and `workflow/reasoning/B-38-decisions.md` decision #4).
+    pub streak_count: u32,
+    /// When true, the gate evaluates floors against the 4-component
+    /// brownfield breakdown.
+    pub brownfield: bool,
+    /// Hint that the plan was just revised. The gate does NOT auto-reset
+    /// the streak; callers must zero `streak_count` before invoking the
+    /// gate when this is true.
+    pub is_plan_revision: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -205,22 +227,104 @@ impl EvidenceGate for GroundingSweepGate {
     }
 
     fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        // 1. Ungrounded check — ALWAYS the highest-priority BLOCK. Preserved
+        //    verbatim from B-17 so that ambiguity output never masks a real
+        //    grounding failure.
         match &ctx.ungrounded_claims {
-            None => Err(EvidenceError {
-                gate_name: self.name(),
-                missing_artifacts: vec!["grounding_sweep_report".into()],
-                suggestion: "Run grounding sweep before transitioning to TESTING_FIRST.".into(),
-            }),
-            Some(claims) if !claims.is_empty() => Err(EvidenceError {
-                gate_name: self.name(),
-                missing_artifacts: claims.clone(),
-                suggestion: format!(
-                    "{} ungrounded claim(s) remain. Ground all claims before proceeding.",
-                    claims.len()
-                ),
-            }),
-            Some(_) => Ok(()),
+            None => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec!["grounding_sweep_report".into()],
+                    suggestion: "Run grounding sweep before transitioning to TESTING_FIRST."
+                        .into(),
+                });
+            }
+            Some(claims) if !claims.is_empty() => {
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: claims.clone(),
+                    suggestion: format!(
+                        "{} ungrounded claim(s) remain. Ground all claims before proceeding.",
+                        claims.len()
+                    ),
+                });
+            }
+            Some(_) => {}
         }
+
+        // 2. Backward-compat: no scorer wired -> ALLOW (B-17 behavior).
+        let Some(score) = ctx.ambiguity_score.as_ref() else {
+            return Ok(());
+        };
+
+        // 3. Continuous threshold check.
+        if score.overall_score > elai_reasoning::AMBIGUITY_THRESHOLD {
+            let bd = &score.breakdown;
+            let mut breakdown_strs = vec![
+                format!("goal={:.3}", bd.goal_clarity.clarity_score),
+                format!("constraint={:.3}", bd.constraint_clarity.clarity_score),
+                format!("success={:.3}", bd.success_criteria_clarity.clarity_score),
+            ];
+            if let Some(ctxc) = &bd.context_clarity {
+                breakdown_strs.push(format!("context={:.3}", ctxc.clarity_score));
+            }
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec![format!(
+                    "ambiguity {:.4} > {} (threshold) [{}]",
+                    score.overall_score,
+                    elai_reasoning::AMBIGUITY_THRESHOLD,
+                    breakdown_strs.join(", ")
+                )],
+                suggestion: "ambiguity score above threshold; refine plan clarity before \
+                             proceeding to TESTING_FIRST."
+                    .into(),
+            });
+        }
+
+        // 4. Floor failures — block even when overall <= threshold.
+        let failures = score.floor_failures(ctx.brownfield);
+        if !failures.is_empty() {
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: failures.clone(),
+                suggestion: format!("floors breached: {}", failures.join(", ")),
+            });
+        }
+
+        // 5/6. Streak gate.
+        if score.qualifies_for_advance(ctx.brownfield) {
+            let next_streak = u64::from(ctx.streak_count).saturating_add(1);
+            let required = elai_reasoning::AUTO_COMPLETE_STREAK_REQUIRED as u64;
+            if next_streak < required {
+                // Emit a soft BLOCK with the streak reason. The caller is
+                // expected to also write an `ambiguity_streak_advanced` SSB
+                // row on receiving this verdict (gate is decoupled from SSB
+                // by design — orchestrator.txt §13).
+                return Err(EvidenceError {
+                    gate_name: self.name(),
+                    missing_artifacts: vec![format!(
+                        "ambiguity_streak {}/{}",
+                        next_streak, required
+                    )],
+                    suggestion: format!(
+                        "streak {}/{}; needs one more snapshot",
+                        next_streak, required
+                    ),
+                });
+            }
+            return Ok(());
+        }
+
+        // Unreachable in practice: at this point overall <= threshold AND no
+        // floors failed, so qualifies_for_advance() must be true. Guard
+        // defensively in case future invariants drift.
+        Err(EvidenceError {
+            gate_name: self.name(),
+            missing_artifacts: vec!["ambiguity_qualification_invariant_violated".into()],
+            suggestion: "score passed threshold + floors but qualifies_for_advance returned false"
+                .into(),
+        })
     }
 }
 
