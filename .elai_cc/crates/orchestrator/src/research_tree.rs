@@ -389,6 +389,52 @@ pub struct Contradiction {
     pub resolution: Option<String>,
 }
 
+/// Lenient deserializer for `Vec<Contradiction>` (and `Vec<Alternative>`).
+/// patch-R2.3: cloud Sonnet sometimes emits a bare string in the
+/// `contradictions` / `alternatives` array (e.g.
+/// `"contradictions": ["localStorage is synchronous and blocks..."]`)
+/// instead of the strict struct shape. Serde's default Vec<T> impl aborts
+/// the WHOLE response parse on the first invalid entry — which kills the
+/// entire research_tree decomposition at level 1. This function parses to
+/// `Vec<serde_json::Value>` first then keeps only entries that round-trip
+/// to T. Malformed entries are dropped silently (logged at debug). The
+/// strict shape still works; lenient shape no longer hard-fails the run.
+///
+/// Empirical proof: B3 cloud run 3 (94dcc5b) failed with
+/// "invalid type: string ... expected struct Contradiction at line 51
+/// column 160" — a single bad entry aborted a 5KB+ ResearchReport JSON.
+pub(crate) fn lenient_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let values: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    let total = values.len();
+    let kept: Vec<T> = values
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value::<T>(v.clone()) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    rejected_value = %v.to_string().chars().take(120).collect::<String>(),
+                    "lenient_vec: dropped malformed entry"
+                );
+                None
+            }
+        })
+        .collect();
+    if kept.len() < total {
+        tracing::warn!(
+            kept = kept.len(),
+            dropped = total - kept.len(),
+            type_name = std::any::type_name::<T>(),
+            "lenient_vec: dropped malformed array entries from LLM response"
+        );
+    }
+    Ok(kept)
+}
+
 // ---------------------------------------------------------------------------
 // SubQuestionResult — result of researching a child node question
 // ---------------------------------------------------------------------------
@@ -888,10 +934,14 @@ pub struct QualitySpec {
 pub struct ResearchReport {
     pub question: String,
     pub answer: String,
+    #[serde(default, deserialize_with = "lenient_vec")]
     pub alternatives: Vec<Alternative>,
+    #[serde(default, deserialize_with = "lenient_vec")]
     pub contradictions: Vec<Contradiction>,
+    #[serde(default, deserialize_with = "lenient_vec")]
     pub sub_results: Vec<SubQuestionResult>,
     pub snapshot: ResearchTreeSnapshot,
+    #[serde(default, deserialize_with = "lenient_vec")]
     pub quality_metrics: Vec<QualityMetric>,
     pub convergence: ConvergenceStatus,
 }
