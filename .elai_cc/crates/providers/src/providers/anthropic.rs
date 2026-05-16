@@ -176,23 +176,94 @@ impl From<OAuthTokenSet> for AuthSource {
     }
 }
 
-/// Response shape of GET `/api/oauth/usage`. Each field is the user's
-/// rolling-window utilisation as a percentage (0-100). When either reads
-/// 100 the corresponding subscription bucket is exhausted.
+/// Response shape of GET `/api/oauth/usage`. The endpoint is documented
+/// in anthropic-rate-limits-findings.md PART 2 as returning bare percentage
+/// floats, but empirical testing (patch-R1 live smoke 2026-05-16) confirmed
+/// Anthropic actually returns nested objects per bucket. We keep the parsed
+/// JSON in a serde_json::Value field for forward compatibility and provide
+/// lenient `percent_for` accessor that walks common shapes.
 ///
-/// Fields documented in anthropic-rate-limits-findings.md PART 2.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+/// Examples of observed response shapes (subject to change without notice):
+///   {"five_hour": 5.0, "seven_day": 12.0}            // findings doc T2
+///   {"five_hour": {"used_percent": 5.0, ...}, ...}   // live 2026-05-16
+///   {"5h": 5.0, "7d": 12.0}                          // possible variant
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(transparent)]
 pub struct OAuthUsage {
-    pub five_hour: f32,
-    pub seven_day: f32,
+    raw: Value,
 }
 
 impl OAuthUsage {
+    /// Constructor for tests and callers that already have a parsed Value.
+    #[must_use]
+    pub fn from_value(raw: Value) -> Self {
+        Self { raw }
+    }
+
+    /// Raw JSON for callers that want to inspect / log the full response.
+    #[must_use]
+    pub fn raw(&self) -> &Value {
+        &self.raw
+    }
+
+    /// Lenient percentage extraction. Tries:
+    ///   1. `raw[field]` as a number     (findings-doc shape).
+    ///   2. `raw[field][used_percent]`   (observed 2026-05-16).
+    ///   3. `raw[field][percent]`        (defensive variant).
+    ///   4. `raw[field][used] / raw[field][limit] * 100`
+    ///      (rate-and-cap shape, also defensive).
+    /// Returns None when none of the above produce a finite f32 in [0,100].
+    #[must_use]
+    pub fn percent_for(&self, field: &str) -> Option<f32> {
+        let node = self.raw.get(field)?;
+        if let Some(n) = node.as_f64() {
+            return finite_pct(n as f32);
+        }
+        if let Some(n) = node.get("used_percent").and_then(Value::as_f64) {
+            return finite_pct(n as f32);
+        }
+        if let Some(n) = node.get("percent").and_then(Value::as_f64) {
+            return finite_pct(n as f32);
+        }
+        if let (Some(used), Some(limit)) = (
+            node.get("used").and_then(Value::as_f64),
+            node.get("limit").and_then(Value::as_f64),
+        ) {
+            if limit > 0.0 {
+                return finite_pct(((used / limit) * 100.0) as f32);
+            }
+        }
+        None
+    }
+
+    /// Five-hour bucket utilisation as a percentage (0-100), or None when
+    /// the response shape didn't yield a parseable value.
+    #[must_use]
+    pub fn five_hour(&self) -> Option<f32> {
+        self.percent_for("five_hour").or_else(|| self.percent_for("5h"))
+    }
+
+    /// Seven-day bucket utilisation as a percentage (0-100), or None.
+    #[must_use]
+    pub fn seven_day(&self) -> Option<f32> {
+        self.percent_for("seven_day").or_else(|| self.percent_for("7d"))
+    }
+
     /// True when either bucket is at or above the safe-burst threshold.
-    /// Default threshold 80% (matches the findings doc's recommendation).
+    /// None values are treated as "no data, don't throttle" (caller can
+    /// inspect raw() for the unparsed shape and act).
     #[must_use]
     pub fn should_throttle(&self, threshold_pct: f32) -> bool {
-        self.five_hour >= threshold_pct || self.seven_day >= threshold_pct
+        self.five_hour().is_some_and(|v| v >= threshold_pct)
+            || self.seven_day().is_some_and(|v| v >= threshold_pct)
+    }
+}
+
+fn finite_pct(v: f32) -> Option<f32> {
+    if v.is_finite() && (0.0..=100.0).contains(&v) {
+        Some(v)
+    } else {
+        None
     }
 }
 
@@ -1725,21 +1796,55 @@ use elai_core::config::OAuthConfig;
 
     #[test]
     fn oauth_usage_should_throttle_at_or_above_threshold() {
-        let safe = super::OAuthUsage {
-            five_hour: 50.0,
-            seven_day: 60.0,
-        };
-        let near_cap_5h = super::OAuthUsage {
-            five_hour: 85.0,
-            seven_day: 60.0,
-        };
-        let near_cap_7d = super::OAuthUsage {
-            five_hour: 50.0,
-            seven_day: 81.0,
-        };
+        let safe = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": 50.0,
+            "seven_day": 60.0,
+        }));
+        let near_cap_5h = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": 85.0,
+            "seven_day": 60.0,
+        }));
+        let near_cap_7d = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": 50.0,
+            "seven_day": 81.0,
+        }));
         assert!(!safe.should_throttle(80.0));
         assert!(near_cap_5h.should_throttle(80.0));
         assert!(near_cap_7d.should_throttle(80.0));
+    }
+
+    #[test]
+    fn oauth_usage_lenient_parses_nested_used_percent_shape() {
+        // Empirical 2026-05-16: live api.anthropic.com returns nested
+        // {"five_hour": {"used_percent": N, ...}} not bare floats.
+        let usage = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": {"used_percent": 5.0, "resets_at": "2026-05-16T20:00:00Z"},
+            "seven_day": {"used_percent": 12.0, "limit": 100},
+        }));
+        assert_eq!(usage.five_hour(), Some(5.0));
+        assert_eq!(usage.seven_day(), Some(12.0));
+        assert!(!usage.should_throttle(80.0));
+    }
+
+    #[test]
+    fn oauth_usage_lenient_parses_used_over_limit_shape() {
+        let usage = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": {"used": 90.0, "limit": 100.0},
+            "seven_day": {"used": 5.0, "limit": 100.0},
+        }));
+        assert_eq!(usage.five_hour(), Some(90.0));
+        assert_eq!(usage.seven_day(), Some(5.0));
+        assert!(usage.should_throttle(80.0));
+    }
+
+    #[test]
+    fn oauth_usage_returns_none_when_shape_unknown() {
+        let usage = super::OAuthUsage::from_value(serde_json::json!({
+            "five_hour": {"some_unrelated_field": "string"},
+        }));
+        assert_eq!(usage.five_hour(), None);
+        assert_eq!(usage.seven_day(), None);
+        assert!(!usage.should_throttle(80.0));
     }
 
     #[test]
