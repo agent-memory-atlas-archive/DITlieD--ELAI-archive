@@ -5,6 +5,7 @@ pub mod multiplexing;
 pub mod oauth;
 mod prompt_cache;
 mod providers;
+pub mod runtime;
 #[cfg(feature = "sidecar")]
 pub mod sidecar_client;
 mod sse;
@@ -17,8 +18,9 @@ pub mod vram_tier;
 pub mod vllm_client;
 
 pub use client::{
-    oauth_token_is_expired, read_base_url, read_xai_base_url, resolve_saved_oauth_token,
-    resolve_startup_auth_source, MessageStream, OAuthTokenSet, ProviderClient,
+    default_claude_code_oauth_config, oauth_token_is_expired, read_base_url, read_xai_base_url,
+    resolve_auth_with_auto_refresh, resolve_saved_oauth_token, resolve_startup_auth_source,
+    MessageStream, OAuthTokenSet, OAuthUsage, ProviderClient,
 };
 pub use oauth::{
     clear_oauth_credentials, cloud_model_id_allowlist, credentials_path,

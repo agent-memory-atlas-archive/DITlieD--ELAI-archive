@@ -128,7 +128,8 @@ impl MessageStream {
 }
 
 pub use anthropic::{
-    oauth_token_is_expired, resolve_saved_oauth_token, resolve_startup_auth_source, OAuthTokenSet,
+    default_claude_code_oauth_config, oauth_token_is_expired, resolve_auth_with_auto_refresh,
+    resolve_saved_oauth_token, resolve_startup_auth_source, OAuthTokenSet, OAuthUsage,
 };
 #[must_use]
 pub fn read_base_url() -> String {

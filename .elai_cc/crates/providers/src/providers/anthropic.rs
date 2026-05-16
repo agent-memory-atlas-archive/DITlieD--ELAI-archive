@@ -15,7 +15,8 @@ use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 use super::{preflight_message_request, Provider, ProviderFuture};
 use crate::sse::SseParser;
 use crate::types::{
-    CacheControl, MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, Usage,
+    CacheControl, MessageDeltaEvent, MessageRequest, MessageResponse, StreamEvent, SystemBlock,
+    Usage,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -31,10 +32,28 @@ const DEFAULT_MAX_RETRIES: u32 = 4;
 // at dashboard-v2/src-tauri/src/commands.rs:2300-2308 and :3061-3077.
 // Without these, OAuth tokens silently route to a near-zero quota and
 // every /v1/messages returns 429 even on Max-20x plans.
-const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.140 (undefined, cli)";
+// Bumped to current Claude Code CLI version per anthropic-rate-limits-findings.md
+// PART 4 / PART 5. Stale UA versions are a documented Anthropic abuse-detection
+// fingerprint surface. Verified 2026-05-15 against @anthropic-ai/claude-code npm.
+// Re-bump cadence: ~quarterly per Claude Code release.
+const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.143 (external, cli)";
 const CLAUDE_X_APP_HEADER: &str = "cli";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const OAUTH_ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Mandatory system-prompt prefix for Opus + Sonnet OAuth requests. Source:
+/// anthropic-rate-limits-findings.md PART 3 / CONDITION 3 — Anthropic's
+/// /v1/messages OAuth path validates that the `system` field starts with this
+/// EXACT literal for Opus and Sonnet models. Missing it returns
+/// `400 invalid_request_error: Error`. Haiku is exempt.
+///
+/// Implementation: `prepend_oauth_system_prefix` injects this as the first
+/// `SystemBlock` (idempotent — leaves an existing prefix block alone) when
+/// auth is BearerToken AND model is opus/sonnet. The block is wrapped in
+/// ephemeral cache_control to amortise its token cost across the rolling
+/// 5-minute cache window (well under Anthropic's 4-marker per-request cap).
+const CLAUDE_CODE_OAUTH_SYSTEM_PREFIX: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Stable per-process UUIDv4-shaped session id for `X-Claude-Code-Session-Id`.
 /// Mirrors dashboard_cli_session_id at dashboard-v2/src-tauri/src/commands.rs:2308.
@@ -154,6 +173,26 @@ pub struct OAuthTokenSet {
 impl From<OAuthTokenSet> for AuthSource {
     fn from(value: OAuthTokenSet) -> Self {
         Self::BearerToken(value.access_token)
+    }
+}
+
+/// Response shape of GET `/api/oauth/usage`. Each field is the user's
+/// rolling-window utilisation as a percentage (0-100). When either reads
+/// 100 the corresponding subscription bucket is exhausted.
+///
+/// Fields documented in anthropic-rate-limits-findings.md PART 2.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct OAuthUsage {
+    pub five_hour: f32,
+    pub seven_day: f32,
+}
+
+impl OAuthUsage {
+    /// True when either bucket is at or above the safe-burst threshold.
+    /// Default threshold 80% (matches the findings doc's recommendation).
+    #[must_use]
+    pub fn should_throttle(&self, threshold_pct: f32) -> bool {
+        self.five_hour >= threshold_pct || self.seven_day >= threshold_pct
     }
 }
 
@@ -451,6 +490,46 @@ impl AnthropicClient {
             .map_err(ApiError::from)
     }
 
+    /// Pre-flight quota check against Anthropic's reverse-engineered
+    /// `/api/oauth/usage` endpoint. Returns the user's `five_hour` and
+    /// `seven_day` rolling-bucket utilisation as percentages 0-100.
+    ///
+    /// Source: anthropic-rate-limits-findings.md PART 2 — endpoint is
+    /// undocumented in T1 but confirmed via reverse engineering. Only
+    /// works with subscription-client OAuth tokens (Console-client tokens
+    /// will 401 here, which is itself a useful diagnostic).
+    ///
+    /// Use this BEFORE bursting a workload. If `five_hour > 80` or
+    /// `seven_day > 80`, throttle aggressively or stop — burning quota
+    /// from this tool also locks out the user's interactive Claude Code
+    /// session (claude.ai web + CLI + VS Code extension share the same
+    /// OAuth identity bucket).
+    ///
+    /// Requires `self.auth` to be `AuthSource::BearerToken(_)`. Returns
+    /// `ApiError::Auth` otherwise.
+    pub async fn fetch_oauth_usage(&self) -> Result<OAuthUsage, ApiError> {
+        if !matches!(&self.auth, AuthSource::BearerToken(_)) {
+            return Err(ApiError::Auth(
+                "fetch_oauth_usage requires AuthSource::BearerToken".to_string(),
+            ));
+        }
+        let request_url = format!(
+            "{}/api/oauth/usage",
+            self.base_url.trim_end_matches('/')
+        );
+        let mut builder = self.http.get(&request_url);
+        builder = self.auth.apply(builder);
+        builder = builder
+            .header("anthropic-beta", OAUTH_BETA_HEADER)
+            .header("anthropic-version", OAUTH_ANTHROPIC_VERSION)
+            .header("user-agent", CLAUDE_CLI_USER_AGENT)
+            .header("x-app", CLAUDE_X_APP_HEADER)
+            .header("x-claude-code-session-id", claude_code_session_id());
+        let response = builder.send().await.map_err(ApiError::from)?;
+        let response = expect_success(response).await?;
+        response.json::<OAuthUsage>().await.map_err(ApiError::from)
+    }
+
     async fn send_with_retry(
         &self,
         request: &MessageRequest,
@@ -555,7 +634,17 @@ impl AnthropicClient {
             }
         }
 
-        let request_body = self.request_profile.render_json_body(request)?;
+        // OAuth requests against Opus/Sonnet REQUIRE the Claude Code system
+        // prefix as the first SystemBlock; Anthropic returns 400 without it.
+        // We mutate a local clone so callers' MessageRequest is untouched.
+        let body_request = if is_oauth_bearer {
+            let mut owned = request.clone();
+            prepend_oauth_system_prefix(&mut owned);
+            std::borrow::Cow::Owned(owned)
+        } else {
+            std::borrow::Cow::Borrowed(request)
+        };
+        let request_body = self.request_profile.render_json_body(body_request.as_ref())?;
         request_builder = request_builder.json(&request_body);
         request_builder.send().await.map_err(ApiError::from)
     }
@@ -629,11 +718,25 @@ impl AuthSource {
     }
 }
 
+/// Returns true when the saved OAuth access token must be refreshed before
+/// use. Three cases:
+///
+/// 1. `expires_at = Some(t)` AND `t <= now`: the recorded TTL has elapsed.
+/// 2. `expires_at = None` AND `refresh_token = Some(_)`: the saved record
+///    omits the TTL (some Claude Code CLI versions persist `expiresAt: null`
+///    even though the access token still has a finite server-side TTL).
+///    Force-refresh on next use so the live request never 401s on a token
+///    the local code thought was perpetual. anthropic-rate-limits-findings.md
+///    PART 1 documents this short-circuit as a recurring bug-class.
+/// 3. `expires_at = None` AND `refresh_token = None`: nothing we can do —
+///    the caller will see the live 401 and surface it. Returns false to
+///    preserve prior behaviour for non-refreshable tokens.
 #[must_use]
 pub fn oauth_token_is_expired(token_set: &OAuthTokenSet) -> bool {
-    token_set
-        .expires_at
-        .is_some_and(|expires_at| expires_at <= now_unix_timestamp(&elai_core::OsClock))
+    match token_set.expires_at {
+        Some(expires_at) => expires_at <= now_unix_timestamp(&elai_core::OsClock),
+        None => token_set.refresh_token.is_some(),
+    }
 }
 
 pub fn resolve_saved_oauth_token(config: &OAuthConfig) -> Result<Option<OAuthTokenSet>, ApiError> {
@@ -647,6 +750,53 @@ pub fn has_auth_from_env_or_saved() -> Result<bool, ApiError> {
     Ok(read_env_non_empty("ANTHROPIC_API_KEY")?.is_some()
         || read_env_non_empty("ANTHROPIC_AUTH_TOKEN")?.is_some()
         || load_saved_oauth_token()?.is_some())
+}
+
+/// Canonical Claude Code OAuth config used by the dashboard and CLI login
+/// flows. Hardcoded here so the providers crate is self-sufficient — any
+/// caller can call `resolve_startup_auth_source` (or
+/// `resolve_auth_with_auto_refresh`) without pulling cli/dashboard crates.
+///
+/// Source of truth (mirrored from cli/src/auth.rs::default_oauth_config):
+/// leaked claude-code-main src/constants/oauth.ts PROD_OAUTH_CONFIG. The
+/// scopes are the Claude.ai-subscriber union (Pro/Max plans authenticate
+/// without consuming API credits).
+#[must_use]
+pub fn default_claude_code_oauth_config() -> OAuthConfig {
+    OAuthConfig {
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
+        authorize_url: "https://claude.com/cai/oauth/authorize".to_string(),
+        token_url: "https://platform.claude.com/v1/oauth/token".to_string(),
+        callback_port: None,
+        manual_redirect_url: Some(
+            "https://platform.claude.com/oauth/code/callback".to_string(),
+        ),
+        scopes: vec![
+            "org:create_api_key".to_string(),
+            "user:profile".to_string(),
+            "user:inference".to_string(),
+            "user:sessions:claude_code".to_string(),
+            "user:mcp_servers".to_string(),
+            "user:file_upload".to_string(),
+        ],
+    }
+}
+
+/// One-shot auto-refresh helper for callers that don't want to thread the
+/// OAuthConfig through their own loader. Wraps `resolve_startup_auth_source`
+/// with `default_claude_code_oauth_config` as the loader. On successful
+/// refresh the new token is persisted to ELAI_CONFIG_HOME/credentials.json
+/// (handled inside `resolve_saved_oauth_token_set`).
+///
+/// Returns the AuthSource ready to construct an AnthropicClient. Order:
+/// 1. `ANTHROPIC_API_KEY` env → ApiKey
+/// 2. `ANTHROPIC_AUTH_TOKEN` env → BearerToken
+/// 3. Saved OAuth + not expired → BearerToken with saved access_token
+/// 4. Saved OAuth + expired + refresh present → refresh via Claude Code
+///    OAuth config, save new token, return BearerToken with new access_token
+/// 5. Otherwise → `MissingCredentials` error
+pub fn resolve_auth_with_auto_refresh() -> Result<AuthSource, ApiError> {
+    resolve_startup_auth_source(|| Ok(Some(default_claude_code_oauth_config())))
 }
 
 pub fn resolve_startup_auth_source<F>(load_oauth_config: F) -> Result<AuthSource, ApiError>
@@ -816,6 +966,41 @@ fn apply_anthropic_cache_markers(request: &mut MessageRequest) {
                 last.cache_control = Some(CacheControl::ephemeral());
             }
         }
+    }
+}
+
+/// Returns true when `model` is an Opus or Sonnet model that requires the
+/// Claude Code OAuth system-prompt prefix. Haiku is exempt per
+/// anthropic-rate-limits-findings.md PART 3 / CONDITION 3.
+fn model_requires_oauth_system_prefix(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.starts_with("claude-opus") || lower.starts_with("claude-sonnet")
+}
+
+/// Inject the mandatory `CLAUDE_CODE_OAUTH_SYSTEM_PREFIX` as the first
+/// `SystemBlock` of `request` when (a) the model is Opus or Sonnet AND
+/// (b) the existing first system block (if any) does not already start
+/// with the prefix. The injected block is wrapped in ephemeral
+/// `cache_control` so its token cost amortises across the 5-minute cache
+/// window (within Anthropic's 4-marker per-request cap — see
+/// `apply_anthropic_cache_markers` above).
+///
+/// Idempotent: calling twice on the same request does not double-prepend.
+/// Safe on Haiku and other non-Opus/Sonnet models (no-op).
+///
+/// Anthropic's /v1/messages OAuth path returns
+/// `400 invalid_request_error: Error` when this prefix is absent on
+/// Opus/Sonnet — see anthropic-rate-limits-findings.md PART 3.
+fn prepend_oauth_system_prefix(request: &mut MessageRequest) {
+    if !model_requires_oauth_system_prefix(&request.model) {
+        return;
+    }
+    let blocks = request.system.get_or_insert_with(Vec::new);
+    let already_prefixed = blocks
+        .first()
+        .is_some_and(|first| first.text.starts_with(CLAUDE_CODE_OAUTH_SYSTEM_PREFIX));
+    if !already_prefixed {
+        blocks.insert(0, SystemBlock::ephemeral_text(CLAUDE_CODE_OAUTH_SYSTEM_PREFIX));
     }
 }
 
@@ -1041,12 +1226,21 @@ use elai_core::config::OAuthConfig;
         let _guard = env_lock();
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("ELAI_CONFIG_HOME");
+        // Point ELAI_CONFIG_HOME at an empty tempdir so the saved-OAuth
+        // lookup also returns None — otherwise the developer's real
+        // ~/.elai/credentials.json bleeds in and we'd see ExpiredOAuthToken
+        // instead of MissingCredentials. (patch-R1: oauth_token_is_expired
+        // now flags expiresAt:null+refresh-present as expired, so the
+        // saved-OAuth path is no longer silently swallowed.)
+        let config_home = temp_config_home();
+        std::env::set_var("ELAI_CONFIG_HOME", &config_home);
         let error = super::read_api_key().expect_err("missing key should error");
         assert!(matches!(
             error,
             crate::error::ApiError::MissingCredentials { .. }
-        ));
+        ), "expected MissingCredentials, got: {error:?}");
+        std::env::remove_var("ELAI_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
@@ -1054,12 +1248,16 @@ use elai_core::config::OAuthConfig;
         let _guard = env_lock();
         std::env::set_var("ANTHROPIC_AUTH_TOKEN", "");
         std::env::remove_var("ANTHROPIC_API_KEY");
+        let config_home = temp_config_home();
+        std::env::set_var("ELAI_CONFIG_HOME", &config_home);
         let error = super::read_api_key().expect_err("empty key should error");
         assert!(matches!(
             error,
             crate::error::ApiError::MissingCredentials { .. }
-        ));
+        ), "expected MissingCredentials, got: {error:?}");
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
+        std::env::remove_var("ELAI_CONFIG_HOME");
+        cleanup_temp_config_home(&config_home);
     }
 
     #[test]
@@ -1367,5 +1565,199 @@ use elai_core::config::OAuthConfig;
             headers.get("authorization").and_then(|v| v.to_str().ok()),
             Some("Bearer proxy-token")
         );
+    }
+
+    // ---- patch-R1: Anthropic OAuth header & system-prefix fixes ----
+
+    fn sample_message_request(model: &str) -> MessageRequest {
+        MessageRequest {
+            model: model.to_string(),
+            max_tokens: 64,
+            messages: vec![],
+            system: None,
+            tools: None,
+            tool_choice: None,
+            stream: false,
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn ua_constant_is_current_claude_code_version() {
+        // Stale UA versions are an Anthropic abuse-detection fingerprint
+        // surface. Verified 2026-05-15 against @anthropic-ai/claude-code.
+        // If you bump CLAUDE_CLI_USER_AGENT, update this assertion to the
+        // new version + bump cadence note in the const's doc-comment.
+        assert!(
+            super::CLAUDE_CLI_USER_AGENT.starts_with("claude-cli/2.1."),
+            "UA must be on the 2.1.x train: {}",
+            super::CLAUDE_CLI_USER_AGENT
+        );
+        assert!(
+            super::CLAUDE_CLI_USER_AGENT.contains("(external, cli)"),
+            "UA must include the published (external, cli) suffix: {}",
+            super::CLAUDE_CLI_USER_AGENT
+        );
+    }
+
+    #[test]
+    fn oauth_system_prefix_is_required_for_opus_and_sonnet_only() {
+        assert!(super::model_requires_oauth_system_prefix("claude-opus-4-7"));
+        assert!(super::model_requires_oauth_system_prefix("claude-opus-4-6"));
+        assert!(super::model_requires_oauth_system_prefix(
+            "claude-sonnet-4-6"
+        ));
+        assert!(super::model_requires_oauth_system_prefix(
+            "Claude-Sonnet-4-6" // case-insensitive
+        ));
+        assert!(!super::model_requires_oauth_system_prefix(
+            "claude-haiku-4-5-20251001"
+        ));
+        assert!(!super::model_requires_oauth_system_prefix("qwen-coder-3b"));
+        assert!(!super::model_requires_oauth_system_prefix("gpt-4"));
+    }
+
+    #[test]
+    fn prepend_oauth_system_prefix_injects_on_opus_with_no_existing_system() {
+        let mut req = sample_message_request("claude-opus-4-7");
+        super::prepend_oauth_system_prefix(&mut req);
+        let blocks = req.system.expect("system blocks should be present");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, super::CLAUDE_CODE_OAUTH_SYSTEM_PREFIX);
+        assert!(
+            blocks[0].cache_control.is_some(),
+            "prefix should be cache-marked ephemeral"
+        );
+    }
+
+    #[test]
+    fn prepend_oauth_system_prefix_inserts_at_index_zero_when_other_blocks_exist() {
+        let mut req = sample_message_request("claude-sonnet-4-6");
+        req.system = Some(vec![
+            crate::SystemBlock::text("custom user system content"),
+        ]);
+        super::prepend_oauth_system_prefix(&mut req);
+        let blocks = req.system.expect("system blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, super::CLAUDE_CODE_OAUTH_SYSTEM_PREFIX);
+        assert_eq!(blocks[1].text, "custom user system content");
+    }
+
+    #[test]
+    fn prepend_oauth_system_prefix_is_idempotent() {
+        let mut req = sample_message_request("claude-opus-4-7");
+        super::prepend_oauth_system_prefix(&mut req);
+        super::prepend_oauth_system_prefix(&mut req);
+        super::prepend_oauth_system_prefix(&mut req);
+        let blocks = req.system.expect("system blocks");
+        assert_eq!(blocks.len(), 1, "must not double-prepend on repeat calls");
+    }
+
+    #[test]
+    fn prepend_oauth_system_prefix_skips_haiku() {
+        let mut req = sample_message_request("claude-haiku-4-5-20251001");
+        super::prepend_oauth_system_prefix(&mut req);
+        assert!(
+            req.system.is_none(),
+            "Haiku should not get the OAuth system prefix"
+        );
+    }
+
+    #[test]
+    fn prepend_oauth_system_prefix_recognises_existing_prefix_block() {
+        let mut req = sample_message_request("claude-sonnet-4-6");
+        req.system = Some(vec![
+            crate::SystemBlock::ephemeral_text(
+                super::CLAUDE_CODE_OAUTH_SYSTEM_PREFIX,
+            ),
+            crate::SystemBlock::text("user content"),
+        ]);
+        super::prepend_oauth_system_prefix(&mut req);
+        let blocks = req.system.expect("system blocks");
+        assert_eq!(blocks.len(), 2, "must not duplicate existing prefix block");
+    }
+
+    #[test]
+    fn oauth_token_is_expired_returns_true_when_expires_at_none_and_refresh_present() {
+        // The recurring "expiresAt: null" short-circuit bug from
+        // PHASE_E2_REPORT — once-saved tokens with null expiry must be
+        // treated as expired so the refresh path fires.
+        let token = OAuthTokenSet {
+            access_token: "stale-access".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            expires_at: None,
+            scopes: vec![],
+        };
+        assert!(super::oauth_token_is_expired(&token));
+    }
+
+    #[test]
+    fn oauth_token_is_expired_returns_false_when_expires_at_none_and_no_refresh() {
+        // Without a refresh token there's nothing we can do; preserve
+        // prior behaviour and let the live request surface the 401.
+        let token = OAuthTokenSet {
+            access_token: "static".to_string(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+        };
+        assert!(!super::oauth_token_is_expired(&token));
+    }
+
+    #[test]
+    fn oauth_token_is_expired_uses_expires_at_when_present() {
+        let now = super::now_unix_timestamp(&elai_core::OsClock);
+        let expired = OAuthTokenSet {
+            access_token: "x".to_string(),
+            refresh_token: None,
+            expires_at: Some(now.saturating_sub(60)),
+            scopes: vec![],
+        };
+        let valid = OAuthTokenSet {
+            access_token: "x".to_string(),
+            refresh_token: None,
+            expires_at: Some(now + 3600),
+            scopes: vec![],
+        };
+        assert!(super::oauth_token_is_expired(&expired));
+        assert!(!super::oauth_token_is_expired(&valid));
+    }
+
+    #[test]
+    fn oauth_usage_should_throttle_at_or_above_threshold() {
+        let safe = super::OAuthUsage {
+            five_hour: 50.0,
+            seven_day: 60.0,
+        };
+        let near_cap_5h = super::OAuthUsage {
+            five_hour: 85.0,
+            seven_day: 60.0,
+        };
+        let near_cap_7d = super::OAuthUsage {
+            five_hour: 50.0,
+            seven_day: 81.0,
+        };
+        assert!(!safe.should_throttle(80.0));
+        assert!(near_cap_5h.should_throttle(80.0));
+        assert!(near_cap_7d.should_throttle(80.0));
+    }
+
+    #[test]
+    fn fetch_oauth_usage_requires_bearer_token_auth() {
+        let _guard = env_lock();
+        let client = AnthropicClient::new("test-api-key");
+        // Tokio runtime needed because fetch_oauth_usage is async.
+        let result = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(client.fetch_oauth_usage());
+        match result {
+            Err(crate::ApiError::Auth(msg)) => {
+                assert!(
+                    msg.contains("BearerToken"),
+                    "auth error should mention BearerToken requirement: {msg}"
+                );
+            }
+            other => panic!("expected ApiError::Auth, got: {other:?}"),
+        }
     }
 }
