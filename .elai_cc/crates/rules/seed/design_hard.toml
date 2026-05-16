@@ -1,0 +1,165 @@
+# B-41 Slice 3a — design-hard rule cluster seed.
+#
+# Format mirrors the project_rule_seeder ingestion shape (see
+# crates/rules/src/project_rule_seeder.rs and schema.rs). Every entry seeded
+# at status="SHADOW" per phase-3F lifecycle so new rules never block builds
+# until promoted to ACTIVE via the rule-engine review path.
+#
+# Source grounding:
+#   - WCAG 2.2 AA contrast 4.5:1 — https://www.w3.org/TR/WCAG22/#contrast-minimum
+#   - 8pt spacing scale — Material 3 spec + Apple HIG (T2 design tier).
+#   - Font fallback stacks — system-ui prevailing recommendation (CSS WG).
+
+domain = "design-hard"
+tier = 2
+default_status = "SHADOW"
+
+[[rules]]
+rule_id = "DH-001"
+title = "WCAG AA contrast minimum 4.5:1 (normal text)"
+description = "All text/background pairs targeting normal text size must achieve contrast ratio >= 4.5:1 per WCAG 2.2 AA SC 1.4.3."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-002"
+title = "WCAG AA contrast minimum 3:1 (large text >= 18pt regular / 14pt bold)"
+description = "Large text per WCAG 1.4.3 may use 3:1 — flag pairs that fall below."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-003"
+title = "Non-text contrast 3:1 (icons, focus rings, form borders)"
+description = "WCAG 2.2 SC 1.4.11 requires 3:1 contrast for non-text UI components against adjacent colors."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-004"
+title = "8pt spacing scale enforced"
+description = "Padding/margin/gap values must be multiples of 8px (or 4px at sub-component scale). Magic spacing values forbidden."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-005"
+title = "Typographic scale uses defined steps"
+description = "Font sizes must come from a defined 8-step scale (e.g. 12/14/16/18/20/24/32/48). No one-off pixel values."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-006"
+title = "Font stack declares fallback chain"
+description = "Every font-family declaration MUST include at least one system fallback (system-ui, -apple-system, sans-serif)."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-007"
+title = "Palette restricted to declared tokens"
+description = "Colour literals (#hex / rgb()) outside the design-token registry are forbidden in component code."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-008"
+title = "Component density limit: <= 7 actionable elements per surface"
+description = "Cards/panels with > 7 buttons/inputs/links violate cognitive-load density guideline (Hick's law, Miller's 7±2)."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-009"
+title = "Tap target minimum 44x44 CSS px (Apple HIG) / 48x48 dp (Material)"
+description = "Interactive targets below the minimum tap-target size fail accessibility on touch devices."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-010"
+title = "Focus state visible on every keyboard-accessible element"
+description = "WCAG 2.2 SC 2.4.11/2.4.13 require visible focus indicators. Forbidden: `outline: none` without replacement ring."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-011"
+title = "Motion respects prefers-reduced-motion"
+description = "Any non-essential animation must check `@media (prefers-reduced-motion: reduce)` and fall back to instant."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-012"
+title = "Text resizable to 200% without loss of content (WCAG 1.4.4)"
+description = "Layout must not break at 200% zoom; no fixed-px containers locking text size."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-013"
+title = "Colour is never the sole channel for meaning"
+description = "WCAG 1.4.1 — pair colour cues with icon/label/text so colour-blind users perceive the same information."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-014"
+title = "Form fields have explicit, programmatically-associated labels"
+description = "<label for=...> or aria-labelledby. Placeholder-only labels forbidden (WCAG 3.3.2)."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-015"
+title = "Error messages identify the field and the correction"
+description = "WCAG 3.3.3 / 3.3.4 — error must name the field and suggest a fix where known."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-016"
+title = "Headings hierarchical (no h1 -> h3 skip)"
+description = "WCAG 1.3.1 — semantic structure must not skip heading levels."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-017"
+title = "Images have alt text (or alt=\"\" if decorative)"
+description = "WCAG 1.1.1 — every <img> requires alt; decorative images use empty alt."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-018"
+title = "Language declared at document root"
+description = "WCAG 3.1.1 — <html lang=...> required for screen-reader pronunciation."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-019"
+title = "Page title is descriptive and unique"
+description = "WCAG 2.4.2 — <title> identifies the page content and differs across views."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-020"
+title = "Skip-link to main content present"
+description = "WCAG 2.4.1 — keyboard users need a skip link to bypass repeated navigation."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-021"
+title = "Touch + pointer events both supported (no pointer-only handlers)"
+description = "WCAG 2.5.1 — primary actions must work via pointer OR keyboard OR touch."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-022"
+title = "Time-limits adjustable or extendable (WCAG 2.2.1)"
+description = "Any auto-dismiss or session timeout must allow extension OR be disabled for assistive tech users."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-023"
+title = "Forbid auto-playing audio > 3s without pause control"
+description = "WCAG 1.4.2 — auto-playing audio must be pause-able from the keyboard within 3 seconds."
+risk = "LOW"
+
+[[rules]]
+rule_id = "DH-024"
+title = "Modal traps focus while open and restores on close"
+description = "WCAG 2.4.3 + ARIA modal pattern — focus order must not escape the modal until dismiss."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "DH-025"
+title = "Loading and async states announced via aria-live"
+description = "Screen readers must perceive progress changes; silent spinners violate 4.1.3 Status Messages."
+risk = "LOW"

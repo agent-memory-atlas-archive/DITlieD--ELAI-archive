@@ -8,6 +8,14 @@ pub mod agent_template;
 // `orchestrator/src/ssb.rs`, which has in-flight B-28 work. Contract:
 // `crates/contracts/tests/artifacts_pipeline_contract.rs`.
 pub mod artifacts;
+// B-42 Phase 2: cosmos briefing compiler (compile_cosmos_briefing).
+pub mod briefing;
+// B-41: per-level auditor mode dispatch. Defines AuditorMode (6 variants),
+// TierNodeId (typed sum over ConceptId/PhaseId/StepId/BabyStepId), Verdict
+// (Allow/Block), Finding, LevelAuditVerdict, and the dispatch / respawn /
+// cascade helpers consumed by pipeline_tree_navigator. See
+// workflow/reasoning/B-41-decisions.md.
+pub mod auditor_mode;
 pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
 pub mod grc;
@@ -39,6 +47,10 @@ pub mod evidence;
 pub mod focus_tunnel;
 pub mod fsm;
 pub mod gate;
+// B-40 — Idea-Framer + Domain Research Presets + Critic Loop. Inserts a
+// FRAMING substate before Phase 4D Recursive Decomposition. Public surface
+// re-exported below (FramedIdea, ProjectClass, CriticCategory, etc.).
+pub mod idea_framing;
 pub mod hooks;
 pub mod hook_dispatcher;
 pub mod shortcoder_hook;
@@ -77,6 +89,7 @@ pub mod research_tree;
 pub mod pipeline_builder;
 pub mod phase_sizing_splitter;
 pub mod pipeline_tree_navigator;
+pub mod per_level_audit_dispatch;
 #[cfg(test)]
 mod pipeline_builder_bench;
 #[cfg(test)]
@@ -198,8 +211,22 @@ pub use elai_core::{
 
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
 pub use fsm::{
-    EvidenceArtifact, Fsm, FsmError, FsmState, PersistedFsmState, ReplanLogEntry, ReplanRequest,
-    ReplanSeverity, TransitionRecord,
+    EvidenceArtifact, Fsm, FsmError, FsmState, FsmSubstate, PersistedFsmState, ReplanLogEntry,
+    ReplanRequest, ReplanSeverity, TransitionRecord,
+};
+// B-40 — Idea-Framer public surface.
+pub use idea_framing::{
+    classify_project_class, classify_project_class_with_pattern,
+    dispatch_multi_root_research, frame_idea, load_research_preset,
+    load_research_presets_from_project_root, parse_research_presets_from_toml,
+    run_critic_loop, ALL_CRITIC_CATEGORIES, ALL_PROJECT_CLASSES,
+    IDEA_FRAMER_GRC_BUDGET_CALLS, IDEA_FRAMER_GRC_BUDGET_CHARS, MAX_CRITIC_ROUNDS,
+    NUM_CRITIC_CATEGORIES,
+};
+pub use idea_framing::{
+    ClassPreset, CriticCategory, CriticFinding, CriticRound, FramedIdea, IdeaFramingError,
+    KeyDecision, ProjectClass, ResearchPresets, ResearchStream, ResearchSummary, Severity,
+    SourceTier, StreamSummary, Tradeoff, TradeoffCard,
 };
 pub use evidence::{
     all_gates, check_transition, daira_adaptive_run, gates_for_transition, AuditFinding,
@@ -219,6 +246,12 @@ pub use autonomous_gate::{
     autonomous_gate_disabled_via_env, AutonomousGate, AutonomousGateConfig, AutonomyDecision,
     EscalationTrigger, Evidence as AutonomousEvidence, GateContext as AutonomousGateContext,
     GateMode, PipelineLevel, TreeAutoAdvancePolicy, ELAI_DISABLE_AUTONOMOUS_GATE_ENV,
+};
+// B-41 — per-level audit evidence helpers (consumed by
+// autonomous_gate_with_per_level_contract.rs + downstream gate callers).
+pub use task_runner::{
+    derive_babystep_zero_blocks, derive_concept_zero_blocks, derive_phase_zero_blocks,
+    derive_plan_zero_blocks, derive_step_zero_blocks,
 };
 pub use tool_filter::{RuleCategory, ToolCategory};
 pub use dispatcher::{

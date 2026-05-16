@@ -36,6 +36,8 @@ fn all_pass() -> AutonomousEvidence {
         test_flipped: true,
         zero_blocks: true,
         dkg_and_changelog_present: true,
+        // B-40: 7th check vacuous-default true for non-FRAMING contexts.
+        framing_converged: true,
     }
 }
 

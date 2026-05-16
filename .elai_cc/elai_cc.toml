@@ -326,3 +326,194 @@ profile = "standard"
 warn_at_usd = 1.0
 # hard_cap_daily_usd = 5.0
 # hard_cap_monthly_usd = 50.0
+
+# ============================================================================
+# B-40: Domain Research Presets
+# ============================================================================
+# Each preset is keyed by the snake_case ProjectClass discriminant
+# (consumer_mobile_app / web_app / saas_dashboard / desktop_app / game_mod /
+#  research_tool / library_or_sdk / cli_tool / other).
+#
+# Loaded by elai_orchestrator::idea_framing::ResearchPresets at startup;
+# dispatched as a multi-root FlashResearch tree by frame_idea() during the
+# FRAMING substate. Each stream becomes one root node in the tree.
+#
+# Mandatory streams MUST converge OR be reported in `degraded_streams`.
+# Non-mandatory streams are best-effort.
+#
+# Spec ref: docs/thefinalglance/B-plan/B-40_idea_framer_research_presets.md
+# Decision doc: workflow/reasoning/B-40-decisions.md
+# ============================================================================
+
+[research_presets]
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "competitor_ux_teardown"
+query_template = "Top consumer mobile apps competing with: {idea}. Capture UX patterns, onboarding flows, and core loop."
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "negative_review_synthesis"
+query_template = "Negative reviews + 1-star feedback for apps similar to: {idea}. What do users hate?"
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "ios_android_guidelines"
+query_template = "iOS Human Interface Guidelines + Android Material Design constraints relevant to: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "asset_ip_licensing"
+query_template = "Asset and IP licensing landscape for consumer mobile apps in domain: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "monetization_patterns"
+query_template = "Monetization patterns (freemium / ads / paid / subscription) for: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 3
+mandatory = false
+
+[[research_presets.consumer_mobile_app.streams]]
+name = "design_trends_2026"
+query_template = "Mobile UX design trends 2026 relevant to: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 2
+mandatory = false
+
+
+[[research_presets.web_app.streams]]
+name = "framework_landscape"
+query_template = "Modern web framework landscape (Next.js / SvelteKit / Astro / Remix) for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.web_app.streams]]
+name = "browser_compat_matrix"
+query_template = "Browser compatibility matrix + core-feature support for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.web_app.streams]]
+name = "competitor_web_apps"
+query_template = "Comparable web apps for: {idea}. Capture rendering strategy, deploy target, and stack."
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.web_app.streams]]
+name = "hosting_cost_models"
+query_template = "Hosting and CDN cost models (Vercel / Netlify / Cloudflare / self-host) for: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.web_app.streams]]
+name = "seo_search_patterns"
+query_template = "SEO patterns + search-intent surfaces for: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 2
+mandatory = false
+
+[[research_presets.web_app.streams]]
+name = "accessibility_baseline"
+query_template = "WCAG 2.2 AA baseline + accessibility patterns for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 2
+mandatory = false
+
+
+[[research_presets.saas_dashboard.streams]]
+name = "competitor_dashboards"
+query_template = "Comparable SaaS dashboards for: {idea}. Capture nav structure, drill-down, and key-metric surface."
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.saas_dashboard.streams]]
+name = "tenant_isolation_models"
+query_template = "Multi-tenant data isolation models (shared DB / per-tenant DB / per-tenant schema) for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.saas_dashboard.streams]]
+name = "analytics_patterns"
+query_template = "Cohort analytics + funnel patterns + retention curves relevant to: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.saas_dashboard.streams]]
+name = "compliance_baseline"
+query_template = "SOC2 / GDPR / HIPAA compliance baseline relevant to: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.saas_dashboard.streams]]
+name = "billing_integrations"
+query_template = "Stripe / Lemon Squeezy / Paddle billing integration patterns for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 2
+mandatory = false
+
+[[research_presets.saas_dashboard.streams]]
+name = "feature_flag_strategy"
+query_template = "Feature-flag + experiment-rollout strategy for: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 2
+mandatory = false
+
+
+[[research_presets.game_mod.streams]]
+name = "host_game_modding_api"
+query_template = "Modding API + extension surface for host game referenced by: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.game_mod.streams]]
+name = "comparable_mods_landscape"
+query_template = "Comparable mods in same host game category as: {idea}. Capture install pipeline + scope."
+min_source_tier = "T2"
+parallelism_budget = 4
+mandatory = true
+
+[[research_presets.game_mod.streams]]
+name = "mod_compatibility_layer"
+query_template = "Mod-compatibility layer (loader / patches / load order) for host game in: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 3
+mandatory = true
+
+[[research_presets.game_mod.streams]]
+name = "host_game_eula"
+query_template = "Host game EULA + modding policy + IP carve-out for: {idea}"
+min_source_tier = "T1"
+parallelism_budget = 2
+mandatory = true
+
+[[research_presets.game_mod.streams]]
+name = "asset_pipeline"
+query_template = "Asset import pipeline (textures / models / audio) for mods in: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 3
+mandatory = false
+
+[[research_presets.game_mod.streams]]
+name = "community_distribution"
+query_template = "Mod distribution channels (Steam Workshop / NexusMods / GitHub) for: {idea}"
+min_source_tier = "T2"
+parallelism_budget = 2
+mandatory = false

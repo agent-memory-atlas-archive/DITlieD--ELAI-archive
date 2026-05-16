@@ -1,0 +1,230 @@
+# B-40 — ProjectClass classifier 50-prompt labeled fixture.
+#
+# Used by .elai_cc/crates/orchestrator/tests/idea_framing_unit.rs to assert
+# the deterministic regex classifier achieves >= 90% accuracy across the 9
+# ProjectClass variants. Each fixture is a (prompt, expected_class) pair.
+#
+# Coverage: balanced across the 5 most common classes (ConsumerMobileApp,
+# WebApp, SaaSDashboard, GameMod, Other) and the 4 less-common variants
+# (DesktopApp, ResearchTool, LibraryOrSDK, CLITool). Counts:
+#   ConsumerMobileApp = 7
+#   WebApp            = 7
+#   SaaSDashboard     = 7
+#   GameMod           = 6
+#   Other             = 6
+#   DesktopApp        = 4
+#   ResearchTool      = 4
+#   LibraryOrSDK      = 5
+#   CLITool           = 4
+# Total = 50
+#
+# Spec ref: docs/thefinalglance/B-plan/B-40_idea_framer_research_presets.md
+# ACCEPTANCE line 1.
+
+[[fixtures]]
+prompt = "make an app like PictureThis"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "iOS app for tracking daily water intake"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "Android app: meditation timer with mood journal"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "React Native app for sharing photos"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "build a TikTok competitor with vertical short-form video"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "consumer app like Duolingo for piano practice"
+expected_class = "consumer_mobile_app"
+
+[[fixtures]]
+prompt = "mobile app to scan barcodes and show recipes"
+expected_class = "consumer_mobile_app"
+
+
+[[fixtures]]
+prompt = "Next.js app for displaying GitHub stats"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "Svelte app: real-time multiplayer drawing canvas"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "static site for my personal portfolio"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "browser game where players build castles"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "landing page for a new product launch"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "Vue app: kanban board with drag-and-drop"
+expected_class = "web_app"
+
+[[fixtures]]
+prompt = "HTML5 game with WebGL rendering"
+expected_class = "web_app"
+
+
+[[fixtures]]
+prompt = "build a Mailchimp competitor with cohort analytics"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "B2B platform with admin panel for invoice tracking"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "SaaS for monitoring server uptime metrics"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "dashboard for product analytics in real-time"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "subscription platform for content creators"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "Looker-style analytics dashboard for e-commerce"
+expected_class = "saas_dashboard"
+
+[[fixtures]]
+prompt = "admin panel for customer support agents"
+expected_class = "saas_dashboard"
+
+
+[[fixtures]]
+prompt = "Minecraft mod for redstone automation"
+expected_class = "game_mod"
+
+[[fixtures]]
+prompt = "Skyrim mod adding new dragons"
+expected_class = "game_mod"
+
+[[fixtures]]
+prompt = "Factorio mod for better train scheduling"
+expected_class = "game_mod"
+
+[[fixtures]]
+prompt = "RimWorld mod with vehicle support"
+expected_class = "game_mod"
+
+[[fixtures]]
+prompt = "mod for Stardew Valley adding new crops"
+expected_class = "game_mod"
+
+[[fixtures]]
+prompt = "mod loader for indie game X"
+expected_class = "game_mod"
+
+
+[[fixtures]]
+prompt = "research tool for ingesting arXiv papers"
+expected_class = "research_tool"
+
+[[fixtures]]
+prompt = "literature review system with citation tracking"
+expected_class = "research_tool"
+
+[[fixtures]]
+prompt = "benchmark suite for evaluating LLM agents"
+expected_class = "research_tool"
+
+[[fixtures]]
+prompt = "experiment runner for reproducible ML training"
+expected_class = "research_tool"
+
+
+[[fixtures]]
+prompt = "Rust crate: parser combinator library"
+expected_class = "library_or_sdk"
+
+[[fixtures]]
+prompt = "npm package for fast string fuzzy-matching"
+expected_class = "library_or_sdk"
+
+[[fixtures]]
+prompt = "Python package: wrapper for the OpenAI API"
+expected_class = "library_or_sdk"
+
+[[fixtures]]
+prompt = "SDK for embedding a chat widget into any website"
+expected_class = "library_or_sdk"
+
+[[fixtures]]
+prompt = "open-source library for image perceptual hashing"
+expected_class = "library_or_sdk"
+
+
+[[fixtures]]
+prompt = "CLI tool to manage Kubernetes contexts"
+expected_class = "cli_tool"
+
+[[fixtures]]
+prompt = "command-line tool for renaming files in bulk"
+expected_class = "cli_tool"
+
+[[fixtures]]
+prompt = "Rust CLI: lightning-fast grep replacement"
+expected_class = "cli_tool"
+
+[[fixtures]]
+prompt = "shell utility for monitoring battery health"
+expected_class = "cli_tool"
+
+
+[[fixtures]]
+prompt = "Electron app for managing my notes"
+expected_class = "desktop_app"
+
+[[fixtures]]
+prompt = "Tauri app for cataloging my Steam library"
+expected_class = "desktop_app"
+
+[[fixtures]]
+prompt = "native GUI for editing audio waveforms"
+expected_class = "desktop_app"
+
+[[fixtures]]
+prompt = "Qt app for serial-port debugging"
+expected_class = "desktop_app"
+
+
+[[fixtures]]
+prompt = "something cool"
+expected_class = "other"
+
+[[fixtures]]
+prompt = "I want to build a thing"
+expected_class = "other"
+
+[[fixtures]]
+prompt = "help"
+expected_class = "other"
+
+[[fixtures]]
+prompt = "let's do AI stuff"
+expected_class = "other"
+
+[[fixtures]]
+prompt = "make money"
+expected_class = "other"
+
+[[fixtures]]
+prompt = "experiment"
+expected_class = "other"

@@ -1082,6 +1082,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("<question>"),
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "entry_points",
+        aliases: &[],
+        summary: "Detect and list project entry points (main/routes/tests/orphans)",
+        argument_hint: Some("[project-root]"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1272,6 +1279,12 @@ pub enum SlashCommand {
     /// handler mirrors the Mode pattern — string-typed, no reasoning-crate dep.
     Reason {
         on_off: String,
+    },
+    /// B-34: Detect and list project entry points (main functions, framework routes,
+    /// test harnesses, orphan files). `project_root` is the optional project
+    /// root path; defaults to the current session project root if omitted.
+    EntryPoints {
+        project_root: Option<String>,
     },
     Unknown(String),
 }
@@ -1545,6 +1558,7 @@ pub fn validate_slash_command_input(
         "reason" => SlashCommand::Reason {
             on_off: remainder.unwrap_or_else(|| "on".to_string()),
         },
+        "entry_points" => SlashCommand::EntryPoints { project_root: remainder },
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1957,7 +1971,7 @@ fn slash_command_category(name: &str) -> &'static str {
         }
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
-        "research" | "ask" | "explore" | "task" | "mode" => "Routing & modes",
+        "research" | "ask" | "explore" | "task" | "mode" | "entry_points" => "Routing & modes",
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -3844,6 +3858,7 @@ pub fn handle_slash_command(
         | SlashCommand::Task { .. }
         | SlashCommand::Mode { .. }
         | SlashCommand::Reason { .. }
+        | SlashCommand::EntryPoints { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }

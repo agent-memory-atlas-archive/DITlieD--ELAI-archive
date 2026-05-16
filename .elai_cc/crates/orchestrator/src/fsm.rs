@@ -103,6 +103,47 @@ impl std::fmt::Display for FsmState {
 }
 
 // ---------------------------------------------------------------------------
+// FsmSubstate (B-40): per-state agent substate
+// ---------------------------------------------------------------------------
+//
+// Agent-scoped substate distinct from top-level FsmState. FRAMING is the only
+// variant at MVP (B-40 P2); future substates (Decomposing under PLANNING,
+// Validating under EXECUTING, etc.) follow the same pattern. This mirrors the
+// AUDITING + MEMORIZING agent_substate pattern used by mcp_fsm_agent_transition
+// (CLAUDE.md FSM cleanup rule).
+//
+// Substates are NOT validated by `valid_targets()` — they're orthogonal to the
+// top-level transition matrix. PLANNING + FRAMING means "agent is in the
+// Idea-Framer phase under the PLANNING top-level state". The PreToolUse hook
+// gates tool access on (state, substate) tuples.
+
+/// Per-state agent substate. Used by B-40 to mark FRAMING within PLANNING.
+/// Persisted via [`PersistedFsmState::substate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsmSubstate {
+    /// B-40: Idea-Framer + critic-loop pass under PLANNING. Restricts tools
+    /// to research / read-only (no Edit/Write/Bash beyond research scratch).
+    /// Exited when run_critic_loop converges (zero BLOCK findings within
+    /// MAX_CRITIC_ROUNDS=3) AND the user has submitted tradeoff responses.
+    Framing,
+}
+
+impl FsmSubstate {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FsmSubstate::Framing => "framing",
+        }
+    }
+}
+
+impl std::fmt::Display for FsmSubstate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FsmConfig — per-project FSM configuration (risk overrides)
 // ---------------------------------------------------------------------------
 
@@ -286,6 +327,10 @@ impl std::error::Error for FsmError {}
 
 /// On-disk state representation. Source: phase-3A.txt line 69.
 /// Path: .elai_cc/sessions/{sid}/.fsm-state.msgpack
+///
+/// B-40: added `substate: Option<FsmSubstate>` (additive, defaulted to None on
+/// deserialization of older snapshots — `#[serde(default)]` makes the field
+/// backward-compatible with the v40-and-earlier msgpack format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedFsmState {
     pub state: FsmState,
@@ -293,6 +338,11 @@ pub struct PersistedFsmState {
     pub token_budget: usize,
     pub replan_log: Vec<ReplanLogEntry>,
     pub transition_history: Vec<TransitionRecord>,
+    /// B-40: optional per-state agent substate (e.g. FRAMING under PLANNING).
+    /// `None` for v40-and-earlier snapshots; loaders should treat missing as
+    /// "no substate active".
+    #[serde(default)]
+    pub substate: Option<FsmSubstate>,
 }
 
 /// Tracks which agents have submitted replan requests per phase.
@@ -659,6 +709,10 @@ impl Fsm {
                 token_budget: guard.token_budget,
                 replan_log: guard.replan_log.clone(),
                 transition_history: guard.transition_history.clone(),
+                // B-40: substate is tracked separately by the framing
+                // workflow; FSM transitions clear any prior substate
+                // implicitly (top-level transition = exit any substate).
+                substate: None,
             };
             persist_state(path, &persisted).await?;
         }
@@ -732,6 +786,7 @@ impl Fsm {
                 token_budget: guard.token_budget,
                 replan_log: guard.replan_log.clone(),
                 transition_history: guard.transition_history.clone(),
+                substate: None,
             };
             persist_state(path, &persisted).await?;
         }
@@ -767,6 +822,7 @@ impl Fsm {
                 token_budget: guard.token_budget,
                 replan_log: guard.replan_log.clone(),
                 transition_history: guard.transition_history.clone(),
+                substate: None,
             };
             persist_state(path, &persisted).await?;
         }
@@ -860,6 +916,7 @@ mod tests {
                     data: vec![1, 2, 3],
                 }],
             }],
+            substate: None,
         };
         let bytes = rmp_serde::to_vec(&persisted).expect("encode");
         let decoded: PersistedFsmState = rmp_serde::from_slice(&bytes).expect("decode");

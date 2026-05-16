@@ -29,6 +29,22 @@ fn all_pass_evidence() -> AutonomousEvidence {
         test_flipped: true,
         zero_blocks: true,
         dkg_and_changelog_present: true,
+        // B-40: 7th check (FRAMING substate). For non-FRAMING contexts the
+        // vacuous-default is true so the 14 existing autonomous_gate tests
+        // observe the same all-pass semantic they did pre-B-40. This is the
+        // single minimal struct-literal update required by Rust's
+        // "all fields explicit" rule when extending a non-#[non_exhaustive]
+        // struct; the test BODIES are unchanged. Documented in
+        // workflow/reasoning/B-40-decisions.md DECISION-EVIDENCE-EXTENSION.
+        framing_converged: true,
+        // B-41: 5 per-level audit zero-blocks vacuous-default true (same
+        // documentation/contract pattern as framing_converged above — extends
+        // the struct without changing test BODIES).
+        concept_zero_blocks: true,
+        phase_zero_blocks: true,
+        step_zero_blocks: true,
+        babystep_zero_blocks: true,
+        plan_zero_blocks: true,
     }
 }
 

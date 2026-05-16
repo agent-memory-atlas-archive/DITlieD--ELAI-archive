@@ -1,0 +1,82 @@
+# B-41 Slice 3a — risk-levels rule cluster seed.
+#
+# Per-tier risk classification consumed by the AutonomousGate
+# (`fsm::resolve_risk_level`) and the auditor MODE DISPATCH section. Values
+# match `elai_fsm::RiskLevel::{Low,Medium,High}` strings (lowercased). SHADOW
+# until the rule-engine review path promotes; ACTIVE values gate auto-advance.
+
+domain = "risk-levels"
+tier = 1
+default_status = "SHADOW"
+
+[[rules]]
+rule_id = "RL-001"
+action = "concept-pivot"
+risk = "HIGH"
+description = "Switching the top-level concept (replan_concept BubbleUp) discards >= 1 hour of pipeline work. Always escalate."
+
+[[rules]]
+rule_id = "RL-002"
+action = "phase-restructure"
+risk = "MEDIUM"
+description = "Reordering or replacing a phase invalidates its contract artefacts. Auto-advance only with all-pass evidence."
+
+[[rules]]
+rule_id = "RL-003"
+action = "step-refactor"
+risk = "LOW"
+description = "Refactoring a step within its existing phase contract is low risk — auto-advance permitted."
+
+[[rules]]
+rule_id = "RL-004"
+action = "babystep-refactor"
+risk = "LOW"
+description = "Tweaking a single baby-step within its 8-block contract is the lowest-risk routine path."
+
+[[rules]]
+rule_id = "RL-005"
+action = "prod-config-edit"
+risk = "HIGH"
+description = "Production config edits (env vars, deployment YAML, secrets) require human review regardless of evidence."
+
+[[rules]]
+rule_id = "RL-006"
+action = "ssb-schema-bump"
+risk = "MEDIUM"
+description = "Bumping SCHEMA_VERSION + adding action_type variants must pass all 8 lockstep sites + contract tests."
+
+[[rules]]
+rule_id = "RL-007"
+action = "dashboard-window-add"
+risk = "LOW"
+description = "Adding a new dashboard window registry entry + Svelte file is additive UI work."
+
+[[rules]]
+rule_id = "RL-008"
+action = "tauri-command-add"
+risk = "MEDIUM"
+description = "New Tauri command crosses the Rust/JS IPC boundary; must register in invoke_handler! AND expose in api/stub."
+
+[[rules]]
+rule_id = "RL-009"
+action = "agent-role-add"
+risk = "MEDIUM"
+description = "Adding an AgentRole variant requires every exhaustive-match site to add an arm + GRC config + rule cluster mapping."
+
+[[rules]]
+rule_id = "RL-010"
+action = "auditor-mode-add"
+risk = "HIGH"
+description = "Adding an AuditorMode requires updating the dispatcher cascade map, evidence helpers, SSB rows, and dashboard timeline."
+
+[[rules]]
+rule_id = "RL-011"
+action = "fsm-state-add"
+risk = "HIGH"
+description = "New FSM state changes the protocol surface; risks orphan transitions + stuck sessions."
+
+[[rules]]
+rule_id = "RL-012"
+action = "hook-binding-edit"
+risk = "MEDIUM"
+description = "Editing PreToolUse / PostToolUse hooks affects every session; requires regression run before commit."

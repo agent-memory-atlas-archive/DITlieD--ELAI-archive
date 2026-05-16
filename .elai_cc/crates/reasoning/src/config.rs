@@ -414,6 +414,185 @@ pub fn agent_grc_config_for_role(role: &str) -> Option<AgentGrcConfig> {
                 require_scope_enumeration: false,
             })
         }
+        // B-40 idea_framer: pre-decomposition framing agent. Designer-shape
+        // (Observe -> PlanAction -> Act -> Verify; NO Hypothesize — the
+        // framer composes a FramedIdea from already-converged research
+        // streams, it does not investigate). Budget 5/800 is strictly tighter
+        // than Designer's 8/1200 because the framing scope is narrower (one
+        // FramedIdea per task, no PipelineSpec generation). Source:
+        // phase-4D.txt L28-44 Designer role + B-40 plan L83 (5/800 budget
+        // restriction). Explicit arm required — relying on `_=>None`
+        // fallback yields AgentGrcConfig::default() with required_steps=[]
+        // which violates validate_config rule (a) per agent_pool.rs:548 B-5.
+        "idea_framer" => Some(AgentGrcConfig {
+            role: role.to_string(),
+            budget: GrcBudget::new(5, 800),
+            required_steps: vec![
+                GrcState::Observe,
+                GrcState::PlanAction,
+                GrcState::Act,
+                GrcState::Verify,
+            ],
+            grounding_level: GroundingLevel::High,
+            csq_required: false,
+            allowed_methods: vec![
+                VerificationMethod::FileCheck,
+                VerificationMethod::SourceCheck,
+                VerificationMethod::TestCheck,
+            ],
+            transition_overrides: FxHashMap::default(),
+            require_scope_enumeration: false,
+        }),
+        // B-40 idea_critic: per-round critic over a FramedIdea. Auditor-shape
+        // double-Verify (Observe -> Verify -> Verify; mirror Auditor at
+        // agent_pool.rs:717-722). Budget 5/800 caps per-round cost. The
+        // Observe -> Verify edge is NOT in the default GrcState transition
+        // graph (Observe.allowed_next = [Hypothesize, Converge, Status]), so
+        // an additive transition_override is required — same pattern as
+        // media_validator + chat_auditor above.
+        "idea_critic" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(5, 800),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        // B-41 per-level auditors. Each mode is Auditor-shape
+        // (Observe -> Verify -> Verify) with the additive Observe->Verify
+        // transition override (same pattern as media_validator, chat_auditor,
+        // idea_critic). Budgets are tiered per plan §3: Concepts 6/1000
+        // semantic-heavy, Phases 5/800, Steps 4/700, BabySteps 4/700,
+        // BabyStepDetail 3/600 line-level fast. csq_required=false because
+        // auditors REVIEW not ACT; grounding=High because audit verdicts
+        // shape downstream BLOCK/respawn behaviour. Source:
+        // workflow/papers/per-level-auditor-2406.01297-interface.md +
+        // B-41-decisions.md (per-level scoping is design hypothesis; closer
+        // empirical citation: arXiv:2404.03602 Kamoi COLM 2024 prompt-scope
+        // recall sensitivity ~17-37pp swing).
+        "auditor_concepts" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(6, 1000),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::WebCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        "auditor_phases" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(5, 800),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        "auditor_steps" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(4, 700),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        "auditor_babysteps" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(4, 700),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
+        "auditor_babystep_detail" => {
+            let mut overrides = FxHashMap::default();
+            overrides.insert(GrcState::Observe, vec![GrcState::Verify]);
+            Some(AgentGrcConfig {
+                role: role.to_string(),
+                budget: GrcBudget::new(3, 600),
+                required_steps: vec![
+                    GrcState::Observe,
+                    GrcState::Verify,
+                    GrcState::Verify,
+                ],
+                grounding_level: GroundingLevel::High,
+                csq_required: false,
+                allowed_methods: vec![
+                    VerificationMethod::FileCheck,
+                    VerificationMethod::SourceCheck,
+                    VerificationMethod::TestCheck,
+                ],
+                transition_overrides: overrides,
+                require_scope_enumeration: false,
+            })
+        }
         _ => None,
     }
 }

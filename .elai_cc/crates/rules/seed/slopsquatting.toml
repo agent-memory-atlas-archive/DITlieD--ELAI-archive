@@ -1,0 +1,222 @@
+# B-41 Slice 3a — slopsquatting rule cluster seed.
+#
+# List of package/import names known to be hallucination-prone (LLMs invent
+# them in code). Distinct from `deprecated_patterns` (which targets real-but-
+# outdated names). Each rule is SHADOW until a maintainer ACTIVATES it via
+# the rule-engine review path. The patterns below derive from public
+# slopsquatting research (Lasso Security 2024 supply-chain reports + the
+# 2024 academic disclosures on hallucinated package names) — T2/T3 sources.
+
+domain = "slopsquatting"
+tier = 2
+default_status = "SHADOW"
+
+[[rules]]
+rule_id = "SQ-001"
+pattern = "from langchain_anthropic_claude"
+ecosystem = "pip"
+description = "Hallucinated import. Real module is `langchain_anthropic`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-002"
+pattern = "import openai_async"
+ecosystem = "pip"
+description = "Hallucinated. Use `openai` (which exposes async clients via AsyncOpenAI)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-003"
+pattern = "import anthropic_python"
+ecosystem = "pip"
+description = "Hallucinated. Real package is `anthropic`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-004"
+pattern = "anthropic_claude_api"
+ecosystem = "pip"
+description = "Hallucinated. Real: `anthropic` library exports `Anthropic`/`AsyncAnthropic` clients."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-005"
+pattern = "import torchvision_models"
+ecosystem = "pip"
+description = "Hallucinated submodule. Use `torchvision.models`."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-006"
+pattern = "from huggingface import"
+ecosystem = "pip"
+description = "Hallucinated top-level. Use `from huggingface_hub` OR `from transformers`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-007"
+pattern = "from transformers_async"
+ecosystem = "pip"
+description = "Hallucinated. `transformers` is sync; use `asyncio.to_thread` or torch async APIs."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-008"
+pattern = "from llama_cpp_python"
+ecosystem = "pip"
+description = "Hallucinated. Real package is `llama_cpp_python` BUT it imports as `llama_cpp`."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-009"
+pattern = "import ollama_python"
+ecosystem = "pip"
+description = "Hallucinated. Real package is `ollama` (PyPI)."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-010"
+pattern = "import vllm_async"
+ecosystem = "pip"
+description = "Hallucinated. vLLM exposes async via `AsyncLLMEngine`, no separate package."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-011"
+pattern = "use tokio_async"
+ecosystem = "cargo"
+description = "Hallucinated. Real crate is `tokio` (already async by definition)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-012"
+pattern = "use serde_async"
+ecosystem = "cargo"
+description = "Hallucinated. `serde` is synchronous by design; use `serde_json` with async I/O wrappers."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-013"
+pattern = "use reqwest_blocking"
+ecosystem = "cargo"
+description = "Misnamed. Real path is `reqwest::blocking` (feature-gated)."
+risk = "LOW"
+
+[[rules]]
+rule_id = "SQ-014"
+pattern = "use anthropic_rust_sdk"
+ecosystem = "cargo"
+description = "No official crate. Use HTTP client (reqwest) against the Anthropic REST API."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-015"
+pattern = "use openai_rust_sdk"
+ecosystem = "cargo"
+description = "Multiple unofficial crates exist with similar names; pin a specific verified crate (e.g. `async-openai`)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-016"
+pattern = "use blake3_async"
+ecosystem = "cargo"
+description = "Hallucinated. `blake3` crate is sync; for async wrap with `spawn_blocking`."
+risk = "LOW"
+
+[[rules]]
+rule_id = "SQ-017"
+pattern = "import @anthropic/sdk"
+ecosystem = "npm"
+description = "Hallucinated. Real package is `@anthropic-ai/sdk`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-018"
+pattern = "import @openai/api"
+ecosystem = "npm"
+description = "Hallucinated. Real package is `openai`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-019"
+pattern = "import @claude-ai/sdk"
+ecosystem = "npm"
+description = "Hallucinated. Real package is `@anthropic-ai/sdk`."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-020"
+pattern = "import @langchain/anthropic-sdk"
+ecosystem = "npm"
+description = "Hallucinated. Real packages: `@langchain/anthropic` and `@anthropic-ai/sdk`."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-021"
+pattern = "import @vercel/ai-sdk"
+ecosystem = "npm"
+description = "Hallucinated path. Real: `ai` package (the Vercel AI SDK)."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-022"
+pattern = "import @tauri/api"
+ecosystem = "npm"
+description = "Hallucinated. Real packages: `@tauri-apps/api`, `@tauri-apps/plugin-*`."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-023"
+pattern = "import @sveltekit/router"
+ecosystem = "npm"
+description = "Hallucinated. SvelteKit routes are filesystem-based; no separate router package."
+risk = "LOW"
+
+[[rules]]
+rule_id = "SQ-024"
+pattern = "import @svelte/runes"
+ecosystem = "npm"
+description = "Hallucinated. Svelte 5 runes are built into `svelte`; no separate package."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-025"
+pattern = "from torch_compile import"
+ecosystem = "pip"
+description = "Hallucinated. `torch.compile` is a function on the `torch` namespace."
+risk = "LOW"
+
+[[rules]]
+rule_id = "SQ-026"
+pattern = "import accelerate_async"
+ecosystem = "pip"
+description = "Hallucinated. Use `accelerate` (which has async internals)."
+risk = "LOW"
+
+[[rules]]
+rule_id = "SQ-027"
+pattern = "import bitsandbytes_4bit"
+ecosystem = "pip"
+description = "Hallucinated. 4-bit support is in `bitsandbytes` proper; activate via load_in_4bit=True."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-028"
+pattern = "use rust_anthropic"
+ecosystem = "cargo"
+description = "Hallucinated unofficial crate. Verify on crates.io before adding."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "SQ-029"
+pattern = "use ort_2_0_rc"
+ecosystem = "cargo"
+description = "Hallucinated module path. Real crate is `ort` (use stable, not RC)."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "SQ-030"
+pattern = "use sled_async"
+ecosystem = "cargo"
+description = "Hallucinated. `sled` is sync; wrap with `spawn_blocking` for async use."
+risk = "LOW"

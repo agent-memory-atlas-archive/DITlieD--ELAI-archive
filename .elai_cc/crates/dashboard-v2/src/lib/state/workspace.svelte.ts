@@ -6,7 +6,7 @@ import type { WindowType, DrawerKey, TabModel, GateMode } from '../api/types';
 import { logStub } from '../api/stub';
 
 const STORAGE_KEY = 'elai.dashboard-v2.workspace.v1';
-const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph']);
+const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline']);
 
 function makeTabId(): string {
   // Stable UUID across hydrate cycles. crypto.randomUUID is universally available

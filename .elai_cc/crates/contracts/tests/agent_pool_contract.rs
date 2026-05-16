@@ -43,7 +43,7 @@ fn contract_spawn_vram_zero_returns_resource_error() {
 }
 
 #[test]
-fn contract_all_8_roles_constructible() {
+fn contract_all_10_roles_constructible() {
     let roles = [
         AgentRole::Executor,
         AgentRole::Auditor,
@@ -53,8 +53,11 @@ fn contract_all_8_roles_constructible() {
         AgentRole::ContextCompiler,
         AgentRole::MemoryWriter,
         AgentRole::MediaValidator,
+        // B-40: FRAMING substate agents.
+        AgentRole::IdeaFramer,
+        AgentRole::IdeaCritic,
     ];
-    assert_eq!(roles.len(), 8, "CONTRACT: must have exactly 8 AgentRole variants");
+    assert_eq!(roles.len(), 10, "CONTRACT: must have exactly 10 AgentRole variants (B-40 added 2)");
     let mut p = pool(u64::MAX);
     for role in &roles {
         let h = p.spawn(*role, "t".into()).unwrap();

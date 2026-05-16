@@ -145,6 +145,34 @@ const ALL_VARIANTS: &[SsbActionType] = &[
     SsbActionType::RenderComplete,
     SsbActionType::VisualFeedbackIteration,
     SsbActionType::MediaHumanReviewRequired,
+    // B-40 — Idea-Framer / Research-Presets beacons (SCHEMA_VERSION 41).
+    // Frontend mapping lands alongside the dashboard FRAMING surface;
+    // coverage floor bumped to 93 here so an enum addition without a
+    // contract update surfaces at build time.
+    SsbActionType::IdeaFramingStarted,
+    SsbActionType::ProjectClassClassified,
+    SsbActionType::CriticRoundComplete,
+    SsbActionType::IdeaFramed,
+    SsbActionType::TradeoffCardEmitted,
+    // B-42 — Cosmos artifact lifecycle beacons (SCHEMA_VERSION 42).
+    // Frontend mapping lands alongside the dashboard COSMOS surface;
+    // coverage floor bumped to 97 here so an enum addition without a
+    // contract update surfaces at build time.
+    SsbActionType::CosmosRefreshStarted,
+    SsbActionType::CosmosArtifactUpdated,
+    SsbActionType::CosmosArtifactDecayed,
+    SsbActionType::CosmosGroundingUsed,
+    // B-41 — Per-level auditor mode beacons (SCHEMA_VERSION 45).
+    // Frontend mapping lands with the dashboard-v2 AuditTimelineWindow
+    // surface; coverage floor bumped to 100 here so an enum addition
+    // without a frontend update surfaces at build time. NOTE: this contract
+    // verifies the ALL_VARIANTS list shape and round-trip semantics; the
+    // ActivityEntry.svelte file referenced by other tests in this module
+    // belongs to the dashboard-v1 frontend (deprecated). The dashboard-v2
+    // mapping is covered by dashboard-side contract tests.
+    SsbActionType::PerLevelAuditStarted,
+    SsbActionType::PerLevelAuditVerdict,
+    SsbActionType::PerLevelAuditCascade,
 ];
 
 /// Batch 2C finding categories that MUST surface inside ActivityEntry.svelte
@@ -406,8 +434,15 @@ fn contract_variant_count_matches_enum_doc() {
     // media_tier1_complete, media_tier2_complete, render_complete,
     // visual_feedback_iteration, media_human_review_required) bumping
     // floor to 88.
+    // B-40: +5 (idea_framing_started, project_class_classified,
+    // critic_round_complete, idea_framed, tradeoff_card_emitted)
+    // bumping floor to 93.
+    // B-42: +4 (cosmos_refresh_started, cosmos_artifact_updated,
+    // cosmos_artifact_decayed, cosmos_grounding_used) bumping floor to 97.
+    // B-41: +3 (per_level_audit_started, per_level_audit_verdict,
+    // per_level_audit_cascade) bumping floor to 100.
     assert!(
-        ALL_VARIANTS.len() >= 88,
-        "ALL_VARIANTS shrank below 88 — review SsbActionType enum"
+        ALL_VARIANTS.len() >= 100,
+        "ALL_VARIANTS shrank below 100 — review SsbActionType enum"
     );
 }

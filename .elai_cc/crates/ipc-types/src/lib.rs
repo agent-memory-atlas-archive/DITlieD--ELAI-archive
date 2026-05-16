@@ -26,11 +26,28 @@ use uuid::Uuid;
 //   (3) orchestrator + agent binaries ship together — older agents won't be
 //       handed an `idea_framer` dispatch config unless paired with this code
 // Documented in workflow/reasoning/B-40-decisions.md DECISION-IPC.
+//
+// B-41 (2026-05-16): added 5 per-level Auditor* variants
+// (AuditorConcepts/AuditorPhases/AuditorSteps/AuditorBabySteps/
+// AuditorBabyStepDetail). The pre-existing `Auditor` variant is RETAINED as
+// the Plan-mode (single-cycle pass, back-compat). 5 unit variants chosen over
+// parametric `Auditor(AuditorMode)` to preserve `#[derive(Copy)]` on
+// AgentRole — payload-carrying variants would require AuditorMode to be Copy
+// too, plus widen every existing pattern arm. Mapping from
+// orchestrator::auditor_mode::AuditorMode to AgentRole is in
+// AuditorMode::map_to_agent_role. Documented in
+// workflow/reasoning/B-41-decisions.md DECISION-AGENTROLE.
+//
+// IPC_PROTOCOL_VERSION stays at 2: same soft-compat rationale as B-40 (snake_case
+// string variants, no IpcMessageType tag change).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
     Executor,
+    /// Plan-mode auditor — single-cycle integration pass at end of plan.
+    /// Pre-B-41 behaviour is preserved on this variant; B-41 adds 5
+    /// per-level siblings (AuditorConcepts/Phases/Steps/BabySteps/BabyStepDetail).
     Auditor,
     Researcher,
     Designer,
@@ -48,6 +65,25 @@ pub enum AgentRole {
     /// critic round (max 3); emits CriticFinding rows that BLOCK
     /// decomposition if unresolved at round 3.
     IdeaCritic,
+    /// B-41: tier-1 auditor — reviews Concept decomposition (market fit, IP
+    /// boundaries, contradictions vs FramedIdea, grounding against cosmos).
+    /// GRC budget 6/1000, Observe->Verify->Verify, grounding=High.
+    AuditorConcepts,
+    /// B-41: tier-2 auditor — reviews Phase decomposition (ordering, contract
+    /// sufficiency, dependency cycles). GRC budget 5/800.
+    AuditorPhases,
+    /// B-41: tier-3 auditor — reviews Step decomposition (granularity, test
+    /// coverage of step boundaries). GRC budget 4/700.
+    AuditorSteps,
+    /// B-41: tier-4 auditor — reviews BabyStep batch (BabyStepSpec 8-block
+    /// completeness). GRC budget 4/700.
+    AuditorBabySteps,
+    /// B-41: tier-4.5 auditor — line-level pass over BabyStep batch outputs
+    /// (lazy-code, unwrap usage, hardcoded secrets, stale APIs). GRC budget
+    /// 3/600. Cascades to BabyStep tier on second BLOCK (no separate
+    /// DecompositionLevel::BabyStepDetail in this slice — see
+    /// B-41-decisions.md DECISION-CASCADE).
+    AuditorBabyStepDetail,
 }
 
 // ---------------------------------------------------------------------------

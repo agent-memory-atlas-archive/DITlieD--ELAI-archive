@@ -23,6 +23,7 @@
 use std::path::Path;
 
 use elai_orchestrator::OutputConfig;
+use elai_orchestrator::ResearchPresets;
 use elai_tools::action_classifier::ActionPolicy;
 use elai_tools::routing_rules::RoutingConfig;
 use serde::{Deserialize, Serialize};
@@ -160,6 +161,20 @@ pub struct ElaiRuntimeConfig {
     /// profile + air-gapped flag. Consumed by `cloud_mode::CloudModeRouter`
     /// via [`CloudConfigToml::to_cloud_config`].
     pub cloud: CloudConfigToml,
+    /// `[research_presets]` section (B-40) — per-ProjectClass research stream
+    /// presets consumed by `idea_framing::frame_idea`. Loaded via the same
+    /// `load_elai_config` pass; accessible via [`ElaiRuntimeConfig::research_presets`].
+    pub research_presets: ResearchPresets,
+}
+
+impl ElaiRuntimeConfig {
+    /// B-40 BLOCK-1 audit fix: accessor for the `[research_presets]` block.
+    /// Returns a reference to the parsed `ResearchPresets` so callers can
+    /// pass `&presets` to `idea_framing::frame_idea` without cloning.
+    #[must_use]
+    pub fn research_presets(&self) -> &ResearchPresets {
+        &self.research_presets
+    }
 }
 
 /// `[cloud]` TOML section. Serializable mirror of

@@ -22,6 +22,7 @@
     'anti-staleness':       'ANTI-STALENESS',
     'tools-hooks':          'TOOLS & HOOKS',
     'web-quality':          'WEB QUALITY',
+    'cosmos':               'COSMOS',
   };
 
   function handleBackdropClick(e: MouseEvent) {

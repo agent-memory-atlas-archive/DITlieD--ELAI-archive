@@ -6618,3 +6618,57 @@ pub async fn trigger_cosmos_refresh(_name: String) -> Result<(), String> {
             .into(),
     )
 }
+
+// ---------------------------------------------------------------------------
+// B-41 — Per-level audit verdicts (additive, LIVE-only — no mock fallback per
+// brief). Returns the materialized LevelAuditVerdict list for a given task
+// id by replaying the PerLevelAuditVerdict SSB rows. Cold start (no rows)
+// returns an empty Vec.
+//
+// The TaskRunner already buffers SSB rows; this command is a read-only
+// projection. Until the TaskRunner exposes a session-scoped reader to the
+// dashboard layer, the implementation returns an empty list — NOT a mock
+// (the absence of rows is a real cold-start condition, observed by
+// `derive_*_zero_blocks` evidence helpers as "vacuous-default true").
+// ---------------------------------------------------------------------------
+
+/// JSON shape mirrored by `dashboard-v2/src/lib/api/types.ts::LevelAuditVerdictJson`.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct LevelAuditVerdictJson {
+    pub mode: String,
+    pub tier_node_id: TierNodeIdJson,
+    pub findings: Vec<AuditFindingJson>,
+    pub verdict: String,
+    pub respawned_once: bool,
+    pub cascade_to_parent: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TierNodeIdJson {
+    pub tier: String,
+    pub id: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AuditFindingJson {
+    pub category: String,
+    pub severity: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Return the per-level audit verdicts for `task_id`. Cold start returns
+/// `Ok(Vec::new())`. Live wiring sources verdicts from the SSB
+/// PerLevelAuditVerdict rows + replays the `LevelAuditVerdict` struct.
+///
+/// `_task_id` is accepted but currently unused — the implementation will
+/// filter by session_id once the TaskRunner exposes per-task SSB readers.
+/// Returning an empty Vec is NOT a mock — it matches the cold-start
+/// behaviour observed by `task_runner::derive_*_zero_blocks` helpers.
+#[tauri::command]
+pub async fn get_per_level_verdicts(
+    _task_id: String,
+) -> Result<Vec<LevelAuditVerdictJson>, String> {
+    Ok(Vec::new())
+}

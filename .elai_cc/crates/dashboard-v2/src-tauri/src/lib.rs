@@ -260,6 +260,9 @@ pub fn run() {
             // cross-lang-pair: dashboard/tauri/api
             commands::get_cosmos_status,
             commands::trigger_cosmos_refresh,
+            // B-41 — Per-level auditor verdicts feed for AuditTimelineWindow.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_per_level_verdicts,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

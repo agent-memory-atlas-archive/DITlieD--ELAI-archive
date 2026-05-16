@@ -741,7 +741,8 @@ pub(crate) fn run_resume_command(
         | SlashCommand::Explore { .. }
         | SlashCommand::Task { .. }
         | SlashCommand::Mode { .. }
-        | SlashCommand::Reason { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
+        | SlashCommand::Reason { .. }
+        | SlashCommand::EntryPoints { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }
 

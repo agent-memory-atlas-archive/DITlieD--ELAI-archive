@@ -8,6 +8,10 @@
   import MonitorWindow from '../windows/MonitorWindow.svelte';
   import SettingsWindow from '../windows/SettingsWindow.svelte';
   import GraphWindow from '../windows/GraphWindow.svelte';
+  // B-40: Idea-Framer pre-decomposition surface (FRAMING substate).
+  import IdeaFramingWindow from '../windows/IdeaFramingWindow.svelte';
+  // B-41: per-level auditor timeline window.
+  import AuditTimelineWindow from '../windows/AuditTimelineWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
 
   interface Props {
@@ -32,6 +36,10 @@
     <SettingsWindow />
   {:else if type === 'graph'}
     <GraphWindow />
+  {:else if type === 'idea_framing'}
+    <IdeaFramingWindow />
+  {:else if type === 'audit_timeline'}
+    <AuditTimelineWindow />
   {:else}
     <FallbackWindow {type} />
   {/if}

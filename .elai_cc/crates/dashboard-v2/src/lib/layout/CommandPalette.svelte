@@ -32,6 +32,7 @@
     { id: 'open-monitor',   label: 'Open Monitor',   kbd: 'Ctrl+5', handler: () => workspace.setPrimaryWindow('monitor') },
     { id: 'open-settings',  label: 'Open Settings',  kbd: 'Ctrl+6', handler: () => workspace.setPrimaryWindow('settings') },
     { id: 'open-graph',     label: 'Open Graph Window', kbd: 'Ctrl+7', handler: () => workspace.setPrimaryWindow('graph') },
+    { id: 'open-audit-timeline', label: 'Open Audit Timeline', handler: () => workspace.setPrimaryWindow('audit_timeline') },
     { id: 'drawer-knowledge',       label: 'Toggle Knowledge Drawer',            handler: () => toggleDrawer('knowledge') },
     { id: 'drawer-reasoning',       label: 'Toggle Reasoning Drawer',            handler: () => toggleDrawer('reasoning') },
     { id: 'drawer-orchestration',   label: 'Toggle Orchestration Drawer',        handler: () => toggleDrawer('orchestration') },
@@ -42,6 +43,8 @@
     { id: 'drawer-anti-staleness',  label: 'Toggle Anti-Staleness Drawer',       handler: () => toggleDrawer('anti-staleness') },
     { id: 'drawer-tools-hooks',     label: 'Toggle Tools & Hooks Drawer',        handler: () => toggleDrawer('tools-hooks') },
     { id: 'drawer-web-quality',     label: 'Toggle Web Quality Drawer',          handler: () => toggleDrawer('web-quality') },
+    // B-42 — Cosmos artifact tier drawer.
+    { id: 'drawer-cosmos',          label: 'Open Cosmos Drawer',                 handler: () => toggleDrawer('cosmos') },
     {
       id: 'toggle-secondary',
       label: 'Toggle Secondary Panel',

@@ -72,10 +72,14 @@ fn test_schema_version_bumped_to_38() {
     // is intentional, not accidental. Update both this constant and the
     // ledger comment in ssb.rs when bumping.
     assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 40,
-        "B-33 follow-up: SCHEMA_VERSION expected 40 after the SymbolGraphUpdated \
-         variant landed. If this fires after another batch bump (41+), update both \
-         constants AND verify the relevant ledger comments in ssb.rs are still present.",
+        SCHEMA_VERSION_PUBLIC, 42,
+        "B-40 follow-up: SCHEMA_VERSION expected 42. B-33 Cycle C bumped to 40, \
+         B-34 bumped 41 -> 42 (entry-point detection + artifact pipeline \
+         beacons), and B-40's 5 Idea-Framer variants (IdeaFramingStarted, \
+         ProjectClassClassified, CriticRoundComplete, IdeaFramed, \
+         TradeoffCardEmitted) landed under the same 42 envelope. If this fires \
+         after another batch bump (43+), update both constants AND verify the \
+         relevant ledger comments in ssb.rs are still present.",
     );
 }
 

@@ -10,6 +10,7 @@
     CalendarClock,
     Plug,
     Globe,
+    Sparkles,
   } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
@@ -30,7 +31,8 @@
     | 'PROJECT-INTELLIGENCE'
     | 'ANTI-STALENESS'
     | 'TOOLS-HOOKS'
-    | 'WEB-QUALITY';
+    | 'WEB-QUALITY'
+    | 'COSMOS';
 
   interface DrawerItem {
     key: DrawerKeyUpper;
@@ -50,6 +52,8 @@
     { key: 'ANTI-STALENESS',       lowerKey: 'anti-staleness',       label: 'ANTI-STALENESS',       Icon: CalendarClock },
     { key: 'TOOLS-HOOKS',          lowerKey: 'tools-hooks',          label: 'TOOLS & HOOKS',        Icon: Plug },
     { key: 'WEB-QUALITY',          lowerKey: 'web-quality',          label: 'WEB QUALITY',          Icon: Globe },
+    // B-42 — Cosmos artifact tier (read-only status; refresh deferred).
+    { key: 'COSMOS',               lowerKey: 'cosmos',               label: 'COSMOS',               Icon: Sparkles },
   ];
 
   function tooltip(node: HTMLElement, opts: { label: string }) {

@@ -3,7 +3,10 @@
   import WindowHost from './WindowHost.svelte';
   import { workspace } from '../state/workspace.svelte';
 
-  type WindowType = 'command' | 'plan' | 'activity' | 'review' | 'monitor' | 'settings' | 'graph';
+  // B-40: import the canonical WindowType from $lib/api/types instead of
+  // re-declaring it here. Re-declaring drifted from types.ts when B-40
+  // added the 'idea_framing' variant, causing svelte-check type errors.
+  import type { WindowType } from '../api/types';
 
   interface TabDef {
     id: string;
@@ -22,7 +25,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -31,6 +34,10 @@
     monitor:  'Monitor',
     settings: 'Settings',
     graph:    'Graph',
+    // B-40: Idea-Framer surface (FRAMING substate).
+    idea_framing: 'Idea Framing',
+    // B-41: per-level auditor timeline.
+    audit_timeline: 'Audit Timeline',
   };
 
   let dragOverTabId = $state<string | null>(null);

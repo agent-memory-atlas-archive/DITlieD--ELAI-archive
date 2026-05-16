@@ -10,8 +10,10 @@
   import AntiStalenessDrawer from '../drawers/AntiStalenessDrawer.svelte';
   import ToolsHooksDrawer from '../drawers/ToolsHooksDrawer.svelte';
   import WebQualityDrawer from '../drawers/WebQualityDrawer.svelte';
+  // B-42 — Cosmos artifact tier drawer.
+  import CosmosDrawer from '../drawers/CosmosDrawer.svelte';
 
   let { drawerKey }: { drawerKey: DrawerKey } = $props();
 </script>
 
-{#if drawerKey === 'knowledge'}<KnowledgeDrawer />{:else if drawerKey === 'reasoning'}<ReasoningDrawer />{:else if drawerKey === 'orchestration'}<OrchestrationDrawer />{:else if drawerKey === 'rules'}<RulesDrawer />{:else if drawerKey === 'research'}<ResearchDrawer />{:else if drawerKey === 'providers'}<ProvidersDrawer />{:else if drawerKey === 'project-intelligence'}<ProjectIntelligenceDrawer />{:else if drawerKey === 'anti-staleness'}<AntiStalenessDrawer />{:else if drawerKey === 'tools-hooks'}<ToolsHooksDrawer />{:else if drawerKey === 'web-quality'}<WebQualityDrawer />{/if}
+{#if drawerKey === 'knowledge'}<KnowledgeDrawer />{:else if drawerKey === 'reasoning'}<ReasoningDrawer />{:else if drawerKey === 'orchestration'}<OrchestrationDrawer />{:else if drawerKey === 'rules'}<RulesDrawer />{:else if drawerKey === 'research'}<ResearchDrawer />{:else if drawerKey === 'providers'}<ProvidersDrawer />{:else if drawerKey === 'project-intelligence'}<ProjectIntelligenceDrawer />{:else if drawerKey === 'anti-staleness'}<AntiStalenessDrawer />{:else if drawerKey === 'tools-hooks'}<ToolsHooksDrawer />{:else if drawerKey === 'web-quality'}<WebQualityDrawer />{:else if drawerKey === 'cosmos'}<CosmosDrawer />{/if}

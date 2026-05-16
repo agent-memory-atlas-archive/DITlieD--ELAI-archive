@@ -514,8 +514,19 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         // Seed is restricted to Auditor because engine.rs:300 gates the
         // FINDING check on `role == "auditor"`; seeding non-auditor engines
         // would burn budget without a corresponding production benefit.
-        if matches!(role, AgentRole::Auditor)
-            && !crate::grc::pipeline_grc_disabled_via_env()
+        // B-41: anti-rubber-stamp seed activates for every auditor variant
+        // (Plan-mode + 5 per-level). engine.rs FINDING gate is keyed on the
+        // role string ("auditor*" prefix); seeding all auditor variants keeps
+        // the GRC budget initialised consistently across tiers.
+        if matches!(
+            role,
+            AgentRole::Auditor
+                | AgentRole::AuditorConcepts
+                | AgentRole::AuditorPhases
+                | AgentRole::AuditorSteps
+                | AgentRole::AuditorBabySteps
+                | AgentRole::AuditorBabyStepDetail
+        ) && !crate::grc::pipeline_grc_disabled_via_env()
         {
             let seed = elai_reasoning::ThinkStep {
                 step_type: GrcState::Observe,
@@ -677,6 +688,15 @@ fn agent_role_to_snake_case(role: AgentRole) -> &'static str {
         AgentRole::ContextCompiler => "context_compiler",
         AgentRole::MemoryWriter => "memory_writer",
         AgentRole::MediaValidator => "media_validator",
+        // B-40: FRAMING substate agents (pre-decomposition).
+        AgentRole::IdeaFramer => "idea_framer",
+        AgentRole::IdeaCritic => "idea_critic",
+        // B-41: per-level auditors (Plan-mode stays on AgentRole::Auditor).
+        AgentRole::AuditorConcepts => "auditor_concepts",
+        AgentRole::AuditorPhases => "auditor_phases",
+        AgentRole::AuditorSteps => "auditor_steps",
+        AgentRole::AuditorBabySteps => "auditor_babysteps",
+        AgentRole::AuditorBabyStepDetail => "auditor_babystep_detail",
     }
 }
 
@@ -819,6 +839,56 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
                 role: "media_validator".into(),
                 ..AgentGrcConfig::default()
             }),
+        // B-40: FRAMING substate agents. Both delegate to reasoning::config
+        // (explicit arms added there — see reasoning/src/config.rs:336).
+        // Designer-shape budget 5/800 with Observe->PlanAction->Act->Verify
+        // (idea_framer) or Auditor-shape Observe->Verify->Verify (idea_critic).
+        // The unwrap_or_else fallback satisfies no-.expect()-in-production but
+        // is unreachable: the reasoning table has explicit arms (B-5 rule (a)
+        // requires non-empty required_steps; relying on `_=>None` fallback
+        // here would yield AgentGrcConfig::default() with required_steps=[]).
+        AgentRole::IdeaFramer => agent_grc_config_for_role("idea_framer")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "idea_framer".into(),
+                ..AgentGrcConfig::default()
+            }),
+        AgentRole::IdeaCritic => agent_grc_config_for_role("idea_critic")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "idea_critic".into(),
+                ..AgentGrcConfig::default()
+            }),
+        // B-41: per-level auditor budgets. All delegate to reasoning::config
+        // (explicit arms added there). Tiered budgets per plan §3: Concepts
+        // 6/1000 semantic-heavy, Phases 5/800, Steps 4/700, BabySteps 4/700,
+        // BabyStepDetail 3/600 line-level fast.
+        AgentRole::AuditorConcepts => agent_grc_config_for_role("auditor_concepts")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "auditor_concepts".into(),
+                ..AgentGrcConfig::default()
+            }),
+        AgentRole::AuditorPhases => agent_grc_config_for_role("auditor_phases")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "auditor_phases".into(),
+                ..AgentGrcConfig::default()
+            }),
+        AgentRole::AuditorSteps => agent_grc_config_for_role("auditor_steps")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "auditor_steps".into(),
+                ..AgentGrcConfig::default()
+            }),
+        AgentRole::AuditorBabySteps => agent_grc_config_for_role("auditor_babysteps")
+            .unwrap_or_else(|| AgentGrcConfig {
+                role: "auditor_babysteps".into(),
+                ..AgentGrcConfig::default()
+            }),
+        AgentRole::AuditorBabyStepDetail => {
+            agent_grc_config_for_role("auditor_babystep_detail").unwrap_or_else(|| {
+                AgentGrcConfig {
+                    role: "auditor_babystep_detail".into(),
+                    ..AgentGrcConfig::default()
+                }
+            })
+        }
     }
 }
 
@@ -839,7 +909,14 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
 pub fn role_default_allowed_paths(role: &AgentRole, project_path: &std::path::Path) -> Vec<String> {
     let project_glob = format!("{}/**", project_path.display());
     match role {
-        AgentRole::Auditor => {
+        // B-41: all auditor variants (Plan-mode + 5 per-level) share the same
+        // broad-read scope — audit needs full project visibility regardless of tier.
+        AgentRole::Auditor
+        | AgentRole::AuditorConcepts
+        | AgentRole::AuditorPhases
+        | AgentRole::AuditorSteps
+        | AgentRole::AuditorBabySteps
+        | AgentRole::AuditorBabyStepDetail => {
             // Auditor needs read access to everything in the project
             vec![project_glob, "**".to_string()]
         }
@@ -995,13 +1072,16 @@ mod tests {
             AgentRole::ContextCompiler,
             AgentRole::MemoryWriter,
             AgentRole::MediaValidator,
+            // B-40: FRAMING substate agents.
+            AgentRole::IdeaFramer,
+            AgentRole::IdeaCritic,
         ];
         for role in &roles {
             let json = serde_json::to_string(role).unwrap();
             let deserialized: AgentRole = serde_json::from_str(&json).unwrap();
             assert_eq!(*role, deserialized);
         }
-        assert_eq!(roles.len(), 8);
+        assert_eq!(roles.len(), 10);
     }
 
     #[test]

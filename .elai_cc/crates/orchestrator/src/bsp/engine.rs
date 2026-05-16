@@ -903,6 +903,16 @@ fn agent_role_str(role: AgentRole) -> String {
         AgentRole::ContextCompiler => "context_compiler",
         AgentRole::MemoryWriter => "memory_writer",
         AgentRole::MediaValidator => "media_validator",
+        // B-40: FRAMING substate agents.
+        AgentRole::IdeaFramer => "idea_framer",
+        AgentRole::IdeaCritic => "idea_critic",
+        // B-41: per-level auditors. The FINDING check at L300 uses the
+        // auditor_ prefix to gate anti-rubber-stamp enforcement across modes.
+        AgentRole::AuditorConcepts => "auditor_concepts",
+        AgentRole::AuditorPhases => "auditor_phases",
+        AgentRole::AuditorSteps => "auditor_steps",
+        AgentRole::AuditorBabySteps => "auditor_babysteps",
+        AgentRole::AuditorBabyStepDetail => "auditor_babystep_detail",
     }
     .to_owned()
 }

@@ -1,0 +1,159 @@
+# Default cosmos artifact manifest — B-42 Phase 1.
+#
+# Installed once at first boot into ~/.elai/cosmos/manifest.toml (user-global).
+# Subsequent edits by the user are preserved; only freshly-introduced artifact
+# names (added in a new ELAI release) are merged on upgrade.
+#
+# project_classes MUST be snake_case to match
+# `orchestrator::idea_framing::ProjectClass` serde rename.
+# Valid values: consumer_mobile_app | web_app | s_a_a_s_dashboard |
+#               desktop_app | game_mod | research_tool | library_or_s_d_k |
+#               c_l_i_tool | other
+# (matches `ProjectClass` derive #[serde(rename_all = "snake_case")] at
+#  orchestrator/src/idea_framing.rs:87-99).
+#
+# Refresh cadences are DESIGN ASSUMPTIONS supported by arXiv:2403.12958
+# ("Dated Data") and arXiv:2511.14022 ("Keeping Code-Aware LLMs Fresh"),
+# NOT empirically calibrated thresholds. They are easily tunable per-host
+# by editing this manifest.
+#
+# Cosmos artifacts are non-code, user-global knowledge briefs. They are NOT
+# a substitute for `[[knowledge.artifacts]]` per-project context (B-35); they
+# augment it for cross-cutting concerns: marketplace policy, design heuristics,
+# IP boundary case law, accessibility checklists.
+
+# --- Mobile / consumer apps -------------------------------------------------
+
+[[artifacts]]
+name = "ios_hig_summary"
+project_classes = ["consumer_mobile_app"]
+refresh_cadence = "monthly"
+min_source_tier = "T1"
+research_query = "Apple Human Interface Guidelines essentials 2026 latest patterns"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.9, phases = 0.7, steps = 0.4, baby_steps = 0.2 }
+
+[[artifacts]]
+name = "android_material_summary"
+project_classes = ["consumer_mobile_app"]
+refresh_cadence = "monthly"
+min_source_tier = "T1"
+research_query = "Material Design 3 components and accessibility latest"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.9, phases = 0.7, steps = 0.4 }
+
+[[artifacts]]
+name = "app_store_policies"
+project_classes = ["consumer_mobile_app"]
+refresh_cadence = "daily"
+min_source_tier = "T1"
+research_query = "Apple App Store Review Guidelines and Google Play policy recent changes"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.5, phases = 0.9, steps = 0.6 }
+
+# --- Web / SaaS -------------------------------------------------------------
+
+[[artifacts]]
+name = "web_a11y_wcag"
+project_classes = ["web_app", "s_a_a_s_dashboard"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "WCAG 2.2 success criteria with practical examples"
+max_size_bytes = 49152
+tier_relevance = { concepts = 0.8, phases = 0.7, steps = 0.5 }
+
+[[artifacts]]
+name = "web_perf_core_vitals"
+project_classes = ["web_app", "s_a_a_s_dashboard"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "Web Core Vitals LCP INP CLS targets and remediation patterns"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.6, phases = 0.5, steps = 0.8 }
+
+[[artifacts]]
+name = "saas_pricing_patterns"
+project_classes = ["s_a_a_s_dashboard"]
+refresh_cadence = "monthly"
+min_source_tier = "T2"
+research_query = "SaaS pricing patterns 2026 freemium usage-based seat-based"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.9, phases = 0.6 }
+
+# --- Desktop / CLI ----------------------------------------------------------
+
+[[artifacts]]
+name = "desktop_packaging"
+project_classes = ["desktop_app"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "Cross-platform desktop packaging Tauri Electron signing notarization"
+max_size_bytes = 32768
+tier_relevance = { phases = 0.8, steps = 0.7 }
+
+[[artifacts]]
+name = "cli_ux_patterns"
+project_classes = ["c_l_i_tool"]
+refresh_cadence = "quarterly"
+min_source_tier = "T2"
+research_query = "Modern CLI UX guidelines flags subcommands exit codes"
+max_size_bytes = 24576
+tier_relevance = { concepts = 0.8, phases = 0.4, steps = 0.6 }
+
+# --- Cross-cutting ----------------------------------------------------------
+
+[[artifacts]]
+name = "ip_boundary_software"
+project_classes = ["consumer_mobile_app", "web_app", "s_a_a_s_dashboard", "desktop_app", "library_or_s_d_k"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "Software IP boundary trademark copyright fair use derivative works practical guidance"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.9, phases = 0.4 }
+
+[[artifacts]]
+name = "license_compatibility"
+project_classes = ["library_or_s_d_k", "c_l_i_tool", "desktop_app"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "Open source license compatibility MIT Apache GPL AGPL practical compatibility"
+max_size_bytes = 24576
+tier_relevance = { concepts = 0.8, phases = 0.5 }
+
+[[artifacts]]
+name = "marketing_landing_patterns"
+project_classes = ["consumer_mobile_app", "web_app", "s_a_a_s_dashboard", "desktop_app"]
+refresh_cadence = "weekly"
+min_source_tier = "T2"
+research_query = "Effective product landing page patterns 2026 above the fold copy hierarchy social proof"
+max_size_bytes = 24576
+tier_relevance = { concepts = 0.6, phases = 0.8 }
+
+[[artifacts]]
+name = "ux_micro_interactions"
+project_classes = ["consumer_mobile_app", "web_app", "s_a_a_s_dashboard", "desktop_app"]
+refresh_cadence = "monthly"
+min_source_tier = "T2"
+research_query = "UX micro-interactions empty states loading skeletons error patterns 2026"
+max_size_bytes = 24576
+tier_relevance = { concepts = 0.5, phases = 0.6, steps = 0.7 }
+
+# --- Research / game ------------------------------------------------------
+
+[[artifacts]]
+name = "game_mod_distribution"
+project_classes = ["game_mod"]
+refresh_cadence = "monthly"
+min_source_tier = "T2"
+research_query = "Game mod distribution platforms Nexus Steam Workshop policy and signing"
+max_size_bytes = 24576
+tier_relevance = { phases = 0.8, steps = 0.6 }
+
+[[artifacts]]
+name = "research_tool_repro"
+project_classes = ["research_tool"]
+refresh_cadence = "quarterly"
+min_source_tier = "T1"
+research_query = "Reproducible research toolchains environment manifests data provenance 2026"
+max_size_bytes = 32768
+tier_relevance = { concepts = 0.8, phases = 0.7 }

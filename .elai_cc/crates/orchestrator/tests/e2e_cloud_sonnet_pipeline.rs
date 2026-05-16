@@ -480,12 +480,15 @@ async fn run_inner() {
     );
 
     // 6. Wire the AnthropicClient -> LlmProvider adapter. Auth resolution
-    //    flow per anthropic.rs:524-555 (ANTHROPIC_API_KEY > ANTHROPIC_AUTH_TOKEN
-    //    > saved OAuth at ~/.elai/credentials.json). We expect the saved-OAuth
-    //    branch; the test will panic early with a descriptive message if no
-    //    credential source is present.
-    let auth = AuthSource::from_env_or_saved().expect(
-        "AuthSource::from_env_or_saved() must resolve a credential; \
+    //    flow per anthropic.rs (ANTHROPIC_API_KEY > ANTHROPIC_AUTH_TOKEN >
+    //    saved OAuth at ~/.elai/credentials.json). patch-R1: switched from
+    //    from_env_or_saved to resolve_auth_with_auto_refresh so an expired
+    //    saved-OAuth (expiresAt elapsed OR null + refresh_token present) is
+    //    auto-refreshed via the bundled Claude Code OAuth config, NOT
+    //    surfaced as an unrefreshable Auth error. Refreshed token persists
+    //    to ELAI_CONFIG_HOME for future use.
+    let auth = elai_providers::resolve_auth_with_auto_refresh().expect(
+        "resolve_auth_with_auto_refresh must resolve a credential; \
          expected saved OAuth at ~/.elai/credentials.json. Run \
          `elai login` (or set ANTHROPIC_API_KEY) before running this test.",
     );

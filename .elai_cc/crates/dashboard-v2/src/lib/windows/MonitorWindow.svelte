@@ -9,6 +9,12 @@
     SupervisionEvent,
     AutoAdvanceStats,
     CloudSpendInfo,
+    // B-40: Idea-Framer state (read for critic-rounds badge).
+    IdeaFramingState,
+    // B-42: cosmos artifact freshness counts for the monitor badge.
+    CosmosArtifactStatus,
+    // B-41: per-level audit verdicts mini-badges.
+    LevelAuditVerdictJson,
   } from '$lib/api/types';
   import { workspace } from '$lib/state/workspace.svelte';
   import { session } from '$lib/state/session.svelte';
@@ -46,12 +52,19 @@
   // Live Tauri state — polled every 5s; graceful empty fallback
   // ------------------------------------------------------------------
   let fsmSnap = $state<FsmSnapshot | null>(null);
+  // B-40: latest IdeaFraming snapshot for the critic-rounds badge.
+  let framingState = $state<IdeaFramingState | null>(null);
   let sysStatus = $state<SystemStatus | null>(null);
   let supervisionLog = $state<SupervisionEvent[]>([]);
   let autoStats = $state<AutoAdvanceStats | null>(null);
   // B-27: cloud-mode spend gauge. Spec D-4:308 — rows are conditionally
   // hidden when both task_usd and day_usd are 0 (no "$0.00" display).
   let cloudSpend = $state<CloudSpendInfo | null>(null);
+  // B-42: cosmos artifact tier counts (fresh/stale/decayed), polled every 30s
+  // while the FSM is in a PLANNING-adjacent substate.
+  let cosmosArtifacts = $state<CosmosArtifactStatus[]>([]);
+  // B-41: per-level audit verdict feed for the auditor mini-badges.
+  let perLevelVerdicts = $state<LevelAuditVerdictJson[]>([]);
   let loadError = $state<string | null>(null);
 
   // Derived from live data, fallback to empty/defaults
@@ -174,6 +187,87 @@
     workspace.openTab('primary', 'activity');
   }
 
+  // B-41: per-mode audit counts derived from perLevelVerdicts. Renders 5
+  // mini-badges (one per per-level mode) in the auto-advance header. Plan
+  // mode is folded into the existing legacy auditor pass — no separate
+  // badge.
+  let auditCounts = $derived.by(() => {
+    const counts = { concepts: 0, phases: 0, steps: 0, babysteps: 0, babystep_detail: 0 };
+    let anyCascade = false;
+    let anyBlock = false;
+    for (const v of perLevelVerdicts) {
+      if (v.mode in counts) {
+        // @ts-expect-error narrow record keyed by AuditorMode subset.
+        counts[v.mode]++;
+      }
+      if (v.cascade_to_parent) anyCascade = true;
+      if (v.verdict === 'block') anyBlock = true;
+    }
+    const status: 'red' | 'yellow' | 'green' =
+      anyCascade ? 'red' : anyBlock ? 'yellow' : 'green';
+    return { ...counts, status, total: perLevelVerdicts.length };
+  });
+
+  // B-41: poll the per-level verdict feed every 5s (matches FSM poll cadence).
+  $effect(() => {
+    let alive = true;
+    async function poll() {
+      try {
+        perLevelVerdicts = await stub.getPerLevelVerdicts('active');
+      } catch {
+        // graceful: keep last snapshot
+      }
+    }
+    poll();
+    const interval = setInterval(() => {
+      if (!alive) return;
+      poll();
+    }, 5000);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  });
+
+  // B-42: cosmos counts derived from cosmosArtifacts.
+  let cosmosCounts = $derived.by(() => {
+    let fresh = 0;
+    let stale = 0;
+    let decayed = 0;
+    for (const a of cosmosArtifacts) {
+      if (a.status === 'fresh') fresh++;
+      else if (a.status === 'decayed') decayed++;
+      else stale++;
+    }
+    return { fresh, stale, decayed, total: cosmosArtifacts.length };
+  });
+
+  // B-42: poll cosmos status every 30s when the FSM is in PLANNING or in the
+  // FRAMING substate (cosmos briefings are consumed during plan composition).
+  $effect(() => {
+    let alive = true;
+    async function pollCosmos() {
+      try {
+        cosmosArtifacts = await stub.getCosmosStatus();
+      } catch {
+        // graceful: keep last snapshot
+      }
+    }
+    pollCosmos();
+    const interval = setInterval(() => {
+      if (!alive) return;
+      const inPlanning = fsmSnap?.state === 'PLANNING';
+      const inFraming = fsmSnap?.agent_substate === 'Framing';
+      if (inPlanning || inFraming || cosmosArtifacts.length === 0) {
+        pollCosmos();
+      }
+    }, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  });
+
   // ------------------------------------------------------------------
   // Polling — every 5s; cleans up on unmount
   // ------------------------------------------------------------------
@@ -182,12 +276,14 @@
 
     async function poll() {
       try {
-        const [fsm, sys, log, stats, spend] = await Promise.all([
+        const [fsm, sys, log, stats, spend, framing] = await Promise.all([
           stub.get_fsm_state(),
           stub.get_system_status(),
           stub.get_supervision_log(),
           stub.get_auto_advance_stats(),
           stub.get_cloud_spend(),
+          // B-40: critic-rounds badge data source.
+          stub.get_idea_framing_state(),
         ]);
         if (!alive) return;
         fsmSnap = fsm;
@@ -195,6 +291,7 @@
         supervisionLog = log;
         autoStats = stats;
         cloudSpend = spend;
+        framingState = framing;
         loadError = null;
       } catch (e) {
         if (!alive) return;
@@ -247,6 +344,20 @@
         class="auto-advance__mode mono auto-advance__mode--{session.gateMode.toLowerCase()}"
         aria-label="Active gate mode: {session.gateMode}"
       >gate {session.gateMode.toLowerCase()}</span>
+      {#if cosmosCounts.total > 0}
+        <span
+          class="cosmos-badge mono"
+          title="Cosmos artifact freshness (fresh / stale / decayed). Click rail's COSMOS drawer for detail."
+          aria-label="Cosmos artifacts: {cosmosCounts.fresh} fresh, {cosmosCounts.stale} stale, {cosmosCounts.decayed} decayed"
+        >cosmos: {cosmosCounts.fresh}/{cosmosCounts.stale}/{cosmosCounts.decayed}</span>
+      {/if}
+      <!-- B-41: per-mode auditor mini-badges + overall status dot. Always
+           rendered (vacuous-default-zero) so a 0/0/0/0/0 baseline is visible. -->
+      <span
+        class="audit-badge mono audit-badge--{auditCounts.status}"
+        title="Per-level audit counts (concepts/phases/steps/babysteps/babystep_detail). Status: {auditCounts.status}."
+        aria-label="Per-level audits: concepts {auditCounts.concepts}, phases {auditCounts.phases}, steps {auditCounts.steps}, babysteps {auditCounts.babysteps}, babystep_detail {auditCounts.babystep_detail}; status {auditCounts.status}"
+      >audit {auditCounts.concepts}/{auditCounts.phases}/{auditCounts.steps}/{auditCounts.babysteps}/{auditCounts.babystep_detail}</span>
     </div>
     <div class="auto-advance__row">
       <span class="auto-advance__metric mono">
@@ -366,6 +477,23 @@
       <!-- Thinking pulse — 1px teal breath line during EXECUTING per DESIGN.md §8 -->
       {#if fsmSnap?.state === 'EXECUTING'}
         <div class="thinking-pulse" aria-label="executing"></div>
+      {/if}
+
+      <!-- B-40: Critic rounds badge.
+           Surfaces "Critic rounds: N/3" when the FRAMING substate is active
+           (PLANNING + agent_substate=Framing). Source: framingState polled
+           every 5s via get_idea_framing_state. -->
+      {#if fsmSnap?.state === 'PLANNING' && fsmSnap?.agent_substate === 'Framing' && framingState}
+        <div class="framing-badge mono" aria-label="critic rounds">
+          Critic rounds: {framingState.critic_rounds_used} / 3
+          {#if framingState.is_converged}
+            <span class="framing-badge-status badge-ok">converged</span>
+          {:else if framingState.critic_rounds_used >= 3}
+            <span class="framing-badge-status badge-block">BLOCK</span>
+          {:else}
+            <span class="framing-badge-status badge-active">in progress</span>
+          {/if}
+        </div>
       {/if}
 
       <!-- Section 3: Status snapshot — prose lines, no headers, no chrome -->
@@ -853,6 +981,28 @@
   }
   .auto-advance__mode--autonomous { color: var(--teal); }
   .auto-advance__mode--interactive { color: var(--text-ghost); }
+  /* B-42 — cosmos artifact freshness badge. */
+  .cosmos-badge {
+    margin-left: 8px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    padding: 1px 6px;
+    border-radius: var(--r-xs);
+    background: var(--bg-input);
+  }
+  /* B-41: per-mode audit mini-badge (overall status from any cascade flag). */
+  .audit-badge {
+    margin-left: 8px;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: var(--r-xs);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border-left: 2px solid transparent;
+  }
+  .audit-badge--green { border-left-color: #22c55e; }
+  .audit-badge--yellow { border-left-color: #eab308; }
+  .audit-badge--red { border-left-color: #ef4444; color: #fca5a5; }
   .auto-advance__row {
     display: flex;
     flex-direction: row;
@@ -885,5 +1035,36 @@
   }
   .auto-advance__metric--warn .auto-advance__num {
     color: var(--warn);
+  }
+
+  /* B-40: critic-rounds badge — surfaces during FRAMING substate. */
+  .framing-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 3px;
+    background: rgba(95, 168, 255, 0.08);
+    color: #5fa8ff;
+    border: 1px solid rgba(95, 168, 255, 0.25);
+  }
+  .framing-badge-status {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+  .badge-ok {
+    background: rgba(111, 192, 111, 0.18);
+    color: #6fc06f;
+  }
+  .badge-block {
+    background: rgba(255, 107, 107, 0.18);
+    color: #ff6b6b;
+  }
+  .badge-active {
+    background: rgba(95, 168, 255, 0.18);
+    color: #5fa8ff;
   }
 </style>

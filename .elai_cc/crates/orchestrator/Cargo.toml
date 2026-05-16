@@ -146,6 +146,11 @@ vlm-integration = ["dep:ort", "dep:nvml-wrapper"]
 # (Cargo.toml L23) so ComfyUI HTTP client does NOT require a new
 # dependency. See workflow/reasoning/B-24-decisions.md decision 54.
 media-validator-rce = []
+# B-41: visual-audit marker feature. Off by default; reserved for B-43
+# (rendered-dashboard visual audit). The AuditorMode::Visual variant in
+# auditor_mode.rs is `#[cfg(feature = "visual_audit")]`-gated so no match-arm
+# obligation propagates to downstream code until B-43 ships.
+visual_audit = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

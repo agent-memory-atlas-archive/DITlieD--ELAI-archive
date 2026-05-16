@@ -51,7 +51,9 @@ export type WindowType =
   | 'settings'
   | 'graph'
   // B-40: Idea-Framer pre-decomposition surface (FRAMING substate).
-  | 'idea_framing';
+  | 'idea_framing'
+  // B-41: per-level auditor timeline + cascade visualisation.
+  | 'audit_timeline';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -135,7 +137,9 @@ export type DrawerKey =
   | 'project-intelligence'
   | 'anti-staleness'
   | 'tools-hooks'
-  | 'web-quality';
+  | 'web-quality'
+  // B-42 — Cosmos artifact tier drawer.
+  | 'cosmos';
 
 // ------------------------------------------------------------------
 // Agent roles
@@ -1628,4 +1632,57 @@ export interface AmbiguityState {
   qualifies_for_advance: boolean;
   /// True when the backend returned the placeholder shape (real producer not yet wired).
   mock: boolean;
+}
+
+// ------------------------------------------------------------------
+// B-42 — Cosmos artifact tier (cross-project knowledge cache).
+// Mirrors `elai_knowledge::CosmosArtifactStatusJson` (snake_case).
+// `refreshed_at` is RFC3339 UTC or null for never-refreshed artifacts.
+// `status` is the snake_case CosmosStatus discriminant.
+// ------------------------------------------------------------------
+export type CosmosArtifactStatus = {
+  name: string;
+  project_classes: string[];
+  refreshed_at: string | null;
+  status: 'fresh' | 'stale' | 'decayed';
+  size_bytes: number;
+};
+
+// ------------------------------------------------------------------
+// B-41 — Per-level auditor mode + verdict surface (mirrors
+// orchestrator::auditor_mode::LevelAuditVerdict JSON encoding).
+// ------------------------------------------------------------------
+export type AuditorMode =
+  | 'concepts'
+  | 'phases'
+  | 'steps'
+  | 'babysteps'
+  | 'babystep_detail'
+  | 'plan';
+
+export type AuditorTier = 'concept' | 'phase' | 'step' | 'baby_step';
+
+export type AuditVerdict = 'allow' | 'block';
+
+export type AuditFindingSeverity = 'BLOCK' | 'WARN' | 'INFO';
+
+export interface AuditFinding {
+  category: string;
+  severity: AuditFindingSeverity;
+  message: string;
+  source?: string | null;
+}
+
+export interface TierNodeIdJson {
+  tier: AuditorTier;
+  id: number;
+}
+
+export interface LevelAuditVerdictJson {
+  mode: AuditorMode;
+  tier_node_id: TierNodeIdJson;
+  findings: AuditFinding[];
+  verdict: AuditVerdict;
+  respawned_once: boolean;
+  cascade_to_parent: boolean;
 }

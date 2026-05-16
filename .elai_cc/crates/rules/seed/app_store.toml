@@ -1,0 +1,99 @@
+# B-41 Slice 3a — app-store rule cluster seed.
+#
+# Source: Apple App Store Review Guidelines (live URL), Google Play Developer
+# Program Policies (live URL). Both T1 official-publisher tier per
+# source_tiers.toml. SHADOW status until promoted by auditor cluster review.
+
+domain = "app-store"
+tier = 1
+default_status = "SHADOW"
+
+[[rules]]
+rule_id = "AS-001"
+title = "iOS — no private API usage"
+description = "App Store Review 2.5.1: apps that use non-public APIs are rejected. Audit imports / dlopen / runtime introspection."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-002"
+title = "iOS — App Transport Security (ATS) compliance"
+description = "App Store Review 2.5.2 + Info.plist: HTTPS-only by default; exceptions require justified ATS dictionary entries."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-003"
+title = "iOS — no deprecated permission strings"
+description = "Privacy NSUsageDescription strings required for every protected resource (Camera, Mic, Location, Contacts, Tracking)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-004"
+title = "iOS — IDFA usage requires App Tracking Transparency prompt"
+description = "ATT (iOS 14.5+): must call requestTrackingAuthorization before IDFA access; bypass = automatic rejection."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-005"
+title = "iOS — In-App Purchase exclusivity for digital goods"
+description = "App Store Review 3.1.1: digital content/subscriptions MUST route through StoreKit; external links forbidden except reader apps."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-006"
+title = "iOS — content rating accuracy"
+description = "Misrated content (e.g. R-equivalent content rated 4+) violates Review 1.3. Audit content vs declared age rating."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "AS-007"
+title = "iOS — account deletion in-app (5.1.1(v))"
+description = "Apps offering account creation MUST also offer in-app account deletion (effective iOS 16.4+)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-008"
+title = "iOS — sign-in service parity (4.8)"
+description = "Apps offering third-party-only sign-in (e.g. Facebook only) must also offer Sign in with Apple OR equivalent privacy-preserving option."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "AS-009"
+title = "Android — target API level meets Play minimum (currently API 34, raised annually)"
+description = "Play Console requires apps target the API level set by Google each August. Stale targets = rejection."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-010"
+title = "Android — declared permissions match manifest"
+description = "Play policy: each requested permission must be justified in the listing; over-declaration = rejection."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-011"
+title = "Android — Data Safety form matches actual data collection"
+description = "Discrepancies between declared Data Safety form and code-observed collection = policy strike."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-012"
+title = "Android — package name uniqueness and stability"
+description = "Application ID locked at first publish; rename = new listing required. Audit before initial release."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "AS-013"
+title = "Android — billing through Google Play (Play Billing Library)"
+description = "Digital goods/subscriptions MUST use Play Billing; external billing only via the User Choice Billing program."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-014"
+title = "Android — Foreground Service types declared (API 34+)"
+description = "Foreground services must declare a type (camera/location/mediaPlayback/...). Missing type = install failure on API 34+."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "AS-015"
+title = "Both — privacy policy URL required and reachable"
+description = "App Store + Play both require a working privacy policy URL on the listing. 404 = rejection."
+risk = "HIGH"

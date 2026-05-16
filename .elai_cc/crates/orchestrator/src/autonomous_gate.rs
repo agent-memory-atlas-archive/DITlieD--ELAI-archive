@@ -180,7 +180,12 @@ impl TreeAutoAdvancePolicy {
 /// auto-advance. Sourced from SSB rows at the call site; passed in as a pure
 /// data structure so the gate stays unit-testable without spinning up SQLite.
 /// Source: phase-4G.txt §4G.3.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// B-40 added the 7th check `framing_converged` for the FRAMING substate.
+/// Gated on `agent_substate == Framing` — for all other states/substates the
+/// field defaults to `true` (vacuous-default per task_runner.rs:6996 pattern)
+/// so the existing 14 autonomous_gate_contract.rs tests pass UNCHANGED.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     /// Check 1 — `project_profile.toml` exists, DKG has >0 nodes, BM25
     /// index populated (DkgReady SSB row present).
@@ -199,10 +204,83 @@ pub struct Evidence {
     /// Check 6 — MEMORIZING → next: DkgReady row for current project +
     /// changelog entry present for the current phase.
     pub dkg_and_changelog_present: bool,
+    /// B-40 Check 7 — PLANNING + FRAMING substate: an `IdeaFramed` row with
+    /// `converged=true` is present for the current session. Vacuous-default
+    /// `true` for any non-FRAMING context — only `derive_framing_evidence`
+    /// at the FRAMING call site flips this to a real value. The
+    /// `#[serde(default = "default_true")]` makes older Evidence snapshots
+    /// (pre-B-40 v40 SSB rows) decode with `framing_converged=true`,
+    /// preserving the autonomous_gate_contract.rs 14-test invariant.
+    #[serde(default = "default_true_for_framing_converged")]
+    pub framing_converged: bool,
+    /// B-41 Check 8 — Concepts-tier per-level audit produced ZERO BLOCK
+    /// verdicts that are still outstanding (i.e. no `cascade_to_parent=true`
+    /// row exists for the AuditorConcepts mode). Vacuous-default `true` for
+    /// any non-Concepts evaluation context — only
+    /// `task_runner::derive_concept_zero_blocks` flips this to a real value
+    /// from the SSB row stream. Matches the framing_converged pattern.
+    #[serde(default = "default_true_for_per_level_zero_blocks")]
+    pub concept_zero_blocks: bool,
+    /// B-41 Check 9 — Phases-tier per-level audit zero-blocks. Vacuous-default
+    /// true (see [`Evidence::concept_zero_blocks`]).
+    #[serde(default = "default_true_for_per_level_zero_blocks")]
+    pub phase_zero_blocks: bool,
+    /// B-41 Check 10 — Steps-tier per-level audit zero-blocks. Vacuous-default
+    /// true (see [`Evidence::concept_zero_blocks`]).
+    #[serde(default = "default_true_for_per_level_zero_blocks")]
+    pub step_zero_blocks: bool,
+    /// B-41 Check 11 — BabySteps-tier per-level audit zero-blocks.
+    /// Vacuous-default true (see [`Evidence::concept_zero_blocks`]).
+    #[serde(default = "default_true_for_per_level_zero_blocks")]
+    pub babystep_zero_blocks: bool,
+    /// B-41 Check 12 — Plan-tier per-level audit zero-blocks. Vacuous-default
+    /// true (see [`Evidence::concept_zero_blocks`]).
+    #[serde(default = "default_true_for_per_level_zero_blocks")]
+    pub plan_zero_blocks: bool,
+}
+
+impl Default for Evidence {
+    fn default() -> Self {
+        Self {
+            knowledge_readiness: false,
+            zero_ungrounded: false,
+            tests_fail_correctly: false,
+            test_flipped: false,
+            zero_blocks: false,
+            dkg_and_changelog_present: false,
+            // Vacuous default true: pre-FRAMING phases (i.e. phases not
+            // gated on framing) must not be blocked by an unset field.
+            framing_converged: true,
+            // B-41: vacuous-default true for all 5 per-level audit
+            // zero-blocks fields. Same pattern as `framing_converged` —
+            // contexts not in that tier's evaluation window observe `true`
+            // and the existing 14 autonomous_gate_contract.rs + 11
+            // autonomous_gate_with_framing_contract.rs tests pass UNCHANGED.
+            concept_zero_blocks: true,
+            phase_zero_blocks: true,
+            step_zero_blocks: true,
+            babystep_zero_blocks: true,
+            plan_zero_blocks: true,
+        }
+    }
+}
+
+fn default_true_for_framing_converged() -> bool {
+    true
+}
+
+fn default_true_for_per_level_zero_blocks() -> bool {
+    true
 }
 
 impl Evidence {
     /// Every check passed. Required for any [`AutonomyDecision::AutoAdvance`].
+    ///
+    /// B-40: includes `framing_converged` as the 7th check. Because the field
+    /// defaults to `true` for non-FRAMING contexts (vacuous-default), the
+    /// existing 14 autonomous_gate_contract.rs tests pass UNCHANGED — only
+    /// FRAMING-substate call sites flip the field to a real value via
+    /// `derive_framing_evidence`.
     pub fn all_passed(&self) -> bool {
         self.knowledge_readiness
             && self.zero_ungrounded
@@ -210,20 +288,35 @@ impl Evidence {
             && self.test_flipped
             && self.zero_blocks
             && self.dkg_and_changelog_present
+            && self.framing_converged
+            // B-41 per-level audit zero-blocks (vacuous-default true).
+            && self.concept_zero_blocks
+            && self.phase_zero_blocks
+            && self.step_zero_blocks
+            && self.babystep_zero_blocks
+            && self.plan_zero_blocks
     }
 
     /// Human-readable summary for the `GateDecision` SSB payload. Format is
-    /// the six single-letter pass/fail flags in check order.
+    /// the seven single-letter pass/fail flags in check order (B-40 adds fc).
     pub fn summary(&self) -> String {
         // NARROWING-OK: bool as u8 is always 0 or 1; no truncation possible.
+        // B-41 NOTE: per-level audit zero-blocks are intentionally OMITTED
+        // from this summary string. The B-40 contract
+        // `autonomous_gate_with_framing_contract::contract_summary_includes_fc_suffix`
+        // asserts the string ENDS with `fc=<0|1>` — appending more flags
+        // breaks that invariant. The 5 B-41 flags are exposed via
+        // `failed_checks()` (which has no such ordering invariant), via the
+        // per-level SSB rows themselves, and via the dashboard timeline.
         format!(
-            "kr={} zu={} tfc={} tf={} zb={} dcg={}",
+            "kr={} zu={} tfc={} tf={} zb={} dcg={} fc={}",
             self.knowledge_readiness as u8,
             self.zero_ungrounded as u8,
             self.tests_fail_correctly as u8,
             self.test_flipped as u8,
             self.zero_blocks as u8,
             self.dkg_and_changelog_present as u8,
+            self.framing_converged as u8,
         )
     }
 
@@ -248,6 +341,25 @@ impl Evidence {
         }
         if !self.dkg_and_changelog_present {
             v.push("dkg_and_changelog_present");
+        }
+        if !self.framing_converged {
+            v.push("framing_converged");
+        }
+        // B-41 per-level audit zero-blocks failed-check labels.
+        if !self.concept_zero_blocks {
+            v.push("concept_zero_blocks");
+        }
+        if !self.phase_zero_blocks {
+            v.push("phase_zero_blocks");
+        }
+        if !self.step_zero_blocks {
+            v.push("step_zero_blocks");
+        }
+        if !self.babystep_zero_blocks {
+            v.push("babystep_zero_blocks");
+        }
+        if !self.plan_zero_blocks {
+            v.push("plan_zero_blocks");
         }
         v
     }
@@ -639,6 +751,14 @@ mod tests {
             test_flipped: true,
             zero_blocks: true,
             dkg_and_changelog_present: true,
+            // B-40: 7th check vacuous-default true for non-FRAMING tests.
+            framing_converged: true,
+            // B-41: 5 per-level audit zero-blocks vacuous-default true.
+            concept_zero_blocks: true,
+            phase_zero_blocks: true,
+            step_zero_blocks: true,
+            babystep_zero_blocks: true,
+            plan_zero_blocks: true,
         }
     }
 
@@ -884,9 +1004,11 @@ mod tests {
 
     #[test]
     fn evidence_summary_format() {
+        // B-40: Evidence::default() yields framing_converged=true (vacuous
+        // default for non-FRAMING contexts); the summary tail is `fc=1`.
         let mut e = Evidence::default();
         e.knowledge_readiness = true;
-        assert_eq!(e.summary(), "kr=1 zu=0 tfc=0 tf=0 zb=0 dcg=0");
+        assert_eq!(e.summary(), "kr=1 zu=0 tfc=0 tf=0 zb=0 dcg=0 fc=1");
     }
 
     #[test]

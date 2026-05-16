@@ -91,6 +91,8 @@ import type {
   TradeoffResponse,
   // B-42 — Cosmos artifact tier.
   CosmosArtifactStatus,
+  // B-41 — Per-level audit timeline.
+  LevelAuditVerdictJson,
 } from './types';
 
 import {
@@ -2280,4 +2282,20 @@ export async function triggerCosmosRefresh(
   } catch (e) {
     return { ok: false, error: String(e) };
   }
+}
+
+// ------------------------------------------------------------------
+// B-41 — Per-level audit verdicts.
+//
+// LIVE Tauri invoke per brief: no mock fallback. Returns an empty array
+// when the backend has no rows for the task or the IPC is unavailable.
+// ------------------------------------------------------------------
+export async function getPerLevelVerdicts(
+  taskId: string,
+): Promise<LevelAuditVerdictJson[]> {
+  logStub('getPerLevelVerdicts', { taskId });
+  const live = await tryInvoke<LevelAuditVerdictJson[]>('get_per_level_verdicts', {
+    taskId,
+  });
+  return live ?? [];
 }

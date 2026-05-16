@@ -160,7 +160,16 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 //   - cosmos_grounding_used    (one row per CosmosCheck verifier dispatch)
 // Producers: knowledge::cosmos_worker (refresh / decay), reasoning::verification
 // (grounding_used). Additive only — no existing variants renumbered.
-const SCHEMA_VERSION: i64 = 44;
+//
+// B-41 (SCHEMA_VERSION 45): bumped 44 -> 45 for 3 new SSB action types
+// tied to the per-level auditor mode dispatch (Concepts/Phases/Steps/
+// BabySteps/BabyStepDetail/Plan):
+//   - per_level_audit_started (one row per Auditor* spawn at a tier node)
+//   - per_level_audit_verdict (one row per LevelAuditVerdict produced)
+//   - per_level_audit_cascade (one row when a 2nd BLOCK forces parent cascade)
+// Producers: orchestrator::pipeline_tree_navigator (per-level audit hooks).
+// Additive only — no existing variants renumbered.
+const SCHEMA_VERSION: i64 = 45;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -361,7 +370,21 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- cosmos_artifact_decayed  -- one row when artifact exceeds 3 * cadence
         -- cosmos_grounding_used    -- one row per CosmosCheck verifier dispatch
         'cosmos_refresh_started', 'cosmos_artifact_updated',
-        'cosmos_artifact_decayed', 'cosmos_grounding_used'
+        'cosmos_artifact_decayed', 'cosmos_grounding_used',
+        -- B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+        -- per_level_audit_started -- one row per AuditorConcepts/Phases/Steps/
+        --                            BabySteps/BabyStepDetail spawn at a tier
+        --                            node (mode + tier + node_id).
+        -- per_level_audit_verdict -- one row per LevelAuditVerdict produced
+        --                            (mode + tier + node_id + verdict +
+        --                            findings_count + respawned_once +
+        --                            cascade_to_parent).
+        -- per_level_audit_cascade -- one row when a 2nd BLOCK at a tier sets
+        --                            cascade_to_parent=true and the navigator
+        --                            bubbles up to the parent decomposer
+        --                            (mode + tier + node_id + parent_tier).
+        'per_level_audit_started', 'per_level_audit_verdict',
+        'per_level_audit_cascade'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -890,6 +913,15 @@ pub enum SsbActionType {
     /// B-42 (SCHEMA_VERSION 44): one row per `CosmosCheck` verifier dispatch.
     /// Carries a [`CosmosGroundingUsedPayload`].
     CosmosGroundingUsed,
+    /// B-41 (SCHEMA_VERSION 45): per-level auditor mode spawn at a tier node.
+    /// Carries a [`PerLevelAuditStartedPayload`].
+    PerLevelAuditStarted,
+    /// B-41 (SCHEMA_VERSION 45): per-level auditor verdict produced.
+    /// Carries a [`PerLevelAuditVerdictPayload`].
+    PerLevelAuditVerdict,
+    /// B-41 (SCHEMA_VERSION 45): per-level auditor cascade (2nd BLOCK at a
+    /// tier forces parent-tier respawn). Carries a [`PerLevelAuditCascadePayload`].
+    PerLevelAuditCascade,
 }
 
 impl SsbActionType {
@@ -1051,6 +1083,10 @@ impl SsbActionType {
             Self::CosmosArtifactUpdated => "cosmos_artifact_updated",
             Self::CosmosArtifactDecayed => "cosmos_artifact_decayed",
             Self::CosmosGroundingUsed => "cosmos_grounding_used",
+            // B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+            Self::PerLevelAuditStarted => "per_level_audit_started",
+            Self::PerLevelAuditVerdict => "per_level_audit_verdict",
+            Self::PerLevelAuditCascade => "per_level_audit_cascade",
         }
     }
 }
@@ -1219,6 +1255,10 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "cosmos_artifact_updated" => Ok(SsbActionType::CosmosArtifactUpdated),
         "cosmos_artifact_decayed" => Ok(SsbActionType::CosmosArtifactDecayed),
         "cosmos_grounding_used"   => Ok(SsbActionType::CosmosGroundingUsed),
+        // B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+        "per_level_audit_started" => Ok(SsbActionType::PerLevelAuditStarted),
+        "per_level_audit_verdict" => Ok(SsbActionType::PerLevelAuditVerdict),
+        "per_level_audit_cascade" => Ok(SsbActionType::PerLevelAuditCascade),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -3590,6 +3630,10 @@ pub enum SsbPayload {
     CosmosArtifactUpdated(CosmosArtifactUpdatedPayload),
     CosmosArtifactDecayed(CosmosArtifactDecayedPayload),
     CosmosGroundingUsed(CosmosGroundingUsedPayload),
+    // B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+    PerLevelAuditStarted(PerLevelAuditStartedPayload),
+    PerLevelAuditVerdict(PerLevelAuditVerdictPayload),
+    PerLevelAuditCascade(PerLevelAuditCascadePayload),
 }
 
 impl SsbPayload {
@@ -3750,6 +3794,10 @@ impl SsbPayload {
             Self::CosmosArtifactUpdated(_) => SsbActionType::CosmosArtifactUpdated,
             Self::CosmosArtifactDecayed(_) => SsbActionType::CosmosArtifactDecayed,
             Self::CosmosGroundingUsed(_) => SsbActionType::CosmosGroundingUsed,
+            // B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+            Self::PerLevelAuditStarted(_) => SsbActionType::PerLevelAuditStarted,
+            Self::PerLevelAuditVerdict(_) => SsbActionType::PerLevelAuditVerdict,
+            Self::PerLevelAuditCascade(_) => SsbActionType::PerLevelAuditCascade,
         }
     }
 }
@@ -4846,6 +4894,59 @@ pub struct CosmosGroundingUsedPayload {
     pub matched: bool,
 }
 
+/// B-41 — payload for [`SsbActionType::PerLevelAuditStarted`].
+///
+/// Emitted by the pipeline-tree navigator immediately before spawning an
+/// Auditor* agent at a tier node (Concepts/Phases/Steps/BabySteps/BabyStepDetail).
+/// The `mode` and `tier` fields are the snake_case labels from
+/// `auditor_mode::AuditorMode::as_str()` and `auditor_mode::TierNodeId::tier_str()`
+/// — kept as strings so this payload stays decoupled from the auditor_mode
+/// module (avoids a cyclic dep in payload deserialization).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerLevelAuditStartedPayload {
+    /// Auditor mode label: `"concepts" | "phases" | "steps" | "babysteps" |
+    /// "babystep_detail" | "plan"`.
+    pub mode: String,
+    /// Tier label: `"concept" | "phase" | "step" | "baby_step"`.
+    pub tier: String,
+    /// Underlying tier node id (ConceptId/PhaseId/StepId/BabyStepId raw value).
+    pub node_id: u64,
+}
+
+/// B-41 — payload for [`SsbActionType::PerLevelAuditVerdict`].
+///
+/// Emitted by the pipeline-tree navigator after an Auditor* agent returns a
+/// `LevelAuditVerdict`. `findings_count` is the length of the verdict's
+/// `findings` vec (full Finding list is persisted as Markdown by
+/// `auditor_mode::persist_verdict`; SSB carries only the metadata so payload
+/// size stays bounded).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerLevelAuditVerdictPayload {
+    pub mode: String,
+    pub tier: String,
+    pub node_id: u64,
+    /// `"allow" | "block"`.
+    pub verdict: String,
+    pub findings_count: u32,
+    pub respawned_once: bool,
+    pub cascade_to_parent: bool,
+}
+
+/// B-41 — payload for [`SsbActionType::PerLevelAuditCascade`].
+///
+/// Emitted when a 2nd BLOCK verdict at a tier sets `cascade_to_parent=true`
+/// and the navigator bubbles up to the parent decomposer. `parent_tier` is
+/// the immediate parent in the decomposition hierarchy
+/// (concept ← phase ← step ← baby_step ← baby_step_detail-cascades-to-baby_step).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerLevelAuditCascadePayload {
+    pub mode: String,
+    pub tier: String,
+    pub node_id: u64,
+    /// Tier label of the parent that was bubbled up to.
+    pub parent_tier: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -5792,6 +5893,33 @@ mod tests {
                     claim_category: "design".into(),
                     artifact_name: "a".into(),
                     matched: true,
+                },
+            ),
+            // B-41 (SCHEMA_VERSION 45): per-level auditor mode beacons.
+            SsbActionType::PerLevelAuditStarted => SsbPayload::PerLevelAuditStarted(
+                PerLevelAuditStartedPayload {
+                    mode: "concepts".into(),
+                    tier: "concept".into(),
+                    node_id: 0,
+                },
+            ),
+            SsbActionType::PerLevelAuditVerdict => SsbPayload::PerLevelAuditVerdict(
+                PerLevelAuditVerdictPayload {
+                    mode: "concepts".into(),
+                    tier: "concept".into(),
+                    node_id: 0,
+                    verdict: "allow".into(),
+                    findings_count: 0,
+                    respawned_once: false,
+                    cascade_to_parent: false,
+                },
+            ),
+            SsbActionType::PerLevelAuditCascade => SsbPayload::PerLevelAuditCascade(
+                PerLevelAuditCascadePayload {
+                    mode: "babystep_detail".into(),
+                    tier: "baby_step".into(),
+                    node_id: 0,
+                    parent_tier: "baby_step".into(),
                 },
             ),
         };
@@ -6969,6 +7097,138 @@ mod tests {
                 scope: "index".into(),
                 holder_pid: 99999,
             }),
+            // B-33 follow-up (SCHEMA_VERSION 40) — symbol-graph build summary row.
+            SsbPayload::SymbolGraphUpdated(SymbolGraphUpdatedPayload {
+                project_id: "abc123def4567890".into(),
+                file_count: 42,
+                symbol_count: 1234,
+                edge_count: 5678,
+                built_ms: 1_700_000_000_000,
+            }),
+            // B-40 (SCHEMA_VERSION 41) — 5 FRAMING substate beacons.
+            SsbPayload::IdeaFramingStarted(IdeaFramingStartedPayload {
+                session_id: "s-test".into(),
+                prompt: "build a todo app".into(),
+                started_at_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::ProjectClassClassified(ProjectClassClassifiedPayload {
+                session_id: "s-test".into(),
+                project_class: "saas".into(),
+                matched_pattern: Some("react+postgres".into()),
+            }),
+            SsbPayload::CriticRoundComplete(CriticRoundCompletePayload {
+                session_id: "s-test".into(),
+                round_index: 1,
+                block_count: 0,
+                warn_count: 2,
+                info_count: 3,
+                converged: true,
+                category_counts: vec![("clarity".into(), 1), ("scope".into(), 1)],
+            }),
+            SsbPayload::IdeaFramed(IdeaFramedPayload {
+                session_id: "s-test".into(),
+                artifact_path: "workflow/sessions/s-test/idea.md".into(),
+                project_class: "saas".into(),
+                rounds_used: 2,
+                tradeoff_count: 3,
+                converged: true,
+            }),
+            SsbPayload::TradeoffCardEmitted(TradeoffCardEmittedPayload {
+                session_id: "s-test".into(),
+                tradeoff_names: vec!["db".into(), "auth".into()],
+                option_counts: vec![3, 2],
+            }),
+            // B-34 (SCHEMA_VERSION 42) — entry-point + artifact pipeline beacons.
+            SsbPayload::EntryPointsDetected(EntryPointsDetectedPayload {
+                project_id: "abc123def4567890".into(),
+                count: 3,
+                by_reason: {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("orphan".into(), 1);
+                    m.insert("well_known:main".into(), 2);
+                    m
+                },
+            }),
+            SsbPayload::ArtifactsIndexed(ArtifactsIndexedPayload {
+                project_id: "abc123def4567890".into(),
+                indexed: vec!["readme".into()],
+                up_to_date: vec!["license".into()],
+                total_chunks: 12,
+                latency_ms: 45,
+            }),
+            SsbPayload::ArtifactSearched(ArtifactSearchedPayload {
+                project_id: "abc123def4567890".into(),
+                artifact_name: Some("readme".into()),
+                query: "install".into(),
+                result_count: 4,
+                latency_ms: 7,
+            }),
+            SsbPayload::ArtifactStale(ArtifactStalePayload {
+                project_id: "abc123def4567890".into(),
+                artifact_name: "readme".into(),
+                changed_files: vec!["README.md".into()],
+            }),
+            // B-38 (SCHEMA_VERSION 43) — ambiguity continuous-metric beacons.
+            SsbPayload::AmbiguityScored(AmbiguityScoredPayload {
+                score: 0.42,
+                milestone: "progress".into(),
+                goal: 0.5,
+                constraint: 0.4,
+                success: 0.4,
+                context: Some(0.3),
+                brownfield: true,
+            }),
+            SsbPayload::AmbiguityFloorFailed(AmbiguityFloorFailedPayload {
+                score: 0.2,
+                failed_dimensions: vec!["goal_clarity".into()],
+            }),
+            SsbPayload::AmbiguityStreakAdvanced(AmbiguityStreakAdvancedPayload {
+                score: 0.9,
+                current_streak: 2,
+                required: 3,
+            }),
+            // B-42 (SCHEMA_VERSION 44) — cosmos tier knowledge worker beacons.
+            SsbPayload::CosmosRefreshStarted(CosmosRefreshStartedPayload {
+                queued: 3,
+                total: 12,
+            }),
+            SsbPayload::CosmosArtifactUpdated(CosmosArtifactUpdatedPayload {
+                name: "saas_pricing_patterns".into(),
+                blake3: "f00dfeedcafebabe".into(),
+                body_bytes: 4096,
+                latency_ms: 120,
+            }),
+            SsbPayload::CosmosArtifactDecayed(CosmosArtifactDecayedPayload {
+                name: "saas_pricing_patterns".into(),
+                age_secs: 86_400,
+                cadence: "daily".into(),
+            }),
+            SsbPayload::CosmosGroundingUsed(CosmosGroundingUsedPayload {
+                claim_category: "monetization".into(),
+                artifact_name: "saas_pricing_patterns".into(),
+                matched: true,
+            }),
+            // B-41 (SCHEMA_VERSION 45) — per-level auditor mode beacons.
+            SsbPayload::PerLevelAuditStarted(PerLevelAuditStartedPayload {
+                mode: "concepts".into(),
+                tier: "concept".into(),
+                node_id: 1,
+            }),
+            SsbPayload::PerLevelAuditVerdict(PerLevelAuditVerdictPayload {
+                mode: "phases".into(),
+                tier: "phase".into(),
+                node_id: 2,
+                verdict: "allow".into(),
+                findings_count: 0,
+                respawned_once: false,
+                cascade_to_parent: false,
+            }),
+            SsbPayload::PerLevelAuditCascade(PerLevelAuditCascadePayload {
+                mode: "babystep_detail".into(),
+                tier: "baby_step".into(),
+                node_id: 42,
+                parent_tier: "baby_step".into(),
+            }),
         ]
     }
 
@@ -6980,8 +7240,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            59,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested)",
+            79,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

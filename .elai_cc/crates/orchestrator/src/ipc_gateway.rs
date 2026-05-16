@@ -226,6 +226,32 @@ pub fn allowed_grounding_methods(role: &AgentRole) -> Vec<GroundingMethod> {
         AgentRole::ContextCompiler => vec![GroundingMethod::FileCheck, GroundingMethod::SourceCheck],
         AgentRole::MemoryWriter => vec![GroundingMethod::FileCheck],
         AgentRole::MediaValidator => vec![GroundingMethod::FileCheck],
+        // B-40: FRAMING substate agents. idea_framer + idea_critic both run
+        // research-driven framing/critique with file + source + web checks
+        // (mirror Designer + Auditor for the FRAMING-scoped tool surface).
+        AgentRole::IdeaFramer => vec![
+            GroundingMethod::FileCheck,
+            GroundingMethod::SourceCheck,
+            GroundingMethod::WebCheck,
+        ],
+        AgentRole::IdeaCritic => vec![
+            GroundingMethod::FileCheck,
+            GroundingMethod::SourceCheck,
+            GroundingMethod::WebCheck,
+        ],
+        // B-41: per-level auditors share the same grounding-method surface as
+        // the Plan-mode auditor — File + Web + Source. Audit reads everything;
+        // tier-specific scoping happens in the REVIEW prompt, not in the
+        // grounding-method matrix.
+        AgentRole::AuditorConcepts
+        | AgentRole::AuditorPhases
+        | AgentRole::AuditorSteps
+        | AgentRole::AuditorBabySteps
+        | AgentRole::AuditorBabyStepDetail => vec![
+            GroundingMethod::FileCheck,
+            GroundingMethod::WebCheck,
+            GroundingMethod::SourceCheck,
+        ],
     }
 }
 

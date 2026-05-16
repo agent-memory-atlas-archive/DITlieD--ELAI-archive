@@ -1029,6 +1029,14 @@ where
                 // B-40: not in FRAMING substate at this call site;
                 // vacuous-default true so 7th check doesn't double-block.
                 framing_converged: true,
+                // B-41: per-level audit zero-blocks vacuous-default true at
+                // this synthetic-evidence call site (no SsbReader handle to
+                // poll per-level verdicts).
+                concept_zero_blocks: true,
+                phase_zero_blocks: true,
+                step_zero_blocks: true,
+                babystep_zero_blocks: true,
+                plan_zero_blocks: true,
             };
             let reason = format!(
                 "fix_and_rerun cap reached after {max_iterations} iterations; \
@@ -7036,7 +7044,93 @@ fn derive_autonomous_evidence(reader: &dyn SsbReader) -> crate::autonomous_gate:
         // non-FRAMING phases observe `framing_converged=true` and the
         // 7th check never spuriously blocks AutoAdvance.
         framing_converged: derive_framing_evidence(reader),
+        // B-41: per-level audit zero-blocks. Each helper is vacuous-default
+        // true when no PerLevelAuditVerdict rows exist for the given mode,
+        // and otherwise returns false IFF any verdict with
+        // cascade_to_parent=true exists for that mode. Calling them here
+        // (rather than at the gate decision site) keeps the Evidence struct
+        // a pure data snapshot — the contract test
+        // `autonomous_gate_with_per_level_contract` asserts cold-start
+        // returns all-true (matches the existing 14+11 gate contracts).
+        concept_zero_blocks: derive_concept_zero_blocks(reader),
+        phase_zero_blocks: derive_phase_zero_blocks(reader),
+        step_zero_blocks: derive_step_zero_blocks(reader),
+        babystep_zero_blocks: derive_babystep_zero_blocks(reader),
+        plan_zero_blocks: derive_plan_zero_blocks(reader),
     }
+}
+
+/// B-41 — derive helpers for the 5 per-level-audit zero-blocks evidence
+/// checks. Each returns `false` IFF there exists a `PerLevelAuditVerdict`
+/// row whose `mode` matches the target AuditorMode AND whose
+/// `cascade_to_parent == true` — i.e. the navigator already escalated a
+/// 2nd BLOCK to the parent tier. Cold-start (no such rows) is vacuous
+/// `true`, preserving the existing 14 autonomous_gate_contract.rs + 11
+/// autonomous_gate_with_framing_contract.rs invariants UNCHANGED.
+///
+/// The 5 helpers are split (rather than parametric) so a static enum-arity
+/// audit (e.g. `grep derive_*_zero_blocks src/task_runner.rs | wc -l`) can
+/// verify all five evidence fields are actually wired at the construction
+/// site. This addresses the B-40 BLOCK-2 dead-code postmortem.
+fn derive_per_level_zero_blocks_for(reader: &dyn SsbReader, mode_label: &str) -> bool {
+    let rows = reader
+        .query_by_type(SsbActionType::PerLevelAuditVerdict)
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return true;
+    }
+    // B-41 audit fix (WARN-1): group by (tier, node_id) and only consider
+    // the LATEST verdict per node. A resolved BLOCK (subsequent ALLOW row
+    // for the same node) MUST recover the zero-blocks signal even if an
+    // earlier row carries cascade_to_parent=true. SsbReader::query_by_type
+    // returns rows in insertion order (by `seq`), so the last matching
+    // row per node wins.
+    use std::collections::BTreeMap;
+    let mut latest: BTreeMap<(String, u64), (String, bool)> = BTreeMap::new();
+    for entry in rows.iter() {
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::PerLevelAuditVerdict(p) = payload {
+            if p.mode == mode_label {
+                latest.insert((p.tier.clone(), p.node_id), (p.verdict, p.cascade_to_parent));
+            }
+        }
+    }
+    // Node is "blocked" only if its LATEST row is still a block AND was
+    // cascaded. ALLOW supersedes any prior BLOCK regardless of cascade flag.
+    !latest
+        .values()
+        .any(|(verdict, cascade)| verdict == "block" && *cascade)
+}
+
+/// B-41 — Concepts-tier per-level audit zero-blocks check.
+pub fn derive_concept_zero_blocks(reader: &dyn SsbReader) -> bool {
+    derive_per_level_zero_blocks_for(reader, "concepts")
+}
+
+/// B-41 — Phases-tier per-level audit zero-blocks check.
+pub fn derive_phase_zero_blocks(reader: &dyn SsbReader) -> bool {
+    derive_per_level_zero_blocks_for(reader, "phases")
+}
+
+/// B-41 — Steps-tier per-level audit zero-blocks check.
+pub fn derive_step_zero_blocks(reader: &dyn SsbReader) -> bool {
+    derive_per_level_zero_blocks_for(reader, "steps")
+}
+
+/// B-41 — BabySteps-tier per-level audit zero-blocks check. BabyStepDetail
+/// cascades into the BabyStep tier (see B-41-decisions.md DECISION-CASCADE),
+/// so this helper folds verdicts for BOTH `babysteps` AND `babystep_detail`
+/// modes — a cascade at babystep_detail surfaces at the babystep parent.
+pub fn derive_babystep_zero_blocks(reader: &dyn SsbReader) -> bool {
+    derive_per_level_zero_blocks_for(reader, "babysteps")
+        && derive_per_level_zero_blocks_for(reader, "babystep_detail")
+}
+
+/// B-41 — Plan-tier per-level audit zero-blocks check.
+pub fn derive_plan_zero_blocks(reader: &dyn SsbReader) -> bool {
+    derive_per_level_zero_blocks_for(reader, "plan")
 }
 
 /// B-40 — derive the 7th evidence check `framing_converged` from SSB.

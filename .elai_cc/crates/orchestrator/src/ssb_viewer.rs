@@ -3768,6 +3768,34 @@ impl SsbViewer {
         }
         Ok(out)
     }
+
+    /// B-40 — Return (session_id, payload_bytes) tuples for an action type,
+    /// ordered seq ASC. Caller decodes payload_bytes via `rmp_serde` against
+    /// the appropriate `SsbPayload` variant. Cap: 500 rows.
+    ///
+    /// Used by dashboard-v2 `get_idea_framing_state` to assemble the
+    /// IdeaFramingState DTO from IdeaFramingStarted + CriticRoundComplete +
+    /// IdeaFramed SSB rows (the dashboard scopes by session_id at decode time).
+    pub fn rows_with_session_by_action_type(
+        &self,
+        action_type: SsbActionType,
+    ) -> Result<Vec<(String, Vec<u8>)>, SsbViewerError> {
+        const MAX_ROWS: i64 = 500;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![action_type.as_sql_str(), MAX_ROWS],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
 }
 
 /// B-23 Phase 4H Group F — DTO emitted by [`SsbViewer::pending_proposals_layer1a`]

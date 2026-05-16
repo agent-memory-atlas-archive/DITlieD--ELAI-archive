@@ -953,6 +953,11 @@ pub struct ResearchTree {
     pub speculative_depth: u32,
     pub time_budget: Duration,
     clock: Arc<dyn ClockProvider>,
+    /// B-40: per-stream root node IDs when this tree was constructed via
+    /// [`ResearchTree::new_multi_root`]. Empty for single-root trees built
+    /// via the original [`ResearchTree::new`] constructor (preserved invariant
+    /// — existing 48 tests untouched). Order matches the input `streams` Vec.
+    multi_root_ids: Vec<NodeId>,
 }
 
 impl ResearchTree {
@@ -993,7 +998,114 @@ impl ResearchTree {
             speculative_depth,
             time_budget,
             clock,
+            // Single-root constructor: multi_root_ids stays empty so
+            // existing 48 ResearchTree tests are unaffected. B-40
+            // `new_multi_root` populates this.
+            multi_root_ids: Vec::new(),
         })
+    }
+
+    /// B-40 — Construct a multi-root tree from a list of research streams.
+    /// Each stream becomes one root node; the tree's `root` field is set to
+    /// the FIRST stream's root for backward compatibility with single-root
+    /// consumers. Use [`ResearchTree::stream_root_id`] to look up other roots
+    /// by stream index.
+    ///
+    /// Convergence semantics: the existing `run()` loop processes all active
+    /// nodes including all root nodes. The caller (B-40 `dispatch_multi_root_research`)
+    /// is responsible for reporting per-stream convergence + emitting
+    /// `degraded_streams` for any mandatory stream that did not converge.
+    ///
+    /// Empty input is rejected with [`ResearchTreeError::EmptyQuestion`].
+    pub fn new_multi_root(
+        streams: Vec<crate::idea_framing::ResearchStream>,
+        clock: Arc<dyn ClockProvider>,
+    ) -> Result<Self, ResearchTreeError> {
+        if streams.is_empty() {
+            return Err(ResearchTreeError::EmptyQuestion);
+        }
+        // Reject any stream with a blank query template up-front so we don't
+        // build degenerate nodes.
+        for s in &streams {
+            if s.query_template.trim().is_empty() {
+                return Err(ResearchTreeError::EmptyQuestion);
+            }
+        }
+
+        // Build a synthetic plan rooted at the first stream's query — the
+        // existing FlashResearch loop is single-question-rooted but
+        // tolerates additional root-level nodes (we manually insert them
+        // into state.nodes below). `sub_questions` stays empty because the
+        // multi-root variant uses additional ROOT nodes rather than child
+        // sub-questions.
+        let first_query = streams[0].query_template.clone();
+        let plan = ResearchPlan {
+            root_question: first_query.clone(),
+            sub_questions: Vec::new(),
+            complexity: QueryComplexity::Moderate,
+            time_budget: Duration::from_secs(60),
+            require_contradictions: false,
+        };
+        let breadth_factor = plan.complexity.breadth_factor();
+        let depth_limit = plan.complexity.depth_limit();
+        let phi_min = plan.complexity.phi_min();
+        let psi_min = PSI_MIN_DEFAULT;
+        let speculative_depth = 0;
+        let time_budget = plan.time_budget;
+
+        let mut state = SharedResearchState::new();
+
+        // Allocate the FIRST stream as the canonical `root` field so
+        // single-root downstream code keeps working.
+        let first_root_id = state.allocate_node_id();
+        let first_root_node = ResearchNode::new(
+            first_root_id,
+            first_query,
+            None,
+            0,
+        );
+        state.nodes.insert(first_root_id, first_root_node);
+
+        let mut multi_root_ids: Vec<NodeId> = vec![first_root_id];
+        for stream in streams.iter().skip(1) {
+            let rid = state.allocate_node_id();
+            let mut node = ResearchNode::new(rid, stream.query_template.clone(), None, 0);
+            // Mark non-first roots Active so run() picks them up at the
+            // "Collect active node IDs" stage — run() only explicitly
+            // activates `self.root`, so without this, additional roots
+            // would remain Pending forever in multi-root mode.
+            node.status = NodeStatus::Active;
+            state.nodes.insert(rid, node);
+            multi_root_ids.push(rid);
+        }
+
+        Ok(Self {
+            plan,
+            state,
+            root: first_root_id,
+            breadth_factor,
+            depth_limit,
+            max_iterations: MAX_ITERATIONS_DEFAULT,
+            phi_min,
+            psi_min,
+            speculative_depth,
+            time_budget,
+            clock,
+            multi_root_ids,
+        })
+    }
+
+    /// B-40 — Look up the root NodeId for the Nth stream (by input order)
+    /// in a tree constructed via [`ResearchTree::new_multi_root`]. Returns
+    /// `None` for single-root trees or out-of-bounds indices.
+    pub fn stream_root_id(&self, stream_index: usize) -> Option<NodeId> {
+        self.multi_root_ids.get(stream_index).copied()
+    }
+
+    /// B-40 — All stream root NodeIds in input order. Empty for single-root
+    /// trees.
+    pub fn multi_root_ids(&self) -> &[NodeId] {
+        &self.multi_root_ids
     }
 
     /// Run the FlashResearch loop. Returns a report on completion.

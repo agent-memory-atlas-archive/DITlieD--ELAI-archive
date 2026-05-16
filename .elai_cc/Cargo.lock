@@ -1461,6 +1461,7 @@ name = "elai-providers"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "futures-util",
  "getrandom 0.3.4",
  "nvml-wrapper",
  "reqwest 0.12.28",
@@ -1479,9 +1480,11 @@ name = "elai-reasoning"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "elai-providers",
  "regex",
  "rustc-hash",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

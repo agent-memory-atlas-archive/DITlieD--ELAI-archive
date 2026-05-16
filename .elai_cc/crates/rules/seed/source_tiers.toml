@@ -1,0 +1,83 @@
+# B-41 Slice 3a — source-tiers rule cluster seed.
+#
+# Maps claim categories to the minimum source tier required for grounding.
+# Tier definitions (see CLAUDE.md "Grounded-by-default" block):
+#   T1 — passing tests / measured data / official spec.
+#   T2 — official docs / SDKs / peer-reviewed papers.
+#   T3 — third-party benchmarks / community implementations.
+# Each rule defaults to SHADOW status until the rule-engine review path
+# promotes it.
+
+domain = "source-tiers"
+tier = 1
+default_status = "SHADOW"
+
+[[rules]]
+rule_id = "ST-001"
+category = "financial"
+min_tier = "T1"
+description = "Financial claims (pricing, revenue, market size, churn) require T1 measurement OR primary-source citation. Training data is NEVER sufficient."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "ST-002"
+category = "medical"
+min_tier = "T1"
+description = "Medical/health/safety claims require T1 (regulatory filing, peer-reviewed study). Off-label or unproven indications forbidden."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "ST-003"
+category = "legal"
+min_tier = "T1"
+description = "Legal claims (compliance, licensing, jurisdiction) require T1 (statute citation, regulator FAQ). LLM training is non-authoritative."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "ST-004"
+category = "marketing"
+min_tier = "T2"
+description = "Marketing copy claims (comparative, performance) require T2 (vendor docs, published benchmark)."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "ST-005"
+category = "design"
+min_tier = "T2"
+description = "Design claims (UX pattern efficacy, design-system convention) accept T2 (NN/g, Material/HIG) or T3 (well-cited community)."
+risk = "LOW"
+
+[[rules]]
+rule_id = "ST-006"
+category = "performance"
+min_tier = "T1"
+description = "Performance claims (latency, throughput, memory) require T1 measurement on the actual workload. Synthetic micro-benchmarks = WARN."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "ST-007"
+category = "security"
+min_tier = "T1"
+description = "Security claims (encryption strength, threat model coverage) require T1 (CVE/NIST cite, formal proof, or audited library doc)."
+risk = "HIGH"
+
+[[rules]]
+rule_id = "ST-008"
+category = "api_behavior"
+min_tier = "T2"
+description = "External-API behavior claims require T2 (official SDK doc, current as of the audit date) — not training data."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "ST-009"
+category = "library_version"
+min_tier = "T1"
+description = "Library version / capability claims require T1 verification via `cargo search` / `pip index versions` / equivalent."
+risk = "MEDIUM"
+
+[[rules]]
+rule_id = "ST-010"
+category = "architecture"
+min_tier = "T2"
+description = "Architecture pattern claims (CRDT, BSP, etc.) require T2 (cited paper / canonical implementation reference)."
+risk = "MEDIUM"
