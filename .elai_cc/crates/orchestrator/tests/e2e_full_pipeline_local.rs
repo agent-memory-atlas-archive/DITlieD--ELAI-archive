@@ -570,13 +570,19 @@ async fn e2e_full_pipeline_local() {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // I. Submit TaskSubmitted row with the verbatim B3 prompt.
-        // "Build me a single-page React TODO app..." does NOT match the
-        // "make me a " scaffold short-circuit (task_runner.rs:~3482), so it
-        // routes through the full agent-decomposition path. Confirmed by
-        // context-package-B3.md MEDIUM validation note.
-        let prompt = "Build me a single-page React TODO app with localStorage persistence. \
-                      Allow add, mark-complete, and delete actions.";
+        // I. Submit TaskSubmitted row with the B3 prompt.
+        // patch-R2 correction (2026-05-17): the original "Build me a single-page
+        // React TODO app..." DOES match is_web_scaffold_task because "build me a "
+        // is a WEB_SCAFFOLD_PREFIXES entry (task_runner.rs:1894-1904) and "react"
+        // is in WEB_SCAFFOLD_KEYWORDS. The first B3 cloud run confirmed: scaffold
+        // fired at +0s emitting a Hero/Features/Cta landing-page template, the LLM
+        // was never invoked, ConceptDecompositionNode count stayed 0 for 15 min.
+        // Rephrased prompt avoids ALL scaffold prefixes (make/create/build/
+        // bootstrap/new) so is_web_scaffold_task returns false and the full
+        // agent-decomposition path fires (the actual target of this test).
+        let prompt = "Develop a single-page React TODO application with localStorage \
+                      persistence. The app must allow adding, marking complete, and \
+                      deleting todo items.";
         let payload = SsbPayload::TaskSubmitted(TaskSubmittedPayload {
             task: prompt.to_string(),
             project_id: project_id.clone(),
