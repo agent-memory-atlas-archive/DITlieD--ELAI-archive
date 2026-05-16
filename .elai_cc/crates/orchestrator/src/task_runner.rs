@@ -1311,6 +1311,18 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 }
             }
 
+            // patch-R2.2: the address the CHILD AGENT must use to connect
+            // differs from the orchestrator-side socket_path on Windows.
+            //   Unix:    address == socket_path  (filesystem path)
+            //   Windows: address == `\\.\pipe\elai-<stem>` (named-pipe name);
+            //            socket_path is `C:\...\agent-<uuid>.sock` which the
+            //            agent CANNOT open as a named pipe (ERROR_FILE_NOT_FOUND).
+            // PlatformListener::agent_connect_address returns the platform-correct
+            // string. Pass it (as a Path) to launch_agent_process so argv[1]
+            // matches the bound endpoint.
+            let agent_connect_address = listener.agent_connect_address();
+            let agent_address_path = std::path::Path::new(&agent_connect_address);
+
             // Spawn the agent process. A failure here is recorded but does
             // NOT abort the session: if a caller (e.g. a test's stub task)
             // has already connected to the socket, accept_one will succeed
@@ -1321,7 +1333,7 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                 pool.launch_agent_process(
                     &agent_id,
                     &self.agent_binary_path,
-                    &socket_path,
+                    agent_address_path,
                     &ctx.session_credentials,
                 )
                 .err()

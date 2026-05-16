@@ -299,10 +299,23 @@ fn run_message_loop(
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
+    // patch-R2.2: agent has no tracing_subscriber initialized (would pull a
+    // ~200KB workspace dep), so tracing::error! events vanish. Use eprintln!
+    // for every error path so the orchestrator's stderr_tail capture surfaces
+    // actionable failure info. Bug history: B3 cloud e2e showed exit_code=4
+    // (EXIT_IPC_ERROR) with empty stderr because all errors flowed through
+    // tracing into a no-op subscriber. Now connect failures (the most common
+    // mode) print the OS error verbatim before exit.
+    eprintln!(
+        "elai_cc_agent: starting with argv={:?}",
+        args.iter().skip(1).collect::<Vec<_>>()
+    );
+
     // Expected: elai_cc_agent <socket_path> [agent_id]
     let socket_path = match args.get(1) {
         Some(p) => p,
         None => {
+            eprintln!("elai_cc_agent: usage: elai_cc_agent <socket_path> [agent_id]");
             tracing::error!("usage: elai_cc_agent <socket_path> [agent_id]");
             return ExitCode::from(1);
         }
@@ -327,22 +340,35 @@ fn main() -> ExitCode {
 
     match run_agent(socket_path, agent_id) {
         Ok(()) => {
+            eprintln!("elai_cc_agent: exiting cleanly");
             tracing::info!("agent exiting cleanly");
             ExitCode::SUCCESS
         }
         Err(AgentError::Killed(reason)) => {
+            eprintln!("elai_cc_agent: killed: {reason}");
             tracing::info!(reason = %reason, "agent killed");
             ExitCode::SUCCESS
         }
-        Err(AgentError::VersionMismatch { .. }) => {
+        Err(AgentError::VersionMismatch { expected, actual }) => {
+            eprintln!(
+                "elai_cc_agent: protocol version mismatch (expected {expected}, got {actual}) \
+                 — binary may be outdated"
+            );
             tracing::error!("protocol version mismatch — binary may be outdated");
             ExitCode::from(EXIT_VERSION_MISMATCH)
         }
         Err(AgentError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            eprintln!("elai_cc_agent: connection refused at socket_path={socket_path}: {e}");
             tracing::error!(error = %e, "connection to orchestrator failed");
             ExitCode::from(EXIT_CONNECT_FAILED)
         }
         Err(e) => {
+            // patch-R2.2: emit the FULL underlying error to stderr (was tracing
+            // only — never reached the orchestrator). This covers the most
+            // important diagnostic case for B2b/B3: agent can't open the IPC
+            // endpoint (Windows ERROR_FILE_NOT_FOUND from wrong pipe path,
+            // missing parent dir on Unix, etc.).
+            eprintln!("elai_cc_agent: error: {e} (socket_path={socket_path})");
             tracing::error!(error = %e, "agent error");
             ExitCode::from(EXIT_IPC_ERROR)
         }

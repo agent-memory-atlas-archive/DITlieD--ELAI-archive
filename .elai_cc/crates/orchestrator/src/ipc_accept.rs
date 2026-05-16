@@ -127,6 +127,41 @@ pub enum PlatformListener {
     },
 }
 
+impl PlatformListener {
+    /// Return the address string a CHILD AGENT must use to connect to this
+    /// listener. Critical for cross-platform IPC bring-up:
+    ///   - Unix: returns the filesystem socket path as-is
+    ///     (e.g. `/tmp/.../agent-<uuid>.sock`).
+    ///   - Windows: returns the named-pipe NAME
+    ///     (e.g. `\\.\pipe\elai-agent-<uuid>`),
+    ///     NOT the filesystem path `C:\...\agent-<uuid>.sock`.
+    ///
+    /// Pass this string (not the original socket_path) to launch_agent_process
+    /// so the agent's connect()/open() call hits the same endpoint the
+    /// orchestrator just bound. The agent has no way to compute the
+    /// Windows-pipe transformation on its own without duplicating
+    /// `socket_path_to_pipe_name` — so the listener returns it directly.
+    ///
+    /// Bug history (patch-R2.2, 2026-05-17): before this method existed,
+    /// launch_agent_process passed `socket_path.to_string_lossy()` for both
+    /// platforms. On Windows the agent did `OpenOptions::open(filesystem_path)`
+    /// and got ERROR_FILE_NOT_FOUND — accept_one then timed out at 120s with
+    /// `exit_code=None`. B3 cloud e2e surfaced this in run 2.
+    #[must_use]
+    pub fn agent_connect_address(&self) -> String {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(listener) => listener
+                .local_addr()
+                .ok()
+                .and_then(|a| a.as_pathname().map(|p| p.to_string_lossy().into_owned()))
+                .unwrap_or_default(),
+            #[cfg(windows)]
+            Self::WindowsPipe { pipe_path, .. } => pipe_path.clone(),
+        }
+    }
+}
+
 /// Connected platform-native stream ready for async frame I/O.
 pub enum PlatformStream {
     #[cfg(unix)]
