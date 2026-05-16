@@ -254,6 +254,12 @@ pub fn run() {
             // B-38 — AMBIGUITY GATE SURFACE (mock data; real producer in follow-up).
             // cross-lang-pair: dashboard/tauri/api
             commands::get_ambiguity_state,
+            // B-42 — COSMOS ARTIFACT TIER (read-only status; refresh trigger
+            // returns explicit NotImplemented Err pending dispatcher wiring —
+            // see workflow/reasoning/B-42-decisions.md BLOCK-WIRING).
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_cosmos_status,
+            commands::trigger_cosmos_refresh,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

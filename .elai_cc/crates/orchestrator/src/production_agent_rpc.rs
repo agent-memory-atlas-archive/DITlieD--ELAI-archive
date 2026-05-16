@@ -24,13 +24,20 @@ use elai_core::tool_dispatcher::{
     ToolDispatcher, ValidateRequest,
 };
 use elai_ipc_types::{
+    EntryPointsRequest, ListArtifactsRequest, RemoveArtifactsRequest, SearchArtifactsRequest,
     SymbolContextRequest, SymbolFlowRequest, SymbolImpactRequest, SymbolListRequest,
-    TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_EDIT, TOOL_FILE_READ, TOOL_GIT_BRANCH,
-    TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW,
+    TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_EDIT, TOOL_ENTRY_POINTS, TOOL_FILE_READ,
+    TOOL_GIT_BRANCH, TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS,
+    TOOL_REMOVE_ARTIFACTS, TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW,
     TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
+};
+use elai_knowledge::artifacts::{
+    store::ArtifactStore,
+    search::artifact_search_with_precomputed_embedding,
 };
 use elai_knowledge::symbol_graph::{
     cache::SymbolGraphCache,
+    entry_points::{detect_entry_points, DetectedEntryPoint, EntryPointReason, EntryPointSummary},
     sharding::SYMBOL_FILE_LRU_SIZE,
     traversal::{compute_call_flow, compute_impact_radius, compute_symbol_context, list_symbols, SymbolFilter},
 };
@@ -74,6 +81,13 @@ pub struct ProductionAgentRpcServer {
     /// append SymbolQuery action rows for the dashboard ActivityFeed.
     /// `None` for harness/test paths that do not wire an SSB instance.
     ssb: Option<Arc<crate::ssb::Ssb>>,
+    /// Optional VectorModule used by the `search_artifacts` dispatcher arm
+    /// (B-35 Phase B). When `None`, artifact search falls back to returning
+    /// an empty result set (mirrors `artifact_search` graceful-degrade behavior).
+    /// Deferred wiring (B-35 Phase C2): inject via a proper service-locator so
+    /// per-project VectorModules can be selected by db_path. Set via
+    /// `with_artifact_vm` at server startup.
+    artifact_vm: Option<Arc<dyn elai_knowledge::vector::VectorModule + Send + Sync>>,
 }
 
 impl ProductionAgentRpcServer {
@@ -90,6 +104,7 @@ impl ProductionAgentRpcServer {
             model,
             max_tokens,
             ssb: None,
+            artifact_vm: None,
         }
     }
 
@@ -97,6 +112,17 @@ impl ProductionAgentRpcServer {
     /// Returns `self` so call sites can chain.
     pub fn with_ssb(mut self, ssb: Arc<crate::ssb::Ssb>) -> Self {
         self.ssb = Some(ssb);
+        self
+    }
+
+    /// Builder-style setter for the VectorModule used by the `search_artifacts`
+    /// dispatcher arm (B-35 Phase B). When not set, artifact search returns
+    /// an empty result set (graceful degrade — no embedding available).
+    pub fn with_artifact_vm(
+        mut self,
+        vm: Arc<dyn elai_knowledge::vector::VectorModule + Send + Sync>,
+    ) -> Self {
+        self.artifact_vm = Some(vm);
         self
     }
 
@@ -198,6 +224,7 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 &arguments,
                 self.dispatcher.as_ref(),
                 self.ssb.as_ref(),
+                self.artifact_vm.as_ref().map(Arc::as_ref),
             )
             .await
             {
@@ -261,6 +288,7 @@ async fn translate_tool_request(
     arguments: &[u8],
     dispatcher: &dyn ToolDispatcher,
     ssb: Option<&Arc<crate::ssb::Ssb>>,
+    artifact_vm: Option<&(dyn elai_knowledge::vector::VectorModule + Send + Sync)>,
 ) -> Result<Vec<u8>, String> {
     match tool_id {
         TOOL_EDIT => {
@@ -615,6 +643,274 @@ async fn translate_tool_request(
             Err(format!(
                 "tool {tool_id}: not implemented in ProductionAgentRpcServer (B2c)"
             ))
+        }
+
+        // B-35 Phase B — Context artifact dispatcher arms.
+        // ArtifactStore is sync (std::sync::Mutex); all calls are wrapped in
+        // tokio::task::spawn_blocking so the async runtime is not blocked.
+
+        TOOL_LIST_ARTIFACTS => {
+            let wire: ListArtifactsRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool list_artifacts: decode error: {e}"))?;
+            let db_path = std::path::PathBuf::from(&wire.db_path);
+            let chunks = tokio::task::spawn_blocking(move || {
+                let store = ArtifactStore::open(&db_path)
+                    .map_err(|e| format!("tool list_artifacts: store open failed: {e}"))?;
+                store.list_all_chunks()
+                    .map_err(|e| format!("tool list_artifacts: list failed: {e}"))
+            })
+            .await
+            .map_err(|e| format!("tool list_artifacts: spawn_blocking error: {e}"))??;
+            // Return artifact names (de-duplicated, sorted) rather than raw chunks.
+            let mut names: Vec<String> = chunks
+                .into_iter()
+                .map(|c| c.artifact_name)
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            let value = serde_json::json!({ "artifact_names": names });
+            serde_json::to_vec(&value)
+                .map_err(|e| format!("tool list_artifacts: serialise error: {e}"))
+        }
+
+        TOOL_INDEX_ARTIFACTS => {
+            // STUB: full artifact re-indexing is deferred to Phase C, which will wire
+            // ArtifactIndexer + VectorModule via a service-locator pattern.
+            // Returning Err prevents agents from calling this tool and silently
+            // receiving an empty artifact store (previous "cleared" status was misleading).
+            // Use the CLI `elai index-artifacts` command for on-demand indexing.
+            return Err(
+                "tool index_artifacts: full indexing deferred to Phase C; \
+                 use the CLI `elai index-artifacts` command for now"
+                    .to_string(),
+            );
+        }
+
+        TOOL_SEARCH_ARTIFACTS => {
+            let wire: SearchArtifactsRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool search_artifacts: decode error: {e}"))?;
+            let limit = wire.limit
+                .unwrap_or(elai_ipc_types::DEFAULT_ARTIFACT_SEARCH_LIMIT);
+            let db_path = std::path::PathBuf::from(&wire.db_path);
+            let query = wire.query.clone();
+            let artifact_name = wire.artifact_name.clone();
+
+            if let Some(vm) = artifact_vm {
+                // Phase: embed in async context (VectorModule is not Send, cannot move
+                // into spawn_blocking).  The embedding call is CPU-bound but short
+                // relative to the store I/O that follows.
+                let query_embedding = vm
+                    .embed_text(&query)
+                    .map_err(|e| format!("tool search_artifacts: embed_text failed: {e}"))?;
+
+                // Offload SQLite I/O + cosine scan to a blocking thread.
+                // query_embedding is Vec<f32> which is Send.
+                let results = tokio::task::spawn_blocking(move || {
+                    let store = ArtifactStore::open(&db_path)
+                        .map_err(|e| format!("tool search_artifacts: store open failed: {e}"))?;
+                    artifact_search_with_precomputed_embedding(
+                        &store,
+                        &query_embedding,
+                        artifact_name.as_deref(),
+                        limit,
+                    )
+                    .map_err(|e| format!("tool search_artifacts: search failed: {e}"))
+                })
+                .await
+                .map_err(|e| format!("tool search_artifacts: spawn_blocking error: {e}"))??;
+
+                // Strip embedding vectors before JSON serialisation: raw f32 arrays
+                // bloat the IPC frame (~150 KB for 10 results at 1536-dim) and callers
+                // do not need the raw vectors — scores and content are sufficient.
+                let response_items: Vec<serde_json::Value> = results
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "artifact_name": r.chunk.artifact_name,
+                            "relative_path": r.chunk.relative_path,
+                            "content": r.chunk.content,
+                            "start_line": r.chunk.start_line,
+                            "end_line": r.chunk.end_line,
+                            "score": r.score,
+                        })
+                    })
+                    .collect();
+                let value = serde_json::json!({ "results": response_items });
+                serde_json::to_vec(&value)
+                    .map_err(|e| format!("tool search_artifacts: serialise error: {e}"))
+            } else {
+                // No VectorModule available — return empty results (graceful degrade).
+                tracing::warn!(
+                    "tool search_artifacts: no VectorModule injected — \
+                     returning empty results (wire with_artifact_vm to enable search)"
+                );
+                let value = serde_json::json!({ "results": [] });
+                serde_json::to_vec(&value)
+                    .map_err(|e| format!("tool search_artifacts: serialise error: {e}"))
+            }
+        }
+
+        TOOL_REMOVE_ARTIFACTS => {
+            let wire: RemoveArtifactsRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool remove_artifacts: decode error: {e}"))?;
+            let db_path = std::path::PathBuf::from(&wire.db_path);
+            let artifact_name = wire.artifact_name.clone();
+            let dropped = tokio::task::spawn_blocking(move || {
+                let store = ArtifactStore::open(&db_path)
+                    .map_err(|e| format!("tool remove_artifacts: store open failed: {e}"))?;
+                store.drop_chunks_for_artifact(&artifact_name)
+                    .map_err(|e| format!("tool remove_artifacts: drop failed: {e}"))
+            })
+            .await
+            .map_err(|e| format!("tool remove_artifacts: spawn_blocking error: {e}"))??;
+            let value = serde_json::json!({
+                "artifact_name": wire.artifact_name,
+                "chunks_removed": dropped,
+            });
+            serde_json::to_vec(&value)
+                .map_err(|e| format!("tool remove_artifacts: serialise error: {e}"))
+        }
+
+        // B-34 — Entry-point detection tool.
+        // Loads reverse_file_index once (lazy), then selectively loads payloads
+        // for orphan-candidate files + conventional entry-point filenames only.
+        // This preserves the B-29 lazy-loading invariant.
+        TOOL_ENTRY_POINTS => {
+            let wire: EntryPointsRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool entry_points: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            // Use canonical blake3-based project_id (WARN-2: replaces basename heuristic).
+            let project_id = elai_core::project_id_from_path(&project_root);
+            let db_path = elai_core::paths::dkg_db_path(&project_root);
+
+            // All SymbolGraphCache operations are synchronous (no async I/O).
+            let t0 = std::time::Instant::now();
+            let result: Result<Vec<DetectedEntryPoint>, String> = (|| {
+                let mut cache =
+                    SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+                        .map_err(|e| format!("tool entry_points: cache open failed: {e}"))?;
+
+                // Step 1: load reverse index (lazy, ~5ms first call).
+                let reverse_index = cache
+                    .ensure_reverse_index()
+                    .map_err(|e| format!("tool entry_points: reverse_index load failed: {e}"))?
+                    .clone();
+
+                // Step 2: collect all known files from the reverse index
+                // (keys = callee files; values = caller files).
+                // Union gives every indexed file without loading name shards.
+                let mut all_files: std::collections::BTreeSet<String> =
+                    reverse_index.keys().cloned().collect();
+                for callers in reverse_index.values() {
+                    all_files.extend(callers.iter().cloned());
+                }
+
+                // Step 3: coarse extension filter — exclude non-code files that can
+                // never contain entry points (BLOCK-5: the old orphan+filename filter
+                // broke Heuristic 3 by excluding imported route files; we now load
+                // payloads for all code-language files; non-code files are excluded for
+                // performance. See workflow/reasoning/B-34-decisions.md DECISION-B34-9).
+                const CODE_EXTENSIONS: &[&str] = &[
+                    "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs", "java", "kt", "php",
+                    "c", "cpp", "cs", "swift", "scala", "ex", "exs",
+                ];
+                let candidate_files: Vec<String> = all_files
+                    .into_iter()
+                    .filter(|f| {
+                        let ext = std::path::Path::new(f)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        CODE_EXTENSIONS.contains(&ext)
+                    })
+                    .collect();
+
+                // Step 4: selectively load payloads for candidates only.
+                let mut payloads = Vec::with_capacity(candidate_files.len());
+                for file in &candidate_files {
+                    match cache.get_or_load_payload(file) {
+                        Ok(Some(arc)) => payloads.push((*arc).clone()),
+                        Ok(None) => {} // file not in DB — skip
+                        Err(e) => {
+                            tracing::warn!(
+                                file = %file,
+                                error = %e,
+                                "tool entry_points: payload load failed — skipping"
+                            );
+                        }
+                    }
+                }
+
+                // Step 5: run detection (pure fn, no I/O).
+                let mut entries = detect_entry_points(&reverse_index, &payloads);
+
+                // Step 6: filter tests if caller requested.
+                if !wire.include_tests {
+                    entries.retain(|e| !matches!(e.reason, EntryPointReason::Test));
+                }
+
+                Ok(entries)
+            })();
+
+            let entries = result?;
+            let latency_ms: u32 = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let summary = EntryPointSummary::from_entries(&entries);
+
+            // Convert to wire DTOs.
+            let dto_entries: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    let (reason_str, reason_detail) = match &e.reason {
+                        EntryPointReason::Orphan => ("orphan".to_string(), None),
+                        EntryPointReason::WellKnownName(n) => {
+                            ("well_known".to_string(), Some(n.clone()))
+                        }
+                        EntryPointReason::FrameworkRoute(r) => {
+                            ("framework".to_string(), Some(r.clone()))
+                        }
+                        EntryPointReason::Test => ("test".to_string(), None),
+                    };
+                    serde_json::json!({
+                        "id": e.id,
+                        "name": e.name,
+                        "file": e.file,
+                        "line": e.line,
+                        "reason": reason_str,
+                        "reason_detail": reason_detail,
+                    })
+                })
+                .collect();
+
+            let value = serde_json::json!({
+                "entries": dto_entries,
+                "summary": {
+                    "total": summary.total,
+                    "by_reason": summary.by_reason,
+                    "latency_ms": latency_ms,
+                },
+            });
+
+            // BLOCK-2: emit EntryPointsDetected SSB row (best-effort, non-fatal).
+            if let Some(ssb) = ssb {
+                use crate::ssb::{EntryPointsDetectedPayload, SsbPayload};
+                let ep_payload = SsbPayload::EntryPointsDetected(EntryPointsDetectedPayload {
+                    project_id: project_id.clone(),
+                    count: summary.total,
+                    by_reason: summary.by_reason.clone(),
+                });
+                if let Err(e) = ssb
+                    .write_payload(SSB_AGENT_SYMBOL_GRAPH, 0, ep_payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "entry_points SSB write failed (continuing tool result)"
+                    );
+                }
+            }
+
+            serde_json::to_vec(&value)
+                .map_err(|e| format!("tool entry_points: serialise error: {e}"))
         }
 
         unknown => Err(format!("unknown tool_id: {unknown}")),

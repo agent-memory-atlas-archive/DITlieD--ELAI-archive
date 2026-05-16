@@ -2379,6 +2379,81 @@ impl LiveCli {
                 }
                 false
             }
+            SlashCommand::EntryPoints { project_root } => {
+                // B-34 BLOCK-4 fix: implement /entry_points handler.
+                // Resolves project root from argument or cwd, loads SymbolGraphCache,
+                // runs detect_entry_points, and prints one line per entry.
+                use elai_knowledge::symbol_graph::{
+                    cache::SymbolGraphCache,
+                    entry_points::{detect_entry_points, EntryPointReason},
+                    sharding::SYMBOL_FILE_LRU_SIZE,
+                };
+                use elai_core::paths::dkg_db_path as ep_dkg_db_path;
+
+                let root: PathBuf = project_root
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                let project_id = elai_core::project_id_from_path(&root);
+                let db_path = ep_dkg_db_path(&root);
+
+                if !db_path.exists() {
+                    eprintln!(
+                        "/entry_points: no symbol graph DB found at {}. Run `elai symbol_graph build` first.",
+                        db_path.display()
+                    );
+                } else {
+                    match SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE) {
+                        Err(e) => eprintln!("/entry_points: cache open failed: {e}"),
+                        Ok(mut cache) => {
+                            match cache.ensure_reverse_index() {
+                                Err(e) => eprintln!("/entry_points: reverse_index load failed: {e}"),
+                                Ok(reverse_index) => {
+                                    let reverse_index = reverse_index.clone();
+                                    let mut all_files: std::collections::BTreeSet<String> =
+                                        reverse_index.keys().cloned().collect();
+                                    for callers in reverse_index.values() {
+                                        all_files.extend(callers.iter().cloned());
+                                    }
+                                    const EP_CODE_EXT: &[&str] = &[
+                                        "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs",
+                                        "java", "kt", "php", "c", "cpp", "cs",
+                                    ];
+                                    let mut payloads = Vec::new();
+                                    for file in all_files.iter().filter(|f| {
+                                        std::path::Path::new(f.as_str())
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .map_or(false, |e| EP_CODE_EXT.contains(&e))
+                                    }) {
+                                        match cache.get_or_load_payload(file) {
+                                            Ok(Some(arc)) => payloads.push((*arc).clone()),
+                                            Ok(None) | Err(_) => {}
+                                        }
+                                    }
+                                    let entries = detect_entry_points(&reverse_index, &payloads);
+                                    if entries.is_empty() {
+                                        println!("No entry points detected.");
+                                    } else {
+                                        println!("Entry points ({}):", entries.len());
+                                        for e in &entries {
+                                            let reason = match &e.reason {
+                                                EntryPointReason::Orphan => "orphan",
+                                                EntryPointReason::WellKnownName(_) => "well_known",
+                                                EntryPointReason::FrameworkRoute(_) => "framework",
+                                                EntryPointReason::Test => "test",
+                                            };
+                                            let line_str = e.line.map_or_else(|| "?".to_string(), |l| l.to_string());
+                                            println!("  {}:{} {} ({})", e.file, line_str, e.name, reason);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            }
             SlashCommand::Unknown(name) => {
                 eprintln!("{}", format_unknown_slash_command(&name));
                 false

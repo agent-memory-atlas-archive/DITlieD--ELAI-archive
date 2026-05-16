@@ -69,6 +69,9 @@ const PROJECT_ID_HEX_LEN: usize = 16;
 /// DDL applied at construction time. Idempotent (`CREATE TABLE IF NOT EXISTS`).
 const MIGRATION_V2_SQL: &str = include_str!("metadata_migration_v2.sql");
 
+/// B-35 Phase A: artifact index state table migration.
+const MIGRATION_V3_SQL: &str = include_str!("metadata_migration_v3.sql");
+
 // ---------------------------------------------------------------------------
 // Status enum
 // ---------------------------------------------------------------------------
@@ -231,6 +234,7 @@ impl ProjectMetadataStore {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(MIGRATION_V2_SQL)?;
+        conn.execute_batch(MIGRATION_V3_SQL)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             clock,
@@ -477,6 +481,78 @@ impl ProjectMetadataStore {
         let guard = self.lock()?;
         let mut stmt = guard
             .prepare("SELECT project_id FROM project_metadata ORDER BY project_id ASC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    // -----------------------------------------------------------------------
+    // B-35 Phase A: artifact index state
+    // -----------------------------------------------------------------------
+
+    /// Upsert an artifact index state row into `artifact_index_state`.
+    ///
+    /// `file_hashes_json` is the JSON-serialized `BTreeMap<String, String>`.
+    pub fn insert_or_update_artifact_state(
+        &self,
+        artifact_name: &str,
+        last_indexed_at: i64,
+        file_hashes_json: &str,
+        chunk_count: usize,
+        status: &str,
+    ) -> Result<(), MetadataError> {
+        let chunk_count_i64 = i64::try_from(chunk_count).unwrap_or(i64::MAX);
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO artifact_index_state \
+             (artifact_name, last_indexed_at, file_hashes_json, chunk_count, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(artifact_name) DO UPDATE SET \
+               last_indexed_at = excluded.last_indexed_at, \
+               file_hashes_json = excluded.file_hashes_json, \
+               chunk_count = excluded.chunk_count, \
+               status = excluded.status",
+            params![artifact_name, last_indexed_at, file_hashes_json, chunk_count_i64, status],
+        )?;
+        Ok(())
+    }
+
+    /// Load an artifact index state row by name. Returns `None` if not found.
+    pub fn get_artifact_state(
+        &self,
+        artifact_name: &str,
+    ) -> Result<Option<(i64, String, usize, String)>, MetadataError> {
+        let guard = self.lock()?;
+        let row = guard
+            .query_row(
+                "SELECT last_indexed_at, file_hashes_json, chunk_count, status \
+                 FROM artifact_index_state \
+                 WHERE artifact_name = ?1",
+                params![artifact_name],
+                |r| {
+                    let last_indexed_at: i64 = r.get(0)?;
+                    let file_hashes_json: String = r.get(1)?;
+                    let chunk_count: i64 = r.get(2)?;
+                    let status: String = r.get(3)?;
+                    Ok((last_indexed_at, file_hashes_json, chunk_count, status))
+                },
+            )
+            .optional()?;
+
+        Ok(row.map(|(ts, hj, cc, st)| {
+            let chunk_count = usize::try_from(cc).unwrap_or(0);
+            (ts, hj, chunk_count, st)
+        }))
+    }
+
+    /// List all artifact names in `artifact_index_state`, ordered alphabetically.
+    pub fn list_artifact_states(&self) -> Result<Vec<String>, MetadataError> {
+        let guard = self.lock()?;
+        let mut stmt = guard
+            .prepare("SELECT artifact_name FROM artifact_index_state ORDER BY artifact_name ASC")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {

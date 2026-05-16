@@ -25,3 +25,8 @@ pub use sharding::{
     MAX_FLOW_DEPTH, MAX_IMPACT_DEPTH, SYMBOL_FILE_LRU_SIZE, SYMBOL_NAME_SHARDS,
     SYMBOL_REVERSE_SHARDS,
 };
+
+// B-34 — Entry-point detection sub-module.
+// NOTE: types are NOT re-exported here (name-collision risk per line 9 above).
+// Callers must qualify: `knowledge::symbol_graph::entry_points::DetectedEntryPoint`.
+pub mod entry_points;

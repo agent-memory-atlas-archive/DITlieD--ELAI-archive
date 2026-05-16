@@ -3,6 +3,8 @@
   import { knowledgeData } from '../state/drawers.svelte';
   import { Card, Badge, Toggle, UnwiredNote } from '$lib/ui';
   import IndexingProgressPanel from '../components/IndexingProgressPanel.svelte';
+  // B-35 Phase C: Context Artifacts panel.
+  import ArtifactsPanel from '../components/ArtifactsPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
   import { get_impact_analysis, type ImpactAnalysis } from '../api/stub';
   // B-33 — Visualize button cross-link: open GraphWindow + push impact target.
@@ -278,6 +280,11 @@
       </div>
     {/if}
   </Card>
+
+  <!-- B-35 Phase C: CONTEXT ARTIFACTS panel.
+       db_path is left blank here so the panel renders gracefully in browser mode.
+       When Tauri commands are registered (Phase C2), pass the project db_path prop. -->
+  <ArtifactsPanel db_path="" />
 
   <!-- B-29 Phase 5: IMPACT ANALYSIS panel -->
   <Card variant="plain" padding={12}>

@@ -86,6 +86,11 @@ import type {
   MediaValidationEntry,
   MediaSsbEvent,
   ReviewDecision,
+  // B-40 — Idea-Framer types.
+  IdeaFramingState,
+  TradeoffResponse,
+  // B-42 — Cosmos artifact tier.
+  CosmosArtifactStatus,
 } from './types';
 
 import {
@@ -2099,4 +2104,180 @@ export async function subscribe_media_ssb_events(
     onEvent(e.payload);
   });
   return unlisten;
+}
+
+// ------------------------------------------------------------------
+// B-40 — Idea-Framer surface. stub_ban: live Tauri tryInvoke ONLY,
+// no mock-data fallback. Returns null when the backend is unavailable
+// or no FRAMING substate is active.
+// ------------------------------------------------------------------
+
+/**
+ * Latest IdeaFramingState for the active session. Returns `null` when:
+ *   * No FRAMING substate is active.
+ *   * The Tauri backend is unreachable (e.g. browser-only dev mode).
+ *   * The backend returned an empty Optional<IdeaFramingState>.
+ *
+ * WIRING_CONTRACT stub_ban: this function MUST NOT return mock data.
+ * The dashboard renders an empty-state placeholder when null.
+ */
+export async function get_idea_framing_state(): Promise<IdeaFramingState | null> {
+  logStub('get_idea_framing_state');
+  const live = await tryInvoke<IdeaFramingState | null>('get_idea_framing_state');
+  return live ?? null;
+}
+
+/**
+ * Submit tradeoff responses captured in IdeaFramingWindow. The orchestrator
+ * persists them under workflow/sessions/{sid}/idea-framing/tradeoff-responses.toml
+ * and (when all required tradeoffs answered) advances FRAMING -> PLANNING.
+ *
+ * WIRING_CONTRACT stub_ban: live Tauri only. Returns `{ok: false}` when the
+ * backend is unreachable so the UI can surface a connectivity error
+ * (no silent mock-success).
+ */
+export async function submit_tradeoff_responses(
+  responses: TradeoffResponse[],
+): Promise<{ ok: boolean }> {
+  logStub('submit_tradeoff_responses', { responses });
+  const live = await tryInvoke<{ ok: boolean }>('submit_tradeoff_responses', {
+    responses,
+  });
+  return live ?? { ok: false };
+}
+
+// ---------------------------------------------------------------------------
+// B-35 Phase C — Context Artifacts + Entry Points
+// ---------------------------------------------------------------------------
+
+export type ArtifactRecord = {
+  name: string;
+};
+
+export type ArtifactSearchResult = {
+  artifact_name: string;
+  relative_path: string;
+  content: string;
+  start_line: number;
+  end_line: number;
+  score: number;
+};
+
+export type EntryPointDto = {
+  id: string;
+  name: string;
+  file: string;
+  line: number | null;
+  reason: string;
+};
+
+export type EntryPointsResponse = {
+  entry_points: EntryPointDto[];
+  summary: {
+    by_reason: Record<string, number>;
+    total: number;
+  };
+};
+
+/**
+ * List all artifact names indexed in the context database at db_path.
+ * Returns { artifact_names: string[] } on success; empty list when db is missing or unreachable.
+ */
+export async function list_artifacts(
+  db_path: string,
+): Promise<{ artifact_names: string[] }> {
+  logStub('list_artifacts', { db_path });
+  const live = await tryInvoke<{ artifact_names: string[] }>('list_artifacts', { db_path });
+  return live ?? { artifact_names: [] };
+}
+
+/**
+ * Search artifact chunks by keyword (Phase C: BM25 fallback) or cosine similarity.
+ * Returns { results: ArtifactSearchResult[] }.
+ */
+export async function search_artifacts(
+  db_path: string,
+  query: string,
+  artifact_name?: string,
+  limit?: number,
+): Promise<{ results: ArtifactSearchResult[] }> {
+  logStub('search_artifacts', { db_path, query, artifact_name, limit });
+  const args: Record<string, unknown> = { db_path, query };
+  if (artifact_name !== undefined) args.artifact_name = artifact_name;
+  if (limit !== undefined) args.limit = limit;
+  const live = await tryInvoke<{ results: ArtifactSearchResult[] }>('search_artifacts', args);
+  return live ?? { results: [] };
+}
+
+/**
+ * Trigger re-index of a single artifact. Phase C: clears chunks (full re-index via CLI).
+ * WIRING_CONTRACT stub_ban: must not return mock-success when backend is unreachable.
+ */
+export async function index_artifacts(
+  db_path: string,
+  artifact_name: string,
+): Promise<{ ok: boolean }> {
+  logStub('index_artifacts', { db_path, artifact_name });
+  const live = await tryInvoke<null>('index_artifacts', { db_path, artifact_name });
+  return { ok: live !== undefined };
+}
+
+/**
+ * Remove all chunks for an artifact from the context database.
+ */
+export async function remove_artifacts(
+  db_path: string,
+  artifact_name: string,
+): Promise<{ artifact_name: string; chunks_removed: number }> {
+  logStub('remove_artifacts', { db_path, artifact_name });
+  const live = await tryInvoke<{ artifact_name: string; chunks_removed: number }>(
+    'remove_artifacts',
+    { db_path, artifact_name },
+  );
+  return live ?? { artifact_name, chunks_removed: 0 };
+}
+
+/**
+ * Detect and list project entry points using the symbol graph reverse index.
+ * Returns an empty list with a zeroed summary when the DKG is not yet built.
+ */
+export async function list_entry_points(
+  include_tests?: boolean,
+): Promise<EntryPointsResponse> {
+  logStub('list_entry_points', { include_tests });
+  const args: Record<string, unknown> = {};
+  if (include_tests !== undefined) args.include_tests = include_tests;
+  const live = await tryInvoke<EntryPointsResponse>('list_entry_points', args);
+  return live ?? { entry_points: [], summary: { by_reason: {}, total: 0 } };
+}
+
+// ------------------------------------------------------------------
+// B-42 — COSMOS ARTIFACT TIER
+// Read-only filesystem snapshot from ~/.elai/cosmos/. Empty array on
+// cold-start (no cosmos root yet) — NOT mock data, a real empty state.
+// `triggerCosmosRefresh` returns an honest NotImplemented error until
+// the production ResearchDispatcher is wired (B-42-decisions BLOCK-5).
+// ------------------------------------------------------------------
+
+export async function getCosmosStatus(): Promise<CosmosArtifactStatus[]> {
+  logStub('getCosmosStatus');
+  const live = await tryInvoke<CosmosArtifactStatus[]>('get_cosmos_status');
+  return live ?? [];
+}
+
+export async function triggerCosmosRefresh(
+  name: string,
+): Promise<{ ok: boolean; error?: string }> {
+  logStub('triggerCosmosRefresh', { name });
+  if (!TAURI_AVAILABLE) {
+    return { ok: false, error: 'tauri unavailable (browser mode)' };
+  }
+  const inv = await ensureInvoke();
+  if (!inv) return { ok: false, error: 'tauri invoke unavailable' };
+  try {
+    await inv('trigger_cosmos_refresh', { name });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 }

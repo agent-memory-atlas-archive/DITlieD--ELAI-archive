@@ -7,6 +7,7 @@ use crate::query_expansion::{self, ExpansionStrategy};
 use crate::QueryTier;
 
 use crate::arag::{AragOrchestrator, RetrievalResult};
+use crate::artifacts::ArtifactStage;
 use crate::bm25::Bm25Index;
 use crate::catrag::CatRag;
 use crate::degradation::SearchMode;
@@ -57,6 +58,9 @@ pub struct QueryPipeline {
     pub dkg_engine: Option<DkgEngine>,
     pub freshness_db: Option<FreshnessDb>,
     pub hyde_stage: Option<HydeStage>,
+    /// Optional context-artifact search stage (B-35 Phase B, Task 8).
+    /// Runs after catrag for STANDARD and DEEP tiers; skipped for FAST.
+    pub artifact_stage: Option<ArtifactStage>,
     #[cfg(feature = "splade")]
     pub splade: Option<SpladeExpander>,
     /// Current degradation cascade mode. Updated at startup by the cascade
@@ -76,6 +80,7 @@ impl QueryPipeline {
             dkg_engine: None,
             freshness_db: None,
             hyde_stage: None,
+            artifact_stage: None,
             #[cfg(feature = "splade")]
             splade: None,
             // Default to Hybrid until the degradation cascade has run its
@@ -119,6 +124,16 @@ impl QueryPipeline {
 
     pub fn with_hyde(mut self, hyde: HydeStage) -> Self {
         self.hyde_stage = Some(hyde);
+        self
+    }
+
+    /// Attach a context-artifact search stage (B-35 Phase B).
+    ///
+    /// When set, the stage runs after catrag for STANDARD and DEEP tiers and
+    /// its results are appended to the stage list before RRF fusion.
+    /// FAST tier queries skip this stage entirely.
+    pub fn with_artifact_stage(mut self, stage: ArtifactStage) -> Self {
+        self.artifact_stage = Some(stage);
         self
     }
 
@@ -513,6 +528,35 @@ impl QueryPipeline {
             circuit_breaker_state: None,
             error: None,
         });
+
+        // Stage 3b: artifact search (STANDARD + DEEP only, B-35 Phase B Task 8).
+        // Runs only when an ArtifactStage is configured AND tier is STANDARD or DEEP.
+        // FAST tier is excluded: artifact search requires embedding (no VectorModule budget).
+        if use_vector {
+            if let Some(ref artifact) = self.artifact_stage {
+                let (artifact_results, artifact_error) = match artifact.run(query, None) {
+                    Ok(results) => {
+                        tracing::debug!(
+                            count = results.len(),
+                            "artifact_stage: returned {} results",
+                            results.len()
+                        );
+                        (results, None)
+                    }
+                    Err(e) => {
+                        tracing::debug!("artifact_stage error: {e}");
+                        (Vec::new(), Some(e.to_string()))
+                    }
+                };
+                stages.push(PipelineStage {
+                    stage: "artifacts".to_string(),
+                    results: artifact_results,
+                    latency_ms: 0,
+                    circuit_breaker_state: None,
+                    error: artifact_error,
+                });
+            }
+        }
 
         // Stage 4: arag (STANDARD + DEEP)
         let arag_results = if use_vector {

@@ -1026,6 +1026,9 @@ where
                 test_flipped: false,
                 zero_blocks: false,
                 dkg_and_changelog_present: true,
+                // B-40: not in FRAMING substate at this call site;
+                // vacuous-default true so 7th check doesn't double-block.
+                framing_converged: true,
             };
             let reason = format!(
                 "fix_and_rerun cap reached after {max_iterations} iterations; \
@@ -4217,6 +4220,20 @@ async fn drive_task(
     // sidecar path. Picked here per-task so the env can be flipped at runtime
     // without restarting the orchestrator. Cloud-init failure surfaces as a
     // ResearchTreeError::GroundingFailed via the GroundingClient contract.
+    // BLOCK-3: build EXISTING_ENTRY_POINTS + AVAILABLE_ARTIFACTS context when a
+    // project directory is present. Non-fatal: empty string when DKG absent or
+    // manifest not found. Prepended to the idea so the Designer LLM sees project
+    // context before decomposing the task.
+    let existing_context = project_dir
+        .as_deref()
+        .map(build_existing_project_context)
+        .unwrap_or_default();
+    let enriched_task: std::borrow::Cow<str> = if existing_context.is_empty() {
+        std::borrow::Cow::Borrowed(task.task.as_str())
+    } else {
+        std::borrow::Cow::Owned(format!("{existing_context}{}", task.task))
+    };
+
     let grounding_backend = std::env::var("ELAI_GROUNDING_BACKEND").ok();
     let decomposition = if grounding_backend.as_deref() == Some("cloud") {
         let grounding_client = CloudGroundingClient::from_env().map_err(|e| {
@@ -4226,7 +4243,7 @@ async fn drive_task(
             }
         })?;
         research_decompose(
-            &task.task,
+            enriched_task.as_ref(),
             ExecutionMode::Autonomous,
             &mut cache,
             &grounding_client,
@@ -4237,7 +4254,7 @@ async fn drive_task(
     } else {
         let grounding_client = SidecarGroundingClient::default();
         research_decompose(
-            &task.task,
+            enriched_task.as_ref(),
             ExecutionMode::Autonomous,
             &mut cache,
             &grounding_client,
@@ -7013,7 +7030,84 @@ fn derive_autonomous_evidence(reader: &dyn SsbReader) -> crate::autonomous_gate:
         test_flipped,
         zero_blocks,
         dkg_and_changelog_present,
+        // B-40 BLOCK-2 audit fix: call `derive_framing_evidence` directly.
+        // The helper is vacuous-default `true` on cold-start (no
+        // IdeaFramingStarted rows) AND on non-FRAMING substates, so
+        // non-FRAMING phases observe `framing_converged=true` and the
+        // 7th check never spuriously blocks AutoAdvance.
+        framing_converged: derive_framing_evidence(reader),
     }
+}
+
+/// B-40 — derive the 7th evidence check `framing_converged` from SSB.
+///
+/// Mirrors [`derive_autonomous_evidence`] above EXACTLY for the
+/// IdeaFramed action_type. Returns `true` when:
+///   * NO `IdeaFramed` row exists yet for this session (vacuous-default —
+///     not yet in FRAMING substate OR FRAMING not yet finished).
+///   * OR the most-recent `IdeaFramed` row has `converged == true`.
+/// Returns `false` when:
+///   * The most-recent `IdeaFramed` row has `converged == false`
+///     (BLOCK condition).
+///
+/// Caller is responsible for gating this check on
+/// `state == PLANNING && substate == Framing` — at other phases the
+/// vacuous-default keeps the existing 14 autonomous_gate_contract.rs tests
+/// passing UNCHANGED.
+pub fn derive_framing_evidence(reader: &dyn SsbReader) -> bool {
+    // B-40 BLOCK-2 audit fix: cold-start gate is now keyed on
+    // IdeaFramingStarted (not IdeaFramed). If FRAMING never started for
+    // this session we return true unconditionally so non-FRAMING phases
+    // (and any session that bypasses FRAMING entirely) keep auto-advancing.
+    let started_rows = reader
+        .query_by_type(SsbActionType::IdeaFramingStarted)
+        .unwrap_or_default();
+    if started_rows.is_empty() {
+        // Vacuous-default: FRAMING never began — caller is not in the
+        // FRAMING substate. Returning true matches the documented
+        // "non-FRAMING contexts never observe a framing-driven block"
+        // contract.
+        return true;
+    }
+
+    // FRAMING did start. The auditor contract requires that we block on
+    // unresolved BLOCK Finding rows emitted after the latest
+    // IdeaFramingStarted row — this catches the case where the critic loop
+    // surfaced blocks that have not yet been resolved.
+    let started_seq = started_rows.last().map(|e| e.seq).unwrap_or(i64::MIN);
+    let finding_rows = reader
+        .query_by_type(SsbActionType::Finding)
+        .unwrap_or_default();
+    for entry in finding_rows.iter() {
+        if entry.seq < started_seq {
+            continue;
+        }
+        let Ok(payload) = rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref()) else {
+            continue;
+        };
+        if let SsbPayload::Finding(f) = payload {
+            // "block" severity post-IdeaFramingStarted = unresolved BLOCK.
+            if f.severity == "block" {
+                return false;
+            }
+        }
+    }
+
+    // If an IdeaFramed row exists, also honour its `converged` flag — a
+    // non-converged IdeaFramed payload is the framer's explicit signal
+    // that convergence failed. Cold-start before IdeaFramed = true.
+    let framed_rows = reader
+        .query_by_type(SsbActionType::IdeaFramed)
+        .unwrap_or_default();
+    if let Some(entry) = framed_rows.last() {
+        if let Ok(SsbPayload::IdeaFramed(p)) =
+            rmp_serde::from_slice::<SsbPayload>(entry.payload.as_ref())
+        {
+            return p.converged;
+        }
+    }
+
+    true
 }
 
 async fn emit_autonomous_decision(
@@ -8277,6 +8371,129 @@ pub fn format_impact_summary(
 ///
 /// - Opens `workflow/sessions/task_seq_{seq}/auditor-briefing.log` in append mode.
 /// - Silently skips files where the symbol graph is not built or has 0 symbols.
+// ---------------------------------------------------------------------------
+// build_existing_project_context (BLOCK-3: Designer briefing injection)
+// ---------------------------------------------------------------------------
+
+/// Build EXISTING_ENTRY_POINTS + AVAILABLE_ARTIFACTS context blocks for the
+/// Designer briefing when a project directory is available.
+///
+/// Returns an empty string (non-fatal) when the DKG db is absent, the
+/// SymbolGraphCache fails to open, or any other inner error occurs.
+/// The Designer decompose call proceeds regardless — these blocks are hints.
+fn build_existing_project_context(project_root: &std::path::Path) -> String {
+    use elai_core::paths::dkg_db_path;
+    use elai_knowledge::artifacts::ArtifactManifest;
+    use elai_knowledge::symbol_graph::{
+        cache::SymbolGraphCache,
+        entry_points::{detect_entry_points, EntryPointReason},
+        sharding::SYMBOL_FILE_LRU_SIZE,
+    };
+
+    let project_id = elai_core::project_id_from_path(project_root);
+    let db_path = dkg_db_path(project_root);
+
+    let entry_block: Option<String> = (|| -> Option<String> {
+        if !db_path.exists() {
+            return None;
+        }
+        let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
+            .map_err(|e| {
+                tracing::debug!(error = %e, "build_existing_project_context: cache open failed");
+                e
+            })
+            .ok()?;
+        let reverse_index = cache
+            .ensure_reverse_index()
+            .map_err(|e| {
+                tracing::debug!(error = %e, "build_existing_project_context: reverse_index failed");
+                e
+            })
+            .ok()?
+            .clone();
+
+        // Collect all indexed file paths.
+        let mut all_files: std::collections::BTreeSet<String> =
+            reverse_index.keys().cloned().collect();
+        for callers in reverse_index.values() {
+            all_files.extend(callers.iter().cloned());
+        }
+
+        // Load payloads for all files (same as BLOCK-5 fix — no orphan filter).
+        const CODE_EXT: &[&str] = &[
+            "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs", "java", "kt", "php",
+            "c", "cpp", "cs", "swift", "scala", "ex", "exs",
+        ];
+        let mut payloads = Vec::new();
+        for file in all_files.iter().filter(|f| {
+            std::path::Path::new(f.as_str())
+                .extension()
+                .and_then(|e| e.to_str())
+                .map_or(false, |e| CODE_EXT.contains(&e))
+        }) {
+            match cache.get_or_load_payload(file) {
+                Ok(Some(arc)) => payloads.push((*arc).clone()),
+                Ok(None) | Err(_) => {}
+            }
+        }
+
+        let entries = detect_entry_points(&reverse_index, &payloads);
+        if entries.is_empty() {
+            return None;
+        }
+
+        const MAX_ENTRIES: usize = 50;
+        let total = entries.len();
+        let shown: Vec<String> = entries
+            .iter()
+            .take(MAX_ENTRIES)
+            .map(|e| {
+                let reason = match &e.reason {
+                    EntryPointReason::Orphan => "orphan",
+                    EntryPointReason::WellKnownName(_) => "well_known",
+                    EntryPointReason::FrameworkRoute(_) => "framework",
+                    EntryPointReason::Test => "test",
+                };
+                let line_str = e.line.map_or_else(|| "?".to_string(), |l| l.to_string());
+                format!("- {}:{} {} ({})", e.file, line_str, e.name, reason)
+            })
+            .collect();
+        let mut block = format!("EXISTING_ENTRY_POINTS:\n{}", shown.join("\n"));
+        if total > MAX_ENTRIES {
+            block.push_str(&format!("\n[+{} more]", total - MAX_ENTRIES));
+        }
+        Some(block)
+    })();
+
+    let artifact_block: Option<String> = (|| -> Option<String> {
+        let manifest = ArtifactManifest::load(project_root)
+            .map_err(|e| {
+                tracing::debug!(error = %e, "build_existing_project_context: manifest load failed");
+                e
+            })
+            .ok()?;
+        if manifest.items.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = manifest
+            .items
+            .iter()
+            .map(|spec| {
+                let desc: String = spec.description.chars().take(150).collect();
+                format!("- {}: {} [path: {}]", spec.name, desc, spec.path.display())
+            })
+            .collect();
+        Some(format!("AVAILABLE_ARTIFACTS:\n{}", lines.join("\n")))
+    })();
+
+    match (entry_block, artifact_block) {
+        (None, None) => String::new(),
+        (Some(a), None) => format!("{a}\n\n"),
+        (None, Some(b)) => format!("{b}\n\n"),
+        (Some(a), Some(b)) => format!("{a}\n\n{b}\n\n"),
+    }
+}
+
 /// - One append call per changed file (atomic per-file, not per-task).
 pub(crate) fn write_impact_summary_to_log(
     seq: i64,

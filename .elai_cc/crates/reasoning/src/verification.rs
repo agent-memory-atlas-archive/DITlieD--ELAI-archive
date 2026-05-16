@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rustc_hash::FxHashMap;
 
 use regex::Regex;
@@ -18,6 +20,25 @@ pub trait Verifier: Send + Sync {
     ) -> Result<VerificationResult, GrcError>;
 
     fn supported_methods(&self) -> &[VerificationMethod];
+
+    /// Discriminant-based capability check.
+    ///
+    /// Returns `true` when this verifier can handle the given `method` variant,
+    /// regardless of the string fields it carries.  Use this instead of
+    /// `supported_methods().contains(method)` for data-carrying variants like
+    /// `ArtifactCheck` where field-by-field `PartialEq` comparison yields false
+    /// negatives (e.g. ArtifactCheck{artifact_name:"openapi"} ≠
+    /// ArtifactCheck{artifact_name:""}).
+    ///
+    /// The default implementation delegates to `supported_methods()` via
+    /// `std::mem::discriminant` comparison.  Implementors may override if the
+    /// set of handled variants cannot be fully expressed via a static slice.
+    fn supports(&self, method: &VerificationMethod) -> bool {
+        use std::mem::discriminant;
+        self.supported_methods()
+            .iter()
+            .any(|m| discriminant(m) == discriminant(method))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,12 +201,32 @@ impl TestRunner for NoopTestRunner {
 
 // ---------------------------------------------------------------------------
 // LocalVerifier: handles FileCheck, SourceCheck, TestCheck (phase 2B)
+//                and ArtifactCheck via optional callback (B-35 Phase B).
 // Uses FileReader for file ops, TestRunner for test execution.
+// The `artifact_lookup` closure receives (artifact_name, query) and returns
+// true when the artifact store confirms the claim. The closure is injected at
+// construction by the orchestrator; tests use a mock closure.
 // ---------------------------------------------------------------------------
 
 pub struct LocalVerifier {
     file_reader: Box<dyn FileReader>,
     test_runner: Box<dyn TestRunner>,
+    /// Optional artifact lookup callback for `ArtifactCheck` verification.
+    ///
+    /// Signature: `(artifact_name: &str, query: &str) -> bool`.
+    /// Returns `true` when at least one artifact chunk matches the query.
+    /// When `None`, `ArtifactCheck` returns `Unverified` with a
+    /// `"artifact_lookup not bound"` reason.
+    artifact_lookup: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
+    /// Optional cosmos lookup callback for `CosmosCheck` verification (B-42).
+    ///
+    /// Signature: `(artifact_name: &str, query: &str, claim_category: &str) -> bool`.
+    /// Returns `true` when the cosmos artifact has at least one chunk that
+    /// matches the query. When `None`, `CosmosCheck` returns a descriptive
+    /// `MalformedGrounding` error analogous to the `ArtifactCheck` unbound
+    /// path. Orchestrator injects a real closure backed by the cosmos store.
+    cosmos_lookup:
+        Option<Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>>,
 }
 
 impl LocalVerifier {
@@ -193,7 +234,31 @@ impl LocalVerifier {
         Self {
             file_reader,
             test_runner,
+            artifact_lookup: None,
+            cosmos_lookup: None,
         }
+    }
+
+    /// Builder-style setter for the artifact lookup closure.
+    ///
+    /// The closure receives `(artifact_name, query)` and returns `true` when
+    /// the artifact store has at least one matching chunk.  Orchestrator
+    /// injects a real closure backed by `artifact_search`; tests inject a mock.
+    pub fn with_artifact_lookup(
+        mut self,
+        f: Arc<dyn Fn(&str, &str) -> bool + Send + Sync>,
+    ) -> Self {
+        self.artifact_lookup = Some(f);
+        self
+    }
+
+    /// Builder-style setter for the cosmos lookup closure (B-42).
+    pub fn with_cosmos_lookup(
+        mut self,
+        f: Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>,
+    ) -> Self {
+        self.cosmos_lookup = Some(f);
+        self
     }
 }
 
@@ -282,8 +347,85 @@ impl Verifier for LocalVerifier {
                     method_used: VerificationMethod::TestCheck,
                 })
             }
+            VerificationMethod::ArtifactCheck {
+                artifact_name,
+                query,
+            } => {
+                match &self.artifact_lookup {
+                    Some(lookup) => {
+                        let passes = lookup(&artifact_name, &query);
+                        let method_used = VerificationMethod::ArtifactCheck {
+                            artifact_name: artifact_name.clone(),
+                            query: query.clone(),
+                        };
+                        Ok(VerificationResult {
+                            claim: claim.to_string(),
+                            passes,
+                            evidence: if passes {
+                                format!(
+                                    "artifact '{}' contains match for query '{}'",
+                                    artifact_name, query
+                                )
+                            } else {
+                                format!(
+                                    "artifact '{}' has no match for query '{}'",
+                                    artifact_name, query
+                                )
+                            },
+                            method_used,
+                        })
+                    }
+                    None => Err(GrcError::MalformedGrounding {
+                        raw: format!("artifact:{}:{}", artifact_name, query),
+                        reason: "artifact_lookup not bound — inject via LocalVerifier::with_artifact_lookup"
+                            .to_string(),
+                    }),
+                }
+            }
+
+            VerificationMethod::CosmosCheck {
+                artifact_name,
+                query,
+                claim_category,
+            } => {
+                match &self.cosmos_lookup {
+                    Some(lookup) => {
+                        let passes = lookup(&artifact_name, &query, &claim_category);
+                        let method_used = VerificationMethod::CosmosCheck {
+                            artifact_name: artifact_name.clone(),
+                            query: query.clone(),
+                            claim_category: claim_category.clone(),
+                        };
+                        Ok(VerificationResult {
+                            claim: claim.to_string(),
+                            passes,
+                            evidence: if passes {
+                                format!(
+                                    "cosmos '{}' contains match for query '{}' (category={})",
+                                    artifact_name, query, claim_category
+                                )
+                            } else {
+                                format!(
+                                    "cosmos '{}' has no match for query '{}' (category={})",
+                                    artifact_name, query, claim_category
+                                )
+                            },
+                            method_used,
+                        })
+                    }
+                    None => Err(GrcError::MalformedGrounding {
+                        raw: format!(
+                            "cosmos:{}:{}:{}",
+                            artifact_name, query, claim_category
+                        ),
+                        reason: "cosmos_lookup not bound — inject via LocalVerifier::with_cosmos_lookup"
+                            .to_string(),
+                    }),
+                }
+            }
+
             other => Err(GrcError::VerificationError {
-                method: other,
+                method: other.clone(),
                 claim: claim.to_string(),
                 reason: format!("{:?} not supported by LocalVerifier", other),
             }),
@@ -291,11 +433,43 @@ impl Verifier for LocalVerifier {
     }
 
     fn supported_methods(&self) -> &[VerificationMethod] {
+        // ArtifactCheck carries heap-allocated String fields and cannot appear
+        // in a static slice.  Use `supports()` for capability checks involving
+        // ArtifactCheck — it uses discriminant comparison and correctly reports
+        // ArtifactCheck as supported (conditionally: artifact_lookup must be set).
         &[
             VerificationMethod::FileCheck,
             VerificationMethod::SourceCheck,
             VerificationMethod::TestCheck,
         ]
+    }
+
+    /// Discriminant-based capability check for LocalVerifier.
+    ///
+    /// Extends the base trait default to also report ArtifactCheck as supported
+    /// (the `verify()` method handles it; whether `artifact_lookup` is bound is
+    /// a runtime concern, not a capability concern at the method level).
+    fn supports(&self, method: &VerificationMethod) -> bool {
+        use std::mem::discriminant;
+        // ArtifactCheck is handled by verify() regardless of artifact_lookup state;
+        // if artifact_lookup is None, verify() returns a descriptive Err rather than
+        // panicking — callers must still attempt the call to get that error.
+        if discriminant(method) == discriminant(&VerificationMethod::ArtifactCheck {
+            artifact_name: String::new(),
+            query: String::new(),
+        }) {
+            return true;
+        }
+        if discriminant(method) == discriminant(&VerificationMethod::CosmosCheck {
+            artifact_name: String::new(),
+            query: String::new(),
+            claim_category: String::new(),
+        }) {
+            return true;
+        }
+        self.supported_methods()
+            .iter()
+            .any(|m| discriminant(m) == discriminant(method))
     }
 }
 
@@ -337,9 +511,9 @@ impl Verifier for NetworkVerifier {
                 })
             }
             other => Err(GrcError::VerificationError {
-                method: other,
                 claim: claim.to_string(),
                 reason: format!("{:?} not supported by NetworkVerifier", other),
+                method: other,
             }),
         }
     }

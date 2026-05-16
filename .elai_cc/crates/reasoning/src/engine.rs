@@ -150,6 +150,11 @@ impl BasicGrcEngine {
 
     /// Parse a claim string with "type:reference" format into (VerificationMethod, stripped_ref).
     /// The "type:" prefix is ALWAYS stripped before dispatching to the Verifier.
+    ///
+    /// "artifact:" syntax: "artifact:artifact_name:query_text"
+    /// The first ':' after "artifact:" separates artifact_name from query.
+    /// artifact_name must match ^[a-zA-Z0-9_-]+$; if malformed the call site
+    /// should fall back to FileCheck (this fn is infallible for compatibility).
     fn parse_claim_prefix(claim: &str) -> (VerificationMethod, &str) {
         if let Some(rest) = claim.strip_prefix("file:") {
             (VerificationMethod::FileCheck, rest)
@@ -161,6 +166,22 @@ impl BasicGrcEngine {
             (VerificationMethod::WebCheck, rest)
         } else if let Some(rest) = claim.strip_prefix("tool:") {
             (VerificationMethod::SourceCheck, rest)
+        } else if let Some(rest) = claim.strip_prefix("artifact:") {
+            // Format: "artifact:artifact_name:query_text"
+            // Split on first ':' to separate artifact_name from query.
+            let (artifact_name, query) = if let Some(idx) = rest.find(':') {
+                (&rest[..idx], &rest[idx + 1..])
+            } else {
+                // Bare artifact name with no query — use empty query string.
+                (rest, "")
+            };
+            (
+                VerificationMethod::ArtifactCheck {
+                    artifact_name: artifact_name.to_string(),
+                    query: query.to_string(),
+                },
+                rest,
+            )
         } else if let Some(rest) = claim.strip_prefix("training:") {
             // training: claims have no direct verification method; attempt FileCheck
             (VerificationMethod::FileCheck, rest)
@@ -171,8 +192,10 @@ impl BasicGrcEngine {
     }
 
     /// Parse grounding string into (source_type, reference) pairs.
-    /// Valid types: "file", "grep", "test", "search", "tool", "training".
+    /// Valid types: "file", "grep", "test", "search", "tool", "training", "artifact".
     /// Format: "type:reference" comma-separated.
+    /// "artifact" citations use format "artifact:artifact_name:query"; the full
+    /// "artifact_name:query" string is stored as the reference field.
     fn parse_grounding(raw: &str) -> Result<Vec<(String, String, GroundingLevel)>, GrcError> {
         let mut results = Vec::new();
         for citation in raw.split(',') {
@@ -195,12 +218,15 @@ impl BasicGrcEngine {
             let level = match source_type {
                 "test" | "search" => GroundingLevel::Verified,
                 "file" | "grep" | "tool" => GroundingLevel::High,
+                // artifact: grounding level is High — the artifact store is a
+                // local authoritative source (comparable to a file read).
+                "artifact" => GroundingLevel::High,
                 "training" => GroundingLevel::Uncertain,
                 _ => {
                     return Err(GrcError::MalformedGrounding {
                         raw: citation.to_string(),
                         reason: format!(
-                            "unknown source type '{}' — valid: file, grep, test, search, tool, training",
+                            "unknown source type '{}' — valid: file, grep, test, search, tool, artifact, training",
                             source_type
                         ),
                     });
@@ -361,23 +387,50 @@ impl GrcEngine for BasicGrcEngine {
                 Some(raw) => {
                     let citations = Self::parse_grounding(raw)?;
                     // Allowed methods enforcement: reject citations using disallowed methods.
+                    // Uses discriminant comparison so data-carrying variants like
+                    // ArtifactCheck are matched by kind, not by field values.
                     if let Some(ref allowed_methods) = config_allowed_methods {
+                        // Pre-build discriminant set for O(n) lookup.
+                        let allowed_disc: std::collections::HashSet<_> = allowed_methods
+                            .iter()
+                            .map(std::mem::discriminant)
+                            .collect();
                         for (source_type, reference, _) in &citations {
                             let method = match source_type.as_str() {
                                 "file" | "grep" => VerificationMethod::FileCheck,
                                 "tool" => VerificationMethod::SourceCheck,
                                 "test" => VerificationMethod::TestCheck,
                                 "search" => VerificationMethod::WebCheck,
+                                "artifact" => VerificationMethod::ArtifactCheck {
+                                    artifact_name: String::new(),
+                                    query: String::new(),
+                                },
+                                // B-42: cosmos:<artifact_name>:<query>:<category> citation maps
+                                // to CosmosCheck. Discriminant-only matching here; the actual
+                                // field values are populated by PipelineGrc::verify_claim when
+                                // the citation is dispatched.
+                                "cosmos" => VerificationMethod::CosmosCheck {
+                                    artifact_name: String::new(),
+                                    query: String::new(),
+                                    claim_category: String::new(),
+                                },
                                 "training" => continue,
-                                _ => continue,
+                                _ => return Err(GrcError::MalformedGrounding {
+                                    raw: format!("{}:{}", source_type, reference),
+                                    reason: format!(
+                                        "unknown citation prefix '{}' — valid: file, grep, test, search, tool, artifact, cosmos, training",
+                                        source_type
+                                    ),
+                                }),
                             };
-                            if !allowed_methods.contains(&method) {
+                            if !allowed_disc.contains(&std::mem::discriminant(&method)) {
+                                let method_for_msg = method.clone();
                                 return Err(GrcError::VerificationError {
                                     method,
                                     claim: format!("{}:{}", source_type, reference),
                                     reason: format!(
                                         "method {:?} not in allowed_methods for role '{}'",
-                                        method,
+                                        method_for_msg,
                                         config_role.as_deref().unwrap_or("unknown")
                                     ),
                                 });

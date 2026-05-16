@@ -241,6 +241,13 @@ impl Default for AgentGrcConfig {
                 VerificationMethod::WebCheck,
                 VerificationMethod::ApiCheck,
                 VerificationMethod::ApiRegistryCheck,
+                // ArtifactCheck: wildcard entry (empty strings) — the gate uses
+                // discriminant comparison, not PartialEq field matching, so any
+                // ArtifactCheck variant is permitted when this entry is present.
+                VerificationMethod::ArtifactCheck {
+                    artifact_name: String::new(),
+                    query: String::new(),
+                },
             ],
             transition_overrides: FxHashMap::default(),
             require_scope_enumeration: false,
@@ -273,6 +280,13 @@ impl Default for GrcDefaults {
                 VerificationMethod::WebCheck,
                 VerificationMethod::ApiCheck,
                 VerificationMethod::ApiRegistryCheck,
+                // ArtifactCheck: wildcard entry (empty strings) — the gate uses
+                // discriminant comparison, not PartialEq field matching, so any
+                // ArtifactCheck variant is permitted when this entry is present.
+                VerificationMethod::ArtifactCheck {
+                    artifact_name: String::new(),
+                    query: String::new(),
+                },
             ],
         }
     }
@@ -308,7 +322,12 @@ impl TopicState {
 // VerificationMethod: the 6 verification strategies (phase 2B)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Note: `Copy` is intentionally NOT derived on this enum.  The `ArtifactCheck`
+/// variant holds `String` fields (runtime artifact name + query), which are not
+/// `Copy`.  All existing callers construct variants inline and do not rely on
+/// implicit copy semantics; any site that previously relied on copy should
+/// use `.clone()` instead.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VerificationMethod {
     FileCheck,
     SourceCheck,
@@ -316,6 +335,30 @@ pub enum VerificationMethod {
     WebCheck,
     ApiCheck,
     ApiRegistryCheck,
+    /// Verify a claim by searching the context artifact store (B-35 Phase B).
+    ///
+    /// `artifact_name` scopes the search to one manifest entry (or all when
+    /// the verifier's `artifact_lookup` closure is provided with an empty string
+    /// and the closure ignores it). `query` is the search string.
+    ArtifactCheck {
+        artifact_name: String,
+        query: String,
+    },
+    /// Verify a claim against the cosmos artifact store (B-42 Phase 2).
+    ///
+    /// Cosmos artifacts are cross-project, user-global Markdown briefs
+    /// (`~/.elai/cosmos/`) refreshed on cadence via FlashResearch. Used for
+    /// design / IP-boundary / monetization / app_store / marketing_pattern /
+    /// ux_convention claim categories (per B-42 plan §6).
+    ///
+    /// `artifact_name` is one manifest entry name (e.g. "ios_hig_summary").
+    /// `query` is the search string. `claim_category` is the routing label
+    /// retained for tracing / dashboard observability.
+    CosmosCheck {
+        artifact_name: String,
+        query: String,
+        claim_category: String,
+    },
 }
 
 impl VerificationMethod {
@@ -337,6 +380,16 @@ impl VerificationMethod {
                 | VerificationMethod::SourceCheck
                 | VerificationMethod::TestCheck
         )
+    }
+
+    /// Methods requiring access to the artifact store (B-35 Phase B).
+    pub fn requires_artifact_store(&self) -> bool {
+        matches!(self, VerificationMethod::ArtifactCheck { .. })
+    }
+
+    /// Methods requiring access to the cosmos artifact store (B-42 Phase 2).
+    pub fn requires_cosmos_store(&self) -> bool {
+        matches!(self, VerificationMethod::CosmosCheck { .. })
     }
 }
 

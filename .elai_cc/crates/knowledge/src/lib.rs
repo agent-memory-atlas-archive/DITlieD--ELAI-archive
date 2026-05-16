@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 // B-35 Phase A: context artifacts pipeline
 pub mod artifacts;
+// B-42 Phase 1: cross-project cosmos artifact tier (~/.elai/cosmos/)
+pub mod cosmos_worker;
 // B-35 Phase A: knowledge-crate runtime config (ArtifactsConfig, KnowledgeRuntimeConfig)
 pub mod runtime_config;
 
@@ -288,4 +290,6 @@ pub use fix_templates::{
     FixTemplateRegistry, DEFAULT_FIX_TEMPLATES_DIR, MAX_FEW_SHOT_EXAMPLES,
 };
 pub use shortcoder::ShortCoder;
+// B-42 dashboard surface — per-artifact status snapshot + standalone helper.
+pub use cosmos_worker::{cosmos_status_snapshot_standalone, CosmosArtifactStatusJson};
 pub use telescope::{assemble_telescope, TelescopeContext};

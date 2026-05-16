@@ -7,12 +7,25 @@
 // Wire format: [1-byte version][4-byte LE length][postcard payload]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// AgentRole — the 8 agent roles
+// AgentRole — the 10 agent roles
 // ---------------------------------------------------------------------------
+//
+// B-40 (2026-05-16): added IdeaFramer + IdeaCritic for the pre-decomposition
+// FRAMING substate. These roles cross the IPC wire as part of
+// AgentDispatchConfig::role but the wire FRAME structure (IpcMessageType tag
+// bijection, IPC_MESSAGE_TYPE_VARIANT_COUNT) is unchanged — adding string
+// variants to a #[serde(rename_all="snake_case")] enum is a soft-compat
+// change. IPC_PROTOCOL_VERSION stays at 2 because:
+//   (1) the IpcMessageType variant table is unchanged (still 16 tags)
+//   (2) MAX_FRAME_SIZE and FRAME_HEADER_SIZE are unchanged
+//   (3) orchestrator + agent binaries ship together — older agents won't be
+//       handed an `idea_framer` dispatch config unless paired with this code
+// Documented in workflow/reasoning/B-40-decisions.md DECISION-IPC.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +38,16 @@ pub enum AgentRole {
     ContextCompiler,
     MemoryWriter,
     MediaValidator,
+    /// B-40: pre-decomposition idea-framer agent. Designer-shape GRC
+    /// (Observe->PlanAction->Act->Verify, no Hypothesize) with restricted
+    /// budget 5/800. Runs BEFORE Concept decomposition; produces
+    /// FramedIdea + TradeoffCard from research-preset streams.
+    IdeaFramer,
+    /// B-40: pre-decomposition idea-critic agent. Auditor-shape GRC
+    /// (Observe->Verify->Verify) with restricted budget 5/800. Runs per
+    /// critic round (max 3); emits CriticFinding rows that BLOCK
+    /// decomposition if unresolved at round 3.
+    IdeaCritic,
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +461,15 @@ pub const TOOL_SYMBOL_FLOW: &str = "symbol_flow";
 pub const TOOL_SYMBOL_CONTEXT: &str = "symbol_context";
 pub const TOOL_SYMBOL_LIST: &str = "symbol_list";
 
+// B-34 — Entry-point detection tool ID.
+pub const TOOL_ENTRY_POINTS: &str = "entry_points";
+
+// B-35 Phase B — Context artifact tool IDs.
+pub const TOOL_LIST_ARTIFACTS: &str = "list_artifacts";
+pub const TOOL_INDEX_ARTIFACTS: &str = "index_artifacts";
+pub const TOOL_SEARCH_ARTIFACTS: &str = "search_artifacts";
+pub const TOOL_REMOVE_ARTIFACTS: &str = "remove_artifacts";
+
 // ---------------------------------------------------------------------------
 // Web research typed request structs (postcard-serialized in ToolRequest.arguments)
 // ---------------------------------------------------------------------------
@@ -496,4 +528,105 @@ pub struct SymbolListRequest {
     pub file: Option<String>,
     pub query: Option<String>,
     pub limit: u32,
+}
+
+// ---------------------------------------------------------------------------
+// B-35 Phase B — Context artifact typed request structs
+// (postcard-serialized in ToolRequest.arguments)
+// ---------------------------------------------------------------------------
+
+/// Request for `list_artifacts` tool — list all indexed artifact entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListArtifactsRequest {
+    /// Absolute path to the project root (used to locate `context_*.db`).
+    pub db_path: String,
+}
+
+/// Request for `index_artifacts` tool — trigger (re)indexing of one artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexArtifactsRequest {
+    /// Absolute path to the `context_*.db` store file.
+    pub db_path: String,
+    /// Name of the artifact to (re)index. Must match a manifest entry.
+    pub artifact_name: String,
+}
+
+/// Request for `search_artifacts` tool — semantic search over artifact chunks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchArtifactsRequest {
+    /// Absolute path to the `context_*.db` store file.
+    pub db_path: String,
+    /// Natural-language search query.
+    pub query: String,
+    /// Optional artifact name filter; `None` searches all artifacts.
+    pub artifact_name: Option<String>,
+    /// Maximum number of results to return. Defaults to `DEFAULT_ARTIFACT_SEARCH_LIMIT`.
+    pub limit: Option<usize>,
+}
+
+/// Default limit when `SearchArtifactsRequest::limit` is `None`.
+pub const DEFAULT_ARTIFACT_SEARCH_LIMIT: usize = 10;
+
+/// Request for `remove_artifacts` tool — delete all chunks for one artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveArtifactsRequest {
+    /// Absolute path to the `context_*.db` store file.
+    pub db_path: String,
+    /// Name of the artifact whose chunks should be removed.
+    pub artifact_name: String,
+}
+
+// ---------------------------------------------------------------------------
+// B-34 — Entry-point detection typed request/response structs
+// (postcard-serialized in ToolRequest.arguments for the request;
+//  JSON-serialized in ToolResponse for the response)
+// ---------------------------------------------------------------------------
+
+/// Request for `entry_points` tool — detect project entry points.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPointsRequest {
+    /// Absolute or repo-relative path to the project root.
+    /// Used to locate the symbol-graph DB (same as other symbol-graph tools).
+    pub project_root: String,
+    /// When false, filter out `Test` reason entries. Defaults to true so the
+    /// researcher agent sees all entry points including test harnesses.
+    #[serde(default = "default_include_tests")]
+    pub include_tests: bool,
+}
+
+fn default_include_tests() -> bool {
+    true
+}
+
+/// Wire DTO for a single detected entry point (JSON surface).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPointDto {
+    /// Stable id: symbol id (heuristics 2–4) or file path (orphan heuristic 1).
+    pub id: String,
+    /// Human-readable name (qualified symbol name or file path).
+    pub name: String,
+    /// Source file path.
+    pub file: String,
+    /// 1-based start line, if available.
+    pub line: Option<u32>,
+    /// Reason discriminant string: "orphan", "well_known", "framework", "test".
+    pub reason: String,
+    /// Additional detail for the reason (e.g. "main", "framework:http-get").
+    pub reason_detail: Option<String>,
+}
+
+/// Summary counts across all detected entry points.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPointSummaryDto {
+    /// Total detected entry-point count.
+    pub total: u32,
+    /// Count per reason key (e.g. "orphan" -> 3, "well_known:main" -> 2).
+    pub by_reason: BTreeMap<String, u32>,
+}
+
+/// Response for `entry_points` tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPointsResponse {
+    pub entries: Vec<EntryPointDto>,
+    pub summary: EntryPointSummaryDto,
 }

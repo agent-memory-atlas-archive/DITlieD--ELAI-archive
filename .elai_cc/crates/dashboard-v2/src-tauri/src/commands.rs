@@ -6579,3 +6579,42 @@ pub fn get_ambiguity_state(_state: State<'_, AppState>) -> CmdResult<Value> {
         "mock": true
     }))
 }
+
+// ---------------------------------------------------------------------------
+// B-42 — COSMOS ARTIFACT TIER (dashboard surface)
+// ---------------------------------------------------------------------------
+//
+// `get_cosmos_status` returns the per-artifact freshness snapshot read
+// filesystem-only from `~/.elai/cosmos/`. No ResearchDispatcher is required:
+// the standalone helper constructs a CosmosWorker with a NoopResearchDispatcher
+// purely to call `status_snapshot`, which never invokes the dispatcher.
+// Cold-start returns an empty Vec (no cosmos root yet).
+//
+// `trigger_cosmos_refresh` is intentionally an explicit `Err(...)` — the
+// production ResearchDispatcher wiring (orchestrator::research_tree::ResearchTree
+// adapted to the ResearchDispatcher trait) is documented as BLOCK-WIRING /
+// BLOCK-TAURI-COMMANDS in workflow/reasoning/B-42-decisions.md. Per CLAUDE.md
+// stub_ban rule, returning a NotImplemented error is honest; returning a fake
+// success would be mock data. The frontend renders this error inline next to
+// the Refresh button.
+
+/// Per-artifact cosmos status for the dashboard drawer.
+/// Read-only: filesystem snapshot of ~/.elai/cosmos/ — no research, no mutation.
+#[tauri::command]
+pub async fn get_cosmos_status() -> Result<Vec<elai_knowledge::CosmosArtifactStatusJson>, String> {
+    Ok(elai_knowledge::cosmos_status_snapshot_standalone())
+}
+
+/// Trigger an on-demand refresh of one cosmos artifact.
+///
+/// Returns an explicit NotImplemented `Err` until the production
+/// ResearchDispatcher is wired (see workflow/reasoning/B-42-decisions.md
+/// BLOCK-TAURI-COMMANDS / BLOCK-WIRING). This is NOT mock data — per
+/// stub_ban, a fake "ok=true" would be a lie; an explicit error is honest.
+#[tauri::command]
+pub async fn trigger_cosmos_refresh(_name: String) -> Result<(), String> {
+    Err(
+        "cosmos refresh dispatcher not yet wired — see B-42-decisions BLOCK-5"
+            .into(),
+    )
+}
