@@ -130,6 +130,8 @@ fn make_baby_step(id: u64, concept_name: &str, phase_name: &str, step_name: &str
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     }
 }
 

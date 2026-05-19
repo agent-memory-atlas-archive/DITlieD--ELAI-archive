@@ -142,7 +142,7 @@
 
   .section-header {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-ghost);
@@ -159,7 +159,7 @@
 
   .label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     white-space: nowrap;
   }
@@ -186,13 +186,13 @@
 
   .conv-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
   .conv-example {
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     margin-bottom: var(--s-1);
     padding-left: 2px;
@@ -248,7 +248,7 @@
     border-radius: var(--r-sm);
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.5;
     padding: var(--s-2) var(--s-3);
     resize: vertical;

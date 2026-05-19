@@ -197,7 +197,7 @@ pub struct MediaValidationRequest {
 }
 
 fn default_request_id() -> uuid::Uuid {
-    uuid::Uuid::new_v4()
+    uuid::Uuid::new_v4() // entropy-allow: serde-default for absent field, no EntropySource available
 }
 
 /// One Tier-1 deterministic check (e.g. resolution, manifold, sample-rate).

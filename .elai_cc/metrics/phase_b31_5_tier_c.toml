@@ -12,3 +12,9 @@ reclaim_wall_secs = 2
 resume_completed = true
 ssb_lock_contested_count = 1
 ssb_lock_acquired_count = 1
+
+# C-17 (DRIFT-K/M): production-scale lock contention runs deferred to
+# C-20. Synthetic baseline above stays as the regression baseline.
+[c17_followup]
+measured_in_phase = "C-20"
+production_scale_fixture = "linux-v6.7"

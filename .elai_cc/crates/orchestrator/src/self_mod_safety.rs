@@ -24,6 +24,8 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::self_mod_types::{ConfigVariant, FullPipelineOutcome, ScoreWeights, StructuralChange};
 
 // ---------------------------------------------------------------------------
@@ -35,6 +37,11 @@ use crate::self_mod_types::{ConfigVariant, FullPipelineOutcome, ScoreWeights, St
 /// proposal whose key string is NOT in this set requires a Layer 3
 /// human-approved [`StructuralChange`] before it can be applied
 /// (spec phase-4H.txt:177-193 + audit BLOCK-2: closed enumeration).
+///
+/// C-21 Task 7: this `&[&str]` is preserved alongside [`ParameterKey`] for
+/// backward-compat consumers that build proposals from JSON / TOML where
+/// the wire form is a string. The closed-enum [`ParameterKey`] is the
+/// canonical form for code paths that construct proposals statically.
 pub const KNOWN_PARAMETER_KEYS: &[&str] = &[
     // Inference / ETC.
     "etc_threshold",
@@ -56,6 +63,85 @@ pub const KNOWN_PARAMETER_KEYS: &[&str] = &[
     // Self-mod cadence.
     "self_mod_frequency",
 ];
+
+// ---------------------------------------------------------------------------
+// C-21 Task 7 — ParameterKey closed enum (12 variants matching KNOWN_PARAMETER_KEYS)
+// ---------------------------------------------------------------------------
+
+/// Closed enumeration of the 12 Class B parameter keys the self-mod agent
+/// MAY modify via staged evaluation. Replaces ad-hoc
+/// `AllowedConfigKey::Parameter(String)` constructions with type-safe
+/// variants so the compiler rejects unknown keys at construction time.
+///
+/// Spec: phase-4H.txt:177-193 + audit BLOCK-2 (closed enumeration). The
+/// canonical wire-form string for each variant lives in [`Self::as_str`]
+/// and round-trips with [`Self::from_str`].
+///
+/// Variants that carry a numeric discriminant (e.g. per-VRAM-tier LOC
+/// limits, per-slot weights) embed the discriminant inline so a single
+/// `ParameterKey::BabyStepMaxLoc { vram_tier: 8 }` is distinguishable from
+/// `ParameterKey::BabyStepMaxLoc { vram_tier: 24 }` at proposal level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ParameterKey {
+    EtcThreshold,
+    FreshnessHalfLife,
+    FreshnessDocHalfLife,
+    FreshnessBoostNorm,
+    BabyStepMaxLoc { vram_tier: u8 },
+    ContextSlotWeight { slot: u8 },
+    RetryBudget,
+    AbMctsMaxBranches,
+    AbMctsTemperatures,
+    MicroReflectionMaxTokens,
+    SteeringVectorCoefficient,
+    SelfModFrequency,
+}
+
+impl ParameterKey {
+    /// Canonical wire-form string. Discriminant-carrying variants expose
+    /// the base key (the discriminant lives in proposal payload, not the
+    /// key string), matching the [`KNOWN_PARAMETER_KEYS`] entries.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ParameterKey::EtcThreshold => "etc_threshold",
+            ParameterKey::FreshnessHalfLife => "freshness_half_life",
+            ParameterKey::FreshnessDocHalfLife => "freshness_doc_half_life",
+            ParameterKey::FreshnessBoostNorm => "freshness_boost_norm",
+            ParameterKey::BabyStepMaxLoc { .. } => "baby_step_max_loc",
+            ParameterKey::ContextSlotWeight { .. } => "context_slot_weight",
+            ParameterKey::RetryBudget => "retry_budget",
+            ParameterKey::AbMctsMaxBranches => "ab_mcts_max_branches",
+            ParameterKey::AbMctsTemperatures => "ab_mcts_temperatures",
+            ParameterKey::MicroReflectionMaxTokens => "micro_reflection_max_tokens",
+            ParameterKey::SteeringVectorCoefficient => "steering_vector_coefficient",
+            ParameterKey::SelfModFrequency => "self_mod_frequency",
+        }
+    }
+
+    /// Parse the canonical wire-form string. Discriminant-carrying
+    /// variants default their discriminant to `0` because the wire-form
+    /// key carries no payload — callers reconstructing a typed proposal
+    /// from a serialised string MUST re-apply the discriminant from the
+    /// proposal payload before dispatch.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "etc_threshold" => Some(ParameterKey::EtcThreshold),
+            "freshness_half_life" => Some(ParameterKey::FreshnessHalfLife),
+            "freshness_doc_half_life" => Some(ParameterKey::FreshnessDocHalfLife),
+            "freshness_boost_norm" => Some(ParameterKey::FreshnessBoostNorm),
+            "baby_step_max_loc" => Some(ParameterKey::BabyStepMaxLoc { vram_tier: 0 }),
+            "context_slot_weight" => Some(ParameterKey::ContextSlotWeight { slot: 0 }),
+            "retry_budget" => Some(ParameterKey::RetryBudget),
+            "ab_mcts_max_branches" => Some(ParameterKey::AbMctsMaxBranches),
+            "ab_mcts_temperatures" => Some(ParameterKey::AbMctsTemperatures),
+            "micro_reflection_max_tokens" => Some(ParameterKey::MicroReflectionMaxTokens),
+            "steering_vector_coefficient" => Some(ParameterKey::SteeringVectorCoefficient),
+            "self_mod_frequency" => Some(ParameterKey::SelfModFrequency),
+            _ => None,
+        }
+    }
+}
 
 /// Returns true when `key` is in [`KNOWN_PARAMETER_KEYS`]. The closed
 /// enumeration prevents arbitrary string keys from sneaking past the

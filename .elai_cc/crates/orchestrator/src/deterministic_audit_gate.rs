@@ -38,7 +38,8 @@ use crate::deterministic_auditor::{
     CheckKind, DeterministicAuditResult, DeterministicAuditor, DeterministicAuditorConfig,
     DeterministicFinding, DeterministicSeverity,
 };
-use crate::ssb::{FindingPayload, Ssb, SsbPayload};
+use crate::mutation_testing::{MutantOutcome, MutationConfig};
+use crate::ssb::{FindingPayload, MutationSurvivedPayload, Ssb, SsbPayload};
 
 /// Agent id used on Finding rows emitted by the deterministic audit gate.
 pub const GATE_AGENT_ID: &str = "deterministic_audit_gate";
@@ -87,6 +88,10 @@ pub type ProjectProfileSupplier = Arc<dyn Fn() -> ProjectProfile + Send + Sync>;
 /// a fixed list.
 pub type ChangedFilesSupplier = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
+/// C-28: pluggable supplier of [`MutationConfig`]. Dashboards thread
+/// `ElaiRuntimeConfig.testing.mutation`; tests pass `MutationConfig::default()`.
+pub type MutationConfigSupplier = Arc<dyn Fn() -> MutationConfig + Send + Sync>;
+
 /// Production [`DeterministicAuditGate`]:
 ///   * Builds a [`DeterministicAuditor`] from the supplied [`ProjectProfile`].
 ///   * Runs the 5 checks via `DeterministicAuditor::run_all`.
@@ -97,6 +102,11 @@ pub struct DefaultDeterministicAuditGate {
     writer: Arc<Ssb>,
     profile_supplier: ProjectProfileSupplier,
     changed_files_supplier: ChangedFilesSupplier,
+    /// C-28: closure that returns the live `MutationConfig`. Defaults to
+    /// `MutationConfig::default()` when [`Self::new`] is used; callers
+    /// that read `[testing.mutation]` from `elai_cc.toml` should use
+    /// [`Self::with_mutation_supplier`].
+    mutation_config_supplier: MutationConfigSupplier,
 }
 
 impl DefaultDeterministicAuditGate {
@@ -105,11 +115,21 @@ impl DefaultDeterministicAuditGate {
         profile_supplier: ProjectProfileSupplier,
         changed_files_supplier: ChangedFilesSupplier,
     ) -> Self {
+        let mutation_config_supplier: MutationConfigSupplier =
+            Arc::new(MutationConfig::default);
         Self {
             writer,
             profile_supplier,
             changed_files_supplier,
+            mutation_config_supplier,
         }
+    }
+
+    /// C-28: replace the mutation config supplier. Used by the dashboard
+    /// to thread `ElaiRuntimeConfig.testing.mutation` into the gate.
+    pub fn with_mutation_supplier(mut self, supplier: MutationConfigSupplier) -> Self {
+        self.mutation_config_supplier = supplier;
+        self
     }
 
     /// Expose the writer so callers that already have an Arc<Ssb> don't need
@@ -128,7 +148,12 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
         let profile = (self.profile_supplier)();
         let changed = (self.changed_files_supplier)();
         let primary_lang = profile.languages.primary.clone();
-        let config = DeterministicAuditorConfig::from_profile(&profile, Vec::new());
+        let mutation_cfg = (self.mutation_config_supplier)();
+        let config = DeterministicAuditorConfig::from_profile_with_mutation(
+            &profile,
+            Vec::new(),
+            mutation_cfg,
+        );
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&changed);
 
@@ -152,11 +177,28 @@ impl DeterministicAuditGate for DefaultDeterministicAuditGate {
 
         let writer = Arc::clone(&self.writer);
         let findings = result.findings.clone();
+        // C-28: one SsbActionType::MutationSurvived row per surviving mutant.
+        let survivors: Vec<MutationSurvivedPayload> = result
+            .mutation
+            .as_ref()
+            .map(|m| {
+                m.records
+                    .iter()
+                    .filter(|r| matches!(r.outcome, MutantOutcome::Survived))
+                    .map(|r| MutationSurvivedPayload {
+                        file: r.file.to_string_lossy().into_owned(),
+                        line: r.line,
+                        mutant_kind: r.mutant_kind.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         tokio::spawn(async move {
             emit_findings(writer.as_ref(), &findings).await;
             if let Some(lang) = tool_missing_language {
                 emit_audit_skipped(writer.as_ref(), &lang).await;
             }
+            emit_mutation_survivors(writer.as_ref(), &survivors).await;
         });
         result
     }
@@ -192,6 +234,7 @@ fn tool_missing_for_language(lang: &elai_core::project_profile::Language) -> Opt
 /// Map a `CheckKind` to the batch-4a `audit_step` tag surfaced on
 /// `FindingPayload`. Only the 5 pipeline step kinds map; the remaining kinds
 /// (ImportCrossRef, ModuleCoherence) fold into the step they're a sub-check of.
+/// C-28: `Mutation` is the Step 6 tag.
 pub fn audit_step_tag(kind: CheckKind) -> &'static str {
     match kind {
         CheckKind::Build => "build",
@@ -199,6 +242,9 @@ pub fn audit_step_tag(kind: CheckKind) -> &'static str {
         CheckKind::FileSizeCensus => "file_size",
         CheckKind::LazyCode => "lazy_code",
         CheckKind::Completeness | CheckKind::ModuleCoherence => "completeness",
+        CheckKind::Mutation => "mutation",
+        // C-29: T-3 basic metamorphic relations — Step 7 tag.
+        CheckKind::Metamorphic => "metamorphic",
     }
 }
 
@@ -255,6 +301,27 @@ pub async fn emit_audit_skipped(writer: &Ssb, language: &str) {
     }
 }
 
+/// C-28: emit one `SsbActionType::MutationSurvived` row per
+/// `MutantOutcome::Survived` mutant. Zero rows when all caught
+/// (stub_ban contract).
+pub async fn emit_mutation_survivors(writer: &Ssb, survivors: &[MutationSurvivedPayload]) {
+    for s in survivors {
+        let payload = SsbPayload::MutationSurvived(s.clone());
+        if let Err(e) = writer
+            .write_payload(GATE_AGENT_ID, GATE_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            tracing::error!(
+                error = %e,
+                file = %s.file,
+                line = s.line,
+                kind = %s.mutant_kind,
+                "deterministic_audit_gate: write MutationSurvived failed"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -291,6 +358,7 @@ mod tests {
                 }],
                 checks_run: 1,
                 passed: true,
+                mutation: None,
             },
         };
         let r = gate.evaluate(crate::fsm::FsmState::Executing, crate::fsm::FsmState::Auditing);

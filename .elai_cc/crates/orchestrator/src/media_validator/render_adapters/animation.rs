@@ -96,7 +96,7 @@ fn validate_artifact_extension(artifact: &Path) -> Result<(), RenderAdapterError
 
 fn make_tempdir(prefix: &str) -> Result<PathBuf, RenderAdapterError> {
     let base = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
     let dir = base.join(format!("{prefix}-{id}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -147,7 +147,7 @@ impl MediaRenderAdapter for AnimationRenderAdapter {
         >,
     > {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             validate_artifact_extension(artifact)?;
             let work_dir = make_tempdir("elai-anim-render")?;
             let modulo = modulo_from_mode(&config.capture_mode);
@@ -335,7 +335,7 @@ mod tests {
         ));
         let cfg = RenderConfig::default();
         let dir = std::env::temp_dir();
-        let mp4 = dir.join(format!("elai-mp4-stub-{}.mp4", uuid::Uuid::new_v4()));
+        let mp4 = dir.join(format!("elai-mp4-stub-{}.mp4", uuid::Uuid::new_v4())); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
         let _ = std::fs::write(&mp4, b"stub");
         let r = a.render(&mp4, &cfg).await;
         let _ = std::fs::remove_file(&mp4);

@@ -23,10 +23,15 @@ pub enum RerankerError {
 }
 
 // ---------------------------------------------------------------------------
-// SSB degradation events (canonical definition in crate::degradation)
+// SSB degradation events (canonical definition in crate::degradation).
+// C-1: production callers must inject a real SsbNotifier via
+// `CrossEncoderReranker::with_ssb`; the convenience `::new` constructor
+// (which defaulted to a noop) is now `#[cfg(test)]`-gated so the
+// WIRING_CONTRACT stub_ban check passes (no noop-notifier references on
+// production lines of this file).
 // ---------------------------------------------------------------------------
 
-pub use crate::degradation::{DegradationEvent, NoopSsbNotifier, SsbNotifier};
+pub use crate::degradation::{DegradationEvent, SsbNotifier};
 
 impl std::fmt::Display for RerankerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -117,11 +122,11 @@ pub struct CrossEncoderReranker {
 }
 
 impl CrossEncoderReranker {
-    /// Create a new reranker without loading models. Call `load()` to initialize
-    /// the ONNX session and tokenizer.
-    pub fn new(config: RerankerConfig, clock: Arc<dyn ClockProvider>) -> Self {
-        Self::with_ssb(config, clock, Arc::new(NoopSsbNotifier))
-    }
+    // C-1: test-only convenience constructor `::new` moved into the
+    // bottom test module so the WIRING_CONTRACT stub_ban check (no noop
+    // notifier references on production lines) holds. See the
+    // `#[cfg(any(test, feature = "test-helpers"))]` impl block at the
+    // bottom of this file.
 
     /// Create a new reranker with an SSB notifier for degradation events.
     pub fn with_ssb(
@@ -652,15 +657,11 @@ impl CrossEncoderReranker {
         scored.into_iter().map(|(_, c)| c).collect()
     }
 
-    /// Create the reranker and return it with the batch worker channel receiver.
-    /// Caller must spawn `run_batch_worker` with the returned receiver.
-    #[allow(dead_code)] // Used when pipeline spawns batch worker task
-    pub(crate) fn new_with_worker(
-        config: RerankerConfig,
-        clock: Arc<dyn ClockProvider>,
-    ) -> (Self, mpsc::Receiver<RerankerRequest>) {
-        Self::new_with_worker_and_ssb(config, clock, Arc::new(NoopSsbNotifier))
-    }
+    // C-1: test-only `new_with_worker` convenience constructor moved
+    // into the bottom test module so the WIRING_CONTRACT stub_ban check
+    // (no noop notifier references on production lines) holds. See the
+    // `#[cfg(any(test, feature = "test-helpers"))]` impl block at the
+    // bottom of this file.
 
     /// Create the reranker with SSB notifier and return it with the batch worker channel receiver.
     #[allow(dead_code)]
@@ -740,6 +741,40 @@ impl CrossEncoderReranker {
         }
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// C-1: test-only impl block. The `::new` + `::new_with_worker`
+// convenience constructors live HERE (outside the production impl)
+// so the WIRING_CONTRACT stub_ban check finds zero noop-notifier
+// references on production lines of reranker.rs. Gated by
+// `cfg(any(test, feature = "test-helpers"))` so both unit tests in
+// the `mod tests` block below AND integration tests in
+// `crates/knowledge/tests/` can resolve the symbols.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl CrossEncoderReranker {
+    /// Test-only convenience constructor that defaults the SSB notifier
+    /// to a noop. Production code uses [`CrossEncoderReranker::with_ssb`].
+    pub fn new(config: RerankerConfig, clock: Arc<dyn ClockProvider>) -> Self {
+        // C-1 stub_ban exclusion: line documented as test-only via inline comment.
+        Self::with_ssb(config, clock, Arc::new(crate::degradation::NoopSsbNotifier)) // test-only
+    }
+
+    /// Test-only convenience constructor that creates the reranker with
+    /// the batch worker channel receiver. Defaults SSB notifier to noop.
+    #[allow(dead_code)]
+    pub(crate) fn new_with_worker(
+        config: RerankerConfig,
+        clock: Arc<dyn ClockProvider>,
+    ) -> (Self, mpsc::Receiver<RerankerRequest>) {
+        Self::new_with_worker_and_ssb(
+            config,
+            clock,
+            Arc::new(crate::degradation::NoopSsbNotifier), // test-only
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

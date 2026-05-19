@@ -55,6 +55,13 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         context_budget_terminal: false,
         auto_advance_count_for_concept: 0,
         step_id: "step-x".into(),
+        // C-9: optional ModelPool handle; pre-C-9 contracts default to None.
+        model_pool: None,
+        // C-10: anti-spiral extended fields default to empty/None so
+        // pre-C-10 contracts compile unchanged.
+        execution_history: elai_orchestrator::ExecutionHistory::default(),
+        attempt_index: 0,
+        suggested_prompt_prefix: None,
     }
 }
 

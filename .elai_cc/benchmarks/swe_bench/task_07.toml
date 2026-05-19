@@ -1,0 +1,11 @@
+id = "task_07"
+description = """
+A Python ML pipeline calls `model.eval()` followed by `with torch.no_grad()`.
+The deprecation guide now recommends `with torch.inference_mode()` for
+slightly faster inference and no version-grad bookkeeping. Migrate the
+context manager and verify the existing tests still pass.
+"""
+expected_output = "torch.inference_mode"
+timeout_s = 120
+stage = 3
+is_canary = false

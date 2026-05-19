@@ -16,9 +16,32 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+# C-26 — emit-and-re-raise diagnostic helper for the previously-bare
+# `except Exception:` blocks in measurements 3 (few-shot) + 4 (structured).
+# Per workflow/sessions/s-25672/context-package-C26.md DRIFT-2 / R1, the
+# 0% measurement bug was masked by silent swallowing in these blocks.
+# This helper preserves the original swallow semantics (callers continue
+# using the fallback value they were already assigning) while emitting a
+# traceback to stderr so future runs surface the actual root cause.
+def _log_measurement_exception(tag: str, exc: BaseException) -> None:
+    """Log a measurement-loop exception with full traceback, then return.
+
+    The 4 measurement-3/4 except blocks intentionally do NOT re-raise — they
+    must continue iterating across the 50-task fixture so a single bad task
+    cannot zero out the whole measurement. This helper makes the previously-
+    silent swallow visible without changing control flow.
+    """
+    print(
+        f"[measurement-bench] {tag}: swallowed {type(exc).__name__}: {exc}",
+        file=sys.stderr,
+        flush=True,
+    )
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -691,7 +714,10 @@ def measure_few_shot(
                         pass_z = False
             else:
                 pass_z = True
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — see _log_measurement_exception
+            # C-26 (DRIFT-2): instrument zero-shot path. Was a silent
+            # swallow; emit traceback to stderr then continue the iteration.
+            _log_measurement_exception("measure_few_shot:zero_shot", e)
             pass_z = False
 
         # Run few-shot
@@ -716,7 +742,10 @@ def measure_few_shot(
             # Estimate few-shot example token cost
             example_text = f"{ex_desc}\n{ex_sig}\n{ex_sol}"
             few_shot_token_costs.append(len(example_text) // 4)  # rough estimate
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — see _log_measurement_exception
+            # C-26 (DRIFT-2): instrument few-shot path. Was a silent
+            # swallow; emit traceback to stderr then continue the iteration.
+            _log_measurement_exception("measure_few_shot:few_shot", e)
             pass_f = False
 
         if pass_z:
@@ -797,7 +826,10 @@ def measure_structured(
                         freeform_correct += 1
                     except SyntaxError:
                         pass
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — see _log_measurement_exception
+            # C-26 (DRIFT-2): instrument free-form path in measure_structured.
+            # Was a silent swallow; emit traceback then continue.
+            _log_measurement_exception("measure_structured:freeform", e)
             time_free = 0
 
         # Run structured
@@ -833,7 +865,10 @@ def measure_structured(
 
             if time_free > 0 and time_struct > 0:
                 latency_diffs.append((time_struct - time_free) / time_free * 100)
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — see _log_measurement_exception
+            # C-26 (DRIFT-2): instrument structured path in measure_structured.
+            # Was a silent swallow; emit traceback then continue.
+            _log_measurement_exception("measure_structured:structured", e)
             time_struct = 0
 
         total += 1

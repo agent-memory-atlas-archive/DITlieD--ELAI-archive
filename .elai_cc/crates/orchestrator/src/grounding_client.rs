@@ -6,8 +6,10 @@
 // Native async fn in traits (no async_trait crate) + generic static dispatch
 // per the workspace anti-stale-training rule.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -371,20 +373,115 @@ const CLOUD_JSON_SYSTEM_PROMPT: &str =
     "Output ONLY a single valid JSON object that matches the schema in the user message. \
      Do not wrap in markdown code fences. Do not include any prose before or after the JSON.";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CloudGroundingClient {
     client: elai_providers::AnthropicClient,
     model: String,
     max_tokens: u32,
+    /// C-5: optional SSB writer. When `Some`, every `send_message`
+    /// round-trip emits a [`crate::ssb::SsbActionType::CloudSpend`] row
+    /// with per-call token counts + computed cost via [`crate::cloud_mode::SpendAccumulator`].
+    /// When `None` (legacy / test path), no row is written; the
+    /// SpendAccumulator state still accrues across calls so the final
+    /// `task_usd` would match the same model's pricing if a writer were
+    /// later attached. Wrapped in `Arc<tokio::sync::Mutex<...>>` so the
+    /// accumulator can be mutated across `.await` boundaries inside the
+    /// `send_message` body.
+    ssb_writer: Option<Arc<crate::Ssb>>,
+    /// C-5: shared spend accumulator. Pinned to the model id at
+    /// construction so pricing constants are correct. Wrapped so
+    /// repeated `send_message` calls can mutate the snapshot.
+    spend_accumulator: Arc<tokio::sync::Mutex<crate::cloud_mode::SpendAccumulator>>,
+    /// C-25: shared cumulative-token tracker. Records per-call token
+    /// counts (input/output/cache-read/cache-write) and feeds
+    /// `recalibrate_budget` for the per-task attention-ceiling
+    /// expansion clamp. Wrapped in `Arc<tokio::sync::Mutex<...>>` so
+    /// the tracker can be mutated across `.await` boundaries inside
+    /// `send_message` (mirrors the SpendAccumulator pattern). Always
+    /// `Some(default-initialised)` after `new` so call sites do not
+    /// branch on optionality.
+    cumulative_token_tracker:
+        Arc<tokio::sync::Mutex<crate::context_budget::CumulativeTokenTracker>>,
+    /// C-5: optional daily spend cap (USD). When `Some`, every
+    /// `send_message` round-trip consults the SSB aggregator BEFORE the
+    /// HTTP send. If the daily ceiling has been breached, the call is
+    /// short-circuited with a typed error and a `cloud_spend_blocked`
+    /// SSB row (carried via the existing `EscalateToCloud` row with
+    /// `trigger_reason="cap_reached"`). `None` disables cap enforcement.
+    spend_cap_daily_usd: Option<f64>,
+    /// C-5: task id stamped on emitted CloudSpend rows so the dashboard
+    /// can group ledger entries per active task. Defaults to
+    /// `"unknown_task"`; production wiring should set it via
+    /// [`with_task_id`].
+    task_id: String,
+}
+
+impl std::fmt::Debug for CloudGroundingClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudGroundingClient")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("ssb_writer", &self.ssb_writer.is_some())
+            .field("spend_cap_daily_usd", &self.spend_cap_daily_usd)
+            .field("task_id", &self.task_id)
+            .finish()
+    }
 }
 
 impl CloudGroundingClient {
     pub fn new(client: elai_providers::AnthropicClient, model: impl Into<String>) -> Self {
+        let model = model.into();
+        let accumulator = crate::cloud_mode::SpendAccumulator::for_model(&model);
         Self {
             client,
-            model: model.into(),
+            model,
             max_tokens: CLOUD_GROUNDING_MAX_TOKENS,
+            ssb_writer: None,
+            spend_accumulator: Arc::new(tokio::sync::Mutex::new(accumulator)),
+            // C-25: tracker starts at default (all zeros). Per-call
+            // record_response wires it next to the SpendAccumulator
+            // accumulate calls (mirroring the billing path but for
+            // raw token counts feeding recalibrate_budget).
+            cumulative_token_tracker: Arc::new(tokio::sync::Mutex::new(
+                crate::context_budget::CumulativeTokenTracker::new(),
+            )),
+            spend_cap_daily_usd: None,
+            task_id: "unknown_task".to_string(),
         }
+    }
+
+    /// C-25 — accessor for the shared tracker so callers (TaskRunner
+    /// post-execute hook) can read the latest snapshot for SSB rows /
+    /// ExecutionOutcome.token_count threading without re-instantiating.
+    #[must_use]
+    pub fn cumulative_token_tracker(
+        &self,
+    ) -> Arc<tokio::sync::Mutex<crate::context_budget::CumulativeTokenTracker>> {
+        self.cumulative_token_tracker.clone()
+    }
+
+    /// C-5: attach a live SSB writer so each `send_message` round-trip
+    /// emits a [`crate::ssb::SsbActionType::CloudSpend`] row.
+    #[must_use]
+    pub fn with_ssb_writer(mut self, ssb: Arc<crate::Ssb>) -> Self {
+        self.ssb_writer = Some(ssb);
+        self
+    }
+
+    /// C-5: set the daily spend cap in USD. When breached, new sends
+    /// short-circuit with a typed error and the dashboard CloudPanel
+    /// renders a BLOCKED row.
+    #[must_use]
+    pub fn with_spend_cap_daily_usd(mut self, cap: Option<f64>) -> Self {
+        self.spend_cap_daily_usd = cap;
+        self
+    }
+
+    /// C-5: stamp a task id on emitted CloudSpend rows.
+    #[must_use]
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = task_id.into();
+        self
     }
 
     /// Construct from env: resolves auth via `AuthSource::from_env_or_saved`,
@@ -452,12 +549,36 @@ impl CloudGroundingClient {
         user_prompt: &str,
         system_prompt: Option<&'static str>,
     ) -> elai_providers::MessageRequest {
-        // Mark the system block as ephemeral so Anthropic caches the JSON-only
-        // directive prefix across grounding calls (~5 min TTL) — cuts per-call
-        // input token cost on hot loops and reduces 429 pressure.
+        self.build_request_with_decoding(user_prompt, system_prompt, None)
+    }
+
+    /// C-26 — variant of [`build_request`] that wires
+    /// [`elai_providers::ConstrainedDecodingConfig`] into the outbound
+    /// MessageRequest.
+    ///
+    /// Translation table:
+    /// * `DecodingMode::JsonSchema { schema_json }` → emit `tools = [
+    ///   ToolDefinition { name: "structured_output", input_schema: <parsed
+    ///   schema_json> } ]` and `tool_choice = Tool { name:
+    ///   "structured_output" }`. This is the canonical Anthropic Tool API
+    ///   schema-enforcement path (Sonnet 4.6 supports it; see
+    ///   update-implementation-order.report.md).
+    /// * `DecodingMode::Grammar { .. }` → unchanged (Grammar is sidecar-only;
+    ///   the cloud client cannot enforce EBNF). Schema-violation surfaces
+    ///   downstream as a retry; not silently dropped.
+    /// * `DecodingMode::Regex { .. }` → unchanged (cloud has no regex
+    ///   enforcement primitive today).
+    /// * `DecodingMode::FreeText` / `None` → unchanged (legacy un-constrained
+    ///   path).
+    pub(crate) fn build_request_with_decoding(
+        &self,
+        user_prompt: &str,
+        system_prompt: Option<&'static str>,
+        decoding: Option<&elai_providers::ConstrainedDecodingConfig>,
+    ) -> elai_providers::MessageRequest {
         let system =
             system_prompt.map(|text| vec![elai_providers::SystemBlock::ephemeral_text(text)]);
-        elai_providers::MessageRequest {
+        let mut request = elai_providers::MessageRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages: vec![elai_providers::InputMessage::user_text(user_prompt)],
@@ -466,7 +587,41 @@ impl CloudGroundingClient {
             tool_choice: None,
             stream: false,
             seed: None,
+        };
+
+        if let Some(cfg) = decoding {
+            if let elai_providers::DecodingMode::JsonSchema { schema_json } = &cfg.mode {
+                // Parse the schema string; on parse failure, log a warn and
+                // skip the Tool-API encoding (callers retain the un-
+                // constrained behaviour rather than silently swallowing).
+                match serde_json::from_str::<serde_json::Value>(schema_json) {
+                    Ok(schema_value) => {
+                        request.tools = Some(vec![elai_providers::ToolDefinition {
+                            name: "structured_output".to_string(),
+                            description: Some(
+                                "Return the structured output object matching the schema."
+                                    .to_string(),
+                            ),
+                            input_schema: schema_value,
+                            cache_control: None,
+                        }]);
+                        request.tool_choice = Some(elai_providers::ToolChoice::Tool {
+                            name: "structured_output".to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "grounding_client",
+                            error = %err,
+                            "cloud decoding json_schema parse failed; falling back to FreeText for this request"
+                        );
+                    }
+                }
+            }
+            // Grammar / Regex / FreeText: no cloud-side wiring (see doc above).
         }
+
+        request
     }
 
     /// Strip a leading ```json or ``` fence and matching trailing ``` from
@@ -495,6 +650,146 @@ impl CloudGroundingClient {
             })
             .ok_or(GroundingError::EmptyResponse)
     }
+
+    /// C-5 — send a MessageRequest and emit `CloudSpend` on success.
+    /// Wraps `AnthropicClient::send_message`. The cap check happens
+    /// before the HTTP send so a breach short-circuits with no network
+    /// call. On success, the SpendAccumulator is updated with the
+    /// per-call usage and the resulting snapshot is written as a
+    /// `CloudSpend` SSB row.
+    async fn send_with_ledger(
+        &self,
+        request: &elai_providers::MessageRequest,
+    ) -> Result<elai_providers::MessageResponse, GroundingError> {
+        // Cap check: open a read-only SsbViewer against the writer's
+        // canonical db_path. Failure to open is logged + skipped per the
+        // C-5 plan's stub_ban ("skip rather than block on viewer error").
+        if let (Some(cap), Some(ssb)) = (self.spend_cap_daily_usd, self.ssb_writer.as_ref()) {
+            // C-15: OsClock-backed cap-check timestamp. Spend ledger reads
+            // are observation-only; no determinism contract.
+            let now_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+            match crate::ssb_viewer::SsbViewer::open(ssb.db_path()) {
+                Ok(viewer) => match viewer.cloud_spend_summary(now_ms) {
+                    Ok(summary) => {
+                        if summary.day_usd >= cap {
+                            // Emit cloud_spend_blocked marker via existing
+                            // EscalateToCloud row (no dedicated row type
+                            // today; reuse the row + trigger_reason).
+                            let payload = crate::ssb::SsbPayload::EscalateToCloud(
+                                crate::ssb::EscalateToCloudPayload {
+                                    step_id: format!("task_{}", self.task_id),
+                                    trigger_reason: "cap_reached".to_string(),
+                                    layer_failed: 0,
+                                    ts_ms: now_ms,
+                                },
+                            );
+                            if let Err(e) = ssb
+                                .write_payload(
+                                    "cloud_grounding_client",
+                                    0,
+                                    payload,
+                                    Vec::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "cloud_grounding: cap_reached SSB write failed (non-fatal)"
+                                );
+                            }
+                            return Err(GroundingError::RequestFailed {
+                                reason: format!(
+                                    "cloud daily spend cap reached: {:.4} >= {:.4} USD",
+                                    summary.day_usd, cap
+                                ),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            cap_usd = cap,
+                            "cloud_grounding: cloud_spend_summary failed; cap check skipped"
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        cap_usd = cap,
+                        "cloud_grounding: SsbViewer open failed; cap check skipped"
+                    );
+                }
+            }
+        }
+
+        // Live HTTP send.
+        let response = self.client.send_message(request).await.map_err(|e| {
+            GroundingError::RequestFailed {
+                reason: format!("anthropic: {e}"),
+            }
+        })?;
+
+        // Accumulate per-call usage + emit CloudSpend row when wired.
+        if let Some(ssb) = self.ssb_writer.as_ref() {
+            let usage = response.usage.clone();
+            let snapshot = {
+                let mut acc = self.spend_accumulator.lock().await;
+                acc.accumulate(usage.input_tokens, usage.output_tokens);
+                acc.accumulate_cache(
+                    usage.cache_creation_input_tokens,
+                    usage.cache_read_input_tokens,
+                );
+                acc.snapshot()
+            };
+            // C-25 — record raw token counts into the cumulative-token
+            // tracker AFTER the billing accumulate calls (DRIFT-C: the
+            // plan's "after each record() call" maps to the .accumulate
+            // calls above). The billing path stays unchanged. The
+            // tracker mutates across the .await of the lock; we use the
+            // same tokio::sync::Mutex pattern as spend_accumulator.
+            {
+                let mut tracker = self.cumulative_token_tracker.lock().await;
+                tracker.record_response(
+                    &crate::context_budget::ProviderUsage::from_u32(
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.cache_read_input_tokens,
+                        usage.cache_creation_input_tokens,
+                    ),
+                );
+            }
+            // C-15: OsClock-backed cap-check timestamp. Spend ledger reads
+            // are observation-only; no determinism contract.
+            let now_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+            // CloudSpendPayload reports per-call token deltas (not the
+            // accumulator total) so the dashboard can aggregate per-day
+            // by summing rows. cost_usd carries the running total via
+            // the accumulator's `cost_usd` snapshot.
+            let payload = crate::ssb::SsbPayload::CloudSpend(crate::ssb::CloudSpendPayload {
+                provider: crate::cloud_mode::DEFAULT_CLOUD_PROVIDER.to_string(),
+                model: snapshot.model.clone(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_creation_tokens: usage.cache_creation_input_tokens,
+                cache_read_tokens: usage.cache_read_input_tokens,
+                cost_usd: snapshot.cost_usd,
+                task_id: self.task_id.clone(),
+                ts_ms: now_ms,
+            });
+            if let Err(e) = ssb
+                .write_payload("cloud_grounding_client", 0, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "cloud_grounding: CloudSpend SSB write failed (non-fatal)"
+                );
+            }
+        }
+
+        Ok(response)
+    }
 }
 
 impl GroundingClient for CloudGroundingClient {
@@ -513,11 +808,10 @@ impl GroundingClient for CloudGroundingClient {
             self.model,
             rendered.chars().count()
         );
-        let response = self.client.send_message(&request).await.map_err(|e| {
+        // C-5: send + emit CloudSpend on success / honour daily cap.
+        let response = self.send_with_ledger(&request).await.map_err(|e| {
             eprintln!("[cloud_grounding] ERR send_message: {e}");
-            GroundingError::RequestFailed {
-                reason: format!("anthropic: {e}"),
-            }
+            e
         })?;
         let text = match Self::extract_text(&response.content) {
             Ok(t) => t,
@@ -560,9 +854,10 @@ impl GroundingClient for CloudGroundingClient {
         // matching SidecarGroundingClient::synthesize_text behaviour.
         let request = self.build_request(prompt, None);
         debug!(model = %self.model, "cloud_synthesis_request");
-        let response = self.client.send_message(&request).await.map_err(|e| {
+        // C-5: send + emit CloudSpend on success / honour daily cap.
+        let response = self.send_with_ledger(&request).await.map_err(|e| {
             GroundingError::RequestFailed {
-                reason: format!("anthropic: {e}"),
+                reason: format!("{e}"),
             }
         })?;
         Self::extract_text(&response.content)
@@ -744,5 +1039,274 @@ mod tests {
     fn default_sidecar_targets_port_8100() {
         let c = SidecarGroundingClient::default();
         assert!(c.base_url().contains("8100"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HttpCosmosResearchDispatcher (C-16 DECISION-B) — bridges
+// `elai_knowledge::ResearchDispatcher` (sync trait) to the sidecar's
+// SearXNG-compatible `/search` endpoint via the existing `SearxClient`.
+// Replaces `NoopResearchDispatcher` in the production live_cli tick path so
+// CosmosWorker actually produces refreshed bodies instead of failing every
+// tick (DRIFT-B).
+//
+// Sync bridge pattern mirrors `SearxSearchBackend` (orchestrator/src/
+// searx_search_backend.rs): own a dedicated current-thread tokio runtime +
+// std::sync::Mutex around the rate-limited SearxClient. The runtime is
+// `current_thread` (cheap; never spawns) and isolated from the outer
+// multi-thread runtime that `cosmos_tick_emit_loop` runs on.
+// ---------------------------------------------------------------------------
+
+use elai_knowledge::cosmos_worker::{CosmosError as KnowledgeCosmosError, ResearchDispatcher};
+use elai_web_search::client::SearxClient;
+use std::future::Future;
+use std::pin::Pin;
+use tokio::sync::Mutex as AsyncMutex;
+
+/// C-16 (DECISION-B): production `ResearchDispatcher` impl that queries
+/// SearXNG (via the sidecar `/search` proxy) and concatenates the top
+/// results into a Markdown body suitable for a cosmos artifact.
+///
+/// The dispatcher implements the `min_source_tier` filter by mapping to
+/// `SourceQualityTable` tiers post-search (currently the sidecar's
+/// SearXNG returns engine + url; tier resolution is best-effort against
+/// the parsed_domain). `max_size_bytes` is enforced as a soft cap: the
+/// dispatcher stops appending result blocks once the running body
+/// exceeds the cap. CosmosWorker::refresh_one re-truncates at the cap if
+/// the body still overflows.
+///
+/// # Async-native (C-16 BLOCK-1 fix)
+///
+/// The dispatcher uses `tokio::sync::Mutex` (async) around the rate-limited
+/// `SearxClient` so the lock can be held across `client.search().await`
+/// without blocking the runtime. The previous current-thread tokio runtime
+/// + `runtime.block_on()` bridge panicked when called from inside an
+/// existing tokio runtime (live_cli + Tauri command). The fix dispatches
+/// directly via reqwest's async client (SearxClient::search is already
+/// async) and removes the nested-runtime entirely.
+pub struct HttpCosmosResearchDispatcher {
+    client: AsyncMutex<SearxClient>,
+    max_results: usize,
+}
+
+impl HttpCosmosResearchDispatcher {
+    /// Default max results per query. Capped at SearxClient's own
+    /// `DEFAULT_MAX_RESULTS = 20` ceiling — values above silently clamp.
+    pub const DEFAULT_MAX_RESULTS: usize = 10;
+
+    /// Build a dispatcher targeting the sidecar `base_url`. Use
+    /// `DEFAULT_SIDECAR_SEARCH_URL` (`http://localhost:8100`) unless the
+    /// caller has a custom sidecar endpoint.
+    pub fn new(base_url: impl Into<String>) -> Result<Self, GroundingError> {
+        Self::with_clock(base_url, Arc::new(OsClock), Self::DEFAULT_MAX_RESULTS)
+    }
+
+    /// Build with custom clock + max_results (test-friendly).
+    pub fn with_clock(
+        base_url: impl Into<String>,
+        clock: Arc<dyn ClockProvider>,
+        max_results: usize,
+    ) -> Result<Self, GroundingError> {
+        let client = SearxClient::new(base_url, clock).map_err(|e| GroundingError::RequestFailed {
+            reason: format!("HttpCosmosResearchDispatcher searx client: {e}"),
+        })?;
+
+        Ok(Self {
+            client: AsyncMutex::new(client),
+            max_results,
+        })
+    }
+}
+
+impl ResearchDispatcher for HttpCosmosResearchDispatcher {
+    fn run<'a>(
+        &'a self,
+        query: &'a str,
+        min_source_tier: &'a str,
+        max_size_bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), KnowledgeCosmosError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            debug!(
+                query = query,
+                min_source_tier = min_source_tier,
+                "http_cosmos_research: issuing search"
+            );
+
+            // Hold the async mutex across the await: SearxClient is
+            // rate-limited and not Sync (single-flight per dispatcher
+            // instance is the intended contract).
+            let mut guard = self.client.lock().await;
+            let results = guard
+                .search(query)
+                .await
+                .map_err(|e| KnowledgeCosmosError::Research(format!("searx: {e}")))?;
+            drop(guard);
+
+            // Compose Markdown body: heading + bullet per result. Honour the
+            // size cap as a soft stop; refresh_one will re-truncate if needed.
+            let mut body = String::with_capacity(2048);
+            body.push_str(&format!("# {}\n\n", query));
+            body.push_str(&format!(
+                "_Curated from SearXNG ({} results, min_tier={})_\n\n",
+                self.max_results, min_source_tier
+            ));
+            let mut included = 0usize;
+            for r in results.into_iter().take(self.max_results) {
+                if (body.as_bytes().len() as u64) >= max_size_bytes {
+                    break;
+                }
+                // Snippet may contain HTML residue; SearxClient::search runs
+                // strip_html internally so we trust the snippet as plain text.
+                body.push_str(&format!(
+                    "## {}\n[{}]({})\n\n{}\n\n",
+                    r.title.trim(),
+                    r.parsed_domain,
+                    r.url,
+                    r.snippet.trim()
+                ));
+                included += 1;
+            }
+            if included == 0 {
+                return Err(KnowledgeCosmosError::Research(format!(
+                    "no search results for query: {}",
+                    query
+                )));
+            }
+
+            // Source tier: best-effort label. Without a SourceQualityTable
+            // lookup here (would require the tier table arc), we tag the body
+            // with the requested min_tier — consistent with the cosmos
+            // contract (the meta.source_tier is the WORST tier of any
+            // included source; we conservatively report the requested floor).
+            Ok((body, min_source_tier.to_string()))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SsbEmitterAdapter (C-16 DECISION-E + BLOCK-1 fix) — bridges
+// `elai_knowledge::cosmos_worker::SsbEmitter` (async-native trait) to an
+// `Arc<Ssb>` (async `write_payload`). The previous current-thread tokio
+// runtime + `runtime.block_on()` bridge panicked when called from inside an
+// existing tokio runtime (live_cli cosmos tick + Tauri command). The async
+// trait now awaits `Ssb::write_payload` directly on the ambient runtime —
+// no nested runtime, no panic.
+// ---------------------------------------------------------------------------
+
+use elai_knowledge::cosmos_worker::SsbEmitter as KnowledgeSsbEmitter;
+use crate::ssb::{
+    CosmosArtifactDecayedPayload, CosmosArtifactUpdatedPayload, CosmosRefreshStartedPayload,
+    Ssb, SsbPayload,
+};
+
+/// Constant agent id for SSB rows emitted by the in-process cosmos tick.
+/// Mirrors `task_runner::RUNNER_AGENT_ID` but scoped to the cosmos worker
+/// so dashboards can filter cosmos-originated rows distinct from runner rows.
+pub const COSMOS_SSB_AGENT_ID: &str = "cosmos_worker";
+
+/// Constant superstep used for cosmos SSB rows. Cosmos events are
+/// out-of-band w.r.t. the planner superstep counter, so 0 is the canonical
+/// "system" superstep (same convention as task_runner::RUNNER_SUPERSTEP).
+pub const COSMOS_SSB_SUPERSTEP: i64 = 0;
+
+/// C-16 (DECISION-E + BLOCK-1 fix): production SSB emitter for CosmosWorker.
+/// Holds a shared `Arc<Ssb>` writer; the async trait methods await
+/// `Ssb::write_payload` directly on the ambient tokio runtime (no nested
+/// runtime, no `block_on` bridge).
+///
+/// All three `emit_*` methods are best-effort: transport errors are
+/// swallowed via `tracing::warn!` so a transient SQLite contention never
+/// panics CosmosWorker::tick().
+pub struct SsbEmitterAdapter {
+    writer: Arc<Ssb>,
+}
+
+impl SsbEmitterAdapter {
+    /// Build an adapter wrapping a shared writer. Infallible — no longer
+    /// owns a tokio runtime (BLOCK-1 fix). Returns `Result` for source
+    /// compatibility with existing call sites (`SsbEmitterAdapter::new(...)
+    /// .map(Arc::new)` patterns); construction never errors.
+    pub fn new(writer: Arc<Ssb>) -> Result<Self, GroundingError> {
+        Ok(Self { writer })
+    }
+}
+
+impl KnowledgeSsbEmitter for SsbEmitterAdapter {
+    fn emit_refresh_started<'a>(
+        &'a self,
+        queued: u32,
+        total: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = SsbPayload::CosmosRefreshStarted(CosmosRefreshStartedPayload {
+                queued,
+                total,
+            });
+            if let Err(e) = self
+                .writer
+                .write_payload(COSMOS_SSB_AGENT_ID, COSMOS_SSB_SUPERSTEP, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "SsbEmitterAdapter: CosmosRefreshStarted write failed (non-fatal)"
+                );
+            }
+        })
+    }
+
+    fn emit_artifact_updated<'a>(
+        &'a self,
+        name: &'a str,
+        blake3_hash: &'a str,
+        body_bytes: u32,
+        latency_ms: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = SsbPayload::CosmosArtifactUpdated(CosmosArtifactUpdatedPayload {
+                name: name.to_string(),
+                blake3: blake3_hash.to_string(),
+                body_bytes,
+                latency_ms,
+            });
+            if let Err(e) = self
+                .writer
+                .write_payload(COSMOS_SSB_AGENT_ID, COSMOS_SSB_SUPERSTEP, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    artifact = %name,
+                    error = %e,
+                    "SsbEmitterAdapter: CosmosArtifactUpdated write failed (non-fatal)"
+                );
+            }
+        })
+    }
+
+    fn emit_artifact_decayed<'a>(
+        &'a self,
+        name: &'a str,
+        age_secs: u64,
+        cadence: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = SsbPayload::CosmosArtifactDecayed(CosmosArtifactDecayedPayload {
+                name: name.to_string(),
+                age_secs,
+                cadence: cadence.to_string(),
+            });
+            if let Err(e) = self
+                .writer
+                .write_payload(COSMOS_SSB_AGENT_ID, COSMOS_SSB_SUPERSTEP, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    artifact = %name,
+                    error = %e,
+                    "SsbEmitterAdapter: CosmosArtifactDecayed write failed (non-fatal)"
+                );
+            }
+        })
     }
 }

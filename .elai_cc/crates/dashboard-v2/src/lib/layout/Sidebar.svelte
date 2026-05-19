@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
     Terminal,
     Layers,
@@ -8,6 +9,8 @@
     Settings,
     UserRound,
     Network,
+    Compass,
+    Menu,
   } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
@@ -33,7 +36,38 @@
     { type: 'monitor',  label: 'Monitor',  shortcut: 'Ctrl+5', Icon: Activity },
     { type: 'settings', label: 'Settings', shortcut: 'Ctrl+6', Icon: Settings },
     { type: 'graph',    label: 'Graph',    shortcut: 'Ctrl+7', Icon: Network },
+    // C-7: Q&A oracle / codebase-explorer surface.
+    { type: 'explore',  label: 'Explore',  shortcut: 'Ctrl+8', Icon: Compass },
   ];
+
+  // C-7: hamburger toggle for narrow viewports (< 1000px). Tracks viewport
+  // width via a window resize listener so the @media-driven CSS visibility
+  // stays in sync with the local sidebarCollapsed state.
+  const NARROW_VIEWPORT_PX = 1000;
+  let viewportIsNarrow = $state<boolean>(false);
+  let sidebarCollapsed = $state<boolean>(false);
+
+  function syncViewport() {
+    if (typeof window === 'undefined') return;
+    const narrow = window.innerWidth < NARROW_VIEWPORT_PX;
+    if (narrow !== viewportIsNarrow) {
+      viewportIsNarrow = narrow;
+      // Auto-collapse on entering narrow mode; auto-expand on leaving.
+      sidebarCollapsed = narrow;
+    }
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+  }
+
+  onMount(() => {
+    syncViewport();
+    window.addEventListener('resize', syncViewport, { passive: true });
+    return () => {
+      window.removeEventListener('resize', syncViewport);
+    };
+  });
 
   // Derive active window type from the workspace primary panel's active tab
   let activeWindow = $derived(
@@ -139,7 +173,12 @@
   }
 </script>
 
-<nav class="sidebar" aria-label="Primary navigation">
+<nav
+  class="sidebar"
+  class:sidebar--narrow={viewportIsNarrow}
+  class:sidebar--collapsed={viewportIsNarrow && sidebarCollapsed}
+  aria-label="Primary navigation"
+>
   <div class="wordmark-wrap">
     <button
       class="wordmark"
@@ -150,6 +189,18 @@
       ELAI
     </button>
   </div>
+
+  {#if viewportIsNarrow}
+    <button
+      class="hamburger-btn"
+      onclick={toggleSidebar}
+      aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      aria-expanded={!sidebarCollapsed}
+      data-testid="sidebar-hamburger"
+    >
+      <Menu size={18} stroke-width={1.5} />
+    </button>
+  {/if}
 
   <div class="divider" role="separator" aria-hidden="true"></div>
 
@@ -206,10 +257,12 @@
 </nav>
 
 <style>
+  /* C-6: width 64px -> 48px to match spec dashboard-design.txt:182.
+     Coupled change in AppShell.svelte grid-template-columns. */
   .sidebar {
     display: flex;
     flex-direction: column;
-    width: 64px;
+    width: 48px;
     height: 100%;
     background: var(--bg-void);
   }
@@ -271,7 +324,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 64px;
+    width: 48px;
     height: 44px;
     background: none;
     border: none;
@@ -391,6 +444,44 @@
   .session-btn:focus-visible {
     box-shadow: var(--ring);
   }
+
+  /* C-7: hamburger button — visible only when viewport-narrow class is
+     applied by the parent (mirrors @media in base.css). The button itself
+     toggles sidebar-collapsed which hides the nav-list. */
+  .hamburger-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 36px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    outline: none;
+    transition: color var(--dur-fast) var(--ease-std);
+  }
+
+  .hamburger-btn:hover {
+    color: var(--text-primary);
+  }
+
+  .hamburger-btn:focus-visible {
+    box-shadow: inset 0 0 0 1px var(--teal);
+  }
+
+  /* When narrow + collapsed: hide nav-list to leave only the wordmark + hamburger.
+     The sidebar itself still occupies its 48px column so the panels-area
+     reflow stays predictable. */
+  .sidebar--narrow.sidebar--collapsed .nav-list {
+    display: none;
+  }
+
+  /* When narrow + collapsed: drop the bottom controls too so the surface
+     reads as a pure icon strip. The user can re-expand via the hamburger. */
+  .sidebar--narrow.sidebar--collapsed .sidebar-bottom {
+    display: none;
+  }
 </style>
 
 <!-- Global tooltip style — injected once into document -->
@@ -407,7 +498,7 @@
       border-radius: 4px;
       padding: 4px 8px;
       font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-      font-size: 11px;
+      font-size: 10px;
       color: #D7DCE3;
       white-space: nowrap;
       pointer-events: none;

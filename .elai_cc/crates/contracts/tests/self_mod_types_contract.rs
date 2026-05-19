@@ -256,7 +256,10 @@ fn self_mod_proposal_carries_evidence_and_scope() {
     let prop = SelfModProposal {
         variant_id: "v1".into(),
         parent_id: "v0".into(),
-        target_config_key: AllowedConfigKey::Parameter("etc_threshold".into()),
+        // C-21 Task 7 — typed closed-enum ParameterKey.
+        target_config_key: AllowedConfigKey::Parameter(
+            elai_orchestrator::ParameterKey::EtcThreshold,
+        ),
         proposed_change: ProposedChange::UpdateKey {
             key: "etc_threshold".into(),
             old_value: "0.6".into(),

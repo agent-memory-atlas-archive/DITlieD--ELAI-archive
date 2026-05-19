@@ -110,6 +110,11 @@ pub enum CatchLayer {
     T2Hook,
     Auditor,
     Etc,
+    /// C-21 Task 4 — manifest-level catch from the dep-audit CLI subcommand
+    /// (cli::dep_audit). Distinct from the in-process Auditor / Etc layers
+    /// because the catch surface is the dependency manifest, not source
+    /// code; aids dashboard attribution + SSB action_type filtering.
+    DepAudit,
 }
 
 impl CatchLayer {
@@ -119,6 +124,7 @@ impl CatchLayer {
             CatchLayer::T2Hook => "t2_hook",
             CatchLayer::Auditor => "auditor",
             CatchLayer::Etc => "etc",
+            CatchLayer::DepAudit => "dep_audit",
         }
     }
 }

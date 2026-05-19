@@ -60,6 +60,17 @@ pub enum ChunkKind {
     /// "minified"; old indexes lacking this variant fall back to File via
     /// the from_str default arm.
     Minified,
+    /// C-17 (phase-3K PARTIAL closure): heading-bounded chunk for prose
+    /// files (markdown / rst / adoc / txt). Produced by
+    /// `heading_paragraph_chunks` between `try_ast_chunk` and the 50-line
+    /// `line_block_chunks` fallback for non-code extensions. Persists as
+    /// "heading"; old indexes lacking this variant decode it as File via
+    /// the from_str default arm.
+    Heading,
+    /// C-17: blank-line-bounded paragraph chunk for prose files. Same
+    /// production path as `Heading` — emitted when no heading boundaries
+    /// were found in the file. Persists as "paragraph".
+    Paragraph,
 }
 
 impl ChunkKind {
@@ -75,6 +86,8 @@ impl ChunkKind {
             ChunkKind::LineBlock => "line_block",
             ChunkKind::File => "file",
             ChunkKind::Minified => "minified",
+            ChunkKind::Heading => "heading",
+            ChunkKind::Paragraph => "paragraph",
         }
     }
 
@@ -89,6 +102,8 @@ impl ChunkKind {
             "trait" => ChunkKind::Trait,
             "line_block" => ChunkKind::LineBlock,
             "minified" => ChunkKind::Minified,
+            "heading" => ChunkKind::Heading,
+            "paragraph" => ChunkKind::Paragraph,
             _ => ChunkKind::File,
         }
     }
@@ -421,6 +436,13 @@ impl Bm25Index {
         }
 
         let mut chunks = Self::try_ast_chunk(path, content.as_bytes(), &lines);
+        // C-17 (DRIFT-G): when AST yields nothing and the file is prose-like,
+        // try heading + paragraph splitters BEFORE the 50-line line_block
+        // fallback. This closes the phase-3K PARTIAL gap for .md/.txt/.rst/
+        // .adoc/.markdown coverage.
+        if chunks.is_empty() && is_prose_extension(path) {
+            chunks = Self::heading_paragraph_chunks(path, &lines);
+        }
         if chunks.is_empty() {
             chunks = Self::line_block_chunks(path, &lines);
         }
@@ -532,6 +554,11 @@ impl Bm25Index {
         }
 
         let mut chunks = Self::try_ast_chunk(path, full_content.as_bytes(), lines);
+        // C-17 (DRIFT-G): heading/paragraph splitter for prose files (mirror
+        // of `chunk_file` path above).
+        if chunks.is_empty() && is_prose_extension(path) {
+            chunks = Self::heading_paragraph_chunks(path, lines);
+        }
         if chunks.is_empty() {
             chunks = Self::line_block_chunks(path, lines);
         }
@@ -547,6 +574,121 @@ impl Bm25Index {
             line_end: u32::try_from(lines.len()).unwrap_or(u32::MAX),
             kind: ChunkKind::File,
         });
+
+        chunks
+    }
+
+    /// C-17: heading + paragraph chunking for prose files (.md, .markdown,
+    /// .rst, .adoc, .txt). Detects ATX-style headings (`#`, `##`, ...) AND
+    /// Setext-style headings (line followed by `===` or `---`). When at
+    /// least one heading boundary is found, emits a `ChunkKind::Heading`
+    /// chunk per section. When no headings are present, falls back to
+    /// blank-line-delimited `ChunkKind::Paragraph` chunks. Empty input
+    /// yields `Vec::new()` so the caller can route to `line_block_chunks`.
+    fn heading_paragraph_chunks(path: &Path, lines: &[&str]) -> Vec<BM25Chunk> {
+        if lines.is_empty() {
+            return Vec::new();
+        }
+
+        // Phase 1: detect heading boundaries (1-based line numbers).
+        let mut headings: Vec<u32> = Vec::new();
+        let lines_len = lines.len();
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            // ATX heading: at most 6 leading hashes followed by space, e.g. "# Title" / "## Subtitle".
+            if trimmed.starts_with('#') {
+                let hash_count = trimmed.chars().take_while(|c| *c == '#').count();
+                if (1..=6).contains(&hash_count) {
+                    let after = &trimmed[hash_count..];
+                    if after.starts_with(' ') || after.is_empty() {
+                        if let Ok(ln) = u32::try_from(idx + 1) {
+                            headings.push(ln);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // Setext heading: current line is non-blank text, next line is
+            // 3+ `=` or `-` chars. Only check when a next line exists.
+            if idx + 1 < lines_len && !line.trim().is_empty() {
+                let next = lines[idx + 1].trim();
+                let is_setext = !next.is_empty()
+                    && next.len() >= 3
+                    && (next.chars().all(|c| c == '=') || next.chars().all(|c| c == '-'));
+                if is_setext {
+                    if let Ok(ln) = u32::try_from(idx + 1) {
+                        headings.push(ln);
+                    }
+                }
+            }
+        }
+
+        let mut chunks: Vec<BM25Chunk> = Vec::new();
+
+        if !headings.is_empty() {
+            // Heading mode: section runs from each heading until the next
+            // heading start (or EOF for the last). The pre-first-heading
+            // preamble (if any) becomes its own Heading-kind chunk too so
+            // no content is dropped.
+            // Convert heading line numbers to inclusive section boundaries.
+            let mut boundaries: Vec<u32> = headings.clone();
+            // If the file begins with non-heading prose before the first
+            // heading, emit it as a leading section so we never lose text.
+            if boundaries[0] > 1 {
+                boundaries.insert(0, 1);
+            }
+            let total_lines_u32 = u32::try_from(lines_len).unwrap_or(u32::MAX);
+            for (i, start) in boundaries.iter().copied().enumerate() {
+                let end = boundaries
+                    .get(i + 1)
+                    .map(|nx| nx.saturating_sub(1))
+                    .unwrap_or(total_lines_u32);
+                if end < start { continue; }
+                let s_idx = (start as usize).saturating_sub(1).min(lines_len);
+                let e_idx = (end as usize).min(lines_len);
+                if s_idx >= e_idx { continue; }
+                let content = lines[s_idx..e_idx].join("\n");
+                chunks.push(BM25Chunk {
+                    path: path.to_path_buf(),
+                    content,
+                    line_start: start,
+                    line_end: end,
+                    kind: ChunkKind::Heading,
+                });
+            }
+        } else {
+            // Paragraph mode: blank lines separate paragraphs. A "blank"
+            // line is one whose trim() is empty.
+            let mut para_start: Option<usize> = None;
+            for (idx, line) in lines.iter().enumerate() {
+                let is_blank = line.trim().is_empty();
+                if !is_blank && para_start.is_none() {
+                    para_start = Some(idx);
+                }
+                let flush_at = if is_blank { Some(idx) } else { None };
+                let last_iter = idx == lines_len - 1;
+                if let Some(end_idx) = flush_at.or(if last_iter { Some(idx + 1) } else { None }) {
+                    if let Some(s) = para_start {
+                        // Inclusive run: [s..end_idx).
+                        let actual_end = if is_blank { idx } else { idx + 1 };
+                        if actual_end > s {
+                            let content = lines[s..actual_end].join("\n");
+                            let start_ln = u32::try_from(s + 1).unwrap_or(u32::MAX);
+                            let end_ln = u32::try_from(actual_end).unwrap_or(u32::MAX);
+                            chunks.push(BM25Chunk {
+                                path: path.to_path_buf(),
+                                content,
+                                line_start: start_ln,
+                                line_end: end_ln,
+                                kind: ChunkKind::Paragraph,
+                            });
+                        }
+                        para_start = None;
+                    }
+                    let _ = end_idx; // end_idx is informational; bounds set via actual_end.
+                }
+            }
+        }
 
         chunks
     }
@@ -638,6 +780,18 @@ impl Bm25Index {
 // ---------------------------------------------------------------------------
 // AST chunking helpers (free functions, outside impl block)
 // ---------------------------------------------------------------------------
+
+/// C-17: extensions that route through `heading_paragraph_chunks` when AST
+/// parsing returns nothing. Keeps the heading/paragraph mode focused on
+/// prose surfaces; binary/code files keep their 50-line line_block path.
+fn is_prose_extension(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "md" | "markdown" | "txt" | "rst" | "adoc")
+}
 
 struct AstBoundary {
     start_line: u32,
@@ -1049,6 +1203,10 @@ fn helper() -> bool {
         let file_chunks: Vec<_> = rs_chunks.iter().filter(|c| c.kind == ChunkKind::File).collect();
         assert!(!file_chunks.is_empty(), "should have File chunk");
 
+        // C-17: .txt now routes through `heading_paragraph_chunks` before
+        // the 50-line LineBlock fallback. We assert the post-C-17 contract
+        // — every non-empty .txt produces at least one non-File chunk that
+        // is either Paragraph (no headings) or Heading (with headings).
         let txt_source = "line 1\nline 2\nline 3\n";
         let txt_lines: Vec<&str> = txt_source.lines().collect();
         let txt_chunks = Bm25Index::make_chunks_from_content(
@@ -1056,8 +1214,14 @@ fn helper() -> bool {
             &txt_lines,
             txt_source,
         );
-        let lb_chunks: Vec<_> = txt_chunks.iter().filter(|c| c.kind == ChunkKind::LineBlock).collect();
-        assert!(!lb_chunks.is_empty(), "txt should use LineBlock chunks");
+        let prose_chunks: Vec<_> = txt_chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Paragraph || c.kind == ChunkKind::Heading)
+            .collect();
+        assert!(
+            !prose_chunks.is_empty(),
+            "txt should produce Paragraph/Heading chunks under C-17 prose routing"
+        );
     }
 
     // -- ChunkKind round-trip through as_str/from_str --
@@ -1067,12 +1231,34 @@ fn helper() -> bool {
             ChunkKind::Function, ChunkKind::Struct, ChunkKind::Enum,
             ChunkKind::Impl, ChunkKind::Class, ChunkKind::Module,
             ChunkKind::Trait, ChunkKind::LineBlock, ChunkKind::File,
+            // B-32 + C-17 additions.
+            ChunkKind::Minified, ChunkKind::Heading, ChunkKind::Paragraph,
         ];
         for kind in &kinds {
             let s = kind.as_str();
             let round = ChunkKind::from_str(s);
             assert_eq!(*kind, round, "round-trip failed for {s}");
         }
+    }
+
+    // C-17: heading and paragraph splitter produces non-File chunks for prose.
+    #[test]
+    fn heading_paragraph_chunks_markdown() {
+        let src = "# Top\nlead text\n\n## Sub\nbody\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let chunks = Bm25Index::heading_paragraph_chunks(&p("doc.md"), &lines);
+        assert!(!chunks.is_empty(), "heading mode must emit at least one chunk");
+        let heading_kinds: Vec<_> = chunks.iter().filter(|c| c.kind == ChunkKind::Heading).collect();
+        assert_eq!(heading_kinds.len(), 2, "expected 2 heading-bounded sections, got {}", heading_kinds.len());
+    }
+
+    #[test]
+    fn paragraph_chunks_when_no_headings() {
+        let src = "first paragraph\nmore text\n\nsecond paragraph\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let chunks = Bm25Index::heading_paragraph_chunks(&p("notes.txt"), &lines);
+        assert!(!chunks.is_empty(), "paragraph mode must emit at least one chunk");
+        assert!(chunks.iter().any(|c| c.kind == ChunkKind::Paragraph));
     }
 
     // -- estimate_tokens basic sanity --

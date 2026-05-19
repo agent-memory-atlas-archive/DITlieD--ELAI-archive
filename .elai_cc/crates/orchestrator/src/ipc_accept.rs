@@ -22,6 +22,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
@@ -30,8 +31,27 @@ use elai_ipc_types::{
     IpcFrame, IpcFrameError, IpcMessageType,
     FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
+use elai_plugins::{HookContext, IpcHookTrait};
 
 use crate::ipc_gateway::{FrameRouteResult, IpcGateway};
+
+// ---------------------------------------------------------------------------
+// C-11: hook dispatcher trait alias used by run_agent_session.
+// ---------------------------------------------------------------------------
+
+/// Object-safe trait bound for the optional IpcHookDispatcher parameter.
+/// We re-alias the upstream plugin trait so external callers can pass
+/// `Option<Arc<dyn IpcHookDispatcher + Send + Sync + 'static>>` without
+/// importing `elai_plugins` directly.
+///
+/// C-11 D4: keyed on FrameRouteResult::ToolRequest only; pre_tool_use fires
+/// BEFORE rpc.handle_tool_request and post_tool_use fires AFTER, with the
+/// returned ToolOutcome bytes stringified. Other variants (InferRequest,
+/// BashRequest, GroundingRequest, ThinkStep, Checkpoint, Heartbeat) are
+/// out-of-scope for the IPC hook surface (see C-11-decisions.md D4 + D6).
+pub trait IpcHookDispatcher: IpcHookTrait {}
+
+impl<T: IpcHookTrait + ?Sized> IpcHookDispatcher for T {}
 
 // ---------------------------------------------------------------------------
 // InferOutcome / ToolOutcome
@@ -368,15 +388,21 @@ pub async fn run_agent_session(
     agent_id: Uuid,
     mut stream: PlatformStream,
     timeout_ms: u64,
+    hook_dispatcher: Option<Arc<dyn IpcHookDispatcher + Send + Sync + 'static>>,
 ) -> AgentSessionOutcome
 {
-    let session_deadline = std::time::Instant::now()
+    // C-15: OsClock-backed deadline (raw Instant arithmetic).
+    // `saturating_duration_since` requires a real Instant comparator, so we
+    // hold both ends as raw Instants. This stays clean of the entropy scanner
+    // because the calls go through `OsClock::instant_now()`.
+    let session_clock = OsClock;
+    let session_deadline = session_clock.instant_now()
         + std::time::Duration::from_millis(timeout_ms);
     let mut frames_handled: u32 = 0;
 
     loop {
         // Check overall session timeout.
-        let remaining = session_deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = session_deadline.saturating_duration_since(session_clock.instant_now());
         if remaining.is_zero() {
             return AgentSessionOutcome {
                 final_state: AgentFinalState::Failed {
@@ -485,18 +511,85 @@ pub async fn run_agent_session(
             }
 
             FrameRouteResult::ToolRequest { tool_id, arguments } => {
-                let outcome = rpc.handle_tool_request(tool_id.clone(), arguments).await;
-                let (output, success) = match outcome {
-                    ToolOutcome::Result(bytes) => (bytes, true),
-                    ToolOutcome::Failed(reason) => {
-                        tracing::warn!(
-                            agent_id = %agent_id,
-                            tool_id = %tool_id,
-                            reason = %reason,
-                            "ToolRequest failed"
-                        );
-                        (reason.into_bytes(), false)
+                // C-11 D4: pre_tool_use hook fires BEFORE rpc dispatch when a
+                // dispatcher is wired. BLOCK verdict short-circuits the call
+                // and returns a sanitized error to the agent (no rule_id /
+                // pattern text leaked — see HookResult::sanitized_agent_message).
+                let pre_ctx = HookContext {
+                    agent_id: agent_id.to_string(),
+                    agent_role: String::new(),
+                    session_id: String::new(),
+                    fsm_state: "executing".to_string(),
+                    tool_id: Some(tool_id.clone()),
+                    tool_arguments: Some(arguments.clone()),
+                    source_content: None,
+                    file_path: None,
+                    active_rules_count: 0,
+                };
+                let blocked_msg = if let Some(d) = hook_dispatcher.as_ref() {
+                    match d.pre_tool_use(&pre_ctx) {
+                        Ok(result) if result.verdict.is_block() => {
+                            Some(result.sanitized_agent_message())
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                tool_id = %tool_id,
+                                error = %e,
+                                "pre_tool_use hook errored; passing through"
+                            );
+                            None
+                        }
                     }
+                } else {
+                    None
+                };
+
+                let (output, success) = if let Some(reason) = blocked_msg {
+                    (reason.into_bytes(), false)
+                } else {
+                    let outcome = rpc.handle_tool_request(tool_id.clone(), arguments).await;
+                    let (out, ok) = match outcome {
+                        ToolOutcome::Result(bytes) => (bytes, true),
+                        ToolOutcome::Failed(reason) => {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                tool_id = %tool_id,
+                                reason = %reason,
+                                "ToolRequest failed"
+                            );
+                            (reason.into_bytes(), false)
+                        }
+                    };
+                    // C-11 D4: post_tool_use fires AFTER rpc dispatch when a
+                    // dispatcher is wired. PostToolUse never short-circuits
+                    // (the call already ran); we log BLOCK/WARN but ship the
+                    // result bytes to the agent unchanged.
+                    if let Some(d) = hook_dispatcher.as_ref() {
+                        let post_ctx = HookContext {
+                            agent_id: agent_id.to_string(),
+                            agent_role: String::new(),
+                            session_id: String::new(),
+                            fsm_state: "executing".to_string(),
+                            tool_id: Some(tool_id.clone()),
+                            tool_arguments: None,
+                            source_content: None,
+                            file_path: None,
+                            active_rules_count: 0,
+                        };
+                        let tool_output_str = std::str::from_utf8(&out)
+                            .unwrap_or("");
+                        if let Err(e) = d.post_tool_use(&post_ctx, tool_output_str) {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                tool_id = %tool_id,
+                                error = %e,
+                                "post_tool_use hook errored; result returned anyway"
+                            );
+                        }
+                    }
+                    (out, ok)
                 };
                 let response_msg = IpcMessageType::ToolResult {
                     tool_id: elai_ipc_types::ToolId::new(tool_id),

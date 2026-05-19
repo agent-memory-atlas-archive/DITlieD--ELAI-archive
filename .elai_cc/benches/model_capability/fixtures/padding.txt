@@ -1,0 +1,111 @@
+C-26 supplementary fixture — padding.txt
+========================================
+This file is referenced by the design spec (token-efficiency-design.report.md
+section 11) but NOT consumed by the current run_benchmark.py harness. It is
+provided so future harness extensions that inject padding tokens around
+zero-shot prompts have a stable, non-empty source.
+
+Each line below is approximately 60 ASCII characters so 100 lines yield
+roughly 6 KB of padding, enough to push small prompts past the attention
+ceiling on MICRO-tier configurations (see metrics/model_baseline.toml).
+
+Line 001  the quick brown fox jumps over the lazy dog -- baseline
+Line 002  the quick brown fox jumps over the lazy dog -- baseline
+Line 003  the quick brown fox jumps over the lazy dog -- baseline
+Line 004  the quick brown fox jumps over the lazy dog -- baseline
+Line 005  the quick brown fox jumps over the lazy dog -- baseline
+Line 006  the quick brown fox jumps over the lazy dog -- baseline
+Line 007  the quick brown fox jumps over the lazy dog -- baseline
+Line 008  the quick brown fox jumps over the lazy dog -- baseline
+Line 009  the quick brown fox jumps over the lazy dog -- baseline
+Line 010  the quick brown fox jumps over the lazy dog -- baseline
+Line 011  the quick brown fox jumps over the lazy dog -- baseline
+Line 012  the quick brown fox jumps over the lazy dog -- baseline
+Line 013  the quick brown fox jumps over the lazy dog -- baseline
+Line 014  the quick brown fox jumps over the lazy dog -- baseline
+Line 015  the quick brown fox jumps over the lazy dog -- baseline
+Line 016  the quick brown fox jumps over the lazy dog -- baseline
+Line 017  the quick brown fox jumps over the lazy dog -- baseline
+Line 018  the quick brown fox jumps over the lazy dog -- baseline
+Line 019  the quick brown fox jumps over the lazy dog -- baseline
+Line 020  the quick brown fox jumps over the lazy dog -- baseline
+Line 021  the quick brown fox jumps over the lazy dog -- baseline
+Line 022  the quick brown fox jumps over the lazy dog -- baseline
+Line 023  the quick brown fox jumps over the lazy dog -- baseline
+Line 024  the quick brown fox jumps over the lazy dog -- baseline
+Line 025  the quick brown fox jumps over the lazy dog -- baseline
+Line 026  the quick brown fox jumps over the lazy dog -- baseline
+Line 027  the quick brown fox jumps over the lazy dog -- baseline
+Line 028  the quick brown fox jumps over the lazy dog -- baseline
+Line 029  the quick brown fox jumps over the lazy dog -- baseline
+Line 030  the quick brown fox jumps over the lazy dog -- baseline
+Line 031  the quick brown fox jumps over the lazy dog -- baseline
+Line 032  the quick brown fox jumps over the lazy dog -- baseline
+Line 033  the quick brown fox jumps over the lazy dog -- baseline
+Line 034  the quick brown fox jumps over the lazy dog -- baseline
+Line 035  the quick brown fox jumps over the lazy dog -- baseline
+Line 036  the quick brown fox jumps over the lazy dog -- baseline
+Line 037  the quick brown fox jumps over the lazy dog -- baseline
+Line 038  the quick brown fox jumps over the lazy dog -- baseline
+Line 039  the quick brown fox jumps over the lazy dog -- baseline
+Line 040  the quick brown fox jumps over the lazy dog -- baseline
+Line 041  the quick brown fox jumps over the lazy dog -- baseline
+Line 042  the quick brown fox jumps over the lazy dog -- baseline
+Line 043  the quick brown fox jumps over the lazy dog -- baseline
+Line 044  the quick brown fox jumps over the lazy dog -- baseline
+Line 045  the quick brown fox jumps over the lazy dog -- baseline
+Line 046  the quick brown fox jumps over the lazy dog -- baseline
+Line 047  the quick brown fox jumps over the lazy dog -- baseline
+Line 048  the quick brown fox jumps over the lazy dog -- baseline
+Line 049  the quick brown fox jumps over the lazy dog -- baseline
+Line 050  the quick brown fox jumps over the lazy dog -- baseline
+Line 051  the quick brown fox jumps over the lazy dog -- baseline
+Line 052  the quick brown fox jumps over the lazy dog -- baseline
+Line 053  the quick brown fox jumps over the lazy dog -- baseline
+Line 054  the quick brown fox jumps over the lazy dog -- baseline
+Line 055  the quick brown fox jumps over the lazy dog -- baseline
+Line 056  the quick brown fox jumps over the lazy dog -- baseline
+Line 057  the quick brown fox jumps over the lazy dog -- baseline
+Line 058  the quick brown fox jumps over the lazy dog -- baseline
+Line 059  the quick brown fox jumps over the lazy dog -- baseline
+Line 060  the quick brown fox jumps over the lazy dog -- baseline
+Line 061  the quick brown fox jumps over the lazy dog -- baseline
+Line 062  the quick brown fox jumps over the lazy dog -- baseline
+Line 063  the quick brown fox jumps over the lazy dog -- baseline
+Line 064  the quick brown fox jumps over the lazy dog -- baseline
+Line 065  the quick brown fox jumps over the lazy dog -- baseline
+Line 066  the quick brown fox jumps over the lazy dog -- baseline
+Line 067  the quick brown fox jumps over the lazy dog -- baseline
+Line 068  the quick brown fox jumps over the lazy dog -- baseline
+Line 069  the quick brown fox jumps over the lazy dog -- baseline
+Line 070  the quick brown fox jumps over the lazy dog -- baseline
+Line 071  the quick brown fox jumps over the lazy dog -- baseline
+Line 072  the quick brown fox jumps over the lazy dog -- baseline
+Line 073  the quick brown fox jumps over the lazy dog -- baseline
+Line 074  the quick brown fox jumps over the lazy dog -- baseline
+Line 075  the quick brown fox jumps over the lazy dog -- baseline
+Line 076  the quick brown fox jumps over the lazy dog -- baseline
+Line 077  the quick brown fox jumps over the lazy dog -- baseline
+Line 078  the quick brown fox jumps over the lazy dog -- baseline
+Line 079  the quick brown fox jumps over the lazy dog -- baseline
+Line 080  the quick brown fox jumps over the lazy dog -- baseline
+Line 081  the quick brown fox jumps over the lazy dog -- baseline
+Line 082  the quick brown fox jumps over the lazy dog -- baseline
+Line 083  the quick brown fox jumps over the lazy dog -- baseline
+Line 084  the quick brown fox jumps over the lazy dog -- baseline
+Line 085  the quick brown fox jumps over the lazy dog -- baseline
+Line 086  the quick brown fox jumps over the lazy dog -- baseline
+Line 087  the quick brown fox jumps over the lazy dog -- baseline
+Line 088  the quick brown fox jumps over the lazy dog -- baseline
+Line 089  the quick brown fox jumps over the lazy dog -- baseline
+Line 090  the quick brown fox jumps over the lazy dog -- baseline
+Line 091  the quick brown fox jumps over the lazy dog -- baseline
+Line 092  the quick brown fox jumps over the lazy dog -- baseline
+Line 093  the quick brown fox jumps over the lazy dog -- baseline
+Line 094  the quick brown fox jumps over the lazy dog -- baseline
+Line 095  the quick brown fox jumps over the lazy dog -- baseline
+Line 096  the quick brown fox jumps over the lazy dog -- baseline
+Line 097  the quick brown fox jumps over the lazy dog -- baseline
+Line 098  the quick brown fox jumps over the lazy dog -- baseline
+Line 099  the quick brown fox jumps over the lazy dog -- baseline
+Line 100  the quick brown fox jumps over the lazy dog -- baseline

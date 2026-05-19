@@ -238,7 +238,7 @@
 
   .section-header {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-ghost);
@@ -299,7 +299,7 @@
 
   .tier-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     letter-spacing: 0.06em;
   }
@@ -355,7 +355,7 @@
 
   .sc-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -373,13 +373,13 @@
 
   .sc-rule-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
   .sc-chip-count {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -438,7 +438,7 @@
 
   .tax-last-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -462,7 +462,7 @@
 
   .tax-count {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
 

@@ -19,6 +19,19 @@ mod state;
 // `scaffold_applier.rs` and wraps `scaffold::apply_template_from_root`.
 pub use scaffold_applier::{default_templates_dir, DashboardScaffoldApplier, TEMPLATES_DIR_ENV};
 
+// C-18 D2: re-export the Tauri-free implementation extracted from the
+// `export_graph_mermaid` command. Surfaces a single function from
+// `commands.rs` without making the entire module `pub`, matching the minimum
+// surface-area principle from the C-18 plan ("ZERO production code changes
+// EXCEPT the 3 visibility/extraction refactors above"). Integration tests
+// under `crates/dashboard-v2/src-tauri/tests/` call this directly because
+// Tauri `State<>` cannot be constructed outside the Tauri runtime.
+pub use commands::export_graph_mermaid_impl;
+// C-24 (DECISION-10): same C-18 D2 extraction pattern applied to the two
+// other Tauri State<>-bound graph commands so their integration tests can
+// call the impl directly.
+pub use commands::{get_graph_view_data_impl, get_impact_overlay_impl};
+
 use crate::state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,7 +46,7 @@ pub fn run() {
         .with_target(false)
         .try_init();
 
-    // FIXME(tokio-runtime): `Ssb::new()` calls `tokio::spawn(write_loop(...))`
+    // FIXME(tokio-runtime): `Ssb::new()` calls `tokio::spawn(write_loop(...))`. stub-ban-allow: documented Tauri/Tokio bootstrap workaround
     // at orchestrator/src/ssb.rs:2459.  That spawn requires an active Tokio
     // runtime, but we are still inside a plain synchronous `pub fn run()` —
     // Tauri's runtime has not started yet.  We build a dedicated multi-thread
@@ -90,16 +103,32 @@ pub fn run() {
             // KNOWLEDGE
             commands::get_query_trace_recent,
             commands::get_search_mode,
+            // C-8 Task #7: dashboard-originated SearchModeChanged emitter.
+            commands::set_search_mode,
             commands::get_embedding_breakers,
             commands::get_recall_metrics,
             commands::get_dkg_stats,
             // B-30: language grammar registry status
             commands::get_language_grammar_status,
+            // C-3: knowledge dashboard surface — pagerank / freshness /
+            // canary drift / research budget / source-tier distribution.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_pagerank_top,
+            commands::get_freshness_state,
+            commands::get_canary_drift,
+            commands::get_research_budget,
+            commands::get_source_tier_distribution,
             // REASONING / GRC
             commands::get_grc_budgets,
             commands::get_grounding_sweep,
             commands::get_csq_pending,
             commands::get_gg_signals,
+            // C-3: reasoning dashboard surface — CSQ log (all verdicts),
+            // feasibility log (raw rows), per-role GRC config.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_csq_log,
+            commands::get_feasibility_log,
+            commands::get_agent_grc_config,
             // ORCHESTRATION
             commands::get_evidence_gates,
             commands::get_agents,
@@ -110,7 +139,12 @@ pub fn run() {
             commands::fork_session_branch,
             commands::merge_session_branch,
             commands::close_session_branch,
+            // C-23: /continue surface — load latest handoff snapshot
+            // from the active SessionDag.
+            commands::load_handoff,
             commands::get_anti_spiral_counter,
+            // C-10 — anti-spiral StagnationSection event feed.
+            commands::get_stagnation_events,
             commands::get_heartbeats,
             // PIPELINE / DECOMPOSITION
             commands::get_decomposition_tree,
@@ -176,6 +210,15 @@ pub fn run() {
             commands::set_cloud_model,
             // CLOUD SPEND (B-27)
             commands::get_cloud_spend,
+            // MUTATION GAUGE (C-28)
+            commands::get_mutation_gauge,
+            // COMPLETENESS RATIO (C-32) -- Code-Completeness Layer 2 gauge.
+            commands::get_completeness_ratio,
+            // INTENT-PAIRS (C-29)
+            // cross-lang-pair: dashboard/tauri/api
+            commands::add_intent_pair,
+            commands::confirm_intent_pairs,
+            commands::get_intent_pairs,
             // WEBHOOK CONFIG
             commands::set_webhook_url,
             commands::get_webhook_url,
@@ -197,6 +240,8 @@ pub fn run() {
             // B-31 Phase 4 (Cycle B) — INDEXING PROGRESS + CANCEL
             commands::cancel_indexing,
             commands::get_indexing_progress,
+            // C-17 (DRIFT-J): indexing resilience snapshot.
+            commands::get_indexing_resilience,
             // B-29 Phase 5 — IMPACT ANALYSIS
             commands::get_impact_analysis,
             // D.2 — PLANNING TASK (SSB-actuated)
@@ -260,6 +305,10 @@ pub fn run() {
             // cross-lang-pair: dashboard/tauri/api
             commands::get_cosmos_status,
             commands::trigger_cosmos_refresh,
+            // C-16 (DECISION-C): cosmos SSB poll-subscription. Returns rows
+            // since last_seq; frontend polls at 5s cadence for the drawer
+            // live-update path.
+            commands::subscribe_cosmos_events,
             // B-41 — Per-level auditor verdicts feed for AuditTimelineWindow.
             // cross-lang-pair: dashboard/tauri/api
             commands::get_per_level_verdicts,
@@ -273,6 +322,28 @@ pub fn run() {
             commands::list_runtimes,
             commands::test_runtime,
             commands::set_role_runtime,
+            // C-4 — ORCHESTRATION + CLOUD SPEND SURFACE.
+            // 9 new commands wired over SsbViewer methods + a greenfield
+            // projects.json persistence pair (list_projects/create_project).
+            // get_executable_pipeline and get_cloud_spend are already
+            // registered above; their bodies were rewritten in C-4 to
+            // call real SsbViewer methods instead of returning stubs.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_phase_detail,
+            commands::get_baby_step_detail,
+            commands::get_phase_progress,
+            commands::get_recent_actions,
+            commands::get_file_changes,
+            commands::get_action_detail,
+            commands::get_research_node_history,
+            // C-7: review-window reviewer-verdict commands. Each emits one
+            // ChangeDecision SSB row (SCHEMA_VERSION 49). Live diff itself
+            // remains carried by FileWrite rows; these record only verdicts.
+            commands::accept_change,
+            commands::decline_change,
+            commands::retry_audit,
+            commands::list_projects,
+            commands::create_project,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the
@@ -428,15 +499,37 @@ pub fn run() {
                                                             ),
                                                             "rust",
                                                         );
-                                                    std::sync::Arc::new(
+                                                    // C-13 — wrap the real
+                                                    // InProcessToolDispatcher in the
+                                                    // IpcToolDispatcherAdapter shim
+                                                    // (dashboard cloud arm). See
+                                                    // workflow/reasoning/C-13-decisions.md
+                                                    // (D1 Option B).
+                                                    let inner: std::sync::Arc<
+                                                        dyn elai_core::tool_dispatcher::ToolDispatcher,
+                                                    > = std::sync::Arc::new(
                                                         elai_tools::dispatcher::InProcessToolDispatcher::new(
                                                             std::sync::Arc::new(validator),
                                                         ),
+                                                    );
+                                                    std::sync::Arc::new(
+                                                        elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
+                                                            inner,
+                                                            wiring.ssb.clone(),
+                                                        ),
                                                     )
                                                 };
+                                                // patch-R5 — canonical baby-step
+                                                // system prompt so Sonnet emits
+                                                // ToolUse blocks (see
+                                                // crates/orchestrator/src/production_agent_rpc.rs
+                                                // DEFAULT_BABY_STEP_SYSTEM_PROMPT docstring).
                                                 std::sync::Arc::new(
                                                     elai_orchestrator::ProductionAgentRpcServer::new(
                                                         client, dispatcher, model, max_tokens,
+                                                    )
+                                                    .with_system_prompt(
+                                                        elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
                                                     ),
                                                 )
                                             }
@@ -500,15 +593,34 @@ pub fn run() {
                                                     std::sync::Arc::new(NoOpIntegrationRunner),
                                                     "rust",
                                                 );
-                                            std::sync::Arc::new(
+                                            // C-13 — wrap the real
+                                            // InProcessToolDispatcher in the
+                                            // IpcToolDispatcherAdapter shim
+                                            // (dashboard sidecar arm). See
+                                            // workflow/reasoning/C-13-decisions.md
+                                            // (D1 Option B).
+                                            let inner: std::sync::Arc<
+                                                dyn elai_core::tool_dispatcher::ToolDispatcher,
+                                            > = std::sync::Arc::new(
                                                 elai_tools::dispatcher::InProcessToolDispatcher::new(
                                                     std::sync::Arc::new(validator),
                                                 ),
+                                            );
+                                            std::sync::Arc::new(
+                                                elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
+                                                    inner,
+                                                    wiring.ssb.clone(),
+                                                ),
                                             )
                                         };
+                                        // patch-R5 — same canonical baby-step
+                                        // system prompt as the cloud arm above.
                                         std::sync::Arc::new(
                                             elai_orchestrator::ProductionAgentRpcServer::new(
                                                 client, dispatcher, model, max_tokens,
+                                            )
+                                            .with_system_prompt(
+                                                elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
                                             ),
                                         )
                                     };
@@ -539,6 +651,46 @@ pub fn run() {
                                  using synthetic fallback executor"
                             );
                         }
+                        // C-9 — install AutonomousGate via the wiring
+                        // chokepoint. Dashboard always starts in Interactive
+                        // mode; users can flip to Autonomous via the
+                        // `/mode` slash command at runtime
+                        // (set_gate_mode IPC, live_cli.rs:2690).
+                        wiring.gate_mode =
+                            Some(elai_orchestrator::GateMode::Interactive);
+
+                        // C-5 — install the CloudModeRouter via the wiring
+                        // chokepoint. The dashboard does NOT depend on the
+                        // CLI crate, so we read `[cloud]` directly from the
+                        // project-root elai_cc.toml here with a thin
+                        // local helper. Falls back to CloudConfig::default()
+                        // when the file is missing or `[cloud]` is empty so
+                        // the router is always constructable; the dashboard
+                        // `set_execution_mode` Tauri command flips between
+                        // providers at runtime. provider_override is None
+                        // because the dashboard has no CLI `--provider`
+                        // flag — toml default carries the initial choice.
+                        let cloud_cfg = load_cloud_config_from_toml(&project_root);
+                        tracing::info!(
+                            toml_default_mode = ?cloud_cfg.default_mode,
+                            privacy_profile = ?cloud_cfg.privacy_profile,
+                            air_gapped = cloud_cfg.air_gapped,
+                            spend_cap_daily_usd = ?cloud_cfg.spend_cap_daily_usd,
+                            "dashboard-v2: cloud-mode router resolved"
+                        );
+                        wiring.cloud_config = Some(cloud_cfg);
+                        wiring.provider_override = None;
+
+                        // C-13 — install the production hook dispatcher
+                        // BEFORE wiring is applied so apply_task_runner_wiring
+                        // threads it onto TaskRunnerConfig.hook_dispatcher
+                        // (Tier-1 surface). See
+                        // workflow/reasoning/C-13-decisions.md (DECISION D3
+                        // option 3A).
+                        wiring.hook_dispatcher = Some(
+                            elai_orchestrator::runtime_setup::build_production_hook_dispatcher(),
+                        );
+
                         let cfg = elai_orchestrator::apply_task_runner_wiring(
                             cursor_path,
                             &wiring,
@@ -774,4 +926,121 @@ fn spawn_symbol_graph_subscriber(
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// C-5 — thin elai_cc.toml `[cloud]` reader.
+//
+// The dashboard does not depend on the CLI crate (which owns the full
+// runtime_config loader). Rather than add that dep purely to read 6
+// fields, we parse the toml ourselves into the orchestrator's typed
+// `CloudConfig`. Missing fields fall through to the orchestrator
+// `CloudConfig::default()` so the router is always constructable.
+// ---------------------------------------------------------------------------
+
+use serde::Deserialize;
+
+/// Mirror of the `[cloud]` toml section used purely for parsing.
+/// Mirrors `elai-cli::runtime_config::CloudConfigToml` shape so the wire
+/// format stays in lockstep — the CLI is the canonical writer.
+#[derive(Debug, Default, Deserialize)]
+struct CloudTomlForDashboard {
+    #[serde(default)]
+    cloud: Option<CloudSectionToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudSectionToml {
+    #[serde(default)]
+    default_provider: Option<String>,
+    #[serde(default)]
+    default_model: Option<String>,
+    #[serde(default)]
+    default_mode: Option<String>,
+    #[serde(default)]
+    air_gapped: Option<bool>,
+    #[serde(default)]
+    privacy: Option<CloudPrivacyTomlSection>,
+    #[serde(default)]
+    spend: Option<CloudSpendTomlSection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CloudPrivacyTomlSection {
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CloudSpendTomlSection {
+    #[serde(default)]
+    hard_cap_daily_usd: Option<f64>,
+    #[serde(default)]
+    hard_cap_monthly_usd: Option<f64>,
+}
+
+/// Read `<project_root>/elai_cc.toml` and convert the `[cloud]` section
+/// into [`elai_orchestrator::cloud_mode::CloudConfig`].
+///
+/// Missing file / unparseable toml / missing `[cloud]` table all fall
+/// through to `CloudConfig::default()` rather than failing the dashboard
+/// boot — the operator can fix the toml at any time and `set_execution_mode`
+/// flips the provider without restart.
+fn load_cloud_config_from_toml(
+    project_root: &std::path::Path,
+) -> elai_orchestrator::cloud_mode::CloudConfig {
+    use elai_orchestrator::cloud_mode::{CloudConfig, ExecMode};
+    use elai_orchestrator::privacy_redactor::RedactionProfile;
+
+    let path = project_root.join("elai_cc.toml");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %e,
+                "dashboard-v2: elai_cc.toml not found; using CloudConfig::default()"
+            );
+            return CloudConfig::default();
+        }
+    };
+    let parsed: CloudTomlForDashboard = match toml::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "dashboard-v2: elai_cc.toml parse failed; using CloudConfig::default()"
+            );
+            return CloudConfig::default();
+        }
+    };
+    let Some(section) = parsed.cloud else {
+        return CloudConfig::default();
+    };
+    let default = CloudConfig::default();
+    CloudConfig {
+        default_provider: section.default_provider.unwrap_or(default.default_provider),
+        default_model: section.default_model.unwrap_or(default.default_model),
+        default_mode: section
+            .default_mode
+            .as_deref()
+            .map(ExecMode::from_config_str)
+            .unwrap_or(default.default_mode),
+        air_gapped: section.air_gapped.unwrap_or(default.air_gapped),
+        privacy_profile: section
+            .privacy
+            .and_then(|p| p.profile)
+            .as_deref()
+            .map(RedactionProfile::from_config_str)
+            .unwrap_or(default.privacy_profile),
+        spend_cap_daily_usd: section
+            .spend
+            .as_ref()
+            .and_then(|s| s.hard_cap_daily_usd),
+        spend_cap_monthly_usd: section
+            .spend
+            .as_ref()
+            .and_then(|s| s.hard_cap_monthly_usd),
+    }
 }

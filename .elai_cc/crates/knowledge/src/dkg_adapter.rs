@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, params};
 
-use elai_rules::predicate::{DkgError, DkgQuerier, ReachabilityMatch, ReachabilityParams};
+use elai_rules::predicate::{
+    DkgDataFlowEdgeRef, DkgEdgeRef, DkgError, DkgNodeRef, DkgQuerier, DkgSubgraphSnapshot,
+    ReachabilityMatch, ReachabilityParams,
+};
 
 /// Queries the DKG (dependency knowledge graph) for reachability paths.
 ///
@@ -197,6 +200,331 @@ impl DkgQuerier for DkgQuerierAdapter {
         }
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // C-30: production overrides for the four new DKG-query trait methods.
+    // -----------------------------------------------------------------------
+
+    fn query_callers(
+        &self,
+        target_symbol: &str,
+        max_depth: u8,
+    ) -> Result<Vec<DkgNodeRef>, DkgError> {
+        if target_symbol.trim().is_empty() {
+            return Err(DkgError::InvalidParams(
+                "target_symbol must not be empty".to_string(),
+            ));
+        }
+        let depth = max_depth.min(MAX_C30_DEPTH);
+        let conn = self.open_readonly()?;
+        // Inbound CALLS edges. DKG edge_type strings may be lowercase or
+        // uppercase per builder — accept both (DRIFT-12 normalisation).
+        let edge_filter = "edge_type IN ('CALLS', 'calls')";
+        let target_id = lookup_node_id(&conn, target_symbol)?;
+        let Some(target_id) = target_id else {
+            return Ok(Vec::new());
+        };
+        let visited = bfs_neighbors(
+            &conn,
+            target_id,
+            depth,
+            BfsDirection::Inbound,
+            edge_filter,
+        )?;
+        let mut nodes = Vec::with_capacity(visited.len());
+        for id in visited {
+            if let Some(n) = fetch_node_by_id(&conn, id)? {
+                nodes.push(n);
+            }
+        }
+        Ok(nodes)
+    }
+
+    fn query_dependents(
+        &self,
+        target_symbol: &str,
+        max_depth: u8,
+    ) -> Result<Vec<DkgNodeRef>, DkgError> {
+        if target_symbol.trim().is_empty() {
+            return Err(DkgError::InvalidParams(
+                "target_symbol must not be empty".to_string(),
+            ));
+        }
+        let depth = max_depth.min(MAX_C30_DEPTH);
+        let conn = self.open_readonly()?;
+        // Outbound IMPORTS / USES (both case variants — see DRIFT-12).
+        let edge_filter =
+            "edge_type IN ('IMPORTS', 'imports', 'USES', 'uses')";
+        let target_id = lookup_node_id(&conn, target_symbol)?;
+        let Some(target_id) = target_id else {
+            return Ok(Vec::new());
+        };
+        let visited = bfs_neighbors(
+            &conn,
+            target_id,
+            depth,
+            BfsDirection::Outbound,
+            edge_filter,
+        )?;
+        let mut nodes = Vec::with_capacity(visited.len());
+        for id in visited {
+            if let Some(n) = fetch_node_by_id(&conn, id)? {
+                nodes.push(n);
+            }
+        }
+        Ok(nodes)
+    }
+
+    fn query_data_flow(
+        &self,
+        target_symbol: &str,
+        max_depth: u8,
+    ) -> Result<Vec<DkgDataFlowEdgeRef>, DkgError> {
+        if target_symbol.trim().is_empty() {
+            return Err(DkgError::InvalidParams(
+                "target_symbol must not be empty".to_string(),
+            ));
+        }
+        let depth = max_depth.min(MAX_C30_DEPTH);
+        let conn = self.open_readonly()?;
+        let target_id = lookup_node_id(&conn, target_symbol)?;
+        let Some(target_id) = target_id else {
+            return Ok(Vec::new());
+        };
+
+        // BFS over dkg_data_flow edges (both directions). Each visited id
+        // contributes outbound edges to the result.
+        let mut visited: HashSet<i64> = HashSet::new();
+        visited.insert(target_id);
+        let mut queue: VecDeque<(i64, u8)> = VecDeque::new();
+        queue.push_back((target_id, 0));
+        let mut edges_out: Vec<DkgDataFlowEdgeRef> = Vec::new();
+
+        while let Some((node_id, hop)) = queue.pop_front() {
+            if hop >= depth {
+                continue;
+            }
+            let mut stmt = conn
+                .prepare(
+                    "SELECT source_node_id, target_node_id, variable_name, flow_type \
+                     FROM dkg_data_flow \
+                     WHERE source_node_id = ?1 OR target_node_id = ?1",
+                )
+                .map_err(|e| DkgError::QueryFailed(format!("prepare data_flow: {e}")))?;
+            let rows = stmt
+                .query_map(params![node_id], |row| {
+                    let src: i64 = row.get(0)?;
+                    let tgt: i64 = row.get(1)?;
+                    let var: String = row.get(2)?;
+                    let ft: String = row.get(3)?;
+                    Ok((src, tgt, var, ft))
+                })
+                .map_err(|e| DkgError::QueryFailed(format!("query data_flow: {e}")))?;
+            for row in rows {
+                let (src, tgt, var, ft) = row.map_err(|e| {
+                    DkgError::QueryFailed(format!("row error (data_flow): {e}"))
+                })?;
+                let source_name = name_for_id(&conn, src).unwrap_or_default();
+                let target_name = name_for_id(&conn, tgt).unwrap_or_default();
+                if source_name.is_empty() && target_name.is_empty() {
+                    continue;
+                }
+                edges_out.push(DkgDataFlowEdgeRef {
+                    source: source_name,
+                    target: target_name,
+                    variable: var,
+                    flow_type: ft,
+                });
+                let next = if src == node_id { tgt } else { src };
+                if visited.insert(next) {
+                    queue.push_back((next, hop + 1));
+                }
+            }
+        }
+        Ok(edges_out)
+    }
+
+    fn query_subgraph(
+        &self,
+        root_symbol: &str,
+        depth: u8,
+    ) -> Result<DkgSubgraphSnapshot, DkgError> {
+        if root_symbol.trim().is_empty() {
+            return Err(DkgError::InvalidParams(
+                "root_symbol must not be empty".to_string(),
+            ));
+        }
+        let depth = depth.min(MAX_C30_DEPTH);
+        let conn = self.open_readonly()?;
+        let root_id = lookup_node_id(&conn, root_symbol)?;
+        let Some(root_id) = root_id else {
+            return Ok(DkgSubgraphSnapshot {
+                root: root_symbol.to_string(),
+                depth,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            });
+        };
+
+        let mut visited: HashSet<i64> = HashSet::new();
+        visited.insert(root_id);
+        let mut queue: VecDeque<(i64, u8)> = VecDeque::new();
+        queue.push_back((root_id, 0));
+
+        let mut nodes_out: Vec<DkgNodeRef> = Vec::new();
+        let mut edges_out: Vec<DkgEdgeRef> = Vec::new();
+
+        // Root node first.
+        if let Some(n) = fetch_node_by_id(&conn, root_id)? {
+            nodes_out.push(n);
+        }
+
+        while let Some((node_id, hop)) = queue.pop_front() {
+            if hop >= depth {
+                continue;
+            }
+            // Outbound edges.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT target_id, edge_type FROM dkg_edges WHERE source_id = ?1",
+                )
+                .map_err(|e| DkgError::QueryFailed(format!("prepare subgraph out: {e}")))?;
+            let rows = stmt
+                .query_map(params![node_id], |row| {
+                    let target_id: i64 = row.get(0)?;
+                    let edge_type: String = row.get(1)?;
+                    Ok((target_id, edge_type))
+                })
+                .map_err(|e| DkgError::QueryFailed(format!("query subgraph out: {e}")))?;
+            let source_name = name_for_id(&conn, node_id).unwrap_or_default();
+            for row in rows {
+                let (target_id, edge_type) = row.map_err(|e| {
+                    DkgError::QueryFailed(format!("row error (subgraph out): {e}"))
+                })?;
+                let target_name = name_for_id(&conn, target_id).unwrap_or_default();
+                edges_out.push(DkgEdgeRef {
+                    source: source_name.clone(),
+                    target: target_name,
+                    edge_type,
+                });
+                if visited.insert(target_id) {
+                    if let Some(n) = fetch_node_by_id(&conn, target_id)? {
+                        nodes_out.push(n);
+                    }
+                    queue.push_back((target_id, hop + 1));
+                }
+            }
+        }
+        Ok(DkgSubgraphSnapshot {
+            root: root_symbol.to_string(),
+            depth,
+            nodes: nodes_out,
+            edges: edges_out,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-30 internal helpers
+// ---------------------------------------------------------------------------
+
+const MAX_C30_DEPTH: u8 = 8;
+
+enum BfsDirection {
+    Inbound,
+    Outbound,
+}
+
+fn lookup_node_id(conn: &Connection, name: &str) -> Result<Option<i64>, DkgError> {
+    let id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM dkg_nodes WHERE name = ?1 LIMIT 1",
+            params![name],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(id)
+}
+
+fn name_for_id(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT name FROM dkg_nodes WHERE id = ?1",
+        params![id],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+fn fetch_node_by_id(conn: &Connection, id: i64) -> Result<Option<DkgNodeRef>, DkgError> {
+    let row = conn
+        .query_row(
+            "SELECT name, file_path, kind, start_line, end_line \
+             FROM dkg_nodes WHERE id = ?1",
+            params![id],
+            |row| {
+                let name: String = row.get(0)?;
+                let file_path: String = row.get(1)?;
+                let kind: String = row.get(2)?;
+                let start_line: i64 = row.get(3)?;
+                let end_line: i64 = row.get(4)?;
+                Ok((name, file_path, kind, start_line, end_line))
+            },
+        )
+        .ok();
+    Ok(row.map(|(name, file_path, kind, start_line, end_line)| DkgNodeRef {
+        name,
+        file_path,
+        kind,
+        start_line: u32::try_from(start_line.max(0)).unwrap_or(0),
+        end_line: u32::try_from(end_line.max(0)).unwrap_or(0),
+    }))
+}
+
+/// BFS over `dkg_edges` from `start_id` up to `max_depth`. `edge_filter`
+/// is the SQL WHERE-clause fragment that selects the relevant edge_type
+/// strings (e.g. "edge_type IN ('CALLS', 'calls')"). `direction` selects
+/// inbound (target = current, source = neighbour) vs outbound (source =
+/// current, target = neighbour). Returns the set of visited node ids
+/// (excluding `start_id`).
+fn bfs_neighbors(
+    conn: &Connection,
+    start_id: i64,
+    max_depth: u8,
+    direction: BfsDirection,
+    edge_filter: &str,
+) -> Result<Vec<i64>, DkgError> {
+    let (select_col, where_col) = match direction {
+        BfsDirection::Inbound => ("source_id", "target_id"),
+        BfsDirection::Outbound => ("target_id", "source_id"),
+    };
+    let sql = format!(
+        "SELECT {select_col} FROM dkg_edges WHERE {where_col} = ?1 AND {edge_filter}",
+    );
+    let mut visited: HashSet<i64> = HashSet::new();
+    visited.insert(start_id);
+    let mut queue: VecDeque<(i64, u8)> = VecDeque::new();
+    queue.push_back((start_id, 0));
+    let mut out: Vec<i64> = Vec::new();
+    while let Some((node_id, hop)) = queue.pop_front() {
+        if hop >= max_depth {
+            continue;
+        }
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| DkgError::QueryFailed(format!("prepare bfs: {e}")))?;
+        let rows = stmt
+            .query_map(params![node_id], |row| row.get::<_, i64>(0))
+            .map_err(|e| DkgError::QueryFailed(format!("query bfs: {e}")))?;
+        for row in rows {
+            let next = row
+                .map_err(|e| DkgError::QueryFailed(format!("row error (bfs): {e}")))?;
+            if visited.insert(next) {
+                out.push(next);
+                queue.push_back((next, hop + 1));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// SQL LIKE-style pattern matching (% = any, _ = single char).

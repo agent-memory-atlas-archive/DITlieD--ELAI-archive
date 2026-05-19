@@ -23,6 +23,7 @@
     'tools-hooks':          'TOOLS & HOOKS',
     'web-quality':          'WEB QUALITY',
     'cosmos':               'COSMOS',
+    'sessions':             'SESSIONS',
   };
 
   function handleBackdropClick(e: MouseEvent) {

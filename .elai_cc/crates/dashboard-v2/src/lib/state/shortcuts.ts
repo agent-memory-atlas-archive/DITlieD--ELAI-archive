@@ -5,6 +5,7 @@
 
 import { workspace } from './workspace.svelte';
 import { commands } from './commands.svelte';
+import { reviewStore } from './review.svelte';
 import type { WindowType } from '../api/types';
 
 export interface ShortcutDef {
@@ -23,7 +24,23 @@ const SIDEBAR_WINDOWS: WindowType[] = [
   'monitor',
   'settings',
   'graph',
+  // C-7: ExploreWindow Q&A oracle surface (8th sidebar slot, Ctrl+8).
+  'explore',
 ];
+
+/** C-7: returns true when the primary panel's active tab is a ReviewWindow.
+ *  Used to guard Ctrl+Shift+A / Ctrl+Shift+R so they don't fire globally. */
+function primaryActiveTabIsReview(): boolean {
+  const active = workspace.primary.tabs.find(
+    (t) => t.id === workspace.primary.activeTabId,
+  );
+  return active?.type === 'review';
+}
+
+// C-7: Ctrl+Shift+W (Tier-0 shell): deferred — 'shell' WindowType not yet
+// registered in types.ts WindowType union or workspace VALID_WINDOW_TYPES.
+// Wire this entry only after Tier-0 shell ships. See context-package-C7.md
+// §5 and plan task #11.
 
 export const SHORTCUTS: ShortcutDef[] = [
   {
@@ -69,6 +86,13 @@ export const SHORTCUTS: ShortcutDef[] = [
     action: () => workspace.setPrimaryWindow('graph'),
   },
   {
+    // C-7: 8th sidebar slot for the ExploreWindow Q&A oracle surface.
+    id: 'sidebar-8',
+    combo: 'Ctrl+8',
+    description: 'Switch to Explore window',
+    action: () => workspace.setPrimaryWindow('explore'),
+  },
+  {
     id: 'open-graph',
     combo: 'Ctrl+G',
     description: 'Open Graph window in primary panel (B-33)',
@@ -111,10 +135,34 @@ export const SHORTCUTS: ShortcutDef[] = [
     action: () => workspace.setPrimaryWindow('settings'),
   },
   {
+    // C-7: previously a no-op stub pointing at openCommandPalette.
+    // Rewired to open the dedicated RecoveryModal (mounted in
+    // Workspace.svelte overlay snippet — see DRIFT-1).
     id: 'recover-closed',
     combo: 'Ctrl+Shift+H',
     description: 'Recover closed window',
-    action: () => workspace.openCommandPalette(),
+    action: () => workspace.openWindowRecovery(),
+  },
+  {
+    // C-7: bulk-accept all hunks in the active ReviewWindow.
+    // Guarded — only fires when primary active tab is 'review' to avoid
+    // global accept-all from any context.
+    id: 'review-accept-all',
+    combo: 'Ctrl+Shift+A',
+    description: 'Accept all hunks in active Review window',
+    action: () => {
+      if (primaryActiveTabIsReview()) reviewStore.acceptAllHunks();
+    },
+  },
+  {
+    // C-7: bulk-reject all hunks in the active ReviewWindow.
+    // Same guard as accept-all.
+    id: 'review-reject-all',
+    combo: 'Ctrl+Shift+R',
+    description: 'Reject all hunks in active Review window',
+    action: () => {
+      if (primaryActiveTabIsReview()) reviewStore.rejectAllHunks();
+    },
   },
   {
     id: 'command-palette',

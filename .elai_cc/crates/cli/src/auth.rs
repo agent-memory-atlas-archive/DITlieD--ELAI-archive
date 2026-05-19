@@ -82,7 +82,7 @@ pub(crate) fn print_bootstrap_plan(output_format: CliOutputFormat) -> Result<(),
         .map(|phase| format!("{phase:?}"))
         .collect::<Vec<_>>();
     match output_format {
-        CliOutputFormat::Text => {
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
             for phase in &phases {
                 println!("- {phase}");
             }
@@ -187,7 +187,7 @@ pub(crate) fn run_login(output_format: CliOutputFormat) -> Result<(), anyhow::Er
         scopes: token_set.scopes,
     })?;
     match output_format {
-        CliOutputFormat::Text => println!("OAuth login complete."),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("OAuth login complete."),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -204,7 +204,7 @@ pub(crate) fn run_login(output_format: CliOutputFormat) -> Result<(), anyhow::Er
 pub(crate) fn run_logout(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     clear_oauth_credentials()?;
     match output_format {
-        CliOutputFormat::Text => println!("OAuth credentials cleared."),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("OAuth credentials cleared."),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -286,7 +286,7 @@ pub(crate) fn print_system_prompt(
 ",
     );
     match output_format {
-        CliOutputFormat::Text => println!("{message}"),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("{message}"),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -302,7 +302,7 @@ pub(crate) fn print_system_prompt(
 pub(crate) fn print_version(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let report = render_version_report();
     match output_format {
-        CliOutputFormat::Text => println!("{report}"),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("{report}"),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({

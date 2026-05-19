@@ -15,3 +15,7 @@
 
 pub mod types;
 pub mod mermaid;
+// C-24 — shared VizData builders for `file` + `symbol` modes (extracted
+// from dashboard-v2 commands.rs so the orchestrator IPC tool arm and the
+// Tauri command share the same code path).
+pub mod views;

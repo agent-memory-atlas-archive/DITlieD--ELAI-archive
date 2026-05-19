@@ -11,13 +11,22 @@
   import { onMount, onDestroy } from 'svelte';
   import { Card, Badge } from '$lib/ui';
   import type { CosmosArtifactStatus } from '$lib/api/types';
-  import { getCosmosStatus, triggerCosmosRefresh } from '$lib/api/stub';
+  import {
+    getCosmosStatus,
+    triggerCosmosRefresh,
+    subscribeCosmosEvents,
+    type CosmosEvent,
+  } from '$lib/api/stub';
 
   let artifacts = $state<CosmosArtifactStatus[]>([]);
   let loaded = $state(false);
   let loadError = $state<string | null>(null);
   let refreshBusy = $state<Record<string, boolean>>({});
   let refreshError = $state<Record<string, string>>({});
+
+  // C-16 (DECISION-C): cosmos SSB event tail + last_seq cursor.
+  let recentEvents = $state<CosmosEvent[]>([]);
+  let lastSeq = $state<number>(0);
 
   async function reload() {
     try {
@@ -30,15 +39,49 @@
     }
   }
 
-  let interval: ReturnType<typeof setInterval> | null = null;
+  // C-16 (DECISION-C): poll subscribe_cosmos_events. New rows arriving
+  // means tick() / trigger_cosmos_refresh emitted SSB activity — reload
+  // the status snapshot so the drawer reflects the post-refresh state
+  // without waiting for the 30s status poll.
+  async function pollEvents() {
+    try {
+      const batch = await subscribeCosmosEvents(lastSeq);
+      if (batch.events.length > 0) {
+        // Append, cap displayed tail at 16 rows.
+        recentEvents = [...recentEvents, ...batch.events].slice(-16);
+        lastSeq = batch.last_seq;
+        // If we saw artifact_updated or refresh_started, refresh status.
+        const triggersReload = batch.events.some(
+          (e) => e.kind === 'artifact_updated' || e.kind === 'refresh_started',
+        );
+        if (triggersReload) {
+          await reload();
+        }
+      } else if (lastSeq === 0) {
+        // Cold-start: bump last_seq to the returned baseline so the next
+        // poll only returns true deltas.
+        lastSeq = batch.last_seq;
+      }
+    } catch (_e) {
+      // Silent failure — drawer remains on the last good snapshot.
+    }
+  }
+
+  let statusInterval: ReturnType<typeof setInterval> | null = null;
+  let eventsInterval: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
     reload();
-    interval = setInterval(reload, 30_000);
+    pollEvents();
+    // Status snapshot poll (slow). Live updates come from the events poll.
+    statusInterval = setInterval(reload, 30_000);
+    // C-16 (DECISION-C): 5s cadence for the SSB event subscription.
+    eventsInterval = setInterval(pollEvents, 5_000);
   });
 
   onDestroy(() => {
-    if (interval !== null) clearInterval(interval);
+    if (statusInterval !== null) clearInterval(statusInterval);
+    if (eventsInterval !== null) clearInterval(eventsInterval);
   });
 
   async function onRefresh(name: string) {
@@ -50,9 +93,8 @@
       if (!res.ok) {
         refreshError = { ...refreshError, [name]: res.error ?? 'unknown error' };
       } else {
-        // On real success, reload immediately. With the current dispatcher
-        // BLOCK this branch is unreachable; kept for the day the wiring lands.
-        await reload();
+        // C-16: real success path. Reload status + event tail immediately.
+        await Promise.all([reload(), pollEvents()]);
       }
     } finally {
       refreshBusy = { ...refreshBusy, [name]: false };
@@ -99,7 +141,7 @@
     <div class="section-label">COSMOS ARTIFACT TIER</div>
     <div class="cosmos-note">
       Cross-project knowledge cache rooted at <span class="mono">~/.elai/cosmos/</span>.
-      Refresh wiring is deferred — see B-42-decisions BLOCK-5.
+      Live SSB subscription active (5s poll, C-16 DECISION-C).
     </div>
 
     {#if !loaded}
@@ -161,14 +203,14 @@
   }
   .section-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     margin-bottom: 8px;
   }
   .cosmos-note {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     margin-bottom: 10px;
     line-height: 1.5;
@@ -235,7 +277,7 @@
     color: var(--teal);
     border-radius: var(--r-sm);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
   }
   .refresh-btn:hover:not(:disabled) {
@@ -256,7 +298,7 @@
   }
   .muted-small {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     font-style: italic;
   }
   .muted-small.error {

@@ -270,7 +270,7 @@
 
   .mp-line {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.4;
     color: var(--text-secondary);
     white-space: nowrap;
@@ -317,7 +317,7 @@
   }
   .mp-radial-text {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     fill: var(--text-primary);
     letter-spacing: 0.04em;
   }
@@ -327,7 +327,7 @@
     column-gap: 8px;
     row-gap: 1px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .mp-meta-k { color: var(--text-ghost); }
   .mp-meta-v { color: var(--teal-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

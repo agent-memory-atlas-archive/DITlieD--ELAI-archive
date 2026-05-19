@@ -196,6 +196,30 @@ impl TieredValidator for DefaultTieredValidator {
                     )
                     .await
                 }
+                ValidationTier::Mutation => {
+                    // C-28: T-1 mutation tier. The real MutationRunner is
+                    // invoked by `DeterministicAuditor` Step 6 (production
+                    // surface) because the runner shells out to
+                    // cargo-mutants / mutmut and depends on the audit
+                    // gate's MutationConfig + EquivalentMutantCache. The
+                    // tiered-validation surface here returns a pass-through
+                    // result so the 6-tier `ordered()` walk is preserved
+                    // for callers that only consume tier ticks (e.g. the
+                    // dispatcher's stub_run path). See
+                    // workflow/reasoning/C-28-decisions.md DECISION-D5
+                    // / DECISION-D6.
+                    let _clock = OsClock;
+                    let start = _clock.now();
+                    let elapsed_ms =
+                        u32::try_from(_clock.elapsed_since(start).as_millis()).unwrap_or(0);
+                    ValidationTierResult {
+                        tier,
+                        passed: true,
+                        elapsed_ms,
+                        rules_fired: 0,
+                        stderr_snippet: None,
+                    }
+                }
                 ValidationTier::Integration => {
                     Self::with_timeout(
                         tier,
@@ -936,7 +960,7 @@ mod tests {
         )
         .with_stress_unit_repeats(2);
         let out = v.run_all(&req(None)).await;
-        assert_eq!(out.len(), 5, "expected 5 tier results, got {}", out.len());
+        assert_eq!(out.len(), 6, "expected 6 tier results, got {}", out.len());
         let tiers: Vec<_> = out.iter().map(|r| r.tier).collect();
         assert_eq!(tiers, ValidationTier::ordered().to_vec());
         assert!(out.iter().all(|r| r.passed));

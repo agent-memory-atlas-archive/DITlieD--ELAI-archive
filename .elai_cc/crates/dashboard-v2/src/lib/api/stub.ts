@@ -80,6 +80,9 @@ import type {
   OAuthLoginInfo,
   CloudModelInfo,
   CloudSpendInfo,
+  MutationGaugeInfo,
+  // C-32 — Code-Completeness Layer 2 gauge.
+  CompletenessRatioInfo,
   SelfModProposalRow,
   SelfModMsiSnapshot,
   ReflectState,
@@ -98,6 +101,16 @@ import type {
   RuntimeBackendId,
   RuntimeAgentRole,
   TestReport,
+  // C-4 — Tauri commands orchestration + cloud spend surface.
+  PhaseDetailResponse,
+  BabyStepDetailResponse,
+  PhaseProgressRow,
+  RecentActionRow,
+  FileChangeRow,
+  ActionDetailResponse,
+  ListProjectsResponse,
+  ProjectEntry,
+  ResearchNodeHistoryRow,
 } from './types';
 
 import {
@@ -664,6 +677,28 @@ export async function merge_session_branch(name: string): Promise<unknown> {
 export async function close_session_branch(name: string): Promise<void> {
   logStub('close_session_branch', name);
   await tryInvoke<void>('close_session_branch', { name });
+}
+
+// C-23: load the latest handoff snapshot from the active SessionDag.
+// Returns metadata for the CommandWindow status card (no in-memory
+// session rehydration happens client-side — that belongs to the CLI).
+// Throws when the backend command rejects (no active session, no
+// handoff snapshot, or SQLite open failed).
+export interface LoadHandoffResult {
+  session_id: string;
+  snap_id: string;
+  fsm_state: string;
+  message_count: number;
+  parent_chain_len: number;
+}
+
+export async function load_handoff(): Promise<LoadHandoffResult> {
+  logStub('load_handoff');
+  const result = await tryInvoke<LoadHandoffResult>('load_handoff');
+  if (!result) {
+    throw new Error('load_handoff: backend command returned no result');
+  }
+  return result;
 }
 
 export async function get_anti_spiral_counter(): Promise<AntiSpiralCounter> {
@@ -1345,6 +1380,35 @@ export async function get_cloud_spend(): Promise<CloudSpendInfo> {
     cache_read_tokens: 0,
     redaction_count: 0,
   };
+}
+
+// ------------------------------------------------------------------
+// MUTATION GAUGE (C-28)
+// ------------------------------------------------------------------
+
+export async function get_mutation_gauge(): Promise<MutationGaugeInfo | null> {
+  logStub('get_mutation_gauge');
+  const live = await tryInvoke<MutationGaugeInfo | null>('get_mutation_gauge');
+  if (live !== undefined) return live;
+  await delay();
+  // Stub default: null = no mutation run yet. MonitorWindow renders a
+  // grey "no mutation run yet" placeholder for the null case.
+  return null;
+}
+
+// ------------------------------------------------------------------
+// COMPLETENESS RATIO (C-32) -- Code-Completeness Layer 2 gauge.
+// ------------------------------------------------------------------
+
+export async function get_completeness_ratio(): Promise<CompletenessRatioInfo> {
+  logStub('get_completeness_ratio');
+  const live = await tryInvoke<CompletenessRatioInfo>('get_completeness_ratio');
+  if (live !== undefined && live !== null) return live;
+  await delay();
+  // Stub default: `{ known: false }` = no skeleton flushed yet for the
+  // current session. MonitorWindow renders the grey placeholder while
+  // `known` is false (audit-C32 W2 close-out).
+  return { known: false };
 }
 
 export async function set_webhook_url(url: string): Promise<{ ok: boolean; webhook_url: string }> {
@@ -2259,11 +2323,12 @@ export async function list_entry_points(
 }
 
 // ------------------------------------------------------------------
-// B-42 — COSMOS ARTIFACT TIER
+// B-42 + C-16 — COSMOS ARTIFACT TIER
 // Read-only filesystem snapshot from ~/.elai/cosmos/. Empty array on
 // cold-start (no cosmos root yet) — NOT mock data, a real empty state.
-// `triggerCosmosRefresh` returns an honest NotImplemented error until
-// the production ResearchDispatcher is wired (B-42-decisions BLOCK-5).
+// `triggerCosmosRefresh` now returns a typed response with refreshed_count
+// + wall-clock brackets (C-16 DECISION-D). `subscribeCosmosEvents` is the
+// new live-update poll path (C-16 DECISION-C).
 // ------------------------------------------------------------------
 
 export async function getCosmosStatus(): Promise<CosmosArtifactStatus[]> {
@@ -2272,9 +2337,31 @@ export async function getCosmosStatus(): Promise<CosmosArtifactStatus[]> {
   return live ?? [];
 }
 
+/** C-16 (DECISION-D): typed cosmos refresh response. */
+export interface TriggerCosmosRefreshResponse {
+  refreshed_count: number;
+  started_at_ms: number;
+  completed_at_ms: number;
+}
+
+/** C-16 (DECISION-C): one cosmos SSB event row. */
+export interface CosmosEvent {
+  seq: number;
+  timestamp_ms: number;
+  /** "refresh_started" | "artifact_updated" | "artifact_decayed" | "grounding_used" */
+  kind: string;
+  payload: { summary: string };
+}
+
+/** C-16 (DECISION-C): batch of cosmos events since last_seq. */
+export interface CosmosEventBatch {
+  last_seq: number;
+  events: CosmosEvent[];
+}
+
 export async function triggerCosmosRefresh(
   name: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; response?: TriggerCosmosRefreshResponse }> {
   logStub('triggerCosmosRefresh', { name });
   if (!TAURI_AVAILABLE) {
     return { ok: false, error: 'tauri unavailable (browser mode)' };
@@ -2282,10 +2369,27 @@ export async function triggerCosmosRefresh(
   const inv = await ensureInvoke();
   if (!inv) return { ok: false, error: 'tauri invoke unavailable' };
   try {
-    await inv('trigger_cosmos_refresh', { name });
-    return { ok: true };
+    const response = await inv('trigger_cosmos_refresh', { name }) as TriggerCosmosRefreshResponse;
+    return { ok: true, response };
   } catch (e) {
     return { ok: false, error: String(e) };
+  }
+}
+
+/** C-16 (DECISION-C): poll for cosmos SSB events since `lastSeq`. */
+export async function subscribeCosmosEvents(
+  lastSeq: number,
+): Promise<CosmosEventBatch> {
+  logStub('subscribeCosmosEvents', { lastSeq });
+  const empty: CosmosEventBatch = { last_seq: lastSeq, events: [] };
+  if (!TAURI_AVAILABLE) return empty;
+  const inv = await ensureInvoke();
+  if (!inv) return empty;
+  try {
+    const result = await inv('subscribe_cosmos_events', { lastSeq }) as CosmosEventBatch;
+    return result ?? empty;
+  } catch (e) {
+    return empty;
   }
 }
 
@@ -2457,4 +2561,169 @@ export async function setRoleRuntime(
   const inv = await ensureInvoke();
   if (!inv) throw new Error('tauri invoke unavailable');
   await inv<void>('set_role_runtime', { role, backend });
+}
+
+// ------------------------------------------------------------------
+// C-4 — Tauri commands orchestration + cloud spend surface
+//
+// Thin invoke() wrappers for the 9 commands added by the C-4 executor
+// in src-tauri/src/commands.rs:7745..8060. Pattern mirrors
+// get_executable_pipeline + get_cloud_spend: tryInvoke first, fall back
+// to a graceful-empty / `known: false` stub so the dashboard renders
+// in browser-only mode and during SSB cold-start.
+// Argument keys are camelCase on the JS side; Tauri v2 deserializes
+// them into the Rust handler's snake_case parameter names.
+// ------------------------------------------------------------------
+
+export async function get_phase_detail(phaseId: string): Promise<PhaseDetailResponse> {
+  logStub('get_phase_detail', { phaseId });
+  const live = await tryInvoke<PhaseDetailResponse>('get_phase_detail', { phaseId });
+  if (live) return live;
+  await delay();
+  return { known: false, phase_id: phaseId };
+}
+
+export async function get_baby_step_detail(babyStepId: string): Promise<BabyStepDetailResponse> {
+  logStub('get_baby_step_detail', { babyStepId });
+  const live = await tryInvoke<BabyStepDetailResponse>('get_baby_step_detail', { babyStepId });
+  if (live) return live;
+  await delay();
+  return { known: false, baby_step_id: babyStepId };
+}
+
+export async function get_phase_progress(): Promise<PhaseProgressRow[]> {
+  logStub('get_phase_progress');
+  const live = await tryInvoke<PhaseProgressRow[]>('get_phase_progress');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_recent_actions(
+  limit?: number,
+  offset?: number,
+): Promise<RecentActionRow[]> {
+  logStub('get_recent_actions', { limit, offset });
+  const live = await tryInvoke<RecentActionRow[]>('get_recent_actions', { limit, offset });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_file_changes(sessionId: string): Promise<FileChangeRow[]> {
+  logStub('get_file_changes', { sessionId });
+  const live = await tryInvoke<FileChangeRow[]>('get_file_changes', { sessionId });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_action_detail(seq: number): Promise<ActionDetailResponse> {
+  logStub('get_action_detail', { seq });
+  const live = await tryInvoke<ActionDetailResponse>('get_action_detail', { seq });
+  if (live) return live;
+  await delay();
+  return { known: false, seq };
+}
+
+export async function get_research_node_history(
+  sessionId: string,
+  nodeId: string,
+): Promise<ResearchNodeHistoryRow[]> {
+  logStub('get_research_node_history', { sessionId, nodeId });
+  const live = await tryInvoke<ResearchNodeHistoryRow[]>('get_research_node_history', {
+    sessionId,
+    nodeId,
+  });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// ------------------------------------------------------------------
+// C-7 — ReviewWindow reviewer-verdict commands
+//
+// Thin invoke() wrappers for the 3 reviewer-verdict commands added by
+// the C-7 executor in src-tauri/src/commands.rs. Each emits one
+// ChangeDecision SSB row (SCHEMA_VERSION 49). `hunk_id` is omitted for
+// file-level verdicts and supplied for per-hunk verdicts.
+//
+// On non-Tauri runtimes (browser-only dev), the wrappers fall back to a
+// logStub no-op + `{ok: false}` so the dashboard renders without errors.
+// ------------------------------------------------------------------
+
+export interface ChangeDecisionResponse {
+  ok: boolean;
+  seq?: number;
+  error?: string;
+}
+
+export async function accept_change(
+  path: string,
+  hunkId?: string,
+): Promise<ChangeDecisionResponse> {
+  logStub('accept_change', { path, hunkId });
+  const live = await tryInvoke<ChangeDecisionResponse>('accept_change', {
+    path,
+    hunkId,
+  });
+  if (live) return live;
+  await delay();
+  return { ok: false, error: 'tauri invoke unavailable' };
+}
+
+export async function decline_change(
+  path: string,
+  hunkId?: string,
+): Promise<ChangeDecisionResponse> {
+  logStub('decline_change', { path, hunkId });
+  const live = await tryInvoke<ChangeDecisionResponse>('decline_change', {
+    path,
+    hunkId,
+  });
+  if (live) return live;
+  await delay();
+  return { ok: false, error: 'tauri invoke unavailable' };
+}
+
+export async function retry_audit(
+  path: string,
+  hunkId?: string,
+  note?: string,
+): Promise<ChangeDecisionResponse> {
+  logStub('retry_audit', { path, hunkId, note });
+  const live = await tryInvoke<ChangeDecisionResponse>('retry_audit', {
+    path,
+    hunkId,
+    note,
+  });
+  if (live) return live;
+  await delay();
+  return { ok: false, error: 'tauri invoke unavailable' };
+}
+
+export async function list_projects(): Promise<ListProjectsResponse> {
+  logStub('list_projects');
+  const live = await tryInvoke<ListProjectsResponse>('list_projects');
+  if (live) return live;
+  await delay();
+  return { known: true, projects: [] };
+}
+
+export async function create_project(
+  name: string,
+  parentPath: string,
+): Promise<ProjectEntry> {
+  logStub('create_project', { name, parentPath });
+  const live = await tryInvoke<ProjectEntry>('create_project', { name, parentPath });
+  if (live) return live;
+  await delay();
+  // Browser-only fallback: synthesize an entry so the picker can show
+  // the user something. Real fs writes only happen via the live Tauri
+  // command path above.
+  return {
+    name,
+    path: `${parentPath}/${name}`,
+    last_opened_ms: Date.now(),
+  };
 }

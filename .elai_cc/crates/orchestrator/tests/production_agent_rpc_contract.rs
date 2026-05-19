@@ -17,9 +17,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use elai_core::tool_dispatcher::{
-    ClassifiedFailure, CommitOutcome, EditOutcome, EditRequest, FailureInput, FileView,
-    GitCommitRequest, IncrementalOutcome, IncrementalRequest, ToolDispatchError, ToolDispatcher,
-    ValidateRequest, ValidationTier, ValidationTierResult,
+    ClassifiedFailure, CommitOutcome, EditMatchTier, EditOutcome, EditRequest, FailureInput,
+    FileView, GitCommitRequest, IncrementalOutcome, IncrementalRequest, ToolDispatchError,
+    ToolDispatcher, ValidateRequest, ValidationTier, ValidationTierResult,
 };
 use elai_orchestrator::{
     AgentRpcServer, InferOutcome, ProductionAgentRpcServer, ToolOutcome,
@@ -42,6 +42,79 @@ impl ToolDispatcher for NoOpDispatcher {
         _req: EditRequest,
     ) -> Pin<Box<dyn Future<Output = Result<EditOutcome, ToolDispatchError>> + Send + '_>> {
         Box::pin(async { Err(ToolDispatchError::NotImplemented("noop".into())) })
+    }
+
+    fn dispatch_validate(
+        &self,
+        _req: ValidateRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<ValidationTierResult>, ToolDispatchError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn dispatch_classify_failure(
+        &self,
+        _input: FailureInput,
+    ) -> Pin<Box<dyn Future<Output = Option<ClassifiedFailure>> + Send + '_>> {
+        Box::pin(async { None })
+    }
+
+    fn dispatch_git_commit(
+        &self,
+        _req: GitCommitRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<CommitOutcome, ToolDispatchError>> + Send + '_>,
+    > {
+        Box::pin(async { Err(ToolDispatchError::NotImplemented("noop".into())) })
+    }
+
+    fn dispatch_file_read_outline(
+        &self,
+        _path: PathBuf,
+        _line_threshold: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<FileView, ToolDispatchError>> + Send + '_>> {
+        Box::pin(async { Err(ToolDispatchError::NotImplemented("noop".into())) })
+    }
+
+    fn dispatch_incremental_compile(
+        &self,
+        _req: IncrementalRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<IncrementalOutcome, ToolDispatchError>> + Send + '_>,
+    > {
+        Box::pin(async { Err(ToolDispatchError::NotImplemented("noop".into())) })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EditEchoDispatcher — returns a synthetic successful EditOutcome for
+// dispatch_edit; every other method returns NotImplemented/empty. Used by
+// test (e) so the assertion focuses on the R3 stash-pop + JSON->postcard
+// conversion path, not on the real edit-tier matching logic of
+// InProcessToolDispatcher (which would require a real Cargo project layout).
+// ---------------------------------------------------------------------------
+
+struct EditEchoDispatcher;
+
+impl ToolDispatcher for EditEchoDispatcher {
+    fn dispatch_edit(
+        &self,
+        req: EditRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<EditOutcome, ToolDispatchError>> + Send + '_>> {
+        Box::pin(async move {
+            let bytes_written: u32 = req.new_text.len().try_into().unwrap_or(u32::MAX);
+            Ok(EditOutcome {
+                tier: EditMatchTier::Exact,
+                bytes_written,
+                file_path: req.file_path,
+                similarity_hint: None,
+            })
+        })
     }
 
     fn dispatch_validate(
@@ -145,6 +218,71 @@ fn canned_anthropic_response(text: &str) -> String {
     .to_string()
 }
 
+/// R3: Anthropic /v1/messages JSON response carrying one Text block and one
+/// ToolUse block. Mirrors `canned_anthropic_response` shape; the tool_use
+/// block uses the snake_case `"tool_use"` tag (matches the `OutputContentBlock`
+/// `#[serde(tag="type", rename_all="snake_case")]` enum surface).
+fn canned_anthropic_response_with_tool_use(
+    text: &str,
+    tool_use_id: &str,
+    tool_use_name: &str,
+    tool_use_input: serde_json::Value,
+) -> String {
+    serde_json::json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": text},
+            {
+                "type": "tool_use",
+                "id": tool_use_id,
+                "name": tool_use_name,
+                "input": tool_use_input
+            }
+        ],
+        "model": "claude-test",
+        "stop_reason": "tool_use",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5
+        }
+    })
+    .to_string()
+}
+
+/// R3: variant of `spawn_anthropic_stub` that accepts an owned response body
+/// so callers can pass a dynamically-constructed JSON string (needed when the
+/// response includes a tempdir-derived file_path that cannot be `'static`).
+async fn spawn_anthropic_stub_owned(response_body: String) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let base_url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            // 64 KiB — comfortably above the request body that R3 produces
+            // (prompt + 6-tool catalog ~= 3 KiB) with headroom for follow-up
+            // patches that may extend the catalog. A single `read` is still
+            // not guaranteed to deliver the whole HTTP request in one call,
+            // but the orchestrator's send_message issues one POST and we
+            // respond once the response headers are written; partial reads
+            // here would only matter if we needed to *parse* the request.
+            let mut buf = vec![0u8; 64 * 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body,
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    base_url
+}
+
 /// Spawn a one-shot TCP stub that reads one HTTP request then writes a canned
 /// Anthropic response. Returns the base URL as `http://127.0.0.1:<port>`.
 async fn spawn_anthropic_stub(response_text: &'static str) -> String {
@@ -154,7 +292,8 @@ async fn spawn_anthropic_stub(response_text: &'static str) -> String {
 
     tokio::spawn(async move {
         if let Ok((mut socket, _)) = listener.accept().await {
-            let mut buf = vec![0u8; 8192];
+            // 64 KiB -- see spawn_anthropic_stub_owned for rationale.
+            let mut buf = vec![0u8; 64 * 1024];
             let _ = socket.read(&mut buf).await;
             let body = canned_anthropic_response(response_text);
             let response = format!(
@@ -277,4 +416,118 @@ async fn c_unknown_tool_id_returns_failed() {
             panic!("expected ToolOutcome::Failed for unknown tool_id");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test D — handle_infer_request emits "TOOL_USE: <name>" marker and stashes
+// the ToolUse.input into pending_tool_args (R3).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d_infer_request_emits_tool_use_marker_from_canned_sonnet() {
+    let body = canned_anthropic_response_with_tool_use(
+        "working on it",
+        "toolu_abc123",
+        "edit",
+        serde_json::json!({
+            "file_path": "src/main.rs",
+            "old_text": "todo",
+            "new_text": "done"
+        }),
+    );
+    let stub_url = spawn_anthropic_stub_owned(body).await;
+    let client = AnthropicClient::new("test-key")
+        .with_base_url(stub_url)
+        .with_retry_policy(
+            0,
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+        );
+    let dispatcher: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> =
+        Arc::new(NoOpDispatcher);
+    let server = ProductionAgentRpcServer::new(client, dispatcher, "test-model".into(), 1024);
+
+    let outcome = server.handle_infer_request("prompt".into(), 1024).await;
+
+    match outcome {
+        InferOutcome::Response(text) => {
+            assert!(
+                text.contains("working on it"),
+                "response text must include the Text block content, got: {text:?}"
+            );
+            assert!(
+                text.lines().any(|l| l.trim_start() == "TOOL_USE: edit"),
+                "response text must include a 'TOOL_USE: edit' marker line, got: {text:?}"
+            );
+        }
+        InferOutcome::Failed(reason) => {
+            panic!("expected InferOutcome::Response, got Failed: {reason}");
+        }
+    }
+
+    let guard = server.pending_tool_args.lock().await;
+    assert_eq!(
+        guard.get("edit").map(|q| q.len()),
+        Some(1),
+        "ToolUse.input must be stashed under name 'edit' with exactly one entry"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test E — handle_tool_request pops stashed args when arguments.is_empty(),
+// converts JSON->postcard, and dispatches the edit arm to a successful Result.
+// Stash must be drained to len=0 after dispatch (R3).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e_handle_tool_request_pops_stashed_args_and_dispatches_edit() {
+    let body = canned_anthropic_response_with_tool_use(
+        "applying edit",
+        "toolu_edit1",
+        "edit",
+        serde_json::json!({
+            "file_path": "src/main.rs",
+            "old_text": "todo",
+            "new_text": "done"
+        }),
+    );
+    let stub_url = spawn_anthropic_stub_owned(body).await;
+    let client = AnthropicClient::new("test-key")
+        .with_base_url(stub_url)
+        .with_retry_policy(
+            0,
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_millis(0),
+        );
+    let dispatcher: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> =
+        Arc::new(EditEchoDispatcher);
+    let server = ProductionAgentRpcServer::new(client, dispatcher, "test-model".into(), 1024);
+
+    // Populate the stash by running the infer round-trip first.
+    let _ = server.handle_infer_request("prompt".into(), 1024).await;
+
+    // Agent_loop sends ToolRequest with empty arguments (agent_loop.rs:170);
+    // the R3 path must pop the stash, convert JSON -> postcard, dispatch.
+    let outcome = server.handle_tool_request("edit".into(), Vec::new()).await;
+
+    match outcome {
+        ToolOutcome::Result(bytes) => {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("result bytes must be valid JSON");
+            assert!(
+                parsed.get("file_path").is_some(),
+                "edit result JSON must carry file_path key, got: {parsed}"
+            );
+        }
+        ToolOutcome::Failed(reason) => {
+            panic!("expected ToolOutcome::Result, got Failed: {reason}");
+        }
+    }
+
+    let guard = server.pending_tool_args.lock().await;
+    assert_eq!(
+        guard.get("edit").map(|q| q.len()),
+        Some(0),
+        "stashed 'edit' entry must be popped to len=0 after dispatch"
+    );
 }

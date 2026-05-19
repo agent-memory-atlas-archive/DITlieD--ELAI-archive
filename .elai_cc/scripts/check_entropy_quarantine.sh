@@ -19,6 +19,15 @@
 #     examples/, benches/, pipeline_builder_tests.rs, pipeline_builder_bench.rs
 #   - Added TEST_KEEP filter: lines annotated with TEST_KEEP are excluded
 #     (cfg(test) timing uses inside src/ files that are intentionally kept)
+#
+# C-15 tightening:
+#   - Added `rand::random` to PATTERN (RNG entry point not previously covered).
+#   - Added `entropy-allow:` filter (skip lines annotated with a same-line
+#     trailing `// entropy-allow: <reason>` comment after the migration could
+#     not be done — e.g., cache TTL Instant comparisons inside #[derive(Deserialize)]
+#     configs that can't carry an Arc<dyn ClockProvider>). The manifest
+#     convention (top-of-file comment listing all annotated sites) is
+#     documented but not script-enforced (see C-15 D9).
 
 set -e
 
@@ -34,7 +43,10 @@ Patterns checked:
   SystemTime::now, Instant::now, tokio::time::Instant::now,
   chrono::Utc::now, chrono::Local::now,
   uuid::Uuid::new_v4, Uuid::new_v4(),
-  rand::thread_rng, OsRng::new, SeedableRng::from_entropy
+  rand::thread_rng, rand::random,
+  OsRng::new, SeedableRng::from_entropy
+
+Lines annotated with `// entropy-allow: <reason>` are excluded (C-15).
 
 Exits 0 when clean, 1 when any leak site is found.
 EOF
@@ -52,8 +64,9 @@ if [ ! -d "$CRATES_DIR" ]; then
     exit 2
 fi
 
-# B-15C extended pattern — covers time AND entropy/UUID violation sites
-PATTERN='SystemTime::now|Instant::now|tokio::time::Instant::now|chrono::Utc::now|chrono::Local::now|uuid::Uuid::new_v4|Uuid::new_v4\(\)|rand::thread_rng|OsRng::new\b|SeedableRng::from_entropy'
+# C-15 extended pattern — covers time AND entropy/UUID violation sites.
+# Added in C-15: `rand::random\b` (RNG entry point not previously covered).
+PATTERN='SystemTime::now|Instant::now|tokio::time::Instant::now|chrono::Utc::now|chrono::Local::now|uuid::Uuid::new_v4|Uuid::new_v4\(\)|rand::thread_rng|rand::random\b|OsRng::new\b|SeedableRng::from_entropy'
 
 HITS_FILE="$(mktemp -t entropy_quarantine.XXXXXX 2>/dev/null || mktemp)"
 trap 'rm -f "$HITS_FILE"' EXIT
@@ -87,6 +100,7 @@ if command -v rg >/dev/null 2>&1; then
         "$PATTERN" "$CRATES_DIR" \
         | grep -v 'TEST_KEEP' \
         | strip_comments \
+        | grep -v 'entropy-allow:' \
         > "$HITS_FILE" || true
 else
     grep -RIn -E "$PATTERN" "$CRATES_DIR" \
@@ -102,6 +116,7 @@ else
         --exclude-dir='.bkp_old' \
         | grep -v 'TEST_KEEP' \
         | strip_comments \
+        | grep -v 'entropy-allow:' \
         > "$HITS_FILE" || true
 fi
 

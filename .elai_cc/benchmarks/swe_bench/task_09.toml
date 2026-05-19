@@ -1,0 +1,11 @@
+id = "task_09"
+description = """
+A FastAPI endpoint returns dict objects that `json.dumps` serialises with
+nondeterministic key ordering. Switch the serialisation to `orjson.dumps(...,
+option=orjson.OPT_SORT_KEYS)` so contract-test assertions on the wire-form
+stop flaking and the response body becomes byte-stable.
+"""
+expected_output = "orjson.OPT_SORT_KEYS"
+timeout_s = 120
+stage = 3
+is_canary = false

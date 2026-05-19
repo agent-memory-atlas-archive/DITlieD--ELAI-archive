@@ -192,13 +192,19 @@ impl DataTable {
 }
 
 /// AllowedConfigKey — Layer 1A only adjusts [`DataTable`] rows. The
-/// `Parameter` variant is reserved for Layer 2 (not implemented).
+/// `Parameter` variant is reserved for Layer 2 (staged eval).
+///
+/// C-21 Task 7: `Parameter` now carries a typed
+/// [`crate::self_mod_safety::ParameterKey`] (12-variant closed enum)
+/// instead of a free-form `String`. The compiler now rejects any unknown
+/// parameter key at construction time; previously such mismatches were
+/// caught at runtime via [`crate::self_mod_safety::is_known_parameter`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AllowedConfigKey {
     DataTable(DataTable),
-    /// Layer 2 placeholder — not allowed in Layer 1A. Any attempt to modify a
-    /// Parameter key returns [`Layer1aError::LockedKey`].
-    Parameter(String),
+    /// Class B parameter modification — routed to staged eval (10/50/200).
+    /// C-21 closed-enum migration: was `Parameter(String)`.
+    Parameter(crate::self_mod_safety::ParameterKey),
 }
 
 /// Provenance of a proposal.
@@ -889,6 +895,10 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                 if let Some(state) = msi.get(&proposal.pipeline_mode) {
                     let v = state.compute(self.msi_lambda);
                     if state.samples() >= 3 && v <= MSI_DIVERGING_THRESHOLD {
+                        // C-21 Task 6 — DIVERGING entry triggers a nightly
+                        // dep-audit spawn (24h rate-limited via sentinel
+                        // file). Non-blocking — spawn detached & continue.
+                        let _ = trigger_dep_audit_background(&self.rules_db_path);
                         return Err(Layer1aError::Diverging(
                             proposal.pipeline_mode.as_str().to_owned(),
                         ));
@@ -1082,6 +1092,17 @@ impl Layer1aProcessor for DefaultLayer1aProcessor {
                     Vec::new(),
                 )
                 .await;
+
+            // C-21 Task 5 + DRIFT-4 — steering vector refresh trigger.
+            // Spec phase-4H.txt anti-staleness section 2.2: when a
+            // DataTable::DeprecatedPatterns row is successfully promoted
+            // (tx.commit() above succeeded), spawn compute_steering_vector.py
+            // in --batch mode so the modern_api_preference cache reflects the
+            // freshly-added pattern. Fire-and-forget: we never block the
+            // apply_proposal future on the python script.
+            if matches!(proposal.table, DataTable::DeprecatedPatterns) {
+                trigger_steering_vector_refresh(&self.rules_db_path);
+            }
 
             Ok(ProposalOutcome {
                 proposal_id: proposal.proposal_id.clone(),
@@ -1460,6 +1481,212 @@ pub fn acquire_rules_lock(rules_db_path: &Path) -> Result<RulesDbLockGuard, Laye
     }
 }
 
+// ---------------------------------------------------------------------------
+// C-21 Task 5 — steering vector refresh trigger (fire-and-forget python spawn).
+// ---------------------------------------------------------------------------
+
+/// Spawn `metrics/compute_steering_vector.py --batch` detached. The
+/// derived `.elai_cc` root is computed from `rules_db_path` (assumed to
+/// live at `<root>/<somewhere>/rules.db` — we walk up to find a `metrics`
+/// sibling). The `models/steering_vectors/` output directory is created
+/// in Rust before spawn so the python `np.savez` call cannot fail on a
+/// missing parent (DRIFT-5 fix; the script itself also calls os.makedirs
+/// as defence-in-depth).
+///
+/// Never panics. On any error (missing python, missing script, dir
+/// create failure) we `tracing::warn!` and return. The caller proceeds.
+pub fn trigger_steering_vector_refresh(rules_db_path: &Path) {
+    // Derive the project root by walking up from rules_db_path until we
+    // find a `metrics` directory containing compute_steering_vector.py.
+    // Bounded to 8 ancestor levels so a malformed path cannot loop.
+    let script_path = {
+        let mut cursor: Option<&Path> = rules_db_path.parent();
+        let mut found: Option<PathBuf> = None;
+        for _ in 0..8 {
+            match cursor {
+                Some(dir) => {
+                    let candidate = dir.join("metrics").join("compute_steering_vector.py");
+                    if candidate.exists() {
+                        found = Some(candidate);
+                        break;
+                    }
+                    cursor = dir.parent();
+                }
+                None => break,
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    rules_db = %rules_db_path.display(),
+                    "compute_steering_vector.py not found; skipping steering refresh"
+                );
+                return;
+            }
+        }
+    };
+    // Project root is two levels up from the script (metrics/script.py -> root).
+    let project_root = script_path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Q3 + DRIFT-5: pre-create models/steering_vectors/ before spawn.
+    let steering_dir = project_root.join("models").join("steering_vectors");
+    if let Err(e) = std::fs::create_dir_all(&steering_dir) {
+        tracing::warn!(
+            error = %e,
+            path = %steering_dir.display(),
+            "failed to create steering_vectors directory; spawn aborted"
+        );
+        return;
+    }
+    let spawn = std::process::Command::new("python")
+        .arg(&script_path)
+        .arg("--batch")
+        .current_dir(&project_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawn {
+        Ok(child) => {
+            tracing::info!(
+                pid = child.id(),
+                script = %script_path.display(),
+                "spawned compute_steering_vector.py --batch (fire-and-forget)"
+            );
+            // Drop the Child to detach — no wait, no zombies on Unix
+            // because process is detached from the orchestrator's
+            // sigchld handler when the runtime exits.
+            drop(child);
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                script = %script_path.display(),
+                "failed to spawn compute_steering_vector.py; continuing"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-21 Task 6 — nightly dep-audit trigger from DIVERGING state.
+// ---------------------------------------------------------------------------
+
+/// Minimum interval between automatic dep-audit triggers (seconds).
+/// 24h matches the spec's "nightly audit" cadence.
+const DEP_AUDIT_RATE_LIMIT_SECS: u64 = 24 * 60 * 60;
+
+/// Sentinel file used to rate-limit DIVERGING-state dep-audit spawns. Lives
+/// in the project's `metrics/` directory and stores the wall-clock time
+/// (RFC3339-ish) of the most recent trigger. The `mtime` is consulted
+/// instead of the contents so concurrent writers cannot race on the body.
+const DEP_AUDIT_SENTINEL_NAME: &str = ".dep_audit_last_trigger";
+
+/// Spawn `elai dep-audit --output-format toml` detached when Layer 1A
+/// enters DIVERGING for a pipeline mode. Rate-limited to one trigger per
+/// 24h via [`DEP_AUDIT_SENTINEL_NAME`] mtime. Never blocks. Returns
+/// `true` when a spawn actually happened (rate-limit allowed and the CLI
+/// exists); `false` when skipped.
+///
+/// The CLI is expected on PATH as `elai`; in dev builds without the
+/// binary on PATH the spawn returns `false` and we tracing::warn the user
+/// to install it. We never panic.
+pub fn trigger_dep_audit_background(rules_db_path: &Path) -> bool {
+    // Walk up to find metrics/ — same heuristic as the steering refresh.
+    let project_root: PathBuf = {
+        let mut cursor: Option<&Path> = rules_db_path.parent();
+        let mut found: Option<PathBuf> = None;
+        for _ in 0..8 {
+            match cursor {
+                Some(dir) => {
+                    if dir.join("metrics").is_dir() {
+                        found = Some(dir.to_path_buf());
+                        break;
+                    }
+                    cursor = dir.parent();
+                }
+                None => break,
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    rules_db = %rules_db_path.display(),
+                    "metrics/ directory not located; skipping dep-audit trigger"
+                );
+                return false;
+            }
+        }
+    };
+    let metrics_dir = project_root.join("metrics");
+    let sentinel = metrics_dir.join(DEP_AUDIT_SENTINEL_NAME);
+    // Rate limit — skip if sentinel mtime is younger than 24h.
+    if let Ok(meta) = std::fs::metadata(&sentinel) {
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(age) = mtime.elapsed() {
+                if age.as_secs() < DEP_AUDIT_RATE_LIMIT_SECS {
+                    tracing::debug!(
+                        age_secs = age.as_secs(),
+                        "dep-audit trigger skipped; sentinel younger than rate limit"
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    // Touch the sentinel first (cheap atomic-ish write) so concurrent
+    // DIVERGING transitions don't double-spawn.
+    if let Err(e) = std::fs::create_dir_all(&metrics_dir) {
+        tracing::warn!(
+            error = %e,
+            path = %metrics_dir.display(),
+            "failed to ensure metrics/; skipping dep-audit trigger"
+        );
+        return false;
+    }
+    if let Err(e) = std::fs::write(&sentinel, b"") {
+        tracing::warn!(
+            error = %e,
+            path = %sentinel.display(),
+            "failed to write dep-audit sentinel; spawn aborted to avoid rate-limit bypass"
+        );
+        return false;
+    }
+    let spawn = std::process::Command::new("elai")
+        .arg("dep-audit")
+        .arg(&project_root)
+        .arg("--output-format")
+        .arg("toml")
+        .current_dir(&project_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawn {
+        Ok(child) => {
+            tracing::info!(
+                pid = child.id(),
+                root = %project_root.display(),
+                "spawned `elai dep-audit --output-format toml` (DIVERGING trigger)"
+            );
+            drop(child);
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to spawn elai dep-audit; ensure `elai` is on PATH for nightly audit triggers"
+            );
+            false
+        }
+    }
+}
+
 /// Returns true when the kill-switch env var is set.
 pub fn layer1a_disabled_via_env() -> bool {
     matches!(
@@ -1525,7 +1752,13 @@ mod tests {
         assert!(is_allowed(&AllowedConfigKey::DataTable(
             DataTable::LazyCodeRegex
         )));
-        assert!(!is_allowed(&AllowedConfigKey::Parameter("budget".into())));
+        // C-21 Task 7: closed-enum ParameterKey replaces String. Any valid
+        // ParameterKey is still rejected by is_allowed (which only accepts
+        // DataTable variants), and the previous "budget" string literal
+        // no longer compiles — that's the migration's whole point.
+        assert!(!is_allowed(&AllowedConfigKey::Parameter(
+            crate::self_mod_safety::ParameterKey::EtcThreshold
+        )));
     }
 
     #[test]

@@ -39,6 +39,11 @@ toml.workspace = true
 # `DefaultLayer1aProcessor` constructor (production callsite of
 # `self_mod_layer1a.rs:486`). Workspace pin matches elai-orchestrator.
 rusqlite = { workspace = true }
+# C-27: per-audit-run correlator uuid::Uuid::new_v4() in wiring_audit.rs.
+# Already a workspace dep at .elai_cc/Cargo.toml; activating v4 feature here
+# does not pull a new external crate (already in the build graph via
+# orchestrator + several other workspace crates).
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [features]
 # D4: pass-through to orchestrator's obscura feature (headless-browser fetch via obscura subprocess).

@@ -510,7 +510,12 @@ fn contract_allowed_config_key_rules() {
     assert!(is_allowed(&AllowedConfigKey::DataTable(
         DataTable::SourceTiers
     )));
-    assert!(!is_allowed(&AllowedConfigKey::Parameter("budget".into())));
+    // C-21 Task 7 — closed-enum ParameterKey replaces String. The previous
+    // `AllowedConfigKey::Parameter("budget".into())` no longer compiles
+    // because "budget" is not in the spec-canonical 12-variant set.
+    assert!(!is_allowed(&AllowedConfigKey::Parameter(
+        elai_orchestrator::ParameterKey::EtcThreshold,
+    )));
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 // ---------------------------------------------------------------------------
 // Connection constants (from CLAUDE.md "Remote sidecar (canonical)")
@@ -170,7 +172,8 @@ pub(crate) fn start_ssh_tunnel() -> Result<(), String> {
 ///
 /// Returns elapsed seconds on success.
 pub(crate) fn poll_until_healthy() -> Result<f32, String> {
-    let start = Instant::now();
+    let poll_clock = OsClock;
+    let start = poll_clock.now();
     let timeout = Duration::from_secs(HEALTH_TIMEOUT_SECS);
     let mut wait_ms = 2_000u64;
     let sock: SocketAddr = "127.0.0.1:8100"
@@ -178,7 +181,7 @@ pub(crate) fn poll_until_healthy() -> Result<f32, String> {
         .map_err(|e| format!("internal: bad sidecar addr: {e}"))?;
 
     loop {
-        if start.elapsed() >= timeout {
+        if poll_clock.elapsed_since(start) >= timeout {
             return Err(format!(
                 "remote sidecar port 8100 did not open within {HEALTH_TIMEOUT_SECS}s; \
                  check ~/sidecar.log on the remote host"
@@ -188,7 +191,7 @@ pub(crate) fn poll_until_healthy() -> Result<f32, String> {
         let reachable = TcpStream::connect_timeout(&sock, Duration::from_secs(3)).is_ok();
 
         if reachable {
-            let elapsed = start.elapsed().as_secs_f32();
+            let elapsed = poll_clock.elapsed_since(start).as_secs_f32();
             tracing::info!(elapsed_secs = elapsed, "remote-sidecar overlay: health poll passed");
             return Ok(elapsed);
         }

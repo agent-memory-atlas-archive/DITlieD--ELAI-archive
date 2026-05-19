@@ -59,6 +59,15 @@ fn ctx_at(level: PipelineLevel, risk: RiskLevel) -> AutonomousGateContext {
         context_budget_terminal: false,
         auto_advance_count_for_concept: 0,
         step_id: "step-1".into(),
+        // C-9: optional ModelPool handle for the can_fit_llm guard.
+        // Pre-C-9 contracts predate the VRAM-gating path; default to
+        // None so the legacy unconstrained behaviour is asserted.
+        model_pool: None,
+        // C-10: anti-spiral extended fields — empty / None defaults so
+        // pre-C-10 contracts compile unchanged.
+        execution_history: elai_orchestrator::ExecutionHistory::default(),
+        attempt_index: 0,
+        suggested_prompt_prefix: None,
     }
 }
 
@@ -207,13 +216,16 @@ async fn contract_split_task_on_context_terminal() {
     let gate = AutonomousGate::new(autonomous_config(), None);
     let mut ctx = ctx_at(PipelineLevel::Step, RiskLevel::Low);
     ctx.context_budget_terminal = true;
-    assert_eq!(
-        gate.decide(&ctx).await,
-        AutonomyDecision::SplitTask {
-            sub_task_count: 4,
-            depth: 2,
+    // C-9: AutonomyDecision::SplitTask now carries a SplitTaskPlan; the
+    // legacy `sub_task_count=4 depth=2` semantics are preserved via the
+    // SplitTaskPlan::sub_task_count() / depth() accessors.
+    match gate.decide(&ctx).await {
+        AutonomyDecision::SplitTask { split_plan } => {
+            assert_eq!(split_plan.sub_task_count(), 4);
+            assert_eq!(split_plan.depth(), 2);
         }
-    );
+        other => panic!("expected SplitTask, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

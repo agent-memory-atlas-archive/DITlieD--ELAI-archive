@@ -13,8 +13,14 @@ use serde::{Deserialize, Serialize};
 
 use elai_core::ClockProvider;
 
+use crate::decoding::{ConstrainedDecodingConfig, DecodingMode};
 use crate::error::ApiError;
 use crate::providers::ollama::{LlmFuture, LlmProvider, OllamaConfig};
+
+/// Sentinel substring the sidecar returns in the 503 body when constrained
+/// decoding is requested but lm-format-enforcer is unavailable. Mirrors
+/// `python/elai_inference/server.py:117` (`_ERR_CONSTRAINED_DECODING_UNAVAILABLE`).
+pub(crate) const CONSTRAINED_DECODING_UNAVAILABLE: &str = "constrained_decoding_unavailable";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -207,6 +213,12 @@ pub struct SidecarProvider {
     last_search_trigger: Mutex<Option<SearchTriggerPayload>>,
     /// Last GG intrinsic verification signals from the most recent completion.
     last_gg_signals: Mutex<GGSignals>,
+    /// C-26 — per-call constrained-decoding policy. `None` (default)
+    /// preserves the legacy un-constrained behaviour. Set via
+    /// [`SidecarProvider::set_decoding_config`] before the next
+    /// `complete()` invocation; the value is consumed by
+    /// [`SidecarProvider::build_completion_body`].
+    decoding_config: Mutex<Option<ConstrainedDecodingConfig>>,
 }
 
 impl std::fmt::Debug for SidecarProvider {
@@ -233,7 +245,29 @@ impl SidecarProvider {
             clock,
             last_search_trigger: Mutex::new(None),
             last_gg_signals: Mutex::new(GGSignals::default()),
+            decoding_config: Mutex::new(None),
         })
+    }
+
+    /// C-26 — install (or clear) a [`ConstrainedDecodingConfig`] for the
+    /// next completion. Passing `None` clears the constraint.
+    pub fn set_decoding_config(&self, cfg: Option<ConstrainedDecodingConfig>) {
+        if let Ok(mut guard) = self.decoding_config.lock() {
+            *guard = cfg;
+        } else {
+            tracing::warn!(
+                target: "providers::sidecar",
+                "decoding_config mutex poisoned; ignoring set_decoding_config"
+            );
+        }
+    }
+
+    /// C-26 — read the current decoding config without taking ownership.
+    pub fn decoding_config(&self) -> Option<ConstrainedDecodingConfig> {
+        self.decoding_config
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Check sidecar health via GET /health.
@@ -259,7 +293,23 @@ impl SidecarProvider {
     /// sidecar can report (and future patches can honour) per-request layer
     /// overrides. `etc_threshold` serializes `f64::INFINITY` as `null` to
     /// preserve the disabled-until-calibration contract.
-    pub(crate) fn build_completion_body(config: &SidecarConfig, prompt: &str) -> serde_json::Value {
+    ///
+    /// C-26: when `decoding` is `Some(cfg)`, the function emits the matching
+    /// transport fields:
+    ///   * `JsonSchema` → `response_format = { "type": "json_object",
+    ///     "schema": <parsed schema_json> }` (the sidecar's lm-format-enforcer
+    ///     handler at `server.py:1564-1641` reads `response_format`).
+    ///   * `Grammar` → `grammar_path = <ebnf_path string>` and, when the
+    ///     `crane_adaptive` flag is set, `crane_adaptive = true` (forward-
+    ///     compat flag; the sidecar ignores it today).
+    ///   * `Regex` → `regex_pattern = <pattern>`.
+    ///   * `FreeText` (and `None`) → no extra fields. Default behaviour.
+    /// `max_retries_on_invalid` is a caller-side retry budget, never forwarded.
+    pub(crate) fn build_completion_body(
+        config: &SidecarConfig,
+        prompt: &str,
+        decoding: Option<&ConstrainedDecodingConfig>,
+    ) -> serde_json::Value {
         let etc_threshold_json: serde_json::Value = if config.etc_threshold.is_infinite() {
             serde_json::Value::Null
         } else {
@@ -292,6 +342,54 @@ impl SidecarProvider {
                 );
             }
         }
+        // C-26: append constrained-decoding fields (no-op for FreeText / None).
+        if let (Some(obj), Some(cfg)) = (body.as_object_mut(), decoding) {
+            match &cfg.mode {
+                DecodingMode::JsonSchema { schema_json } => {
+                    // Best-effort schema parse; on parse failure we fall back to
+                    // forwarding the raw string so the sidecar can surface a
+                    // schema-level error rather than silently dropping the
+                    // constraint. tracing::warn! captures the parse failure.
+                    let schema_value: serde_json::Value =
+                        serde_json::from_str(schema_json).unwrap_or_else(|err| {
+                            tracing::warn!(
+                                target: "providers::sidecar",
+                                error = %err,
+                                "decoding json_schema parse failed; forwarding raw string"
+                            );
+                            serde_json::Value::String(schema_json.clone())
+                        });
+                    obj.insert(
+                        "response_format".to_owned(),
+                        serde_json::json!({
+                            "type": "json_object",
+                            "schema": schema_value,
+                        }),
+                    );
+                }
+                DecodingMode::Grammar { ebnf_path, crane_adaptive } => {
+                    obj.insert(
+                        "grammar_path".to_owned(),
+                        serde_json::Value::String(ebnf_path.to_string_lossy().into_owned()),
+                    );
+                    if *crane_adaptive {
+                        obj.insert(
+                            "crane_adaptive".to_owned(),
+                            serde_json::Value::Bool(true),
+                        );
+                    }
+                }
+                DecodingMode::Regex { pattern } => {
+                    obj.insert(
+                        "regex_pattern".to_owned(),
+                        serde_json::Value::String(pattern.clone()),
+                    );
+                }
+                DecodingMode::FreeText => {
+                    // No extra fields.
+                }
+            }
+        }
         body
     }
 
@@ -303,7 +401,15 @@ impl SidecarProvider {
         prompt: &str,
     ) -> Result<(Vec<String>, Option<SearchTriggerPayload>, GGSignals), ApiError> {
         let url = format!("{}/v1/completions", self.config.server_url);
-        let body = Self::build_completion_body(&self.config, prompt);
+        // C-26 — snapshot the currently-installed decoding config (if any) so
+        // a concurrent mutator cannot mid-flight swap the constraint.
+        let decoding_snapshot = self.decoding_config();
+
+        let body = Self::build_completion_body(
+            &self.config,
+            prompt,
+            decoding_snapshot.as_ref(),
+        );
 
         let response = self.client
             .post(&url)
@@ -314,15 +420,72 @@ impl SidecarProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response
+            let body_text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
+            // C-26 — graceful fallback when the sidecar reports
+            // `constrained_decoding_unavailable` (server.py:117). We log a
+            // warn and re-issue the request with the constraint stripped,
+            // matching the plan's stub_ban: never silently swallow this
+            // error class.
+            let fallback_eligible = decoding_snapshot
+                .as_ref()
+                .map(|cfg| !matches!(cfg.mode, DecodingMode::FreeText))
+                .unwrap_or(false)
+                && body_text.contains(CONSTRAINED_DECODING_UNAVAILABLE);
+            if fallback_eligible {
+                tracing::warn!(
+                    target: "providers::sidecar",
+                    status = %status,
+                    "sidecar reported constrained_decoding_unavailable; \
+                     falling back to FreeText for this request"
+                );
+                let fallback_body =
+                    Self::build_completion_body(&self.config, prompt, None);
+                let retry = self
+                    .client
+                    .post(&url)
+                    .json(&fallback_body)
+                    .send()
+                    .await
+                    .map_err(ApiError::Http)?;
+                if !retry.status().is_success() {
+                    let retry_status = retry.status();
+                    let retry_body = retry
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    return Err(ApiError::Api {
+                        status: retry_status,
+                        error_type: None,
+                        message: None,
+                        body: retry_body,
+                        retryable: retry_status.is_server_error(),
+                        retry_after: None,
+                    });
+                }
+                let resp: CompletionResponse =
+                    retry.json().await.map_err(ApiError::Http)?;
+                let tokens: Vec<String> = resp
+                    .choices
+                    .into_iter()
+                    .filter_map(|c| if c.text.is_empty() { None } else { Some(c.text) })
+                    .collect();
+                let gg = GGSignals {
+                    mean_logprob: resp.mean_logprob,
+                    min_logprob: resp.min_logprob,
+                    entropy_mean: resp.entropy_mean,
+                    entropy_max: resp.entropy_max,
+                    generation_novelty: resp.generation_novelty,
+                };
+                return Ok((tokens, resp.search_trigger, gg));
+            }
             return Err(ApiError::Api {
                 status,
                 error_type: None,
                 message: None,
-                body,
+                body: body_text,
                 retryable: status.is_server_error(),
                 retry_after: None,
             });
@@ -623,7 +786,7 @@ mod tests {
             actadd_enabled: false,
             actadd_layer: 0,
         };
-        let body = SidecarProvider::build_completion_body(&config, "hello");
+        let body = SidecarProvider::build_completion_body(&config, "hello", None);
         assert_eq!(body["prompt"], "hello");
         assert_eq!(body["max_tokens"], 64);
         assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
@@ -639,7 +802,7 @@ mod tests {
     #[test]
     fn completion_body_etc_threshold_infinity_serializes_as_null() {
         let config = SidecarConfig::default();
-        let body = SidecarProvider::build_completion_body(&config, "x");
+        let body = SidecarProvider::build_completion_body(&config, "x", None);
         assert!(body["etc_threshold"].is_null());
     }
 

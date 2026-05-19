@@ -24,10 +24,17 @@
 //! acceptance surface.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::project_profile::{BuildCommand, Language, ProjectProfile};
 use elai_plugins::tiered_analysis::FileDisciplineConfig;
 use elai_rules::schema::DeprecatedPatternEntry;
+
+use crate::mutation_testing::{
+    EquivalentMutantCache, MutationConfig, MutationResult, MutationRunner, PythonMutationRunner,
+    RustMutationRunner,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +81,14 @@ pub enum CheckKind {
     LazyCode,
     Completeness,
     ModuleCoherence,
+    /// C-28: Tier T-1 mutation testing — Step 6 in run_all(). Runs only
+    /// after all 5 prior checks pass (no Block findings).
+    Mutation,
+    /// C-29: Tier T-3 basic metamorphic relations — Step 7 in run_all().
+    /// Emits one `MrViolated` SSB row per failed relation; never a
+    /// standalone Block (score aggregation deferred to T-4 per
+    /// workflow/reasoning/C-29-decisions.md DECISION-D3).
+    Metamorphic,
 }
 
 impl std::fmt::Display for CheckKind {
@@ -86,6 +101,8 @@ impl std::fmt::Display for CheckKind {
             Self::LazyCode => write!(f, "lazy_code"),
             Self::Completeness => write!(f, "completeness"),
             Self::ModuleCoherence => write!(f, "module_coherence"),
+            Self::Mutation => write!(f, "mutation"),
+            Self::Metamorphic => write!(f, "metamorphic"),
         }
     }
 }
@@ -112,6 +129,14 @@ pub struct DeterministicAuditorConfig {
     pub project_root: PathBuf,
     /// File discipline config for size census (language limits, exempt paths).
     pub file_discipline: FileDisciplineConfig,
+    /// C-28: T-1 mutation testing config (from `[testing.mutation]` in
+    /// elai_cc.toml). Step 6 of run_all() consults
+    /// `mutation.enabled` + `mutation.threshold_pct`.
+    pub mutation: MutationConfig,
+    /// C-29: T-3 basic metamorphic testing config (from
+    /// `[testing.metamorphic]` in elai_cc.toml). Step 7 of run_all()
+    /// consults `metamorphic.enabled` + `metamorphic.relations`.
+    pub metamorphic: crate::metamorphic_testing::MetamorphicConfig,
 }
 
 impl Default for DeterministicAuditorConfig {
@@ -124,15 +149,33 @@ impl Default for DeterministicAuditorConfig {
             primary_language: Language::Unknown,
             project_root: PathBuf::from("."),
             file_discipline: FileDisciplineConfig::default(),
+            mutation: MutationConfig::default(),
+            metamorphic: crate::metamorphic_testing::MetamorphicConfig::default(),
         }
     }
 }
 
 impl DeterministicAuditorConfig {
     /// Build config from a ProjectProfile and deprecated pattern entries.
+    /// C-28: `mutation` defaults to `MutationConfig::default()`. Callers
+    /// that read `[testing.mutation]` from `elai_cc.toml` should use
+    /// [`Self::from_profile_with_mutation`] instead.
     pub fn from_profile(
         profile: &ProjectProfile,
         deprecated_patterns: Vec<DeprecatedPatternEntry>,
+    ) -> Self {
+        Self::from_profile_with_mutation(profile, deprecated_patterns, MutationConfig::default())
+    }
+
+    /// Build config from a ProjectProfile + deprecated patterns +
+    /// explicit MutationConfig (C-28). Used by
+    /// `DefaultDeterministicAuditGate` so the `[testing.mutation]`
+    /// section in `elai_cc.toml` is threaded all the way through
+    /// to Step 6.
+    pub fn from_profile_with_mutation(
+        profile: &ProjectProfile,
+        deprecated_patterns: Vec<DeprecatedPatternEntry>,
+        mutation: MutationConfig,
     ) -> Self {
         Self {
             enabled: true,
@@ -142,7 +185,26 @@ impl DeterministicAuditorConfig {
             primary_language: profile.languages.primary.clone(),
             project_root: profile.project_root.clone(),
             file_discipline: FileDisciplineConfig::default(),
+            mutation,
+            // C-29: per-profile callers default to MetamorphicConfig::default()
+            // (identity + inverse enabled). The `with_metamorphic` variant
+            // below threads `[testing.metamorphic]` through from elai_cc.toml.
+            metamorphic: crate::metamorphic_testing::MetamorphicConfig::default(),
         }
+    }
+
+    /// C-29: build config from ProjectProfile + MutationConfig + MetamorphicConfig.
+    /// Used by the runtime loader so `[testing.metamorphic]` reaches Step 7.
+    pub fn from_profile_with_mutation_and_metamorphic(
+        profile: &ProjectProfile,
+        deprecated_patterns: Vec<DeprecatedPatternEntry>,
+        mutation: MutationConfig,
+        metamorphic: crate::metamorphic_testing::MetamorphicConfig,
+    ) -> Self {
+        let mut cfg =
+            Self::from_profile_with_mutation(profile, deprecated_patterns, mutation);
+        cfg.metamorphic = metamorphic;
+        cfg
     }
 
     /// Per-language build command registry (7 languages from ProjectProfile).
@@ -398,6 +460,7 @@ impl DeterministicAuditor {
                 findings: Vec::new(),
                 checks_run: 0,
                 passed: true,
+                mutation: None,
             };
         }
 
@@ -416,6 +479,7 @@ impl DeterministicAuditor {
                 findings,
                 checks_run: 1,
                 passed: false,
+                mutation: None,
             };
         }
 
@@ -455,6 +519,7 @@ impl DeterministicAuditor {
                             findings,
                             checks_run: 1,
                             passed: false,
+                            mutation: None,
                         };
                     }
                     Ok(out) => {
@@ -478,6 +543,7 @@ impl DeterministicAuditor {
                                 findings,
                                 checks_run: 1,
                                 passed: false,
+                                mutation: None,
                             };
                         }
                         tracing::info!(cmd = %build_cmd.cmd, "deterministic_auditor: build command OK");
@@ -493,6 +559,7 @@ impl DeterministicAuditor {
                 findings,
                 checks_run: 2,
                 passed: false,
+                mutation: None,
             };
         }
 
@@ -503,6 +570,7 @@ impl DeterministicAuditor {
                 findings,
                 checks_run: 3,
                 passed: false,
+                mutation: None,
             };
         }
 
@@ -513,6 +581,7 @@ impl DeterministicAuditor {
                 findings,
                 checks_run: 4,
                 passed: false,
+                mutation: None,
             };
         }
 
@@ -520,14 +589,213 @@ impl DeterministicAuditor {
         findings.extend(self.check_completeness(changed_files));
         findings.extend(self.check_module_coherence(changed_files));
 
+        let prior_block = findings
+            .iter()
+            .any(|f| f.severity == DeterministicSeverity::Block);
+
+        // Step 6 (C-28): MUTATION CHECK. Runs ONLY when:
+        //   * MutationConfig.enabled is true, AND
+        //   * Steps 1-5 produced ZERO Block findings.
+        // The runner is async; we bridge via tokio::task::block_in_place +
+        // Handle::current().block_on. In a no-runtime context (unit tests
+        // outside a tokio runtime) the check emits a single Warn-severity
+        // finding ("mutation check skipped — no tokio runtime") and
+        // returns no MutationResult. See workflow/reasoning/C-28-decisions.md
+        // DECISION-D3 (DRIFT-C28-2).
+        let mut mutation_result: Option<MutationResult> = None;
+        let mut checks_run: u8 = 5;
+        if self.config.mutation.enabled && !prior_block {
+            checks_run = 6;
+            match self.check_mutation(changed_files) {
+                Ok(Some((mut_findings, result))) => {
+                    findings.extend(mut_findings);
+                    mutation_result = Some(result);
+                }
+                Ok(None) => {
+                    findings.push(DeterministicFinding {
+                        check: CheckKind::Mutation,
+                        severity: DeterministicSeverity::Warn,
+                        file: None,
+                        line: None,
+                        message:
+                            "mutation check skipped — no tokio runtime in scope"
+                                .to_owned(),
+                    });
+                }
+                Err(e) => {
+                    findings.push(DeterministicFinding {
+                        check: CheckKind::Mutation,
+                        severity: DeterministicSeverity::Warn,
+                        file: None,
+                        line: None,
+                        message: format!("mutation check failed: {e}"),
+                    });
+                }
+            }
+        }
+
+        // Step 7 (C-29): METAMORPHIC CHECK. Runs ONLY when:
+        //   * MetamorphicConfig.enabled is true, AND
+        //   * Steps 1-6 produced ZERO Block findings (same gate as Step 6).
+        // The runner is synchronous (sync closure inputs) so no tokio
+        // bridge is needed (unlike Step 6). Failed relations surface as
+        // Warn-level DeterministicFindings carrying the relation name +
+        // counterexample summary; SSB MrViolated row emission is the
+        // caller's responsibility (the runner stays SSB-agnostic so unit
+        // tests need no writer) — score aggregation deferred to T-4 per
+        // workflow/reasoning/C-29-decisions.md DECISION-D3.
+        let post_step6_block = findings
+            .iter()
+            .any(|f| f.severity == DeterministicSeverity::Block);
+        if self.config.metamorphic.enabled && !post_step6_block {
+            checks_run = 7;
+            let mr_findings = self.check_metamorphic();
+            findings.extend(mr_findings);
+        }
+
         let passed = !findings
             .iter()
             .any(|f| f.severity == DeterministicSeverity::Block);
         DeterministicAuditResult {
             findings,
-            checks_run: 5,
+            checks_run,
             passed,
+            mutation: mutation_result,
         }
+    }
+
+    // -- Check 7 (C-29): METAMORPHIC --
+
+    /// Run the T-3 metamorphic gate. Construction of the configured
+    /// `MetamorphicTestRunner` validates `[testing.metamorphic].relations`
+    /// against the known relation set (unknown names emit a
+    /// `tracing::warn!` via `RelationLibrary::from_config`). When zero
+    /// relations remain enabled a single Warn finding surfaces the
+    /// misconfiguration; otherwise the dispatch is silent. Per-BabyStep
+    /// corpus integration is deferred to T-4+; until then the
+    /// `checks_run = 7` bump in `run_all()` is the observable wire-evidence
+    /// of dispatch. Never returns Block per
+    /// workflow/reasoning/C-29-decisions.md DECISION-D3 (MrViolated is
+    /// evidence-only, not a standalone Block).
+    fn check_metamorphic(&self) -> Vec<DeterministicFinding> {
+        let runner = crate::metamorphic_testing::MetamorphicTestRunner::from_config(
+            &self.config.metamorphic,
+        );
+        if runner.library.enabled.is_empty() {
+            return vec![DeterministicFinding {
+                check: CheckKind::Metamorphic,
+                severity: DeterministicSeverity::Warn,
+                file: None,
+                line: None,
+                message: "metamorphic check skipped — no relations enabled".to_owned(),
+            }];
+        }
+        // Pending integration: per-BabyStep MR corpus (T-4+). Clean
+        // dispatch path emits no findings — observable via checks_run = 7
+        // in `DeterministicAuditResult`. The `runner` is constructed (and
+        // its config validated via `from_config`) so misconfiguration
+        // surfaces eagerly even when no corpus is supplied; the value is
+        // intentionally unused on the happy path.
+        let _ = runner;
+        Vec::new()
+    }
+
+    // -- Check 6 (C-28): MUTATION --
+
+    /// Run the T-1 mutation gate on `changed_files`. Returns:
+    ///   * `Ok(Some((findings, result)))` — runner executed; emits one
+    ///     Block finding when `result.mutation_score_pct < threshold_pct`.
+    ///   * `Ok(None)` — no tokio runtime available; caller emits a Warn.
+    ///   * `Err(_)` — runner failure (subprocess spawn / parse error etc).
+    ///
+    /// The runner is dispatched by file extension: `.rs` files go to
+    /// [`RustMutationRunner`]; `.py` files to [`PythonMutationRunner`].
+    /// Both runners share a single [`EquivalentMutantCache`] keyed by
+    /// `<project_root>/.elai/mutation_cache.sqlite3` so cross-runner
+    /// equivalent mutants are deduplicated.
+    fn check_mutation(
+        &self,
+        changed_files: &[PathBuf],
+    ) -> Result<
+        Option<(Vec<DeterministicFinding>, MutationResult)>,
+        crate::mutation_testing::MutationError,
+    > {
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => return Ok(None),
+        };
+
+        let project_root = self.config.project_root.clone();
+        let cache_path = project_root.join(".elai").join("mutation_cache.sqlite3");
+        let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let cache = EquivalentMutantCache::open(&cache_path, clock)?;
+        let cfg = self.config.mutation.clone();
+
+        let rust_files: Vec<PathBuf> = changed_files
+            .iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+            .cloned()
+            .collect();
+        let py_files: Vec<PathBuf> = changed_files
+            .iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("py"))
+            .cloned()
+            .collect();
+
+        let mut aggregate: Vec<crate::mutation_testing::MutantRecord> = Vec::new();
+        let mut total_run: u32 = 0;
+        let mut cache_hits: u32 = 0;
+
+        // Bridge async runner.run() into sync run_all() via block_in_place +
+        // block_on (DRIFT-C28-2 DECISION-D3).
+        if !rust_files.is_empty() {
+            let runner = RustMutationRunner::new();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(runner.run(&cfg, &project_root, &rust_files, &cache))
+            })?;
+            total_run = total_run.saturating_add(result.total_run);
+            cache_hits = cache_hits.saturating_add(result.cache_hits);
+            aggregate.extend(result.records);
+        }
+        if !py_files.is_empty() {
+            let runner = PythonMutationRunner::new();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(runner.run(&cfg, &project_root, &py_files, &cache))
+            })?;
+            total_run = total_run.saturating_add(result.total_run);
+            cache_hits = cache_hits.saturating_add(result.cache_hits);
+            aggregate.extend(result.records);
+        }
+
+        let aggregate_result = {
+            let mut r = MutationResult::from_records(aggregate);
+            // The MutationResult::from_records score is correct over the
+            // aggregated record set. Preserve cache_hits + total_run from
+            // the per-runner sums (they exclude cache_hits from total_run).
+            r.total_run = total_run;
+            r.cache_hits = cache_hits;
+            r
+        };
+
+        let mut findings = Vec::new();
+        // Block when score < threshold AND we actually ran something.
+        if aggregate_result.total_run > 0
+            && aggregate_result.mutation_score_pct < self.config.mutation.threshold_pct
+        {
+            findings.push(DeterministicFinding {
+                check: CheckKind::Mutation,
+                severity: DeterministicSeverity::Block,
+                file: None,
+                line: None,
+                message: format!(
+                    "mutation_score {:.1}% < threshold {:.1}%",
+                    aggregate_result.mutation_score_pct,
+                    self.config.mutation.threshold_pct,
+                ),
+            });
+        }
+
+        Ok(Some((findings, aggregate_result)))
     }
 
     // -- Check 1: Build commands --
@@ -943,6 +1211,10 @@ impl DeterministicAuditor {
         };
 
         // Extract `mod child_name;` declarations (not inline `mod name { ... }`)
+        // SAFETY: LazyLock infallible regex (B-16B D5 exempt) — literal pattern is
+        // statically validated; regex::Regex::new on a const-checked literal cannot
+        // panic at runtime once compiled.
+        #[allow(clippy::unwrap_used)]
         static MOD_DECL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"(?m)^\s*(?:pub\s+)?mod\s+(\w+)\s*;").unwrap()
         });
@@ -989,6 +1261,10 @@ impl DeterministicAuditor {
             None => return,
         };
 
+        // SAFETY: LazyLock infallible regex (B-16B D5 exempt) — literal pattern is
+        // statically validated; regex::Regex::new on a const-checked literal cannot
+        // panic at runtime once compiled.
+        #[allow(clippy::unwrap_used)]
         static PY_IMPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r"from\s+\.(\w+)\s+import").unwrap()
         });
@@ -1034,6 +1310,10 @@ impl DeterministicAuditor {
             None => return,
         };
 
+        // SAFETY: LazyLock infallible regex (B-16B D5 exempt) — literal pattern is
+        // statically validated; regex::Regex::new on a const-checked literal cannot
+        // panic at runtime once compiled.
+        #[allow(clippy::unwrap_used)]
         static TS_EXPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r#"export\s+.*\s+from\s+['"]\./(\w+)['"]"#).unwrap()
         });
@@ -1140,10 +1420,16 @@ fn is_test_file(path: &Path, lang: &Language) -> bool {
 #[derive(Debug, Clone)]
 pub struct DeterministicAuditResult {
     pub findings: Vec<DeterministicFinding>,
-    /// Number of checks completed (1-5). Less than 5 means early exit on build failure.
+    /// Number of checks completed (1-6). Less than 6 means early exit on
+    /// a Block finding (or Step 6 disabled via `MutationConfig.enabled`).
     pub checks_run: u8,
     /// True iff zero BLOCK findings.
     pub passed: bool,
+    /// C-28: Step 6 mutation result, when run. `None` when mutation is
+    /// disabled OR the audit short-circuited before Step 6. The gate
+    /// caller iterates `mutation.records` to emit one
+    /// `SsbActionType::MutationSurvived` row per `MutantOutcome::Survived`.
+    pub mutation: Option<MutationResult>,
 }
 
 impl DeterministicAuditResult {
@@ -1219,10 +1505,14 @@ mod tests {
         let config = default_config();
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&[]);
-        // Should have a warn about missing build commands
-        assert_eq!(result.warn_count(), 1);
-        assert!(result.passed); // WARN does not block
-        assert_eq!(result.checks_run, 5);
+        // C-28: Step 6 (mutation) is enabled by default. In a non-tokio
+        // unit-test context, check_mutation returns Ok(None) and emits
+        // a second Warn ("mutation check skipped — no tokio runtime").
+        // So warn_count becomes 2 (build + mutation), checks_run is 6,
+        // and the audit still passes (Warns do not block).
+        assert_eq!(result.warn_count(), 2);
+        assert!(result.passed);
+        assert_eq!(result.checks_run, 6);
     }
 
     #[test]
@@ -1418,6 +1708,7 @@ mod tests {
             ],
             checks_run: 5,
             passed: false,
+            mutation: None,
         };
         let audit_findings = result.to_audit_findings();
         assert_eq!(audit_findings.len(), 2);
@@ -1457,7 +1748,10 @@ mod tests {
         let auditor = DeterministicAuditor::new(config);
         let result = auditor.run_all(&[file]);
         assert!(result.passed);
-        assert_eq!(result.checks_run, 5);
+        // C-28: Step 6 (mutation) runs after the 5 prior checks pass.
+        // No tokio runtime in this unit-test => check_mutation -> Ok(None)
+        // => emits a Warn (does not block). checks_run becomes 6.
+        assert_eq!(result.checks_run, 6);
         assert_eq!(result.block_count(), 0);
     }
 

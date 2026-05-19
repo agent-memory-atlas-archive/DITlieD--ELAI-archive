@@ -1,0 +1,12 @@
+id = "task_10"
+description = """
+A Tokio-based async service holds a `std::sync::Mutex<HashMap>` across an
+`.await`, which blocks the runtime. Convert the field to
+`tokio::sync::Mutex<HashMap>` and replace `.lock().unwrap()` with
+`.lock().await` at every call site so the runtime can continue scheduling
+other tasks.
+"""
+expected_output = "tokio::sync::Mutex"
+timeout_s = 180
+stage = 3
+is_canary = false

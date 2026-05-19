@@ -29,7 +29,7 @@ use elai_orchestrator::ssb::{
 };
 use elai_orchestrator::{
     classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,
-    GpuInfo, SystemProbeReport, SystemProber, TaskRunnerConfig, ELAI_DISABLE_SYSTEM_PROBE_ENV,
+    GpuInfo, SystemProbeResult, SystemProber, TaskRunnerConfig, ELAI_DISABLE_SYSTEM_PROBE_ENV,
     ELAI_FREE_DISK_GB_ENV, ELAI_FREE_RAM_GB_ENV, ELAI_VRAM_FREE_GB_ENV, ELAI_VRAM_GB_ENV,
 };
 
@@ -280,7 +280,7 @@ async fn contract_unavailable_report_includes_gpu_stub() {
     std::env::set_var(ELAI_DISABLE_SYSTEM_PROBE_ENV, "1");
     let clock: Arc<dyn ClockProvider> = Arc::new(OsClock);
     let prober = DefaultSystemProber::new(None, clock);
-    let r: SystemProbeReport = prober.probe().await;
+    let r: SystemProbeResult = prober.probe().await;
     std::env::remove_var(ELAI_DISABLE_SYSTEM_PROBE_ENV);
     let gpu: GpuInfo = r.gpu.expect("unavailable still carries stub GpuInfo");
     assert_eq!(gpu.name, "unavailable");

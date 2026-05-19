@@ -1,0 +1,37 @@
+(* C-26 — file-plan EBNF grammar.
+ * Constrains designer / planner output when emitting the per-baby-step
+ * "Files touched" plan as a JSON object.  Each plan lists ADD / MODIFY /
+ * DELETE buckets, each carrying zero-or-more relative-path strings.
+ *
+ * Used by the executor role's DecodingMode::Grammar default to keep
+ * file-list output structurally sound even when the model would
+ * otherwise hallucinate prose around the list.
+ *)
+
+file_plan = "{" ws
+            field_add ws "," ws
+            field_modify ws "," ws
+            field_delete ws
+            "}" ;
+
+field_add    = '"add"' ws ":" ws path_array ;
+field_modify = '"modify"' ws ":" ws path_array ;
+field_delete = '"delete"' ws ":" ws path_array ;
+
+path_array = "[" ws "]" | "[" ws path_string ( ws "," ws path_string )* ws "]" ;
+
+(* Relative path: at least one path segment, segments joined by "/".
+ * Segments use letters, digits, '_', '-', '.', no spaces or absolute
+ * paths.  Disallows leading "/" or "\".  Disallows leading "..".
+ *)
+path_string = '"' path_segment ( "/" path_segment )* '"' ;
+path_segment = path_char+ ;
+path_char    = letter | digit | "_" | "-" | "." ;
+letter       = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+             | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+             | "u" | "v" | "w" | "x" | "y" | "z"
+             | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+             | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+             | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+digit        = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+ws           = ( " " | "\t" | "\n" | "\r" )* ;

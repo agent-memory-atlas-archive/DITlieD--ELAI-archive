@@ -247,7 +247,7 @@
 
   .section-heading {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-secondary);
@@ -261,13 +261,13 @@
     max-height: 220px;
   }
 
-  /* Override Tree primitive to 20px rows / 11px font */
+  /* Override Tree primitive to 20px rows / 10px font */
   .mini-tree :global(.tree-node) {
     height: 20px;
   }
 
   .mini-tree :global(.tree-label) {
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .mini-tree :global(.tree-meta) {
@@ -472,7 +472,7 @@
 
   .empty-note {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: var(--s-2) 0;
   }

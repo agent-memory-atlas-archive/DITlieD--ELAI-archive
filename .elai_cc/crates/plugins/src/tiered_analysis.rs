@@ -11,8 +11,11 @@ use blake3;
 use elai_rules::predicate::VerdictResult;
 use elai_rules::rule_engine::{EvaluationContext, FsmPhaseBit, RuleEngine};
 use rustc_hash::FxHashMap;
-use std::sync::LazyLock;
+use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
+use elai_core::file_plan::FilePlan;
+use elai_core::mistake_book::FailureCategory;
 use elai_core::{ClockProvider as _, OsClock};
 
 use crate::import_extractor::{
@@ -69,6 +72,21 @@ pub struct FileDisciplineConfig {
     /// Maximum distinct external symbols per file (T2 Check 6b). Default: 15.
     #[serde(default = "FileDisciplineConfig::default_max_coupling_score")]
     pub max_coupling_score: usize,
+    /// C-31 §Task 7 — ProjectIntelligence-derived per-language overrides
+    /// applied on top of `limits`. When populated, the override entries
+    /// take precedence in `evaluate_file_size`. Empty by default so spec
+    /// defaults hold when PI is unavailable (see C-31-decisions DRIFT-6).
+    #[serde(default)]
+    pub language_limit_overrides: FxHashMap<String, LanguageLimits>,
+    /// C-32 §Task 5 / DRIFT-10 — opt-in flag for the StructuralRetrySequencer
+    /// AcceptAndComplete outcome. When false (the default) a BLOCKed fill that
+    /// runs out of structural retry stages propagates upward as Exhausted.
+    /// When true, a FilledBuffer with completeness_ratio >= 0.5 is accepted
+    /// and the remaining blanks are flushed as `// BLANK_N -- not filled`
+    /// comments. Cloud /task callers may flip this on per-project; strict
+    /// local development keeps it off so partial writes are not silenced.
+    #[serde(default)]
+    pub accept_and_complete_enabled: bool,
 }
 
 impl FileDisciplineConfig {
@@ -109,7 +127,60 @@ impl Default for FileDisciplineConfig {
             ],
             max_cyclomatic_complexity: Self::default_max_cyclomatic_complexity(),
             max_coupling_score: Self::default_max_coupling_score(),
+            language_limit_overrides: FxHashMap::default(),
+            // C-32 / DRIFT-10 — strict by default. Cloud /task callers may
+            // flip this on per-project.
+            accept_and_complete_enabled: false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-31 — MistakeRecorder trait + named constants
+// ---------------------------------------------------------------------------
+
+/// Per-baby-step function-count slack permitted on top of `FileSpec.functions.len()`
+/// before T2 Check 3 emits a BLOCK. Named constant — see C-31 §Task 6.
+pub const FUNCTION_COUNT_SLACK: usize = 2;
+
+/// Re-export of the global cap enforced by `FilePlan::validate`. Mirrored
+/// here so callers reading T2 logic see the same source-of-truth value
+/// without crossing the `elai-core` boundary unnecessarily.
+pub const MAX_FUNCTIONS_PER_FILE: u8 = elai_core::file_plan::MAX_FUNCTIONS_PER_FILE;
+
+/// Inject point for MistakeBook recording from T1/T2 BLOCK verdicts.
+///
+/// C-31 §Task 5. The production implementation lives in task_runner (or
+/// a thin orchestrator-side adapter) and calls `write_mistake_entry`;
+/// every hook caller receives the no-op default unless explicitly wired.
+/// Sync trait — no async — so it can fire from inside `evaluate` without
+/// awaiting. Production implementations spawn fire-and-forget tasks.
+pub trait MistakeRecorder: Send + Sync {
+    /// Record one BLOCK event. Implementations MUST NOT panic. Errors
+    /// inside the recorder are logged but never bubble up — code
+    /// completeness enforcement must not break the hook hot path.
+    fn record_mistake_event(
+        &self,
+        baby_step_id: &str,
+        category: FailureCategory,
+        file_path: &Path,
+        snippet: &str,
+    );
+}
+
+/// No-op MistakeRecorder. Default for both T1 and T2 hooks so existing
+/// callers (and the entire test suite) keep working unchanged.
+pub struct NoopMistakeRecorder;
+
+impl MistakeRecorder for NoopMistakeRecorder {
+    fn record_mistake_event(
+        &self,
+        _baby_step_id: &str,
+        _category: FailureCategory,
+        _file_path: &Path,
+        _snippet: &str,
+    ) {
+        // intentional no-op
     }
 }
 
@@ -143,6 +214,21 @@ pub(crate) fn env_flag_true(name: &str) -> bool {
     std::env::var(name)
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
         .unwrap_or(false)
+}
+
+/// C-31 §Task 6 helper — recursively count AST nodes of a given kind.
+/// Used by T2 Check 3 to count `function_item` (Rust) and
+/// `function_definition` (Python) nodes for FilePlan validation.
+fn count_nodes_of_kind(node: &tree_sitter::Node<'_>, kind: &str) -> usize {
+    let mut total = 0usize;
+    if node.kind() == kind {
+        total += 1;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        total += count_nodes_of_kind(&child, kind);
+    }
+    total
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +370,51 @@ static LAZY_PATTERNS: LazyLock<Vec<LazyPattern>> = LazyLock::new(|| vec![
 ]);
 
 // ---------------------------------------------------------------------------
+// C-32 MiniCritic — 7-pattern lazy subset (BORROWED, no regex duplication)
+// ---------------------------------------------------------------------------
+//
+// Plan §Task 2 (a): MiniCritic re-uses the existing T1 LazyLock<Regex> statics
+// declared above. Per plan stub_ban "MiniCritic MUST reuse T1 LazyLock<Regex>
+// statics from tiered_analysis.rs; MUST NOT duplicate regex literals" the
+// new module just borrows the seven patterns by id rather than defining its
+// own. The pattern_id strings travel through MiniCriticResult.reason as
+// "lazy_pattern:<id>".
+
+/// One MiniCritic lazy pattern. The `id` mirrors the parent
+/// [`LazyPattern.id`] string so dashboards can render verdict rows that
+/// match T1 hook output 1:1.
+pub struct MiniCriticPattern {
+    pub id: &'static str,
+    /// Regex statically borrowed from this module — never `Regex::new` at
+    /// call time.
+    pub regex: &'static LazyLock<regex::Regex>,
+    /// Optional language scope; `None` means universal (all languages).
+    pub language: Option<&'static str>,
+}
+
+/// Returns the 7-pattern subset called out by C-32 plan §Task 2 (a).
+///
+/// Order is fixed: `// TODO`, `// FIXME`, `# TODO`, `// ...` ellipsis,
+/// `todo!(...)`, `unimplemented!(...)`, bare `pass`. A first-match wins.
+/// The data is `'static` so cloning the array is just pointer copies; the
+/// regex statics are already cached behind `LazyLock`.
+pub fn mini_critic_patterns() -> &'static [MiniCriticPattern] {
+    &*MINI_CRITIC_PATTERNS
+}
+
+static MINI_CRITIC_PATTERNS: LazyLock<[MiniCriticPattern; 7]> = LazyLock::new(|| {
+    [
+        MiniCriticPattern { id: "todo_slash", regex: &RE_TODO_SLASH, language: None },
+        MiniCriticPattern { id: "fixme_slash", regex: &RE_FIXME_SLASH, language: None },
+        MiniCriticPattern { id: "todo_hash", regex: &RE_TODO_HASH, language: None },
+        MiniCriticPattern { id: "ellipsis_slash", regex: &RE_ELLIPSIS_SLASH, language: None },
+        MiniCriticPattern { id: "rust_todo_macro", regex: &RE_RUST_TODO, language: Some("rust") },
+        MiniCriticPattern { id: "rust_unimplemented", regex: &RE_RUST_UNIMPL, language: Some("rust") },
+        MiniCriticPattern { id: "py_bare_pass", regex: &RE_PY_PASS, language: Some("python") },
+    ]
+});
+
+// ---------------------------------------------------------------------------
 // Hook verdict types
 // ---------------------------------------------------------------------------
 
@@ -341,6 +472,16 @@ pub struct T1Hook {
     loaded_rules: Vec<(elai_rules::rule_engine::Rule, elai_rules::rule_engine::CompiledPredicate)>,
     /// File discipline config for size enforcement.
     file_discipline: FileDisciplineConfig,
+    /// C-31 §Task 5 — MistakeBook BLOCK event recorder. Defaults to
+    /// `None`, in which case BLOCK verdicts emitted by T1 are NOT
+    /// recorded (preserving existing test-suite behaviour). Production
+    /// wiring injects an SSB-backed implementation via
+    /// [`Self::set_mistake_recorder`].
+    mistake_recorder: Option<Arc<dyn MistakeRecorder>>,
+    /// C-31 §Task 5 — baby_step_id stamped on every MistakeRecorder call.
+    /// Updated by the task_runner before each evaluation; defaults to a
+    /// sentinel string so test-only callers still get well-formed ids.
+    current_baby_step_id: String,
 }
 
 impl T1Hook {
@@ -351,6 +492,8 @@ impl T1Hook {
             fsm_phase,
             loaded_rules: Vec::new(),
             file_discipline: FileDisciplineConfig::default(),
+            mistake_recorder: None,
+            current_baby_step_id: String::new(),
         }
     }
 
@@ -366,6 +509,8 @@ impl T1Hook {
             fsm_phase,
             loaded_rules: rules,
             file_discipline: FileDisciplineConfig::default(),
+            mistake_recorder: None,
+            current_baby_step_id: String::new(),
         }
     }
 
@@ -381,6 +526,19 @@ impl T1Hook {
     /// Replace file discipline config at runtime.
     pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
         self.file_discipline = config;
+    }
+
+    /// C-31 §Task 5 — inject a MistakeBook-backed BLOCK event recorder.
+    /// Setter pattern matches the established `set_*` style (see DRIFT-5).
+    pub fn set_mistake_recorder(&mut self, recorder: Arc<dyn MistakeRecorder>) {
+        self.mistake_recorder = Some(recorder);
+    }
+
+    /// C-31 §Task 5 — stamp the currently-active baby step id used as the
+    /// MistakeBook bucket key for any BLOCK events emitted during the
+    /// next [`Self::evaluate`] call.
+    pub fn set_current_baby_step_id(&mut self, id: impl Into<String>) {
+        self.current_baby_step_id = id.into();
     }
 
     /// Evaluate predicates for active rules matching current phase + domain.
@@ -496,7 +654,13 @@ impl T1Hook {
         let is_test = is_test_file(file_path);
         let line_count = source.lines().count();
 
-        let (warn_limit, hard_block) = if let Some(limits) = self.file_discipline.limits.get(lang) {
+        // C-31 §Task 7 — overrides win over base `limits` for the same key.
+        let lang_limits = self
+            .file_discipline
+            .language_limit_overrides
+            .get(lang)
+            .or_else(|| self.file_discipline.limits.get(lang));
+        let (warn_limit, hard_block) = if let Some(limits) = lang_limits {
             let warn = if is_test { limits.test_warn } else { limits.production_warn };
             (warn, limits.hard_block)
         } else {
@@ -505,6 +669,15 @@ impl T1Hook {
         };
 
         if line_count > hard_block {
+            // C-31 §Task 5 — record FileSizeExceeded BLOCK into MistakeBook.
+            if let Some(rec) = &self.mistake_recorder {
+                rec.record_mistake_event(
+                    &self.current_baby_step_id,
+                    FailureCategory::FileSizeExceeded,
+                    Path::new(file_path),
+                    &format!("{} lines (limit {})", line_count, hard_block),
+                );
+            }
             HookVerdict::Block {
                 message: format!(
                     "File exceeds hard block limit ({} lines > {} max for {})",
@@ -605,6 +778,15 @@ pub struct T2Hook {
     deprecated_imports: Vec<DeprecatedImport>,
     /// File discipline config for responsibility metrics (complexity, coupling).
     file_discipline: FileDisciplineConfig,
+    /// C-31 §Task 5 — MistakeBook BLOCK event recorder. Defaults to
+    /// `None`; production wiring injects an SSB-backed implementation
+    /// via [`Self::set_mistake_recorder`].
+    mistake_recorder: Option<Arc<dyn MistakeRecorder>>,
+    /// C-31 §Task 5 — baby_step_id stamped on every MistakeRecorder call.
+    current_baby_step_id: String,
+    /// C-31 §Task 6 — optional FilePlan driving Check 3 (function-count
+    /// guard). When `None`, Check 3 is silently skipped.
+    file_plan: Option<Arc<FilePlan>>,
 }
 
 /// Detected language for tree-sitter parsing.
@@ -626,6 +808,9 @@ impl T2Hook {
             circuit_breaker_lines,
             deprecated_imports: Vec::new(),
             file_discipline: FileDisciplineConfig::default(),
+            mistake_recorder: None,
+            current_baby_step_id: String::new(),
+            file_plan: None,
         }
     }
 
@@ -642,6 +827,9 @@ impl T2Hook {
             circuit_breaker_lines,
             deprecated_imports,
             file_discipline: FileDisciplineConfig::default(),
+            mistake_recorder: None,
+            current_baby_step_id: String::new(),
+            file_plan: None,
         }
     }
 
@@ -654,6 +842,23 @@ impl T2Hook {
     /// Replace file discipline config at runtime.
     pub fn set_file_discipline(&mut self, config: FileDisciplineConfig) {
         self.file_discipline = config;
+    }
+
+    /// C-31 §Task 5 — inject a MistakeBook-backed BLOCK event recorder
+    /// on T2 (used for LazyCode and EmptyBody BLOCK paths).
+    pub fn set_mistake_recorder(&mut self, recorder: Arc<dyn MistakeRecorder>) {
+        self.mistake_recorder = Some(recorder);
+    }
+
+    /// C-31 §Task 5 — stamp the currently-active baby step id for the
+    /// next evaluate() call. See [`T1Hook::set_current_baby_step_id`].
+    pub fn set_current_baby_step_id(&mut self, id: impl Into<String>) {
+        self.current_baby_step_id = id.into();
+    }
+
+    /// C-31 §Task 6 — install the FilePlan that drives Check 3.
+    pub fn set_file_plan(&mut self, plan: Arc<FilePlan>) {
+        self.file_plan = Some(plan);
     }
 
     /// Detect language from file extension.
@@ -747,6 +952,14 @@ impl T2Hook {
             // Check 6b: coupling score (all languages with import nodes)
             self.check_coupling_score_generic(&root, source, detected, file_path, &mut findings);
 
+            // C-31 §Task 6 — Check 3: function-count guard vs FilePlan.
+            // Runs only when a FilePlan is installed and the file path
+            // matches a declared FileSpec. Per DRIFT-9: Rust grammar
+            // node = `function_item`, Python = `function_definition`.
+            self.check_function_count_against_file_plan(
+                &root, detected, file_path, &mut findings,
+            );
+
             // --- Language-specific deep checks ---
             match detected {
                 DetectedLanguage::Rust => {
@@ -807,6 +1020,13 @@ impl T2Hook {
         let has_complexity_block = findings
             .iter()
             .any(|(id, _)| id.starts_with("cyclomatic_complexity") || id.starts_with("coupling_score"));
+        // C-31 §Task 6 — function-count overflow elevates to BLOCK.
+        let has_fn_count_block = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("fn_count_exceeds_file_plan"));
+        let has_empty_body = findings
+            .iter()
+            .any(|(id, _)| id.starts_with("empty_fn_body"));
         let has_lazy_code = findings.iter().any(|(id, _)| {
             id.starts_with("lazy_") || id.starts_with("empty_fn_body")
         });
@@ -815,12 +1035,18 @@ impl T2Hook {
             .any(|(id, _)| id.starts_with("magic_number"));
 
         let (pattern_id, message) = &findings[0];
-        let verdict = if has_ast_error || has_deprecated_block || has_security_block || has_complexity_block {
+        let verdict = if has_ast_error
+            || has_deprecated_block
+            || has_security_block
+            || has_complexity_block
+            || has_fn_count_block
+        {
             // Find the first BLOCK-level finding for the message
             let block_finding = findings.iter().find(|(id, _)| {
                 id.starts_with("ast_error") || id.starts_with("deprecated_import_BLOCK")
                     || id.starts_with("unwrap_call") || id.starts_with("eval_call")
                     || id.starts_with("cyclomatic_complexity") || id.starts_with("coupling_score")
+                    || id.starts_with("fn_count_exceeds_file_plan")
             });
             let (bid, bmsg) = match block_finding {
                 Some((id, msg)) => (id.as_str(), msg.as_str()),
@@ -852,7 +1078,98 @@ impl T2Hook {
                 pattern_hash: blake3::hash(pattern_id.as_bytes()).to_hex().to_string(),
             }
         };
+
+        // C-31 §Task 5 — record BLOCK events to MistakeBook. The verdict
+        // path drives the FailureCategory: empty-body and lazy-code WARN
+        // verdicts route through T1 LazyCode by spec, so they only fire
+        // here when the verdict is BLOCK (e.g. multiple lazy findings).
+        if let (Some(rec), HookVerdict::Block { .. }) = (&self.mistake_recorder, &verdict) {
+            let category = if has_empty_body {
+                FailureCategory::EmptyBody
+            } else if has_lazy_code {
+                FailureCategory::LazyCode
+            } else {
+                // Other BLOCK paths (AST error, deprecated, security,
+                // complexity, fn-count) are not Layer 1 FailureTaxonomy
+                // events per spec L1224-1255. Skip recording.
+                let _ = rec;
+                return Ok(Some(verdict));
+            };
+            let snippet_finding = findings.iter().find(|(id, _)| {
+                id.starts_with("empty_fn_body") || id.starts_with("lazy_")
+            });
+            let snippet = snippet_finding
+                .map(|(_, m)| m.as_str())
+                .unwrap_or("(no snippet)");
+            rec.record_mistake_event(
+                &self.current_baby_step_id,
+                category,
+                Path::new(file_path),
+                snippet,
+            );
+        }
+
         Ok(Some(verdict))
+    }
+
+    /// C-31 §Task 6 — Check 3: count function definitions in the AST
+    /// and compare against the FilePlan FileSpec entry for this file.
+    ///
+    /// Per DRIFT-9: Rust node = `function_item`, Python = `function_definition`.
+    /// Other languages: no-op (FilePlan currently scoped to Rust + Python).
+    fn check_function_count_against_file_plan(
+        &self,
+        root: &tree_sitter::Node<'_>,
+        lang: DetectedLanguage,
+        file_path: &str,
+        findings: &mut Vec<(String, String)>,
+    ) {
+        let plan = match &self.file_plan {
+            Some(p) => p,
+            None => return, // silently skipped per spec
+        };
+
+        // Match by suffix so a relative spec path (e.g. "src/foo.rs")
+        // still matches an absolute write path. PathBuf comparison via
+        // string suffix avoids canonicalisation cost in the hot path.
+        let normalized = file_path.replace('\\', "/");
+        let entry = plan
+            .new_files
+            .iter()
+            .find(|f| normalized.ends_with(&f.path.to_string_lossy().replace('\\', "/")))
+            .map(|f| (f.path.clone(), f.functions.len()))
+            .or_else(|| {
+                plan.modified_files
+                    .iter()
+                    .find(|f| {
+                        normalized.ends_with(&f.path.to_string_lossy().replace('\\', "/"))
+                    })
+                    .map(|f| (f.path.clone(), f.functions.len()))
+            });
+        let (matched_path, declared) = match entry {
+            Some(v) => v,
+            None => return, // file not in plan -> skip
+        };
+
+        let node_kind = match lang {
+            DetectedLanguage::Rust => "function_item",
+            DetectedLanguage::Python => "function_definition",
+            _ => return,
+        };
+        let actual = count_nodes_of_kind(root, node_kind);
+        let limit_with_slack = declared + FUNCTION_COUNT_SLACK;
+        if actual > limit_with_slack {
+            findings.push((
+                format!("fn_count_exceeds_file_plan_{}", matched_path.display()),
+                format!(
+                    "function count {} exceeds FILE_PLAN limit {}+{} in {}",
+                    actual,
+                    declared,
+                    FUNCTION_COUNT_SLACK,
+                    matched_path.display()
+                ),
+            ));
+        }
     }
 
     /// Extract imports via tree-sitter AST and cross-reference against deprecated patterns.
@@ -1581,7 +1898,7 @@ pub enum T3Category {
     AccessibilityHint,
     /// Naming convention hint (A-32/A-33 conventions).
     NamingConvention,
-    /// TODO/FIXME reminder in public API surface.
+    /// TODO/FIXME reminder in public API surface. stub-ban-allow: enum variant name describing a T3 category, not a stub
     TodoPublicApi,
 }
 
@@ -1667,7 +1984,7 @@ impl T3Hook {
         static CAMEL_FN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r"\b(?:fn|func)\s+[a-z]+[A-Z][A-Za-z0-9]*\s*\(").unwrap()
         });
-        // TODO/FIXME in public API surface: matches a TODO/FIXME comment on
+        // TODO/FIXME in public API surface: matches a TODO/FIXME comment on stub-ban-allow: doc comment describing what the regex below detects
         // the line immediately preceding a `pub fn` / `pub struct`
         // declaration. Low-priority advisory.
         static TODO_PUB_RE: LazyLock<regex::Regex> = LazyLock::new(|| {

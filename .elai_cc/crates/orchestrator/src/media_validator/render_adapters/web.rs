@@ -261,7 +261,7 @@ impl MediaRenderAdapter for WebRenderAdapter {
         >,
     > {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             let viewports = self.effective_viewports(config).to_vec();
             if viewports.is_empty() {
                 return Err(RenderAdapterError::MalformedOutput(
@@ -469,7 +469,7 @@ impl MediaRenderAdapter for WebRenderAdapter {
 /// Returns the absolute path.
 fn make_tempdir(prefix: &str) -> Result<PathBuf, RenderAdapterError> {
     let base = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
     let dir = base.join(format!("{prefix}-{id}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -543,7 +543,7 @@ mod tests {
         ));
         let cfg = RenderConfig::default();
         let dir = std::env::temp_dir();
-        let html = dir.join(format!("elai-web-stub-{}.html", uuid::Uuid::new_v4()));
+        let html = dir.join(format!("elai-web-stub-{}.html", uuid::Uuid::new_v4())); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
         let _ = std::fs::write(&html, b"<html><body>hi</body></html>");
         let r = a.render(&html, &cfg).await;
         let _ = std::fs::remove_file(&html);

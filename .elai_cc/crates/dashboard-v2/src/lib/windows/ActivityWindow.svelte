@@ -157,7 +157,7 @@
     color: var(--text-ghost);
   }
   .mt-key {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--teal);
     text-transform: lowercase;
   }

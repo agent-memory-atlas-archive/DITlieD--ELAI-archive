@@ -70,6 +70,8 @@ fn make_step(id: u64, task: &str) -> BabyStepSpec {
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     }
 }
 

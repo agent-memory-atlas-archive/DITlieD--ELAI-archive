@@ -45,7 +45,8 @@ fn route_data_table_to_layer_one_a() {
 #[test]
 fn route_parameter_to_staged_eval() {
     let p = proposal_with(
-        AllowedConfigKey::Parameter("etc_threshold".into()),
+        // C-21 Task 7 — typed closed-enum ParameterKey.
+        AllowedConfigKey::Parameter(elai_orchestrator::ParameterKey::EtcThreshold),
         ProposedChange::UpdateKey {
             key: "etc_threshold".into(),
             old_value: "0.6".into(),

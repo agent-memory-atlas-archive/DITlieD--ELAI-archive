@@ -32,3 +32,13 @@ p99_ms = 16.540
 p50_ms = 0.006
 p95_ms = 18.020
 p99_ms = 18.020
+# ---------------------------------------------------------------------------
+# C-20: real tier runs (linux/chromium/vscode/postgres)
+# ---------------------------------------------------------------------------
+# ELAI_SCALE_FIXTURE_ROOT not set at measurement time; sibling driver
+# scripts/scale_test/run_b29_5_symbol_graph.sh was not invoked. The
+# elai_self synthetic-3-file tier above is unchanged.
+[c20_scale_run]
+fired = false
+skipped_reason = "fixture_root_not_set"
+script_path = "scripts/scale_test/run_b29_5_symbol_graph.sh"

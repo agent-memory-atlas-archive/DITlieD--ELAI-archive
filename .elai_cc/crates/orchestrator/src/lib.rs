@@ -20,6 +20,11 @@ pub mod deterministic_audit_gate;
 pub mod deterministic_auditor;
 pub mod grc;
 pub mod anti_spiral;
+// C-10 Phase 4G.9: task-runner-step-level anti-spiral primitives. Coexists
+// with anti_spiral.rs (GRC-step-level Spinning detector). 11 types +
+// 4-pattern detector + 5-persona switch + GoalDriftCanary + Watchdog +
+// AdaptiveFutilityTracker. See workflow/reasoning/C-10-decisions.md.
+pub mod anti_spiral_extended;
 pub mod autonomous_gate;
 pub mod sandbox;
 // Phase B1 — Tier C Sandbox policy layer. Sibling of `sandbox` (the
@@ -56,6 +61,9 @@ pub mod hook_dispatcher;
 pub mod shortcoder_hook;
 pub mod provider_signals;
 pub mod indexing_service;
+// C-29: Testing-Trust Tier T-2 (IntentPair) — per-BabyStep intent
+// formalization. See workflow/reasoning/C-29-decisions.md.
+pub mod intent_pair;
 // B-31 Phase 3 (Cycle B): cross-process IndexLock primitive (lock.rs) and
 // startup auto-resume + graceful_shutdown (startup.rs). Both are free
 // functions/types with no dependency on `ssb.rs` (SSB variant emission is
@@ -63,6 +71,8 @@ pub mod indexing_service;
 // DECISIONS / OUT-OF-SCOPE).
 pub mod lock;
 pub mod startup;
+// C-17 (DRIFT-F closure): production consumer of LockScope::Watch.
+pub mod watcher_service;
 pub mod ipc;
 pub mod ipc_gateway;
 pub mod ipc_types;
@@ -90,6 +100,12 @@ pub mod pipeline_builder;
 pub mod phase_sizing_splitter;
 pub mod pipeline_tree_navigator;
 pub mod per_level_audit_dispatch;
+// C-25: compiled pipeline cache, template crystallizer, compiled executor,
+// on-disk store. See `workflow/reasoning/C-25-decisions.md`.
+pub mod compiled_pipeline;
+// C-25: background-task manager with soft/hard timeout auto-detach +
+// 2 new SSB beacons. See `workflow/reasoning/C-25-decisions.md`.
+pub mod background_task;
 #[cfg(test)]
 mod pipeline_builder_bench;
 #[cfg(test)]
@@ -101,9 +117,48 @@ mod session_control;
 pub mod plan_skeleton;
 pub mod session_dag;
 pub mod workload_profiling;
+// C-32 — Code-Completeness Layer 2: skeleton-first + MiniCritic +
+// AcceptAndComplete + deterministic bridge templates.
+pub mod skeleton_generator;
+pub mod mini_critic;
+pub mod structural_retry;
+pub mod bridge_template;
+// C-32 close-out (audit-C32 W1): per-blank dispatch wiring that drives
+// BridgeTemplate -> StructuralRetrySequencer -> MiniCritic -> flush.
+pub mod c32_dispatch;
+pub use c32_dispatch::{
+    classify_bridge_kind, dispatch_skeleton_with_retry, DispatchOutcome, PerBlankCandidates,
+};
+pub use skeleton_generator::{
+    emit_skeleton_flushed_ssb, emit_skeleton_generated_ssb, BlankId, FillResult,
+    FilledBuffer, SkeletonError, SkeletonGenerator, SkeletonGeneratorConfig, SkeletonSpec,
+};
+pub use mini_critic::{
+    MiniCritic, MiniCriticLanguage, MiniCriticResult, MiniCriticVerdict, MIN_BODY_LINES,
+};
+pub use structural_retry::{
+    emit_stage_attempt_ssb, RetryContext, StageCandidates, StaticStageCandidates,
+    StructuralRetryConfig, StructuralRetryOutcome, StructuralRetryPlan, StructuralRetrySequencer,
+    StructuralRetryStage, ACCEPT_AND_COMPLETE_THRESHOLD,
+};
+pub use bridge_template::{
+    emit_bridge_file_generated_ssb, BridgeError, BridgeFileSpec, BridgeFileTemplate, BridgeKind,
+};
 pub use plan_skeleton::{
     PlanSkeleton, PlanSkeletonError, PhaseEntry, PhaseContext, PhaseDetail,
     ExtractedContracts, AdjacentContracts, ContractRef, StalenessWarning,
+};
+// C-25 public surface: contracts crate + CLI handler need access to the
+// store and core types. TemplateId / PipelineOutcomeId collide with
+// `self_mod_types` re-exports — callers reach those via
+// `compiled_pipeline::{TemplateId, PipelineOutcomeId}` explicitly.
+pub use compiled_pipeline::{
+    CompiledExecutor, CompiledExecutorError, CompiledPipeline, CompiledPipelineStore,
+    CompiledPipelineStoreError, CompiledStep, ExecutionOutcome,
+    TemplateCrystallizer, TemplateVariable, VariableType,
+};
+pub use background_task::{
+    BackgroundTaskError, BackgroundTaskHandle, BackgroundTaskManager,
 };
 pub use session_dag::{
     SessionDag, SessionDagError, Snapshot, TrimmedMessage, TrimConfig,
@@ -139,6 +194,21 @@ pub mod self_mod_orchestrator;
 pub mod self_mod_safety;
 pub mod self_mod_types;
 pub mod ssb;
+// C-27: Testing-trust Tier T(-1) DeterminismConfig + Tier T-0 WiringContract.
+// Surface re-exports below for the CLI driver and contract crate. See
+// workflow/reasoning/C-27-decisions.md.
+pub mod determinism;
+pub mod wiring_contract;
+// C-28: Testing-trust Tier T-1 mutation testing — MutationRunner,
+// MutationResult, EquivalentMutantCache, MutationConfig. Lives next to
+// `wiring_contract` so the deterministic_auditor can consult both. See
+// workflow/reasoning/C-28-decisions.md.
+pub mod mutation_testing;
+// C-29: Testing-Trust Tier T-3 — basic metamorphic relation library
+// (Identity / Inverse / PermutationInvariance). Hooked into the
+// deterministic_auditor as Step 7 (post-Mutation). See
+// workflow/reasoning/C-29-decisions.md.
+pub mod metamorphic_testing;
 pub mod staged_eval;
 pub mod ssb_viewer;
 // B-37C Phase 4M.5 — per-AgentRole runtime backend mapping +
@@ -150,6 +220,11 @@ pub mod per_role_runtime;
 pub mod runtime_config;
 pub mod runtime_event_sink_ssb;
 pub mod runtime_orchestrator;
+// C-1: orchestrator-side adapter that bridges
+// `elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink` into
+// `Ssb::write_payload`. Lives here (not in `knowledge`) so the
+// orchestrator -> knowledge dependency direction stays acyclic.
+pub mod knowledge_ssb_adapter;
 // B-24 Phase 4I (Group C1): media validator skeleton. See
 // `media_validator/mod.rs` for the per-group rollout map.
 pub mod media_validator;
@@ -161,10 +236,16 @@ pub mod system_probe;
 pub mod symbol_graph;
 pub mod telescope_caller;
 pub mod feasibility_probe;
+/// C-30 — Surgical Mode pipeline: DKG blast-radius decomposition + LOC gates.
+pub mod surgical_decomposer;
+/// C-30 — Oracle answer-level cache (TTL by SourceTier).
+pub mod oracle_cache;
 pub mod task_runner;
 // Phase A1b — production task_runner wiring helpers (build/apply chokepoint
 // bundle). Used by `elai run` CLI and the dashboard-v2 Tauri setup() callback.
 pub mod runtime_setup;
+/// C-13 — WIP commit squash helper.
+pub mod wip_squash;
 // Phase B2 — IPC accept loop: bind/accept/route cycle for orchestrator-side
 // agent session management. Exposes AgentRpcServer trait + InferOutcome +
 // ToolOutcome + bind_session_listener + accept_one + run_agent_session.
@@ -186,8 +267,14 @@ pub mod json {
     pub use elai_core::json::{JsonError, JsonValue};
 }
 pub mod usage {
-    pub use elai_core::{
-        format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
+    // C-14 — TokenUsage / UsageTracker stay in elai_core (raw counter primitives).
+    // Pricing/cost helpers moved to elai_providers::pricing (provider-layer concern).
+    pub use elai_core::{TokenUsage, UsageTracker};
+    pub use elai_providers::pricing::{
+        estimate_cost_usd, estimate_cost_usd_with_pricing, summary_lines, summary_lines_for_model,
+    };
+    pub use elai_providers::{
+        format_usd, pricing_for_model, ModelPricing, UsageCostEstimate,
     };
 }
 pub mod bootstrap {
@@ -213,9 +300,11 @@ pub mod trust_resolver {
     pub use elai_rules::trust_resolver::*;
 }
 
-// Usage types re-exported at crate root (many files use `crate::TokenUsage` etc.)
-pub use elai_core::{
-    format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
+// Usage types re-exported at crate root (many files use `crate::TokenUsage` etc.).
+// C-14 — pricing/cost helpers now sourced from elai_providers; counters from elai_core.
+pub use elai_core::{TokenUsage, UsageTracker};
+pub use elai_providers::{
+    format_usd, pricing_for_model, ModelPricing, UsageCostEstimate,
 };
 
 pub use bash::{execute_bash, BashCommandInput, BashCommandOutput};
@@ -240,9 +329,9 @@ pub use idea_framing::{
 pub use evidence::{
     all_gates, check_transition, daira_adaptive_run, gates_for_transition, AuditFinding,
     DairaScope, DairaScopeResult, DkgChangelogGate, EvidenceError, EvidenceGate,
-    FindingSeverity, GroundingSweepGate, KnowledgeReadiness, KnowledgeReadinessGate,
-    ReplanFastTrackGate, TestFailReasonsGate, TestFlippedGate, TestOutcome,
-    TransitionContext, ZeroBlocksGate,
+    FindingSeverity, GroundingSweepGate, IntentPairsGate, KnowledgeReadiness,
+    KnowledgeReadinessGate, ReplanFastTrackGate, TestFailReasonsGate, TestFlippedGate,
+    TestOutcome, TransitionContext, ZeroBlocksGate,
 };
 pub use gate::{
     default_risk_level, run_interactive_gate, EvidenceSummary, GateDecision, GateResult,
@@ -255,6 +344,21 @@ pub use autonomous_gate::{
     autonomous_gate_disabled_via_env, AutonomousGate, AutonomousGateConfig, AutonomyDecision,
     EscalationTrigger, Evidence as AutonomousEvidence, GateContext as AutonomousGateContext,
     GateMode, PipelineLevel, TreeAutoAdvancePolicy, ELAI_DISABLE_AUTONOMOUS_GATE_ENV,
+};
+// C-9 (Autonomous Mode Core Infrastructure) — additional surface.
+pub use autonomous_gate::{
+    AutoAdvanceEvaluator, EscalationPolicy, EvidenceCheck, EvidenceVerdict, FsmTransition,
+    MergeStrategy, SplitTaskPlan, SubTask,
+};
+// C-10 (Phase 4G.9 Anti-Spiral Primitives) — task-runner-step-level
+// detector + persona switcher + canary + watchdog.
+pub use anti_spiral_extended::{
+    strategy_for, suggest_persona_for_pattern, AdaptiveFutilityTracker, AttemptResult,
+    DriftVerdict, ExecutionHistory, GenerationWatchdog, GoalDriftCanary, PersonaStrategy,
+    StagnationDetection, StagnationPattern, ThinkingPersona, WatchdogTimeoutKind,
+    DIMINISHING_MIN_IMPROVEMENT_PCT, DIMINISHING_MIN_WINDOW, FUTILITY_MIN_ATTEMPTS,
+    FUTILITY_THRESHOLD, HISTORY_CAPACITY, IDLE_TIMEOUT_MS, JACCARD_GREEN, JACCARD_YELLOW,
+    NO_PROGRESS_TIMEOUT_MS, OSC_WINDOW, PERSONA_STRATEGIES, SAFETY_TIMEOUT_MS, SPIN_THRESHOLD,
 };
 // B-41 — per-level audit evidence helpers (consumed by
 // autonomous_gate_with_per_level_contract.rs + downstream gate callers).
@@ -377,7 +481,14 @@ pub use research_pipeline::{
     ClassifiedResults, CollectedResults, FormulatedQueries, PostVerificationResult,
     SearchBackend, SearchResult, StubSearchBackend,
 };
-pub use grounding_client::{GroundingClient, SidecarGroundingClient};
+pub use grounding_client::{
+    CloudGroundingClient, GroundingClient, GroundingError, ResearchLevel,
+    SidecarGroundingClient,
+    // C-16: production cosmos research dispatcher + SSB emitter adapter.
+    HttpCosmosResearchDispatcher, SsbEmitterAdapter,
+    CLOUD_DEFAULT_MODEL, CLOUD_GROUNDING_MAX_TOKENS,
+    COSMOS_SSB_AGENT_ID, COSMOS_SSB_SUPERSTEP,
+};
 pub use searx_search_backend::{SearxSearchBackend, DEFAULT_SIDECAR_SEARCH_URL};
 pub use pipeline_builder::{
     PipelineBuilder, PipelineBuilderError, PipelineId, NodeIndex, StateId, DataRef, RuleId,
@@ -389,8 +500,8 @@ pub use pipeline_builder::{
     PredicateRef, T_DAG, CONTRACT_OVERHEAD, SPLIT_RATIO, MAX_SPLIT_DEPTH,
 };
 pub use recovery_recipes::{
-    attempt_recovery, recipe_for, EscalationPolicy, FailureScenario, RecoveryContext,
-    RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
+    attempt_recovery, recipe_for, EscalationPolicy as RecoveryEscalationPolicy, FailureScenario,
+    RecoveryContext, RecoveryEvent, RecoveryRecipe, RecoveryResult, RecoveryStep,
 };
 pub use elai_core::sandbox::{
     build_linux_sandbox_command, detect_container_environment, detect_container_environment_from,
@@ -544,8 +655,73 @@ pub use ssb::{
     // without `::ssb::*` paths.
     RuntimeFallbackPayload, RuntimeHealthChangedPayload,
     CliSubprocessSpawnedPayload, CliSubprocessKilledPayload,
+    // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+    // Re-exported so dashboard-v2 KnowledgeDrawer / ReasoningDrawer Tauri
+    // commands + contract tests can decode rows without `::ssb::*` paths.
+    GrcStepEmittedPayload, GroundingSweepResultPayload, CsqEvaluatedPayload,
+    AuditorRubberStampRejectedPayload, HydeQueryPayload,
+    VectorCacheHitRatePayload, QueryTracePayload,
+    // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon. Re-exported so the
+    // dashboard-v2 accept_change / decline_change / retry_audit Tauri
+    // commands + the c7_change_decision_contract test can construct the
+    // payload without reaching into `orchestrator::ssb::*` directly.
+    ChangeDecisionPayload,
+    // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge. Re-exported
+    // so the dashboard-v2 set_search_mode Tauri command + the c8 stub
+    // eradication contract test can construct the payload without
+    // reaching into `orchestrator::ssb::*` directly.
+    SearchModeChangedPayload,
+    // B-42 (SCHEMA_VERSION 44): cosmos tier knowledge worker beacons.
+    // Re-exported here for the live_cli C-8 tick scheduler + contract tests
+    // so callers can construct payloads without `::ssb::*` paths.
+    CosmosRefreshStartedPayload, CosmosArtifactUpdatedPayload,
+    CosmosArtifactDecayedPayload, CosmosGroundingUsedPayload,
+    // C-2 / C-10 (SCHEMA_VERSION 48 + 52): orchestration + stagnation beacons.
+    // Re-exported so the dashboard-v2 get_stagnation_events Tauri command
+    // + the c10_anti_spiral_contract test can construct payloads without
+    // reaching into `orchestrator::ssb::*` directly.
+    StagnationSpinningDetectedPayload, StagnationOscillationDetectedPayload,
+    LateralThinkingActivatedPayload, GoalDriftWarningPayload, WatchdogTimeoutPayload,
+    LateralThinkingSucceededPayload, LateralThinkingExhaustedPayload, GoalDriftBlockPayload,
+    // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons. Re-exported
+    // so the dashboard-v2 branch_fork / branch_merge / branch_close Tauri
+    // commands + contract tests can construct the payloads without
+    // reaching into `orchestrator::ssb::*` directly.
+    BranchForkedPayload, BranchMergedPayload, BranchClosedPayload,
     // SSB schema version + string-to-enum helper (used by contract tests).
     SCHEMA_VERSION_PUBLIC, ssb_action_type_from_str_public,
+    // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+    // Re-exported so the contract crate + cli/wiring_audit.rs can construct
+    // payloads without reaching into `orchestrator::ssb::*` directly.
+    WiringEvidencePayload, WiringViolationPayload, DeterminismDriftPayload,
+    WiringViolationKind,
+};
+// C-27 — Testing-Trust T(-1) DeterminismConfig public surface.
+pub use determinism::{
+    ActionTypeSequence, DeterminismConfig, DeterminismError, DriftComparator, DriftSink,
+    GpuSku, HardwareClass, ELAI_HARDWARE_CLASS_ENV, ELAI_SEED_ENV, ELAI_SYSTEM_FINGERPRINT_ENV,
+};
+// C-27 — Testing-Trust T-0 WiringContract public surface.
+pub use wiring_contract::{
+    collect_contract_markdown_files, parse_wiring_contract_from_markdown, AuditorSink,
+    DkgAuditOutcome, DkgReachabilityAuditor, ObservableEffect, ObservableEffectRunner,
+    ReachabilityGraph, StubBanAuditor, StubBanEntry, WiringAuditCmd, WiringAuditError,
+    WiringAuditReport, WiringAuditScope, WiringContract, WiringContractError,
+    WiringEntrypointSet, WiringEntrypointSetLoader,
+};
+// C-28 — Testing-Trust T-1 mutation testing public surface.
+pub use mutation_testing::{
+    EquivalentMutantCache, MutantOutcome, MutantRecord, MutationConfig, MutationError,
+    MutationResult, MutationRunner, PythonMutationRunner, RustMutationRunner, CACHE_TTL_SECS,
+};
+// C-29 — Testing-Trust T-2 (IntentPair) + T-3 (Metamorphic) public surface.
+pub use intent_pair::{
+    evaluate_autonomous_intent_confirm, ConfirmedBy, IntentConfig, IntentConfirmation,
+    IntentError, IntentPair, IntentPairSet, ASSERTION_MAX_CHARS, INTENT_MAX_CHARS, REF_MAX_CHARS,
+};
+pub use metamorphic_testing::{
+    parse_relation, MetamorphicConfig, MetamorphicError, MetamorphicRelation,
+    MetamorphicTestRunner, MrResult, RelationLibrary,
 };
 // B-37C — multi-runtime orchestration public surfaces.
 pub use per_role_runtime::PerRoleRuntime;
@@ -556,6 +732,8 @@ pub use runtime_orchestrator::{
     CompleteOutcome, RuntimeOrchestrator, RuntimeOrchestratorError, RuntimeOrchestratorEvent,
 };
 pub use runtime_event_sink_ssb::{install_runtime_event_sink_ssb, SsbRuntimeEventSink};
+// C-1: orchestrator adapter for the knowledge-side typed SSB sink.
+pub use knowledge_ssb_adapter::OrchestratorKnowledgeSsbSink;
 
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -580,7 +758,8 @@ pub use irreversible_classifier::{
 pub use self_mod_layer1a::{
     acquire_rules_lock, build_pattern_regex, classify_table, estimate_fpr, is_allowed,
     is_security_sensitive, layer1a_auto_apply_via_env, layer1a_disabled_via_env,
-    status_label as msi_status_label, AllowedConfigKey, AppliedProposalRecord, DataTable,
+    status_label as msi_status_label, trigger_dep_audit_background,
+    trigger_steering_vector_refresh, AllowedConfigKey, AppliedProposalRecord, DataTable,
     DataTableProposal, DefaultLayer1aProcessor, FailureRecord, FindingRecord, Layer1aError,
     Layer1aProcessor, MsiStatus, PipelineMode, PipelineOutcome, ProposalOutcome, ProposalSource,
     RulesDbLockGuard, DEFAULT_ARCHIVE_CAP, DEFAULT_MAX_FPR, DEFAULT_MIN_OCCURRENCES,
@@ -607,7 +786,7 @@ pub use staged_eval::{
 };
 pub use self_mod_safety::{
     apply_structural_change, check_lock_list_read, check_locked_key, is_known_parameter,
-    is_locked, should_auto_revert, SafetyError, DEFAULT_AUTO_REVERT_FRACTION,
+    is_locked, should_auto_revert, ParameterKey, SafetyError, DEFAULT_AUTO_REVERT_FRACTION,
     DEFAULT_AUTO_REVERT_WINDOW, KNOWN_PARAMETER_KEYS, LOCKED_KEYS,
 };
 // B-23 Phase 4H Group E — MSI per-mode tracker (4H.7), OSC ouroboros port
@@ -675,7 +854,7 @@ pub use self_mod_types::{
 };
 pub use system_probe::{
     classify_vram_tier, system_probe_disabled_via_env, DefaultSystemProber, DetectionMethod,
-    GpuInfo, SystemProbeReport, SystemProber, ELAI_DISABLE_SYSTEM_PROBE_ENV,
+    GpuInfo, SystemProbeResult, SystemProber, ELAI_DISABLE_SYSTEM_PROBE_ENV,
     ELAI_FREE_DISK_GB_ENV, ELAI_FREE_RAM_GB_ENV, ELAI_VRAM_FREE_GB_ENV, ELAI_VRAM_GB_ENV,
 };
 pub use feasibility_probe::{
@@ -683,13 +862,14 @@ pub use feasibility_probe::{
     feasibility_probe_disabled_via_env, BabyStepEscalation, BabyStepFeasibilityReport,
     BabyStepStubResult, ConstraintResult, DefaultFeasibilityProber, FeasibilityDecision,
     FeasibilityEscalation, FeasibilityExecutionMode, FeasibilityProber, FeasibilityReport,
-    NovelStep, ResourceMargins, StubResult, SystemConstraintsRequired, TaskFeasibility,
+    NovelStep, ResourceDelta, ResourceMargins, StubExecutor, StubResult, SyntheticStubExecutor,
+    SystemConstraintsRequired, TaskFeasibility,
     ELAI_DISABLE_FEASIBILITY_PROBE_ENV, MAX_ALTERNATIVES_PER_STEP, RESOURCE_MARGIN_THRESHOLD_PCT,
     STUB_LINE_LIMIT, STUB_TIMEOUT_GRACEFUL, STUB_TIMEOUT_HARD,
 };
 pub use ssb_viewer::{
-    ChatEntry, FeasibilityReportRow, FeasibilitySummary, FileChange, FsmStateSnapshot,
-    InterventionRequest, NovelStepRow, PhaseStatus, SessionInfo,
+    ChatEntry, CloudSpendSummary, FeasibilityReportRow, FeasibilitySummary, FileChange,
+    FsmStateSnapshot, InterventionRequest, NovelStepRow, PhaseStatus, SessionInfo,
     RuleViolationSummary, SsbActionDetail, SsbActionSummary, SsbViewer, SsbViewerError,
     StepStatus, StubRunRow, TaskSummary, ThinkStepSummary, validate_request_id,
     // Tier 2 Track B (dashboard-wiring §6) — PlanWindow / PreviewWindow DTOs.
@@ -740,6 +920,11 @@ pub use task_runner::{
     WEB_SCAFFOLD_TEMPLATE_VANILLA,
     // B-29 Phase 5: IMPACT_SUMMARY formatter + baseline tools constant.
     format_impact_summary, DISPATCH_CONTEXT_BASELINE_TOOLS_PUBLIC,
+    // C-16 (DECISION-D + DECISION-G): expose the trigger_cosmos_refresh
+    // helper to the dashboard-v2 Tauri command. Previously orphan (no caller
+    // in the production path); now reachable from
+    // commands::trigger_cosmos_refresh.
+    trigger_cosmos_refresh,
 };
 pub use rule_loader::load_seed_rules_from_dir;
 // Phase A1b — chokepoint helpers exposed at the orchestrator crate root so
@@ -747,14 +932,15 @@ pub use rule_loader::load_seed_rules_from_dir;
 // reach the same RuntimeWiring + apply_task_runner_wiring entry points.
 // Contract: `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
 pub use runtime_setup::{
-    apply_task_runner_wiring, build_default_baby_step_executor, build_task_runner_wiring,
-    locate_default_agent_binary, RuntimeWiring,
+    apply_task_runner_wiring, build_default_baby_step_executor,
+    build_production_hook_dispatcher, build_task_runner_wiring, locate_default_agent_binary,
+    RuntimeWiring,
 };
 // Phase B2 — IPC accept-loop public surface.
 pub use ipc_accept::{
     accept_one, bind_session_listener, run_agent_session, AgentFinalState, AgentRpcServer,
-    AgentSessionOutcome, IpcAcceptError, InferOutcome, NoOpAgentRpcServer, PlatformListener,
-    PlatformStream, ToolOutcome,
+    AgentSessionOutcome, IpcAcceptError, IpcHookDispatcher, InferOutcome, NoOpAgentRpcServer,
+    PlatformListener, PlatformStream, ToolOutcome,
 };
 // Phase B2c — ProductionAgentRpcServer public surface.
 // NullToolDispatcher removed (B2c fix): CLI/dashboard build the real InProcessToolDispatcher

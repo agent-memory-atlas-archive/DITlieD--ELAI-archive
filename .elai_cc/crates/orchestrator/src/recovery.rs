@@ -20,7 +20,7 @@ use crate::ssb::{
 pub enum AgentDeathClassification {
     Crash,
     CleanExit,
-    // STUB(3C.2): heartbeat-based death detection not yet implemented.
+    // STUB(3C.2): heartbeat-based death detection not yet implemented. stub-ban-allow: 3C.2 follow-up
     // Timeout is accepted but treated identically to Crash for recovery.
     Timeout,
     BudgetExceeded,
@@ -516,7 +516,7 @@ mod tests {
         let ssb = make_ssb(SeededClock::new()).await;
 
         let mgr = RecoveryManager::new(SeededClock::new());
-        // STUB(3C.2): Timeout treated same as Crash
+        // STUB(3C.2): Timeout treated same as Crash. stub-ban-allow: test fixture for 3C.2 follow-up
         let (recovered, ctx) = mgr
             .recover_agent(&handle, AgentDeathClassification::Timeout, 1, &ssb)
             .await

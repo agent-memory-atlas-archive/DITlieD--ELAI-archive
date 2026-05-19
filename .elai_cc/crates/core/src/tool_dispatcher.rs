@@ -187,6 +187,12 @@ pub enum ValidationTier {
     QualityAst,
     /// Module-scoped tests (Step level in phase-4E.txt). Target: < 30 s.
     Unit,
+    /// C-28: T-1 mutation testing. Runs cargo-mutants (Rust) or mutmut
+    /// (Python) on changed files. Per-mutant timeout enforced by the
+    /// `MutationRunner`; the per-tier `timeout_ms` returns the sentinel
+    /// `0` because the budget is computed at runtime from
+    /// `MutationConfig.max_mutants_per_session * timeout_per_mutant_sec`.
+    Mutation,
     /// Crate-scoped tests (Phase level in phase-4E.txt). Target: < 60 s.
     Integration,
     /// Workspace tests + repeat-N flakiness probe on the Unit tier.
@@ -202,6 +208,7 @@ impl ValidationTier {
             Self::Determinism => "determinism",
             Self::QualityAst => "quality_ast",
             Self::Unit => "unit",
+            Self::Mutation => "mutation",
             Self::Integration => "integration",
             Self::Stress => "stress",
         }
@@ -209,22 +216,30 @@ impl ValidationTier {
 
     /// Ordered list of tiers in short-circuit order. Used by both
     /// `DefaultTieredValidator::run_all` and the contract tests.
-    pub fn ordered() -> [ValidationTier; 5] {
+    /// C-28: `Mutation` inserted between `Unit` and `Integration` at index 3.
+    pub fn ordered() -> [ValidationTier; 6] {
         [
             Self::Determinism,
             Self::QualityAst,
             Self::Unit,
+            Self::Mutation,
             Self::Integration,
             Self::Stress,
         ]
     }
 
     /// Per-tier timeout in milliseconds. Matches the spec budget.
+    /// C-28: `Mutation` returns the sentinel `0` because the budget is
+    /// computed dynamically by `MutationRunner` from
+    /// `MutationConfig.max_mutants_per_session * timeout_per_mutant_sec`.
+    /// Callers iterating `windows(2)` for monotonicity assertions MUST
+    /// filter the `Mutation` arm first (see C-28-decisions.md DECISION-D5).
     pub fn timeout_ms(&self) -> u32 {
         match self {
             Self::Determinism => 5_000,
             Self::QualityAst => 10_000,
             Self::Unit => 30_000,
+            Self::Mutation => 0,
             Self::Integration => 60_000,
             Self::Stress => 120_000,
         }
@@ -262,11 +277,15 @@ pub struct ValidationTierResult {
 // Failure classification
 // ---------------------------------------------------------------------------
 
-/// 9-variant failure taxonomy (B-20A reduction; matches
-/// `elai_tools::failure_taxonomy::FailureCategory` lockstep). Decision A:
-/// uses the B-20 plan body's Rust-flavoured 9-list (LIFETIME_ERROR /
-/// BORROW_ERROR included; PERMISSION_DENIED from the competing
-/// phase-4B.txt list rejected — see workflow/reasoning/B-20A-decisions.md).
+/// 12-variant failure taxonomy. Original 9-list per B-20A; extended by
+/// C-33 with LazyCode / EmptyBody / FileSizeExceeded so the dispatcher
+/// can surface Zero-Lazy-Code and file-size gate hits as first-class
+/// categories. Lockstep mirror of
+/// `elai_tools::failure_taxonomy::FailureCategory`. Decision A: uses the
+/// B-20 plan body's Rust-flavoured list (LIFETIME_ERROR / BORROW_ERROR
+/// included; PERMISSION_DENIED from the competing phase-4B.txt list
+/// rejected — see workflow/reasoning/B-20A-decisions.md). C-33 extension
+/// documented in workflow/reasoning/C-33-decisions.md.
 /// Re-exported from `elai_tools::failure_taxonomy::FailureCategory` via a
 /// thin conversion in the `InProcessToolDispatcher` impl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,6 +300,12 @@ pub enum ToolFailureCategory {
     UnusedWarning,
     TestAssertion,
     RuntimePanic,
+    /// C-33: placeholder return / TODO body / pass body / mock data in prod.
+    LazyCode,
+    /// C-33: function or impl block with no statements.
+    EmptyBody,
+    /// C-33: file exceeds configured max-lines gate.
+    FileSizeExceeded,
 }
 
 impl ToolFailureCategory {
@@ -295,6 +320,9 @@ impl ToolFailureCategory {
             Self::UnusedWarning => "UNUSED_WARNING",
             Self::TestAssertion => "TEST_ASSERTION",
             Self::RuntimePanic => "RUNTIME_PANIC",
+            Self::LazyCode => "LAZY_CODE",
+            Self::EmptyBody => "EMPTY_BODY",
+            Self::FileSizeExceeded => "FILE_SIZE_EXCEEDED",
         }
     }
 }
@@ -489,20 +517,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_tier_ordered_has_five_elements() {
+    fn validation_tier_ordered_has_six_elements() {
         let ordered = ValidationTier::ordered();
-        assert_eq!(ordered.len(), 5);
+        assert_eq!(ordered.len(), 6);
         assert_eq!(ordered[0], ValidationTier::Determinism);
-        assert_eq!(ordered[4], ValidationTier::Stress);
+        assert_eq!(ordered[3], ValidationTier::Mutation);
+        assert_eq!(ordered[5], ValidationTier::Stress);
     }
 
     #[test]
     fn validation_tier_timeout_is_monotonic_non_decreasing() {
-        let tiers = ValidationTier::ordered();
+        // C-28: `Mutation` returns the sentinel `0` (runtime-computed
+        // budget) so it would break the monotonic chain. Filter it out
+        // before windowing — the contract is that the remaining tiers
+        // honor the static phase-4B budget order. See C-28-decisions.md
+        // DECISION-D5 (DRIFT-C28-4).
+        let tiers: Vec<ValidationTier> = ValidationTier::ordered()
+            .into_iter()
+            .filter(|t| *t != ValidationTier::Mutation)
+            .collect();
         for pair in tiers.windows(2) {
             assert!(
                 pair[0].timeout_ms() <= pair[1].timeout_ms(),
-                "tier budget must be non-decreasing: {pair:?}",
+                "tier budget must be non-decreasing (excluding Mutation sentinel): {pair:?}",
             );
         }
     }

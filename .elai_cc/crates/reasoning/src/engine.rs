@@ -327,6 +327,16 @@ impl GrcEngine for BasicGrcEngine {
         // Converge is allowed from any state (including as first step).
 
         // Anti-rubber-stamp: auditor must have >= 1 FINDING: before Converge.
+        //
+        // C-1: when this branch returns `GrcError::InsufficientFindings`,
+        // production callers (PipelineGrc wrappers in `orchestrator::task_runner`
+        // / `orchestrator::agent_pool`) MUST emit a corresponding
+        // `SsbActionType::AuditorRubberStampRejected` SSB row via
+        // `orchestrator::task_runner::emit_auditor_rubber_stamp_rejected`.
+        // The emit site lives at the caller (not here) because `engine.rs`
+        // has no Ssb writer field and adding one would couple the
+        // reasoning crate to the orchestrator's SSB store (GAP-2 in
+        // explorer-C1.md). See workflow/reasoning/C-1-decisions.md.
         if step.step_type == GrcState::Converge {
             if let Some(ref role) = config_role {
                 if role == "auditor" {

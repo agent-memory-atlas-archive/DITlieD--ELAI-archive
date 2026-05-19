@@ -379,10 +379,60 @@ pub enum DkgError {
     QueryFailed(String),
 }
 
+/// A single DKG node reference returned by the C-30 graph-query helpers.
+/// `name` is the qualified symbol name (matches `dkg_nodes.name`); `file_path`
+/// is repo-relative; `(start_line, end_line)` is 1-based inclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgNodeRef {
+    pub name: String,
+    pub file_path: String,
+    pub kind: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// A single DKG edge returned by the C-30 graph-query helpers. `source` /
+/// `target` carry the qualified symbol names; `edge_type` is the raw
+/// `dkg_edges.edge_type` string (the DKG mixes lowercase + uppercase forms;
+/// callers normalise as needed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgEdgeRef {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String,
+}
+
+/// A single data-flow edge returned by `query_data_flow`. `flow_type` is the
+/// canonical uppercase form (`PARAMETER` | `RETURN` | `ASSIGNMENT` |
+/// `FIELD_ACCESS`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgDataFlowEdgeRef {
+    pub source: String,
+    pub target: String,
+    pub variable: String,
+    pub flow_type: String,
+}
+
+/// Compact subgraph payload returned by `query_subgraph`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgSubgraphSnapshot {
+    pub root: String,
+    pub depth: u8,
+    pub nodes: Vec<DkgNodeRef>,
+    pub edges: Vec<DkgEdgeRef>,
+}
+
 /// Queries a dependency/knowledge graph for reachability.
 ///
 /// Implementors provide graph-backed reachability analysis.
 /// Object-safe for use as a trait object when needed.
+///
+/// C-30 adds four optional graph-query methods exposed to agents via the
+/// `dkg_callers` / `dkg_dependents` / `dkg_data_flow` / `dkg_subgraph` tool
+/// catalog. Default implementations return empty results so legacy impls
+/// (e.g. `EmptyDkgQuerier`) keep compiling without code changes; production
+/// impls like `DkgQuerierAdapter` override them with real SQLite-backed
+/// traversals.
 pub trait DkgQuerier {
     fn query_reachability(
         &self,
@@ -390,6 +440,53 @@ pub trait DkgQuerier {
     ) -> Result<Vec<ReachabilityMatch>, DkgError>;
 
     fn validate_params(&self, params: &ReachabilityParams) -> Result<(), DkgError>;
+
+    /// C-30: return the symbols that CALL `target_symbol` (inbound CALLS
+    /// edges, optionally normalised to lowercase by the impl). Default impl
+    /// returns empty.
+    fn query_callers(
+        &self,
+        _target_symbol: &str,
+        _max_depth: u8,
+    ) -> Result<Vec<DkgNodeRef>, DkgError> {
+        Ok(Vec::new())
+    }
+
+    /// C-30: return the files / symbols that `target_symbol` depends on
+    /// (outbound IMPORTS / USES edges). Default impl returns empty.
+    fn query_dependents(
+        &self,
+        _target_symbol: &str,
+        _max_depth: u8,
+    ) -> Result<Vec<DkgNodeRef>, DkgError> {
+        Ok(Vec::new())
+    }
+
+    /// C-30: return the data-flow edges (PARAMETER / RETURN / ASSIGNMENT /
+    /// FIELD_ACCESS) reachable from `target_symbol` up to `max_depth`.
+    /// Default impl returns empty.
+    fn query_data_flow(
+        &self,
+        _target_symbol: &str,
+        _max_depth: u8,
+    ) -> Result<Vec<DkgDataFlowEdgeRef>, DkgError> {
+        Ok(Vec::new())
+    }
+
+    /// C-30: BFS subgraph rooted at `root_symbol` up to `depth`. Returns the
+    /// reachable nodes + edges. Default impl returns an empty snapshot.
+    fn query_subgraph(
+        &self,
+        root_symbol: &str,
+        depth: u8,
+    ) -> Result<DkgSubgraphSnapshot, DkgError> {
+        Ok(DkgSubgraphSnapshot {
+            root: root_symbol.to_string(),
+            depth,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

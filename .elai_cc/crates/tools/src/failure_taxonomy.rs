@@ -7,12 +7,16 @@ use elai_ipc_types::{ClassifyRequest, ToolResultPayload, TOOL_CLASSIFY};
 use crate::ipc_registry::{ToolError, ToolHandler};
 use serde::{Deserialize, Serialize};
 
-/// 9-variant failure taxonomy per B-20 plan body (Rust-flavoured list).
-/// Mirrored verbatim by `elai_core::tool_dispatcher::ToolFailureCategory`
-/// so the two enums never drift. Decision A (B-20A): the B-20 plan list
-/// is canonical; phase-4B.txt's competing 9-list (PERMISSION_DENIED,
+/// 12-variant failure taxonomy. Original 9-list per B-20 plan body
+/// (Rust-flavoured); extended by C-33 with LazyCode / EmptyBody /
+/// FileSizeExceeded so the auditor can classify Zero-Lazy-Code and
+/// file-size gate hits without falling back to RuntimePanic. Mirrored
+/// verbatim by `elai_core::tool_dispatcher::ToolFailureCategory` so the
+/// two enums never drift. Decision A (B-20A): the B-20 plan list is
+/// canonical; phase-4B.txt's competing 9-list (PERMISSION_DENIED,
 /// TIMEOUT, RESOURCE_EXHAUSTED, EMPTY_OUTPUT) is documented in
-/// workflow/reasoning/B-20A-decisions.md and rejected for this phase.
+/// workflow/reasoning/B-20A-decisions.md and rejected for that phase.
+/// C-33 extension documented in workflow/reasoning/C-33-decisions.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FailureCategory {
@@ -25,6 +29,12 @@ pub enum FailureCategory {
     UnusedWarning,
     TestAssertion,
     RuntimePanic,
+    /// C-33: placeholder return / TODO body / pass body / mock data in prod.
+    LazyCode,
+    /// C-33: function or impl block with no statements.
+    EmptyBody,
+    /// C-33: file exceeds configured max-lines gate.
+    FileSizeExceeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,9 +88,11 @@ impl ClassifyHandler {
         }
     }
 
-    /// Classify an error message into the 9-variant taxonomy. Order is
+    /// Classify an error message into the 12-variant taxonomy. Order is
     /// load-bearing: more specific patterns must precede generic ones so
     /// e.g. "unresolved import" maps to MissingImport (not UndefinedSymbol).
+    /// C-33 patterns (LazyCode / EmptyBody / FileSizeExceeded) precede the
+    /// RuntimePanic fallback so a TODO body never gets swallowed as a panic.
     fn detect_category(output: &str) -> FailureCategory {
         // Imports first — most specific Rust diagnostic.
         if output.contains("unresolved import")
@@ -141,6 +153,29 @@ impl ClassifyHandler {
                 || output.contains("unused_variables"))
         {
             return FailureCategory::UnusedWarning;
+        }
+        // C-33: Zero-Lazy-Code patterns. The auditor / Stop hook emits these
+        // strings when scanning a freshly written function. Kept BEFORE the
+        // RuntimePanic fallback so a `todo!()` marker is never swallowed as
+        // a panic message even when the same output also contains a panic
+        // banner (covered by c33_phase_map_contract once mixed-input fixtures
+        // are added).
+        if output.contains("TODO")
+            || output.contains("placeholder")
+            || output.contains("unimplemented!")
+            || output.contains("todo!()")
+        {
+            return FailureCategory::LazyCode;
+        }
+        if output.contains("empty function body")
+            || output.contains("no statements")
+        {
+            return FailureCategory::EmptyBody;
+        }
+        if output.contains("file exceeds")
+            || output.contains("FILE_SIZE")
+        {
+            return FailureCategory::FileSizeExceeded;
         }
         if output.contains("panicked at")
             || output.contains("thread '")
@@ -212,6 +247,15 @@ impl ClassifyHandler {
             FailureCategory::UnusedWarning => "remove dead code or prefix unused name with `_`".to_string(),
             FailureCategory::TestAssertion => "investigate test assertion failures".to_string(),
             FailureCategory::RuntimePanic => "check for panics / runtime errors / timeouts / OOM".to_string(),
+            FailureCategory::LazyCode => {
+                "replace placeholder / TODO / unimplemented body with real logic; CLAUDE.md Zero-Lazy-Code rule".to_string()
+            }
+            FailureCategory::EmptyBody => {
+                "implement the function body or remove the empty declaration".to_string()
+            }
+            FailureCategory::FileSizeExceeded => {
+                "split the file or extend the configured max-lines gate".to_string()
+            }
         }
     }
 }

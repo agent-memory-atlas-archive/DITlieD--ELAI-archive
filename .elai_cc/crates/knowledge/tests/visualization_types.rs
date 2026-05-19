@@ -46,6 +46,9 @@ fn fixture_data() -> VizData {
                 deps: 1,
                 dependents: 0,
                 symbol_count: 1,
+                // C-24 (DRIFT-7 Path A): file mode leaves these None.
+                level: None,
+                status: None,
             },
             VizFile {
                 id: "src/main.rs".to_string(),
@@ -54,6 +57,8 @@ fn fixture_data() -> VizData {
                 deps: 0,
                 dependents: 1,
                 symbol_count: 0,
+                level: None,
+                status: None,
             },
         ],
         file_edges: vec![VizFileEdge {

@@ -66,7 +66,7 @@
   }
   .feature {
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
   .note {

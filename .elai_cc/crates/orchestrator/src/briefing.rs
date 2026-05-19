@@ -277,7 +277,7 @@ mod tests {
     };
     use std::sync::Arc;
 
-    fn make_worker(body: &str) -> (tempfile::TempDir, CosmosWorker) {
+    async fn make_worker(body: &str) -> (tempfile::TempDir, CosmosWorker) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 [[artifacts]]
@@ -306,14 +306,14 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         let research = Arc::new(MockResearch::new(body, "T1"));
         let worker = CosmosWorker::new(tmp.path().to_path_buf(), manifest, clock, research)
             .expect("worker");
-        let r = worker.tick();
+        let r = worker.tick().await;
         assert_eq!(r.refreshed.len(), 3);
         (tmp, worker)
     }
 
-    #[test]
-    fn briefing_filters_by_project_class_and_tier() {
-        let (_tmp, w) = make_worker("# body content for relevant slice");
+    #[tokio::test]
+    async fn briefing_filters_by_project_class_and_tier() {
+        let (_tmp, w) = make_worker("# body content for relevant slice").await;
         let out = compile_cosmos_briefing(
             &w,
             "consumer_mobile_app",
@@ -328,9 +328,9 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         assert!(!out.contains("app_store_policies"), "{out}");
     }
 
-    #[test]
-    fn briefing_empty_when_no_match() {
-        let (_tmp, w) = make_worker("# body");
+    #[tokio::test]
+    async fn briefing_empty_when_no_match() {
+        let (_tmp, w) = make_worker("# body").await;
         let out = compile_cosmos_briefing(
             &w,
             "research_tool",
@@ -342,10 +342,10 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         assert_eq!(out, "");
     }
 
-    #[test]
-    fn briefing_respects_token_budget() {
+    #[tokio::test]
+    async fn briefing_respects_token_budget() {
         let big_body = "x".repeat(4096);
-        let (_tmp, w) = make_worker(&big_body);
+        let (_tmp, w) = make_worker(&big_body).await;
         // 200 tokens ≈ 800 chars — only header + maybe partial body fits.
         let out = compile_cosmos_briefing(
             &w,
@@ -358,9 +358,9 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         assert!(out.len() <= 200 * BUDGET_CHARS_PER_TOKEN + 256, "len={}", out.len());
     }
 
-    #[test]
-    fn briefing_too_small_budget_errors() {
-        let (_tmp, w) = make_worker("# body");
+    #[tokio::test]
+    async fn briefing_too_small_budget_errors() {
+        let (_tmp, w) = make_worker("# body").await;
         let r = compile_cosmos_briefing(
             &w,
             "consumer_mobile_app",
@@ -371,13 +371,13 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         assert!(matches!(r, Err(BriefingError::BudgetTooSmall { .. })));
     }
 
-    #[test]
-    fn truncation_suffix_reports_nonzero_byte_count() {
+    #[tokio::test]
+    async fn truncation_suffix_reports_nonzero_byte_count() {
         // Body large enough to force per-artifact truncation under a tight
         // budget. The suffix `... [truncated, N bytes]` MUST report a
         // non-zero N (B-42 audit BLOCK-2: previously hard-coded 0).
         let big_body = "x".repeat(8192);
-        let (_tmp, w) = make_worker(&big_body);
+        let (_tmp, w) = make_worker(&big_body).await;
         let out = compile_cosmos_briefing(
             &w,
             "consumer_mobile_app",
@@ -393,13 +393,13 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         );
     }
 
-    #[test]
-    fn briefing_does_not_panic_on_multibyte_body() {
+    #[tokio::test]
+    async fn briefing_does_not_panic_on_multibyte_body() {
         // Multibyte body: each "日本語" = 9 bytes. Tight budget forces
         // truncation. Naive byte-index truncate (pre-fix) panics on a
         // mid-codepoint cut; floor_char_boundary must snap DOWN.
         let big_body = "日本語".repeat(1024);
-        let (_tmp, w) = make_worker(&big_body);
+        let (_tmp, w) = make_worker(&big_body).await;
         let out = compile_cosmos_briefing(
             &w,
             "consumer_mobile_app",
@@ -413,9 +413,9 @@ tier_relevance = { concepts = 0.8, steps = 0.5 }
         assert!(out.contains("[truncated,"), "{out}");
     }
 
-    #[test]
-    fn precompile_all_tiers_returns_five_entries() {
-        let (_tmp, w) = make_worker("# body");
+    #[tokio::test]
+    async fn precompile_all_tiers_returns_five_entries() {
+        let (_tmp, w) = make_worker("# body").await;
         let map = precompile_all_tiers(
             &w,
             "consumer_mobile_app",

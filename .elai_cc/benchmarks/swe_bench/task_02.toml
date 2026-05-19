@@ -1,0 +1,11 @@
+id = "task_02"
+description = """
+A regex in a Python validator over-matches on negative numbers because the
+pattern uses `\\d+` instead of `-?\\d+`. Update the regex to accept an
+optional leading minus sign and add the corresponding test fixture for the
+input `-42`.
+"""
+expected_output = "-?\\d+"
+timeout_s = 60
+stage = 1
+is_canary = false

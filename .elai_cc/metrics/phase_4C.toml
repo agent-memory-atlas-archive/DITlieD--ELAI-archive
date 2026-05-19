@@ -41,3 +41,23 @@ stop_fsm_enforcement = "Stop blocks all non-idle FSM states"
 code_simplify = "not implemented (function does not exist in tools crate yet)"
 schema_required = "in rules/predicate.rs, not tiered_analysis.rs — no patch needed"
 thiserror = "made non-optional in plugins Cargo.toml (was gated behind mcp feature)"
+# ---------------------------------------------------------------------------
+# C-20 runtime_metrics (BACKFILLED by C-20 measure)
+# ---------------------------------------------------------------------------
+# Deterministic-fixture split rates over 30 synthetic source lengths
+# (1*600..=30*600 LOC). Real T1/T2/T3 latency requires an IpcHookDispatcher
+# + RuleEngine wired against a project's DKG + AST, which lives in the
+# orchestrator wiring and is out of scope for this measure pass. Latency
+# fields are annotated unmeasured rather than fabricated.
+[runtime_metrics]
+tier_split_t1_pct = 26.67
+tier_split_t2_pct = 26.67
+tier_split_t3_pct = 46.67
+tier_split_sample_size = 30
+tier_split_method = "line_count_classifier_over_synthetic_corpus"
+hook_dispatch_p50_us_unmeasured_reason = "requires_full_ipc_hook_dispatcher_wiring"
+hook_dispatch_p99_us_unmeasured_reason = "requires_full_ipc_hook_dispatcher_wiring"
+block_rate_unmeasured_reason = "requires_session_with_live_findings"
+warn_rate_unmeasured_reason = "requires_session_with_live_findings"
+sanitization_overhead_us_unmeasured_reason = "covered_by_audit_substate_in_phase_4G"
+backfilled_at = "C-20"

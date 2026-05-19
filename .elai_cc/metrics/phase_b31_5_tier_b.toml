@@ -27,3 +27,9 @@ resume_wall_secs = 2
 files_skipped_on_resume = 180
 identity_diff_lines = 0
 ssb_index_resume_action_count = 1
+
+# C-17 (DRIFT-K/M): production-scale crash-resume identity runs deferred
+# to C-20. Synthetic baseline above stays as the regression baseline.
+[c17_followup]
+measured_in_phase = "C-20"
+production_scale_fixture = "linux-v6.7"

@@ -583,6 +583,209 @@ pub fn detect_model_capability_profile(
 }
 
 // ---------------------------------------------------------------------------
+// C-25 — CumulativeTokenTracker + ProviderUsage mirror
+// ---------------------------------------------------------------------------
+
+/// C-25 — local mirror of provider usage fields (per C-25 DRIFT-B Option B).
+///
+/// Decouples `context_budget.rs` from the `elai-providers` crate: callers at
+/// the cloud send site widen `u32` -> `u64` once when constructing this
+/// struct from `elai_providers::types::Usage`. Two structs to maintain, one
+/// to import — cheaper than a new crate-level dep.
+///
+/// All counts are cumulative-per-call (one provider response's worth);
+/// `CumulativeTokenTracker` accumulates them across the task lifetime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ProviderUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+}
+
+impl ProviderUsage {
+    /// Construct a ProviderUsage from the providers crate's `Usage` shape
+    /// (the four u32 fields surfaced by the Anthropic + openai-compat
+    /// adapters). Widens to u64 at the boundary so the tracker never has to
+    /// worry about per-call overflow.
+    #[must_use]
+    pub const fn from_u32(
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_write_tokens: u32,
+    ) -> Self {
+        Self {
+            input_tokens: input_tokens as u64,
+            output_tokens: output_tokens as u64,
+            cache_read_tokens: cache_read_tokens as u64,
+            cache_write_tokens: cache_write_tokens as u64,
+        }
+    }
+}
+
+/// C-25 — cross-call token accumulator + attention-ceiling recalibrator.
+///
+/// Companion to `cloud_mode::SpendAccumulator` (which tracks USD): this
+/// tracker holds the raw token counts and recalibrates the runtime's
+/// `ModelCapabilityProfile.attention_ceiling` based on the largest observed
+/// prompt size + a safety margin.
+///
+/// Per C-25 DRIFT-E resolution, `recalibrate_budget` uses an
+/// EXPANSION-ONLY clamp: `max(profile.attention_ceiling, last_response_prompt
+/// + 2048)`. This guarantees the function never SHRINKS a measured ceiling
+/// (e.g. cloud_200k=200_000) on a short reply; it only raises the ceiling
+/// when a measured prompt size exceeds the current profile budget.
+///
+/// The 2048-token margin reserves room for the next round of system prompt
+/// + tool definitions + assistant scratch without re-recalibrating on every
+/// call. See `workflow/reasoning/C-25-decisions.md` decision (a).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CumulativeTokenTracker {
+    pub prompt_tokens_total: u64,
+    pub completion_tokens_total: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub last_response_prompt: u64,
+    pub last_response_completion: u64,
+}
+
+/// C-25 — safety margin added on top of the largest observed prompt size
+/// when recalibrating attention_ceiling. Reserves room for the next round
+/// of system prompt + tool definitions + assistant scratch.
+pub const RECALIBRATE_PROMPT_MARGIN_TOKENS: u64 = 2048;
+
+/// C-25 — absolute floor for `recalibrate_budget`. Per the plan's
+/// stub_ban contract, the function MUST clamp to at least this value;
+/// never 0. Real models always have an attention ceiling much larger,
+/// but the floor protects against a degenerate `last_response_prompt=0`
+/// + corrupted profile case.
+pub const RECALIBRATE_MIN_CEILING: usize = 4096;
+
+impl CumulativeTokenTracker {
+    /// Construct an empty tracker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one provider response's token usage. Updates the cumulative
+    /// totals AND the per-call snapshot (`last_response_*`).
+    pub fn record_response(&mut self, usage: &ProviderUsage) {
+        self.prompt_tokens_total = self
+            .prompt_tokens_total
+            .saturating_add(usage.input_tokens);
+        self.completion_tokens_total = self
+            .completion_tokens_total
+            .saturating_add(usage.output_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(usage.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(usage.cache_write_tokens);
+        self.last_response_prompt = usage.input_tokens;
+        self.last_response_completion = usage.output_tokens;
+    }
+
+    /// Recalibrate the runtime model profile's `attention_ceiling` to
+    /// accommodate the largest observed prompt. EXPANSION-ONLY per DRIFT-E:
+    /// `max(profile.attention_ceiling, last_response_prompt + margin)` with
+    /// a hard floor of `RECALIBRATE_MIN_CEILING` (4096) so the result is
+    /// never zero. Updates `effective_ceiling` to stay in sync (the
+    /// `resolve_effective_ceiling` policy is min(vram, attention); we
+    /// recompute manually since this function does not own the vram input).
+    pub fn recalibrate_budget(&self, profile: &mut ModelCapabilityProfile) {
+        let desired = self
+            .last_response_prompt
+            .saturating_add(RECALIBRATE_PROMPT_MARGIN_TOKENS);
+        let desired_usize = usize::try_from(desired).unwrap_or(usize::MAX);
+        // Expansion-only clamp + absolute floor.
+        let new_ceiling = profile
+            .attention_ceiling
+            .max(desired_usize)
+            .max(RECALIBRATE_MIN_CEILING);
+        profile.attention_ceiling = new_ceiling;
+        // Keep effective_ceiling in sync without re-deriving vram input.
+        match (profile.in_vram_ceiling, profile.attention_ceiling) {
+            (0, 0) => {}
+            (0, a) => profile.effective_ceiling = a,
+            (v, 0) => profile.effective_ceiling = v,
+            (v, a) => profile.effective_ceiling = v.min(a),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cumulative_token_tracker_tests {
+    use super::*;
+
+    fn cloud_profile() -> ModelCapabilityProfile {
+        ModelCapabilityProfile::cloud_200k()
+    }
+
+    #[test]
+    fn record_response_accumulates_across_calls() {
+        let mut t = CumulativeTokenTracker::new();
+        t.record_response(&ProviderUsage::from_u32(100, 50, 10, 5));
+        t.record_response(&ProviderUsage::from_u32(200, 80, 20, 0));
+        assert_eq!(t.prompt_tokens_total, 300);
+        assert_eq!(t.completion_tokens_total, 130);
+        assert_eq!(t.cache_read_tokens, 30);
+        assert_eq!(t.cache_write_tokens, 5);
+        assert_eq!(t.last_response_prompt, 200);
+        assert_eq!(t.last_response_completion, 80);
+    }
+
+    #[test]
+    fn recalibrate_never_shrinks_cloud_200k() {
+        let mut profile = cloud_profile();
+        let original = profile.attention_ceiling;
+        assert_eq!(original, 200_000);
+        let mut t = CumulativeTokenTracker::new();
+        // Tiny prompt: would shrink under naive max(4096, ...) clamp.
+        t.record_response(&ProviderUsage::from_u32(50, 10, 0, 0));
+        t.recalibrate_budget(&mut profile);
+        assert_eq!(
+            profile.attention_ceiling, 200_000,
+            "expansion-only clamp must not shrink cloud_200k ceiling"
+        );
+    }
+
+    #[test]
+    fn recalibrate_expands_for_large_prompt() {
+        // micro_7b_12gb has attention_ceiling = 25000. A 30K prompt + 2K margin
+        // = 32048 must EXPAND the ceiling.
+        let mut profile = ModelCapabilityProfile::micro_7b_12gb();
+        let original = profile.attention_ceiling;
+        assert_eq!(original, 25_000);
+        let mut t = CumulativeTokenTracker::new();
+        t.record_response(&ProviderUsage::from_u32(30_000, 200, 0, 0));
+        t.recalibrate_budget(&mut profile);
+        assert!(
+            profile.attention_ceiling >= 32_048,
+            "expected expansion to >= 32048, got {}",
+            profile.attention_ceiling
+        );
+    }
+
+    #[test]
+    fn recalibrate_enforces_floor_on_degenerate_input() {
+        // Synthesize a degenerate profile: attention_ceiling=0, no usage yet.
+        let mut profile = ModelCapabilityProfile::cloud_200k();
+        profile.attention_ceiling = 0;
+        profile.in_vram_ceiling = 0;
+        let t = CumulativeTokenTracker::new();
+        t.recalibrate_budget(&mut profile);
+        assert_eq!(
+            profile.attention_ceiling, RECALIBRATE_MIN_CEILING,
+            "stub_ban: recalibrate_budget MUST clamp to >= 4096"
+        );
+        assert!(profile.attention_ceiling > 0, "never 0");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // B-10 / 3E.5 — file_overlap_score + compute_overlap
 // ---------------------------------------------------------------------------
 
@@ -1977,8 +2180,8 @@ fn extract_definition_symbol(line: &str) -> Option<String> {
 /// indentation before writing to disk. Model generates minimally formatted code,
 /// system restores deterministically.
 ///
-/// STUB: tree-sitter not added to orchestrator due to dep cycle risk with
-/// knowledge crate. Wire after dep audit (see A-42-T2).
+/// STUB: tree-sitter not added to orchestrator due to dep cycle risk. stub-ban-allow: A-42-T2 follow-up
+/// with knowledge crate. Wire after dep audit (see A-42-T2).
 pub fn restore_output_formatting(code: &str, _language: &str) -> String {
     // A-42-T2: tree-sitter pretty-print blocked — adding tree-sitter to
     // orchestrator risks dep cycle with knowledge crate. Wire after dep audit.

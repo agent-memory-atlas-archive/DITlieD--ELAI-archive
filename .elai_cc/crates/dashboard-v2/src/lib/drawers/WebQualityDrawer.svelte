@@ -611,7 +611,7 @@
 
   .section-header {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-ghost);
@@ -659,7 +659,7 @@
 
   .slot-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
 
@@ -698,13 +698,13 @@
 
   .server-pid {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
   .server-port {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -716,7 +716,7 @@
 
   .server-url {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--teal);
     cursor: pointer;
     flex: 1;
@@ -730,7 +730,7 @@
 
   .server-url-inactive {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     flex: 1;
   }
@@ -785,7 +785,7 @@
 
   .rules-breakdown {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -815,14 +815,14 @@
 
   .arag-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     width: 11ch;
   }
 
   .arag-value {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
@@ -964,7 +964,7 @@
 
   .wv-error-msg {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     word-break: break-word;
   }
@@ -1034,7 +1034,7 @@
 
   .wv-empty {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: var(--s-2);
   }
@@ -1076,7 +1076,7 @@
 
   .wv-finding-msg {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;

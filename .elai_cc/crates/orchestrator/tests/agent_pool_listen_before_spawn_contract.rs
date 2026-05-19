@@ -147,6 +147,15 @@ async fn contract_listen_before_spawn_passes_and_routes_infer_request() {
             }
         };
 
+        // patch-R4 — drain the orchestrator's initial AgentRequest frame
+        // before exercising the B2b InferRequest round-trip. See R4 contract
+        // test crates/contracts/tests/baby_step_initial_agent_request_contract.rs.
+        let initial = read_frame(&mut stream).await;
+        assert!(
+            matches!(initial, IpcMessageType::AgentRequest { .. }),
+            "expected initial AgentRequest from orchestrator, got: {initial:?}"
+        );
+
         // Send InferRequest.
         write_frame(
             &mut stream,

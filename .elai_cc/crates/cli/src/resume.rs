@@ -765,7 +765,11 @@ pub(crate) fn run_resume_command(
         | SlashCommand::Task { .. }
         | SlashCommand::Mode { .. }
         | SlashCommand::Reason { .. }
-        | SlashCommand::EntryPoints { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
+        | SlashCommand::EntryPoints { .. }
+        | SlashCommand::GraphMermaid { .. }
+        | SlashCommand::Measure { .. }
+        | SlashCommand::Pipeline { .. }
+        | SlashCommand::WiringAudit { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }
 

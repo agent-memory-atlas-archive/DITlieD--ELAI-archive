@@ -1,150 +1,206 @@
 <script lang="ts">
-  import { Button, Empty, Scrollbar, UnwiredNote } from '$lib/ui';
+  // ============================================================
+  // ReviewWindow — live SSB-backed reviewer surface (C-7)
+  // ============================================================
+  // Wired to:
+  //   - invoke('get_file_changes', { sessionId })    — read FileWrite rows
+  //   - invoke('accept_change',  { path, hunkId? })  — record verdict
+  //   - invoke('decline_change', { path, hunkId? })  — record verdict
+  //   - invoke('retry_audit',    { path, hunkId?, note? }) — record verdict
+  //
+  // Empty-state path: when get_file_changes returns [] (cold-start session
+  // or no edits yet) we show the <Empty> surface — NO static fallback.
+  //
+  // Per-hunk action row (DRIFT-4): always-visible Accept/Decline/Retry
+  // buttons rendered BELOW each hunk separator (replaces prior hover-only
+  // inline buttons).
+  //
+  // Global shortcuts (Ctrl+Shift+A / Ctrl+Shift+R) fire via reviewStore
+  // signal counters which we observe with $effect.
+
+  import { onMount } from 'svelte';
+  import { Button, Empty, Scrollbar } from '$lib/ui';
   import * as stub from '$lib/api/stub';
+  import type { FileChangeRow } from '$lib/api/types';
+  import { session } from '../state/session.svelte';
+  import { reviewStore } from '../state/review.svelte';
+  // C-24 (DRIFT-8) — cross-link FileWrite rows to GraphWindow with a
+  // blast-radius overlay. Mirrors the visualizeImpact() pattern in
+  // KnowledgeDrawer.svelte:14-19. ActivityWindow.svelte does not render
+  // file-write rows (it's an OrbitCanvas host) so the plan's task #7 was
+  // retargeted here per workflow/reasoning/C-24-decisions.md DECISION-7.
+  import { graph } from '../state/graph.svelte';
+  import { workspace } from '../state/workspace.svelte';
 
-  interface DiffLine {
-    kind: 'added' | 'removed' | 'context' | 'hunk';
-    oldNum?: number;
-    newNum?: number;
-    content: string;
-  }
-
-  interface ReviewFile {
-    path: string;
-    added: number;
-    removed: number;
-    lines: DiffLine[];
+  function showBlastRadius(path: string) {
+    if (!path) return;
+    // Drop into file mode + push the impact target. GraphWindow's
+    // $effect on graph.impact_target picks this up after openTab, calls
+    // get_impact_overlay, and applies the red-gradient class set.
+    graph.set_mode('file');
+    graph.request_impact(path);
+    workspace.openTab('primary', 'graph');
+    stub.logStub('review.showBlastRadius', { path });
   }
 
   // ------------------------------------------------------------------
-  // Sample diffs — realistic ELAI Rust domain
+  // Live file-changes wiring
   // ------------------------------------------------------------------
-  const FILES: ReviewFile[] = [
-    {
-      path: 'crates/orchestrator/src/fsm.rs',
-      added: 12,
-      removed: 4,
-      lines: [
-        { kind: 'hunk', content: '@@ -38,7 +38,15 @@ impl FsmEngine {' },
-        { kind: 'context', oldNum: 38, newNum: 38, content: '    pub fn transition(&mut self, event: FsmEvent) -> Result<FsmState> {' },
-        { kind: 'context', oldNum: 39, newNum: 39, content: '        let current = self.state;' },
-        { kind: 'removed', oldNum: 40, content: '        let next = self.table.get(&(current, event)).copied().ok_or(FsmError::NoTransition)?' },
-        { kind: 'removed', oldNum: 41, content: '        self.history.push(Transition { from: current, to: next, ts: now_ms() });' },
-        { kind: 'added', newNum: 40, content: '        let next = self.table' },
-        { kind: 'added', newNum: 41, content: '            .get(&(current, event))' },
-        { kind: 'added', newNum: 42, content: '            .copied()' },
-        { kind: 'added', newNum: 43, content: '            .ok_or_else(|| FsmError::NoTransition { from: current, event })?;' },
-        { kind: 'added', newNum: 44, content: '        let ts = now_ms();' },
-        { kind: 'added', newNum: 45, content: '        self.history.push(Transition { from: current, to: next, ts });' },
-        { kind: 'added', newNum: 46, content: '        self.last_transition_ts = ts;' },
-        { kind: 'context', oldNum: 42, newNum: 47, content: '        self.state = next;' },
-        { kind: 'context', oldNum: 43, newNum: 48, content: '        Ok(next)' },
-        { kind: 'context', oldNum: 44, newNum: 49, content: '    }' },
-        { kind: 'hunk', content: '@@ -88,4 +93,6 @@ impl FsmEngine {' },
-        { kind: 'context', oldNum: 88, newNum: 93, content: '    pub fn current_state(&self) -> FsmState {' },
-        { kind: 'context', oldNum: 89, newNum: 94, content: '        self.state' },
-        { kind: 'removed', oldNum: 90, content: '    }' },
-        { kind: 'added', newNum: 95, content: '    }' },
-        { kind: 'added', newNum: 96, content: '    pub fn last_transition_ts(&self) -> u64 {' },
-        { kind: 'added', newNum: 97, content: '        self.last_transition_ts' },
-        { kind: 'added', newNum: 98, content: '    }' },
-      ],
-    },
-    {
-      path: 'crates/cli/src/main.rs',
-      added: 6,
-      removed: 3,
-      lines: [
-        { kind: 'hunk', content: '@@ -12,9 +12,12 @@ use clap::Parser;' },
-        { kind: 'context', oldNum: 12, newNum: 12, content: '#[derive(Parser, Debug)]' },
-        { kind: 'context', oldNum: 13, newNum: 13, content: '#[command(author, version, about)]' },
-        { kind: 'context', oldNum: 14, newNum: 14, content: 'pub struct Cli {' },
-        { kind: 'removed', oldNum: 15, content: '    #[arg(long, default_value = "7B")]' },
-        { kind: 'removed', oldNum: 16, content: '    pub model_size: String,' },
-        { kind: 'removed', oldNum: 17, content: '    #[arg(long)]' },
-        { kind: 'added', newNum: 15, content: '    #[arg(long, default_value = "D:\\.ELAI_workflow\\.elai_cc\\models\\Qwen2.5-Coder-7B-Instruct-abliterated")]' },
-        { kind: 'added', newNum: 16, content: '    pub model: String,' },
-        { kind: 'added', newNum: 17, content: '    #[arg(long, default_value_t = 25_000_usize)]' },
-        { kind: 'added', newNum: 18, content: '    pub context_window: usize,' },
-        { kind: 'added', newNum: 19, content: '    #[arg(long)]' },
-        { kind: 'context', oldNum: 18, newNum: 20, content: '    pub gate_mode: Option<String>,' },
-        { kind: 'context', oldNum: 19, newNum: 21, content: '}' },
-      ],
-    },
-    {
-      path: 'crates/dashboard/src/state.rs',
-      added: 8,
-      removed: 2,
-      lines: [
-        { kind: 'hunk', content: '@@ -24,6 +24,12 @@ pub struct DashboardState {' },
-        { kind: 'context', oldNum: 24, newNum: 24, content: '    pub fsm: FsmSnapshot,' },
-        { kind: 'context', oldNum: 25, newNum: 25, content: '    pub sidecar: SidecarStatus,' },
-        { kind: 'removed', oldNum: 26, content: '    pub vram_pct: u8,' },
-        { kind: 'added', newNum: 26, content: '    pub vram: Vec<VramGauge>,' },
-        { kind: 'added', newNum: 27, content: '    pub active_agents: Vec<AgentEntry>,' },
-        { kind: 'added', newNum: 28, content: '    pub gate: GateStatus,' },
-        { kind: 'context', oldNum: 27, newNum: 29, content: '    pub session_id: String,' },
-        { kind: 'hunk', content: '@@ -42,5 +48,9 @@ impl DashboardState {' },
-        { kind: 'context', oldNum: 42, newNum: 48, content: '    pub fn new() -> Self {' },
-        { kind: 'context', oldNum: 43, newNum: 49, content: '        Default::default()' },
-        { kind: 'removed', oldNum: 44, content: '    }' },
-        { kind: 'added', newNum: 50, content: '    }' },
-        { kind: 'added', newNum: 51, content: '    pub fn vram_pct(&self) -> u8 {' },
-        { kind: 'added', newNum: 52, content: '        self.vram.first().map(|g| g.pct_used as u8).unwrap_or(0)' },
-        { kind: 'added', newNum: 53, content: '    }' },
-        { kind: 'added', newNum: 54, content: '    pub fn is_executing(&self) -> bool {' },
-        { kind: 'added', newNum: 55, content: '        self.fsm.state == FsmState::Executing' },
-        { kind: 'added', newNum: 56, content: '    }' },
-      ],
-    },
-  ];
 
+  let files = $state<FileChangeRow[]>([]);
+  let loading = $state<boolean>(true);
   let activeIndex = $state(0);
-  let activeFile = $derived(FILES[activeIndex]);
+  let activeFile = $derived(files[activeIndex]);
 
-  // Per-hunk acceptance state: keyed by hunk-line content
+  async function loadFileChanges() {
+    loading = true;
+    try {
+      const rows = await stub.get_file_changes(session.sessionId);
+      files = rows;
+      if (activeIndex >= files.length) activeIndex = 0;
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(() => {
+    void loadFileChanges();
+  });
+
+  // ------------------------------------------------------------------
+  // Per-hunk + per-file verdict state (in-memory)
+  //
+  // hunkState / fileState keys are the path or path#hunkLabel; the
+  // backend ChangeDecision SSB rows are the source of truth across
+  // reloads. Local state lets the UI react instantly without re-polling.
+  // ------------------------------------------------------------------
+
   let hunkState = $state<Record<string, 'accepted' | 'declined' | null>>({});
   let fileState = $state<Record<string, 'accepted' | 'declined' | null>>({});
-  let hunkHovered = $state<string | null>(null);
   let retryNote = $state<Record<string, string>>({});
   let retryNoteVisible = $state<Record<string, boolean>>({});
 
-  // Per-file acceptance state
+  function hunkKey(path: string, hunkLabel: string): string {
+    return `${path}#${hunkLabel}`;
+  }
+
+  function acceptHunk(path: string, hunkLabel: string) {
+    const key = hunkKey(path, hunkLabel);
+    hunkState = { ...hunkState, [key]: 'accepted' };
+    void stub.accept_change(path, hunkLabel);
+  }
+
+  function declineHunk(path: string, hunkLabel: string) {
+    const key = hunkKey(path, hunkLabel);
+    hunkState = { ...hunkState, [key]: 'declined' };
+    void stub.decline_change(path, hunkLabel);
+  }
+
+  function retryHunk(path: string, hunkLabel: string) {
+    const key = hunkKey(path, hunkLabel);
+    const note = retryNote[key]?.trim() ?? '';
+    hunkState = { ...hunkState, [key]: null };
+    retryNoteVisible = { ...retryNoteVisible, [key]: false };
+    void stub.retry_audit(path, hunkLabel, note.length > 0 ? note : undefined);
+  }
+
+  function toggleHunkRetryNote(path: string, hunkLabel: string) {
+    const key = hunkKey(path, hunkLabel);
+    retryNoteVisible = { ...retryNoteVisible, [key]: !retryNoteVisible[key] };
+  }
+
   function acceptAll(path: string) {
     fileState = { ...fileState, [path]: 'accepted' };
-    stub.logStub('review.acceptAll', { path });
+    void stub.accept_change(path);
   }
+
   function declineAll(path: string) {
     fileState = { ...fileState, [path]: 'declined' };
-    stub.logStub('review.declineAll', { path });
+    void stub.decline_change(path);
   }
-  function retry(path: string) {
+
+  function retryFile(path: string) {
     const note = retryNote[path]?.trim() ?? '';
     fileState = { ...fileState, [path]: null };
     retryNoteVisible = { ...retryNoteVisible, [path]: false };
-    stub.logStub('review.retry', { path, note: note || undefined });
+    void stub.retry_audit(path, undefined, note.length > 0 ? note : undefined);
   }
+
   function toggleRetryNote(path: string) {
     retryNoteVisible = { ...retryNoteVisible, [path]: !retryNoteVisible[path] };
   }
-  function acceptHunk(hunkContent: string) {
-    hunkState = { ...hunkState, [hunkContent]: 'accepted' };
+
+  // ------------------------------------------------------------------
+  // Hunk parsing — turn the FileChangeRow.summary into a hunk list.
+  //
+  // FileChangeRow today carries {path, action, summary}; the raw diff
+  // body lives in the FileWrite SSB row, retrievable via
+  // get_action_detail(seq) — that detail-fetch is a follow-up. For now
+  // we render one synthetic hunk per file labeled with the action +
+  // summary so the per-hunk action row is exercised on every file.
+  // ------------------------------------------------------------------
+
+  interface HunkLabel {
+    label: string;
   }
-  function declineHunk(hunkContent: string) {
-    hunkState = { ...hunkState, [hunkContent]: 'declined' };
+
+  function hunkLabelsFor(file: FileChangeRow): HunkLabel[] {
+    return [{ label: `${file.action}: ${file.summary}` }];
   }
+
+  // ------------------------------------------------------------------
+  // Global shortcut subscriptions (Ctrl+Shift+A / Ctrl+Shift+R)
+  //
+  // reviewStore exposes monotonic counters; we observe via $effect and
+  // fire bulk actions on every increment. Both shortcuts are guarded
+  // by shortcuts.ts to only fire when primary active tab is 'review'.
+  // ------------------------------------------------------------------
+
+  let lastAcceptSignal = 0;
+  let lastRejectSignal = 0;
+
+  $effect(() => {
+    const sig = reviewStore.acceptAllSignal;
+    if (sig !== lastAcceptSignal) {
+      lastAcceptSignal = sig;
+      if (sig > 0) {
+        // Accept every file's every synthetic hunk.
+        for (const f of files) {
+          fileState = { ...fileState, [f.path]: 'accepted' };
+          for (const h of hunkLabelsFor(f)) {
+            hunkState = { ...hunkState, [hunkKey(f.path, h.label)]: 'accepted' };
+          }
+          void stub.accept_change(f.path);
+        }
+        stub.logStub('review.bulkAcceptAll', { count: files.length });
+      }
+    }
+  });
+
+  $effect(() => {
+    const sig = reviewStore.rejectAllSignal;
+    if (sig !== lastRejectSignal) {
+      lastRejectSignal = sig;
+      if (sig > 0) {
+        for (const f of files) {
+          fileState = { ...fileState, [f.path]: 'declined' };
+          for (const h of hunkLabelsFor(f)) {
+            hunkState = { ...hunkState, [hunkKey(f.path, h.label)]: 'declined' };
+          }
+          void stub.decline_change(f.path);
+        }
+        stub.logStub('review.bulkRejectAll', { count: files.length });
+      }
+    }
+  });
 </script>
 
-<div class="review">
-  <div class="review__unwired-banner">
-    <UnwiredNote
-      phase="4B"
-      feature="auditor-proposed diffs with per-hunk accept / decline / retry"
-      note="No Tauri command yet exposes the auditor diff stream. The diffs below are static sample data — accept/decline/retry are logStub-only. Real wiring depends on a /v1/audit_proposals SSB feed plus accept_change / decline_change / retry_audit commands."
-    />
-  </div>
-
-  {#if FILES.length === 0}
+<div class="review" data-testid="review-window">
+  {#if loading}
+    <div class="review__loading">
+      <span class="review__loading-text">loading file changes…</span>
+    </div>
+  {:else if files.length === 0}
     <div class="review__empty">
       <Empty
         title="no changes to review"
@@ -155,7 +211,7 @@
 
   <!-- Tab strip -->
   <div class="tab-strip" role="tablist" aria-label="Changed files">
-    {#each FILES as file, i}
+    {#each files as file, i (file.path)}
       <button
         class="file-tab"
         class:file-tab--active={i === activeIndex}
@@ -172,13 +228,10 @@
     <!-- Sticky file header -->
     <div class="file-header">
       <span class="file-path">{activeFile.path}</span>
-      <span class="file-stats">
-        <span class="file-stats__added">+{activeFile.added}</span>
-        <span class="file-stats__removed">-{activeFile.removed} lines</span>
-      </span>
+      <span class="file-action">{activeFile.action}</span>
       <div class="file-actions">
         <Button
-          variant={fileState[activeFile.path] === 'accepted' ? 'primary' : 'primary'}
+          variant="primary"
           size="sm"
           onclick={() => acceptAll(activeFile.path)}
         >
@@ -198,6 +251,19 @@
         >
           Retry
         </Button>
+        <!-- C-24 (DRIFT-8): cross-link to GraphWindow with blast-radius
+             overlay. Mirrors KnowledgeDrawer.svelte:307-312. The Button
+             component does not accept arbitrary HTML attributes, so a
+             plain <button> is used so the test selector
+             [data-testid=review-blast-radius] can find it. -->
+        <button
+          class="blast-radius-btn"
+          type="button"
+          onclick={() => showBlastRadius(activeFile.path)}
+          data-testid="review-blast-radius"
+        >
+          Show blast radius
+        </button>
       </div>
     </div>
 
@@ -208,56 +274,67 @@
           type="text"
           placeholder="optional note for auditor (Enter to confirm)"
           bind:value={retryNote[activeFile.path]}
-          onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); retry(activeFile.path); } }}
+          onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); retryFile(activeFile.path); } }}
         />
-        <button class="retry-note-confirm" onclick={() => retry(activeFile.path)}>retry</button>
+        <button class="retry-note-confirm" onclick={() => retryFile(activeFile.path)}>retry</button>
       </div>
     {/if}
 
     {#if fileState[activeFile.path]}
       <div class="file-verdict file-verdict--{fileState[activeFile.path]}">
         {fileState[activeFile.path] === 'accepted' ? 'All changes accepted' : 'All changes declined'}
-        <button class="file-verdict__undo" onclick={() => retry(activeFile.path)}>Undo</button>
+        <button class="file-verdict__undo" onclick={() => retryFile(activeFile.path)}>Undo</button>
       </div>
     {/if}
 
-    <!-- Diff body -->
+    <!-- Diff body: synthetic hunks from FileChangeRow summary -->
     <Scrollbar>
       <div class="diff-body">
-        {#each activeFile.lines as line}
-          {#if line.kind === 'hunk'}
-            <div
-              class="diff-hunk"
-              role="group"
-              aria-label={line.content}
-              onmouseenter={() => { hunkHovered = line.content; }}
-              onmouseleave={() => { hunkHovered = null; }}
-            >
-              <span class="diff-hunk__label">{line.content}</span>
-              {#if hunkHovered === line.content}
-                <span class="diff-hunk__actions">
-                  <button
-                    class="hunk-btn"
-                    onclick={() => acceptHunk(line.content)}
-                    class:hunk-btn--active={hunkState[line.content] === 'accepted'}
-                  >Accept</button>
-                  <button
-                    class="hunk-btn"
-                    onclick={() => declineHunk(line.content)}
-                    class:hunk-btn--active={hunkState[line.content] === 'declined'}
-                  >Decline</button>
-                </span>
-              {:else if hunkState[line.content]}
-                <span class="diff-hunk__verdict diff-hunk__verdict--{hunkState[line.content]}">
-                  {hunkState[line.content]}
-                </span>
-              {/if}
-            </div>
-          {:else}
-            <div class="diff-line diff-line--{line.kind}">
-              <span class="diff-line__old-num">{line.oldNum ?? ''}</span>
-              <span class="diff-line__new-num">{line.newNum ?? ''}</span>
-              <span class="diff-line__content">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' '}{line.content}</span>
+        {#each hunkLabelsFor(activeFile) as hunk}
+          {@const key = hunkKey(activeFile.path, hunk.label)}
+          <div class="diff-hunk" role="group" aria-label={hunk.label}>
+            <span class="diff-hunk__label">{hunk.label}</span>
+            {#if hunkState[key]}
+              <span class="diff-hunk__verdict diff-hunk__verdict--{hunkState[key]}">
+                {hunkState[key]}
+              </span>
+            {/if}
+          </div>
+
+          <!-- Always-visible per-hunk action row (DRIFT-4 rewrite) -->
+          <div class="hunk-row" data-testid="hunk-row">
+            <button
+              class="hunk-btn"
+              class:hunk-btn--active={hunkState[key] === 'accepted'}
+              onclick={() => acceptHunk(activeFile.path, hunk.label)}
+              data-testid="hunk-accept"
+            >Accept</button>
+            <button
+              class="hunk-btn"
+              class:hunk-btn--active={hunkState[key] === 'declined'}
+              onclick={() => declineHunk(activeFile.path, hunk.label)}
+              data-testid="hunk-decline"
+            >Decline</button>
+            <button
+              class="hunk-btn"
+              onclick={() => toggleHunkRetryNote(activeFile.path, hunk.label)}
+              data-testid="hunk-retry"
+            >Retry</button>
+          </div>
+
+          {#if retryNoteVisible[key]}
+            <div class="retry-note-bar">
+              <input
+                class="retry-note-input mono"
+                type="text"
+                placeholder="optional note for auditor (Enter to confirm)"
+                bind:value={retryNote[key]}
+                onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); retryHunk(activeFile.path, hunk.label); } }}
+              />
+              <button
+                class="retry-note-confirm"
+                onclick={() => retryHunk(activeFile.path, hunk.label)}
+              >retry</button>
             </div>
           {/if}
         {/each}
@@ -276,10 +353,17 @@
     overflow: hidden;
   }
 
-  .review__unwired-banner {
-    flex-shrink: 0;
-    padding: var(--s-2) var(--s-3);
-    border-bottom: 1px solid var(--border-subtle);
+  .review__loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .review__loading-text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-ghost);
   }
 
   /* Tab strip */
@@ -302,7 +386,7 @@
     border-bottom: 2px solid transparent;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     white-space: nowrap;
     transition: color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
@@ -336,19 +420,37 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .file-stats {
-    display: flex;
-    gap: 6px;
+  .file-action {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
     flex-shrink: 0;
   }
-  .file-stats__added { color: var(--teal); }
-  .file-stats__removed { color: var(--fail); }
   .file-actions {
     display: flex;
     gap: var(--s-1);
     flex-shrink: 0;
+  }
+  /* C-24 (DRIFT-8) — blast-radius cross-link button. Mirrors the ghost
+     variant of the Button component (the latter doesn't accept arbitrary
+     HTML attrs, so we render a plain button + the matching styles). */
+  .blast-radius-btn {
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
+  }
+  .blast-radius-btn:hover {
+    background: var(--teal-ghost);
+    color: var(--teal);
+    border-color: var(--teal-line);
   }
 
   /* File verdict banner */
@@ -358,7 +460,7 @@
     gap: var(--s-2);
     padding: 4px 12px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     flex-shrink: 0;
   }
   .file-verdict--accepted { background: var(--teal-ghost); color: var(--teal); }
@@ -375,7 +477,7 @@
   }
   .file-verdict__undo:hover { color: var(--text-secondary); }
 
-  /* Retry note bar */
+  /* Retry note bar (file + hunk) */
   .retry-note-bar {
     display: flex;
     align-items: center;
@@ -391,7 +493,7 @@
     border: none;
     border-bottom: 1px solid var(--border-subtle);
     color: var(--text-primary);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 0;
     outline: none;
     transition: border-color var(--dur-fast) var(--ease-std);
@@ -419,30 +521,35 @@
     font-size: 12px;
   }
 
-  /* Hunk header */
+  /* Hunk header (separator line) */
   .diff-hunk {
     display: flex;
     align-items: center;
     background: var(--bg-input);
     padding: 4px 12px;
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     gap: var(--s-2);
     position: relative;
     min-height: 24px;
   }
   .diff-hunk__label { flex: 1; }
-  .diff-hunk__actions {
-    display: flex;
-    gap: 4px;
-  }
   .diff-hunk__verdict {
     font-size: 10px;
   }
   .diff-hunk__verdict--accepted { color: var(--teal); }
   .diff-hunk__verdict--declined { color: var(--fail); }
 
-  /* Per-hunk action buttons */
+  /* Always-visible per-hunk action row (C-7 DRIFT-4 rewrite) */
+  .hunk-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: 4px 12px;
+    background: var(--bg-base);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
   .hunk-btn {
     background: transparent;
     border: 1px solid var(--border-subtle);
@@ -450,50 +557,12 @@
     color: var(--text-secondary);
     font-family: var(--font-mono);
     font-size: 10px;
-    padding: 1px 6px;
+    padding: 2px 8px;
     cursor: pointer;
-    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std);
+    transition: background-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std), border-color var(--dur-fast) var(--ease-std);
   }
   .hunk-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .hunk-btn--active { color: var(--teal); border-color: var(--teal-line); }
-
-  /* Diff lines */
-  .diff-line {
-    display: grid;
-    grid-template-columns: 44px 44px 1fr;
-    min-height: 20px;
-    line-height: 20px;
-  }
-  .diff-line--added {
-    background: var(--teal-ghost);
-    border-left: 1px solid var(--teal-line);
-    color: var(--text-primary);
-  }
-  .diff-line--removed {
-    background: rgba(176,69,69,0.10);
-    border-left: 1px solid var(--fail);
-    color: var(--text-secondary);
-  }
-  .diff-line--context {
-    background: var(--bg-base);
-    color: var(--text-secondary);
-  }
-
-  .diff-line__old-num,
-  .diff-line__new-num {
-    color: var(--text-ghost);
-    font-size: 11px;
-    padding: 0 8px;
-    user-select: none;
-    text-align: right;
-    min-width: 0;
-  }
-  .diff-line__content {
-    padding: 0 12px;
-    white-space: pre;
-    overflow-x: auto;
-    font-size: 12px;
-  }
+  .hunk-btn--active { color: var(--teal); border-color: var(--teal-line); background: var(--teal-ghost); }
 
   .review__empty {
     flex: 1;

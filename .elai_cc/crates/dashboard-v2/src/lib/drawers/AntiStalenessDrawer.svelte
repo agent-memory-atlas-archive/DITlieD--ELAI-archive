@@ -176,7 +176,7 @@
 
   .section-header {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-ghost);
@@ -200,7 +200,7 @@
 
   .count-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -219,7 +219,7 @@
 
   .pattern-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     flex: 1;
     min-width: 0;
@@ -244,13 +244,13 @@
 
   .meta-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
   .meta-value {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
@@ -284,7 +284,7 @@
 
   .metric-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     white-space: nowrap;
     overflow: hidden;

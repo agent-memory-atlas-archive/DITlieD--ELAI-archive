@@ -1,0 +1,23 @@
+{
+  "_note": "C-26 — supplementary fixture file added per plan §Task 6a. The harness (run_benchmark.py L1471) currently reads only tasks.json; templates.json is referenced by the design spec (token-efficiency-design.report.md §11) but NOT by the harness today. This file is provided so future harness extensions that read templates.json have non-empty input to work with. See workflow/reasoning/C-26-decisions.md DECISION-E.",
+  "templates": [
+    {
+      "id": "rust_fn_simple",
+      "language": "rust",
+      "template": "fn {name}({args}) -> {return_type} {\n    {body}\n}",
+      "description": "Single-arg Rust function with explicit return type."
+    },
+    {
+      "id": "python_fn_simple",
+      "language": "python",
+      "template": "def {name}({args}) -> {return_type}:\n    {body}",
+      "description": "Single-arg Python function with PEP-484 return type hint."
+    },
+    {
+      "id": "rust_struct_simple",
+      "language": "rust",
+      "template": "pub struct {name} {\n    {fields}\n}",
+      "description": "Public Rust struct with named fields."
+    }
+  ]
+}

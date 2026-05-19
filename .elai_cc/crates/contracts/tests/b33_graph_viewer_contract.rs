@@ -39,6 +39,9 @@ fn vizdata_json_shape_pinned() {
             deps: 0,
             dependents: 0,
             symbol_count: 1,
+            // C-24 (DRIFT-7 Path A).
+            level: None,
+            status: None,
         }],
         file_edges: vec![],
         symbols: vec![],

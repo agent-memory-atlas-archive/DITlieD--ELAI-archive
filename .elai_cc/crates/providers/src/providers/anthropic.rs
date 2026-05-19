@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use elai_core::config::OAuthConfig;
-use elai_core::format_usd;
+use crate::pricing::format_usd;
 use crate::oauth::{load_oauth_credentials, save_oauth_credentials, OAuthRefreshRequest, OAuthTokenExchangeRequest};
 use crate::telemetry_types::{AnalyticsEvent, AnthropicRequestProfile, ClientIdentity, SessionTracer};
 use serde::Deserialize;
@@ -71,7 +71,7 @@ fn claude_code_session_id() -> &'static str {
         // to look like UUIDv4 to Anthropic's parser.
         if getrandom::fill(&mut bytes).is_err() {
             let pid = std::process::id().to_le_bytes();
-            let ts = std::time::SystemTime::now()
+            let ts = std::time::SystemTime::now() // entropy-allow: getrandom-fallback-seed
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)

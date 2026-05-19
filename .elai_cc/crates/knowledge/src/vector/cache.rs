@@ -1,5 +1,11 @@
 use blake3;
 use rusqlite::Connection;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+use crate::knowledge_ssb_sink::{
+    noop_sink, KnowledgeSsbSink, VectorCacheHitRateEvent,
+};
 
 use super::DualVector;
 #[cfg(test)]
@@ -8,6 +14,12 @@ use super::{CODE_VEC_DIM, TEXT_VEC_DIM};
 // ---------------------------------------------------------------------------
 // Schema — M3 migration (after DKG M1 + BM25 M2)
 // ---------------------------------------------------------------------------
+
+/// C-1: scale factor used to convert hits / total ratio into a
+/// percentage for `VectorCacheHitRateEvent.hit_rate_pct`. Named to keep
+/// magic numbers out of the code (codeRules baseline). Multiplying by
+/// 100.0 yields a percentage in the closed interval [0.0, 100.0].
+const HIT_RATE_PCT_SCALE: f64 = 100.0;
 
 const SCHEMA_SQL: &str = "
 DROP TABLE IF EXISTS vector_cache;
@@ -50,12 +62,37 @@ impl std::error::Error for CacheError {}
 
 pub struct VectorCache {
     conn: Connection,
+    /// C-1: monotonic hits counter incremented per [`Self::lookup`]
+    /// returning Some. Reset by [`Self::flush_hit_rate_ssb`].
+    hits: AtomicU32,
+    /// C-1: monotonic misses counter incremented per [`Self::lookup`]
+    /// returning None. Reset by [`Self::flush_hit_rate_ssb`].
+    misses: AtomicU32,
+    /// C-1: typed SSB sink for `vector_cache_hit_rate` beacons.
+    /// Production wiring threads `OrchestratorKnowledgeSsbSink`;
+    /// tests / inert paths use `NoopKnowledgeSsbSink`.
+    ssb_sink: Arc<dyn KnowledgeSsbSink>,
 }
 
 impl VectorCache {
     pub fn new(conn: Connection) -> Result<Self, CacheError> {
+        Self::with_ssb(conn, noop_sink())
+    }
+
+    /// C-1: construct a `VectorCache` with a typed knowledge SSB sink.
+    /// Production callers (cli::live_cli) wire the orchestrator adapter
+    /// here; tests use `noop_sink()`.
+    pub fn with_ssb(
+        conn: Connection,
+        ssb_sink: Arc<dyn KnowledgeSsbSink>,
+    ) -> Result<Self, CacheError> {
         conn.execute_batch(SCHEMA_SQL).map_err(CacheError::Migration)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            hits: AtomicU32::new(0),
+            misses: AtomicU32::new(0),
+            ssb_sink,
+        })
     }
 
     pub fn content_hash(content: &[u8]) -> Vec<u8> {
@@ -91,7 +128,11 @@ impl VectorCache {
             .map_err(CacheError::Query)?;
 
         match rows.next().map_err(CacheError::Query)? {
-            None => Ok(None),
+            None => {
+                // C-1: count miss for the periodic hit-rate flush.
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                Ok(None)
+            }
             Some(row) => {
                 let code_bytes: Vec<u8> = row.get(0).map_err(CacheError::Query)?;
                 let text_bytes: Vec<u8> = row.get(1).map_err(CacheError::Query)?;
@@ -106,9 +147,47 @@ impl VectorCache {
                 let dv = DualVector::new(code_vec, text_vec).map_err(|e| {
                     CacheError::DeserError(format!("dimension check: {e}"))
                 })?;
+                // C-1: count hit for the periodic hit-rate flush.
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 Ok(Some(dv))
             }
         }
+    }
+
+    /// C-1: hit-rate accessor used by callers that want a peek without
+    /// flushing (e.g. dashboard debug). Returns `(hits, misses)`. Relaxed
+    /// ordering is sufficient since the counters are monotonic and
+    /// readers tolerate stale-by-one snapshots.
+    pub fn hit_miss_snapshot(&self) -> (u32, u32) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+        )
+    }
+
+    /// C-1: emit a `VectorCacheHitRate` SSB row through the configured
+    /// [`KnowledgeSsbSink`] and atomically reset the hits/misses
+    /// counters. Skips emission when `hits + misses == 0` so empty
+    /// flushes do not flood the dashboard.
+    ///
+    /// Returns `true` if a row was emitted, `false` if the call was a
+    /// no-op (zero traffic since last flush).
+    pub fn flush_hit_rate_ssb(&self, session_id: &str) -> bool {
+        let hits = self.hits.swap(0, Ordering::Relaxed);
+        let misses = self.misses.swap(0, Ordering::Relaxed);
+        let total = hits.saturating_add(misses);
+        if total == 0 {
+            return false;
+        }
+        let hit_rate_pct = (f64::from(hits) / f64::from(total)) * HIT_RATE_PCT_SCALE;
+        self.ssb_sink
+            .emit_vector_cache_hit_rate(VectorCacheHitRateEvent {
+                session_id: session_id.to_owned(),
+                hits,
+                misses,
+                hit_rate_pct,
+            });
+        true
     }
 
     /// Invalidate cache entries for a given file path.

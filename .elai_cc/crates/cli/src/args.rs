@@ -172,6 +172,20 @@ pub(crate) enum CliAction {
     /// `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
     Run {
         project_root: PathBuf,
+        /// C-9 (Phase 4G) — `--mode autonomous|interactive|hybrid`. Resolved
+        /// to a [`GateMode`] by [`elai_orchestrator::GateMode::from_cli_args`]
+        /// at the production wiring point (`apply_task_runner_wiring`).
+        /// `None` => default Interactive.
+        mode: Option<String>,
+        /// C-5 (cloud-mode hardening) — `--provider local|cloud|hybrid`.
+        /// Distinct semantic axis from `--mode` (which is gate-mode, i.e.
+        /// who decides to advance). `--provider` controls WHERE the work
+        /// runs: pure local sidecar, pure cloud API, or hybrid (local-first
+        /// with cloud-escalate). Maps to
+        /// [`elai_orchestrator::dispatcher::BackendMode`] at the wiring
+        /// site: `local` -> `Local`, `cloud` -> `Api`, `hybrid` -> `Hybrid`.
+        /// `None` => use the toml default from `[cloud].default_mode`.
+        provider: Option<String>,
     },
     /// --remote-sidecar: SSH-boot the GPU box sidecar, start the local tunnel,
     /// health-poll until ready, then launch the V2 dashboard with
@@ -191,6 +205,45 @@ pub(crate) enum CliAction {
     /// Prints SymbolGraphMeta (symbol_count, edge_count, unresolved_edge_pct, …).
     SymbolGraphStats {
         project_root: PathBuf,
+    },
+    /// C-13: `elai wip-squash [--project-root <path>]` — invoked by the
+    /// Python FSM hook chain at AUDITING -> MEMORIZING transitions when
+    /// the Rust task_runner is not in scope (the hook layer fires the
+    /// transition from outside the runner process). Forwards to
+    /// `elai_orchestrator::wip_squash::squash_wip_commits_if_any`.
+    WipSquash {
+        project_root: PathBuf,
+    },
+    /// C-20: `elai measure [--scope <name>] [--cloud] [--output toml|json]`
+    /// — run the test-infra measurement suite. Direct (non-REPL) invocation
+    /// of `/measure`; the three parser-string fields carry the slash-command
+    /// shape verbatim (validation lives at the handler boundary in
+    /// `crate::measure::run_measure_subcommand`).
+    Measure {
+        scope: String,
+        cloud: bool,
+        output_format: CliOutputFormat,
+    },
+    /// C-25: `elai pipeline [list|reset]` — inspect or reset the compiled-pipeline
+    /// cache at `.elai/cache/compiled_pipelines.msgpack`. Direct (non-REPL)
+    /// invocation of `/pipeline`. `action` is the lower-cased subcommand
+    /// (`"list"` | `"reset"` | `"help"` | None=>list). Handler lives in
+    /// `crate::pipeline_subcommand::run_pipeline_subcommand`.
+    Pipeline {
+        action: Option<String>,
+        output_format: CliOutputFormat,
+    },
+    /// C-27: `elai wiring audit [--scope all|stub-ban|dkg-reachability|observable-effect]
+    /// [--config PATH] [--contracts PATH] [--output toml|json]`
+    /// — run the deterministic Tier T-0 wiring contract audit. Mirrors the
+    /// Measure/Pipeline pattern (string-typed scope; validation lives at
+    /// the handler boundary in `crate::wiring_audit::run`). Exits 0 on
+    /// clean audit, 1 on any violation.
+    WiringAudit {
+        scope: Option<String>,
+        config_path: Option<String>,
+        contracts_dir: Option<String>,
+        output_format: CliOutputFormat,
     },
 }
 
@@ -224,6 +277,13 @@ pub(crate) enum LocalHelpTopic {
 pub(crate) enum CliOutputFormat {
     Text,
     Json,
+    /// C-21 DRIFT-6 — dep-audit `--output-format toml`. The TOML report is
+    /// always written to `metrics/dep_audit_<YYYY-MM-DD>.toml`; when this
+    /// variant is selected, the dep-audit subcommand additionally emits
+    /// `metrics/dep_audit_latest.toml` (copy of the dated file) so callers
+    /// like Layer1A DIVERGING-state pipelines can locate the most recent
+    /// audit deterministically.
+    Toml,
 }
 
 impl CliOutputFormat {
@@ -231,9 +291,23 @@ impl CliOutputFormat {
         match value {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
+            "toml" => Ok(Self::Toml),
             other => Err(format!(
-                "unsupported value for --output-format: {other} (expected text or json)"
+                "unsupported value for --output-format: {other} (expected text, json, or toml)"
             )),
+        }
+    }
+
+    /// C-21 Task 6 — for consumers that only know Text/Json, fold the
+    /// `Toml` variant down to `Text` so non-dep-audit subcommands don't
+    /// have to grow Toml-specific renderers. The dep-audit consumer
+    /// explicitly matches `Toml` (see doctor::run_dep_audit_command) so
+    /// the demotion is invisible for the one subcommand that cares.
+    #[allow(dead_code)]
+    pub(crate) fn for_generic_consumer(self) -> Self {
+        match self {
+            Self::Text | Self::Toml => Self::Text,
+            Self::Json => Self::Json,
         }
     }
 }
@@ -500,6 +574,68 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "init" => Ok(CliAction::Init { output_format }),
         "run" => parse_run_subcommand_args(&rest[1..]),
         "symbol_graph" | "symbol-graph" => parse_symbol_graph_args(&rest[1..]),
+        "wip-squash" | "wip_squash" => parse_wip_squash_args(&rest[1..]),
+        // C-20: route `elai measure …` through the slash-command parser so
+        // the grammar is a single source of truth (mirrors the `runtime`
+        // routing immediately above).
+        "measure" => {
+            let raw = std::iter::once("/measure".to_string())
+                .chain(rest[1..].iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            match SlashCommand::parse(&raw) {
+                Ok(Some(SlashCommand::Measure {
+                    scope,
+                    cloud,
+                    output_format: _of,
+                })) => Ok(CliAction::Measure {
+                    scope,
+                    cloud,
+                    output_format,
+                }),
+                Ok(_) => Err(format!("unexpected slash command: {raw}")),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        // C-25: `elai pipeline [list|reset]` routes through the slash-command
+        // parser so the grammar stays single-sourced.
+        "pipeline" => {
+            let raw = std::iter::once("/pipeline".to_string())
+                .chain(rest[1..].iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            match SlashCommand::parse(&raw) {
+                Ok(Some(SlashCommand::Pipeline { action })) => Ok(CliAction::Pipeline {
+                    action,
+                    output_format,
+                }),
+                Ok(_) => Err(format!("unexpected slash command: {raw}")),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        // C-27: `elai wiring audit ...` routes through the slash-command
+        // parser. Mirrors the pipeline/measure shape (string-typed,
+        // single-grammar source).
+        "wiring" => {
+            let raw = std::iter::once("/wiring".to_string())
+                .chain(rest[1..].iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            match SlashCommand::parse(&raw) {
+                Ok(Some(SlashCommand::WiringAudit {
+                    scope,
+                    config_path,
+                    contracts_dir,
+                })) => Ok(CliAction::WiringAudit {
+                    scope,
+                    config_path,
+                    contracts_dir,
+                    output_format,
+                }),
+                Ok(_) => Err(format!("unexpected slash command: {raw}")),
+                Err(error) => Err(error.to_string()),
+            }
+        }
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -529,12 +665,18 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
 /// Phase A1a — parse `run` subcommand args.
 ///
 /// Supports `--project-root <path>` and `--project-root=<path>`; defaults to
-/// `std::env::current_dir()` when the flag is absent. Anything else is
-/// rejected with a typed error string so the top-level dispatcher can format
-/// it. Keeping the parser tight here protects the chokepoint contract test
-/// from drift introduced by a future flag.
+/// `std::env::current_dir()` when the flag is absent.
+///
+/// C-9 — also supports `--mode <autonomous|interactive|hybrid>` (default
+/// interactive). Validation lives at the gate construction site
+/// (`GateMode::from_cli_args`); unknown values resolve to Interactive there.
+/// Anything else is rejected with a typed error string so the top-level
+/// dispatcher can format it. Keeping the parser tight here protects the
+/// chokepoint contract test from drift introduced by a future flag.
 pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     let mut project_root: Option<PathBuf> = None;
+    let mut mode: Option<String> = None;
+    let mut provider: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -549,6 +691,55 @@ pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, St
                 project_root = Some(PathBuf::from(&flag[15..]));
                 i += 1;
             }
+            "--mode" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --mode".to_string())?;
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "autonomous" | "interactive" | "hybrid") {
+                    return Err(format!(
+                        "unsupported value for --mode: {value} (expected autonomous, interactive, or hybrid)"
+                    ));
+                }
+                mode = Some(lower);
+                i += 2;
+            }
+            flag if flag.starts_with("--mode=") => {
+                let value = &flag[7..];
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "autonomous" | "interactive" | "hybrid") {
+                    return Err(format!(
+                        "unsupported value for --mode: {value} (expected autonomous, interactive, or hybrid)"
+                    ));
+                }
+                mode = Some(lower);
+                i += 1;
+            }
+            // C-5: --provider local|cloud|hybrid (provider-routing axis).
+            "--provider" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --provider".to_string())?;
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "local" | "cloud" | "hybrid") {
+                    return Err(format!(
+                        "unsupported value for --provider: {value} (expected local, cloud, or hybrid)"
+                    ));
+                }
+                provider = Some(lower);
+                i += 2;
+            }
+            flag if flag.starts_with("--provider=") => {
+                let value = &flag[11..];
+                let lower = value.trim().to_ascii_lowercase();
+                if !matches!(lower.as_str(), "local" | "cloud" | "hybrid") {
+                    return Err(format!(
+                        "unsupported value for --provider: {value} (expected local, cloud, or hybrid)"
+                    ));
+                }
+                provider = Some(lower);
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `run` argument: {other}"));
             }
@@ -559,7 +750,7 @@ pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, St
         None => std::env::current_dir()
             .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
     };
-    Ok(CliAction::Run { project_root })
+    Ok(CliAction::Run { project_root, mode, provider })
 }
 
 /// B-29 Phase 4 — parse `symbol_graph` / `symbol-graph` subcommand args.
@@ -606,6 +797,38 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
             "unknown `symbol_graph` sub-command: '{other}' (expected 'build' or 'stats')"
         )),
     }
+}
+
+/// C-13 — parse `elai wip-squash [--project-root <path>]` arguments.
+/// Same `--project-root` resolution scheme as `parse_symbol_graph_args`.
+pub(crate) fn parse_wip_squash_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut project_root: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--project-root" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `wip-squash` argument: {other}"));
+            }
+        }
+    }
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| {
+            format!("`wip-squash` cannot determine cwd for --project-root default: {e}")
+        })?,
+    };
+    Ok(CliAction::WipSquash { project_root })
 }
 
 pub(crate) fn parse_local_help_action(rest: &[String]) -> Option<Result<CliAction, String>> {
@@ -716,6 +939,33 @@ pub(crate) fn parse_direct_slash_cli_action(
             action,
             role,
             target,
+            output_format,
+        }),
+        Ok(Some(SlashCommand::Measure {
+            scope,
+            cloud,
+            output_format: _of,
+        })) => Ok(CliAction::Measure {
+            scope,
+            cloud,
+            output_format,
+        }),
+        // C-25: route /pipeline through the same direct-slash path so
+        // `elai /pipeline list` works from the shell.
+        Ok(Some(SlashCommand::Pipeline { action })) => Ok(CliAction::Pipeline {
+            action,
+            output_format,
+        }),
+        // C-27: route /wiring through the same direct-slash path so
+        // `elai /wiring audit` works from the shell.
+        Ok(Some(SlashCommand::WiringAudit {
+            scope,
+            config_path,
+            contracts_dir,
+        })) => Ok(CliAction::WiringAudit {
+            scope,
+            config_path,
+            contracts_dir,
             output_format,
         }),
         Ok(Some(SlashCommand::Skills { args })) => Ok(CliAction::Skills {

@@ -86,7 +86,7 @@
     display: flex;
     flex-direction: column;
     width: 100%;
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .bt-header, .bt-row {
@@ -119,7 +119,7 @@
   .bt-empty {
     padding: 12px 8px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 

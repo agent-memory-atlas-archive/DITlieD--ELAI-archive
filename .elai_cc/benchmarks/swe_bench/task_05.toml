@@ -1,0 +1,11 @@
+id = "task_05"
+description = """
+A Python service uses `datetime.utcnow()`, which the standard library has
+deprecated since 3.12. Migrate every call site to
+`datetime.now(datetime.UTC)` so the deprecation warning stops firing on
+CI.
+"""
+expected_output = "datetime.now(datetime.UTC)"
+timeout_s = 90
+stage = 2
+is_canary = false

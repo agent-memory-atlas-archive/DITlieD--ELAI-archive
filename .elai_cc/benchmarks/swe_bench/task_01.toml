@@ -1,0 +1,11 @@
+id = "task_01"
+description = """
+Fix a Python function that returns the wrong type. Spec says the function
+returns `list[int]` but the current implementation returns `tuple[int, ...]`.
+Adjust the return statement to wrap the tuple in `list(...)` without
+changing the iteration logic.
+"""
+expected_output = "return list("
+timeout_s = 60
+stage = 1
+is_canary = false

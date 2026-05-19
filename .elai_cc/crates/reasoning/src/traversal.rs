@@ -59,7 +59,15 @@ pub fn default_answers_for_category(category: FailureCategory) -> Vec<ChoiceId> 
         | FailureCategory::RuntimePanic
         | FailureCategory::LogicError
         | FailureCategory::Timeout
-        | FailureCategory::Unknown => vec![c("A")],
+        | FailureCategory::Unknown
+        // C-21 Task 10 — gate-driven block categories share the same
+        // single-question fallback as Unknown. The interrogation tree
+        // has no dedicated branch for hook-tier blocks (they short-
+        // circuit before the agent ever produces a diff), so the
+        // first-question/answer-A path is the safest default.
+        | FailureCategory::T1Block
+        | FailureCategory::T2Block
+        | FailureCategory::PreToolBlock => vec![c("A")],
     }
 }
 

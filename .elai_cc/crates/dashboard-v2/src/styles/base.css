@@ -203,3 +203,61 @@ svg {
 .breath {
   animation: breath 2.2s ease-in-out infinite;
 }
+
+/* ----------------------------------------------------------
+   RESPONSIVE BREAKPOINTS (C-7)
+
+   Three-tier viewport adaptation:
+     desktop  (>= 1100px) — default layout, both panels visible
+     tablet   (<= 1099px) — hamburger sidebar, both panels visible
+     mobile   (<= 720px)  — hamburger sidebar, secondary auto-collapsed
+                           via Workspace.svelte ResizeObserver
+
+   The 1000px breakpoint mirrors Sidebar.svelte's NARROW_VIEWPORT_PX
+   constant. The 800px breakpoint mirrors Workspace.svelte's
+   NARROW_BREAKPOINT_PX. JS observers handle the state mutations;
+   CSS handles purely visual fall-back so the sidebar fits even
+   before JS hydrates.
+---------------------------------------------------------- */
+@media (max-width: 1099px) {
+  /* Tablet — sidebar shrinks to a pure 48px icon strip; the wordmark
+     stays but the per-button tooltips become the only label. Nav-list
+     visibility itself is controlled by the .sidebar--narrow.sidebar--collapsed
+     class set in Sidebar.svelte; this @media is the fall-back hook for
+     pre-hydration paint. */
+  .sidebar-tooltip-global {
+    /* Disable hover tooltips on touch-likely viewports — they get stuck. */
+    display: none !important;
+  }
+}
+
+@media (max-width: 999px) {
+  /* Sub-1000px — hamburger sidebar must be available. Sidebar.svelte
+     toggles sidebarCollapsed automatically when innerWidth crosses the
+     1000px threshold. */
+  .panels-area {
+    /* Tighter min-widths so the primary panel can survive sub-1000px. */
+    min-width: 0;
+  }
+}
+
+@media (max-width: 799px) {
+  /* Mobile — single-panel mode. Workspace.svelte's ResizeObserver sets
+     secondaryCollapsed = true on the panels-area below 800px, so
+     PanelDivider + secondary-panel-wrap stop rendering. The primary
+     panel takes full width via flex: 1 1 100%.
+
+     Drawer/CommandPalette overlays remain available at this width. */
+  .app-shell {
+    /* Status bar text gets dense — shrink slightly for sub-800px. */
+    grid-template-rows: 1fr 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Very narrow — sidebar tightens further and the wordmark shrinks. */
+  .sidebar .wordmark {
+    font-size: 14px;
+    letter-spacing: 0.18em;
+  }
+}

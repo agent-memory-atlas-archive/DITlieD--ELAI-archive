@@ -501,6 +501,13 @@ pub const TOOL_SYMBOL_FLOW: &str = "symbol_flow";
 pub const TOOL_SYMBOL_CONTEXT: &str = "symbol_context";
 pub const TOOL_SYMBOL_LIST: &str = "symbol_list";
 
+// C-24 (DRIFT-5) — Mermaid graph-export tool ID. Surfaces the same code
+// path the dashboard Tauri `export_graph_mermaid` command uses (and the
+// shared `export_graph_mermaid_impl` C-18 extracted) over the IPC wire
+// so REPL / agent callers can request a Mermaid string without going
+// through the Tauri layer.
+pub const TOOL_EXPORT_GRAPH_MERMAID: &str = "export_graph_mermaid";
+
 // B-34 — Entry-point detection tool ID.
 pub const TOOL_ENTRY_POINTS: &str = "entry_points";
 
@@ -568,6 +575,21 @@ pub struct SymbolListRequest {
     pub file: Option<String>,
     pub query: Option<String>,
     pub limit: u32,
+}
+
+/// Request for the `export_graph_mermaid` tool — render the same
+/// VizData payload as a Mermaid flowchart string. Mirrors the Tauri
+/// command `export_graph_mermaid` (dashboard-v2/src-tauri/src/commands.rs)
+/// and the shared `export_graph_mermaid_impl` free function it delegates
+/// to (C-18). `mode` ∈ {"file", "symbol", "decomposition"}. `max_nodes`
+/// caps the rendered subset; when `None`, the impl uses the B-33
+/// default (200).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportGraphMermaidRequest {
+    pub project_root: String,
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_nodes: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------

@@ -76,7 +76,7 @@
     background: rgba(8, 16, 14, 0.62);
     padding: 8px 12px 9px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.4;
     color: var(--text-secondary);
     opacity: 0;
@@ -126,7 +126,7 @@
   }
   .mc-line {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { Select, SegmentedControl, Scrollbar, UnwiredNote } from '$lib/ui';
   import RuntimePanel from '$lib/components/RuntimePanel.svelte';
+  import CloudPanel from '$lib/screens/CloudPanel.svelte';
   import { session } from '$lib/state/session.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import * as stub from '$lib/api/stub';
@@ -728,43 +729,20 @@
       <RuntimePanel />
     </section>
 
-    <!-- Section: CLOUD PANEL (B-27) — privacy + air-gapped + redaction profile.
-         Currently read-only mirror of elai_cc.toml [cloud] section. Live edit
-         + write-back is a B-27.5 follow-up; the surface here keeps the dashboard
-         honest about what's actually wired in cloud_mode::CloudConfig. Spend
-         gauges live in MonitorWindow (spec D-4:307), NOT here. -->
+    <!-- Section: CLOUD PANEL (C-5) — live provider routing + spend cap +
+         redaction events. Replaces the B-27 read-only mirror with a
+         CloudPanel component that polls get_cloud_spend / get_execution_mode
+         every 5s and wires the provider selector to set_execution_mode
+         (LOCAL | HYBRID | CLOUD). The privacy profile / air-gapped fields
+         remain elai_cc.toml-driven and are passed through as props. -->
     <section class="s-section">
       <div class="s-header">cloud</div>
-
-      <div class="s-row">
-        <span class="s-label">Privacy profile</span>
-        <div class="s-control">
-          <span
-            class="bare-input bare-input--disabled mono"
-            title="Configured via elai_cc.toml [cloud.privacy].profile (minimal | standard | strict)"
-          >standard</span>
-        </div>
-      </div>
-
-      <div class="s-row">
-        <span class="s-label">Air-gapped</span>
-        <div class="s-control">
-          <span
-            class="bare-input bare-input--disabled mono"
-            title="When true, ExecMode::Cloud short-circuits with AirGappedConflict before any network call. Configured via elai_cc.toml [cloud].air_gapped"
-          >off</span>
-        </div>
-      </div>
-
-      <div class="s-row">
-        <span class="s-label">Routing mode</span>
-        <div class="s-control">
-          <span
-            class="bare-input bare-input--disabled mono"
-            title="local | cloud | auto. Auto starts local and escalates to cloud on retry exhaustion. Configured via elai_cc.toml [cloud].default_mode"
-          >auto</span>
-        </div>
-      </div>
+      <CloudPanel
+        capDailyUsd={Number.isFinite(Number(cloudSpendCap)) ? Number(cloudSpendCap) : null}
+        capMonthlyUsd={null}
+        privacyProfile="standard"
+        airGapped={false}
+      />
     </section>
 
     <!-- Section: CONTROL -->
@@ -1070,7 +1048,7 @@
   .s-readonly--accent { color: var(--teal); }
   .s-readonly--mono {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1145,7 +1123,7 @@
   }
 
   .s-save-error {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fail);
     margin-top: var(--s-1);
   }
@@ -1153,7 +1131,7 @@
   /* ---- Toggle pill: [ ON ] / [ off ] outlined-text button ---- */
   .toggle-pill {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     background: transparent;
     border: 1px solid var(--border-default);
@@ -1261,7 +1239,7 @@
     gap: var(--s-3);
     align-items: baseline;
     padding: 2px 0;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
   .audit-row--outdated .audit-crate { color: var(--warn); }

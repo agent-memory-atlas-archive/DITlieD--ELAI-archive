@@ -1,5 +1,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
+
+/// Baseline `Instant` captured once, used by `SeededClock::instant_now()` so the
+/// returned `Instant` is monotonically derived from tick (no `lazy_static`,
+/// no new dependency — see C-15 D3).
+static SEEDED_INSTANT_BASE: OnceLock<Instant> = OnceLock::new();
+
+fn seeded_instant_base() -> Instant {
+    *SEEDED_INSTANT_BASE.get_or_init(Instant::now)
+}
 
 /// Opaque monotonic timestamp. Comparable but not constructable outside this module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -34,6 +44,32 @@ pub trait ClockProvider: Send + Sync {
     fn now(&self) -> LogicalInstant;
     fn elapsed_since(&self, mark: LogicalInstant) -> Duration;
     fn system_now(&self) -> SystemTime;
+
+    /// Return a raw `Instant`. For `OsClock` this is `Instant::now()`. For
+    /// `SeededClock` it is a synthetic instant derived from a process-wide
+    /// baseline plus tick milliseconds — monotonic but unrelated to wall clock.
+    /// Added in C-15.1 so that callers holding only an `Arc<dyn ClockProvider>`
+    /// can still produce an `Instant` for legacy APIs (e.g., `Instant`-keyed
+    /// caches) without leaking `Instant::now()` calls.
+    fn instant_now(&self) -> Instant;
+
+    /// Convenience: milliseconds since UNIX epoch, derived from `system_now()`.
+    /// Returns 0 if the clock is somehow before UNIX_EPOCH (impossible for
+    /// `OsClock` and `SeededClock`, but defensive for custom impls).
+    fn now_ms(&self) -> u128 {
+        self.system_now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    }
+
+    /// Convenience: seconds since UNIX epoch, derived from `system_now()`.
+    fn now_secs(&self) -> u64 {
+        self.system_now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +102,10 @@ impl ClockProvider for OsClock {
     fn system_now(&self) -> SystemTime {
         SystemTime::now()
     }
+
+    fn instant_now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +113,12 @@ impl ClockProvider for OsClock {
 // ---------------------------------------------------------------------------
 
 /// Tick-based clock for deterministic tests. Each `now()` call increments by 1ms.
+///
+/// ELAI_SEED seeds the random number generator only (SeedableRng path in
+/// entropy.rs). The tick counter always starts at 0 in seeded mode — the first
+/// call to `now()` returns `tick=0`. Timestamps in derived/non-clock fields are
+/// therefore byte-identical across runs with the same ELAI_SEED when
+/// `ClockProvider` is properly injected (C-15.2).
 pub struct SeededClock {
     tick: AtomicU64,
     epoch: SystemTime,
@@ -124,5 +170,13 @@ impl ClockProvider for SeededClock {
     fn system_now(&self) -> SystemTime {
         let tick = self.tick.load(Ordering::Relaxed);
         self.epoch + Duration::from_millis(tick)
+    }
+
+    fn instant_now(&self) -> Instant {
+        // Synthetic Instant: process-wide baseline + tick ms. Monotonic in tick.
+        // Not related to wall clock — callers that need wall clock must use
+        // `system_now()`.
+        let tick = self.tick.load(Ordering::Relaxed);
+        seeded_instant_base() + Duration::from_millis(tick)
     }
 }

@@ -23,6 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use elai_core::clock::{ClockProvider, OsClock};
 
 // SSH connection details (from CLAUDE.md "Remote sidecar (canonical)").
 const SSH_HOST: &str = "192.0.2.10";
@@ -215,7 +216,11 @@ fn start_ssh_tunnel() -> Result<(), anyhow::Error> {
 /// with exponential backoff, max 120 s. The endpoint is used rather than
 /// /health because the tunnel may forward only the Anthropic-protocol path.
 fn poll_until_healthy(client: &reqwest::blocking::Client) -> Result<(), anyhow::Error> {
-    let start = std::time::Instant::now();
+    // C-15: OsClock-backed `start` so the entropy scanner stays clean. Health
+    // polling is wall-clock-driven (HEALTH_TIMEOUT_SECS budget) and is not part
+    // of any deterministic test.
+    let poll_clock = OsClock;
+    let start = poll_clock.now();
     let timeout = Duration::from_secs(HEALTH_TIMEOUT_SECS);
     let mut wait_ms = 2_000u64;
     let mut attempt = 0u32;
@@ -224,7 +229,7 @@ fn poll_until_healthy(client: &reqwest::blocking::Client) -> Result<(), anyhow::
     io::stdout().flush().ok();
 
     loop {
-        if start.elapsed() >= timeout {
+        if poll_clock.elapsed_since(start) >= timeout {
             return Err(anyhow::anyhow!(
                 "remote sidecar did not become healthy within {HEALTH_TIMEOUT_SECS}s; \
                  check ~/sidecar.log on the remote host"
@@ -252,10 +257,10 @@ fn poll_until_healthy(client: &reqwest::blocking::Client) -> Result<(), anyhow::
             .unwrap_or(false);
 
         if reachable {
-            println!("\n[remote-sidecar] step 3: healthy after {:.1}s ({} attempts)", start.elapsed().as_secs_f32(), attempt);
+            println!("\n[remote-sidecar] step 3: healthy after {:.1}s ({} attempts)", poll_clock.elapsed_since(start).as_secs_f32(), attempt);
             io::stdout().flush().ok();
             tracing::info!(
-                elapsed_secs = start.elapsed().as_secs_f32(),
+                elapsed_secs = poll_clock.elapsed_since(start).as_secs_f32(),
                 attempts = attempt,
                 "remote-sidecar: health poll passed"
             );

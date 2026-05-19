@@ -181,7 +181,316 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // The pinned-schema-version contract tests from B-34 (idea_framing_contract /
 // minified_chunked_ssb_contract) intentionally stay at 42 floor — they
 // guard against regressions, not floor advancement. Additive only.
-const SCHEMA_VERSION: i64 = 46;
+// C-1 (SCHEMA_VERSION 47): atomic bump for 7 new knowledge + reasoning
+// producer variants (GrcStepEmitted, GroundingSweepResult, CsqEvaluated,
+// AuditorRubberStampRejected, HydeQuery, VectorCacheHitRate, QueryTrace).
+// Producers: task_runner (GRC step + grounding sweep + CSQ),
+// reasoning::engine (auditor anti-rubber-stamp, surfaced at the
+// PipelineGrc caller), knowledge::hyde (per-hypothesize call),
+// knowledge::vector::cache (flush_hit_rate_ssb), knowledge::pipeline
+// (per-query trace). See workflow/reasoning/C-1-decisions.md.
+// C-2 (SCHEMA_VERSION 48): atomic bump for 10 new orchestration + cosmos +
+// stagnation producer variants — 4 tree-node beacons (PhaseNodeReady /
+// StepNodeReady / BabyStepReady / DagRepairEscalated) + AgentStatusChanged
+// (mirror of AgentLifecycle, single `state` field per DRIFT-5) + 5
+// stagnation / anti-spiral variants (StagnationSpinningDetected /
+// StagnationOscillationDetected / LateralThinkingActivated /
+// GoalDriftWarning / WatchdogTimeout). Producers: task_runner baby-step
+// loop (PhaseNodeReady/StepNodeReady/BabyStepReady), pipeline_builder
+// RepairOutcome::Escalated path (DagRepairEscalated), bsp/engine co-emit
+// (AgentStatusChanged), reserved for C-10 stagnation detectors (5 anti-
+// spiral variants — defined now so the SCHEMA bump is atomic).
+// See workflow/reasoning/C-2-decisions.md.
+// C-7 (SCHEMA_VERSION 49): atomic bump for 1 new dashboard review-surface
+// variant — ChangeDecision. Emitted by the dashboard-v2 Tauri commands
+// accept_change / decline_change / retry_audit each time a human reviewer
+// acts on a per-file or per-hunk change row in ReviewWindow. Carries
+// `decision` ("accepted" | "declined" | "retried"), `path`, optional
+// `hunk_id` (None == file-level decision), and optional `note` (reviewer
+// retry note). Live FileWrite rows remain the source of truth for the
+// diff payload itself; ChangeDecision rows record reviewer verdicts.
+// See workflow/reasoning/C-7-decisions.md.
+// C-8 (SCHEMA_VERSION 50): atomic bump for 1 new viewer-stub-eradication
+// variant — SearchModeChanged. Emitted by the live_cli startup-readiness
+// path AND by the dashboard-v2 Tauri command `set_search_mode` whenever
+// the DegradationCascade verdict changes (or a reviewer manually flips
+// the mode for diagnostic purposes). Carries the new `mode` string
+// ("hybrid" | "lexical" | "semantic" | "ann") plus an optional `history`
+// vector capturing the trailing mode sequence so the dashboard can
+// render a "last N transitions" timeline without re-querying. Bridges
+// the live_cli AppState (CLI process) and dashboard-v2 AppState
+// (src-tauri process) which share no in-memory state — SSB is the
+// only cross-process channel (per context-package-C8.md DRIFT-I).
+// NOTE: ArtifactsIndexed variant + ArtifactsIndexedPayload already exist
+// from B-34 (SCHEMA 42); C-8 wires them into production_agent_rpc.rs
+// without re-defining. See workflow/reasoning/C-8-decisions.md DRIFT-G.
+// C-5 (SCHEMA_VERSION 51): atomic bump for 1 new cloud-mode-hardening
+// variant — RedactionApplied. Emitted by `RedactingBabyStepExecutor`
+// each time the privacy redactor scrubs PII or secrets from a cloud-bound
+// baby-step payload. Carries `count` (number of redaction substitutions
+// applied) + `fields` (which logical fields were touched: e.g.
+// `["task_summary", "escalation_message"]`). Consumer: CloudPanel.svelte
+// privacy-event feed (last 5 redactions surfaced via SsbViewer query).
+// Companion writes: CloudSpend (existing) and the new spend-cap-enforcement
+// emission paths in CloudGroundingClient + CloudModeRouter. See
+// workflow/reasoning/C-5-decisions.md.
+// C-13 (SCHEMA_VERSION 53): atomic bump for 1 new IPC-dispatcher
+// production-swap beacon — WipSquashComplete. Emitted by the post-AUDITING
+// -> MEMORIZING transition hook (`squash_wip_commits_if_any` in
+// `wip_squash.rs`) AND by the `elai wip-squash` CLI subcommand whenever a
+// real squash actually executed (`squashed == true`, `wip_count > 5`).
+// Carries `wip_count` (the leading-WIP-commit count observed before
+// squashing) + `squashed` (true ⇒ a `git reset --soft HEAD~N` + commit
+// happened; false ⇒ no-op because count <= 5). Producer wiring: lands at
+// the task_runner audit-loop boundary AND as a direct CLI invocation for
+// the Python hook side-channel. Consumer: dashboard activity feed surfaces
+// "wip-squash: 7 commits collapsed" rows. See workflow/reasoning/C-13-decisions.md.
+//
+// C-22 (SCHEMA_VERSION 54): atomic bump for 2 new feasibility-probe completeness
+// beacons:
+//   * alternative_explored — emitted once per NovelStep alternative accepted
+//     by the feasibility probe. Carries step_id + alternative_index so the
+//     dashboard can render per-step alternative trails. Producer wiring:
+//     `crate::feasibility_probe::DefaultFeasibilityProber::probe` per
+//     NovelStep iteration where an alternative was chosen.
+//   * feasibility_escalated — emitted when `decide_with_mode` returns
+//     `FeasibilityDecision::Escalate`. Carries the FSM-facing escalation
+//     summary (reason + escalation variant tag). Distinct from the
+//     pre-existing `escalation_fired` row which targets the autonomous
+//     gate; this row is the feasibility-probe-specific signal.
+// Both action_types are reflected in the SQL CHECK constraint, as_sql_str,
+// from_str, SsbPayload variant, action_type() arm, test_payload arm, and
+// all_test_payloads sample list — the atomic 9-tuple per CLAUDE.md SCHEMA
+// hard rule.
+//
+// C-23 (SCHEMA_VERSION 55): atomic bump for 3 new SessionDag branch-UI
+// beacons. Replaces the previous `Checkpoint`-row-with-discriminator
+// pattern used in `merge_branch_with_ssb` so the dashboard ActivityWindow
+// and SessionsDrawer surfaces can render branch operations without
+// inspecting the grc_history_hash string. The pre-existing
+// `branch_merge` action_type (singular form, no payload) remains as a
+// no-op deprecation stub for legacy rows; new producers MUST emit the
+// new typed variants.
+//   * branch_forked   — one row per successful SessionDag::create_branch.
+//                       Producer: dashboard `fork_session_branch` Tauri
+//                       command + CLI `/session fork` (handoff.rs).
+//                       Carries branch_name + tip_snap_id + parent_snap_id.
+//   * branch_merged   — one row per successful merge_branch_with_ssb
+//                       (replaces the legacy Checkpoint emit on Winner).
+//                       Producer: SessionDag::merge_branch_with_ssb.
+//                       Carries winner_name + trunk_snap_id + abandoned_names.
+//   * branch_closed   — one row per successful close_branch_with_ssb.
+//                       Producer: SessionDag::close_branch_with_ssb (new
+//                       wrapper mirroring merge_branch_with_ssb). Carries
+//                       branch_name + reason.
+// All three action_types are reflected in the SQL CHECK constraint,
+// as_sql_str, from_str, SsbPayload variant, action_type() arm,
+// test_payload arm, and all_test_payloads sample list — the atomic
+// 9-tuple per CLAUDE.md SCHEMA hard rule.
+// C-10 (SCHEMA_VERSION 52): atomic bump for 3 new anti-spiral lateral
+// thinking + goal-drift block beacons:
+//   * lateral_thinking_succeeded — emitted when a persona switch broke
+//     a stagnation loop (downstream pattern detector no longer fires
+//     after the persona suggestion was consumed). Producer wiring
+//     deferred to C-N; the variant is added now so the SCHEMA bump is
+//     atomic with the other C-10 detection emit sites.
+//   * lateral_thinking_exhausted — emitted when all 5 personas have
+//     been tried within the current task window without a pattern
+//     break. Carries the persona-trial count so the dashboard can
+//     surface "all personas exhausted" status.
+//   * goal_drift_block — emitted when the GoalDriftCanary verdict
+//     crosses the Block threshold (drift_score < 0.4 jaccard
+//     similarity in the plan-direction reading; see
+//     workflow/reasoning/C-10-decisions.md DRIFT-3). The existing
+//     `goal_drift_warning` row covers the YELLOW band; this new row
+//     covers the RED band and may be wired by the gate to fail the
+//     task before audit. Producer wiring lands when GoalDriftCanary
+//     emits the corresponding decision branch in task_runner.
+// C-25 (SCHEMA_VERSION 56): atomic bump for 5 new compiled-pipeline +
+// template-crystallizer + background-task beacons. Definition-only here;
+// producer wiring lands in `compiled_pipeline.rs`, `background_task.rs`,
+// `pipeline_builder.rs`, and the `task_runner.rs` post-execute hook.
+//   * plan_skeleton                — one row per pipeline_builder factory
+//                                    entry. Carries plan_id, step_count,
+//                                    concept_class, plan_skeleton_hash,
+//                                    and source (Template | Llm). C-25
+//                                    ships the FIRST emitter (the spec's
+//                                    "plan_skeleton SSB row" was missing
+//                                    before this bump — see C-25 DRIFT-D).
+//   * compiled_pipeline_fired      — one row per CompiledExecutor cache HIT
+//                                    followed by successful run. Carries
+//                                    pipeline_id, concept_class, use_count.
+//   * template_crystallized        — one row per TemplateCrystallizer
+//                                    crystallization. Carries concept_class,
+//                                    plan_skeleton_hash, pipeline_id,
+//                                    threshold_n.
+//   * background_task_started      — one row per BackgroundTaskManager
+//                                    spawn_task / gated_spawn success.
+//                                    Carries task_id, command_summary,
+//                                    soft_timeout_secs, hard_timeout_secs.
+//   * background_task_complete     — one row per harvested handle
+//                                    (poll_completed or auto-detach).
+//                                    Carries task_id, exit_status,
+//                                    duration_secs, auto_detached,
+//                                    timed_out.
+// DESTRUCTIVE: existing v55 session DBs are DROPped on first open with v56;
+// rebuild from scratch (no migration is provided because SSB rows are
+// observational, capped at PAYLOAD_MAX_BYTES, and have no downstream
+// consumers that hold long-term state).
+//
+// C-25 audit follow-up (SCHEMA_VERSION 57): atomic bump for the 6th
+// compiled-pipeline beacon, `decompile_triggered`. WIRING_CONTRACT line 161
+// of the C-25 plan listed `decompile_triggered` as a produced SSB
+// action_type, but the v56 implementation routed the event through the
+// pre-existing `AntiSpiralHit` payload (WARN-1 in audit-C25.md). This
+// bump adds the missing variant + payload so dashboard / contract queries
+// filtered on `decompile_triggered` see every decompile event. Producer
+// wiring lives at `compiled_pipeline.rs::CompiledExecutor::emit_decompile_triggered`.
+//   * decompile_triggered          — one row per CompiledExecutor decompile
+//                                    decision (consecutive-failure threshold
+//                                    or confidence floor). Carries
+//                                    concept_class, plan_skeleton_hash,
+//                                    failure_count, trigger_reason.
+// DESTRUCTIVE: existing v56 session DBs are DROPped on first open with v57.
+//
+// C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+// Two new beacons added atomically (9-tuple lockstep — see
+// workflow/reasoning/C-26-decisions.md):
+//   * futility_detected            — same-error-class window in
+//                                    NavigatorTree saturates at
+//                                    futility_same_error_threshold (default
+//                                    3). Carries error_class,
+//                                    consecutive_count, level, escalated.
+//   * futility_output_stagnation   — GoalDriftCanary similarity between
+//                                    consecutive baby-step outputs exceeds
+//                                    0.90. Carries similarity, threshold,
+//                                    level, new_persona (Hacker for NoDrift
+//                                    per C-10 D4 affinity).
+// all_test_payloads().len() goes 118 -> 120 (+2 variants).
+//
+// C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) DeterminismConfig + T-0
+// WiringContract foundation. Three new beacons emitted atomically — the
+// determinism tier produces one, the wiring tier produces two. Producer
+// wiring lands in `determinism.rs` (DriftComparator) + `wiring_contract.rs`
+// (StubBanAuditor / DkgReachabilityAuditor / ObservableEffectRunner) +
+// `cli/wiring_audit.rs` (audit driver). See workflow/reasoning/C-27-decisions.md.
+//   * wiring_evidence        — one row per produces_symbol verified reachable
+//                              by DkgReachabilityAuditor under a configured
+//                              [wiring.entrypoints]. Carries entrypoint,
+//                              produces_symbols_verified, reachable_count,
+//                              audit_id.
+//   * wiring_violation       — one row per StubBanAuditor /
+//                              DkgReachabilityAuditor / ObservableEffectRunner
+//                              violation. Carries violation_kind (StubPattern
+//                              | UnreachableSymbol | BrokenObservable),
+//                              file, line, pattern, audit_id.
+//   * determinism_drift      — one row per DriftComparator divergence. Carries
+//                              seed, run_a_hash, run_b_hash,
+//                              first_divergence_index, audit_id. Identical
+//                              sequences emit ZERO rows (stub_ban contract).
+// all_test_payloads().len() goes 120 -> 123 (+3 variants).
+//
+// C-28 (SCHEMA_VERSION 60): Testing-trust Tier T-1 mutation testing gate.
+// One new beacon — mutation_survived — emitted by deterministic_auditor's
+// Step 6 mutation check, one row per surviving mutant. Producer wiring
+// lands in `mutation_testing.rs` (RustMutationRunner / PythonMutationRunner
+// + MutationResult + EquivalentMutantCache) + `deterministic_auditor.rs`
+// (CheckKind::Mutation, run_all() Step 6 async bridge). See
+// workflow/reasoning/C-28-decisions.md.
+//   * mutation_survived       — one row per mutant whose outcome is Survived.
+//                               Carries file, line, mutant_kind. Caught /
+//                               Timeout / Skipped emit zero rows.
+// all_test_payloads().len() goes 123 -> 124 (+1 variant).
+//
+// C-29 (SCHEMA_VERSION 61): Testing-trust Tier T-2 (IntentPair) + T-3
+// (basic Metamorphic relations). Two new beacons emitted atomically with
+// the 9-tuple lockstep — IntentConfirmed (per BabyStep T-2 confirmation,
+// `pair_count >= IntentConfig.min_pairs`) + MrViolated (one row per failed
+// metamorphic relation emitted from `deterministic_auditor` Step 7,
+// post-Mutation). The MrViolated payload `counterexample` MUST be
+// non-empty (debug_assert + runtime sentinel fallback, see
+// `metamorphic_testing::MrResult::failed` + DRIFT-C29-11). Producer
+// wiring lands in `intent_pair.rs` / `metamorphic_testing.rs` +
+// `evidence.rs::IntentPairsGate` + `autonomous_gate.rs` auto-confirm
+// branch + `deterministic_auditor.rs::check_metamorphic`. See
+// workflow/reasoning/C-29-decisions.md.
+//   * intent_confirmed        — one row per BabyStep that satisfies the
+//                               PLANNING -> TESTING_FIRST IntentPair gate.
+//                               Carries step_id, pair_count, confirmed_by
+//                               ("user" | "autonomous_gate").
+//   * mr_violated             — one row per `MrResult { passed: false }`.
+//                               Carries step_id, relation
+//                               ("identity"|"inverse"|"permutation_invariance"),
+//                               counterexample (non-empty, stub_ban),
+//                               sample_size.
+// all_test_payloads().len() goes 124 -> 126 (+2 variants).
+//
+// C-30 (SCHEMA_VERSION 62): atomic bump for 5 new Surgical Mode + Oracle Mode
+// pipeline beacons. Producer wiring lands in
+// `surgical_decomposer.rs` (decompose + LOC gate emit), `oracle_cache.rs`
+// (get/insert emit), and `cli/src/live_cli.rs` (project_detection_signal
+// scan before first /task). See workflow/reasoning/C-30-decisions.md.
+//   * surgical_plan_created      — one row per SurgicalDecomposer::decompose
+//                                  Ok return. Carries complexity_class
+//                                  (Simple|Medium|Complex), blast_radius_files,
+//                                  total_loc_estimate, step_count.
+//   * surgical_loc_warning       — one row per decompose call whose
+//                                  AffectedSet.total_loc_estimate exceeds 500.
+//                                  Carries total_loc_estimate + threshold +
+//                                  mode (Interactive|Autonomous).
+//   * oracle_cache_hit           — one row per OracleAnswerCache::get hit.
+//                                  Carries query_hash_hex, source_tier
+//                                  (T1Authoritative|T2Strong|T3Weak),
+//                                  cached_age_secs.
+//   * oracle_cache_miss          — one row per OracleAnswerCache::insert
+//                                  (preceded by a get-returns-None). Carries
+//                                  query_hash_hex + confidence.
+//   * project_detection_signal   — one row per signal evaluated by the
+//                                  fresh-project detector
+//                                  (Cargo.toml|go.mod|pyproject.toml|
+//                                  package.json|rust_file_count_ge_10).
+//                                  Carries signal_name, weight
+//                                  (Required|Strong|Weak), fired (bool).
+// All five variants are reflected in the SQL CHECK constraint, as_sql_str,
+// from_str, SsbPayload variant, action_type() arm, test_payload arm, and
+// all_test_payloads sample list — the atomic 9-tuple per CLAUDE.md SCHEMA
+// hard rule. all_test_payloads().len() goes 126 -> 131 (+5 variants).
+//
+// C-32 (SCHEMA_VERSION 63): atomic bump for 5 new Code-Completeness Layer 2
+// beacons. Producer wiring lands in
+// `skeleton_generator.rs` (generate + flush emit), `mini_critic.rs`
+// (per-blank verdict emit), `structural_retry.rs` (per-stage attempt
+// emit), and `bridge_template.rs` (deterministic bridge-file emit). See
+// workflow/reasoning/C-32-decisions.md.
+//   * skeleton_generated              — one row per
+//                                        `SkeletonGenerator::generate_for_functions`
+//                                        Ok return. Carries blank_count,
+//                                        language, file_path.
+//   * skeleton_flushed                — one row per
+//                                        `SkeletonGenerator::flush_to_disk`
+//                                        success. Carries path,
+//                                        completeness_ratio.
+//   * mini_critic_verdict             — one row per `MiniCritic::check`.
+//                                        Carries blank_id, verdict
+//                                        ("pass"|"warn"|"block"), reason,
+//                                        language.
+//   * structural_retry_stage_attempt  — one row per
+//                                        `StructuralRetrySequencer` stage
+//                                        invocation. Carries blank_id,
+//                                        stage, attempt, outcome.
+//   * bridge_file_generated           — one row per
+//                                        `BridgeFileTemplate::write_bridge`
+//                                        success. Carries kind, path,
+//                                        module_count.
+// All five variants are reflected in the SQL CHECK constraint, as_sql_str,
+// from_str, SsbPayload variant, action_type() arm, test_payload arm, and
+// all_test_payloads sample list — the atomic 9-tuple per CLAUDE.md SCHEMA
+// hard rule. all_test_payloads().len() goes 131 -> 136 (+5 variants).
+// DESTRUCTIVE: existing v62 session DBs are DROPped on first open with v63
+// (no migration is provided because SSB rows are observational, capped at
+// PAYLOAD_MAX_BYTES, and have no downstream consumers that hold long-term
+// state).
+const SCHEMA_VERSION: i64 = 63;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -403,7 +712,173 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- cli_subprocess_spawned   -- one row per CLI adapter subprocess spawn
         -- cli_subprocess_killed    -- one row per CLI adapter subprocess kill / exit
         'runtime_fallback', 'runtime_health_changed',
-        'cli_subprocess_spawned', 'cli_subprocess_killed'
+        'cli_subprocess_spawned', 'cli_subprocess_killed',
+        -- C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+        -- grc_step_emitted              -- per emit_reasoning call (real PipelineGrc budget)
+        -- grounding_sweep_result        -- one row per ground_plan() call (task_runner)
+        -- csq_evaluated                 -- one row per generate_csq() result (task_runner)
+        -- auditor_rubber_stamp_rejected -- engine.rs InsufficientFindings surfaced at PipelineGrc caller
+        -- hyde_query                    -- one row per HydeStage::hypothesize call
+        -- vector_cache_hit_rate         -- aggregate row per VectorCache::flush_hit_rate_ssb
+        -- query_trace                   -- per QueryPipeline::query_with_tier completion
+        'grc_step_emitted', 'grounding_sweep_result', 'csq_evaluated',
+        'auditor_rubber_stamp_rejected', 'hyde_query',
+        'vector_cache_hit_rate', 'query_trace',
+        -- C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+        -- phase_node_ready              -- task_runner baby-step loop crosses a phase boundary
+        -- step_node_ready               -- task_runner baby-step loop crosses a step boundary
+        -- baby_step_ready               -- task_runner per baby-step entry
+        -- dag_repair_escalated          -- pipeline_builder RepairOutcome::Escalated
+        -- agent_status_changed          -- mirror of AgentLifecycle for live-agent panel
+        -- stagnation_spinning_detected  -- C-10 anti-spiral detector (definition only here)
+        -- stagnation_oscillation_detected -- C-10 anti-spiral detector (definition only here)
+        -- lateral_thinking_activated    -- C-10 persona switch (definition only here)
+        -- goal_drift_warning            -- C-10 goal-drift canary (definition only here)
+        -- watchdog_timeout              -- C-10 generation watchdog (definition only here)
+        'phase_node_ready', 'step_node_ready', 'baby_step_ready',
+        'dag_repair_escalated', 'agent_status_changed',
+        'stagnation_spinning_detected', 'stagnation_oscillation_detected',
+        'lateral_thinking_activated', 'goal_drift_warning', 'watchdog_timeout',
+        -- C-7 (SCHEMA_VERSION 49): reviewer verdict beacon emitted by the
+        -- dashboard-v2 Tauri commands accept_change / decline_change /
+        -- retry_audit. One row per reviewer action; `decision` discriminates
+        -- accepted/declined/retried; `hunk_id` is null for file-level
+        -- verdicts and set for per-hunk verdicts.
+        'change_decision',
+        -- C-8 (SCHEMA_VERSION 50): degradation-cascade verdict bridge between
+        -- the live_cli AppState and the dashboard-v2 process. Emitted by the
+        -- CLI at startup_readiness_check and on cascade transitions; mirrored
+        -- by the dashboard-v2 Tauri set_search_mode command. The dashboard
+        -- get_search_mode command reads the most-recent row (graceful empty
+        -- fallback returns hybrid). mode is the resolved SearchMode label;
+        -- history is the trailing N transitions so the drawer renders a
+        -- timeline without N round-trips. See C-8-decisions.md DRIFT-I/J.
+        'search_mode_changed',
+        -- C-5 (SCHEMA_VERSION 51): cloud-mode hardening — per-call privacy
+        -- redaction event emitted by RedactingBabyStepExecutor whenever the
+        -- privacy_redactor scrubs PII or secrets from a cloud-bound
+        -- baby-step payload. Producer: cloud_mode::RedactingBabyStepExecutor.
+        -- Consumer: dashboard CloudPanel.svelte privacy-event feed. Carries
+        -- redaction count + the list of logical fields touched.
+        'redaction_applied',
+        -- C-10 (SCHEMA_VERSION 52): three new anti-spiral lateral-thinking
+        -- + goal-drift block beacons (companion to the C-2 stagnation
+        -- variants already at L484-485). Definition-only here; producer
+        -- wiring lands at task_runner step boundaries via
+        -- anti_spiral_extended.rs.
+        'lateral_thinking_succeeded', 'lateral_thinking_exhausted',
+        'goal_drift_block',
+        -- C-13 (SCHEMA_VERSION 53): IPC-dispatcher production-swap beacon.
+        -- Emitted by `squash_wip_commits_if_any` (wip_squash.rs) at the
+        -- post-AUDITING -> MEMORIZING boundary AND by the `elai wip-squash`
+        -- CLI subcommand each time a leading-WIP-commit squash actually
+        -- ran. Carries (wip_count, squashed). Producer wiring lives in
+        -- task_runner.rs::squash_wip_commits + cli/src/wip_squash_subcommand.rs.
+        'wip_squash_complete',
+        -- C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+        -- alternative_explored: per-NovelStep alternative emission;
+        -- feasibility_escalated: FeasibilityDecision::Escalate decision emission.
+        'alternative_explored', 'feasibility_escalated',
+        -- C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+        -- branch_forked: one row per successful SessionDag::create_branch
+        --                emit (replaces ad-hoc fork log lines).
+        -- branch_merged: one row per merge_branch_with_ssb Winner — supersedes
+        --                the legacy `branch_merge`/Checkpoint discriminator pair.
+        -- branch_closed: one row per close_branch_with_ssb success.
+        'branch_forked', 'branch_merged', 'branch_closed',
+        -- C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+        -- + background-task beacons. C-25 ships the FIRST plan_skeleton
+        -- emitter (no producer existed before this bump — see C-25 DRIFT-D).
+        -- plan_skeleton             -- one row per pipeline_builder factory entry
+        -- compiled_pipeline_fired   -- one row per CompiledExecutor cache HIT + run
+        -- template_crystallized     -- one row per TemplateCrystallizer success
+        -- background_task_started   -- one row per gated_spawn success
+        -- background_task_complete  -- one row per harvested handle (or auto-detach)
+        'plan_skeleton', 'compiled_pipeline_fired', 'template_crystallized',
+        'background_task_started', 'background_task_complete',
+        -- C-25 audit follow-up (SCHEMA_VERSION 57): missing 6th beacon
+        -- from the C-25 WIRING_CONTRACT. Producer:
+        -- compiled_pipeline::CompiledExecutor::emit_decompile_triggered.
+        -- Carries concept_class, plan_skeleton_hash, failure_count,
+        -- trigger_reason (snake-case discriminant: confidence | consecutive_failures).
+        'decompile_triggered',
+        -- C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+        -- futility_detected            -- NavigatorTree same-error-class window
+        --                                 saturates (default threshold = 3).
+        --                                 Carries error_class, consecutive_count,
+        --                                 level (baby_step|step|phase|concept),
+        --                                 escalated (bool).
+        -- futility_output_stagnation   -- GoalDriftCanary similarity > 0.90
+        --                                 between consecutive outputs. Carries
+        --                                 similarity, threshold, level,
+        --                                 new_persona (snake-case persona).
+        'futility_detected', 'futility_output_stagnation',
+        -- C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) DeterminismConfig
+        -- + T-0 WiringContract foundation. 3 new beacons emitted atomically.
+        -- wiring_evidence       -- DkgReachabilityAuditor produces_symbol verified reachable
+        -- wiring_violation      -- StubBanAuditor / DkgReachabilityAuditor /
+        --                          ObservableEffectRunner violation
+        -- determinism_drift     -- DriftComparator divergence; zero rows on identical runs
+        'wiring_evidence', 'wiring_violation', 'determinism_drift',
+        -- C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing gate.
+        -- mutation_survived     -- One row per surviving mutant emitted from
+        --                          DeterministicAuditor Step 6 (post-Build /
+        --                          VersionGate / FileSizeCensus / LazyCode /
+        --                          Completeness). Carries file, line, mutant_kind.
+        --                          Caught / Timeout / Skipped emit ZERO rows
+        --                          (stub_ban contract). The mutation_score
+        --                          gate (default 60%) is enforced via a
+        --                          DeterministicFinding::Block, not via
+        --                          row count.
+        'mutation_survived',
+        -- C-29 (SCHEMA_VERSION 61): Testing-trust T-2 IntentPair gate +
+        -- T-3 basic metamorphic relations.
+        -- intent_confirmed      -- One row per BabyStep that passes the
+        --                          PLANNING -> TESTING_FIRST IntentPair
+        --                          gate (pair_count >= IntentConfig.min_pairs).
+        --                          Carries step_id, pair_count, confirmed_by.
+        -- mr_violated           -- One row per failed metamorphic relation
+        --                          emitted by deterministic_auditor Step 7.
+        --                          counterexample MUST be non-empty
+        --                          (debug_assert + runtime sentinel fallback).
+        'intent_confirmed', 'mr_violated',
+        -- C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode pipeline beacons.
+        -- surgical_plan_created      -- one row per SurgicalDecomposer::decompose
+        --                               Ok return. Carries complexity_class,
+        --                               blast_radius_files, total_loc_estimate,
+        --                               step_count.
+        -- surgical_loc_warning       -- one row per decompose call whose
+        --                               total_loc_estimate exceeds 500.
+        --                               Carries total_loc_estimate + threshold
+        --                               + mode (interactive|autonomous).
+        -- oracle_cache_hit           -- one row per OracleAnswerCache::get hit.
+        --                               Carries query_hash_hex + source_tier +
+        --                               cached_age_secs.
+        -- oracle_cache_miss          -- one row per OracleAnswerCache::insert.
+        --                               Carries query_hash_hex + confidence.
+        -- project_detection_signal   -- one row per signal evaluated by the
+        --                               fresh-project detector. Carries
+        --                               signal_name + weight + fired.
+        'surgical_plan_created', 'surgical_loc_warning',
+        'oracle_cache_hit', 'oracle_cache_miss',
+        'project_detection_signal',
+        -- C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 beacons.
+        -- skeleton_generated             -- one row per SkeletonGenerator::generate
+        --                                   Ok return. Carries blank_count,
+        --                                   language, file_path.
+        -- skeleton_flushed               -- one row per SkeletonGenerator::flush_to_disk
+        --                                   success. Carries path, completeness_ratio.
+        -- mini_critic_verdict            -- one row per MiniCritic::check. Carries
+        --                                   blank_id, verdict, reason, language.
+        -- structural_retry_stage_attempt -- one row per StructuralRetrySequencer
+        --                                   stage invocation. Carries blank_id,
+        --                                   stage, attempt, outcome.
+        -- bridge_file_generated          -- one row per BridgeFileTemplate::write_bridge
+        --                                   success. Carries kind, path, module_count.
+        'skeleton_generated', 'skeleton_flushed',
+        'mini_critic_verdict',
+        'structural_retry_stage_attempt',
+        'bridge_file_generated'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -958,6 +1433,303 @@ pub enum SsbActionType {
     /// (B-37B cli_common::kill_and_wait, idle timeout, or natural exit).
     /// Carries a [`CliSubprocessKilledPayload`] with exit code + reason.
     CliSubprocessKilled,
+    /// C-1 (SCHEMA_VERSION 47): one row per `emit_reasoning` call when a
+    /// `PipelineGrc` handle was plumbed through `ResolvedConfig`. Replaces
+    /// the synthetic-constant `ReasoningTrace` row with real
+    /// `budget_remaining` (from `BasicGrcEngine::get_budget`) and
+    /// `agent_id` (from the engine's `AgentGrcConfig.role`). Carries a
+    /// [`GrcStepEmittedPayload`].
+    GrcStepEmitted,
+    /// C-1 (SCHEMA_VERSION 47): one row per `PipelineGrc::ground_plan`
+    /// call in `task_runner::drive_task_inner`. Emitted ONCE per call
+    /// (not per gate iteration) so the dashboard renders one sweep row
+    /// per plan grounding pass. Carries a [`GroundingSweepResultPayload`].
+    GroundingSweepResult,
+    /// C-1 (SCHEMA_VERSION 47): one row per `PipelineGrc::generate_csq`
+    /// completion in `task_runner::drive_task_inner`. Replaces the
+    /// TODO(B-future) comment at the pre-tool CSQ branch. stub-ban-allow: historical reference, not a stub
+    /// Carries a [`CsqEvaluatedPayload`].
+    CsqEvaluated,
+    /// C-1 (SCHEMA_VERSION 47): one row per `BasicGrcEngine::advance`
+    /// returning `GrcError::InsufficientFindings` (auditor attempted to
+    /// Converge with zero `FINDING:` rows). Surfaced at the `PipelineGrc`
+    /// caller in `task_runner`, NOT inside `engine.rs`, because the
+    /// engine has no SSB hook (GAP-2 in explorer-C1.md). Carries an
+    /// [`AuditorRubberStampRejectedPayload`].
+    AuditorRubberStampRejected,
+    /// C-1 (SCHEMA_VERSION 47): one row per `HydeStage::hypothesize`
+    /// call. `cache_hit=true` rows carry latency_ms of the cache lookup
+    /// only; `cache_hit=false` rows carry total sidecar + cache-insert
+    /// latency. Carries a [`HydeQueryPayload`].
+    HydeQuery,
+    /// C-1 (SCHEMA_VERSION 47): aggregate vector-cache hit/miss snapshot
+    /// emitted by `VectorCache::flush_hit_rate_ssb` after a query
+    /// pipeline run. Hits/misses counters reset atomically per flush.
+    /// Carries a [`VectorCacheHitRatePayload`].
+    VectorCacheHitRate,
+    /// C-1 (SCHEMA_VERSION 47): per-query trace emitted at the end of
+    /// `QueryPipeline::query_with_tier`. Pairs with the existing
+    /// `tracing::debug!("query_trace")` event but persists into SSB so
+    /// the dashboard recentTraces panel can read live rows. Carries a
+    /// [`QueryTracePayload`].
+    QueryTrace,
+    /// C-2 (SCHEMA_VERSION 48): emitted by the task_runner baby-step loop
+    /// the first time `nav.next_baby_step` returns a baby-step whose
+    /// `tree.location_index[bs_id].phase_id` differs from the previously
+    /// seen phase id. Carries a [`PhaseNodeReadyPayload`].
+    PhaseNodeReady,
+    /// C-2 (SCHEMA_VERSION 48): emitted by the task_runner baby-step loop
+    /// when the resolved `tree.location_index[bs_id].step_id` differs from
+    /// the previously seen step id. Carries a [`StepNodeReadyPayload`].
+    StepNodeReady,
+    /// C-2 (SCHEMA_VERSION 48): emitted once per baby-step consumption in
+    /// the task_runner loop. Carries a [`BabyStepReadyPayload`].
+    BabyStepReady,
+    /// C-2 (SCHEMA_VERSION 48): emitted by `pipeline_builder` on the
+    /// `RepairOutcome::Escalated` path when the DAG repair loop exhausts
+    /// `T_DAG = 10` retries. Carries a [`DagRepairEscalatedPayload`].
+    DagRepairEscalated,
+    /// C-2 (SCHEMA_VERSION 48): mirror of [`Self::AgentLifecycle`] surfaced
+    /// for the dashboard `AGENTS` panel. Single `state` field (no
+    /// old_lifecycle); consumers derive transitions by reading the ordered
+    /// stream per agent_id (DRIFT-5 in context-package-C2.md). Carries an
+    /// [`AgentStatusChangedPayload`].
+    AgentStatusChanged,
+    /// C-2 (SCHEMA_VERSION 48): C-10 anti-spiral detector — spinning pattern
+    /// (same step hash 3+ times). Variant defined now so the SCHEMA bump
+    /// is atomic; producer wiring lands in C-10. Carries a
+    /// [`StagnationSpinningDetectedPayload`].
+    StagnationSpinningDetected,
+    /// C-2 (SCHEMA_VERSION 48): C-10 anti-spiral detector — period-2
+    /// oscillation pattern. Definition-only in C-2; producer wiring in
+    /// C-10. Carries a [`StagnationOscillationDetectedPayload`].
+    StagnationOscillationDetected,
+    /// C-2 (SCHEMA_VERSION 48): C-10 persona switch — lateral thinking
+    /// persona activated to break a stagnation loop. Definition-only in
+    /// C-2; producer wiring in C-10. Carries a
+    /// [`LateralThinkingActivatedPayload`].
+    LateralThinkingActivated,
+    /// C-2 (SCHEMA_VERSION 48): C-10 goal-drift canary verdict. Emitted
+    /// when the canary detects that the active baby-step has drifted from
+    /// the original task intent. Definition-only in C-2; producer wiring
+    /// in C-10. Carries a [`GoalDriftWarningPayload`].
+    GoalDriftWarning,
+    /// C-2 (SCHEMA_VERSION 48): C-10 generation watchdog timeout. Emitted
+    /// when an agent exceeds its per-step wall-clock budget without
+    /// producing observable output. Definition-only in C-2; producer
+    /// wiring in C-10. Carries a [`WatchdogTimeoutPayload`].
+    WatchdogTimeout,
+    /// C-7 (SCHEMA_VERSION 49): reviewer verdict on a proposed change. Emitted
+    /// by the dashboard-v2 Tauri commands `accept_change` / `decline_change` /
+    /// `retry_audit` each time a human reviewer acts on a change row in
+    /// ReviewWindow. Carries a [`ChangeDecisionPayload`].
+    ChangeDecision,
+    /// C-8 (SCHEMA_VERSION 50): DegradationCascade verdict bridge.
+    /// Emitted by the live_cli startup-readiness path AND by the
+    /// dashboard-v2 Tauri command `set_search_mode`. Carries a
+    /// [`SearchModeChangedPayload`]. The dashboard `get_search_mode`
+    /// command reads the latest row of this type (graceful empty
+    /// fallback to "hybrid"). Cross-process SSB bridge between the
+    /// CLI AppState and the dashboard process (no shared memory).
+    SearchModeChanged,
+    /// C-5 (SCHEMA_VERSION 51): per-call privacy redaction event.
+    /// Emitted by [`crate::cloud_mode::RedactingBabyStepExecutor`] each
+    /// time the privacy redactor scrubs PII or secrets from a
+    /// cloud-bound baby-step payload. Carries a
+    /// [`RedactionAppliedPayload`] with `count` (number of substitutions
+    /// applied across all redacted fields) and `fields` (the logical
+    /// field names touched, e.g. `["task_summary", "escalation_message"]`).
+    /// Consumer: dashboard CloudPanel.svelte privacy-event feed (last 5
+    /// redactions). The row is best-effort: a write failure never aborts
+    /// the baby-step execution.
+    RedactionApplied,
+    /// C-10 (SCHEMA_VERSION 52): lateral-thinking persona switch
+    /// succeeded — emitted when a previously-active stagnation pattern
+    /// no longer fires after a persona suggestion was consumed.
+    /// Carries a [`LateralThinkingSucceededPayload`]. Producer wiring:
+    /// task_runner step-boundary detector (anti_spiral_extended.rs).
+    LateralThinkingSucceeded,
+    /// C-10 (SCHEMA_VERSION 52): lateral-thinking exhausted — all 5
+    /// personas have been tried within the current task window without
+    /// a pattern break. Carries a [`LateralThinkingExhaustedPayload`].
+    LateralThinkingExhausted,
+    /// C-10 (SCHEMA_VERSION 52): goal-drift Block verdict — emitted
+    /// when the GoalDriftCanary verdict crosses the Block threshold.
+    /// Companion to [`Self::GoalDriftWarning`] (Yellow band). Carries a
+    /// [`GoalDriftBlockPayload`].
+    GoalDriftBlock,
+    /// C-13 (SCHEMA_VERSION 53): WIP-commit squash completion beacon.
+    /// Emitted by `crate::wip_squash::squash_wip_commits_if_any` at the
+    /// post-AUDITING -> MEMORIZING boundary AND by the `elai wip-squash`
+    /// CLI subcommand. Carries `wip_count` (leading-WIP-commit count
+    /// observed) + `squashed` (true ⇒ `git reset --soft HEAD~N` + commit
+    /// fired; false ⇒ no-op because count <= 5). Producer wiring:
+    /// task_runner audit-loop boundary + cli/wip_squash_subcommand.rs.
+    /// Consumer: dashboard activity feed.
+    WipSquashComplete,
+    /// C-22 (SCHEMA_VERSION 54): per-NovelStep alternative-explored row.
+    /// Emitted by `DefaultFeasibilityProber::probe` once per NovelStep
+    /// alternative attempted, carrying step_id + alternative_index.
+    /// Consumer: dashboard FeasibilityPanel alternative trail.
+    AlternativeExplored,
+    /// C-22 (SCHEMA_VERSION 54): feasibility-probe escalation row.
+    /// Emitted when `decide_with_mode` returns
+    /// `FeasibilityDecision::Escalate`. Carries reason + variant tag.
+    /// Distinct from the gate-level `escalation_fired` row.
+    FeasibilityEscalated,
+    /// C-23 (SCHEMA_VERSION 55): SessionDag branch fork beacon. Emitted
+    /// at the orchestrator level whenever `SessionDag::create_branch`
+    /// returns Ok via the new `create_branch_with_ssb` wrapper (mirror
+    /// of `merge_branch_with_ssb`). Also emitted by the dashboard-v2
+    /// `fork_session_branch` Tauri command which opens the DAG per call.
+    /// Carries [`BranchForkedPayload`] (branch_name + tip_snap_id +
+    /// parent_snap_id).
+    BranchForked,
+    /// C-23 (SCHEMA_VERSION 55): SessionDag branch merge beacon.
+    /// Supersedes the legacy Checkpoint-with-discriminator emit at
+    /// `merge_branch_with_ssb`. Carries [`BranchMergedPayload`]
+    /// (winner_name + trunk_snap_id + abandoned_names).
+    BranchMerged,
+    /// C-23 (SCHEMA_VERSION 55): SessionDag branch close beacon. Emitted
+    /// by the new `close_branch_with_ssb` wrapper. Carries
+    /// [`BranchClosedPayload`] (branch_name + reason).
+    BranchClosed,
+    /// C-25 (SCHEMA_VERSION 56): plan-skeleton emission row. Emitted by
+    /// `pipeline_builder::PipelineBuilder::build_with_emitter` ONCE per
+    /// factory entry. Carries [`PlanSkeletonPayload`] (plan_id, step_count,
+    /// concept_class, plan_skeleton_hash, source). C-25 is the FIRST emitter
+    /// of this row (see C-25 DRIFT-D — no producer existed pre-bump).
+    PlanSkeleton,
+    /// C-25 (SCHEMA_VERSION 56): compiled-pipeline cache-hit + run beacon.
+    /// Emitted by `compiled_pipeline::CompiledExecutor::try_execute` on
+    /// successful pipeline-cache resolution and run. Carries
+    /// [`CompiledPipelineFiredPayload`] (pipeline_id, concept_class,
+    /// use_count, plan_skeleton_hash).
+    CompiledPipelineFired,
+    /// C-25 (SCHEMA_VERSION 56): template-crystallizer success beacon.
+    /// Emitted by `compiled_pipeline::TemplateCrystallizer::check_crystallization`
+    /// when the threshold (N=3 consecutive successes) is met and a new
+    /// CompiledPipeline is crystallized. Carries
+    /// [`TemplateCrystallizedPayload`] (concept_class, plan_skeleton_hash,
+    /// pipeline_id, threshold_n).
+    TemplateCrystallized,
+    /// C-25 (SCHEMA_VERSION 56): background-task spawn beacon. Emitted by
+    /// `background_task::BackgroundTaskManager::gated_spawn` on a
+    /// successful (autonomous_mode=true) spawn. Carries
+    /// [`BackgroundTaskStartedPayload`] (task_id, command_summary,
+    /// soft_timeout_secs, hard_timeout_secs).
+    BackgroundTaskStarted,
+    /// C-25 (SCHEMA_VERSION 56): background-task completion beacon.
+    /// Emitted by `background_task::BackgroundTaskManager::poll_completed`
+    /// when a handle finishes (normal exit) AND by `enforce_timeouts`
+    /// when a handle is auto-detached at the soft boundary. Carries
+    /// [`BackgroundTaskCompletePayload`] (task_id, exit_status,
+    /// duration_secs, auto_detached, timed_out).
+    BackgroundTaskComplete,
+    /// C-25 audit follow-up (SCHEMA_VERSION 57): compiled-pipeline
+    /// decompile beacon. Emitted by
+    /// `compiled_pipeline::CompiledExecutor::emit_decompile_triggered`
+    /// whenever a cache HIT is rejected via the confidence floor or the
+    /// consecutive-failure threshold. Carries
+    /// [`DecompileTriggeredPayload`] (concept_class, plan_skeleton_hash,
+    /// failure_count, trigger_reason). Closes the WARN-1 gap from
+    /// audit-C25.md where decompile events were routed through
+    /// `AntiSpiralHit` and dashboard filters keyed on `decompile_triggered`
+    /// missed every decompile.
+    DecompileTriggered,
+    /// C-26 (SCHEMA_VERSION 58): NavigatorTree futility — same-error-class
+    /// window saturates at `futility_same_error_threshold` (default 3).
+    /// Carries [`FutilityDetectedPayload`].
+    FutilityDetected,
+    /// C-26 (SCHEMA_VERSION 58): NavigatorTree futility — output-similarity
+    /// path. Triggered when GoalDriftCanary computes a Jaccard similarity
+    /// > 0.90 between two consecutive baby-step outputs. Carries
+    /// [`FutilityOutputStagnationPayload`] (includes the persona switch
+    /// label per C-10 D4 affinity table).
+    FutilityOutputStagnation,
+    /// C-27 (SCHEMA_VERSION 59): Testing-trust T-0 — DkgReachabilityAuditor
+    /// successfully verified that a produces_symbol declared in a
+    /// WIRING_CONTRACT block is reachable from a configured
+    /// [wiring.entrypoints]. Carries [`WiringEvidencePayload`].
+    WiringEvidence,
+    /// C-27 (SCHEMA_VERSION 59): Testing-trust T-0 — any of StubBanAuditor /
+    /// DkgReachabilityAuditor / ObservableEffectRunner reported a violation.
+    /// Carries [`WiringViolationPayload`] (violation_kind discriminates the
+    /// three branches: StubPattern | UnreachableSymbol | BrokenObservable).
+    WiringViolation,
+    /// C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) — DriftComparator
+    /// observed divergent ActionTypeSequence at index N between two
+    /// nominally-equivalent runs (same seed, same hardware_class). Carries
+    /// [`DeterminismDriftPayload`]. Identical sequences emit zero rows
+    /// (stub_ban contract: zero false positives).
+    DeterminismDrift,
+    /// C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing —
+    /// `MutationRunner` produced a `MutantOutcome::Survived` for a generated
+    /// mutant. Emitted once per surviving mutant by the Step 6
+    /// `DeterministicAuditor` mutation check (runs only after Build /
+    /// VersionGate / FileSizeCensus / LazyCode / Completeness all pass).
+    /// Carries [`MutationSurvivedPayload`] (file, line, mutant_kind).
+    /// Caught / Timeout / Skipped outcomes emit ZERO rows; the
+    /// `mutation_score` gate is enforced via a separate
+    /// `DeterministicFinding::Block` finding.
+    MutationSurvived,
+    /// C-29 (SCHEMA_VERSION 61): Testing-trust Tier T-2 — emitted when a
+    /// `BabyStepSpec.intent_pairs` set crosses the
+    /// `IntentConfig.min_pairs` threshold (default 3). The
+    /// `IntentPairsGate` (PLANNING -> TESTING_FIRST) emits one row per
+    /// confirmation; the autonomous gate auto-confirm branch emits with
+    /// `confirmed_by="autonomous_gate"`. Carries
+    /// [`IntentConfirmedPayload`].
+    IntentConfirmed,
+    /// C-29 (SCHEMA_VERSION 61): Testing-trust Tier T-3 — `MetamorphicTestRunner`
+    /// observed a relation violation (one of identity / inverse /
+    /// permutation_invariance). Emitted by `deterministic_auditor` Step 7
+    /// (post-Mutation). Carries [`MrViolatedPayload`] with a non-empty
+    /// `counterexample` (debug_assert + runtime sentinel fallback, see
+    /// `metamorphic_testing::MrResult::failed` + DRIFT-C29-11). MrViolated
+    /// is NOT a standalone Block — score aggregation deferred to T-4 per
+    /// C-29 plan §13(c).
+    MrViolated,
+    /// C-30 (SCHEMA_VERSION 62): Surgical Mode — one row per successful
+    /// `SurgicalDecomposer::decompose` return. Carries a
+    /// [`SurgicalPlanCreatedPayload`].
+    SurgicalPlanCreated,
+    /// C-30 (SCHEMA_VERSION 62): Surgical Mode — one row per decompose call
+    /// whose AffectedSet.total_loc_estimate exceeds 500. Carries a
+    /// [`SurgicalLocWarningPayload`] (loc + threshold + mode).
+    SurgicalLocWarning,
+    /// C-30 (SCHEMA_VERSION 62): Oracle Mode — one row per
+    /// `OracleAnswerCache::get` hit. Carries an [`OracleCacheHitPayload`]
+    /// (query_hash_hex + source_tier + cached_age_secs).
+    OracleCacheHit,
+    /// C-30 (SCHEMA_VERSION 62): Oracle Mode — one row per
+    /// `OracleAnswerCache::insert` (preceded by a cache miss). Carries an
+    /// [`OracleCacheMissPayload`] (query_hash_hex + confidence).
+    OracleCacheMiss,
+    /// C-30 (SCHEMA_VERSION 62): one row per signal evaluated by the
+    /// fresh-project detector inside the first-task gate. Carries a
+    /// [`ProjectDetectionSignalPayload`] (signal_name + weight + fired).
+    ProjectDetectionSignal,
+    /// C-32 (SCHEMA_VERSION 63): one row per
+    /// `SkeletonGenerator::generate_for_functions` Ok return. Carries a
+    /// [`SkeletonGeneratedPayload`] (blank_count, language, file_path).
+    SkeletonGenerated,
+    /// C-32 (SCHEMA_VERSION 63): one row per
+    /// `SkeletonGenerator::flush_to_disk` success. Carries a
+    /// [`SkeletonFlushedPayload`] (path, completeness_ratio).
+    SkeletonFlushed,
+    /// C-32 (SCHEMA_VERSION 63): one row per `MiniCritic::check`. Carries a
+    /// [`MiniCriticVerdictPayload`] (blank_id, verdict, reason, language).
+    MiniCriticVerdict,
+    /// C-32 (SCHEMA_VERSION 63): one row per
+    /// `StructuralRetrySequencer` stage invocation. Carries a
+    /// [`StructuralRetryStageAttemptPayload`] (blank_id, stage, attempt,
+    /// outcome).
+    StructuralRetryStageAttempt,
+    /// C-32 (SCHEMA_VERSION 63): one row per
+    /// `BridgeFileTemplate::write_bridge` success. Carries a
+    /// [`BridgeFileGeneratedPayload`] (kind, path, module_count).
+    BridgeFileGenerated,
 }
 
 impl SsbActionType {
@@ -1128,6 +1900,78 @@ impl SsbActionType {
             Self::RuntimeHealthChanged => "runtime_health_changed",
             Self::CliSubprocessSpawned => "cli_subprocess_spawned",
             Self::CliSubprocessKilled => "cli_subprocess_killed",
+            // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+            Self::GrcStepEmitted => "grc_step_emitted",
+            Self::GroundingSweepResult => "grounding_sweep_result",
+            Self::CsqEvaluated => "csq_evaluated",
+            Self::AuditorRubberStampRejected => "auditor_rubber_stamp_rejected",
+            Self::HydeQuery => "hyde_query",
+            Self::VectorCacheHitRate => "vector_cache_hit_rate",
+            Self::QueryTrace => "query_trace",
+            // C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+            Self::PhaseNodeReady => "phase_node_ready",
+            Self::StepNodeReady => "step_node_ready",
+            Self::BabyStepReady => "baby_step_ready",
+            Self::DagRepairEscalated => "dag_repair_escalated",
+            Self::AgentStatusChanged => "agent_status_changed",
+            Self::StagnationSpinningDetected => "stagnation_spinning_detected",
+            Self::StagnationOscillationDetected => "stagnation_oscillation_detected",
+            Self::LateralThinkingActivated => "lateral_thinking_activated",
+            Self::GoalDriftWarning => "goal_drift_warning",
+            Self::WatchdogTimeout => "watchdog_timeout",
+            // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon.
+            Self::ChangeDecision => "change_decision",
+            // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge.
+            Self::SearchModeChanged => "search_mode_changed",
+            // C-5 (SCHEMA_VERSION 51): privacy-redaction event.
+            Self::RedactionApplied => "redaction_applied",
+            // C-10 (SCHEMA_VERSION 52): anti-spiral lateral-thinking +
+            // goal-drift Block beacons.
+            Self::LateralThinkingSucceeded => "lateral_thinking_succeeded",
+            Self::LateralThinkingExhausted => "lateral_thinking_exhausted",
+            Self::GoalDriftBlock => "goal_drift_block",
+            // C-13 (SCHEMA_VERSION 53): IPC-dispatcher production-swap
+            // beacon — WIP commit squash completion.
+            Self::WipSquashComplete => "wip_squash_complete",
+            // C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+            Self::AlternativeExplored => "alternative_explored",
+            Self::FeasibilityEscalated => "feasibility_escalated",
+            // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+            Self::BranchForked => "branch_forked",
+            Self::BranchMerged => "branch_merged",
+            Self::BranchClosed => "branch_closed",
+            // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+            // + background-task beacons.
+            Self::PlanSkeleton => "plan_skeleton",
+            Self::CompiledPipelineFired => "compiled_pipeline_fired",
+            Self::TemplateCrystallized => "template_crystallized",
+            Self::BackgroundTaskStarted => "background_task_started",
+            Self::BackgroundTaskComplete => "background_task_complete",
+            Self::DecompileTriggered => "decompile_triggered",
+            // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+            Self::FutilityDetected => "futility_detected",
+            Self::FutilityOutputStagnation => "futility_output_stagnation",
+            // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+            Self::WiringEvidence => "wiring_evidence",
+            Self::WiringViolation => "wiring_violation",
+            Self::DeterminismDrift => "determinism_drift",
+            // C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing.
+            Self::MutationSurvived => "mutation_survived",
+            // C-29 (SCHEMA_VERSION 61): Testing-trust T-2 + T-3 beacons.
+            Self::IntentConfirmed => "intent_confirmed",
+            Self::MrViolated => "mr_violated",
+            // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode beacons.
+            Self::SurgicalPlanCreated => "surgical_plan_created",
+            Self::SurgicalLocWarning => "surgical_loc_warning",
+            Self::OracleCacheHit => "oracle_cache_hit",
+            Self::OracleCacheMiss => "oracle_cache_miss",
+            Self::ProjectDetectionSignal => "project_detection_signal",
+            // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 beacons.
+            Self::SkeletonGenerated => "skeleton_generated",
+            Self::SkeletonFlushed => "skeleton_flushed",
+            Self::MiniCriticVerdict => "mini_critic_verdict",
+            Self::StructuralRetryStageAttempt => "structural_retry_stage_attempt",
+            Self::BridgeFileGenerated => "bridge_file_generated",
         }
     }
 }
@@ -1305,6 +2149,77 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "runtime_health_changed"  => Ok(SsbActionType::RuntimeHealthChanged),
         "cli_subprocess_spawned"  => Ok(SsbActionType::CliSubprocessSpawned),
         "cli_subprocess_killed"   => Ok(SsbActionType::CliSubprocessKilled),
+        // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+        "grc_step_emitted"              => Ok(SsbActionType::GrcStepEmitted),
+        "grounding_sweep_result"        => Ok(SsbActionType::GroundingSweepResult),
+        "csq_evaluated"                 => Ok(SsbActionType::CsqEvaluated),
+        "auditor_rubber_stamp_rejected" => Ok(SsbActionType::AuditorRubberStampRejected),
+        "hyde_query"                    => Ok(SsbActionType::HydeQuery),
+        "vector_cache_hit_rate"         => Ok(SsbActionType::VectorCacheHitRate),
+        "query_trace"                   => Ok(SsbActionType::QueryTrace),
+        // C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+        "phase_node_ready"               => Ok(SsbActionType::PhaseNodeReady),
+        "step_node_ready"                => Ok(SsbActionType::StepNodeReady),
+        "baby_step_ready"                => Ok(SsbActionType::BabyStepReady),
+        "dag_repair_escalated"           => Ok(SsbActionType::DagRepairEscalated),
+        "agent_status_changed"           => Ok(SsbActionType::AgentStatusChanged),
+        "stagnation_spinning_detected"   => Ok(SsbActionType::StagnationSpinningDetected),
+        "stagnation_oscillation_detected"=> Ok(SsbActionType::StagnationOscillationDetected),
+        "lateral_thinking_activated"     => Ok(SsbActionType::LateralThinkingActivated),
+        "goal_drift_warning"             => Ok(SsbActionType::GoalDriftWarning),
+        "watchdog_timeout"               => Ok(SsbActionType::WatchdogTimeout),
+        // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon.
+        "change_decision"                => Ok(SsbActionType::ChangeDecision),
+        // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge.
+        "search_mode_changed"            => Ok(SsbActionType::SearchModeChanged),
+        // C-5 (SCHEMA_VERSION 51): privacy-redaction event.
+        "redaction_applied"              => Ok(SsbActionType::RedactionApplied),
+        // C-10 (SCHEMA_VERSION 52): anti-spiral lateral-thinking +
+        // goal-drift Block beacons.
+        "lateral_thinking_succeeded"     => Ok(SsbActionType::LateralThinkingSucceeded),
+        "lateral_thinking_exhausted"     => Ok(SsbActionType::LateralThinkingExhausted),
+        "goal_drift_block"               => Ok(SsbActionType::GoalDriftBlock),
+        // C-13 (SCHEMA_VERSION 53): IPC-dispatcher production-swap beacon.
+        "wip_squash_complete"            => Ok(SsbActionType::WipSquashComplete),
+        // C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+        "alternative_explored"           => Ok(SsbActionType::AlternativeExplored),
+        "feasibility_escalated"          => Ok(SsbActionType::FeasibilityEscalated),
+        // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+        "branch_forked"                  => Ok(SsbActionType::BranchForked),
+        "branch_merged"                  => Ok(SsbActionType::BranchMerged),
+        "branch_closed"                  => Ok(SsbActionType::BranchClosed),
+        // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+        // + background-task beacons.
+        "plan_skeleton"                  => Ok(SsbActionType::PlanSkeleton),
+        "compiled_pipeline_fired"        => Ok(SsbActionType::CompiledPipelineFired),
+        "template_crystallized"          => Ok(SsbActionType::TemplateCrystallized),
+        "background_task_started"        => Ok(SsbActionType::BackgroundTaskStarted),
+        "background_task_complete"       => Ok(SsbActionType::BackgroundTaskComplete),
+        "decompile_triggered"            => Ok(SsbActionType::DecompileTriggered),
+        // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+        "futility_detected"              => Ok(SsbActionType::FutilityDetected),
+        "futility_output_stagnation"     => Ok(SsbActionType::FutilityOutputStagnation),
+        // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+        "wiring_evidence"                => Ok(SsbActionType::WiringEvidence),
+        "wiring_violation"               => Ok(SsbActionType::WiringViolation),
+        "determinism_drift"              => Ok(SsbActionType::DeterminismDrift),
+        // C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing.
+        "mutation_survived"              => Ok(SsbActionType::MutationSurvived),
+        // C-29 (SCHEMA_VERSION 61): Testing-trust T-2 + T-3 beacons.
+        "intent_confirmed"               => Ok(SsbActionType::IntentConfirmed),
+        "mr_violated"                    => Ok(SsbActionType::MrViolated),
+        // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode beacons.
+        "surgical_plan_created"          => Ok(SsbActionType::SurgicalPlanCreated),
+        "surgical_loc_warning"           => Ok(SsbActionType::SurgicalLocWarning),
+        "oracle_cache_hit"               => Ok(SsbActionType::OracleCacheHit),
+        "oracle_cache_miss"              => Ok(SsbActionType::OracleCacheMiss),
+        "project_detection_signal"       => Ok(SsbActionType::ProjectDetectionSignal),
+        // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 beacons.
+        "skeleton_generated"             => Ok(SsbActionType::SkeletonGenerated),
+        "skeleton_flushed"               => Ok(SsbActionType::SkeletonFlushed),
+        "mini_critic_verdict"            => Ok(SsbActionType::MiniCriticVerdict),
+        "structural_retry_stage_attempt" => Ok(SsbActionType::StructuralRetryStageAttempt),
+        "bridge_file_generated"          => Ok(SsbActionType::BridgeFileGenerated),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -2442,6 +3357,15 @@ pub struct SymbolGraphUpdatedPayload {
     /// the injected `ClockProvider`). Used by the dashboard for "fetched
     /// X ms ago" timestamps.
     pub built_ms: i64,
+    /// C-24 (DRIFT-4): `Some(true)` when the producer used the incremental
+    /// `update_changed_files_symbol_graph` pathway (i.e. a resume after a
+    /// prior successful index). `Some(false)` or `None` when a full
+    /// `build_symbol_graph` rebuild ran (cold start / above-threshold
+    /// change set). Additive `Option<bool>` so existing rmp-serde fixtures
+    /// continue to decode — same precedent as C-17 DECISION-8 for
+    /// `IndexCheckpointPayload::batch_duration_ms`. No SCHEMA_VERSION bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_incremental: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2602,6 +3526,13 @@ pub struct TradeoffCardEmittedPayload {
 /// after each successful batch is persisted via `ProjectMetadataStore::save`.
 /// `batches_total` is `None` when the work queue was empty up-front (no
 /// candidates) or could not be sized cheaply.
+///
+/// C-17 (DRIFT-I): `batch_duration_ms` carries the per-batch wall-clock
+/// elapsed in milliseconds, sourced from an OsClock-backed `Instant::now()`
+/// taken at batch entry. Added as `Option<u64>` so older readers tolerate
+/// payloads emitted without the field (back-compat under rmp-serde's named
+/// encoding — no SCHEMA_VERSION bump required for the additive optional
+/// field). Consumers parse p50/p99 across recent rows for the scale TOMLs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexCheckpointPayload {
     /// BLAKE3-derived per-project identifier (matches
@@ -2619,6 +3550,12 @@ pub struct IndexCheckpointPayload {
     /// Unix-seconds timestamp of the checkpoint, sourced from the injected
     /// [`elai_core::ClockProvider`].
     pub last_checkpoint_at: i64,
+    /// C-17 (DRIFT-I): wall-clock duration of the batch that just completed,
+    /// in milliseconds, measured via `clock.instant_now()`. Optional for
+    /// back-compat with pre-C-17 emitters; readers that need real p50/p99
+    /// timing skip rows where this is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_duration_ms: Option<u64>,
 }
 
 /// B-31.5 (SCHEMA_VERSION 39) — payload for [`SsbActionType::IndexResume`].
@@ -2903,7 +3840,7 @@ pub struct DairaTracePayload {
 // Batch 3A (Phase 4F) — SystemProbe / FeasibilityReport payloads
 // ---------------------------------------------------------------------------
 
-/// Batch 3A — snapshot of the [`crate::system_probe::SystemProbeReport`] at
+/// Batch 3A — snapshot of the [`crate::system_probe::SystemProbeResult`] at
 /// task_runner startup. Emitted once per runner lifetime. `vram_*` fields are
 /// `Option<u32>` so env-fallback probes with no GPU data still serialise
 /// cleanly. `detection_method` / `tier` are stable string labels matching
@@ -3685,6 +4622,79 @@ pub enum SsbPayload {
     RuntimeHealthChanged(RuntimeHealthChangedPayload),
     CliSubprocessSpawned(CliSubprocessSpawnedPayload),
     CliSubprocessKilled(CliSubprocessKilledPayload),
+    // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+    GrcStepEmitted(GrcStepEmittedPayload),
+    GroundingSweepResult(GroundingSweepResultPayload),
+    CsqEvaluated(CsqEvaluatedPayload),
+    AuditorRubberStampRejected(AuditorRubberStampRejectedPayload),
+    HydeQuery(HydeQueryPayload),
+    VectorCacheHitRate(VectorCacheHitRatePayload),
+    QueryTrace(QueryTracePayload),
+    // C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+    PhaseNodeReady(PhaseNodeReadyPayload),
+    StepNodeReady(StepNodeReadyPayload),
+    BabyStepReady(BabyStepReadyPayload),
+    DagRepairEscalated(DagRepairEscalatedPayload),
+    AgentStatusChanged(AgentStatusChangedPayload),
+    StagnationSpinningDetected(StagnationSpinningDetectedPayload),
+    StagnationOscillationDetected(StagnationOscillationDetectedPayload),
+    LateralThinkingActivated(LateralThinkingActivatedPayload),
+    GoalDriftWarning(GoalDriftWarningPayload),
+    WatchdogTimeout(WatchdogTimeoutPayload),
+    // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon.
+    ChangeDecision(ChangeDecisionPayload),
+    // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge.
+    SearchModeChanged(SearchModeChangedPayload),
+    // C-5 (SCHEMA_VERSION 51): privacy-redaction event.
+    RedactionApplied(RedactionAppliedPayload),
+    // C-10 (SCHEMA_VERSION 52): anti-spiral lateral-thinking + goal-drift Block.
+    LateralThinkingSucceeded(LateralThinkingSucceededPayload),
+    LateralThinkingExhausted(LateralThinkingExhaustedPayload),
+    GoalDriftBlock(GoalDriftBlockPayload),
+    // C-13 (SCHEMA_VERSION 53): WIP commit squash completion.
+    WipSquashComplete(WipSquashCompletePayload),
+    // C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+    AlternativeExplored(AlternativeExploredPayload),
+    FeasibilityEscalated(FeasibilityEscalatedPayload),
+    // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+    BranchForked(BranchForkedPayload),
+    BranchMerged(BranchMergedPayload),
+    BranchClosed(BranchClosedPayload),
+    // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+    // + background-task beacons. Payload structs live below.
+    PlanSkeleton(PlanSkeletonPayload),
+    CompiledPipelineFired(CompiledPipelineFiredPayload),
+    TemplateCrystallized(TemplateCrystallizedPayload),
+    BackgroundTaskStarted(BackgroundTaskStartedPayload),
+    BackgroundTaskComplete(BackgroundTaskCompletePayload),
+    DecompileTriggered(DecompileTriggeredPayload),
+    // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+    FutilityDetected(FutilityDetectedPayload),
+    FutilityOutputStagnation(FutilityOutputStagnationPayload),
+    // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons. Payload
+    // structs live below near the RedactionAppliedPayload region.
+    WiringEvidence(WiringEvidencePayload),
+    WiringViolation(WiringViolationPayload),
+    DeterminismDrift(DeterminismDriftPayload),
+    // C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing.
+    MutationSurvived(MutationSurvivedPayload),
+    // C-29 (SCHEMA_VERSION 61): Testing-trust T-2 (IntentPair) + T-3
+    // (Metamorphic). Payload structs live below near MutationSurvivedPayload.
+    IntentConfirmed(IntentConfirmedPayload),
+    MrViolated(MrViolatedPayload),
+    // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode pipeline beacons.
+    SurgicalPlanCreated(SurgicalPlanCreatedPayload),
+    SurgicalLocWarning(SurgicalLocWarningPayload),
+    OracleCacheHit(OracleCacheHitPayload),
+    OracleCacheMiss(OracleCacheMissPayload),
+    ProjectDetectionSignal(ProjectDetectionSignalPayload),
+    // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 beacons. Payload
+    // structs live below the C-30 region.
+    SkeletonGenerated(SkeletonGeneratedPayload),
+    SkeletonFlushed(SkeletonFlushedPayload),
+    MiniCriticVerdict(MiniCriticVerdictPayload),
+    StructuralRetryStageAttempt(StructuralRetryStageAttemptPayload),
+    BridgeFileGenerated(BridgeFileGeneratedPayload),
 }
 
 impl SsbPayload {
@@ -3854,6 +4864,76 @@ impl SsbPayload {
             Self::RuntimeHealthChanged(_) => SsbActionType::RuntimeHealthChanged,
             Self::CliSubprocessSpawned(_) => SsbActionType::CliSubprocessSpawned,
             Self::CliSubprocessKilled(_) => SsbActionType::CliSubprocessKilled,
+            // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+            Self::GrcStepEmitted(_) => SsbActionType::GrcStepEmitted,
+            Self::GroundingSweepResult(_) => SsbActionType::GroundingSweepResult,
+            Self::CsqEvaluated(_) => SsbActionType::CsqEvaluated,
+            Self::AuditorRubberStampRejected(_) => SsbActionType::AuditorRubberStampRejected,
+            Self::HydeQuery(_) => SsbActionType::HydeQuery,
+            Self::VectorCacheHitRate(_) => SsbActionType::VectorCacheHitRate,
+            Self::QueryTrace(_) => SsbActionType::QueryTrace,
+            // C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+            Self::PhaseNodeReady(_) => SsbActionType::PhaseNodeReady,
+            Self::StepNodeReady(_) => SsbActionType::StepNodeReady,
+            Self::BabyStepReady(_) => SsbActionType::BabyStepReady,
+            Self::DagRepairEscalated(_) => SsbActionType::DagRepairEscalated,
+            Self::AgentStatusChanged(_) => SsbActionType::AgentStatusChanged,
+            Self::StagnationSpinningDetected(_) => SsbActionType::StagnationSpinningDetected,
+            Self::StagnationOscillationDetected(_) => SsbActionType::StagnationOscillationDetected,
+            Self::LateralThinkingActivated(_) => SsbActionType::LateralThinkingActivated,
+            Self::GoalDriftWarning(_) => SsbActionType::GoalDriftWarning,
+            Self::WatchdogTimeout(_) => SsbActionType::WatchdogTimeout,
+            // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon.
+            Self::ChangeDecision(_) => SsbActionType::ChangeDecision,
+            // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge.
+            Self::SearchModeChanged(_) => SsbActionType::SearchModeChanged,
+            // C-5 (SCHEMA_VERSION 51): privacy-redaction event.
+            Self::RedactionApplied(_) => SsbActionType::RedactionApplied,
+            // C-10 (SCHEMA_VERSION 52): anti-spiral lateral-thinking + goal-drift Block.
+            Self::LateralThinkingSucceeded(_) => SsbActionType::LateralThinkingSucceeded,
+            Self::LateralThinkingExhausted(_) => SsbActionType::LateralThinkingExhausted,
+            Self::GoalDriftBlock(_) => SsbActionType::GoalDriftBlock,
+            // C-13 (SCHEMA_VERSION 53): WIP commit squash completion.
+            Self::WipSquashComplete(_) => SsbActionType::WipSquashComplete,
+            // C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+            Self::AlternativeExplored(_) => SsbActionType::AlternativeExplored,
+            Self::FeasibilityEscalated(_) => SsbActionType::FeasibilityEscalated,
+            // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+            Self::BranchForked(_) => SsbActionType::BranchForked,
+            Self::BranchMerged(_) => SsbActionType::BranchMerged,
+            Self::BranchClosed(_) => SsbActionType::BranchClosed,
+            // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+            // + background-task beacons.
+            Self::PlanSkeleton(_) => SsbActionType::PlanSkeleton,
+            Self::CompiledPipelineFired(_) => SsbActionType::CompiledPipelineFired,
+            Self::TemplateCrystallized(_) => SsbActionType::TemplateCrystallized,
+            Self::BackgroundTaskStarted(_) => SsbActionType::BackgroundTaskStarted,
+            Self::BackgroundTaskComplete(_) => SsbActionType::BackgroundTaskComplete,
+            Self::DecompileTriggered(_) => SsbActionType::DecompileTriggered,
+            // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+            Self::FutilityDetected(_) => SsbActionType::FutilityDetected,
+            Self::FutilityOutputStagnation(_) => SsbActionType::FutilityOutputStagnation,
+            // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+            Self::WiringEvidence(_) => SsbActionType::WiringEvidence,
+            Self::WiringViolation(_) => SsbActionType::WiringViolation,
+            Self::DeterminismDrift(_) => SsbActionType::DeterminismDrift,
+            // C-28 (SCHEMA_VERSION 60): Testing-trust T-1 mutation testing.
+            Self::MutationSurvived(_) => SsbActionType::MutationSurvived,
+            // C-29 (SCHEMA_VERSION 61): Testing-trust T-2 + T-3 beacons.
+            Self::IntentConfirmed(_) => SsbActionType::IntentConfirmed,
+            Self::MrViolated(_) => SsbActionType::MrViolated,
+            // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode beacons.
+            Self::SurgicalPlanCreated(_) => SsbActionType::SurgicalPlanCreated,
+            Self::SurgicalLocWarning(_) => SsbActionType::SurgicalLocWarning,
+            Self::OracleCacheHit(_) => SsbActionType::OracleCacheHit,
+            Self::OracleCacheMiss(_) => SsbActionType::OracleCacheMiss,
+            Self::ProjectDetectionSignal(_) => SsbActionType::ProjectDetectionSignal,
+            // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 beacons.
+            Self::SkeletonGenerated(_) => SsbActionType::SkeletonGenerated,
+            Self::SkeletonFlushed(_) => SsbActionType::SkeletonFlushed,
+            Self::MiniCriticVerdict(_) => SsbActionType::MiniCriticVerdict,
+            Self::StructuralRetryStageAttempt(_) => SsbActionType::StructuralRetryStageAttempt,
+            Self::BridgeFileGenerated(_) => SsbActionType::BridgeFileGenerated,
         }
     }
 }
@@ -4112,6 +5192,11 @@ pub struct Ssb {
     read_pool: SsbPool,
     project_id: String,
     session_id: String,
+    /// C-5: canonical DB path captured at construction so callers (e.g.
+    /// task_runner cloud-mode hook) can open a sibling read-only
+    /// `SsbViewer` without re-plumbing the SsbConfig through every
+    /// hand-off site.
+    db_path: std::path::PathBuf,
     shutdown: Arc<AtomicBool>,
     _write_task: tokio::task::JoinHandle<()>,
 }
@@ -4176,9 +5261,20 @@ impl Ssb {
             read_pool,
             project_id,
             session_id,
+            db_path: config.db_path.clone(),
             shutdown,
             _write_task: write_task,
         })
+    }
+
+    /// C-5 — canonical filesystem path of the underlying SQLite DB.
+    /// Captured at construction; consumers (e.g. task_runner cloud-mode
+    /// hook) open a sibling read-only [`crate::ssb_viewer::SsbViewer`]
+    /// against this path without having to thread the original
+    /// [`SsbConfig`] through every wiring hand-off.
+    #[must_use]
+    pub fn db_path(&self) -> &std::path::Path {
+        &self.db_path
     }
 
     /// Submit a write request to the single-writer loop.
@@ -5065,6 +6161,1025 @@ pub struct CliSubprocessKilledPayload {
 }
 
 // ---------------------------------------------------------------------------
+// C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer payloads
+// ---------------------------------------------------------------------------
+
+/// C-1 — payload for [`SsbActionType::GrcStepEmitted`].
+///
+/// Emitted by `task_runner::emit_reasoning` when a `PipelineGrc` handle is
+/// plumbed through `ResolvedConfig`. `agent_id` is sourced from the
+/// engine's `AgentGrcConfig.role` (NOT the synthetic `RUNNER_AGENT_ID`
+/// constant). `budget_remaining` is the per-topic
+/// `GrcBudget::remaining_calls()` value. `elapsed_ms` is the wall-clock
+/// time since the runner entered the GRC step (caller supplies; clock is
+/// the runner's `ClockProvider`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GrcStepEmittedPayload {
+    pub agent_id: String,
+    pub topic: String,
+    pub step_type: String,
+    pub grounding_level: String,
+    pub confidence: f64,
+    pub budget_remaining: u32,
+    pub elapsed_ms: u64,
+}
+
+/// C-1 — payload for [`SsbActionType::GroundingSweepResult`].
+///
+/// Emitted ONCE per `PipelineGrc::ground_plan` call. Fields:
+/// * `ungrounded` — count of claims that remain ungrounded after sweep.
+/// * `verify_needed` — count of `training:`-prefixed claims (subset of
+///   `ungrounded`) that require manual verification.
+/// * `grounded` — count of claims that did verify (
+///   `claims.len() - ungrounded.len()`).
+/// * `top_claim` — first ungrounded claim text, used by the dashboard
+///   GroundingSweepCard for an at-a-glance preview. `None` when all
+///   claims are grounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroundingSweepResultPayload {
+    pub ungrounded: u32,
+    pub verify_needed: u32,
+    pub grounded: u32,
+    pub top_claim: Option<String>,
+}
+
+/// C-1 — payload for [`SsbActionType::CsqEvaluated`].
+///
+/// Emitted by `task_runner` immediately after `PipelineGrc::generate_csq`
+/// returns. `severity` mirrors `CsqSeverity::Critical` / `Warning`
+/// (the worst severity among the checks, or `"None"` when the result
+/// contains no checks). `guard_present` reflects whether every critical
+/// check has `guard_added=true`. `blocked` is `true` when the runner's
+/// `hook_pre_blocked` flag was set as a result of the verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsqEvaluatedPayload {
+    pub severity: String,
+    pub guard_present: bool,
+    pub blocked: bool,
+    pub check_count: u32,
+}
+
+/// C-1 — payload for [`SsbActionType::AuditorRubberStampRejected`].
+///
+/// Emitted at the `PipelineGrc` caller when `BasicGrcEngine::advance`
+/// returns `GrcError::InsufficientFindings`. `role` is the auditor's
+/// `AgentGrcConfig.role` (always `"auditor"` today). `finding_count` is
+/// the observed count of `FINDING:` rows in the topic state;
+/// `expected_min` is the gate threshold (currently `1`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditorRubberStampRejectedPayload {
+    pub role: String,
+    pub finding_count: u32,
+    pub expected_min: u32,
+}
+
+/// C-1 — payload for [`SsbActionType::HydeQuery`].
+///
+/// Emitted by `HydeStage::hypothesize` per call. `query_hash` is the
+/// hex-encoded blake3 hash of the query bytes (full 32 bytes / 64 hex
+/// chars). `hypothesis_len` is `0` when no hypothesis was produced
+/// (short query / breaker open / sidecar error). `cache_hit=true`
+/// indicates the cache TTL window was within bounds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HydeQueryPayload {
+    pub query_hash: String,
+    pub hypothesis_len: u32,
+    pub cache_hit: bool,
+    pub latency_ms: u64,
+}
+
+/// C-1 — payload for [`SsbActionType::VectorCacheHitRate`].
+///
+/// Aggregate hits/misses snapshot flushed by
+/// `VectorCache::flush_hit_rate_ssb`. `hit_rate_pct` ranges
+/// `0.0..=100.0`. The producer skips emission when `hits + misses == 0`,
+/// so every row carries non-zero traffic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorCacheHitRatePayload {
+    pub session_id: String,
+    pub hits: u32,
+    pub misses: u32,
+    pub hit_rate_pct: f64,
+}
+
+/// C-1 — payload for [`SsbActionType::QueryTrace`].
+///
+/// Per-query trace emitted at the end of
+/// `QueryPipeline::query_with_tier`. Pairs with the existing
+/// `tracing::debug!("query_trace")` line — both fire on every query;
+/// the SSB row is the persisted form the dashboard reads via
+/// `get_query_trace_recent`. `query_id` is the UUID stringified from
+/// `QueryTrace::query_id`. `tier` is one of `"FAST" / "STANDARD" /
+/// "DEEP" / "AUTO"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryTracePayload {
+    pub query_id: String,
+    pub tier: String,
+    pub stage_count: u32,
+    pub result_count: u32,
+    pub total_latency_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// C-2 — 10 NEW payload structs (orchestration + cosmos + stagnation).
+// Defined here so the SCHEMA_VERSION 47 -> 48 bump is atomic for every
+// 9-tuple-lockstep row (CHECK / enum / as_sql_str / from_str / SsbPayload /
+// action_type / test_payload / all_test_payloads / count assert).
+// ---------------------------------------------------------------------------
+
+/// C-2 — payload for [`SsbActionType::PhaseNodeReady`].
+///
+/// Emitted by the task_runner baby-step loop the first time
+/// `nav.next_baby_step` returns a baby-step whose
+/// `tree.location_index[bs_id].phase_id` differs from the previously
+/// observed phase. `depth` mirrors the navigator's
+/// `DecompositionLevel::Phase` depth (always `1` today; reserved for
+/// future N-level decompositions). `parent_concept_id` is the
+/// containing concept (always present per location_index invariant).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseNodeReadyPayload {
+    pub phase_id: u64,
+    pub concept_id: u64,
+    pub label: String,
+    pub depth: u32,
+}
+
+/// C-2 — payload for [`SsbActionType::StepNodeReady`].
+///
+/// Emitted when the task_runner baby-step loop observes a step-id
+/// change against the previous iteration. `parent_phase_id` and
+/// `parent_concept_id` are the containing decomposition ancestors so
+/// the dashboard can render the row inside the correct tree column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepNodeReadyPayload {
+    pub step_id: u64,
+    pub phase_id: u64,
+    pub concept_id: u64,
+    pub label: String,
+    pub depth: u32,
+}
+
+/// C-2 — payload for [`SsbActionType::BabyStepReady`].
+///
+/// Emitted once per baby-step consumption in the task_runner loop
+/// (matches the cadence of `emit_reasoning`). Carries the full
+/// (concept, phase, step, baby_step) ancestry plus the truncated task
+/// label so the dashboard BubbleUpStrip can show a per-baby-step
+/// bubble without joining additional rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BabyStepReadyPayload {
+    pub baby_step_id: u64,
+    pub step_id: u64,
+    pub phase_id: u64,
+    pub concept_id: u64,
+    pub label: String,
+    pub depth: u32,
+}
+
+/// C-2 — payload for [`SsbActionType::DagRepairEscalated`].
+///
+/// Emitted from `pipeline_builder` when `DagRepairLoop::repair`
+/// returns `RepairOutcome::Escalated` after `T_DAG = 10` retries. The
+/// row distinguishes "successful repair after N rounds"
+/// ([`SsbActionType::DagRepairRound`]) from "gave up after N rounds"
+/// so the dashboard can surface a distinct ESCALATED badge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagRepairEscalatedPayload {
+    /// Number of rounds the repair loop executed before escalating.
+    pub rounds: u32,
+    /// Count of validation issues that remained unrepaired.
+    pub remaining_issues: u32,
+    /// Short summary of the last validation error (first remaining issue's
+    /// `message`). Empty when no remaining issues were attached.
+    pub last_error: String,
+}
+
+/// C-2 — payload for [`SsbActionType::AgentStatusChanged`].
+///
+/// Sibling row to [`AgentLifecyclePayload`], emitted alongside every
+/// AgentLifecycle write in `bsp/engine`. Single `state` field per
+/// DRIFT-5 in context-package-C2.md (no `old_lifecycle`): consumers
+/// derive transitions by reading the ordered stream per `agent_id`.
+/// `timestamp_ms` is sourced from the engine's `ClockProvider` (never
+/// `SystemTime::now` directly) per ENTROPY_QUARANTINE.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStatusChangedPayload {
+    pub agent_id: String,
+    /// AgentRole discriminant in snake_case (mirrors `AgentLifecyclePayload.role`).
+    pub role: String,
+    /// `"spawned" | "ready" | "exited"` — mirrors `AgentLifecyclePayload.state`.
+    pub state: String,
+    /// Present when `state == "exited"`: `"clean_exit" | "crash" | "timeout" |
+    /// "budget_exceeded"`. Mirrors `AgentLifecyclePayload.death_class`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_class: Option<String>,
+    /// Wall-clock millisecond timestamp sourced from the engine clock.
+    pub timestamp_ms: u64,
+}
+
+/// C-2 — payload for [`SsbActionType::StagnationSpinningDetected`].
+///
+/// Defined now so the SCHEMA bump is atomic; producer wiring lands in
+/// C-10 (Stagnation Detector). Carries the detector verdict shape used
+/// by [`crate::anti_spiral::SpiralTracker`] when the same step_hash
+/// repeats 3+ times within the current phase window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagnationSpinningDetectedPayload {
+    pub agent_id: String,
+    pub pattern: String,
+    pub iteration: u32,
+    pub detail: String,
+}
+
+/// C-2 — payload for [`SsbActionType::StagnationOscillationDetected`].
+///
+/// Defined now; producer wiring lands in C-10. Period-2 oscillation
+/// pattern (e.g. step_hash sequence A B A B A).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagnationOscillationDetectedPayload {
+    pub agent_id: String,
+    pub pattern: String,
+    pub iteration: u32,
+    pub detail: String,
+}
+
+/// C-2 — payload for [`SsbActionType::LateralThinkingActivated`].
+///
+/// Defined now; producer wiring lands in C-10 (persona switcher).
+/// Carries the persona label that was activated to break a stagnation
+/// loop (`"hacker" | "researcher" | "simplifier" | "architect" |
+/// "contrarian"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LateralThinkingActivatedPayload {
+    pub agent_id: String,
+    pub persona: String,
+    pub iteration: u32,
+    pub detail: String,
+}
+
+/// C-2 — payload for [`SsbActionType::GoalDriftWarning`].
+///
+/// Defined now; producer wiring lands in C-10 (Goal Drift Canary).
+/// Emitted when the canary detects that the active baby-step's task
+/// summary has diverged from the original task intent by more than
+/// `drift_score` cosine distance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalDriftWarningPayload {
+    pub agent_id: String,
+    pub drift_score: f32,
+    pub baby_step_id: u64,
+    pub detail: String,
+}
+
+/// C-2 — payload for [`SsbActionType::WatchdogTimeout`].
+///
+/// Defined now; producer wiring lands in C-10 (Generation Watchdog).
+/// Emitted when an agent exceeds its per-step wall-clock budget
+/// without producing observable output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogTimeoutPayload {
+    pub agent_id: String,
+    pub elapsed_ms: u64,
+    pub budget_ms: u64,
+    pub detail: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-10 (SCHEMA_VERSION 52) payload structs — anti-spiral lateral-thinking +
+// goal-drift Block. Producer wiring lands in anti_spiral_extended.rs +
+// task_runner step-boundary loop.
+// ---------------------------------------------------------------------------
+
+/// C-10 — payload for [`SsbActionType::LateralThinkingSucceeded`].
+///
+/// Emitted when a previously-active stagnation pattern stops firing
+/// after a persona suggestion was consumed. Carries the persona that
+/// broke the loop plus the iteration count at success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LateralThinkingSucceededPayload {
+    pub agent_id: String,
+    pub persona: String,
+    pub iteration: u32,
+    pub detail: String,
+}
+
+/// C-10 — payload for [`SsbActionType::LateralThinkingExhausted`].
+///
+/// Emitted when all 5 personas have been tried within the current task
+/// window without breaking the stagnation pattern. Carries the count of
+/// personas attempted (always 5 in the current implementation; field
+/// kept for forward-compat if the persona roster expands).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LateralThinkingExhaustedPayload {
+    pub agent_id: String,
+    pub personas_tried: u32,
+    pub iteration: u32,
+    pub detail: String,
+}
+
+/// C-10 — payload for [`SsbActionType::GoalDriftBlock`].
+///
+/// Companion to [`GoalDriftWarningPayload`] for the Block verdict band.
+/// `drift_score` carries the Jaccard-similarity value in the plan-direction
+/// reading (see workflow/reasoning/C-10-decisions.md DRIFT-3). Lower
+/// score = more drift; `drift_score < 0.4` triggers this Block row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalDriftBlockPayload {
+    pub agent_id: String,
+    pub drift_score: f32,
+    pub baby_step_id: u64,
+    pub detail: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-13 (SCHEMA_VERSION 53) payload struct — WIP commit squash completion.
+// Producer wiring lands in `crate::wip_squash::squash_wip_commits_if_any`
+// + the `elai wip-squash` CLI subcommand. Emitted unconditionally after a
+// squash attempt regardless of the no-op vs. squashed outcome so the
+// dashboard can render both rows.
+// ---------------------------------------------------------------------------
+
+/// C-13 — payload for [`SsbActionType::WipSquashComplete`].
+///
+/// Emitted after the leading-WIP-commit squash heuristic runs. `wip_count`
+/// is the count of consecutive leading commits whose first message line
+/// matches `/^[Ww][Ii][Pp]/`. `squashed` records whether a real squash
+/// actually executed:
+///   * `squashed == true`  ⇒ a `git reset --soft HEAD~{wip_count}` plus
+///     a `git commit --no-verify -m "phase: squash {wip_count} WIP commits"`
+///     fired; the working tree's HEAD now sits on a single squash commit.
+///   * `squashed == false` ⇒ no-op (wip_count <= 5 or no WIP prefix found).
+///
+/// `step_id` is the baby-step identifier that triggered the squash; empty
+/// when invoked directly via the `elai wip-squash` CLI subcommand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WipSquashCompletePayload {
+    pub wip_count: u32,
+    pub squashed: bool,
+    pub step_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-22 (SCHEMA_VERSION 54) payload structs — feasibility-probe completeness
+// ---------------------------------------------------------------------------
+
+/// C-22 — payload for [`SsbActionType::AlternativeExplored`].
+///
+/// Emitted by `DefaultFeasibilityProber::probe` per NovelStep alternative
+/// attempted (i.e. each branch the prober tried in the alternatives chain).
+/// `alternative_index` is 0-indexed (0 = first attempt, the original step).
+/// Up to `MAX_ALTERNATIVES_PER_STEP` (3) rows per NovelStep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlternativeExploredPayload {
+    pub step_id: String,
+    pub alternative_index: u8,
+    pub accepted: bool,
+}
+
+/// C-22 — payload for [`SsbActionType::FeasibilityEscalated`].
+///
+/// Emitted by the feasibility-probe escalation path when
+/// `decide_with_mode` returns `FeasibilityDecision::Escalate` (Interactive
+/// mode) or `Replan` (Autonomous mode). `variant` is the
+/// `FeasibilityEscalation` discriminant tag in snake_case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeasibilityEscalatedPayload {
+    pub reason: String,
+    pub variant: String,
+    pub step_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-23 (SCHEMA_VERSION 55) payload structs — SessionDag branch-UI beacons.
+// ---------------------------------------------------------------------------
+
+/// C-23 — payload for [`SsbActionType::BranchForked`].
+///
+/// Emitted at the orchestrator level (via `create_branch_with_ssb`) and by
+/// the dashboard-v2 `fork_session_branch` Tauri command on successful
+/// `SessionDag::create_branch`. `branch_name` is the user-facing branch
+/// label (matches `BranchRef::name`). `tip_snap_id` is the freshly-created
+/// snapshot id at the branch tip. `parent_snap_id` is the snapshot the
+/// branch was forked from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchForkedPayload {
+    pub branch_name: String,
+    pub tip_snap_id: String,
+    pub parent_snap_id: String,
+}
+
+/// C-23 — payload for [`SsbActionType::BranchMerged`].
+///
+/// Emitted by `SessionDag::merge_branch_with_ssb` on a successful
+/// `MergeResult::Winner`. Supersedes the legacy `Checkpoint` row with a
+/// `branch_merge:winner=...;abandoned=...` discriminator string (the
+/// Checkpoint row was indistinguishable from a snapshot-save row in the
+/// dashboard activity feed).
+///
+/// `winner_name` is the branch that survived the merge into trunk.
+/// `trunk_snap_id` is the trunk snapshot id post-merge. `abandoned_names`
+/// is the set of non-winner active branches at the time of the merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchMergedPayload {
+    pub winner_name: String,
+    pub trunk_snap_id: String,
+    pub abandoned_names: Vec<String>,
+}
+
+/// C-23 — payload for [`SsbActionType::BranchClosed`].
+///
+/// Emitted by `SessionDag::close_branch_with_ssb` on a successful
+/// `close_branch` call. `reason` carries a short free-text explanation
+/// (e.g. `"user-requested"`, `"dashboard:close_session_branch"`) so the
+/// dashboard activity feed can render context without inspecting other
+/// rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchClosedPayload {
+    pub branch_name: String,
+    pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-25 (SCHEMA_VERSION 56) payload structs — compiled-pipeline +
+// template-crystallizer + background-task beacons.
+// ---------------------------------------------------------------------------
+
+/// C-25 — source discriminator for [`PlanSkeletonPayload::source`].
+///
+/// Distinguishes the two pipeline-builder factory paths:
+///   * `Llm`      — the standard LLM-decomposition path (existing behaviour).
+///   * `Template` — the C-25 `CompiledExecutor` cache hit short-circuit.
+/// Tagged via `#[serde(rename_all = "snake_case")]` so the wire form is
+/// `"llm"` / `"template"` for dashboard/CLI parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanSkeletonSource {
+    Llm,
+    Template,
+}
+
+/// C-25 — payload for [`SsbActionType::PlanSkeleton`].
+///
+/// Emitted by `pipeline_builder::PipelineBuilder::build_with_emitter` on
+/// every successful factory entry. `source` flips to
+/// [`PlanSkeletonSource::Template`] when the C-25 `CompiledExecutor`
+/// returns a cache hit; otherwise it is [`PlanSkeletonSource::Llm`]. C-25
+/// ships the FIRST emitter for this row (see DRIFT-D in
+/// `workflow/sessions/s-25672/context-package-C25.md`).
+///
+/// `plan_skeleton_hash` is a blake3-truncated-u64 over the spec name +
+/// concatenated step names (stable across rustc versions — DefaultHasher
+/// is NOT used, per C-25 Q5 resolution).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanSkeletonPayload {
+    pub plan_id: String,
+    pub step_count: u32,
+    pub concept_class: String,
+    pub plan_skeleton_hash: u64,
+    pub source: PlanSkeletonSource,
+}
+
+/// C-25 — payload for [`SsbActionType::CompiledPipelineFired`].
+///
+/// Emitted by `compiled_pipeline::CompiledExecutor::try_execute` on a
+/// successful cache hit followed by a successful run. `use_count` is the
+/// `CompiledPipeline.use_count` AFTER the increment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledPipelineFiredPayload {
+    pub pipeline_id: String,
+    pub concept_class: String,
+    pub plan_skeleton_hash: u64,
+    pub use_count: u32,
+}
+
+/// C-25 — payload for [`SsbActionType::TemplateCrystallized`].
+///
+/// Emitted by `compiled_pipeline::TemplateCrystallizer::check_crystallization`
+/// when the N-consecutive-success threshold (default N=3) is met and a new
+/// CompiledPipeline is materialized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateCrystallizedPayload {
+    pub concept_class: String,
+    pub plan_skeleton_hash: u64,
+    pub pipeline_id: String,
+    pub threshold_n: u32,
+}
+
+/// C-25 — payload for [`SsbActionType::BackgroundTaskStarted`].
+///
+/// Emitted by `background_task::BackgroundTaskManager::gated_spawn` on a
+/// successful (autonomous_mode=true) spawn. `command_summary` is the
+/// caller-supplied free-text command label (already truncated to fit
+/// PAYLOAD_MAX_BYTES). `soft_timeout_secs` is the auto-detach boundary;
+/// `hard_timeout_secs` is the kill boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTaskStartedPayload {
+    pub task_id: String,
+    pub command_summary: String,
+    pub soft_timeout_secs: u32,
+    pub hard_timeout_secs: u32,
+}
+
+/// C-25 — payload for [`SsbActionType::BackgroundTaskComplete`].
+///
+/// Emitted by `background_task::BackgroundTaskManager::poll_completed`
+/// (normal exit path) AND `enforce_timeouts` (auto-detach path). `auto_detached`
+/// is `true` when the manager dropped the JoinHandle at the soft boundary;
+/// `timed_out` is `true` when the hard boundary was exceeded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTaskCompletePayload {
+    pub task_id: String,
+    pub exit_status: i32,
+    pub duration_secs: u32,
+    pub auto_detached: bool,
+    pub timed_out: bool,
+}
+
+/// C-25 audit follow-up — trigger reason for [`DecompileTriggeredPayload`].
+///
+/// `Confidence` fires when the cached pipeline's `first_try_success_rate`
+/// is below `COMPILED_EXECUTOR_CONFIDENCE_THRESHOLD`.
+/// `ConsecutiveFailures` fires when `record_failure` was called at least
+/// `COMPILED_EXECUTOR_FAILURE_THRESHOLD` times since the last
+/// `record_success` reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecompileTriggerReason {
+    Confidence,
+    ConsecutiveFailures,
+}
+
+/// C-25 audit follow-up — payload for [`SsbActionType::DecompileTriggered`].
+///
+/// Emitted by `compiled_pipeline::CompiledExecutor::emit_decompile_triggered`
+/// whenever a cache HIT is rejected via the confidence floor or the
+/// consecutive-failure threshold. `failure_count` is the observed
+/// consecutive-failure counter at the time the row was emitted (0 for the
+/// confidence-floor path, which does not require accumulated failures).
+///
+/// Closes WARN-1 from `workflow/sessions/s-25672/audit-C25.md` where the
+/// C-25 v56 implementation routed this event through `AntiSpiralHit` and
+/// dashboards / contract tests filtered on `decompile_triggered` saw
+/// zero rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecompileTriggeredPayload {
+    pub concept_class: String,
+    pub plan_skeleton_hash: u64,
+    pub failure_count: u32,
+    pub trigger_reason: DecompileTriggerReason,
+}
+
+// ---------------------------------------------------------------------------
+// C-26 (SCHEMA_VERSION 58) payload structs — constrained-decoding + futility
+// ---------------------------------------------------------------------------
+
+/// C-26 — payload for [`SsbActionType::FutilityDetected`].
+///
+/// Emitted by `pipeline_tree_navigator::NavigatorTree::record_baby_step_outcome`
+/// when the per-baby-step same-error-class window saturates at the
+/// `RetryStrategy.futility_same_error_threshold` (default 3). The producer
+/// also issues a `BubbleUpAction::Escalate` and increments the cascade
+/// counter at the surrounding level (matches the C-26 plan §Task 3 path A).
+///
+/// Fields:
+///   - `error_class`         snake_case discriminant (e.g. `"compile_error"`,
+///                           `"constrained_decode_reject"`); free-form
+///                           string for forward-compat.
+///   - `consecutive_count`   number of consecutive same-class failures at
+///                           the moment the futility row was emitted.
+///                           Equal to the threshold the navigator policy
+///                           set.
+///   - `level`               `"baby_step" | "step" | "phase" | "concept"`.
+///   - `escalated`           `true` when the navigator also issued a
+///                           `BubbleUpAction::Escalate` row in the same
+///                           cycle. C-26 plan path A always sets `true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FutilityDetectedPayload {
+    pub error_class: String,
+    pub consecutive_count: u32,
+    pub level: String,
+    pub escalated: bool,
+}
+
+/// C-26 — payload for [`SsbActionType::FutilityOutputStagnation`].
+///
+/// Emitted by `pipeline_tree_navigator::NavigatorTree::record_baby_step_outcome`
+/// when `GoalDriftCanary::compute(prev_output, curr_output) > 0.90` between
+/// two consecutive outputs of the same baby step. The producer also sets
+/// `TreeNavigatorState.suggested_persona` via
+/// `suggest_persona_for_pattern(StagnationPattern::NoDrift)`, which per
+/// C-10 D4 always yields `ThinkingPersona::Hacker` (NOT Researcher).
+///
+/// Fields:
+///   - `similarity`   Jaccard similarity in `[0.0, 1.0]`.
+///   - `threshold`    the policy threshold (default `0.90`).
+///   - `level`        `"baby_step" | "step" | "phase" | "concept"`.
+///   - `new_persona`  snake_case persona label set by the producer (see
+///                    `ThinkingPersona::as_str()` — defaults to `"hacker"`
+///                    for NoDrift). `None` when C-10 is unavailable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FutilityOutputStagnationPayload {
+    pub similarity: f32,
+    pub threshold: f32,
+    pub level: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_persona: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// C-7 (SCHEMA_VERSION 49) payload struct
+// ---------------------------------------------------------------------------
+
+/// C-7 — payload for [`SsbActionType::ChangeDecision`].
+///
+/// Emitted by the dashboard-v2 Tauri commands `accept_change` /
+/// `decline_change` / `retry_audit` each time a human reviewer acts on
+/// a per-file or per-hunk change row in ReviewWindow. The live diff
+/// remains carried by [`SsbActionType::FileWrite`]; this row records
+/// only the reviewer verdict so the dashboard can re-render verdict
+/// state on reload + downstream consumers can audit reviewer actions.
+///
+/// `decision` discriminator (string for forward-compat — adding a new
+/// verdict tag does not require a schema bump):
+///   - `"accepted"` — emitted by `accept_change`
+///   - `"declined"` — emitted by `decline_change`
+///   - `"retried"`  — emitted by `retry_audit`
+///
+/// `hunk_id` is `None` for file-level verdicts and `Some(id)` for
+/// per-hunk verdicts. The id is opaque to the orchestrator; the
+/// dashboard derives it from the FileWrite diff (typically the
+/// `@@ -N,M +P,Q @@` header content hash).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeDecisionPayload {
+    pub decision: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hunk_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// C-8 (SCHEMA_VERSION 50) payload struct
+// ---------------------------------------------------------------------------
+
+/// C-8 — payload for [`SsbActionType::SearchModeChanged`].
+///
+/// Emitted by the CLI startup-readiness path and by the dashboard-v2
+/// Tauri command `set_search_mode` whenever the resolved retrieval mode
+/// transitions. The dashboard `get_search_mode` command reads the latest
+/// row of this type (graceful empty fallback returns `"hybrid"`). This
+/// is the SSB-row bridge between the live_cli AppState (CLI process)
+/// and the dashboard-v2 AppState (src-tauri process) — the two share no
+/// in-memory state, so the canonical channel is the SSB DB.
+///
+/// `mode` discriminator (lowercase string for forward-compat — adding a
+/// new SearchMode tag does not require a schema bump):
+///   - `"hybrid"`   — bm25 + vector + reranker (default)
+///   - `"lexical"`  — bm25 only (e.g. embedder offline)
+///   - `"semantic"` — vector only (e.g. bm25 corrupted)
+///   - `"ann"`      — ANN approximate-NN fallback
+///
+/// `history` is the trailing sequence of mode tags (most-recent last),
+/// so the dashboard can render a "last N transitions" timeline without
+/// N round-trips. May be empty on the first transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchModeChangedPayload {
+    pub mode: String,
+    #[serde(default)]
+    pub history: Vec<String>,
+}
+
+/// C-5 — payload for [`SsbActionType::RedactionApplied`].
+///
+/// Emitted by [`crate::cloud_mode::RedactingBabyStepExecutor`] each
+/// time the privacy redactor scrubs PII or secrets from a cloud-bound
+/// baby-step payload. Best-effort: a write failure never aborts the
+/// baby-step execution.
+///
+/// Fields:
+///   - `count`: total number of redaction substitutions applied across
+///     every redacted field on this baby-step (sum of per-field deltas).
+///   - `fields`: logical field names that were touched. Today this is
+///     either `["task_summary"]` or `["task_summary", "escalation_message"]`
+///     depending on whether the baby-step carried an escalation message.
+///     Forward-compatible: new redactable fields will simply append.
+///   - `baby_step_id`: numeric id from
+///     [`crate::task_runner::BabyStepExecutionCtx::baby_step_id`] so the
+///     dashboard CloudPanel privacy-event feed can correlate each row
+///     with its source step.
+///   - `ts_ms`: wall-clock millisecond timestamp at redaction time. Set
+///     by the producer (RedactingBabyStepExecutor) using its injected
+///     clock so deterministic tests stay stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactionAppliedPayload {
+    pub count: u64,
+    #[serde(default)]
+    pub fields: Vec<String>,
+    pub baby_step_id: u64,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// C-27 (SCHEMA_VERSION 59) — Testing-trust T(-1) + T-0 payloads.
+// ---------------------------------------------------------------------------
+
+/// C-27 — kind discriminator for [`WiringViolationPayload`].
+///
+/// `StubPattern`        — StubBanAuditor matched a forbidden regex in a
+///                        production-path source file (todo!(),
+///                        unimplemented!(), `Ok(Default::default())` exact-line,
+///                        "deferred", "stub").
+/// `UnreachableSymbol`  — DkgReachabilityAuditor could not BFS from any
+///                        configured entrypoint to the declared
+///                        produces_symbol.
+/// `BrokenObservable`   — ObservableEffectRunner timed out waiting for the
+///                        declared expect_ssb / expect_artifact row (no panic,
+///                        violation row emitted instead).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WiringViolationKind {
+    StubPattern,
+    UnreachableSymbol,
+    BrokenObservable,
+}
+
+/// C-27 — payload for [`SsbActionType::WiringEvidence`].
+///
+/// Emitted by `wiring_contract::DkgReachabilityAuditor` once per
+/// produces_symbol declared in a WIRING_CONTRACT block that the auditor
+/// verified is reachable (BFS) from at least one configured
+/// `[wiring.entrypoints]` symbol path. Zero rows when the contract declares
+/// no produces_symbols.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WiringEvidencePayload {
+    /// The configured entrypoint that reached the verified symbols.
+    pub entrypoint: String,
+    /// Symbols from `produces_symbols` that BFS proved reachable.
+    #[serde(default)]
+    pub produces_symbols_verified: Vec<String>,
+    /// Total reachable count under this entrypoint (>= verified.len()).
+    pub reachable_count: u32,
+    /// Per-`elai wiring audit` invocation correlator.
+    pub audit_id: uuid::Uuid,
+}
+
+/// C-27 — payload for [`SsbActionType::WiringViolation`].
+///
+/// Emitted by any of the three T-0 auditors when a wiring contract clause is
+/// breached. `violation_kind` discriminates the three branches (StubPattern
+/// | UnreachableSymbol | BrokenObservable). `file` + `line` carry the
+/// location of the breach (file path for StubPattern; declaring contract
+/// source for the other two). `pattern` is the breached pattern string
+/// (forbidden regex literal for StubPattern; symbol name for
+/// UnreachableSymbol; observable trigger name for BrokenObservable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WiringViolationPayload {
+    pub violation_kind: WiringViolationKind,
+    pub file: String,
+    pub line: u32,
+    pub pattern: String,
+    pub audit_id: uuid::Uuid,
+}
+
+/// C-27 — payload for [`SsbActionType::DeterminismDrift`].
+///
+/// Emitted by `determinism::DriftComparator::compare` when two
+/// `ActionTypeSequence`s recorded from nominally-equivalent runs diverge.
+/// `seed` is the shared `ELAI_SEED` under test; `run_a_hash` /
+/// `run_b_hash` are blake3 hashes of the joined snake-case action_type
+/// stream up to (but not including) `first_divergence_index`. Identical
+/// sequences emit zero rows (contract: no false positives).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeterminismDriftPayload {
+    pub seed: u64,
+    pub run_a_hash: String,
+    pub run_b_hash: String,
+    pub first_divergence_index: u32,
+    pub audit_id: uuid::Uuid,
+}
+
+// ---------------------------------------------------------------------------
+// C-28 (SCHEMA_VERSION 60) — Testing-trust T-1 mutation testing payload.
+// ---------------------------------------------------------------------------
+
+/// C-28 — payload for [`SsbActionType::MutationSurvived`].
+///
+/// Emitted by `deterministic_auditor` Step 6 (mutation check) once per
+/// mutant whose `MutantOutcome` is `Survived`. Caught / Timeout / Skipped
+/// outcomes emit ZERO rows (stub_ban contract: no spam on healthy runs).
+/// `file` is the source path relative to project_root; `line` is the
+/// 1-based source line targeted by the mutation; `mutant_kind` is a
+/// stable snake_case identifier emitted by the underlying tool (e.g.
+/// `replace_+_with_-` for cargo-mutants binary-op replacements, or
+/// `delete_line` for mutmut statement deletions).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationSurvivedPayload {
+    pub file: String,
+    pub line: u32,
+    pub mutant_kind: String,
+}
+
+// ---------------------------------------------------------------------------
+// C-29 (SCHEMA_VERSION 61) — Testing-trust T-2 (IntentPair) + T-3 (Metamorphic)
+// payloads. See workflow/reasoning/C-29-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// C-29 — payload for [`SsbActionType::IntentConfirmed`].
+///
+/// Emitted when a `BabyStepSpec.intent_pairs` set passes the
+/// `IntentConfig.min_pairs` threshold at the PLANNING -> TESTING_FIRST
+/// gate (`IntentPairsGate` in `evidence.rs`). `confirmed_by` is one of
+/// `"user"` (dashboard Confirm button) or `"autonomous_gate"` (auto-confirm
+/// branch). `pair_count` is the count of populated pairs at confirmation
+/// time and must be >= the active `min_pairs` (the gate guarantees this).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentConfirmedPayload {
+    pub step_id: u64,
+    pub pair_count: u8,
+    pub confirmed_by: String,
+}
+
+/// C-29 — payload for [`SsbActionType::MrViolated`].
+///
+/// Emitted by `deterministic_auditor` Step 7 when a metamorphic relation
+/// returned `MrResult { passed: false }`. `relation` is one of
+/// `"identity"` / `"inverse"` / `"permutation_invariance"`. `counterexample`
+/// MUST be non-empty — `MrResult::failed` debug_asserts non-emptiness and
+/// substitutes `"<empty>"` as a runtime sentinel so the SSB writer never
+/// emits a row that violates the stub_ban contract (DRIFT-C29-11).
+/// `sample_size` is the number of inputs the relation was evaluated over.
+/// MrViolated is NOT a standalone Block — score aggregation deferred to
+/// T-4 per C-29 plan §13(c).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MrViolatedPayload {
+    pub step_id: u64,
+    pub relation: String,
+    pub counterexample: String,
+    pub sample_size: u32,
+}
+
+// ---------------------------------------------------------------------------
+// C-30 (SCHEMA_VERSION 62) — Surgical Mode + Oracle Mode pipeline payloads.
+// See workflow/reasoning/C-30-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// C-30 — payload for [`SsbActionType::SurgicalPlanCreated`].
+///
+/// Emitted once per successful `SurgicalDecomposer::decompose` return. The
+/// payload pins the canonical SurgicalPlan shape so the dashboard
+/// SurgicalPanel and downstream auditors can reconstruct the plan summary
+/// without re-running the DKG traversal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurgicalPlanCreatedPayload {
+    /// Stable identifier for the originating `/task` invocation
+    /// (`task_<unix_secs>_<short_hash>` per surgical_decomposer.rs).
+    pub task_id: String,
+    /// Lowercase identifier: `"simple"` | `"medium"` | `"complex"`.
+    pub complexity_class: String,
+    /// Total files in `AffectedSet.direct_files + dependent_files`.
+    pub blast_radius_files: u32,
+    /// Sum of `(end_line - start_line + 1)` across all affected DKG nodes.
+    pub total_loc_estimate: u32,
+    /// Number of `SurgicalStep` entries (capped per complexity class).
+    pub step_count: u32,
+    /// Hex-encoded blake3 hash of the `RegressionGate.must_pass` vec
+    /// (deterministic for identical must_pass content).
+    pub regression_gate_snapshot_hash: String,
+}
+
+/// C-30 — payload for [`SsbActionType::SurgicalLocWarning`].
+///
+/// Emitted when `AffectedSet.total_loc_estimate` exceeds the
+/// `SURGICAL_LOC_WARN_THRESHOLD` (500). Carries the ExecutionMode so the
+/// dashboard can render distinct treatments for Interactive (user must
+/// confirm) vs Autonomous (may escalate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurgicalLocWarningPayload {
+    pub task_id: String,
+    pub total_loc_estimate: u32,
+    pub threshold: u32,
+    /// `"interactive"` | `"autonomous"`.
+    pub mode: String,
+}
+
+/// C-30 — payload for [`SsbActionType::OracleCacheHit`].
+///
+/// Emitted when `OracleAnswerCache::get(&key, now)` returns `Some(&entry)`
+/// with `now - entry.cached_at < ttl_for_tier(entry.source_tier)`. The
+/// `query_hash_hex` is the 64-char blake3 hex of the cache key's query bytes
+/// (the project_hash component is kept private to avoid leaking path info
+/// via the SSB stream).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OracleCacheHitPayload {
+    pub query_hash_hex: String,
+    /// Lowercase tier identifier: `"t1_authoritative"` | `"t2_strong"` |
+    /// `"t3_weak"`. T4 / Unknown never cache, so they cannot appear here.
+    pub source_tier: String,
+    /// Age of the cached entry in seconds at lookup time.
+    pub cached_age_secs: u64,
+}
+
+/// C-30 — payload for [`SsbActionType::OracleCacheMiss`].
+///
+/// Emitted alongside `OracleAnswerCache::insert(...)` after a get-returns-None
+/// has been followed by a successful `run_research_pipeline` call. `confidence`
+/// is the lowercase serde form of `AnswerConfidence` (`"high"` | `"medium"`
+/// | `"low"` | `"unknown"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OracleCacheMissPayload {
+    pub query_hash_hex: String,
+    pub confidence: String,
+}
+
+/// C-30 — payload for [`SsbActionType::ProjectDetectionSignal`].
+///
+/// Emitted once per signal evaluated by the fresh-project detector when
+/// `IndexingService::indexes_exist()` returns `false` at the first `/task`
+/// invocation. `weight` mirrors the `SignalWeight` enum
+/// (`"required"` | `"strong"` | `"weak"`). `fired = true` means the signal
+/// matched (e.g. `Cargo.toml` present, or `rust_file_count >= 10`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDetectionSignalPayload {
+    pub signal_name: String,
+    pub weight: String,
+    pub fired: bool,
+}
+
+// ---------------------------------------------------------------------------
+// C-32 (SCHEMA_VERSION 63) — Code-Completeness Layer 2 payloads.
+// See workflow/reasoning/C-32-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// C-32 — payload for [`SsbActionType::SkeletonGenerated`].
+///
+/// Emitted once per successful `SkeletonGenerator::generate_for_functions`
+/// return. The orchestrator pre-computes the file shape (function
+/// signatures + BLANK_N body placeholders) and surfaces this row so the
+/// dashboard can render "skeleton with N blanks" before any fill begins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkeletonGeneratedPayload {
+    pub blank_count: u32,
+    /// Lowercase language tag (`"rust"` | `"python"` | ...).
+    pub language: String,
+    /// Target path (UTF-8 lossy; absolute or workspace-relative).
+    pub file_path: String,
+}
+
+/// C-32 — payload for [`SsbActionType::SkeletonFlushed`].
+///
+/// Emitted once per `SkeletonGenerator::flush_to_disk` success. The fill
+/// loop performs ZERO disk writes; this single `fs::write` is the only
+/// disk-side effect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkeletonFlushedPayload {
+    pub path: String,
+    pub completeness_ratio: f32,
+}
+
+/// C-32 — payload for [`SsbActionType::MiniCriticVerdict`].
+///
+/// Emitted once per `MiniCritic::check`. Carries the verdict tri-state
+/// (`"pass"`/`"warn"`/`"block"`) and the short reason tag the dashboard
+/// ReasoningDrawer renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MiniCriticVerdictPayload {
+    pub blank_id: u8,
+    pub verdict: String,
+    pub reason: String,
+    pub language: String,
+}
+
+/// C-32 — payload for [`SsbActionType::StructuralRetryStageAttempt`].
+///
+/// Emitted once per StructuralRetrySequencer stage invocation. The
+/// `stage` field is one of `"decompose"`, `"template"`, `"few_shot"`,
+/// `"best_of_n"`. The `outcome` field is the lowercase variant tag from
+/// `StructuralRetryOutcome` (or `"converged"` / `"exhausted"` /
+/// `"accept_and_complete"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuralRetryStageAttemptPayload {
+    pub blank_id: u8,
+    pub stage: String,
+    pub attempt: u32,
+    pub outcome: String,
+}
+
+/// C-32 — payload for [`SsbActionType::BridgeFileGenerated`].
+///
+/// Emitted once per `BridgeFileTemplate::write_bridge` success. Carries
+/// the bridge kind, the written path, and the module count assembled into
+/// the bridge file body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeFileGeneratedPayload {
+    /// Lowercase kind tag (`"mod_rs_aggregator"` | `"init_py_barrel"` |
+    /// `"index_ts_barrel"` | `"go_package_doc"`).
+    pub kind: String,
+    pub path: String,
+    pub module_count: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -5855,6 +7970,7 @@ mod tests {
                     batches_total: Some(4),
                     files_processed: 10,
                     last_checkpoint_at: 0,
+                    batch_duration_ms: Some(120),
                 })
             }
             SsbActionType::IndexResume => SsbPayload::IndexResume(IndexResumePayload {
@@ -5885,6 +8001,9 @@ mod tests {
                     symbol_count: 1_024,
                     edge_count: 4_096,
                     built_ms: 0,
+                    // C-24 (DRIFT-4): default None (additive field; full-build
+                    // path leaves the flag unset).
+                    is_incremental: None,
                 })
             }
             // B-40 (SCHEMA_VERSION 41): FRAMING substate beacons.
@@ -6074,6 +8193,418 @@ mod tests {
                     pid: 12345,
                     exit_code: Some(0),
                     reason: "normal exit".into(),
+                },
+            ),
+            // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
+            SsbActionType::GrcStepEmitted => SsbPayload::GrcStepEmitted(GrcStepEmittedPayload {
+                agent_id: "executor".into(),
+                topic: "task_runner".into(),
+                step_type: "observe".into(),
+                grounding_level: "high".into(),
+                confidence: 0.85,
+                budget_remaining: 5,
+                elapsed_ms: 12,
+            }),
+            SsbActionType::GroundingSweepResult => {
+                SsbPayload::GroundingSweepResult(GroundingSweepResultPayload {
+                    ungrounded: 1,
+                    verify_needed: 0,
+                    grounded: 3,
+                    top_claim: Some("training:placeholder".into()),
+                })
+            }
+            SsbActionType::CsqEvaluated => SsbPayload::CsqEvaluated(CsqEvaluatedPayload {
+                severity: "Warning".into(),
+                guard_present: true,
+                blocked: false,
+                check_count: 2,
+            }),
+            SsbActionType::AuditorRubberStampRejected => SsbPayload::AuditorRubberStampRejected(
+                AuditorRubberStampRejectedPayload {
+                    role: "auditor".into(),
+                    finding_count: 0,
+                    expected_min: 1,
+                },
+            ),
+            SsbActionType::HydeQuery => SsbPayload::HydeQuery(HydeQueryPayload {
+                query_hash: "abc123".into(),
+                hypothesis_len: 128,
+                cache_hit: false,
+                latency_ms: 12,
+            }),
+            SsbActionType::VectorCacheHitRate => {
+                SsbPayload::VectorCacheHitRate(VectorCacheHitRatePayload {
+                    session_id: "test-session".into(),
+                    hits: 4,
+                    misses: 1,
+                    hit_rate_pct: 80.0,
+                })
+            }
+            SsbActionType::QueryTrace => SsbPayload::QueryTrace(QueryTracePayload {
+                query_id: "11111111-2222-3333-4444-555555555555".into(),
+                tier: "STANDARD".into(),
+                stage_count: 9,
+                result_count: 12,
+                total_latency_ms: 245,
+            }),
+            // C-2 (SCHEMA_VERSION 48): orchestration + cosmos + stagnation beacons.
+            SsbActionType::PhaseNodeReady => SsbPayload::PhaseNodeReady(PhaseNodeReadyPayload {
+                phase_id: 7,
+                concept_id: 3,
+                label: "phase-test".into(),
+                depth: 1,
+            }),
+            SsbActionType::StepNodeReady => SsbPayload::StepNodeReady(StepNodeReadyPayload {
+                step_id: 12,
+                phase_id: 7,
+                concept_id: 3,
+                label: "step-test".into(),
+                depth: 2,
+            }),
+            SsbActionType::BabyStepReady => SsbPayload::BabyStepReady(BabyStepReadyPayload {
+                baby_step_id: 42,
+                step_id: 12,
+                phase_id: 7,
+                concept_id: 3,
+                label: "baby-step-test".into(),
+                depth: 3,
+            }),
+            SsbActionType::DagRepairEscalated => SsbPayload::DagRepairEscalated(
+                DagRepairEscalatedPayload {
+                    rounds: 10,
+                    remaining_issues: 2,
+                    last_error: "cycle persists after repair".into(),
+                },
+            ),
+            SsbActionType::AgentStatusChanged => SsbPayload::AgentStatusChanged(
+                AgentStatusChangedPayload {
+                    agent_id: "executor-1".into(),
+                    role: "executor".into(),
+                    state: "spawned".into(),
+                    death_class: None,
+                    timestamp_ms: 1_700_000_000_000,
+                },
+            ),
+            SsbActionType::StagnationSpinningDetected => SsbPayload::StagnationSpinningDetected(
+                StagnationSpinningDetectedPayload {
+                    agent_id: "executor-1".into(),
+                    pattern: "spinning".into(),
+                    iteration: 3,
+                    detail: "step_hash repeated 3 times".into(),
+                },
+            ),
+            SsbActionType::StagnationOscillationDetected => {
+                SsbPayload::StagnationOscillationDetected(
+                    StagnationOscillationDetectedPayload {
+                        agent_id: "executor-1".into(),
+                        pattern: "oscillation".into(),
+                        iteration: 4,
+                        detail: "period-2 A-B-A-B".into(),
+                    },
+                )
+            }
+            SsbActionType::LateralThinkingActivated => SsbPayload::LateralThinkingActivated(
+                LateralThinkingActivatedPayload {
+                    agent_id: "executor-1".into(),
+                    persona: "contrarian".into(),
+                    iteration: 5,
+                    detail: "switched after spinning".into(),
+                },
+            ),
+            SsbActionType::GoalDriftWarning => SsbPayload::GoalDriftWarning(
+                GoalDriftWarningPayload {
+                    agent_id: "executor-1".into(),
+                    drift_score: 0.42,
+                    baby_step_id: 17,
+                    detail: "task drifted from intent".into(),
+                },
+            ),
+            SsbActionType::WatchdogTimeout => SsbPayload::WatchdogTimeout(WatchdogTimeoutPayload {
+                agent_id: "executor-1".into(),
+                elapsed_ms: 30_000,
+                budget_ms: 20_000,
+                detail: "no observable output".into(),
+            }),
+            // C-10 (SCHEMA_VERSION 52) — lateral-thinking + goal-drift Block.
+            SsbActionType::LateralThinkingSucceeded => SsbPayload::LateralThinkingSucceeded(
+                LateralThinkingSucceededPayload {
+                    agent_id: "executor-1".into(),
+                    persona: "hacker".into(),
+                    iteration: 6,
+                    detail: "pattern broken after hacker persona".into(),
+                },
+            ),
+            SsbActionType::LateralThinkingExhausted => SsbPayload::LateralThinkingExhausted(
+                LateralThinkingExhaustedPayload {
+                    agent_id: "executor-1".into(),
+                    personas_tried: 5,
+                    iteration: 10,
+                    detail: "all personas tried; pattern persists".into(),
+                },
+            ),
+            SsbActionType::GoalDriftBlock => SsbPayload::GoalDriftBlock(GoalDriftBlockPayload {
+                agent_id: "executor-1".into(),
+                drift_score: 0.32,
+                baby_step_id: 19,
+                detail: "drift_score below block threshold".into(),
+            }),
+            // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon.
+            SsbActionType::ChangeDecision => SsbPayload::ChangeDecision(ChangeDecisionPayload {
+                decision: "accepted".into(),
+                path: "src/foo.rs".into(),
+                hunk_id: Some("hunk-1".into()),
+                note: None,
+            }),
+            // C-8 (SCHEMA_VERSION 50): search-mode cross-process bridge.
+            SsbActionType::SearchModeChanged => SsbPayload::SearchModeChanged(
+                SearchModeChangedPayload {
+                    mode: "hybrid".into(),
+                    history: vec!["lexical".into(), "hybrid".into()],
+                },
+            ),
+            // C-5 (SCHEMA_VERSION 51): privacy-redaction event.
+            SsbActionType::RedactionApplied => SsbPayload::RedactionApplied(
+                RedactionAppliedPayload {
+                    count: 3,
+                    fields: vec!["task_summary".into(), "escalation_message".into()],
+                    baby_step_id: 17,
+                    ts_ms: 0,
+                },
+            ),
+            // C-13 (SCHEMA_VERSION 53): WIP commit squash completion.
+            SsbActionType::WipSquashComplete => SsbPayload::WipSquashComplete(
+                WipSquashCompletePayload {
+                    wip_count: 7,
+                    squashed: true,
+                    step_id: "step-42".into(),
+                },
+            ),
+            // C-22 (SCHEMA_VERSION 54): feasibility-probe completeness beacons.
+            SsbActionType::AlternativeExplored => SsbPayload::AlternativeExplored(
+                AlternativeExploredPayload {
+                    step_id: "step-c22".into(),
+                    alternative_index: 1,
+                    accepted: true,
+                },
+            ),
+            SsbActionType::FeasibilityEscalated => SsbPayload::FeasibilityEscalated(
+                FeasibilityEscalatedPayload {
+                    reason: "vram_margin_breached".into(),
+                    variant: "resource_margin_breached".into(),
+                    step_id: "step-c22".into(),
+                },
+            ),
+            // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+            SsbActionType::BranchForked => SsbPayload::BranchForked(BranchForkedPayload {
+                branch_name: "feature-x".into(),
+                tip_snap_id: "snap-c23-tip".into(),
+                parent_snap_id: "snap-c23-parent".into(),
+            }),
+            SsbActionType::BranchMerged => SsbPayload::BranchMerged(BranchMergedPayload {
+                winner_name: "feature-x".into(),
+                trunk_snap_id: "snap-c23-trunk".into(),
+                abandoned_names: vec!["experiment-y".into()],
+            }),
+            SsbActionType::BranchClosed => SsbPayload::BranchClosed(BranchClosedPayload {
+                branch_name: "experiment-y".into(),
+                reason: "user-requested".into(),
+            }),
+            // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+            // + background-task beacons.
+            SsbActionType::PlanSkeleton => SsbPayload::PlanSkeleton(PlanSkeletonPayload {
+                plan_id: "plan-c25-test".into(),
+                step_count: 3,
+                concept_class: "Counter".into(),
+                plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                source: PlanSkeletonSource::Llm,
+            }),
+            SsbActionType::CompiledPipelineFired => SsbPayload::CompiledPipelineFired(
+                CompiledPipelineFiredPayload {
+                    pipeline_id: "pl-c25-test".into(),
+                    concept_class: "Counter".into(),
+                    plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                    use_count: 4,
+                },
+            ),
+            SsbActionType::TemplateCrystallized => SsbPayload::TemplateCrystallized(
+                TemplateCrystallizedPayload {
+                    concept_class: "Counter".into(),
+                    plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                    pipeline_id: "pl-c25-test".into(),
+                    threshold_n: 3,
+                },
+            ),
+            SsbActionType::BackgroundTaskStarted => SsbPayload::BackgroundTaskStarted(
+                BackgroundTaskStartedPayload {
+                    task_id: "bg-c25-test".into(),
+                    command_summary: "grep -r foo /large".into(),
+                    soft_timeout_secs: 30,
+                    hard_timeout_secs: 600,
+                },
+            ),
+            SsbActionType::BackgroundTaskComplete => SsbPayload::BackgroundTaskComplete(
+                BackgroundTaskCompletePayload {
+                    task_id: "bg-c25-test".into(),
+                    exit_status: 0,
+                    duration_secs: 12,
+                    auto_detached: false,
+                    timed_out: false,
+                },
+            ),
+            // C-25 audit follow-up (SCHEMA_VERSION 57): missing 6th
+            // compiled-pipeline beacon (WARN-1 in audit-C25.md).
+            SsbActionType::DecompileTriggered => SsbPayload::DecompileTriggered(
+                DecompileTriggeredPayload {
+                    concept_class: "Counter".into(),
+                    plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                    failure_count: 2,
+                    trigger_reason: DecompileTriggerReason::ConsecutiveFailures,
+                },
+            ),
+            // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+            SsbActionType::FutilityDetected => SsbPayload::FutilityDetected(
+                FutilityDetectedPayload {
+                    error_class: "constrained_decode_reject".into(),
+                    consecutive_count: 3,
+                    level: "baby_step".into(),
+                    escalated: true,
+                },
+            ),
+            SsbActionType::FutilityOutputStagnation => SsbPayload::FutilityOutputStagnation(
+                FutilityOutputStagnationPayload {
+                    similarity: 0.95,
+                    threshold: 0.90,
+                    level: "baby_step".into(),
+                    new_persona: Some("hacker".into()),
+                },
+            ),
+            // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+            // audit_id = Uuid::nil() keeps the test fixture inside the entropy
+            // quarantine — see C-15 D7 + DRIFT-11.
+            SsbActionType::WiringEvidence => SsbPayload::WiringEvidence(
+                WiringEvidencePayload {
+                    entrypoint: "crates/cli/src/main.rs::main".into(),
+                    produces_symbols_verified: vec!["DeterminismConfig".into()],
+                    reachable_count: 1,
+                    audit_id: uuid::Uuid::nil(),
+                },
+            ),
+            SsbActionType::WiringViolation => SsbPayload::WiringViolation(
+                WiringViolationPayload {
+                    violation_kind: WiringViolationKind::StubPattern,
+                    file: "crates/orchestrator/src/example.rs".into(),
+                    line: 42,
+                    pattern: "todo!()".into(),
+                    audit_id: uuid::Uuid::nil(),
+                },
+            ),
+            SsbActionType::DeterminismDrift => SsbPayload::DeterminismDrift(
+                DeterminismDriftPayload {
+                    seed: 42,
+                    run_a_hash: "blake3:a".into(),
+                    run_b_hash: "blake3:b".into(),
+                    first_divergence_index: 7,
+                    audit_id: uuid::Uuid::nil(),
+                },
+            ),
+            // C-28 (SCHEMA_VERSION 60): T-1 mutation testing — one row per
+            // surviving mutant. Fixture pins file/line/mutant_kind for the
+            // SQL CHECK roundtrip test (test_typed_payloads).
+            SsbActionType::MutationSurvived => SsbPayload::MutationSurvived(
+                MutationSurvivedPayload {
+                    file: "crates/orchestrator/src/example.rs".into(),
+                    line: 7,
+                    mutant_kind: "replace_+_with_-".into(),
+                },
+            ),
+            // C-29 (SCHEMA_VERSION 61): T-2 IntentPair confirmation +
+            // T-3 metamorphic-relation violation. Both fixtures pin
+            // canonical payload shapes for the test_typed_payloads
+            // roundtrip; MrViolated.counterexample MUST be non-empty
+            // (stub_ban contract).
+            SsbActionType::IntentConfirmed => SsbPayload::IntentConfirmed(
+                IntentConfirmedPayload {
+                    step_id: 1,
+                    pair_count: 3,
+                    confirmed_by: "user".into(),
+                },
+            ),
+            SsbActionType::MrViolated => SsbPayload::MrViolated(MrViolatedPayload {
+                step_id: 1,
+                relation: "inverse".into(),
+                counterexample: "sample_index=0 input_hex=01 encoded_hex=ff decoded_hex=01".into(),
+                sample_size: 1,
+            }),
+            // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode payloads.
+            SsbActionType::SurgicalPlanCreated => SsbPayload::SurgicalPlanCreated(
+                SurgicalPlanCreatedPayload {
+                    task_id: "task_1700000000_c30test".into(),
+                    complexity_class: "simple".into(),
+                    blast_radius_files: 2,
+                    total_loc_estimate: 150,
+                    step_count: 1,
+                    regression_gate_snapshot_hash: "blake3:c30aaaaa".into(),
+                },
+            ),
+            SsbActionType::SurgicalLocWarning => SsbPayload::SurgicalLocWarning(
+                SurgicalLocWarningPayload {
+                    task_id: "task_1700000000_c30test".into(),
+                    total_loc_estimate: 600,
+                    threshold: 500,
+                    mode: "interactive".into(),
+                },
+            ),
+            SsbActionType::OracleCacheHit => SsbPayload::OracleCacheHit(OracleCacheHitPayload {
+                query_hash_hex: "00".repeat(32),
+                source_tier: "t1_authoritative".into(),
+                cached_age_secs: 60,
+            }),
+            SsbActionType::OracleCacheMiss => SsbPayload::OracleCacheMiss(OracleCacheMissPayload {
+                query_hash_hex: "00".repeat(32),
+                confidence: "high".into(),
+            }),
+            SsbActionType::ProjectDetectionSignal => SsbPayload::ProjectDetectionSignal(
+                ProjectDetectionSignalPayload {
+                    signal_name: "cargo_toml".into(),
+                    weight: "required".into(),
+                    fired: true,
+                },
+            ),
+            // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 payloads.
+            SsbActionType::SkeletonGenerated => SsbPayload::SkeletonGenerated(
+                SkeletonGeneratedPayload {
+                    blank_count: 4,
+                    language: "rust".into(),
+                    file_path: "src/lib.rs".into(),
+                },
+            ),
+            SsbActionType::SkeletonFlushed => SsbPayload::SkeletonFlushed(
+                SkeletonFlushedPayload {
+                    path: "src/lib.rs".into(),
+                    completeness_ratio: 1.0,
+                },
+            ),
+            SsbActionType::MiniCriticVerdict => SsbPayload::MiniCriticVerdict(
+                MiniCriticVerdictPayload {
+                    blank_id: 1,
+                    verdict: "pass".into(),
+                    reason: "ok".into(),
+                    language: "rust".into(),
+                },
+            ),
+            SsbActionType::StructuralRetryStageAttempt => SsbPayload::StructuralRetryStageAttempt(
+                StructuralRetryStageAttemptPayload {
+                    blank_id: 1,
+                    stage: "template".into(),
+                    attempt: 1,
+                    outcome: "converged".into(),
+                },
+            ),
+            SsbActionType::BridgeFileGenerated => SsbPayload::BridgeFileGenerated(
+                BridgeFileGeneratedPayload {
+                    kind: "mod_rs_aggregator".into(),
+                    path: "src/mod.rs".into(),
+                    module_count: 3,
                 },
             ),
         };
@@ -7230,6 +9761,7 @@ mod tests {
                 batches_total: Some(4),
                 files_processed: 100,
                 last_checkpoint_at: 1_700_000_000,
+                batch_duration_ms: Some(250),
             }),
             SsbPayload::IndexResume(IndexResumePayload {
                 project_id: "abc123def4567890".into(),
@@ -7258,6 +9790,11 @@ mod tests {
                 symbol_count: 1234,
                 edge_count: 5678,
                 built_ms: 1_700_000_000_000,
+                // C-24 (DRIFT-4): exercise the additive Option<bool> field
+                // explicitly in the determinism vector so rmp-serde encoding
+                // round-trips Some(true) too (the field is skipped when
+                // None per #[serde(skip_serializing_if]).
+                is_incremental: Some(true),
             }),
             // B-40 (SCHEMA_VERSION 41) — 5 FRAMING substate beacons.
             SsbPayload::IdeaFramingStarted(IdeaFramingStartedPayload {
@@ -7412,6 +9949,338 @@ mod tests {
                 exit_code: Some(0),
                 reason: "normal exit".into(),
             }),
+            // C-1 (SCHEMA_VERSION 47) — 7 knowledge + reasoning producer payloads.
+            SsbPayload::GrcStepEmitted(GrcStepEmittedPayload {
+                agent_id: "executor".into(),
+                topic: "task_runner".into(),
+                step_type: "observe".into(),
+                grounding_level: "high".into(),
+                confidence: 0.85,
+                budget_remaining: 5,
+                elapsed_ms: 12,
+            }),
+            SsbPayload::GroundingSweepResult(GroundingSweepResultPayload {
+                ungrounded: 1,
+                verify_needed: 0,
+                grounded: 3,
+                top_claim: Some("training:placeholder".into()),
+            }),
+            SsbPayload::CsqEvaluated(CsqEvaluatedPayload {
+                severity: "Critical".into(),
+                guard_present: false,
+                blocked: true,
+                check_count: 3,
+            }),
+            SsbPayload::AuditorRubberStampRejected(AuditorRubberStampRejectedPayload {
+                role: "auditor".into(),
+                finding_count: 0,
+                expected_min: 1,
+            }),
+            SsbPayload::HydeQuery(HydeQueryPayload {
+                query_hash: "abc123".into(),
+                hypothesis_len: 128,
+                cache_hit: false,
+                latency_ms: 12,
+            }),
+            SsbPayload::VectorCacheHitRate(VectorCacheHitRatePayload {
+                session_id: "test-session".into(),
+                hits: 7,
+                misses: 3,
+                hit_rate_pct: 70.0,
+            }),
+            SsbPayload::QueryTrace(QueryTracePayload {
+                query_id: "11111111-2222-3333-4444-555555555555".into(),
+                tier: "STANDARD".into(),
+                stage_count: 9,
+                result_count: 12,
+                total_latency_ms: 245,
+            }),
+            // C-2 (SCHEMA_VERSION 48) — 10 orchestration + cosmos + stagnation payloads.
+            SsbPayload::PhaseNodeReady(PhaseNodeReadyPayload {
+                phase_id: 7,
+                concept_id: 3,
+                label: "phase-test".into(),
+                depth: 1,
+            }),
+            SsbPayload::StepNodeReady(StepNodeReadyPayload {
+                step_id: 12,
+                phase_id: 7,
+                concept_id: 3,
+                label: "step-test".into(),
+                depth: 2,
+            }),
+            SsbPayload::BabyStepReady(BabyStepReadyPayload {
+                baby_step_id: 42,
+                step_id: 12,
+                phase_id: 7,
+                concept_id: 3,
+                label: "baby-step-test".into(),
+                depth: 3,
+            }),
+            SsbPayload::DagRepairEscalated(DagRepairEscalatedPayload {
+                rounds: 10,
+                remaining_issues: 2,
+                last_error: "cycle persists after repair".into(),
+            }),
+            SsbPayload::AgentStatusChanged(AgentStatusChangedPayload {
+                agent_id: "executor-1".into(),
+                role: "executor".into(),
+                state: "spawned".into(),
+                death_class: None,
+                timestamp_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::StagnationSpinningDetected(StagnationSpinningDetectedPayload {
+                agent_id: "executor-1".into(),
+                pattern: "spinning".into(),
+                iteration: 3,
+                detail: "step_hash repeated 3 times".into(),
+            }),
+            SsbPayload::StagnationOscillationDetected(StagnationOscillationDetectedPayload {
+                agent_id: "executor-1".into(),
+                pattern: "oscillation".into(),
+                iteration: 4,
+                detail: "period-2 A-B-A-B".into(),
+            }),
+            SsbPayload::LateralThinkingActivated(LateralThinkingActivatedPayload {
+                agent_id: "executor-1".into(),
+                persona: "contrarian".into(),
+                iteration: 5,
+                detail: "switched after spinning".into(),
+            }),
+            SsbPayload::GoalDriftWarning(GoalDriftWarningPayload {
+                agent_id: "executor-1".into(),
+                drift_score: 0.42,
+                baby_step_id: 17,
+                detail: "task drifted from intent".into(),
+            }),
+            SsbPayload::WatchdogTimeout(WatchdogTimeoutPayload {
+                agent_id: "executor-1".into(),
+                elapsed_ms: 30_000,
+                budget_ms: 20_000,
+                detail: "no observable output".into(),
+            }),
+            // C-7 (SCHEMA_VERSION 49) — reviewer verdict beacon.
+            SsbPayload::ChangeDecision(ChangeDecisionPayload {
+                decision: "accepted".into(),
+                path: "src/foo.rs".into(),
+                hunk_id: Some("hunk-1".into()),
+                note: None,
+            }),
+            // C-8 (SCHEMA_VERSION 50) — search-mode cross-process bridge.
+            SsbPayload::SearchModeChanged(SearchModeChangedPayload {
+                mode: "hybrid".into(),
+                history: vec!["lexical".into(), "hybrid".into()],
+            }),
+            // C-5 (SCHEMA_VERSION 51) — privacy-redaction event.
+            SsbPayload::RedactionApplied(RedactionAppliedPayload {
+                count: 3,
+                fields: vec!["task_summary".into(), "escalation_message".into()],
+                baby_step_id: 17,
+                ts_ms: 0,
+            }),
+            // C-10 (SCHEMA_VERSION 52) — lateral-thinking + goal-drift Block.
+            SsbPayload::LateralThinkingSucceeded(LateralThinkingSucceededPayload {
+                agent_id: "executor-1".into(),
+                persona: "hacker".into(),
+                iteration: 6,
+                detail: "pattern broken after hacker persona".into(),
+            }),
+            SsbPayload::LateralThinkingExhausted(LateralThinkingExhaustedPayload {
+                agent_id: "executor-1".into(),
+                personas_tried: 5,
+                iteration: 10,
+                detail: "all personas tried; pattern persists".into(),
+            }),
+            SsbPayload::GoalDriftBlock(GoalDriftBlockPayload {
+                agent_id: "executor-1".into(),
+                drift_score: 0.32,
+                baby_step_id: 19,
+                detail: "drift_score below block threshold".into(),
+            }),
+            SsbPayload::WipSquashComplete(WipSquashCompletePayload {
+                wip_count: 7,
+                squashed: true,
+                step_id: "step-42".into(),
+            }),
+            SsbPayload::AlternativeExplored(AlternativeExploredPayload {
+                step_id: "step-c22".into(),
+                alternative_index: 1,
+                accepted: true,
+            }),
+            SsbPayload::FeasibilityEscalated(FeasibilityEscalatedPayload {
+                reason: "vram_margin_breached".into(),
+                variant: "resource_margin_breached".into(),
+                step_id: "step-c22".into(),
+            }),
+            // C-23 (SCHEMA_VERSION 55): SessionDag branch-UI beacons.
+            SsbPayload::BranchForked(BranchForkedPayload {
+                branch_name: "feature-x".into(),
+                tip_snap_id: "snap-c23-tip".into(),
+                parent_snap_id: "snap-c23-parent".into(),
+            }),
+            SsbPayload::BranchMerged(BranchMergedPayload {
+                winner_name: "feature-x".into(),
+                trunk_snap_id: "snap-c23-trunk".into(),
+                abandoned_names: vec!["experiment-y".into()],
+            }),
+            SsbPayload::BranchClosed(BranchClosedPayload {
+                branch_name: "experiment-y".into(),
+                reason: "user-requested".into(),
+            }),
+            // C-25 (SCHEMA_VERSION 56): compiled-pipeline + template-crystallizer
+            // + background-task beacons.
+            SsbPayload::PlanSkeleton(PlanSkeletonPayload {
+                plan_id: "plan-c25-test".into(),
+                step_count: 3,
+                concept_class: "Counter".into(),
+                plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                source: PlanSkeletonSource::Llm,
+            }),
+            SsbPayload::CompiledPipelineFired(CompiledPipelineFiredPayload {
+                pipeline_id: "pl-c25-test".into(),
+                concept_class: "Counter".into(),
+                plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                use_count: 4,
+            }),
+            SsbPayload::TemplateCrystallized(TemplateCrystallizedPayload {
+                concept_class: "Counter".into(),
+                plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                pipeline_id: "pl-c25-test".into(),
+                threshold_n: 3,
+            }),
+            SsbPayload::BackgroundTaskStarted(BackgroundTaskStartedPayload {
+                task_id: "bg-c25-test".into(),
+                command_summary: "grep -r foo /large".into(),
+                soft_timeout_secs: 30,
+                hard_timeout_secs: 600,
+            }),
+            SsbPayload::BackgroundTaskComplete(BackgroundTaskCompletePayload {
+                task_id: "bg-c25-test".into(),
+                exit_status: 0,
+                duration_secs: 12,
+                auto_detached: false,
+                timed_out: false,
+            }),
+            // C-25 audit follow-up (SCHEMA_VERSION 57): missing 6th
+            // compiled-pipeline beacon (WARN-1 in audit-C25.md).
+            SsbPayload::DecompileTriggered(DecompileTriggeredPayload {
+                concept_class: "Counter".into(),
+                plan_skeleton_hash: 0xC25_AAAA_BBBB_CCCC,
+                failure_count: 2,
+                trigger_reason: DecompileTriggerReason::ConsecutiveFailures,
+            }),
+            // C-26 (SCHEMA_VERSION 58): constrained-decoding + futility primitives.
+            SsbPayload::FutilityDetected(FutilityDetectedPayload {
+                error_class: "constrained_decode_reject".into(),
+                consecutive_count: 3,
+                level: "baby_step".into(),
+                escalated: true,
+            }),
+            SsbPayload::FutilityOutputStagnation(FutilityOutputStagnationPayload {
+                similarity: 0.95,
+                threshold: 0.90,
+                level: "baby_step".into(),
+                new_persona: Some("hacker".into()),
+            }),
+            // C-27 (SCHEMA_VERSION 59): Testing-trust T(-1) + T-0 beacons.
+            SsbPayload::WiringEvidence(WiringEvidencePayload {
+                entrypoint: "crates/cli/src/main.rs::main".into(),
+                produces_symbols_verified: vec![
+                    "DeterminismConfig".into(),
+                    "WiringContract".into(),
+                ],
+                reachable_count: 2,
+                audit_id: uuid::Uuid::nil(),
+            }),
+            SsbPayload::WiringViolation(WiringViolationPayload {
+                violation_kind: WiringViolationKind::StubPattern,
+                file: "crates/orchestrator/src/example.rs".into(),
+                line: 99,
+                pattern: "todo!()".into(),
+                audit_id: uuid::Uuid::nil(),
+            }),
+            SsbPayload::DeterminismDrift(DeterminismDriftPayload {
+                seed: 42,
+                run_a_hash: "blake3:aaaa".into(),
+                run_b_hash: "blake3:bbbb".into(),
+                first_divergence_index: 13,
+                audit_id: uuid::Uuid::nil(),
+            }),
+            // C-28 (SCHEMA_VERSION 60): T-1 mutation testing.
+            SsbPayload::MutationSurvived(MutationSurvivedPayload {
+                file: "crates/orchestrator/src/example.rs".into(),
+                line: 7,
+                mutant_kind: "replace_+_with_-".into(),
+            }),
+            // C-29 (SCHEMA_VERSION 61): T-2 IntentPair + T-3 Metamorphic.
+            SsbPayload::IntentConfirmed(IntentConfirmedPayload {
+                step_id: 1,
+                pair_count: 3,
+                confirmed_by: "user".into(),
+            }),
+            SsbPayload::MrViolated(MrViolatedPayload {
+                step_id: 1,
+                relation: "inverse".into(),
+                counterexample: "sample_index=0 input_hex=01 encoded_hex=ff decoded_hex=01"
+                    .into(),
+                sample_size: 1,
+            }),
+            // C-30 (SCHEMA_VERSION 62): Surgical Mode + Oracle Mode payloads.
+            SsbPayload::SurgicalPlanCreated(SurgicalPlanCreatedPayload {
+                task_id: "task_1700000000_c30test".into(),
+                complexity_class: "simple".into(),
+                blast_radius_files: 2,
+                total_loc_estimate: 150,
+                step_count: 1,
+                regression_gate_snapshot_hash: "blake3:c30aaaaa".into(),
+            }),
+            SsbPayload::SurgicalLocWarning(SurgicalLocWarningPayload {
+                task_id: "task_1700000000_c30test".into(),
+                total_loc_estimate: 600,
+                threshold: 500,
+                mode: "interactive".into(),
+            }),
+            SsbPayload::OracleCacheHit(OracleCacheHitPayload {
+                query_hash_hex: "00".repeat(32),
+                source_tier: "t1_authoritative".into(),
+                cached_age_secs: 60,
+            }),
+            SsbPayload::OracleCacheMiss(OracleCacheMissPayload {
+                query_hash_hex: "00".repeat(32),
+                confidence: "high".into(),
+            }),
+            SsbPayload::ProjectDetectionSignal(ProjectDetectionSignalPayload {
+                signal_name: "cargo_toml".into(),
+                weight: "required".into(),
+                fired: true,
+            }),
+            // C-32 (SCHEMA_VERSION 63): Code-Completeness Layer 2 payloads.
+            SsbPayload::SkeletonGenerated(SkeletonGeneratedPayload {
+                blank_count: 4,
+                language: "rust".into(),
+                file_path: "src/lib.rs".into(),
+            }),
+            SsbPayload::SkeletonFlushed(SkeletonFlushedPayload {
+                path: "src/lib.rs".into(),
+                completeness_ratio: 1.0,
+            }),
+            SsbPayload::MiniCriticVerdict(MiniCriticVerdictPayload {
+                blank_id: 1,
+                verdict: "pass".into(),
+                reason: "ok".into(),
+                language: "rust".into(),
+            }),
+            SsbPayload::StructuralRetryStageAttempt(StructuralRetryStageAttemptPayload {
+                blank_id: 1,
+                stage: "template".into(),
+                attempt: 1,
+                outcome: "converged".into(),
+            }),
+            SsbPayload::BridgeFileGenerated(BridgeFileGeneratedPayload {
+                kind: "mod_rs_aggregator".into(),
+                path: "src/mod.rs".into(),
+                module_count: 3,
+            }),
         ]
     }
 
@@ -7423,8 +10292,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            83,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade) + 4 B-37C (RuntimeFallback/RuntimeHealthChanged/CliSubprocessSpawned/CliSubprocessKilled)",
+            136,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade) + 4 B-37C (RuntimeFallback/RuntimeHealthChanged/CliSubprocessSpawned/CliSubprocessKilled) + 7 C-1 (GrcStepEmitted/GroundingSweepResult/CsqEvaluated/AuditorRubberStampRejected/HydeQuery/VectorCacheHitRate/QueryTrace) + 10 C-2 (PhaseNodeReady/StepNodeReady/BabyStepReady/DagRepairEscalated/AgentStatusChanged/StagnationSpinningDetected/StagnationOscillationDetected/LateralThinkingActivated/GoalDriftWarning/WatchdogTimeout) + 1 C-7 (ChangeDecision) + 1 C-8 (SearchModeChanged) + 1 C-5 (RedactionApplied) + 3 C-10 (LateralThinkingSucceeded/LateralThinkingExhausted/GoalDriftBlock) + 1 C-13 (WipSquashComplete) + 2 C-22 (AlternativeExplored/FeasibilityEscalated) + 3 C-23 (BranchForked/BranchMerged/BranchClosed) + 5 C-25 (PlanSkeleton/CompiledPipelineFired/TemplateCrystallized/BackgroundTaskStarted/BackgroundTaskComplete) + 1 C-25-audit (DecompileTriggered) + 2 C-26 (FutilityDetected/FutilityOutputStagnation) + 3 C-27 (WiringEvidence/WiringViolation/DeterminismDrift) + 1 C-28 (MutationSurvived) + 2 C-29 (IntentConfirmed/MrViolated) + 5 C-30 (SurgicalPlanCreated/SurgicalLocWarning/OracleCacheHit/OracleCacheMiss/ProjectDetectionSignal) + 5 C-32 (SkeletonGenerated/SkeletonFlushed/MiniCriticVerdict/StructuralRetryStageAttempt/BridgeFileGenerated)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {
@@ -7537,6 +10406,124 @@ mod tests {
             .await
             .expect("empty vecs must be accepted");
         assert!(seq > 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // C-18 phase-3B backfill — payload-mismatch + write-sequence determinism
+    // ---------------------------------------------------------------------
+
+    /// `validate_payload_matches_action_type` (ssb.rs:1660) rejects a write
+    /// whose declared `action_type` does not match the actual payload variant
+    /// — already covered for FileWrite/ToolResult at ssb.rs:7298.
+    ///
+    /// This C-18 addition locks the CheckpointPayload -> FileWritePayload
+    /// direction (phase-3B MISSING). Writing a Checkpoint variant under the
+    /// `FileWrite` action_type must yield `Err(SsbError::ActionTypeMismatch)`
+    /// — not a panic, not an Ok.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_payload_mismatch_checkpoint_as_file_write() {
+        let dir = TempDir::new().expect("tempdir");
+        let ssb = Ssb::new(test_config(&dir), test_clock()).expect("ssb init");
+
+        // 1. Build a CheckpointPayload and serialise it. Field values are
+        //    irrelevant — only the variant discriminant matters for the
+        //    mismatch check.
+        let checkpoint_payload = SsbPayload::Checkpoint(CheckpointPayload {
+            agent_state_hash: "h".into(),
+            grc_history_hash: "g".into(),
+            agent_id: "a".into(),
+            step_index: 0,
+            file_sizes: vec![],
+        });
+        let payload_bytes =
+            rmp_serde::to_vec_named(&checkpoint_payload).expect("serialize checkpoint");
+
+        // 2. Attempt to write the bytes under the wrong action_type.
+        let result = ssb
+            .write(SsbWriteRequest {
+                action_type: SsbActionType::FileWrite, // <- mismatch with Checkpoint payload
+                agent_id: "agent-mismatch".into(),
+                superstep: 0,
+                payload: payload_bytes,
+                files: vec![],
+            })
+            .await;
+
+        // 3. Assert Err(ActionTypeMismatch) with the right declared/actual.
+        assert!(result.is_err(), "action_type mismatch must be rejected");
+        match result.expect_err("just asserted is_err") {
+            SsbError::ActionTypeMismatch { declared, actual } => {
+                assert_eq!(declared, "file_write");
+                assert_eq!(actual, "checkpoint");
+            }
+            other => panic!("expected SsbError::ActionTypeMismatch; got {other}"),
+        }
+    }
+
+    /// Sequence-counter determinism contract (phase-3B MISSING).
+    ///
+    /// With a `SeededClock` (fixed epoch) and 5 sequential writes, the
+    /// returned `seq` values must be exactly 1..=5 (monotonic, starting at 1).
+    /// On a second run against a fresh in-memory database with the same
+    /// `SeededClock`, the persisted payload bytes for each row must be
+    /// byte-identical to the first run — locking out clock-derived
+    /// non-determinism in the encoded payload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_write_sequence_determinism() {
+        fn five_writes_payload(i: u32) -> SsbPayload {
+            SsbPayload::FileWrite(FileWritePayload {
+                path: format!("seqdet_{i}.rs"),
+                size_bytes: 16,
+                hash: format!("h{i}"),
+            })
+        }
+
+        async fn run_once() -> (Vec<i64>, Vec<Vec<u8>>) {
+            let dir = TempDir::new().expect("tempdir");
+            let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
+            let ssb = Ssb::new(test_config(&dir), Arc::clone(&clock))
+                .expect("ssb init for determinism run");
+
+            let mut seqs = Vec::with_capacity(5);
+            for i in 1u32..=5 {
+                let seq = ssb
+                    .write_payload(
+                        "agent-determinism",
+                        0,
+                        five_writes_payload(i),
+                        vec![],
+                    )
+                    .await
+                    .expect("write_payload must succeed for determinism run");
+                seqs.push(seq);
+            }
+
+            // Read back the payload bytes for each row in seq order.
+            // The async write path completes the SQL INSERT before
+            // `write_payload` returns the seq (see Ssb::write_loop), so a
+            // subsequent SsbReader::query_by_seq is guaranteed to find it.
+            // `SsbEntry.payload` is `Arc<[u8]>` — convert to Vec<u8> so the
+            // two run results can be compared element-wise without exposing
+            // an Arc pointer-equality false-positive.
+            let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(5);
+            for seq in &seqs {
+                let entry = SsbReader::query_by_seq(&ssb, *seq)
+                    .expect("query_by_seq must succeed for determinism run")
+                    .expect("row must exist after write");
+                payloads.push(entry.payload.to_vec());
+            }
+            (seqs, payloads)
+        }
+
+        let (seqs_a, payloads_a) = run_once().await;
+        let (seqs_b, payloads_b) = run_once().await;
+
+        assert_eq!(seqs_a, vec![1i64, 2, 3, 4, 5], "first run seqs must be 1..=5");
+        assert_eq!(seqs_b, vec![1i64, 2, 3, 4, 5], "second run seqs must be 1..=5");
+        assert_eq!(
+            payloads_a, payloads_b,
+            "payload bytes must be byte-identical across two SeededClock runs"
+        );
     }
 
     mod proptest_payloads {
@@ -7777,14 +10764,15 @@ mod tests {
                         })
                     ),
                 // B-31.5 (SCHEMA_VERSION 39) — 5 deferred B-31 SSB variants.
-                ("[a-f0-9]{16}", 0u32..1000, any::<Option<u32>>(), 0u64..100_000, 0i64..2_000_000_000)
-                    .prop_map(|(project_id, batches_processed, batches_total, files_processed, last_checkpoint_at)|
+                ("[a-f0-9]{16}", 0u32..1000, any::<Option<u32>>(), 0u64..100_000, 0i64..2_000_000_000, any::<Option<u64>>())
+                    .prop_map(|(project_id, batches_processed, batches_total, files_processed, last_checkpoint_at, batch_duration_ms)|
                         SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
                             project_id,
                             batches_processed,
                             batches_total,
                             files_processed,
                             last_checkpoint_at,
+                            batch_duration_ms,
                         })
                     ),
                 ("[a-f0-9]{16}", 0u32..1000, 0u64..100_000)

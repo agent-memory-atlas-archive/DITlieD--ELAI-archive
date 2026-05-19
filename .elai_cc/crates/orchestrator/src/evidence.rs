@@ -148,6 +148,21 @@ pub struct TransitionContext {
     /// the streak; callers must zero `streak_count` before invoking the
     /// gate when this is true.
     pub is_plan_revision: bool,
+
+    // C-29: Testing-trust Tier T-2 IntentPair gate (PLANNING -> TESTING_FIRST).
+    // Both fields default-degrade so the new gate never blocks transitions
+    // whose caller has not yet wired the IntentPair data into context. See
+    // workflow/reasoning/C-29-decisions.md.
+    /// C-29: The active BabyStep's `IntentPairSet`. `None` falls through
+    /// to gate-passes (back-compat with existing callers that don't yet
+    /// populate the field). The `IntentPairsGate` only blocks when the
+    /// caller has explicitly handed a set + that set has fewer than
+    /// `min_intent_pairs` populated entries.
+    pub intent_pairs: Option<crate::intent_pair::IntentPairSet>,
+    /// C-29: Threshold pulled from `[testing.intent].min_pairs` via
+    /// `IntentConfig::default()` (3). Used by `IntentPairsGate::check`.
+    /// `0` disables the gate (consistent with `IntentConfig` semantics).
+    pub min_intent_pairs: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -565,10 +580,65 @@ impl EvidenceGate for DkgChangelogGate {
 }
 
 // ---------------------------------------------------------------------------
+// C-29: IntentPairsGate (PLANNING -> TESTING_FIRST, in addition to
+// GroundingSweepGate). Blocks when `intent_pairs.len() < min_intent_pairs`.
+// Default-degrades when `intent_pairs.is_none()` so existing transition
+// sites that have not been threaded yet keep working — DRIFT-C29-3.
+// ---------------------------------------------------------------------------
+
+/// PLANNING -> TESTING_FIRST: require at least `IntentConfig.min_pairs`
+/// IntentPairs on the active BabyStep. Both `GroundingSweepGate` and this
+/// gate fire for PLANNING -> TESTING_FIRST; both must pass for the
+/// transition to proceed (`check_transition` short-circuits on the first
+/// failure).
+///
+/// Spec ref: docs/specs/guide/testing-trust-design.txt L546-552 +
+/// L567 ("require SSB INTENT_CONFIRMED with at least 3 pairs per baby
+/// step"). See workflow/reasoning/C-29-decisions.md DECISION-D2.
+pub struct IntentPairsGate;
+
+impl EvidenceGate for IntentPairsGate {
+    fn name(&self) -> &'static str {
+        "intent_pairs"
+    }
+
+    fn transition(&self) -> (FsmState, FsmState) {
+        (FsmState::Planning, FsmState::TestingFirst)
+    }
+
+    fn check(&self, ctx: &TransitionContext) -> Result<(), EvidenceError> {
+        // Threshold of 0 disables the gate (IntentConfig semantics).
+        if ctx.min_intent_pairs == 0 {
+            return Ok(());
+        }
+        // Back-compat: callers that have not threaded intent_pairs yet
+        // pass-through. The dashboard + autonomous_gate populate this
+        // field explicitly. (See DRIFT-C29-3 + IMPLICIT-DEP-C29-2.)
+        let Some(pairs) = ctx.intent_pairs.as_ref() else {
+            return Ok(());
+        };
+        let count = pairs.len();
+        if count < ctx.min_intent_pairs {
+            return Err(EvidenceError {
+                gate_name: self.name(),
+                missing_artifacts: vec!["intent_pairs_below_threshold".into()],
+                suggestion: format!(
+                    "Need >= {} IntentPairs per BabyStepSpec; found {}.",
+                    ctx.min_intent_pairs, count
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Gate registry: maps transitions to their required gates
 // ---------------------------------------------------------------------------
 
-/// All 7 evidence gates. Caller looks up the gate(s) for a transition.
+/// All evidence gates. Caller looks up the gate(s) for a transition.
+/// C-29 appends `IntentPairsGate` (PLANNING -> TESTING_FIRST). The
+/// 7 historical gates remain unchanged.
 pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
     vec![
         Box::new(KnowledgeReadinessGate),
@@ -578,6 +648,9 @@ pub fn all_gates() -> Vec<Box<dyn EvidenceGate>> {
         Box::new(ReplanFastTrackGate),
         Box::new(ZeroBlocksGate),
         Box::new(DkgChangelogGate),
+        // C-29: T-2 IntentPair gate. Order-stable append so existing
+        // gate-evaluation tests that index into `all_gates()` keep working.
+        Box::new(IntentPairsGate),
     ]
 }
 

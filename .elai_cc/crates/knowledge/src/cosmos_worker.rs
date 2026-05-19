@@ -34,10 +34,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, warn};
@@ -101,6 +104,17 @@ impl RefreshCadence {
 
     /// Decay threshold: when `age > 3 * interval`, an artifact is DECAYED.
     /// Serving a decayed artifact MUST emit a WARN per contract.
+    ///
+    /// **Deliberate 3x vs plan's 2x divergence** (C-16 DECISION-I).
+    ///
+    /// The C-16 plan §8 prose mentions "age > 2x cadence = DECAYED" but B-42
+    /// shipped 3x. The 3x factor provides a grace buffer before SHADOW-serving
+    /// stops — lowering to 2x would shrink the safe-stale window and risk
+    /// falsely marking artifacts DECAYED during a single missed refresh
+    /// cycle. The 3x value is documented in
+    /// `workflow/reasoning/C-16-decisions.md` and pinned by
+    /// `contracts/tests/cosmos_decay_contract.rs`. Changing this value is a
+    /// behavioral regression that requires its own audit cycle.
     pub fn decay_secs(&self) -> i64 {
         self.interval_secs() * 3
     }
@@ -292,15 +306,12 @@ pub trait CosmosClock: Send + Sync {
     fn now_secs(&self) -> i64;
 }
 
-/// Default system clock — wall time via `SystemTime`.
+/// Default system clock — delegates to `elai_core::OsClock` (C-15).
 pub struct SystemCosmosClock;
 
 impl CosmosClock for SystemCosmosClock {
     fn now_secs(&self) -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+        i64::try_from(OsClock.now_secs()).unwrap_or(i64::MAX)
     }
 }
 
@@ -309,13 +320,83 @@ impl CosmosClock for SystemCosmosClock {
 /// `MockResearch` that returns a fixed Markdown body.
 ///
 /// Returns `(markdown_body, source_tier_string)`.
+///
+/// # Async-native (C-16 BLOCK-1 fix)
+///
+/// The trait is async-native, returning `Pin<Box<dyn Future>>` so it stays
+/// `dyn`-compatible (Rust 1.75+ native `async fn` in trait is not yet
+/// object-safe without manual boxing). Production impls (e.g.
+/// `HttpCosmosResearchDispatcher`) call into already-async HTTP clients
+/// directly — no nested `Runtime::block_on()` bridge.
 pub trait ResearchDispatcher: Send + Sync {
-    fn run(
-        &self,
-        query: &str,
-        min_source_tier: &str,
+    fn run<'a>(
+        &'a self,
+        query: &'a str,
+        min_source_tier: &'a str,
         max_size_bytes: u64,
-    ) -> Result<(String, String), CosmosError>;
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), CosmosError>> + Send + 'a>>;
+}
+
+/// C-16 (DECISION-E + BLOCK-1 fix): async-native SSB emitter callback.
+/// Production wires an `Arc<Ssb>` adapter (`orchestrator::SsbEmitterAdapter`)
+/// that translates these calls into typed `SsbPayload::Cosmos*` writes via
+/// the already-async `Ssb::write_payload`. Tests pass `None` and the worker
+/// is a no-op on the emission side.
+///
+/// All three methods return `Pin<Box<dyn Future>>` so the trait stays
+/// `dyn`-compatible. They are best-effort — implementations MUST swallow
+/// transport errors via `tracing::warn!` and never panic.
+pub trait SsbEmitter: Send + Sync {
+    /// Emitted ONCE per `tick()` invocation, BEFORE the manifest loop.
+    /// `queued` is the stale+decayed count (per C-16 DECISION-F), `total`
+    /// is the full manifest size.
+    fn emit_refresh_started<'a>(
+        &'a self,
+        queued: u32,
+        total: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Emitted on `refresh_one(...) -> Ok(RefreshOutcome { changed: true, .. })`.
+    /// Real blake3 / body_bytes / latency_ms per C-16 DECISION-H.
+    fn emit_artifact_updated<'a>(
+        &'a self,
+        name: &'a str,
+        blake3_hash: &'a str,
+        body_bytes: u32,
+        latency_ms: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Emitted from the cosmos refresh tick when an artifact is observed to
+    /// be Decayed at serve time, in addition to the tracing::warn channel.
+    ///
+    /// Note: The synchronous `cosmos_get()` does NOT call this emitter (would
+    /// require sync->async bridging via nested runtime which panics — the
+    /// C-16 BLOCK-1 root cause). Decayed emission now happens from async
+    /// call sites only (cosmos tick scheduler, task_runner helper, Tauri
+    /// command). `cosmos_get` still emits `tracing::warn!` so the
+    /// observability channel survives in sync contexts.
+    fn emit_artifact_decayed<'a>(
+        &'a self,
+        name: &'a str,
+        age_secs: u64,
+        cadence: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+/// C-16 (DECISION-H): outcome of a single `refresh_one` invocation, surfaced
+/// to callers so they can emit SSB rows with real blake3 / size / latency
+/// instead of placeholder zeros (DRIFT-H).
+#[derive(Debug, Clone)]
+pub struct RefreshOutcome {
+    /// True iff a new body was written (content-changed). False on
+    /// idempotent re-research (blake3 matched previous).
+    pub changed: bool,
+    /// blake3 hash of the (potentially unchanged) body.
+    pub blake3: String,
+    /// Size of the body in bytes (post-truncation).
+    pub body_bytes: u32,
+    /// Wall-clock latency of the research+write path in milliseconds.
+    pub latency_ms: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -333,15 +414,28 @@ pub struct CosmosWorker {
     manifest: CosmosManifest,
     clock: Arc<dyn CosmosClock>,
     research: Arc<dyn ResearchDispatcher>,
+    /// C-16 (DECISION-E): optional SSB emitter. `None` for tests + the
+    /// standalone read-only dashboard snapshot path; `Some` in production
+    /// after `with_ssb_emitter(...)` wiring in `cli::live_cli`.
+    ssb_emitter: Option<Arc<dyn SsbEmitter>>,
 }
 
 /// Summary of one `tick()` invocation.
+///
+/// C-16 (DECISION-H): the `outcomes` field carries per-refreshed-artifact
+/// [`RefreshOutcome`] records (blake3 / size / latency) so the external
+/// SSB emitter can populate `CosmosArtifactUpdated` rows with real data
+/// instead of zeros. `refreshed` retains the name-only list for backward
+/// compat; entries in `outcomes` are guaranteed to align 1:1 by index.
 #[derive(Debug, Clone, Default)]
 pub struct TickReport {
     pub checked: usize,
     pub refreshed: Vec<String>,
     pub unchanged: Vec<String>,
     pub failed: Vec<(String, String)>,
+    /// C-16: per-refreshed-artifact outcome with blake3/size/latency. Aligned
+    /// 1:1 with `refreshed` by index.
+    pub outcomes: Vec<RefreshOutcome>,
 }
 
 impl CosmosWorker {
@@ -360,6 +454,7 @@ impl CosmosWorker {
             manifest,
             clock,
             research,
+            ssb_emitter: None,
         })
     }
 
@@ -381,7 +476,47 @@ impl CosmosWorker {
             manifest,
             clock,
             research,
+            ssb_emitter: None,
         }
+    }
+
+    /// C-16 (DECISION-E): attach a sync SSB emitter. Builder-style so the
+    /// existing `new(...)` signature stays backward-compatible. When None
+    /// (the default), all `emit_*` calls are skipped — tracing remains the
+    /// observability channel. When Some, both the tracing path AND the SSB
+    /// emitter fire (additive per DECISION-J).
+    pub fn with_ssb_emitter(mut self, emitter: Arc<dyn SsbEmitter>) -> Self {
+        self.ssb_emitter = Some(emitter);
+        self
+    }
+
+    /// C-16 (DECISION-F): count of artifacts that are NOT Fresh — i.e. the
+    /// number `tick()` would queue for re-research. Used by external SSB
+    /// emitters to populate `CosmosRefreshStartedPayload.queued` with the
+    /// actual stale+decayed+missing count (DRIFT-F), not the manifest size.
+    ///
+    /// Counts:
+    /// - Stale artifacts (age >= interval, age < decay)
+    /// - Decayed artifacts (age >= decay)
+    /// - Missing artifacts (no meta on disk)
+    ///
+    /// Read failures (corrupt meta) are counted as due (the loop will try
+    /// to refresh them).
+    pub fn count_due(&self) -> usize {
+        let now = self.clock.now_secs();
+        let mut due = 0usize;
+        for spec in &self.manifest.artifacts {
+            match self.read_meta(&spec.name) {
+                Ok(Some(meta)) => {
+                    if !matches!(self.status_for(&meta, now), CosmosStatus::Fresh) {
+                        due += 1;
+                    }
+                }
+                // Missing OR unreadable -> needs refresh.
+                Ok(None) | Err(_) => due += 1,
+            }
+        }
+        due
     }
 
     pub fn cosmos_root(&self) -> &Path {
@@ -390,6 +525,14 @@ impl CosmosWorker {
 
     pub fn manifest(&self) -> &CosmosManifest {
         &self.manifest
+    }
+
+    /// C-2: expose the clock's current seconds-since-epoch so external
+    /// callers (e.g. orchestrator `trigger_cosmos_refresh`) can call
+    /// [`Self::refresh_one`] with a consistent `now` value without
+    /// reaching into the private `clock` field.
+    pub fn now_secs_clock(&self) -> i64 {
+        self.clock.now_secs()
     }
 
     /// Classify an artifact's freshness against `now`.
@@ -441,9 +584,28 @@ impl CosmosWorker {
     /// Idempotency: a refreshed body whose blake3 matches the previous body
     /// is NOT emitted as `CosmosArtifactUpdated`. Only true content change
     /// produces an "updated" event (per plan §4 idempotency rule).
-    pub fn tick(&self) -> TickReport {
+    ///
+    /// # Async-native (C-16 BLOCK-1 fix)
+    ///
+    /// `tick()` is `async fn` because `ResearchDispatcher::run` and
+    /// `SsbEmitter::emit_*` are async. Callers MUST be on a tokio runtime
+    /// (live_cli cosmos tick scheduler + Tauri trigger_cosmos_refresh
+    /// command both already are). No nested `Runtime::block_on()` bridge.
+    pub async fn tick(&self) -> TickReport {
         let now = self.clock.now_secs();
         let mut report = TickReport::default();
+
+        // C-16 (DECISION-F + DRIFT-F): emit ONE CosmosRefreshStarted SSB row
+        // BEFORE the manifest loop, with `queued` = stale+decayed+missing
+        // count (not manifest_size). The pre-scan via `count_due()` is an
+        // in-memory manifest iteration — cheap (no I/O beyond the meta read
+        // which the loop body would do anyway).
+        if let Some(ref emitter) = self.ssb_emitter {
+            let queued = u32::try_from(self.count_due()).unwrap_or(u32::MAX);
+            let total = u32::try_from(self.manifest.artifacts.len()).unwrap_or(u32::MAX);
+            emitter.emit_refresh_started(queued, total).await;
+        }
+
         for spec in &self.manifest.artifacts {
             report.checked += 1;
             let existing = match self.read_meta(&spec.name) {
@@ -471,12 +633,26 @@ impl CosmosWorker {
                 "cosmos refresh started",
             );
 
-            match self.refresh_one(spec, now, existing.as_ref()) {
-                Ok(true) => {
+            match self.refresh_one(spec, now, existing.as_ref()).await {
+                Ok(outcome) if outcome.changed => {
+                    // C-16 (DECISION-H): emit CosmosArtifactUpdated with real
+                    // blake3 / size / latency from the outcome.
+                    if let Some(ref emitter) = self.ssb_emitter {
+                        emitter
+                            .emit_artifact_updated(
+                                &spec.name,
+                                &outcome.blake3,
+                                outcome.body_bytes,
+                                outcome.latency_ms,
+                            )
+                            .await;
+                    }
                     report.refreshed.push(spec.name.clone());
+                    report.outcomes.push(outcome);
                 }
-                Ok(false) => {
+                Ok(_outcome) => {
                     // Body unchanged after re-research — content idempotent.
+                    // NO CosmosArtifactUpdated SSB row (idempotent skip).
                     report.unchanged.push(spec.name.clone());
                 }
                 Err(e) => {
@@ -490,15 +666,33 @@ impl CosmosWorker {
     /// Re-research a single artifact and persist if content changed.
     /// Returns `Ok(true)` when a new body was written, `Ok(false)` when the
     /// new body matches the previous body byte-for-byte.
-    fn refresh_one(
+    ///
+    /// C-2 (DRIFT-3): promoted from `fn` to `pub fn` so the task_runner can
+    /// trigger a refresh once per task entry via
+    /// `trigger_cosmos_refresh()` and surface `cosmos_refresh_started`
+    /// rows on a live cloud run. Production callers MUST hold an outer
+    /// `IndexLock(LockScope::Index)` (or equivalent) — single-writer per
+    /// artifact contract still applies.
+    ///
+    /// # Async-native (C-16 BLOCK-1 fix)
+    ///
+    /// `refresh_one` is `async fn` because `ResearchDispatcher::run` is
+    /// async — no nested `Runtime::block_on()` bridge.
+    pub async fn refresh_one(
         &self,
         spec: &CosmosArtifactSpec,
         now: i64,
         previous: Option<&CosmosArtifactMeta>,
-    ) -> Result<bool, CosmosError> {
-        let (mut body, source_tier) =
-            self.research
-                .run(&spec.research_query, &spec.min_source_tier, spec.max_size_bytes)?;
+    ) -> Result<RefreshOutcome, CosmosError> {
+        // C-16 (DECISION-H): measure wall-clock latency for the research +
+        // write path so the SSB CosmosArtifactUpdated row carries a real
+        // `latency_ms` instead of zero. Use std::time::Instant (monotonic) —
+        // CosmosClock is wall-clock seconds and unsuitable for latency.
+        let start = std::time::Instant::now();
+        let (mut body, source_tier) = self
+            .research
+            .run(&spec.research_query, &spec.min_source_tier, spec.max_size_bytes)
+            .await?;
         if body.as_bytes().len() as u64 > spec.max_size_bytes {
             warn!(
                 target: COSMOS_TRACE_TARGET,
@@ -511,9 +705,16 @@ impl CosmosWorker {
             body.truncate(cap);
         }
         let hash = blake3::hash(body.as_bytes()).to_hex().to_string();
+        let body_bytes = u32::try_from(body.as_bytes().len()).unwrap_or(u32::MAX);
         if let Some(prev) = previous {
             if prev.blake3_hash == hash {
-                return Ok(false);
+                let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+                return Ok(RefreshOutcome {
+                    changed: false,
+                    blake3: hash,
+                    body_bytes,
+                    latency_ms,
+                });
             }
         }
         // Write body + meta atomically (write to tmp, rename).
@@ -527,6 +728,7 @@ impl CosmosWorker {
             refresh_cadence: spec.refresh_cadence,
         };
         self.write_meta(&meta)?;
+        let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
         info!(
             target: COSMOS_TRACE_TARGET,
             event = "cosmos_artifact_updated",
@@ -534,9 +736,15 @@ impl CosmosWorker {
             blake3 = %hash,
             size_bytes = meta.size_bytes,
             source_tier = %source_tier,
+            latency_ms = latency_ms,
             "cosmos artifact updated",
         );
-        Ok(true)
+        Ok(RefreshOutcome {
+            changed: true,
+            blake3: hash,
+            body_bytes,
+            latency_ms,
+        })
     }
 
     /// Resolve an artifact by name. Returns the on-disk body and freshness
@@ -563,14 +771,23 @@ impl CosmosWorker {
         let now = self.clock.now_secs();
         let status = self.status_for(&meta, now);
         if status == CosmosStatus::Decayed {
+            let age_secs = (now - meta.refreshed_at).max(0);
             warn!(
                 target: COSMOS_TRACE_TARGET,
                 event = "cosmos_artifact_decayed",
                 artifact = %name,
-                age_secs = now - meta.refreshed_at,
+                age_secs = age_secs,
                 cadence = meta.refresh_cadence.as_str(),
                 "cosmos artifact is DECAYED; serving stale body with warning",
             );
+            // C-16 BLOCK-1 fix: `cosmos_get` is sync (called from sync
+            // pipeline + briefing paths) and CANNOT call `SsbEmitter`
+            // (async) without re-introducing the nested-runtime panic.
+            // The tracing::warn above remains the observability channel
+            // in sync contexts; async callers that want a typed SSB
+            // `CosmosArtifactDecayed` row should call
+            // `cosmos_get_async()` (TODO: future helper) or emit it
+            // themselves from the async dispatch site.
         }
         Ok(CosmosArtifact {
             spec,
@@ -683,18 +900,26 @@ pub struct CosmosArtifactStatusJson {
 /// (dashboard `get_cosmos_status` command). Returns `Err` if accidentally
 /// invoked — `status_snapshot` MUST NOT trigger research. This dispatcher is
 /// intentionally inert to keep the "filesystem-only" contract honest.
-struct NoopResearchDispatcher;
+/// No-op `ResearchDispatcher` used by read-only callers
+/// (`cosmos_status_snapshot_standalone`) and C-8 (`CosmosWorker` tick
+/// scheduler bootstrap before a real research client is wired). Always
+/// returns `CosmosError::Research("...")` from `research`; callers that
+/// only call `tick()` / `status_snapshot()` are unaffected because those
+/// paths short-circuit when no artifact is `Stale` / `Decayed`.
+pub struct NoopResearchDispatcher;
 
 impl ResearchDispatcher for NoopResearchDispatcher {
-    fn run(
-        &self,
-        _query: &str,
-        _min_source_tier: &str,
+    fn run<'a>(
+        &'a self,
+        _query: &'a str,
+        _min_source_tier: &'a str,
         _max_size_bytes: u64,
-    ) -> Result<(String, String), CosmosError> {
-        Err(CosmosError::Research(
-            "NoopResearchDispatcher invoked from read-only snapshot path".into(),
-        ))
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), CosmosError>> + Send + 'a>> {
+        Box::pin(async move {
+            Err(CosmosError::Research(
+                "NoopResearchDispatcher invoked from read-only snapshot path".into(),
+            ))
+        })
     }
 }
 
@@ -874,18 +1099,20 @@ impl MockResearch {
 }
 
 impl ResearchDispatcher for MockResearch {
-    fn run(
-        &self,
-        _query: &str,
-        _min_source_tier: &str,
+    fn run<'a>(
+        &'a self,
+        _query: &'a str,
+        _min_source_tier: &'a str,
         _max_size_bytes: u64,
-    ) -> Result<(String, String), CosmosError> {
-        let body = self
-            .body
-            .lock()
-            .map(|g| g.clone())
-            .map_err(|_| CosmosError::Research("mock body lock poisoned".into()))?;
-        Ok((body, self.tier.clone()))
+    ) -> Pin<Box<dyn Future<Output = Result<(String, String), CosmosError>> + Send + 'a>> {
+        Box::pin(async move {
+            let body = self
+                .body
+                .lock()
+                .map(|g| g.clone())
+                .map_err(|_| CosmosError::Research("mock body lock poisoned".into()))?;
+            Ok((body, self.tier.clone()))
+        })
     }
 }
 
@@ -1000,8 +1227,8 @@ research_query = "b"
         );
     }
 
-    #[test]
-    fn tick_writes_body_and_meta_on_first_run() {
+    #[tokio::test]
+    async fn tick_writes_body_and_meta_on_first_run() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("# iOS HIG\nbody", "T1"));
@@ -1013,7 +1240,7 @@ research_query = "b"
         )
         .expect("worker");
 
-        let report = w.tick();
+        let report = w.tick().await;
         assert_eq!(report.checked, 2);
         assert_eq!(report.refreshed.len(), 2);
         assert!(report.failed.is_empty());
@@ -1027,8 +1254,8 @@ research_query = "b"
         assert_eq!(body, "# iOS HIG\nbody");
     }
 
-    #[test]
-    fn tick_is_idempotent_when_body_unchanged() {
+    #[tokio::test]
+    async fn tick_is_idempotent_when_body_unchanged() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("# stable\nbody", "T1"));
@@ -1040,21 +1267,21 @@ research_query = "b"
         )
         .expect("worker");
 
-        let r1 = w.tick();
+        let r1 = w.tick().await;
         assert_eq!(r1.refreshed.len(), 2);
 
         // Advance past Daily interval so app_store_policies is due again;
         // body has NOT changed, so refresh_one must return Ok(false) and
         // the report should classify as `unchanged` (idempotent path).
         clock.advance(2 * 24 * 3600);
-        let r2 = w.tick();
+        let r2 = w.tick().await;
         assert!(r2.refreshed.is_empty(), "expected no refresh: {:?}", r2);
         assert_eq!(r2.unchanged.len() + r2.failed.len(), 2);
         assert!(r2.failed.is_empty(), "no failures: {:?}", r2.failed);
     }
 
-    #[test]
-    fn tick_refreshes_when_body_changes() {
+    #[tokio::test]
+    async fn tick_refreshes_when_body_changes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("v1", "T1"));
@@ -1066,10 +1293,10 @@ research_query = "b"
         )
         .expect("worker");
 
-        let _ = w.tick();
+        let _ = w.tick().await;
         research.set_body("v2");
         clock.advance(2 * 24 * 3600);
-        let r = w.tick();
+        let r = w.tick().await;
         assert!(
             r.refreshed.contains(&"app_store_policies".to_string()),
             "expected app_store_policies refreshed, got {:?}",
@@ -1077,8 +1304,8 @@ research_query = "b"
         );
     }
 
-    #[test]
-    fn cosmos_get_returns_artifact_with_status() {
+    #[tokio::test]
+    async fn cosmos_get_returns_artifact_with_status() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("# body", "T1"));
@@ -1089,7 +1316,7 @@ research_query = "b"
             research,
         )
         .expect("worker");
-        let _ = w.tick();
+        let _ = w.tick().await;
 
         let art = w
             .cosmos_get("ios_hig_summary")
@@ -1098,8 +1325,8 @@ research_query = "b"
         assert_eq!(art.status, CosmosStatus::Fresh);
     }
 
-    #[test]
-    fn cosmos_get_decayed_status_emits_warn_but_serves() {
+    #[tokio::test]
+    async fn cosmos_get_decayed_status_emits_warn_but_serves() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("# body", "T1"));
@@ -1110,7 +1337,7 @@ research_query = "b"
             research,
         )
         .expect("worker");
-        let _ = w.tick();
+        let _ = w.tick().await;
 
         // Jump past decay_secs for `app_store_policies` (Daily * 3 = 3 days +).
         clock.advance(10 * 24 * 3600);
@@ -1136,8 +1363,8 @@ research_query = "b"
         assert!(matches!(r, Err(CosmosError::UnknownArtifact(_))));
     }
 
-    #[test]
-    fn status_snapshot_emits_row_per_artifact() {
+    #[tokio::test]
+    async fn status_snapshot_emits_row_per_artifact() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let clock = Arc::new(FixedClock::new(1_700_000_000));
         let research = Arc::new(MockResearch::new("# body", "T1"));
@@ -1148,7 +1375,7 @@ research_query = "b"
             research,
         )
         .expect("worker");
-        let _ = w.tick();
+        let _ = w.tick().await;
 
         let snap = w.status_snapshot();
         assert_eq!(snap.len(), 2);

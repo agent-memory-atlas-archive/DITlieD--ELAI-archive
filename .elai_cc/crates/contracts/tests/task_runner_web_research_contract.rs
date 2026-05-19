@@ -178,8 +178,14 @@ async fn web_research_task_emits_web_research_step_rows() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            research_tree: None,
             pipeline_grc: None,
             model_capability_profile: None,
+            cloud_router: None,
+            cloud_spend_cap_daily_usd: None,
+            crystallizer: None,
+            compiled_pipeline_store: None,
+            background_task_manager: None,
         },
     );
 
@@ -274,8 +280,14 @@ async fn web_research_task_without_runner_emits_finding() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            research_tree: None,
             pipeline_grc: None,
             model_capability_profile: None,
+            cloud_router: None,
+            cloud_spend_cap_daily_usd: None,
+            crystallizer: None,
+            compiled_pipeline_store: None,
+            background_task_manager: None,
         },
     );
 
@@ -375,8 +387,14 @@ async fn web_research_runner_invoked_once_per_task() {
             irreversible_classifier: None,
             dkg_querier_swap: None,
             task_splitter: None,
+            research_tree: None,
             pipeline_grc: None,
             model_capability_profile: None,
+            cloud_router: None,
+            cloud_spend_cap_daily_usd: None,
+            crystallizer: None,
+            compiled_pipeline_store: None,
+            background_task_manager: None,
         },
     );
 

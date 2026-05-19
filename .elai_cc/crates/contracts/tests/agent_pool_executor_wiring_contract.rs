@@ -235,5 +235,20 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         feasibility_prober,
         layer1a_processor,
         baby_step_executor: None,
+        // C-9: AutonomousGate is opt-in via the gate_mode field. The
+        // contract here predates C-9 and tests the pre-gate wiring path.
+        gate_mode: None,
+        // C-5: CloudModeRouter is opt-in via cloud_config. The contract
+        // predates C-5 and tests the pre-cloud-mode wiring path.
+        cloud_config: None,
+        provider_override: None,
+        // C-13: hook dispatcher defaults to None on the legacy path.
+        hook_dispatcher: None,
+        // C-25 audit follow-up: crystallizer / compiled_pipeline_store /
+        // background_task_manager defaults to None on the legacy
+        // contract path (this fixture covers the pre-C-25 wiring shape).
+        crystallizer: None,
+        compiled_pipeline_store: None,
+        background_task_manager: None,
     }
 }

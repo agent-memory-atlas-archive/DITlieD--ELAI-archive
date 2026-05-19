@@ -25,7 +25,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -38,6 +38,8 @@
     idea_framing: 'Idea Framing',
     // B-41: per-level auditor timeline.
     audit_timeline: 'Audit Timeline',
+    // C-7: Q&A oracle / codebase-explorer surface.
+    explore:  'Explore',
   };
 
   let dragOverTabId = $state<string | null>(null);
@@ -422,7 +424,7 @@
     cursor: pointer;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     white-space: nowrap;
     outline: none;
     position: relative;
@@ -550,7 +552,7 @@
     border: 1px solid var(--teal-line);
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     border-radius: var(--r-sm);
     outline: none;
@@ -589,7 +591,7 @@
     gap: 12px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .panel-empty-msg {
@@ -610,7 +612,7 @@
     border-radius: var(--r-sm);
     color: var(--teal);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     outline: none;
     transition: color 120ms var(--ease-std), background 120ms var(--ease-std), border-color 120ms var(--ease-std);
@@ -664,7 +666,7 @@
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     border-radius: var(--r-sm);
     outline: none;

@@ -53,7 +53,9 @@ export type WindowType =
   // B-40: Idea-Framer pre-decomposition surface (FRAMING substate).
   | 'idea_framing'
   // B-41: per-level auditor timeline + cascade visualisation.
-  | 'audit_timeline';
+  | 'audit_timeline'
+  // C-7: Q&A oracle / codebase-explorer surface.
+  | 'explore';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -84,6 +86,11 @@ export interface VizFile {
   deps: number;
   dependents: number;
   symbol_count: number;
+  // C-24 (DRIFT-7 Path A): optional decomposition-level / status fields.
+  // Populated only by the decomposition view (b33_build_decomposition_view).
+  // GraphWindow's cytoscape selectors use these to pick shape + color.
+  level?: string;
+  status?: string;
 }
 
 export interface VizFileEdge {
@@ -139,7 +146,9 @@ export type DrawerKey =
   | 'tools-hooks'
   | 'web-quality'
   // B-42 — Cosmos artifact tier drawer.
-  | 'cosmos';
+  | 'cosmos'
+  // C-23 — Sessions drawer (BranchTree + per-branch SessionDag actions).
+  | 'sessions';
 
 // ------------------------------------------------------------------
 // Agent roles
@@ -437,7 +446,19 @@ export interface DagRepairEvent {
 // ------------------------------------------------------------------
 // Knowledge / Search
 // ------------------------------------------------------------------
-export type SearchMode = 'HYBRID' | 'SPARSE_ONLY' | 'BM25_ONLY';
+// C-8 Task #7: the live get_search_mode command returns the lowercase
+// payload-discriminator tags emitted by the SearchModeChanged SSB row
+// (mode: 'hybrid' | 'lexical' | 'semantic' | 'ann'). Legacy callers using
+// the uppercase enum literals are preserved so older drawers / stubs still
+// compile while migration is in progress.
+export type SearchMode =
+  | 'HYBRID'
+  | 'SPARSE_ONLY'
+  | 'BM25_ONLY'
+  | 'hybrid'
+  | 'lexical'
+  | 'semantic'
+  | 'ann';
 
 export interface QueryStage {
   name: string;
@@ -1010,6 +1031,15 @@ export interface FeasibilityReport {
   overall: FeasibilityOutcome;
   results: FeasibilityResult[];
   probed_at: number;
+  /** C-22: distinct feasibility probes recorded in this view's window.
+   *  Currently 0 or 1 (viewer keeps the latest report only). */
+  probe_count?: number;
+  /** C-22: alternative slots attempted across all stub runs. */
+  alternatives_explored?: number;
+  /** C-22: distinct novel steps in the latest probe report. */
+  novel_step_count?: number;
+  /** C-22: skip_reason from the most-recent feasibility report, if any. */
+  skip_reason?: string | null;
 }
 
 // ------------------------------------------------------------------
@@ -1432,6 +1462,38 @@ export interface CloudSpendInfo {
   redaction_count: number;
 }
 
+// C-28: T-1 mutation testing gauge surfaced in MonitorWindow.
+// Fields mirror the snake_case shape returned by the Rust
+// `get_mutation_gauge` Tauri command. MonitorWindow renders the section
+// green when `score_pct >= threshold_pct`, amber when below, and a grey
+// "no mutation run yet" placeholder when the value is `null` (no run
+// recorded for the current session). See
+// workflow/reasoning/C-28-decisions.md DECISION-D9 / DECISION-D10.
+export interface MutationGaugeInfo {
+  score_pct: number;
+  threshold_pct: number;
+  cache_hits: number;
+  total_run: number;
+  last_updated_ms: number;
+}
+
+// C-32: Code-Completeness Layer 2 -- skeleton-first completeness ratio
+// surfaced in MonitorWindow. Polled every 5s next to the mutation gauge.
+// `{ known: false }` = no skeleton flushed yet for this session (renders
+// a grey "no skeleton flushed yet" placeholder). `{ known: true, ... }`
+// drives the colour-coded horizontal gauge: red < 0.5, yellow 0.5..0.9,
+// green >= 0.9 per workflow/reasoning/C-32-decisions.md D3 / plan §Task 6.
+// Audit-C32 W2 close-out: previously returned bare null; now returns the
+// envelope shape so the frontend can branch on a single `known` flag.
+export type CompletenessRatioInfo =
+  | { known: false }
+  | {
+      known: true;
+      ratio: number;
+      blank_count: number;
+      last_path: string | null;
+    };
+
 // ------------------------------------------------------------------
 // REFLECT (B-39) — multi-candidate self-reflection pipeline state.
 // Fields use snake_case matching Rust struct field names verbatim.
@@ -1682,8 +1744,11 @@ export interface AmbiguityState {
   floor_failures: string[];
   streak: AmbiguityStreak;
   qualifies_for_advance: boolean;
-  /// True when the backend returned the placeholder shape (real producer not yet wired).
-  mock: boolean;
+  /// C-2: legacy `mock` field is no longer emitted by the live backend
+  /// (replaced with real SSB reads). Kept as an optional flag for
+  /// backward compatibility with any cached client state — always
+  /// absent in C-2+ responses.
+  mock?: boolean;
 }
 
 // ------------------------------------------------------------------
@@ -1844,3 +1909,118 @@ export interface TestReport {
   latency_ms: number;
   error?: string;
 }
+
+// ------------------------------------------------------------------
+// C-4 — Tauri commands orchestration + cloud spend surface.
+// Mirrors SsbViewer DTOs (snake_case) + the Tauri wrapper return
+// shapes in src-tauri/src/commands.rs:7745..8060. The `known` boolean
+// is the convention used by phase_detail / baby_step_detail /
+// action_detail wrappers so cold-start / not-found rows can be
+// rendered as an empty-state placeholder without throwing.
+// Rust `Option<T>` serializes as JSON `null`, not `undefined`.
+// ------------------------------------------------------------------
+
+/** Mirror of `SsbViewer::PhaseDetail` augmented with the `known`
+ *  discriminator the Tauri wrapper inserts. When `known === false`
+ *  only `phase_id` is meaningful; every other field is absent. */
+export type PhaseDetailResponse =
+  | {
+      known: true;
+      phase_id: string;
+      description: string | null;
+      expected_outcome: string | null;
+      dependencies: string[];
+      estimated_steps_remaining: number | null;
+    }
+  | {
+      known: false;
+      phase_id: string;
+    };
+
+/** Mirror of `SsbViewer::BabyStepDetail` augmented with the `known`
+ *  discriminator. `tdd` / `acceptance` are free-shape JSON because the
+ *  Rust side serializes them as `Option<serde_json::Value>`. */
+export type BabyStepDetailResponse =
+  | {
+      known: true;
+      baby_step_id: string;
+      task: string;
+      estimated_tokens: number;
+      concept_name: string;
+      phase_name: string;
+      step_name: string;
+      tdd: unknown | null;
+      acceptance: unknown | null;
+    }
+  | {
+      known: false;
+      baby_step_id: string;
+    };
+
+/** Mirror of `SsbViewer::PhaseStatus`. Empty Vec on cold start. */
+export interface PhaseProgressRow {
+  phase_id: string;
+  status: string;
+  step_count: number;
+  completed_count: number;
+}
+
+/** Mirror of `SsbViewer::SsbActionSummary`. `action_type` is the
+ *  snake_case `SsbActionType` discriminant (e.g. `'phase_complete'`,
+ *  `'task_submitted'`). Kept as `string` rather than a closed union
+ *  because the Rust enum has 100+ variants and the dashboard renders
+ *  it generically. */
+export interface RecentActionRow {
+  seq: number;
+  timestamp: number;
+  action_type: string;
+  agent_id: string;
+  summary: string;
+}
+
+/** Mirror of `SsbViewer::FileChange`. */
+export interface FileChangeRow {
+  path: string;
+  action: string;
+  summary: string;
+}
+
+/** Mirror of `SsbViewer::SsbActionDetail` augmented with the `known`
+ *  discriminator. `payload_json` is the typed SsbPayload re-serialised
+ *  as JSON (msgpack on the wire, JSON at the IPC boundary). */
+export type ActionDetailResponse =
+  | {
+      known: true;
+      seq: number;
+      ts: number;
+      action_type: string;
+      agent_id: string;
+      payload_json: unknown;
+      files: string[];
+    }
+  | {
+      known: false;
+      seq: number;
+    };
+
+/** Mirror of `commands.rs::ProjectEntry`. `last_opened_ms` is epoch ms;
+ *  the dashboard uses it for sort ordering (newest first). */
+export interface ProjectEntry {
+  name: string;
+  path: string;
+  last_opened_ms: number;
+}
+
+/** `list_projects` Tauri wrapper return shape. `known: false` is
+ *  surfaced when the read / parse failed (vs `known: true` + empty Vec
+ *  for the legitimate "no projects yet" case). */
+export interface ListProjectsResponse {
+  known: boolean;
+  projects: ProjectEntry[];
+}
+
+/** Per-stage research history row. C-4 ships this as a stable empty
+ *  Vec until the `research_node_stage` emitter lands (C-5 deferral —
+ *  commands.rs:7860). Shape mirrors the future `ResearchStageEvent`
+ *  but is opaque today, so callers must guard on row presence. */
+export type ResearchNodeHistoryRow = Record<string, unknown>;

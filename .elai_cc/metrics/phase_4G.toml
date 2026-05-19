@@ -157,9 +157,25 @@ clock_provider_used = true                # last_24h filtering accepts now_ms; d
 session = "s-26716"
 constraint = "no commits, only 1 audit cycle, autonomous mode (user sleeping)"
 remaining_work_path = "workflow/sessions/s-26716/session-handoff.md"
-# Deferred items recorded in handoff:
-# - last_24h_rate uses dashboard ClockProvider but does not yet honour
-#   SeededClock under deterministic replay (low priority).
-# - W1-SEMANTIC drive_task stop enforcement gap (out of scope for 4G).
-# - Phase 4G.7-4G.8 broader tree auto-advance integration in production
-#   construction paths (cli/main.rs still passes autonomous_gate: None).
+# ---------------------------------------------------------------------------
+# 9. runtime_measurements (BACKFILLED by C-20 measure)
+# ---------------------------------------------------------------------------
+# Real values written by `elai measure --scope phase_4G` against the
+# AutonomousGate type in this workspace. See crates/cli/src/measure.rs.
+[runtime_measurements]
+auto_advance_accuracy = 1.0000
+false_escalation_rate = 0.0  # by construction: 0/20 (deterministic fixture)
+mode_switch_latency_ms = 0.0003
+split_task_overhead_ms = 0
+split_task_overhead_unmeasured_reason = "requires_tree_wiring_C9_real_dispatch"
+substitute_model_swap_ms = 0.0006  # config-path subset of decide() p50
+end_to_end_autonomous_vs_interactive = 0.0
+end_to_end_unmeasured_reason = "requires_two_full_session_runs_held_for_c21"
+gate_evaluation_overhead_ms = 0.0006
+gate_evaluation_p99_ms = 0.0064
+escalation_count_per_session = 3
+completion = true
+c20_backfilled_at = "C-20"
+c20_sample_decide_calls = 200
+c20_sample_mode_switch_calls = 100
+c20_sample_accuracy_calls = 20

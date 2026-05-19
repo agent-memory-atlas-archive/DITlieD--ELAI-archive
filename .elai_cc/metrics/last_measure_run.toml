@@ -1,0 +1,56 @@
+# elai measure run summary — overwritten on every invocation.
+started_at_unix_secs = 1779116283
+scope_arg = "all"
+cloud_flag = false
+scopes_run_count = 10
+
+[scope.phase_4B]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_4B.toml"
+note = "shortcoder_savings_pct=72.77 loc_tools=17043 test_count=1"
+
+[scope.phase_4G]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_4G.toml"
+note = "auto_advance_accuracy=1.00 mode_p50=0.000ms decide_p50=0.001ms decide_p99=0.006ms"
+
+[scope.phase_4F]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_4F.toml"
+note = "probe_p50=10044.734ms stub_p50=0.001ms cc_p50=0.600us"
+
+[scope.phase_4C]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_4C.toml"
+note = "t1_pct=26.7 t2_pct=26.7 t3_pct=46.7"
+
+[scope.phase_4M]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_4M.toml"
+note = "11_backends_probed cloud=false"
+
+[scope.phase_1F]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_1F.toml"
+note = "decision=UNAVAILABLE reason=prompt_lookup_decoding_not_instrumented"
+
+[scope.phase_1G]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_1G.toml"
+note = "l12_size_mb=127.51 l6_size_mb=86.78 sweep=unmeasured(requires_onnx_runtime)"
+
+[scope.phase_1H]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_1H.toml"
+note = "verified 6 required keys; generated_at appended"
+
+[scope.scale]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_b29_5_scale.toml"
+note = "skipped:fixture_root_not_set"
+
+[scope.cloud]
+pass = true
+file_written = "D:/.ELAI_workflow/.elai_cc/metrics/phase_cloud_canary.toml"
+note = "fired=true known=true"
+

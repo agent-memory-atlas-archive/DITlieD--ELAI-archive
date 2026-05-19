@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # B-15A Task 10 — Determinism proof harness.
 #
+# PLATFORM: POSIX-only. Requires bash, mktemp, sed, awk, shasum or sha256sum,
+# and process substitution `<(...)`. On Windows use the sibling
+# `determinism_proof.ps1` (PowerShell 7+); cmd.exe is unsupported. C-14
+# confirmed the test-target name is `bsp_determinism` (NOT `seeded_determinism`,
+# which was a typo in the C-14 plan) and the script already uses `--test
+# bsp_determinism`, not `--workspace`.
+#
 # EXPECTATIONS:
 #   - runs the orchestrator's `bsp_determinism` integration test twice with a
 #     fixed seed, captures stdout to two tmp files, and exits 0 iff the byte

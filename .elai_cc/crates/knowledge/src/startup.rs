@@ -700,6 +700,14 @@ mod tests {
                 + Duration::from_secs(1_700_000_000)
                 + Duration::from_millis(self.tick.load(std::sync::atomic::Ordering::Relaxed))
         }
+
+        // C-16 incidental fix: ClockProvider gained `instant_now` (clock.rs:54)
+        // after this test-only impl was written; without it the lib test build
+        // fails. Use std::time::Instant::now() — test-only fidelity (not used
+        // by cosmos paths).
+        fn instant_now(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
     }
 
     #[test]

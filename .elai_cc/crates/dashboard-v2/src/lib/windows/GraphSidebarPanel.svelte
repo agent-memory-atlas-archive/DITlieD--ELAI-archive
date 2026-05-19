@@ -84,7 +84,7 @@
     border-left: 1px solid var(--border-subtle);
     overflow-y: auto;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
   .empty {
@@ -143,7 +143,7 @@
     color: var(--teal);
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
   }
   .actions button:hover {
     background: var(--teal-ghost);
@@ -173,7 +173,7 @@
     cursor: pointer;
     text-align: left;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
   }
   .sym:hover {
     border-color: var(--border-default);

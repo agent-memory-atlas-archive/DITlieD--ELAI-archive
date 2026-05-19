@@ -1,0 +1,10 @@
+id = "task_04"
+description = """
+A TypeScript handler swallows network errors silently because it wraps the
+`fetch` call in `try { ... } catch (e) {}`. Replace the empty catch with a
+typed error log that re-throws so upstream callers can surface a 502.
+"""
+expected_output = "throw e"
+timeout_s = 60
+stage = 2
+is_canary = false

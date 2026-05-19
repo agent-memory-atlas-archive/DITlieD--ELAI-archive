@@ -12,6 +12,15 @@ per_batch_p99_ms = 4100
 final_dkg_nodes = 420
 final_chunk_count = 860
 
+# C-17 (DRIFT-K/M): production-scale measurements deferred to C-20. The
+# synthetic baseline above stays in place as the regression baseline.
+# run_tier_a.sh now parses real per-batch p50/p99 from SSB IndexCheckpoint
+# rows (batch_duration_ms field added in C-17 DRIFT-I) — replace the
+# synthetic block with real numbers after each production-scale run.
+[c17_followup]
+measured_in_phase = "C-20"
+production_scale_fixture = "linux-v6.7"
+
 [provenance]
 fixture_path = "target/scale_fixtures/synthetic"
 script = "run_tier_a.sh"

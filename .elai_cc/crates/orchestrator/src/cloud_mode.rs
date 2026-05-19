@@ -29,6 +29,7 @@
 
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use thiserror::Error;
 
 use crate::privacy_redactor::{self, PrivacyConfig, RedactionProfile};
@@ -291,6 +292,11 @@ pub fn resolve_exec_mode(backend: &crate::dispatcher::BackendConfig) -> ExecMode
     match backend.mode {
         crate::dispatcher::BackendMode::Local => ExecMode::Local,
         crate::dispatcher::BackendMode::Api => ExecMode::Cloud,
+        // C-5: BackendMode::Hybrid -> ExecMode::Auto. The hybrid path starts
+        // local (see ExecMode::Auto docs L86-89); the cloud_mode escalation
+        // loop in task_runner promotes on retry exhaustion + emits
+        // EscalateToCloud.
+        crate::dispatcher::BackendMode::Hybrid => ExecMode::Auto,
     }
 }
 
@@ -413,27 +419,111 @@ pub struct SpendSnapshot {
 /// installs this on the OUTSIDE of the real executor so redaction
 /// runs BEFORE the inner executor's network code touches the text.
 ///
-/// Wiring contract (B-27): the orchestrator's CLI-side construction
-/// site wraps the ordinary [`BabyStepExecutor`] in this newtype when
-/// [`ExecMode::Cloud`] or [`ExecMode::Auto`] is selected. Local mode
-/// installs the inner executor directly with no redaction.
+/// Wiring contract (B-27 + C-5): the production wiring site
+/// [`crate::runtime_setup::apply_task_runner_wiring`] wraps the
+/// ordinary [`BabyStepExecutor`] in this newtype when the resolved
+/// [`crate::dispatcher::BackendMode`] is `Api` (cloud) or `Hybrid`.
+/// Pure `Local` mode installs the inner executor directly with no
+/// redaction.
+///
+/// C-5: the wrapper optionally carries an [`crate::Ssb`] writer and
+/// emits a [`crate::ssb::SsbActionType::RedactionApplied`] row each
+/// time redaction substitutions are made, so the dashboard
+/// CloudPanel.svelte privacy-event feed can render a "last N redactions"
+/// timeline. Best-effort: a write failure is logged but never aborts
+/// the baby-step execution. When the writer slot is `None` (legacy /
+/// test path), the redactor runs unchanged and no SSB row is emitted.
 pub struct RedactingBabyStepExecutor {
     inner: Arc<dyn BabyStepExecutor>,
     privacy: PrivacyConfig,
+    /// C-5: optional SSB writer. When `Some`, the executor emits a
+    /// `RedactionApplied` row each time a redaction firing modifies the
+    /// payload. When `None`, redaction still runs but no row is written
+    /// (legacy / unit-test path).
+    ssb_writer: Option<Arc<crate::Ssb>>,
+    /// Agent id used on the emitted SSB row. Defaults to
+    /// [`RedactingBabyStepExecutor::DEFAULT_AGENT_ID`] when the caller
+    /// does not pin one.
+    agent_id: String,
 }
 
 impl RedactingBabyStepExecutor {
+    /// Agent id stamped on `RedactionApplied` SSB rows when the caller
+    /// does not specify one. Mirrors the convention used by other
+    /// task_runner-side beacons.
+    pub const DEFAULT_AGENT_ID: &'static str = "cloud_mode_redactor";
+
+    /// Construct a redactor without SSB emission. Legacy entry point —
+    /// retained so existing tests that pre-date C-5 keep compiling.
     #[must_use]
     pub fn new(inner: Arc<dyn BabyStepExecutor>, privacy: PrivacyConfig) -> Self {
-        Self { inner, privacy }
+        Self {
+            inner,
+            privacy,
+            ssb_writer: None,
+            agent_id: Self::DEFAULT_AGENT_ID.to_string(),
+        }
     }
 
-    fn redact_ctx(&self, ctx: BabyStepExecutionCtx) -> BabyStepExecutionCtx {
-        let task_summary = privacy_redactor::redact_context(&ctx.task_summary, &self.privacy);
-        let escalation_message = ctx
-            .escalation_message
-            .map(|m| privacy_redactor::redact_context(&m, &self.privacy));
-        BabyStepExecutionCtx {
+    /// C-5: construct a redactor that emits a `RedactionApplied` SSB
+    /// row each time redaction fires. The `ssb` writer is shared with
+    /// the orchestrator so the row lands on the same DB the dashboard
+    /// reads.
+    #[must_use]
+    pub fn with_ssb(
+        inner: Arc<dyn BabyStepExecutor>,
+        privacy: PrivacyConfig,
+        ssb: Arc<crate::Ssb>,
+    ) -> Self {
+        Self {
+            inner,
+            privacy,
+            ssb_writer: Some(ssb),
+            agent_id: Self::DEFAULT_AGENT_ID.to_string(),
+        }
+    }
+
+    /// C-5: redact a single field and report how many substitutions
+    /// fired. Counts every character-position the redactor mutated,
+    /// proxied as `(redacted.len() != original.len()) as u64 + difference_count`.
+    /// The exact substitution counter would require threading the
+    /// scrubber regex set; the difference heuristic is reliable for the
+    /// dashboard's "did redaction fire?" surface and never reports a
+    /// false zero when a difference exists.
+    fn redact_field(&self, original: &str) -> (String, u64) {
+        let redacted = privacy_redactor::redact_context(original, &self.privacy);
+        let count = if redacted == original {
+            0
+        } else {
+            // Count `[REDACTED]` and `[REDACTED-PATH]` substitutions; the
+            // privacy_redactor module emits these tokens on every hit.
+            let r1 = redacted.matches("[REDACTED]").count();
+            let r2 = redacted.matches("[REDACTED-PATH]").count();
+            (r1 + r2) as u64
+        };
+        (redacted, count)
+    }
+
+    fn redact_ctx(&self, ctx: BabyStepExecutionCtx) -> (BabyStepExecutionCtx, u64, Vec<String>) {
+        let mut count = 0u64;
+        let mut fields: Vec<String> = Vec::new();
+        let (task_summary, n) = self.redact_field(&ctx.task_summary);
+        count = count.saturating_add(n);
+        if n > 0 {
+            fields.push("task_summary".to_string());
+        }
+        let escalation_message = match ctx.escalation_message {
+            Some(m) => {
+                let (red, n) = self.redact_field(&m);
+                count = count.saturating_add(n);
+                if n > 0 {
+                    fields.push("escalation_message".to_string());
+                }
+                Some(red)
+            }
+            None => None,
+        };
+        let new_ctx = BabyStepExecutionCtx {
             baby_step_id: ctx.baby_step_id,
             task_summary,
             escalation_message,
@@ -444,7 +534,8 @@ impl RedactingBabyStepExecutor {
             // C2: pass session_credentials through unchanged — the redactor
             // does not touch credential values (they are not user-visible text).
             session_credentials: ctx.session_credentials,
-        }
+        };
+        (new_ctx, count, fields)
     }
 }
 
@@ -455,9 +546,41 @@ impl BabyStepExecutor for RedactingBabyStepExecutor {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = BabyStepExecutionResult> + Send + 'a>,
     > {
-        let redacted = self.redact_ctx(ctx);
+        let baby_step_id = ctx.baby_step_id;
+        let (redacted, count, fields) = self.redact_ctx(ctx);
         let inner = Arc::clone(&self.inner);
-        Box::pin(async move { inner.execute(redacted).await })
+        let writer = self.ssb_writer.clone();
+        let agent_id = self.agent_id.clone();
+        Box::pin(async move {
+            // C-5: emit RedactionApplied SSB row when redaction fired AND
+            // a writer is plumbed. Best-effort — log + proceed on error.
+            if count > 0 {
+                if let Some(ssb) = writer {
+                    // C-15: OsClock-backed ts_ms. RedactionApplied is an
+                    // observation row; not part of any deterministic fixture.
+                    let ts_ms = i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX);
+                    let payload = crate::ssb::SsbPayload::RedactionApplied(
+                        crate::ssb::RedactionAppliedPayload {
+                            count,
+                            fields,
+                            baby_step_id,
+                            ts_ms,
+                        },
+                    );
+                    if let Err(e) = ssb
+                        .write_payload(&agent_id, 0, payload, Vec::new())
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            baby_step_id,
+                            "cloud_mode: RedactionApplied SSB write failed (non-fatal)"
+                        );
+                    }
+                }
+            }
+            inner.execute(redacted).await
+        })
     }
 }
 

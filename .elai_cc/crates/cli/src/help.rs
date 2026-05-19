@@ -202,7 +202,7 @@ pub(crate) fn print_help(output_format: CliOutputFormat) -> Result<(), anyhow::E
     print_help_to(&mut buffer)?;
     let message = String::from_utf8(buffer)?;
     match output_format {
-        CliOutputFormat::Text => print!("{message}"),
+        CliOutputFormat::Text | CliOutputFormat::Toml => print!("{message}"),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({

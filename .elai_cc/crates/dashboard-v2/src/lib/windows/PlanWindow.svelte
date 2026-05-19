@@ -51,6 +51,40 @@
   let focusTunnel = $state<FocusTunnelPerStep | null>(null);
   let focusTunnelTimer: ReturnType<typeof setInterval> | null = null;
 
+  // ----------------------------------------------------------------
+  // C-29: Inline IntentPairEditor (per-BabyStep T-2 intent grounding).
+  // Reads via `get_intent_pairs(step_id)`, writes via `add_intent_pair`
+  // + `confirm_intent_pairs`. The Confirm button enables only when
+  // pair count >= MIN_INTENT_PAIRS (default 3 per [testing.intent]
+  // min_pairs). Char bounds enforced client-side mirror the Rust
+  // constructor (120/120/80) so the editor surfaces violations before
+  // the round-trip rejection.
+  // ----------------------------------------------------------------
+  const MIN_INTENT_PAIRS = 3;
+  const INTENT_MAX_CHARS = 120;
+  const ASSERTION_MAX_CHARS = 120;
+
+  type IntentPairLite = {
+    natural_language_intent: string;
+    concrete_test_assertion: string;
+    baby_step_ref: string;
+  };
+  type IntentPairSetLite = {
+    pairs: IntentPairLite[];
+    confirmed: boolean;
+    confirmed_at_ms: number | null;
+  };
+
+  let intentPairs = $state<IntentPairSetLite>({
+    pairs: [],
+    confirmed: false,
+    confirmed_at_ms: null,
+  });
+  let intentPairsTimer: ReturnType<typeof setInterval> | null = null;
+  let intentPairForm = $state({ intent: '', assertion: '' });
+  let intentPairError = $state<string | null>(null);
+  let intentPairBusy = $state(false);
+
   // Phase D wiring: poll bubble-up events from the backend instead of
   // reading the static mock array. plan + fsm + activity stores already
   // poll on Workspace.onMount.
@@ -188,6 +222,118 @@
       }
     };
   });
+
+  // ----------------------------------------------------------------
+  // C-29: IntentPair poller — mirrors the focus-tunnel pattern.
+  // Polls get_intent_pairs(step_id) every 5s; rebuilds on selection.
+  // ----------------------------------------------------------------
+  $effect(() => {
+    if (intentPairsTimer) {
+      clearInterval(intentPairsTimer);
+      intentPairsTimer = null;
+    }
+    intentPairs = { pairs: [], confirmed: false, confirmed_at_ms: null };
+    intentPairError = null;
+    intentPairForm = { intent: '', assertion: '' };
+    const node = selectedNode;
+    if (!node || node.level !== 'baby-step') {
+      return;
+    }
+    const numericId = babyStepIdFromNode(node.id);
+    if (numericId === null) {
+      return;
+    }
+    let alive = true;
+    async function refresh(): Promise<void> {
+      try {
+        const result = await invoke<IntentPairSetLite>(
+          'get_intent_pairs',
+          { step_id: numericId },
+        );
+        if (alive && result) intentPairs = result;
+      } catch (_err) {
+        // Tauri reject -> keep last good state; surface in editor only on user action.
+      }
+    }
+    void refresh();
+    intentPairsTimer = setInterval(() => void refresh(), 5_000);
+    return () => {
+      alive = false;
+      if (intentPairsTimer) {
+        clearInterval(intentPairsTimer);
+        intentPairsTimer = null;
+      }
+    };
+  });
+
+  async function handleAddIntentPair(): Promise<void> {
+    const node = selectedNode;
+    if (!node || node.level !== 'baby-step') return;
+    const numericId = babyStepIdFromNode(node.id);
+    if (numericId === null) return;
+    const intent = intentPairForm.intent.trim();
+    const assertion = intentPairForm.assertion.trim();
+    if (intent.length === 0 || assertion.length === 0) {
+      intentPairError = 'both fields are required';
+      return;
+    }
+    if (intent.length > INTENT_MAX_CHARS) {
+      intentPairError = `natural_language_intent > ${INTENT_MAX_CHARS} chars`;
+      return;
+    }
+    if (assertion.length > ASSERTION_MAX_CHARS) {
+      intentPairError = `concrete_test_assertion > ${ASSERTION_MAX_CHARS} chars`;
+      return;
+    }
+    intentPairBusy = true;
+    intentPairError = null;
+    try {
+      await invoke('add_intent_pair', {
+        step_id: numericId,
+        natural_language_intent: intent,
+        concrete_test_assertion: assertion,
+      });
+      intentPairForm = { intent: '', assertion: '' };
+      // Optimistic refresh — the next poller tick will reconcile.
+      const result = await invoke<IntentPairSetLite>(
+        'get_intent_pairs',
+        { step_id: numericId },
+      );
+      if (result) intentPairs = result;
+    } catch (err) {
+      intentPairError = String(err);
+    } finally {
+      intentPairBusy = false;
+    }
+  }
+
+  async function handleConfirmIntentPairs(): Promise<void> {
+    const node = selectedNode;
+    if (!node || node.level !== 'baby-step') return;
+    const numericId = babyStepIdFromNode(node.id);
+    if (numericId === null) return;
+    if (intentPairs.pairs.length < MIN_INTENT_PAIRS) {
+      intentPairError = `need ${MIN_INTENT_PAIRS - intentPairs.pairs.length} more pair(s)`;
+      return;
+    }
+    intentPairBusy = true;
+    intentPairError = null;
+    try {
+      await invoke('confirm_intent_pairs', {
+        step_id: numericId,
+        min_pairs: MIN_INTENT_PAIRS,
+      });
+      const result = await invoke<IntentPairSetLite>(
+        'get_intent_pairs',
+        { step_id: numericId },
+      );
+      if (result) intentPairs = result;
+    } catch (err) {
+      intentPairError = String(err);
+    } finally {
+      intentPairBusy = false;
+    }
+  }
 
   // Hardcoded sample BabyStep detail blocks for active baby step
   const SAMPLE_BLOCKS: { block: BabyStepBlock; status: 'done' | 'active' | 'pending' | 'failed'; detail: string }[] = [
@@ -420,6 +566,68 @@
               </div>
             {/if}
 
+            <!-- C-29: Inline IntentPairEditor (T-2 intent grounding).
+                 PLANNING -> TESTING_FIRST gate requires >= MIN_INTENT_PAIRS
+                 confirmed pairs per baby step. -->
+            <div class="intent-pair-editor" data-testid="intent-pair-editor">
+              <div class="ipe-header">
+                <span class="ipe-title">INTENT PAIRS (T-2)</span>
+                <span class="ipe-count">
+                  {intentPairs.pairs.length}/{MIN_INTENT_PAIRS}
+                  {#if intentPairs.confirmed}<span class="ipe-confirmed">CONFIRMED</span>{/if}
+                </span>
+              </div>
+              {#if intentPairs.pairs.length > 0}
+                <ul class="ipe-list">
+                  {#each intentPairs.pairs as pair, idx (idx)}
+                    <li class="ipe-row">
+                      <div class="ipe-row-intent">{pair.natural_language_intent}</div>
+                      <div class="ipe-row-assertion">{pair.concrete_test_assertion}</div>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="ipe-empty">no intent pairs yet — add at least {MIN_INTENT_PAIRS} before confirming</p>
+              {/if}
+              {#if !intentPairs.confirmed}
+                <div class="ipe-form">
+                  <textarea
+                    class="ipe-input"
+                    placeholder="natural language intent (max {INTENT_MAX_CHARS} chars)"
+                    rows="2"
+                    maxlength={INTENT_MAX_CHARS}
+                    bind:value={intentPairForm.intent}
+                    disabled={intentPairBusy}
+                  ></textarea>
+                  <textarea
+                    class="ipe-input"
+                    placeholder="concrete test assertion (max {ASSERTION_MAX_CHARS} chars)"
+                    rows="2"
+                    maxlength={ASSERTION_MAX_CHARS}
+                    bind:value={intentPairForm.assertion}
+                    disabled={intentPairBusy}
+                  ></textarea>
+                  <div class="ipe-actions">
+                    <button
+                      class="ipe-btn"
+                      type="button"
+                      onclick={() => void handleAddIntentPair()}
+                      disabled={intentPairBusy}
+                    >add pair</button>
+                    <button
+                      class="ipe-btn ipe-btn-confirm"
+                      type="button"
+                      onclick={() => void handleConfirmIntentPairs()}
+                      disabled={intentPairBusy || intentPairs.pairs.length < MIN_INTENT_PAIRS}
+                    >confirm ({intentPairs.pairs.length}/{MIN_INTENT_PAIRS})</button>
+                  </div>
+                  {#if intentPairError}
+                    <p class="ipe-error" role="alert">{intentPairError}</p>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+
             <!-- BabyStep detail: 8 block spec sections -->
             {@const blocks = selectedNode.detail?.blocks ?? SAMPLE_BLOCKS.map(b => ({ block: b.block, status: b.status }))}
             <div class="blocks-list">
@@ -542,7 +750,7 @@
     border: none;
     color: var(--text-ghost);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     padding: 2px 4px;
     border-radius: var(--r-xs);
@@ -556,7 +764,7 @@
   .divider-char {
     color: var(--text-ghost);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     user-select: none;
   }
 
@@ -618,7 +826,7 @@
 
   .detail-hint {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -668,7 +876,7 @@
 
   .detail-elapsed {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     margin-top: 2px;
   }
@@ -700,7 +908,7 @@
 
   .meta-value {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
@@ -822,5 +1030,107 @@
     line-height: 1.5;
     margin: 0;
     word-break: break-word;
+  }
+
+  /* ---- C-29 IntentPairEditor ---- */
+  .intent-pair-editor {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: var(--s-3);
+    margin-bottom: var(--s-3);
+    background: var(--bg-surface);
+  }
+  .ipe-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--s-2);
+  }
+  .ipe-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+  }
+  .ipe-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+  .ipe-confirmed {
+    color: var(--teal);
+    margin-left: 4px;
+  }
+  .ipe-list {
+    list-style: none;
+    margin: 0 0 var(--s-2) 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .ipe-row {
+    border-left: 2px solid var(--border-subtle);
+    padding-left: 6px;
+  }
+  .ipe-row-intent {
+    font-size: 11px;
+    color: var(--text-primary);
+    line-height: 1.4;
+  }
+  .ipe-row-assertion {
+    font-size: 11px;
+    color: var(--text-ghost);
+    font-family: var(--font-mono);
+    line-height: 1.4;
+  }
+  .ipe-empty {
+    font-size: 11px;
+    color: var(--text-ghost);
+    margin: 0 0 var(--s-2) 0;
+  }
+  .ipe-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ipe-input {
+    width: 100%;
+    background: var(--bg-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    padding: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    resize: vertical;
+  }
+  .ipe-actions {
+    display: flex;
+    gap: var(--s-2);
+  }
+  .ipe-btn {
+    padding: 4px 8px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .ipe-btn:disabled {
+    color: var(--text-ghost);
+    cursor: not-allowed;
+  }
+  .ipe-btn-confirm:not(:disabled) {
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+  .ipe-error {
+    font-size: 11px;
+    color: var(--fail);
+    margin: 0;
   }
 </style>

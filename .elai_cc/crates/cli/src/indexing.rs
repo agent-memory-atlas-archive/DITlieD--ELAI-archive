@@ -4,8 +4,8 @@
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::paths::{
     dkg_db_path as core_dkg_db_path, ELAI_DATA_DIR_NAME, INDEXES_DIR_NAME,
 };
@@ -28,11 +28,12 @@ const INDEXING_STAGE_FAILED: &str = "failed";
 
 /// Return current time as milliseconds since Unix epoch. Best-effort; returns
 /// 0 on overflow or clock failure.
+///
+/// C-15: sourced from `OsClock` (the `ClockProvider` default) so the entropy
+/// quarantine scanner does not flag this CLI helper. Indexing-progress
+/// timestamps are observation-only.
 fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    u64::try_from(OsClock.now_ms()).unwrap_or(u64::MAX)
 }
 
 /// Emit `IndexingProgress` and/or `DkgReady` SSB rows from sync context by

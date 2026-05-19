@@ -19,8 +19,9 @@
 //! commits.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_orchestrator::{RuntimeBackendConfig, RuntimeOrchestrator};
 use elai_providers::runtime::{
     create_runtime, resolve_backend, AuthSource as RuntimeAuthSource, RuntimeBackend,
@@ -152,8 +153,8 @@ async fn render_runtime_list(project_root: &Path) -> Result<String, RuntimeCmdEr
     // Build a backend -> health map so the row loop below can preserve
     // the canonical `RuntimeBackend::all()` ordering regardless of the
     // snapshot's BTreeMap iteration order.
-    let mut health_by_backend: std::collections::HashMap<RuntimeBackend, RuntimeHealth> =
-        std::collections::HashMap::with_capacity(snapshot.len());
+    let mut health_by_backend: rustc_hash::FxHashMap<RuntimeBackend, RuntimeHealth> =
+        rustc_hash::FxHashMap::with_capacity_and_hasher(snapshot.len(), Default::default());
     for (backend, health) in snapshot {
         health_by_backend.insert(backend, health);
     }
@@ -205,7 +206,8 @@ async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError>
         candidate: e.candidate,
         supported: e.supported.join(", "),
     })?;
-    let start = Instant::now();
+    let test_clock = OsClock;
+    let start = test_clock.now();
     let canonical = backend.canonical_name();
     let mut cfg = RuntimeFactoryConfig::for_backend(backend);
     if backend == RuntimeBackend::AnthropicApi {
@@ -226,7 +228,7 @@ async fn handle_runtime_test(candidate: &str) -> Result<String, RuntimeCmdError>
         .unwrap_or(RuntimeHealth::Unavailable {
             reason: "health probe timeout (>5s)".to_string(),
         });
-    let elapsed_ms = start.elapsed().as_millis();
+    let elapsed_ms = test_clock.elapsed_since(start).as_millis();
     match health {
         RuntimeHealth::Ready => Ok(format!("[OK] {canonical} ({elapsed_ms}ms)")),
         RuntimeHealth::Degraded { reason } => Ok(format!(
@@ -615,7 +617,7 @@ mod tests {
     fn load_runtime_routing_returns_empty_when_missing() {
         let tmp = std::env::temp_dir().join(format!(
             "runtime_cmd_test_missing_{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP: cfg(test) unique tmp dir name
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
@@ -630,7 +632,7 @@ mod tests {
     fn load_runtime_routing_reads_existing_section() {
         let tmp = std::env::temp_dir().join(format!(
             "runtime_cmd_test_load_{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP: cfg(test) unique tmp dir name
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
@@ -658,7 +660,7 @@ mod tests {
     fn atomic_write_replaces_file_contents() {
         let tmp = std::env::temp_dir().join(format!(
             "runtime_cmd_test_atomic_{}",
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // TEST_KEEP: cfg(test) unique tmp dir name
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)

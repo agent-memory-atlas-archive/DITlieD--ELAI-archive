@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Send, Slash } from '@lucide/svelte';
+  import { Send, Slash, Square } from '@lucide/svelte';
   import { commands } from '../state/commands.svelte';
   import { fsm } from '../state/fsm.svelte';
   import { session } from '../state/session.svelte';
@@ -10,7 +10,7 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks } from '../api/stub';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff } from '../api/stub';
   import type { RecentTask } from '../api/types';
 
   // Live recent-tasks list (was a mock import). Polled every 10s.
@@ -208,6 +208,14 @@
       }
     }
 
+    // C-6: Ctrl+Enter as ADDITIONAL submit alias (spec dashboard-design.txt:852).
+    // Preserves existing bare-Enter submit (muscle memory). Shift+Enter still inserts newline.
+    if (e.key === 'Enter' && e.ctrlKey) {
+      e.preventDefault();
+      submitInput();
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submitInput();
@@ -251,9 +259,54 @@
   }
 
   function executeSlash(cmd: string) {
+    // C-23: /continue is the only slash that invokes a Tauri command
+    // synchronously (the others compose a multi-arg textarea entry
+    // first). Fall back to the textarea-prepopulate path only if
+    // load_handoff rejects — that surfaces the typed DagBranchError
+    // ("no active SessionDag" / "no handoff snapshot") in an error
+    // card without losing the user's ability to manually type the
+    // /continue arguments.
+    if (cmd === '/continue') {
+      commands.closeSlash();
+      // Fire-and-forget; the await is wrapped so executeSlash stays
+      // synchronous (matches the other branches and the keyboard-event
+      // call site that expects a void return).
+      void handleContinueSlash();
+      return;
+    }
     commands.setInput(cmd + ' ');
     commands.closeSlash();
     textareaEl?.focus();
+  }
+
+  async function handleContinueSlash() {
+    try {
+      const result = await load_handoff();
+      commands.appendCard('status', {
+        kind: 'status',
+        message:
+          `Resumed handoff (session ${result.session_id})\n` +
+          `  Snapshot         ${result.snap_id}\n` +
+          `  FSM state        ${result.fsm_state}\n` +
+          `  Messages         ${result.message_count}\n` +
+          `  Parent chain     ${result.parent_chain_len} snapshot(s) (root -> tip)`,
+        fsm_state: undefined,
+        step_id: undefined,
+      });
+    } catch (err) {
+      commands.appendCard('error', {
+        kind: 'error',
+        message: `/continue failed: ${err}`,
+        source: 'sidecar',
+        step_id: undefined,
+        recoverable: true,
+      });
+      // Fall back to textarea prepopulate so the user can manually
+      // continue with a snap_id argument (mirrors the legacy behaviour
+      // when load_handoff is unavailable).
+      commands.setInput('/continue ');
+      textareaEl?.focus();
+    }
   }
 
   // ----------------------------------------------------------------
@@ -757,13 +810,26 @@
           placeholder={placeholder()}
           rows={1}
           disabled={!!commands.pendingResearchChip}
+          aria-label="Prompt — press Enter or Ctrl+Enter to send"
           oninput={handleInput}
           onkeydown={handleKeydown}
           onfocus={() => commands.setFocused(true)}
           onblur={() => commands.setFocused(false)}
         ></textarea>
 
-        {#if commands.inputValue.trim().length > 0}
+        <!-- C-6: Stop and Send are mutually exclusive. Stop wires to existing
+             commands.cancelStream() at commands.svelte.ts:395; no new IPC. -->
+        {#if commands.isStreaming}
+          <button
+            class="stop-btn"
+            aria-label="Stop streaming"
+            data-testid="stop-button"
+            onclick={() => commands.cancelStream()}
+          >
+            <Square size={12} strokeWidth={1.5} />
+            <span class="stop-btn-label">Stop</span>
+          </button>
+        {:else if commands.inputValue.trim().length > 0}
           <button
             class="send-btn"
             aria-label="Send"
@@ -874,7 +940,7 @@
 
   .label-ghost {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -915,7 +981,7 @@
 
   .recent-task-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     text-align: left;
     white-space: nowrap;
@@ -973,7 +1039,7 @@
   }
 
   .status-state {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--teal);
   }
 
@@ -1063,7 +1129,7 @@
   }
 
   .card-filepath {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -1315,7 +1381,7 @@
 
   /* ---- Code-answer card (EXPLORE_CODE wire) ---- */
   .code-answer-header {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     margin-bottom: var(--s-2);
     letter-spacing: 0.02em;
@@ -1338,7 +1404,7 @@
     display: flex;
     align-items: center;
     gap: var(--s-3);
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.4;
   }
   .code-answer-path { color: var(--teal); }
@@ -1349,7 +1415,7 @@
     font-size: 10px;
   }
   .code-answer-snippet {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     background: rgba(26, 32, 41, 0.45);
     border-radius: var(--r-xs);
@@ -1362,7 +1428,7 @@
     overflow: hidden;
   }
   .code-answer-hint {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     font-style: italic;
   }
@@ -1500,6 +1566,44 @@
 
   .send-btn:focus-visible {
     box-shadow: var(--ring);
+  }
+
+  /* C-6: Stop button. Mutually exclusive with .send-btn. Matches send height (28px).
+     --teal-soft background + --text-primary text per plan task 9. */
+  .stop-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    flex-shrink: 0;
+    background: var(--teal-soft);
+    border: 1px solid var(--teal-line);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    outline: none;
+    transition:
+      background var(--dur-fast) var(--ease-std),
+      border-color var(--dur-fast) var(--ease-std),
+      color var(--dur-fast) var(--ease-std);
+  }
+
+  .stop-btn:hover {
+    background: var(--teal-ghost);
+    border-color: var(--teal);
+    color: var(--teal-bright);
+  }
+
+  .stop-btn:focus-visible {
+    box-shadow: var(--ring);
+  }
+
+  .stop-btn-label {
+    line-height: 1;
   }
 
   /* ---- Outlined chat shell ---- */

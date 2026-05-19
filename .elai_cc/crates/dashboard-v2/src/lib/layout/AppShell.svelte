@@ -28,7 +28,7 @@
   // Both auto-uncollapse the secondary panel as part of the operation.
   const MIME_TAB = 'text/elai-tab';
   const MIME_TAB_TYPE = 'application/x-elai-tab-type';
-  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph']);
+  const VALID_TYPES = new Set(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore']);
 
   function dropStripAcceptsDrag(e: DragEvent): boolean {
     if (!e.dataTransfer) return false;
@@ -183,7 +183,7 @@
     width: 100vw;
     height: 100vh;
     display: grid;
-    grid-template-columns: 64px 1fr 0;
+    grid-template-columns: 48px 1fr 0; /* C-6: matches Sidebar width 48px */
     grid-template-rows: 1fr 22px;
     background: var(--bg-void);
     overflow: hidden;

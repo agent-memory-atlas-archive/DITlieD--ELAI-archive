@@ -113,8 +113,11 @@ pub(crate) fn run_symbol_graph_stats(project_root: PathBuf) -> Result<(), anyhow
 /// the subcommand entrypoint — never from library code. The library functions
 /// (`build_symbol_graph`, `update_changed_files_symbol_graph`) accept the
 /// timestamp as a parameter.
+// C-15 entropy-allow manifest:
+//   line 119 — entrypoint-only one-shot now-ms read; ClockProvider exempted
+//              per CLAUDE.md "main()/entrypoint" rule, see fn doc above.
 fn entrypoint_now_ms() -> i64 {
-    let millis = std::time::SystemTime::now()
+    let millis = std::time::SystemTime::now() // entropy-allow: cli-entrypoint-bootloader-init
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0u128);

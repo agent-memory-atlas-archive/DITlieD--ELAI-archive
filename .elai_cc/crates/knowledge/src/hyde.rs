@@ -14,6 +14,9 @@ use std::time::Duration;
 
 use elai_core::{ClockProvider, LogicalInstant};
 
+use crate::knowledge_ssb_sink::{
+    noop_sink, HydeQueryEvent, KnowledgeSsbSink,
+};
 use crate::vector::circuit_breaker::{
     BreakerState, EmbeddingCircuitBreaker, FailureKind,
 };
@@ -39,6 +42,18 @@ pub const HYDE_TEMPERATURE: f32 = 0.7;
 
 /// Prompt template for hypothesis generation.
 pub const HYDE_PROMPT_PREFIX: &str = "Write a short technical paragraph answering: ";
+
+// C-1: convert `Duration` to milliseconds clamped to `u64::MAX`. Used
+// for HyDE latency payloads. Module-private to keep the helper close to
+// its single call site.
+fn duration_to_ms_clamped(d: Duration) -> u64 {
+    let ms_u128 = d.as_millis();
+    if ms_u128 > u128::from(u64::MAX) {
+        u64::MAX
+    } else {
+        ms_u128 as u64
+    }
+}
 
 // ---------------------------------------------------------------------------
 // HydeClient trait
@@ -80,17 +95,36 @@ pub struct HydeStage {
     cache: Mutex<FxHashMap<[u8; 32], CachedHypothesis>>,
     breaker: Mutex<EmbeddingCircuitBreaker>,
     clock: Arc<dyn ClockProvider>,
+    /// C-1: typed SSB sink for per-hypothesize beacons. Production wiring
+    /// uses the orchestrator's `OrchestratorKnowledgeSsbSink`; tests and
+    /// inert paths use `NoopKnowledgeSsbSink`.
+    ssb_sink: Arc<dyn KnowledgeSsbSink>,
 }
 
 impl HydeStage {
-    /// Create a new HyDE stage with default circuit breaker configuration.
+    /// Create a new HyDE stage with default circuit breaker configuration
+    /// and a no-op SSB sink. Production callers should prefer
+    /// [`HydeStage::with_ssb`] to wire the orchestrator adapter so HyDE
+    /// rows reach the dashboard.
     pub fn new(client: Arc<dyn HydeClient>, clock: Arc<dyn ClockProvider>) -> Self {
+        Self::with_ssb(client, clock, noop_sink())
+    }
+
+    /// Create a new HyDE stage with a typed SSB sink installed. Every
+    /// call to [`HydeStage::hypothesize`] will emit one
+    /// `KnowledgeSsbSink::emit_hyde_query` row via this sink.
+    pub fn with_ssb(
+        client: Arc<dyn HydeClient>,
+        clock: Arc<dyn ClockProvider>,
+        ssb_sink: Arc<dyn KnowledgeSsbSink>,
+    ) -> Self {
         let breaker = EmbeddingCircuitBreaker::with_defaults("hyde_sidecar", clock.clone());
         Self {
             client,
             cache: Mutex::new(FxHashMap::default()),
             breaker: Mutex::new(breaker),
             clock,
+            ssb_sink,
         }
     }
 
@@ -102,6 +136,12 @@ impl HydeStage {
     /// - Sidecar call fails or times out
     ///
     /// Returns cached hypothesis on cache hit (5-minute TTL).
+    ///
+    /// C-1: emits one [`HydeQueryEvent`] through the configured
+    /// [`KnowledgeSsbSink`] for every call that passes the
+    /// `MIN_WORDS_FOR_HYDE` guard. Short-query rejections are NOT
+    /// emitted (they happen before the cache key is computed and would
+    /// flood the dashboard for trivial queries).
     pub fn hypothesize(&self, query: &str) -> Option<String> {
         // Skip short/simple queries.
         let word_count = query.split_whitespace().count();
@@ -114,16 +154,39 @@ impl HydeStage {
             return None;
         }
 
-        // Cache lookup (blake3 key).
-        let key_bytes: [u8; 32] = *blake3::hash(query.as_bytes()).as_bytes();
+        // C-1: capture start instant for latency measurement (entropy
+        // quarantine: ClockProvider only, never std::time::Instant).
+        let started = self.clock.now();
+
+        // Cache lookup (blake3 key). The full 32-byte hash is hex-encoded
+        // for the SSB payload so duplicate-query analysis on the dashboard
+        // side can group by the full hash without truncation collisions.
+        let raw_hash = blake3::hash(query.as_bytes());
+        let key_bytes: [u8; 32] = *raw_hash.as_bytes();
+        let query_hash_hex = raw_hash.to_hex().to_string();
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.get(&key_bytes) {
                 let age = self.clock.elapsed_since(entry.created_at);
                 if age < HYDE_CACHE_TTL {
                     // NARROWING-OK: cache age never exceeds u64::MAX ms (584M years).
-                    tracing::debug!(age_ms = age.as_millis().min(u64::MAX as u128) as u64, "hyde: cache hit");
-                    return Some(entry.text.clone());
+                    tracing::debug!(
+                        age_ms = age.as_millis().min(u64::MAX as u128) as u64,
+                        "hyde: cache hit"
+                    );
+                    let text = entry.text.clone();
+                    // Drop the cache lock before emitting so the sink
+                    // dispatch path never holds the cache mutex.
+                    drop(cache);
+                    let latency_ms = duration_to_ms_clamped(self.clock.elapsed_since(started));
+                    let hypothesis_len = u32::try_from(text.len()).unwrap_or(u32::MAX);
+                    self.ssb_sink.emit_hyde_query(HydeQueryEvent {
+                        query_hash: query_hash_hex,
+                        hypothesis_len,
+                        cache_hit: true,
+                        latency_ms,
+                    });
+                    return Some(text);
                 }
             }
         }
@@ -142,6 +205,18 @@ impl HydeStage {
                 });
             }
         }
+
+        let latency_ms = duration_to_ms_clamped(self.clock.elapsed_since(started));
+        let hypothesis_len = hypothesis
+            .as_ref()
+            .map(|t| u32::try_from(t.len()).unwrap_or(u32::MAX))
+            .unwrap_or(0);
+        self.ssb_sink.emit_hyde_query(HydeQueryEvent {
+            query_hash: query_hash_hex,
+            hypothesis_len,
+            cache_hit: false,
+            latency_ms,
+        });
 
         hypothesis
     }

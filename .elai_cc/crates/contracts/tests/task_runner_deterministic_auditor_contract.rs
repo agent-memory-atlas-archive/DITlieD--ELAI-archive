@@ -30,6 +30,12 @@ use elai_orchestrator::{
 use elai_rules::schema::DeprecatedPatternEntry;
 
 fn config_with_passing_build() -> DeterministicAuditorConfig {
+    // C-28: disable Step 6 (mutation) for these legacy gap-#4 contracts.
+    let mut mutation = elai_orchestrator::MutationConfig::default();
+    mutation.enabled = false;
+    // C-29: disable Step 7 (metamorphic) for the same reason.
+    let mut metamorphic = elai_orchestrator::MetamorphicConfig::default();
+    metamorphic.enabled = false;
     DeterministicAuditorConfig {
         enabled: true,
         build_cmds: vec![BuildCommand {
@@ -45,6 +51,8 @@ fn config_with_passing_build() -> DeterministicAuditorConfig {
         primary_language: Language::Rust,
         project_root: PathBuf::from("."),
         file_discipline: Default::default(),
+        mutation,
+        metamorphic,
     }
 }
 

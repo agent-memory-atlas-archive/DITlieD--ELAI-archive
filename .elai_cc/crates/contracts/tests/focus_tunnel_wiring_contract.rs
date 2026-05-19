@@ -456,6 +456,8 @@ fn dummy_spec(id: u64) -> BabyStepSpec {
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     }
 }
 
@@ -702,6 +704,8 @@ async fn fim_step_executes_when_target_file_and_edit_region_set() {
         preferred_mode: None,
         target_file: Some(file.clone()),
         edit_region: Some(region),
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
 
     // BLOCK 2b: build_step_context_from MUST forward the region verbatim.

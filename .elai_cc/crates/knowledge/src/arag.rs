@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::error::KnowledgeError;
+use crate::vector::ort_session::OrtSession;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,6 +117,17 @@ impl ContextTracker {
 pub struct AragOrchestrator {
     pub config: AragConfig,
     chunks: Vec<AragChunk>,
+    /// C-8 Task #8: optional ONNX-backed embedder used by
+    /// [`Self::semantic_search`] to compute a real query embedding and
+    /// score chunks via dot-product against their stored embeddings.
+    ///
+    /// Defaults to `None`; production wiring at `cli::live_cli::
+    /// build_local_knowledge_stack` loads the graphcodebert.onnx model
+    /// from `.elai_cc/models/onnx/` and installs it via
+    /// [`Self::with_embedder`]. When absent the search falls back to the
+    /// pre-C-8 embedding-norm proxy with a `tracing::warn!` so callers
+    /// are not silently degraded.
+    embedder: Option<Arc<OrtSession>>,
 }
 
 impl AragOrchestrator {
@@ -122,7 +135,18 @@ impl AragOrchestrator {
         Self {
             config,
             chunks: Vec::new(),
+            embedder: None,
         }
+    }
+
+    /// C-8 Task #8: install an ONNX `OrtSession` so [`Self::semantic_search`]
+    /// computes real query embeddings and scores chunks via dot-product. The
+    /// session must be the graphcodebert (or compatible RoBERTa-family)
+    /// model whose 768-dim output matches the dim of stored
+    /// `AragChunk.embedding` vectors.
+    pub fn with_embedder(mut self, embedder: Arc<OrtSession>) -> Self {
+        self.embedder = Some(embedder);
+        self
     }
 
     /// Add a chunk to the in-memory corpus for keyword and semantic search.
@@ -248,6 +272,18 @@ impl AragOrchestrator {
     /// 3. Group by parent chunk_id, take max score per chunk.
     /// 4. Sort by score, return top_k.
     /// 5. Snippet = matched sentences (progressive disclosure).
+    ///
+    /// C-8 + C-17 (DRIFT-B): ONNX dot-product is the default and only
+    /// production code path when an embedder is installed. The norm-proxy
+    /// is a documented LOGGED-FALLBACK reserved for two degraded states:
+    ///   (a) `self.embedder` is `None` — no embedder constructed (legacy
+    ///       call sites still in transition to `AragOrchestrator::with_embedder`).
+    ///   (b) the ONNX `embed(query)` call itself returned `Err` — model
+    ///       failure mid-pipeline. We emit a `tracing::warn!` and keep
+    ///       returning ranked results so the consumer never goes dark.
+    /// C-17 contract: when the embedder is present and `embed()` succeeded,
+    /// dot-product is the scoring function. The fallback is never the
+    /// happy path.
     fn semantic_search(
         &self,
         query: &str,
@@ -257,23 +293,43 @@ impl AragOrchestrator {
             return Ok(Vec::new());
         }
 
-        // Use chunk embeddings for similarity scoring.
-        // In production this would use real dual-vector embeddings; for now we use chunk-level
-        // embeddings directly since sentence-level embeddings aren't stored separately.
         let candidate_count = top_k.saturating_mul(SEMANTIC_OVERSAMPLE_FACTOR).min(self.chunks.len());
 
-        let mut chunk_scores: Vec<(usize, f64)> = self
-            .chunks
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| !c.embedding.is_empty())
-            .map(|(idx, c)| {
-                // Use chunk embedding norm as a proxy score.
-                // In production: dot_product(query_embedding, chunk_embedding).
-                let norm: f64 = c.embedding.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
-                (idx, norm)
-            })
-            .collect();
+        let mut chunk_scores: Vec<(usize, f64)> = match self.embedder.as_ref() {
+            Some(embedder) => {
+                // C-8 Task #8: real ONNX dot-product path.
+                match embedder.embed(query) {
+                    Ok(query_emb) => self
+                        .chunks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| !c.embedding.is_empty())
+                        .map(|(idx, c)| {
+                            let score = dot_product_f32(&query_emb, &c.embedding);
+                            (idx, score as f64)
+                        })
+                        .collect(),
+                    Err(e) => {
+                        // Embedding failure is non-fatal at this layer: fall
+                        // back to the norm proxy with a single warn so the
+                        // pipeline keeps producing output and the degradation
+                        // is observable.
+                        tracing::warn!(
+                            error = %e,
+                            "arag.semantic_search: ONNX query embedding failed; falling back to norm proxy",
+                        );
+                        norm_proxy_scores(&self.chunks)
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "arag.semantic_search: no embedder installed; using legacy norm proxy. \
+                     Install via AragOrchestrator::with_embedder for real dot-product scoring.",
+                );
+                norm_proxy_scores(&self.chunks)
+            }
+        };
 
         chunk_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         chunk_scores.truncate(candidate_count);
@@ -351,6 +407,44 @@ impl AragOrchestrator {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// C-8 Task #8: dot-product between a query embedding and a chunk embedding.
+/// Truncates to the common prefix length so a dimension mismatch between
+/// model output (e.g. 768) and stored chunk dim does not panic. Returns 0.0
+/// if either side is empty.
+fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let mut acc: f32 = 0.0;
+    // SAFETY-NOTE: bounded loop indexes a[..n] and b[..n] from len().min(len()).
+    for i in 0..n {
+        acc += a[i] * b[i];
+    }
+    acc
+}
+
+/// C-8 Task #8: legacy norm proxy used when no embedder is installed or the
+/// query embedding call fails. Kept as a fallback so the pipeline never goes
+/// dark when the ONNX path is degraded. A `tracing::warn!` upstream records
+/// the degradation.
+fn norm_proxy_scores(chunks: &[AragChunk]) -> Vec<(usize, f64)> {
+    chunks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.embedding.is_empty())
+        .map(|(idx, c)| {
+            let norm: f64 = c
+                .embedding
+                .iter()
+                .map(|x| (*x as f64) * (*x as f64))
+                .sum::<f64>()
+                .sqrt();
+            (idx, norm)
+        })
+        .collect()
+}
 
 /// Count case-insensitive substring occurrences.
 fn count_substring_occurrences(haystack: &str, needle: &str) -> usize {

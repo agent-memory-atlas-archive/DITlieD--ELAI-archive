@@ -1,4 +1,8 @@
-use elai_core::{pricing_for_model, TokenUsage, UsageCostEstimate};
+use elai_core::TokenUsage;
+
+use crate::pricing::{
+    estimate_cost_usd, estimate_cost_usd_with_pricing, pricing_for_model, UsageCostEstimate,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -286,8 +290,8 @@ impl Usage {
     pub fn estimated_cost_usd(&self, model: &str) -> UsageCostEstimate {
         let usage = self.token_usage();
         pricing_for_model(model).map_or_else(
-            || usage.estimate_cost_usd(),
-            |pricing| usage.estimate_cost_usd_with_pricing(pricing),
+            || estimate_cost_usd(usage),
+            |pricing| estimate_cost_usd_with_pricing(usage, pricing),
         )
     }
 }
@@ -353,7 +357,7 @@ pub enum StreamEvent {
 
 #[cfg(test)]
 mod tests {
-    use elai_core::format_usd;
+    use crate::pricing::format_usd;
 
     use super::{MessageResponse, Usage};
 

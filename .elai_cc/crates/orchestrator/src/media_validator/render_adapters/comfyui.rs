@@ -83,7 +83,7 @@ struct PromptResponse {
 
 fn make_tempdir(prefix: &str) -> Result<PathBuf, RenderAdapterError> {
     let base = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
     let dir = base.join(format!("{prefix}-{id}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -106,7 +106,7 @@ impl MediaRenderAdapter for ComfyUIRenderAdapter {
         >,
     > {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
 
             // 1. Read + parse the workflow JSON from the artifact path.
             let workflow_bytes = std::fs::read(artifact).map_err(|_| {
@@ -176,9 +176,9 @@ impl MediaRenderAdapter for ComfyUIRenderAdapter {
                 "{}{}/{}",
                 self.api_url, COMFYUI_ENDPOINT_HISTORY, prompt_id
             );
-            let deadline = Instant::now() + timeout;
+            let deadline = Instant::now() + timeout; // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             let outputs = loop {
-                if Instant::now() >= deadline {
+                if Instant::now() >= deadline { // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
                     return Err(RenderAdapterError::Timeout { millis: timeout_ms });
                 }
                 let r = match client.get(&history_url).send().await {

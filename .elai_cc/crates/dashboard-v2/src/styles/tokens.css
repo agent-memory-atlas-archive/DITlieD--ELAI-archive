@@ -3,6 +3,20 @@
    Single source of truth for all custom properties.
    No hex literals may appear outside this :root block.
    Usage: always var(--…) — never raw hex in components.
+
+   C-6 NOTES (token semantic deviations from naming):
+   - --font-sans now contains JetBrains Mono (monospace). The
+     token name is retained for backward-compat: renaming would
+     cascade through every component referencing var(--font-sans).
+     Body font is intentionally monospace per spec
+     dashboard-design.txt:75. Consumers should treat --font-sans
+     as "default body font" regardless of family classification.
+   - Sidebar.svelte ships 7 nav icons (command/plan/activity/
+     review/monitor/settings/graph). Spec dashboard-design.txt:
+     195-199 lists 5 (terminal/layers/play/search/settings).
+     Surplus (review/monitor/graph) retained; "search/explore"
+     icon missing. Reconciliation deferred to C-7 (UX audit);
+     hiding pre-empts that audit and risks user confusion.
    ============================================================ */
 
 :root {
@@ -11,22 +25,22 @@
      BACKGROUNDS — deep to lifted
      Depth is expressed through bg steps, never box-shadow.
   ---------------------------------------------------------- */
-  --bg-void:      #07090B;   /* window chrome, out-of-panel voids */
-  --bg-base:      #0B0E12;   /* primary surface (default panel bg) */
-  --bg-surface:   #10141A;   /* elevated cards, tab bar */
-  --bg-hover:     #161B22;   /* hover row, selected row */
-  --bg-input:     #1A2029;   /* input fields, code blocks */
-  --bg-overlay:   rgba(7,9,11,0.72); /* modal backdrop — NO blur over 4px */
+  --bg-void:      #0a0e12;   /* window chrome, out-of-panel voids */
+  --bg-base:      #0f1318;   /* primary surface (default panel bg) */
+  --bg-surface:   #151a20;   /* elevated cards, tab bar */
+  --bg-hover:     #1a2028;   /* hover row, selected row */
+  --bg-input:     #1e2530;   /* input fields, code blocks */
+  --bg-overlay:   rgba(10,14,18,0.72); /* modal backdrop — NO blur over 4px */
 
   /* ----------------------------------------------------------
      PRIMARY ACCENT — muted teal-forest
      One accent dominates. Use teal-bright sparingly.
   ---------------------------------------------------------- */
-  --teal:         #1E8A7A;   /* active, focus ring, brand */
-  --teal-bright:  #2BAE98;   /* progress bars, important badges */
-  --teal-soft:    rgba(30,138,122,0.28);  /* glows, subtle highlights */
-  --teal-ghost:   rgba(30,138,122,0.10);  /* hover tint, active bg */
-  --teal-line:    rgba(30,138,122,0.45);  /* 1–2px accent borders */
+  --teal:         #1B7A6E;   /* active, focus ring, brand */
+  --teal-bright:  #24a08e;   /* progress bars, important badges */
+  --teal-soft:    rgba(27,122,110,0.25);  /* glows, subtle highlights */
+  --teal-ghost:   rgba(27,122,110,0.08);  /* hover tint, active bg */
+  --teal-line:    rgba(27,122,110,0.45);  /* 1–2px accent borders */
 
   /* ----------------------------------------------------------
      SECONDARY — cold steel blue
@@ -39,9 +53,9 @@
   /* ----------------------------------------------------------
      TEXT — warm-neutral, never pure white
   ---------------------------------------------------------- */
-  --text-primary:   #DCE5E8;
-  --text-secondary: #95A1A8;
-  --text-ghost:     #5E6B73;
+  --text-primary:   #d0d7de;
+  --text-secondary: #6e7681;
+  --text-ghost:     #383e47;
   --text-disabled:  #3A4148;
 
   /* ----------------------------------------------------------
@@ -101,9 +115,9 @@
   /* ----------------------------------------------------------
      TYPOGRAPHY
   ---------------------------------------------------------- */
-  --font-sans:    'Inter', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-sans:    'JetBrains Mono', 'Fira Code', monospace; /* C-6: body font is monospace per spec; token name kept for back-compat */
   --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  --font-display: 'Inter', 'Segoe UI Variable', system-ui, sans-serif; /* thin-200 for display */
+  --font-display: 'Segoe UI Variable', 'Segoe UI', sans-serif; /* thin-200 for display */
 
   /* ----------------------------------------------------------
      FOCUS RING

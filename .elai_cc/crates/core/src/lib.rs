@@ -3,6 +3,7 @@ pub mod bounded_string;
 pub mod clock;
 pub mod config;
 pub mod entropy;
+pub mod file_plan;
 pub mod interrogation_tree;
 pub mod micro_reflection;
 pub mod mistake_book;
@@ -34,9 +35,10 @@ pub use sandbox::{
     FilesystemIsolationMode, LinuxSandboxCommand, SandboxConfig, SandboxDetectionInputs,
     SandboxRequest, SandboxStatus,
 };
-pub use usage::{
-    format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
-};
+// C-14 — Phase 0 debt strip: pricing-adjacent symbols moved to the providers
+// crate (see `elai_providers::pricing`). Only the raw counter primitives
+// remain in core.
+pub use usage::{TokenUsage, UsageTracker};
 
 pub use project_id::{
     project_id_from_cwd, project_id_from_path, PROJECT_ID_HEX_LEN, PROJECT_ID_PREFIX,
@@ -54,6 +56,12 @@ pub use project_profile::{
 pub use mistake_book::{
     contains_diff, format_constraints, insert_with_eviction, DiffHash, FailureCategory,
     MistakeEntry, DIFF_HASH_SHORT_LEN, MAX_ENTRIES_PER_STEP, MAX_INJECTION_TOKENS,
+};
+
+// C-31 — Layer 1 FilePlan primitives.
+pub use file_plan::{
+    FileModSpec, FilePlan, FilePlanError, FileSpec, FunctionSpec, LanguageLimitsMap,
+    DEFAULT_LANGUAGE_HARD_BLOCK, MAX_FUNCTIONS_PER_FILE,
 };
 
 pub use micro_reflection::{

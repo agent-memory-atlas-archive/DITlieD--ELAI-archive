@@ -39,6 +39,11 @@ fn fixture(files: Vec<(&str, &str)>, edges: Vec<(&str, &str, bool)>) -> VizData 
                 deps: 0,
                 dependents: 0,
                 symbol_count: 0,
+                // C-24 (DRIFT-7 Path A): file-mode test fixtures leave
+                // level/status None; the cytoscape decomposition selectors
+                // are gated by graphMode === "decomposition".
+                level: None,
+                status: None,
             })
             .collect(),
         file_edges: edges

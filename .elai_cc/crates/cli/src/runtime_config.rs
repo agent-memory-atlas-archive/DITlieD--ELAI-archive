@@ -24,6 +24,16 @@ use std::path::Path;
 
 use elai_orchestrator::OutputConfig;
 use elai_orchestrator::ResearchPresets;
+// C-28: re-use the orchestrator's MutationConfig (defined in
+// `mutation_testing.rs`) so the [testing.mutation] elai_cc.toml block
+// stays a single struct shared between the loader + the auditor's
+// Step 6 gate.
+use elai_orchestrator::MutationConfig;
+// C-29: re-use the orchestrator's IntentConfig + MetamorphicConfig so the
+// `[testing.intent]` + `[testing.metamorphic]` elai_cc.toml blocks stay
+// single structs shared between the loader, the PLANNING -> TESTING_FIRST
+// gate, and the auditor Step 7 hook.
+use elai_orchestrator::{IntentConfig, MetamorphicConfig};
 use elai_tools::action_classifier::ActionPolicy;
 use elai_tools::routing_rules::RoutingConfig;
 use serde::{Deserialize, Serialize};
@@ -137,6 +147,30 @@ pub struct AgentsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// C-28: TestingConfig — [testing.mutation] block in elai_cc.toml.
+// ---------------------------------------------------------------------------
+
+/// Aggregated config for the `[testing]` TOML section.
+/// `mutation` is the only sub-block today; future tiers (T-2/T-3 in C-29)
+/// land alongside.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TestingConfig {
+    /// `[testing.mutation]` — T-1 mutation testing gate config.
+    /// Absent section falls through to `MutationConfig::default()`.
+    pub mutation: MutationConfig,
+    /// `[testing.intent]` — C-29 T-2 IntentPair gate config (PLANNING ->
+    /// TESTING_FIRST). Absent section falls through to
+    /// `IntentConfig::default()` (`min_pairs = 3`).
+    pub intent: IntentConfig,
+    /// `[testing.metamorphic]` — C-29 T-3 metamorphic relations config
+    /// consumed by `DeterministicAuditor` Step 7. Absent section falls
+    /// through to `MetamorphicConfig::default()` (`enabled = true`,
+    /// `relations = ["identity","inverse"]`, `sample_size = 100`).
+    pub metamorphic: MetamorphicConfig,
+}
+
+// ---------------------------------------------------------------------------
 // ElaiRuntimeConfig
 // ---------------------------------------------------------------------------
 
@@ -165,6 +199,9 @@ pub struct ElaiRuntimeConfig {
     /// presets consumed by `idea_framing::frame_idea`. Loaded via the same
     /// `load_elai_config` pass; accessible via [`ElaiRuntimeConfig::research_presets`].
     pub research_presets: ResearchPresets,
+    /// `[testing]` section (C-28) — testing-trust tier configuration.
+    /// Currently carries the T-1 mutation block under `testing.mutation`.
+    pub testing: TestingConfig,
 }
 
 impl ElaiRuntimeConfig {
@@ -174,6 +211,29 @@ impl ElaiRuntimeConfig {
     #[must_use]
     pub fn research_presets(&self) -> &ResearchPresets {
         &self.research_presets
+    }
+
+    /// C-28: accessor for the `[testing.mutation]` block. Dashboards
+    /// thread this into `DefaultDeterministicAuditGate::with_mutation_supplier`.
+    #[must_use]
+    pub fn mutation_config(&self) -> &MutationConfig {
+        &self.testing.mutation
+    }
+
+    /// C-29: accessor for the `[testing.intent]` block. Threaded into
+    /// `TransitionContext.min_intent_pairs` at the PLANNING -> TESTING_FIRST
+    /// gate evaluation site.
+    #[must_use]
+    pub fn intent_config(&self) -> &IntentConfig {
+        &self.testing.intent
+    }
+
+    /// C-29: accessor for the `[testing.metamorphic]` block. Threaded into
+    /// `DeterministicAuditorConfig.metamorphic` so Step 7 sees the same
+    /// relation list as the runtime loader.
+    #[must_use]
+    pub fn metamorphic_config(&self) -> &MetamorphicConfig {
+        &self.testing.metamorphic
     }
 }
 

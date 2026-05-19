@@ -12,6 +12,8 @@
   import IdeaFramingWindow from '../windows/IdeaFramingWindow.svelte';
   // B-41: per-level auditor timeline window.
   import AuditTimelineWindow from '../windows/AuditTimelineWindow.svelte';
+  // C-7: Q&A oracle / codebase-explorer surface.
+  import ExploreWindow from '../windows/ExploreWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
 
   interface Props {
@@ -40,6 +42,8 @@
     <IdeaFramingWindow />
   {:else if type === 'audit_timeline'}
     <AuditTimelineWindow />
+  {:else if type === 'explore'}
+    <ExploreWindow />
   {:else}
     <FallbackWindow {type} />
   {/if}

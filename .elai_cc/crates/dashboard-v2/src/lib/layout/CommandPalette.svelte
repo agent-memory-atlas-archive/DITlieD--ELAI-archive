@@ -390,7 +390,7 @@
 
   .item-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     flex: 1 1 auto;
     overflow: hidden;
@@ -418,7 +418,7 @@
 
   .empty-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 </style>

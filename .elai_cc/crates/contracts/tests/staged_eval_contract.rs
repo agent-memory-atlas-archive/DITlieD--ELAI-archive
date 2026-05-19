@@ -1,9 +1,9 @@
 //! Contract tests for B-23 Phase 4H Group D — staged_eval.rs (4H.5).
 
 use elai_orchestrator::{
-    evaluate_stage, run_full_pipeline, AllowedConfigKey, BenchmarkRunner, DataTable, PipelineMode,
-    ProjectScope, ProposedChange, ReasoningTraceRef, SelfModProposal, StageOutcome, StageReport,
-    StagedEvalError, StagedEvaluation, TestOutcomeReport, STAGE1_DEFAULT_TASKS,
+    evaluate_stage, run_full_pipeline, AllowedConfigKey, BenchmarkRunner, DataTable, ParameterKey,
+    PipelineMode, ProjectScope, ProposedChange, ReasoningTraceRef, SelfModProposal, StageOutcome,
+    StageReport, StagedEvalError, StagedEvaluation, TestOutcomeReport, STAGE1_DEFAULT_TASKS,
     STAGE2_DEFAULT_TASKS, STAGE3_DEFAULT_TASKS,
 };
 
@@ -11,7 +11,8 @@ fn class_b_proposal() -> SelfModProposal {
     SelfModProposal {
         variant_id: "v1".into(),
         parent_id: "v0".into(),
-        target_config_key: AllowedConfigKey::Parameter("etc_threshold".into()),
+        // C-21 Task 7 — typed closed-enum ParameterKey.
+        target_config_key: AllowedConfigKey::Parameter(ParameterKey::EtcThreshold),
         proposed_change: ProposedChange::UpdateKey {
             key: "etc_threshold".into(),
             old_value: "0.6".into(),
@@ -179,12 +180,16 @@ fn class_a_rejected_at_entry() {
     assert!(matches!(err, StagedEvalError::ClassAProposalRejected));
 }
 
+/// C-21 Task 7: LOCKED_KEYS rejection migrated from runtime to COMPILE
+/// time. `cloud_monthly_budget` has no variant in `ParameterKey`, so the
+/// previous test construction does not compile. The compile-time check is
+/// pinned by the c21_anti_stale_contract.rs trybuild fixture; the runtime
+/// `is_locked` gate remains as defence-in-depth for JSON-decoded proposals.
 #[test]
-fn locked_parameter_rejected_at_entry() {
-    let mut p = class_b_proposal();
-    p.target_config_key = AllowedConfigKey::Parameter("cloud_monthly_budget".into());
-    let err = run_full_pipeline(&AlwaysPass, &p, PipelineMode::Surgical).unwrap_err();
-    assert!(matches!(err, StagedEvalError::LockedKey(_)));
+fn locked_parameter_check_runtime_consistent() {
+    assert!(elai_orchestrator::is_locked("cloud_monthly_budget"));
+    assert!(elai_orchestrator::is_locked("score_weights"));
+    assert!(!elai_orchestrator::is_locked("etc_threshold"));
 }
 
 #[test]

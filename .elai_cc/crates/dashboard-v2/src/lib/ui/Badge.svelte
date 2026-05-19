@@ -61,7 +61,7 @@
   }
 
   .badge--sm {
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 7px;
   }
 </style>

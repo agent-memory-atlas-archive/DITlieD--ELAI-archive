@@ -504,12 +504,17 @@ async fn e2e_full_pipeline_local() {
                     };
                     let rpc_server: Arc<
                         dyn elai_orchestrator::AgentRpcServer + Send + Sync + 'static,
-                    > = Arc::new(elai_orchestrator::ProductionAgentRpcServer::new(
-                        anthropic_client,
-                        dispatcher,
-                        model,
-                        max_tokens,
-                    ));
+                    > = Arc::new(
+                        elai_orchestrator::ProductionAgentRpcServer::new(
+                            anthropic_client,
+                            dispatcher,
+                            model,
+                            max_tokens,
+                        )
+                        .with_system_prompt(
+                            elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
+                        ),
+                    );
 
                     wiring.baby_step_executor = Some(build_default_baby_step_executor(
                         SeededRng::new(0xB3_F011),

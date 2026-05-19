@@ -1905,7 +1905,7 @@
   .orbit-label--baby  { color: var(--text-ghost, rgba(150, 165, 170, 0.55)); font-size: 9px; }
   .orbit-label--active {
     color: var(--teal-bright, rgba(75, 220, 180, 1));
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 0.06em;
   }
 

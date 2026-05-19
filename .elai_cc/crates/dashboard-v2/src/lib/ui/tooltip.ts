@@ -27,7 +27,7 @@ export function tooltip(node: HTMLElement, opts: TooltipOptions) {
       align-items: center;
       gap: 6px;
       font-family: var(--font-mono);
-      font-size: 11px;
+      font-size: 10px;
       color: var(--text-primary);
       white-space: nowrap;
       pointer-events: none;

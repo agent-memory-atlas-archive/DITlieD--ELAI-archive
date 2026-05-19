@@ -257,7 +257,7 @@
   .status-blocked { color: #ff6b6b; }
   .error-line {
     color: #ff6b6b;
-    font-size: 11px;
+    font-size: 10px;
     margin-top: 4px;
   }
   .field-row {
@@ -278,12 +278,12 @@
   ul { margin: 4px 0 4px 18px; padding: 0; }
   li { margin: 2px 0; font-size: 12px; }
   .stream-name { font-weight: 500; }
-  .stream-status { margin-left: 8px; font-size: 11px; }
+  .stream-status { margin-left: 8px; font-size: 10px; }
   .stream-status.status-converged { color: #6fc06f; }
   .stream-status.status-degraded  { color: #ffaa55; }
   .degraded {
     color: #ffaa55;
-    font-size: 11px;
+    font-size: 10px;
     margin: 4px 0;
   }
   .unknown { color: #ffaa55; }
@@ -325,11 +325,11 @@
     background: #444;
     cursor: not-allowed;
   }
-  .submit-ok   { color: #6fc06f; margin-left: 8px; font-size: 11px; }
-  .submit-fail { color: #ff6b6b; margin-left: 8px; font-size: 11px; }
+  .submit-ok   { color: #6fc06f; margin-left: 8px; font-size: 10px; }
+  .submit-fail { color: #ff6b6b; margin-left: 8px; font-size: 10px; }
   .hint {
     color: #aaa;
-    font-size: 11px;
+    font-size: 10px;
     margin-top: 6px;
   }
   .finding-block { color: #ff6b6b; }

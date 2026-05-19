@@ -55,13 +55,65 @@ jobs:
         working-directory: .elai_cc
         run: bash scripts/check_hashmap_ban.sh
 
-      # Entropy quarantine is intentionally NOT run here yet — 16 production
-      # sites (cli/, dashboard-v2/, orchestrator/) still need ClockProvider
-      # injection. Re-enable this step when Batch F of B-15 lands.
-      # - name: Entropy quarantine check
-      #   working-directory: .elai_cc
-      #   run: bash scripts/check_entropy_quarantine.sh
+      # Entropy quarantine is active as of C-15. Allowlist mechanism:
+      #   - `// entropy-allow: <reason>` annotation on the SystemTime / Instant
+      #     / Uuid line for sites that cannot route through ClockProvider /
+      #     EntropySource (e.g., serde defaults, getrandom fallback seeds,
+      #     non-injectable boundary code).
+      #   - `// TEST_KEEP` for cfg(test) blocks inside src/ that the script
+      #     cannot exclude by directory.
+      #   - Canonical modules (clock.rs, entropy.rs) and tests/ directories
+      #     are excluded by the script.
+      - name: Entropy quarantine check
+        working-directory: .elai_cc
+        run: bash scripts/check_entropy_quarantine.sh
+
+      # C-21 Task 1 — anti-staleness lint. STRICT mode (exit 1 on violation).
+      # Checks for Box<dyn Error>, `use log::`, ort = "-rc", etc. Per
+      # CLAUDE.md "Anti-Stale-Training" hard rule.
+      - name: Anti-stale lint
+        working-directory: .elai_cc
+        run: bash scripts/check_anti_stale.sh
 
       - name: Hooks Windows compat contract test
         working-directory: .elai_cc
         run: cargo test -p elai-orchestrator --test hooks_windows_compat --locked
+
+      # C-27 Testing-Trust Tier T-0 — deterministic wiring contract audit.
+      # Compiles the elai CLI in release mode and invokes
+      # `elai wiring audit` over the workflow-root plan markdown directories
+      # (`docs/thefinalglance/B-plan` + `C-plan` + `D-plan`). Exit code is
+      # 0 on a clean audit (zero WiringViolation rows) and 1 on any
+      # violation.
+      #
+      # BLOCK-1 follow-up (C-27 patch): the default forbidden patterns
+      # were tightened — bare-word `\bstub\b` / `\bdeferred\b` were
+      # producing 930 false positives against the live tree. Defaults now
+      # match only (a) bare-statement `todo!()` / `unimplemented!()` /
+      # `panic!("not yet ...")` and (b) comment-leading `// STUB:` /
+      # `// TODO:` / `// FIXME:` markers. Lines tagged with the
+      # `stub-ban-allow:` opt-out token are exempt (mirrors C-15
+      # `entropy-allow:`).
+      #
+      # BLOCK-2 follow-up: contracts dir now points at
+      # `../docs/thefinalglance` (the workflow-root plan tree); the
+      # previous `crates/orchestrator/tests` default scanned a Rust test
+      # directory with zero `*.md` files, so DkgReachability +
+      # ObservableEffect auditors no-opped.
+      #
+      # Skip set: `/tests/`, `/target/`, `/node_modules/`,
+      # `/__pycache__/`, `/.bkp_old/`, `/.elai/`, `/benches/`,
+      # `/examples/`, `/.venv/`, `/.venv-staging/`, `/site-packages/`,
+      # `/dist-info/`, `/.tox/`, `_test.rs`, `_contract.rs`.
+      #
+      # `[ci skip]` opt-out mirrors the existing scripts/check_anti_stale.sh
+      # convention; commit messages containing `[ci skip]` short-circuit
+      # before the binary build.
+      - name: Wiring contract audit (C-27 T-0)
+        if: "!contains(github.event.head_commit.message, '[ci skip]')"
+        working-directory: .elai_cc
+        run: |
+          cargo build -p elai-cli --release --locked
+          ./target/release/elai wiring audit \
+            --config elai_cc.toml \
+            --contracts ../docs/thefinalglance

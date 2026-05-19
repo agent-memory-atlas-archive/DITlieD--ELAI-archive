@@ -26,9 +26,9 @@
 //! [`TokenPositionTracker`] (reused across tokens). Per locked decision #6
 //! the trait is synchronous; no async, no I/O.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use elai_plugins::import_extractor::{
@@ -569,7 +569,7 @@ pub struct StreamingValidator {
     consecutive_parse_errors: u32,
     /// Set of already-reported deprecated import names so we never trigger
     /// twice on the same import line.
-    reported_imports: HashMap<String, ()>,
+    reported_imports: FxHashMap<String, ()>,
     /// One-time language→parser construction. `None` if the chunk gate has
     /// not yet had to instantiate the parser, OR if the language has no
     /// tree-sitter grammar in the orchestrator crate.
@@ -592,7 +592,7 @@ impl StreamingValidator {
             terminated: false,
             termination_reason: None,
             consecutive_parse_errors: 0,
-            reported_imports: HashMap::new(),
+            reported_imports: FxHashMap::default(),
             parser: None,
         }
     }
@@ -843,7 +843,7 @@ pub struct StreamingEarlyTermStats {
     /// Number of `StreamingEarlyTerminated` rows observed.
     pub total_terminations: u32,
     /// Reason wire-string → count.
-    pub reason_breakdown: HashMap<String, u32>,
+    pub reason_breakdown: FxHashMap<String, u32>,
     /// Sum of `token_count_at_term` across rows — a coarse "tokens we
     /// stopped emitting" proxy.
     pub total_tokens_saved: u64,
@@ -857,7 +857,7 @@ pub fn streaming_early_termination_stats_for_payloads(
     payloads: &[&SsbPayload],
 ) -> StreamingEarlyTermStats {
     let mut total = 0u32;
-    let mut by_reason: HashMap<String, u32> = HashMap::new();
+    let mut by_reason: FxHashMap<String, u32> = FxHashMap::default();
     let mut tokens_saved: u64 = 0;
     for payload in payloads {
         if let SsbPayload::StreamingEarlyTerminated(p) = payload {

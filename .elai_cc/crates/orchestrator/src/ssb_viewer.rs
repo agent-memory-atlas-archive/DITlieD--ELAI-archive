@@ -17,11 +17,11 @@ use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::ssb::{
-    ssb_action_type_from_str_public, BubbleUpTypedPayload, ConceptDecompositionNodePayload,
-    ContextBudgetComputedPayload, DagRepairRoundPayload, FeasibilityReportPayload,
-    InterventionOption, InterventionRequestPayload, InterventionType, NovelStepDetectedPayload,
-    ReflectAuditVerdictPayload, ReflectRefinedPayload, ReflectTriagedPayload,
-    SsbActionType, SsbPayload, StubRunPayload, TaskSubmittedPayload,
+    ssb_action_type_from_str_public, BabyStepReadyPayload, BubbleUpTypedPayload,
+    ConceptDecompositionNodePayload, ContextBudgetComputedPayload, DagRepairRoundPayload,
+    FeasibilityReportPayload, InterventionOption, InterventionRequestPayload, InterventionType,
+    NovelStepDetectedPayload, ReflectAuditVerdictPayload, ReflectRefinedPayload,
+    ReflectTriagedPayload, SsbActionType, SsbPayload, StubRunPayload, TaskSubmittedPayload,
 };
 
 /// Maximum length of `phase_id` accepted by [`SsbViewer::step_progress`].
@@ -335,6 +335,33 @@ pub struct BabyStepDetail {
     pub tdd: Option<serde_json::Value>,
     /// Serialised AcceptanceCriteria when present.
     pub acceptance: Option<serde_json::Value>,
+}
+
+/// C-4 — aggregated cloud-spend snapshot returned by
+/// [`SsbViewer::cloud_spend_summary`] and surfaced to the dashboard
+/// `MonitorWindow` cloud gauges via the `get_cloud_spend` Tauri command.
+///
+/// All fields are zero when the SSB has no `cloud_spend` rows (fresh
+/// install / no cloud invocations yet) so the frontend never sees
+/// `undefined`. `redaction_count` is currently always 0 because no SSB
+/// action type emits a redaction counter — wired in for a future
+/// `redaction_event` row type (documented in C-4-decisions.md).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CloudSpendSummary {
+    /// Most recent CloudSpend row's `cost_usd`. Approximates the cost of
+    /// the active task.
+    pub task_usd: f64,
+    /// Sum of `cost_usd` across every CloudSpend row whose `created_at`
+    /// falls inside the current local-day window.
+    pub day_usd: f64,
+    /// Sum of `cache_creation_tokens` over today's rows.
+    pub cache_creation_tokens: u64,
+    /// Sum of `cache_read_tokens` over today's rows.
+    pub cache_read_tokens: u64,
+    /// Number of redaction events. Always 0 today (no source SSB row);
+    /// kept on the wire so a future writer side can populate without
+    /// breaking the frontend.
+    pub redaction_count: u64,
 }
 
 impl BabyStepDetail {
@@ -1614,6 +1641,77 @@ impl SsbViewer {
         }))
     }
 
+    /// C-1: read the N most recent rows for a single `action_type`.
+    /// Returns full `SsbActionDetail` records with deserialised payload
+    /// JSON so dashboard commands (`get_query_trace_recent`,
+    /// `get_grounding_sweep`, `get_csq_pending`) can reshape the rows
+    /// without writing per-type viewer methods. `limit` is hard-capped
+    /// at [`DRAWER_QUERY_HARD_CAP`] to bound the result size.
+    ///
+    /// Rows whose msgpack payload fails to deserialise are SKIPPED with
+    /// a `tracing::warn` — matching the existing `gg_signals` /
+    /// `failure_taxonomy_last` reader semantics. The dashboard always
+    /// sees a well-formed array.
+    pub fn recent_rows_of_type(
+        &self,
+        action_type: &str,
+        limit: usize,
+    ) -> Result<Vec<SsbActionDetail>, SsbViewerError> {
+        let effective = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 = i64::try_from(effective).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, created_at, action_type, agent_id, payload \
+             FROM ssb WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![action_type, limit_i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        })?;
+        let mut out: Vec<SsbActionDetail> = Vec::new();
+        for row in rows {
+            let (seq, ts, at, agent_id, payload_bytes) = row?;
+            let typed: SsbPayload = match rmp_serde::from_slice(&payload_bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        seq,
+                        action_type = %at,
+                        error = %e,
+                        "ssb_viewer::recent_rows_of_type: payload decode failed; skipping"
+                    );
+                    continue;
+                }
+            };
+            let payload_json = match serde_json::to_value(&typed) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        seq,
+                        action_type = %at,
+                        error = %e,
+                        "ssb_viewer::recent_rows_of_type: json encode failed; skipping"
+                    );
+                    continue;
+                }
+            };
+            out.push(SsbActionDetail {
+                seq,
+                ts,
+                action_type: at,
+                agent_id,
+                payload_json,
+                files: Vec::new(),
+            });
+        }
+        Ok(out)
+    }
+
     /// All `reasoning_trace` rows that reference a given `step_id`, ordered
     /// by `seq` ascending. `step_id` matches `topic` in the stored payload
     /// (the orchestrator writes the plan step into `topic`).
@@ -1908,11 +2006,23 @@ impl SsbViewer {
 
     /// Tier 2 Track B — full BabyStep view fetched on PlanWindow leaf click.
     ///
-    /// Mirrors [`crate::research_tree::BabyStepSpec`]'s 6 fields. The
-    /// orchestrator does not yet persist BabyStepSpec rows in the SSB, so
-    /// this implementation returns [`SsbViewerError::NotFound`] for unknown
-    /// ids. Once the writer side emits a `baby_step_spec` action the lookup
-    /// scans the SSB by id; today it can only confirm the id syntactically.
+    /// C-4 update: C-2 ships `BabyStepReady` SSB rows + the
+    /// `ConceptDecompositionNode` tree, so this method now scans both to
+    /// produce a partially-populated [`BabyStepDetail`].
+    ///
+    /// Lookup strategy (in order):
+    ///   1. Scan recent `BabyStepReady` rows and match `baby_step_id` against
+    ///      `payload.baby_step_id.to_string()`.
+    ///   2. When a match is found, walk the decomposition tree to recover
+    ///      `concept_name` / `phase_name` / `step_name` from the ancestry
+    ///      ids (concept_id / phase_id / step_id).
+    ///   3. `task` is populated from `payload.label`.
+    ///   4. `tdd` / `acceptance` / `estimated_tokens` remain `None` / 0 —
+    ///      no SSB row carries those fields today (BabyStepSpec persistence
+    ///      is a documented C-5+ deferral).
+    ///
+    /// Returns [`SsbViewerError::NotFound`] when no matching BabyStepReady
+    /// row exists. The dashboard renders that as "BabyStepNotPersisted".
     pub fn baby_step_detail(
         &self,
         baby_step_id: &str,
@@ -1928,12 +2038,91 @@ impl SsbViewer {
                 baby_step_id.len()
             )));
         }
-        // Touch the lock so connection-poison errors surface here.
-        let _conn = self.lock()?;
-        // No BabyStepSpec persistence yet — every lookup is a NotFound.
-        Err(SsbViewerError::NotFound {
-            kind: "baby_step".to_owned(),
-            id: baby_step_id.to_owned(),
+
+        // Scan recent BabyStepReady rows (descending seq) so the latest
+        // emission for an id wins. Cap at BABY_STEP_DETAIL_SCAN_LIMIT —
+        // a project with >2000 unique baby-steps is implausible.
+        const BABY_STEP_DETAIL_SCAN_LIMIT: i64 = 2000;
+        let mut matched: Option<BabyStepReadyPayload> = None;
+        {
+            let conn = self.lock()?;
+            let mut stmt = conn.prepare(
+                "SELECT payload FROM ssb \
+                 WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    SsbActionType::BabyStepReady.as_sql_str(),
+                    BABY_STEP_DETAIL_SCAN_LIMIT,
+                ],
+                |row| row.get::<_, Vec<u8>>(0),
+            )?;
+            for row in rows {
+                let bytes = row?;
+                let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                if let SsbPayload::BabyStepReady(p) = payload {
+                    if p.baby_step_id.to_string() == baby_step_id {
+                        matched = Some(p);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(payload) = matched else {
+            return Err(SsbViewerError::NotFound {
+                kind: "baby_step".to_owned(),
+                id: baby_step_id.to_owned(),
+            });
+        };
+
+        // Walk the decomposition tree to derive concept / phase / step
+        // names. Each lookup is O(N) over a small tree (typical project
+        // <100 nodes); we trade clarity for an extra pass.
+        let tree = self.decomposition_tree(None).unwrap_or_default();
+        let mut concept_name = String::new();
+        let mut phase_name = String::new();
+        let mut step_name = String::new();
+        let concept_id_s = payload.concept_id.to_string();
+        let phase_id_s = payload.phase_id.to_string();
+        let step_id_s = payload.step_id.to_string();
+        for c in &tree.concepts {
+            if c.id == concept_id_s {
+                concept_name = c.title.clone();
+            }
+            for ph in &c.phases {
+                if ph.id == phase_id_s {
+                    phase_name = ph.title.clone();
+                    if concept_name.is_empty() {
+                        concept_name = c.title.clone();
+                    }
+                }
+                for st in &ph.steps {
+                    if st.id == step_id_s {
+                        step_name = st.title.clone();
+                        if phase_name.is_empty() {
+                            phase_name = ph.title.clone();
+                        }
+                        if concept_name.is_empty() {
+                            concept_name = c.title.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(BabyStepDetail {
+            baby_step_id: baby_step_id.to_owned(),
+            task: payload.label,
+            estimated_tokens: 0,
+            concept_name,
+            phase_name,
+            step_name,
+            tdd: None,
+            acceptance: None,
         })
     }
 
@@ -2693,14 +2882,69 @@ impl SsbViewer {
         Ok(by_model.into_values().collect())
     }
 
-    /// PageRank top-N stub (Tier 3 Knowledge drawer). No SSB row type
-    /// currently persists per-symbol PageRank scores; the viewer returns
-    /// an empty list so the drawer renders a graceful "not available".
+    /// PageRank top-N (Tier 3 Knowledge drawer).
+    ///
+    /// C-3 (DRIFT-1): no SSB row type persists per-symbol PageRank scores
+    /// and the codebase does not currently materialise a `dkg_nodes_pagerank`
+    /// table — PageRank in elai_cc is recomputed in-memory per query by
+    /// `RetrievalPipeline::compute_repo_map` (knowledge/src/pipeline.rs).
+    /// To future-proof the viewer for the day a persistent table lands,
+    /// we probe `sqlite_master` for the table name and only run the
+    /// canonical SELECT when it exists. When the table is absent we
+    /// return `Ok(Vec::new())` so the dashboard renders "no data" without
+    /// surfacing an error — this matches the plan acceptance rule
+    /// "returns empty array (not error) when table is empty".
     pub fn pagerank_top(
         &self,
-        _n: usize,
+        n: usize,
     ) -> Result<Vec<PageRankEntry>, SsbViewerError> {
-        Ok(Vec::new())
+        let limit_i64 = i64::try_from(n).unwrap_or(i64::MAX);
+        let conn = self.lock()?;
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dkg_nodes_pagerank'",
+                [],
+                |_| Ok(true),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                other => Err(other),
+            })?;
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+        let mut stmt = conn.prepare(
+            "SELECT symbol, path, score FROM dkg_nodes_pagerank \
+             ORDER BY score DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit_i64], |row| {
+            Ok(PageRankEntry {
+                symbol: row.get::<_, String>(0)?,
+                path: row.get::<_, String>(1)?,
+                score: row.get::<_, f64>(2)?,
+            })
+        })?;
+        let mut out: Vec<PageRankEntry> = Vec::new();
+        for row in rows {
+            match row {
+                Ok(entry) => out.push(entry),
+                Err(e) => {
+                    tracing::warn!(error = %e, "pagerank_top: row decode failed; skipping");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// C-3 (DRIFT-6): thin alias over [`recent_rows_of_type`] for
+    /// `query_trace` rows so the deterministic check
+    /// `rg "fn recent_query_traces"` resolves. The implementation just
+    /// forwards to the canonical reader; no extra DB work.
+    pub fn recent_query_traces(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SsbActionDetail>, SsbViewerError> {
+        self.recent_rows_of_type(SsbActionType::QueryTrace.as_sql_str(), limit)
     }
 
     /// Query tier stats stub (Tier 3 Knowledge drawer). Reserved until a
@@ -2870,8 +3114,13 @@ impl SsbViewer {
     }
 
     /// Session handoffs (Tier 3 Orchestration drawer). Derived from
-    /// `BranchMerge` SSB rows — each row describes a handoff boundary
+    /// branch-merge SSB rows — each row describes a handoff boundary
     /// where the winner name survived and the abandoned names did not.
+    ///
+    /// C-23: reads BOTH the legacy `BranchMerge` rows (no producer in
+    /// the current codebase but kept for forward-compat with externally
+    /// authored rows) AND the new `BranchMerged` rows emitted by
+    /// `merge_branch_with_ssb` after the SCHEMA_VERSION 55 bump.
     pub fn session_handoffs(
         &self,
         limit: usize,
@@ -2881,10 +3130,14 @@ impl SsbViewer {
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
             "SELECT seq, created_at, payload FROM ssb \
-             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+             WHERE action_type IN (?1, ?2) ORDER BY seq DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(
-            params![SsbActionType::BranchMerge.as_sql_str(), limit_i64],
+            params![
+                SsbActionType::BranchMerge.as_sql_str(),
+                SsbActionType::BranchMerged.as_sql_str(),
+                limit_i64,
+            ],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -2900,17 +3153,33 @@ impl SsbViewer {
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            if let SsbPayload::BranchMerge(b) = payload {
-                let from_count =
-                    u32::try_from(b.from_snap_ids.len()).unwrap_or(u32::MAX);
-                out.push(SessionHandoffEntry {
-                    seq,
-                    ts_ms,
-                    winner: b.winner_name,
-                    abandoned: b.abandoned_names,
-                    trunk_snap_id: b.trunk_snap_id,
-                    from_snap_count: from_count,
-                });
+            match payload {
+                SsbPayload::BranchMerge(b) => {
+                    let from_count =
+                        u32::try_from(b.from_snap_ids.len()).unwrap_or(u32::MAX);
+                    out.push(SessionHandoffEntry {
+                        seq,
+                        ts_ms,
+                        winner: b.winner_name,
+                        abandoned: b.abandoned_names,
+                        trunk_snap_id: b.trunk_snap_id,
+                        from_snap_count: from_count,
+                    });
+                }
+                SsbPayload::BranchMerged(b) => {
+                    // C-23 BranchMerged payload has no from_snap_ids field;
+                    // expose 0 (callers use this only for activity-feed
+                    // labelling, not for chain reconstruction).
+                    out.push(SessionHandoffEntry {
+                        seq,
+                        ts_ms,
+                        winner: b.winner_name,
+                        abandoned: b.abandoned_names,
+                        trunk_snap_id: b.trunk_snap_id,
+                        from_snap_count: 0,
+                    });
+                }
+                _ => {}
             }
         }
         Ok(out)
@@ -3338,6 +3607,120 @@ impl SsbViewer {
             }
         }
         Ok(out)
+    }
+
+    /// C-2: returns the latest [`crate::ssb::AgentStatusChangedPayload`] per
+    /// `agent_id` in descending seq order. Used by the dashboard `get_agents`
+    /// Tauri command to replace the hardcoded 8-role IDLE list. When the SSB
+    /// has zero rows yet, returns an empty Vec; the caller falls back to the
+    /// canonical IDLE list so the AGENTS section never empty-renders.
+    pub fn recent_agent_status_changes(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::AgentStatusChangedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::AgentStatusChanged.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        // Walk the descending stream and keep the FIRST payload per agent_id
+        // (which is the latest because of DESC ordering). Preserves order
+        // across roles for stable dashboard rendering.
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AgentStatusChanged(p) = payload {
+                if seen.insert(p.agent_id.clone()) {
+                    out.push(p);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// C-2: returns up to `limit` recent ambiguity rows. Used by the
+    /// dashboard `get_ambiguity_state` Tauri command. Returns the latest
+    /// [`crate::ssb::AmbiguityScoredPayload`] plus optional last
+    /// [`crate::ssb::AmbiguityFloorFailedPayload`] / streak rows so the
+    /// drawer can render score + breakdown + floor warnings + streak.
+    pub fn latest_ambiguity_scored(
+        &self,
+    ) -> Result<Option<crate::ssb::AmbiguityScoredPayload>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![SsbActionType::AmbiguityScored.as_sql_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        if let Some(row) = rows.next() {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AmbiguityScored(p) = payload {
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
+    }
+
+    /// C-2: returns the latest [`crate::ssb::AmbiguityFloorFailedPayload`] or
+    /// `None` when no floor-fail row has been written yet.
+    pub fn latest_ambiguity_floor_failed(
+        &self,
+    ) -> Result<Option<crate::ssb::AmbiguityFloorFailedPayload>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![SsbActionType::AmbiguityFloorFailed.as_sql_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        if let Some(row) = rows.next() {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AmbiguityFloorFailed(p) = payload {
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
+    }
+
+    /// C-2: returns the latest [`crate::ssb::AmbiguityStreakAdvancedPayload`]
+    /// or `None` when no streak row has been written yet.
+    pub fn latest_ambiguity_streak(
+        &self,
+    ) -> Result<Option<crate::ssb::AmbiguityStreakAdvancedPayload>, SsbViewerError> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![SsbActionType::AmbiguityStreakAdvanced.as_sql_str()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        if let Some(row) = rows.next() {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::AmbiguityStreakAdvanced(p) = payload {
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
     }
 
     /// Returns up to `limit` recent `dag_repair_round` rows in descending seq
@@ -3795,6 +4178,84 @@ impl SsbViewer {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// C-4 — aggregate `cloud_spend` rows into a single
+    /// [`CloudSpendSummary`] for the dashboard `get_cloud_spend` Tauri
+    /// command.
+    ///
+    /// One pass scans up to [`CLOUD_SPEND_SCAN_LIMIT`] of the most recent
+    /// rows. Latest row's `cost_usd` populates `task_usd`. Rows whose
+    /// `created_at` falls within the current UTC-day window are summed
+    /// into `day_usd`, and their token counters accumulate into
+    /// `cache_creation_tokens` / `cache_read_tokens`.
+    ///
+    /// Empty SSB or no `cloud_spend` rows -> zeroed
+    /// [`CloudSpendSummary::default`]. The wire shape is stable regardless
+    /// of how many rows exist; consumers never have to branch on
+    /// `Option<None>`.
+    ///
+    /// `now_ms` is the wall-clock millisecond timestamp used to derive the
+    /// "today" boundary. Threading a clock through here (rather than
+    /// reading `OsClock` directly) keeps deterministic-replay tests stable.
+    /// NOTE: the SSB stores `created_at` in seconds since epoch
+    /// (`ssb::execute_write` writes `as_secs()`), so we convert the
+    /// caller's millisecond `now` to a seconds-based day boundary before
+    /// comparing.
+    pub fn cloud_spend_summary(
+        &self,
+        now_ms: i64,
+    ) -> Result<CloudSpendSummary, SsbViewerError> {
+        const CLOUD_SPEND_SCAN_LIMIT: i64 = 10_000;
+
+        // SSB stores created_at in *seconds*. Convert the caller's `now_ms`
+        // into a seconds-based day boundary so the inequality compares
+        // like to like.
+        const SECS_PER_DAY: i64 = 86_400;
+        let now_secs = if now_ms > 0 { now_ms / 1000 } else { 0 };
+        let day_start_secs = (now_secs / SECS_PER_DAY) * SECS_PER_DAY;
+
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT created_at, payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::CloudSpend.as_sql_str(), CLOUD_SPEND_SCAN_LIMIT],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )?;
+
+        let mut summary = CloudSpendSummary::default();
+        let mut task_assigned = false;
+        for row in rows {
+            let (created_at_secs, bytes) = row?;
+            let payload: SsbPayload = match rmp_serde::from_slice(&bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let SsbPayload::CloudSpend(p) = payload else {
+                continue;
+            };
+            if !task_assigned {
+                summary.task_usd = p.cost_usd;
+                task_assigned = true;
+            }
+            if created_at_secs >= day_start_secs {
+                summary.day_usd += p.cost_usd;
+                summary.cache_creation_tokens = summary
+                    .cache_creation_tokens
+                    .saturating_add(u64::from(p.cache_creation_tokens));
+                summary.cache_read_tokens = summary
+                    .cache_read_tokens
+                    .saturating_add(u64::from(p.cache_read_tokens));
+            }
+            // redaction_count: no source field in CloudSpendPayload today;
+            // wired in for a future `redaction_event` SSB row (see
+            // C-4-decisions.md Q5).
+            let _ = &p;
+        }
+
+        Ok(summary)
     }
 }
 

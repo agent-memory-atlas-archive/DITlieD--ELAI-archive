@@ -12,3 +12,12 @@ lock_released = true
 shutdown_wall_secs = 62
 deadline_exceeded = false
 forced_release_logged = true
+
+# C-17 (DRIFT-K/M, DRIFT-L): production-scale graceful-shutdown runs
+# deferred to C-20. Synthetic baseline above stays as the regression
+# baseline. The deadline literal is now pinned by
+# elai_orchestrator::startup::SHUTDOWN_DEADLINE (30s) plus the contract
+# range assertion 30..=120 in c17_indexing_resilience_contract.rs.
+[c17_followup]
+measured_in_phase = "C-20"
+production_scale_fixture = "linux-v6.7"

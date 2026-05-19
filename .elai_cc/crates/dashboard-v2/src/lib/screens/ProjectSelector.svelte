@@ -6,7 +6,7 @@
   import { formatRelative } from '../utils/time';
   import type { ProjectSummary, ExecutionMode } from '../api/types';
 
-  // TODO replace with ../ui/SegmentedControl.svelte after Wave 2
+  // TODO replace with ../ui/SegmentedControl.svelte after Wave 2. stub-ban-allow: Wave 2 PRIMITIVES agent follow-up
   // Inline fallback implementation until PRIMITIVES agent delivers it
 
   let mounted = $state(false);
@@ -398,7 +398,7 @@
 
   .project-path {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     white-space: nowrap;
     overflow: hidden;
@@ -408,7 +408,7 @@
 
   .project-time {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     white-space: nowrap;
     justify-self: end;
@@ -433,7 +433,7 @@
     border: none;
     padding: var(--s-1) var(--s-1);
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 400;
     color: var(--text-ghost);
     letter-spacing: 0.08em;

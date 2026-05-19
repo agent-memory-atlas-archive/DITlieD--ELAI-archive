@@ -24,13 +24,19 @@ mod sidecar_hyde;
 
 mod args;
 mod auth;
+mod c17_lifecycle;
 mod help;
 mod live_cli;
+mod measure;
+mod pipeline_subcommand;
 mod symbol_graph;
 mod progress;
 mod resume;
 mod run_subcommand;
 mod runtime_builder;
+mod wip_squash_subcommand;
+// C-27: T(-1)+T-0 wiring contract audit dispatcher.
+mod wiring_audit;
 mod runtime_client;
 mod runtime_cmd;
 mod tool_executor;
@@ -240,22 +246,46 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::ResumeSession { session_path, commands, output_format } => resume_session(&session_path, &commands, output_format),
         CliAction::Status { model, permission_mode, output_format } => live_cli::print_status_snapshot(&model, permission_mode, output_format)?,
         CliAction::Sandbox { output_format } => live_cli::print_sandbox_status_snapshot(output_format)?,
-        CliAction::Prompt { prompt, model, output_format, allowed_tools, permission_mode, backend } =>
+        CliAction::Prompt { prompt, model, output_format, allowed_tools, permission_mode, backend } => {
+            // C-17 (DRIFT-D/E): auto-resume any persisted indexing batches
+            // and install the process-wide SIGINT/SIGTERM observer before
+            // dispatching the prompt. The project root is the CWD — the
+            // CLI does not accept --project-root on this arm.
+            let prompt_project_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            c17_lifecycle::install_lifecycle(&prompt_project_root);
             LiveCli::new_prompt(model, true, allowed_tools, permission_mode, backend)?
-                .run_turn_with_output(&prompt, output_format)?,
+                .run_turn_with_output(&prompt, output_format)?;
+        }
         CliAction::Login { output_format } => run_login(output_format)?,
         CliAction::Logout { output_format } => run_logout(output_format)?,
         CliAction::Doctor { output_format } => doctor::run_doctor(output_format)?,
         CliAction::Init { output_format } => live_cli::run_init(output_format)?,
-        CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } =>
-            repl::run_repl(model, allowed_tools, permission_mode, export_jsonl)?,
+        CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } => {
+            // C-17 (DRIFT-D/E): auto-resume + signal observer for the
+            // long-lived REPL scope. Sync entrypoint — see c17_lifecycle.rs
+            // for the transient-runtime pattern.
+            let repl_project_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            c17_lifecycle::install_lifecycle(&repl_project_root);
+            repl::run_repl(model, allowed_tools, permission_mode, export_jsonl)?;
+        }
         CliAction::DepAudit { project_dir, output_format } => doctor::run_dep_audit_command(&project_dir, output_format)?,
         CliAction::Local { port } => repl::run_local_repl(port)?,
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
         // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-        CliAction::Run { project_root } => {
-            run_subcommand::run_task_runner_subcommand(run_subcommand::RunArgs { project_root })?
+        CliAction::Run { project_root, mode, provider } => {
+            // C-17 (DRIFT-D/E): auto-resume + process-wide signal observer
+            // for the long-lived `elai run` task_runner scope. Runs BEFORE
+            // run_subcommand builds its own tokio runtime so the resume
+            // pass uses a transient runtime that finishes promptly.
+            c17_lifecycle::install_lifecycle(&project_root);
+            run_subcommand::run_task_runner_subcommand(run_subcommand::RunArgs {
+                project_root,
+                mode,
+                provider,
+            })?
         }
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
         CliAction::HelpTopic(topic) => live_cli::print_help_topic(topic),
@@ -266,6 +296,38 @@ fn run() -> Result<(), anyhow::Error> {
         }
         CliAction::SymbolGraphStats { project_root } => {
             symbol_graph::run_symbol_graph_stats(project_root)?
+        }
+        // C-13: `elai wip-squash [--project-root <path>]` — squashes leading
+        // WIP commits when count > 5. Invoked by the Python FSM hook chain
+        // at AUDITING -> MEMORIZING transitions.
+        CliAction::WipSquash { project_root } => {
+            wip_squash_subcommand::run_wip_squash_subcommand(project_root)?
+        }
+        // C-20: `elai measure [--scope <name>] [--cloud] [--output toml|json]`
+        // — test-infra metrics backfill driver. Owns its own tokio runtime
+        // (sync entrypoint pattern mirrored from `run_subcommand.rs`).
+        CliAction::Measure { scope, cloud, output_format: _ } => {
+            let project_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            measure::run_measure_subcommand(scope, cloud, project_root)?
+        }
+        // C-25: `elai pipeline [list|reset]` — inspect or reset the
+        // compiled-pipeline cache at `.elai/cache/compiled_pipelines.msgpack`.
+        CliAction::Pipeline { action, output_format: _ } => {
+            let project_root = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            pipeline_subcommand::run_pipeline_subcommand(action.as_deref(), &project_root)?
+        }
+        // C-27: `elai wiring audit ...` — deterministic Tier T-0 wiring
+        // contract audit. Owns its own tokio runtime (sync entry, mirrors
+        // pipeline/measure subcommands). Exits 1 on any violation.
+        CliAction::WiringAudit {
+            scope,
+            config_path,
+            contracts_dir,
+            output_format,
+        } => {
+            wiring_audit::run(scope, config_path, contracts_dir, output_format)?;
         }
     }
     Ok(())

@@ -146,8 +146,8 @@ function createKnowledge() {
     get languageStatus() { return languageStatus; },
     /** Bucket-B sections — backend producer not yet wired. */
     unwired: {
-      recentTraces: true,    // get_query_trace_recent returns []
-      searchMode: true,      // get_search_mode returns hardcoded HYBRID
+      recentTraces: false,   // C-1: get_query_trace_recent reads SSB query_trace rows
+      searchMode: false,     // C-8: get_search_mode reads SSB search_mode_changed rows
       recallMetrics: false,  // wired in PART11; commands.rs:614 returns measured constants from baseline toml
       languageStatus: false, // wired in Pass D; SsbViewer::latest_action_of_type reads SSB
     },
@@ -227,10 +227,10 @@ function createReasoning() {
     get feasibility() { return feasibility; },
     get reflectState() { return reflectState; },
     unwired: {
-      groundingSweep: true, // GroundingSweepGate producer not wired
-      csqPending: true,     // CSQ enforcement not wired in pre-tool dispatch
-      feasibility: false,   // B-21 4F: get_feasibility_report decodes real SSB rows
-      reflect: false,       // B-39: get_reflect_state wired to Tauri command
+      groundingSweep: false, // C-1: get_grounding_sweep reads SSB grounding_sweep_result rows
+      csqPending: false,     // C-1: get_csq_pending reads SSB csq_evaluated rows where blocked=true
+      feasibility: false,    // B-21 4F: get_feasibility_report decodes real SSB rows
+      reflect: false,        // B-39: get_reflect_state wired to Tauri command
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,

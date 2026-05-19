@@ -22,9 +22,16 @@
 use std::sync::Arc;
 
 use elai_core::clock::{ClockProvider, OsClock};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     agent_pool::{AgentPoolConfig, InProcessAgentPool},
+    autonomous_gate::{AutonomousGate, AutonomousGateConfig, GateMode},
+    background_task::BackgroundTaskManager,
+    cloud_mode::{CloudConfig, CloudModeRouter, RedactingBabyStepExecutor},
+    compiled_pipeline::{CompiledPipelineStore, TemplateCrystallizer},
+    dispatcher::{BackendConfig, BackendMode},
+    hook_dispatcher::{HookDispatcher, InProcessHookDispatcher},
     ipc_accept::AgentRpcServer,
     ipc_gateway::IpcGateway,
     task_runner::{AgentPoolBabyStepExecutor, BabyStepExecutor},
@@ -59,7 +66,74 @@ pub struct RuntimeWiring {
     /// Optional production baby-step executor. `None` keeps the legacy
     /// synthetic path. Set to `Some(build_default_baby_step_executor(...))`
     /// for the real agent-pool path.
+    ///
+    /// C-5: when `cloud_config` is also `Some` and the resolved provider is
+    /// `Cloud` or `Hybrid`, [`apply_task_runner_wiring`] wraps this executor
+    /// in [`RedactingBabyStepExecutor`] before plumbing it into
+    /// [`TaskRunnerConfig::baby_step_executor`].
     pub baby_step_executor: Option<Arc<dyn BabyStepExecutor>>,
+    /// C-9 — autonomous-gate operating mode. `None` keeps the legacy
+    /// behaviour (no gate attached to TaskRunnerConfig); `Some(mode)` causes
+    /// [`apply_task_runner_wiring`] to construct an [`AutonomousGate`] and
+    /// thread it into `TaskRunnerConfig::autonomous_gate`. Callers parse
+    /// `--mode` via `GateMode::from_cli_args` and stash the resolved mode
+    /// here before calling apply.
+    pub gate_mode: Option<GateMode>,
+    /// C-5 — cloud-mode router config. When `Some`,
+    /// [`apply_task_runner_wiring`] constructs a [`CloudModeRouter`] and
+    /// installs it on [`TaskRunnerConfig::cloud_router`], and wraps the
+    /// baby-step executor in [`RedactingBabyStepExecutor`] using the
+    /// privacy profile carried on the config. `None` keeps the legacy
+    /// pre-C-5 behaviour (no router, no redaction wrapper).
+    pub cloud_config: Option<CloudConfig>,
+    /// C-5 — `--provider local|cloud|hybrid` override from the CLI. When
+    /// `Some`, [`apply_task_runner_wiring`] honours it over the toml
+    /// `[cloud].default_mode` field; when `None`, the toml default carried
+    /// on `cloud_config.default_mode` wins. Mapped to
+    /// [`BackendMode`] at apply time:
+    ///   * `"local"`  -> `BackendMode::Local`
+    ///   * `"cloud"`  -> `BackendMode::Api`
+    ///   * `"hybrid"` -> `BackendMode::Hybrid`
+    pub provider_override: Option<String>,
+    /// C-13 — production hook dispatcher (Tier-1, in-process). When
+    /// `Some`, [`apply_task_runner_wiring`] assigns
+    /// `cfg.hook_dispatcher = wiring.hook_dispatcher.clone()`. Callers
+    /// build this via [`build_production_hook_dispatcher`] which returns
+    /// an [`InProcessHookDispatcher`] with the
+    /// `RuffPostToolUseRunner` installed. `None` keeps the pre-C-13
+    /// behaviour (no hook dispatcher attached; task_runner skips T1/T2/T3
+    /// evaluation).
+    ///
+    /// Trait selection (DECISION D3 option 3A in workflow/reasoning/C-13-decisions.md):
+    /// the field is typed as `Arc<dyn HookDispatcher>` (the in-process
+    /// trait at `hook_dispatcher.rs:345`) so the assignment into
+    /// `TaskRunnerConfig.hook_dispatcher` is direct. The C-11 Tier-2
+    /// `ipc_accept::IpcHookDispatcher` surface is a separate concern
+    /// wired by `AgentPoolBabyStepExecutor::with_hook_dispatcher` at the
+    /// agent-pool level.
+    pub hook_dispatcher: Option<Arc<dyn HookDispatcher + Send + Sync>>,
+    /// C-25 audit follow-up — production template crystallizer.
+    /// Defaults to `Some(Arc<AsyncMutex<TemplateCrystallizer>>)` via
+    /// [`build_task_runner_wiring`] so [`apply_task_runner_wiring`]
+    /// threads it into `TaskRunnerConfig.crystallizer`. Closes audit
+    /// WARN-4: the v56 surface left production sites at `None` so the
+    /// post-execute hook was a strict no-op in live runs. Tests that
+    /// want the legacy None path overwrite the field on the bundle
+    /// before calling apply.
+    pub crystallizer: Option<Arc<AsyncMutex<TemplateCrystallizer>>>,
+    /// C-25 audit follow-up — production compiled-pipeline on-disk store
+    /// rooted under `<project_root>/.elai_cc/cache/compiled_pipelines.msgpack`.
+    /// Loads from disk eagerly inside [`build_task_runner_wiring`] so the
+    /// runner sees pre-existing crystallizations on the first task. The
+    /// runner persists back via [`run_crystallizer_post_execute_hook`].
+    /// Closes audit WARN-4.
+    pub compiled_pipeline_store: Option<Arc<AsyncMutex<CompiledPipelineStore>>>,
+    /// C-25 audit follow-up — background-task manager (soft/hard-timeout
+    /// auto-detach + spawn/complete SSB rows). Constructed in
+    /// [`build_task_runner_wiring`] with the same SSB writer as the
+    /// rest of the runtime so all background spawns surface in the
+    /// dashboard timeline. Closes audit WARN-4.
+    pub background_task_manager: Option<Arc<BackgroundTaskManager>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -155,11 +229,59 @@ pub async fn build_task_runner_wiring(
         .map_err(|e| anyhow::anyhow!("build_task_runner_wiring: Layer1A ensure_tables failed: {e}"))?;
     let layer1a_processor = Arc::new(layer1a);
 
+    // C-25 audit follow-up — construct the production
+    // crystallizer + compiled_pipeline_store + background_task_manager
+    // bundle so [`apply_task_runner_wiring`] threads them onto
+    // TaskRunnerConfig. Closes audit WARN-4: all production
+    // construction sites previously passed `None` for these three Arcs
+    // so the post-execute hook (run_crystallizer_post_execute_hook)
+    // was a strict no-op and the SSB beacons never fired live.
+    //
+    // crystallizer: default 3-success threshold; SSB writer plumbed so
+    // `template_crystallized` rows surface in the dashboard.
+    let crystallizer = Arc::new(AsyncMutex::new(TemplateCrystallizer::new(Some(
+        Arc::clone(&ssb),
+    ))));
+    // compiled_pipeline_store: load from disk eagerly so pre-existing
+    // crystallizations are visible on the first task. The standard path
+    // sits under <project_root>/.elai/cache/compiled_pipelines.msgpack.
+    // Corrupt-input handling is panic-free (per compiled_pipeline::tests
+    // store_load_corrupt_msgpack_returns_empty_no_panic).
+    let store_path = CompiledPipelineStore::standard_path(project_root);
+    let mut store = CompiledPipelineStore::new(store_path);
+    store.load_from_disk();
+    let compiled_pipeline_store = Arc::new(AsyncMutex::new(store));
+    // background_task_manager: default soft/hard-timeout policy; SSB
+    // writer plumbed so background_task_started / background_task_complete
+    // rows surface in the dashboard timeline.
+    let background_task_manager =
+        Arc::new(BackgroundTaskManager::new(Some(Arc::clone(&ssb))));
+
     Ok(RuntimeWiring {
         ssb,
         feasibility_prober,
         layer1a_processor,
         baby_step_executor: None,
+        // C-9: default to None so existing callers preserve pre-C-9
+        // behaviour. The CLI + dashboard wiring sites set this to
+        // `Some(GateMode::from_cli_args(args.mode.as_deref()))` before
+        // calling `apply_task_runner_wiring`.
+        gate_mode: None,
+        // C-5: cloud-mode router + provider override. Defaults preserve
+        // pre-C-5 behaviour (no router, no redaction wrapper, no
+        // ceiling enforcement).
+        cloud_config: None,
+        provider_override: None,
+        // C-13: hook dispatcher defaults to None so existing callers
+        // preserve pre-C-13 behaviour. The CLI + dashboard wiring sites
+        // set this to `Some(build_production_hook_dispatcher(...))`
+        // before calling `apply_task_runner_wiring`.
+        hook_dispatcher: None,
+        // C-25 audit follow-up — live by default; tests that want the
+        // legacy None path overwrite these on the bundle.
+        crystallizer: Some(crystallizer),
+        compiled_pipeline_store: Some(compiled_pipeline_store),
+        background_task_manager: Some(background_task_manager),
     })
 }
 
@@ -178,8 +300,149 @@ pub fn apply_task_runner_wiring(
     let processor: Arc<dyn Layer1aProcessor> = wiring.layer1a_processor.clone();
     cfg.feasibility_prober = Some(prober);
     cfg.layer1a_processor = Some(processor);
-    cfg.baby_step_executor = wiring.baby_step_executor.clone();
+
+    // C-9 — install the AutonomousGate at the single production chokepoint
+    // both `cli::run_subcommand` and `dashboard-v2::src-tauri::lib::setup`
+    // reach. Closes the gap recorded in metrics/phase_4G.toml notes:165
+    // ("autonomous_gate: None"). When `gate_mode` is None the field stays
+    // None, preserving the pre-C-9 behaviour for callers that have not
+    // opted in.
+    if let Some(mode) = wiring.gate_mode {
+        let gate_cfg = AutonomousGateConfig {
+            mode,
+            ..AutonomousGateConfig::default()
+        };
+        cfg.autonomous_gate = Some(Arc::new(AutonomousGate::new(gate_cfg, None)));
+    }
+
+    // C-5 — cloud-mode router + redaction wrapper + ceiling enforcement.
+    //
+    // When `cloud_config` is `Some`, we:
+    //   1. Resolve the effective BackendMode from the CLI `--provider`
+    //      override (when supplied) or the toml `[cloud].default_mode` field.
+    //   2. Wrap the caller-supplied baby-step executor in
+    //      `RedactingBabyStepExecutor` when the resolved mode is `Hybrid`
+    //      or `Api` (cloud), so cloud-bound payloads pass through the
+    //      privacy redactor before any network call.
+    //   3. Construct a `CloudModeRouter` and install it on
+    //      `TaskRunnerConfig::cloud_router` so the runner's pre-dispatch
+    //      hook can emit EscalateToCloud and enforce the daily spend cap.
+    //   4. Thread the daily spend cap onto `cloud_spend_cap_daily_usd`
+    //      for the ceiling-check call site.
+    //
+    // When `cloud_config` is `None`, the path is a strict no-op — the
+    // baby-step executor is plumbed through unchanged.
+    let (resolved_executor, backend_mode, spend_cap_daily) = if let Some(cloud) = &wiring.cloud_config {
+        let resolved_mode = resolve_backend_mode(
+            wiring.provider_override.as_deref(),
+            cloud.default_mode,
+        );
+        let wraps_redactor = matches!(
+            resolved_mode,
+            BackendMode::Api | BackendMode::Hybrid,
+        );
+        let router = Arc::new(CloudModeRouter::new(cloud.clone()));
+        let privacy = router.privacy_config();
+        cfg.cloud_router = Some(router);
+        cfg.cloud_spend_cap_daily_usd = cloud.spend_cap_daily_usd;
+        // RedactingBabyStepExecutor wraps the production executor when the
+        // resolved provider is cloud-capable. For pure Local the inner
+        // executor is plumbed through verbatim — redaction is needless
+        // overhead and would burn CPU on data that never leaves the host.
+        //
+        // C-5: pass the SSB writer through `with_ssb` so the wrapper emits a
+        // `RedactionApplied` row each time the redactor fires. Lets the
+        // dashboard CloudPanel render the privacy-event feed without any
+        // additional plumbing at the executor call site.
+        let exec = match (&wiring.baby_step_executor, wraps_redactor) {
+            (Some(inner), true) => {
+                let wrapped: Arc<dyn BabyStepExecutor> = Arc::new(
+                    RedactingBabyStepExecutor::with_ssb(
+                        Arc::clone(inner),
+                        privacy,
+                        wiring.ssb.clone(),
+                    ),
+                );
+                Some(wrapped)
+            }
+            (inner, _) => inner.clone(),
+        };
+        (exec, resolved_mode, cloud.spend_cap_daily_usd)
+    } else {
+        (wiring.baby_step_executor.clone(), BackendMode::default(), None)
+    };
+    cfg.baby_step_executor = resolved_executor;
+
+    // Always populate backend_config so downstream code (resolve_exec_mode,
+    // build_dispatch_context) sees a coherent provider routing decision.
+    let mut backend_config = BackendConfig::default();
+    backend_config.mode = backend_mode;
+    if let Some(cloud) = &wiring.cloud_config {
+        backend_config.model = cloud.default_model.clone();
+    }
+    cfg.backend_config = Some(backend_config);
+
+    // Cap is mirrored on TaskRunnerConfig.cloud_spend_cap_daily_usd above
+    // when cloud_config is Some; this assignment makes the legacy fallthrough
+    // explicit so the field is never silently None when the caller wanted a
+    // cap (defensive: caps only land via cloud_config today).
+    let _ = spend_cap_daily; // documented intent — assignment happens above.
+
+    // C-13 — install the production hook dispatcher at the chokepoint so
+    // task_runner's T1/T2/T3 evaluation paths (5359/6577/6932) see a
+    // non-None `Arc<dyn HookDispatcher>`. `None` preserves the pre-C-13
+    // skip-everything behaviour. See DECISION D3 in
+    // workflow/reasoning/C-13-decisions.md (option 3A — Tier-1 trait).
+    if let Some(hd) = wiring.hook_dispatcher.as_ref() {
+        let trait_obj: Arc<dyn crate::hook_dispatcher::HookDispatcher> = hd.clone();
+        cfg.hook_dispatcher = Some(trait_obj);
+    }
+
+    // C-25 audit follow-up — thread the live crystallizer +
+    // compiled_pipeline_store + background_task_manager into
+    // TaskRunnerConfig so the post-execute hook and the
+    // build_with_compiled_executor entry point see non-None Arcs in
+    // production. Closes WARN-4 in workflow/sessions/s-25672/audit-C25.md.
+    cfg.crystallizer = wiring.crystallizer.clone();
+    cfg.compiled_pipeline_store = wiring.compiled_pipeline_store.clone();
+    cfg.background_task_manager = wiring.background_task_manager.clone();
+
     cfg
+}
+
+/// C-5 helper — resolve the production [`BackendMode`] from the CLI
+/// `--provider` override (when supplied) or the toml-default `ExecMode`
+/// carried on [`CloudConfig::default_mode`].
+///
+/// Mapping (canonical):
+///   * `Some("local")`   -> `BackendMode::Local`
+///   * `Some("cloud")`   -> `BackendMode::Api`
+///   * `Some("hybrid")`  -> `BackendMode::Hybrid`
+///   * `None` + `ExecMode::Local` -> `BackendMode::Local`
+///   * `None` + `ExecMode::Cloud` -> `BackendMode::Api`
+///   * `None` + `ExecMode::Auto`  -> `BackendMode::Hybrid`
+///
+/// Unknown strings fall through to `BackendMode::default()` (Api) so a
+/// typo in `--provider` never silently demotes to Local with an
+/// "implicit" semantic; the parser at [`crate::args::parse_run_subcommand_args`]
+/// rejects unknown values up front.
+fn resolve_backend_mode(
+    cli_override: Option<&str>,
+    toml_default: crate::cloud_mode::ExecMode,
+) -> BackendMode {
+    if let Some(raw) = cli_override {
+        return match raw.to_ascii_lowercase().as_str() {
+            "local" => BackendMode::Local,
+            "cloud" => BackendMode::Api,
+            "hybrid" => BackendMode::Hybrid,
+            _ => BackendMode::default(),
+        };
+    }
+    match toml_default {
+        crate::cloud_mode::ExecMode::Local => BackendMode::Local,
+        crate::cloud_mode::ExecMode::Cloud => BackendMode::Api,
+        crate::cloud_mode::ExecMode::Auto => BackendMode::Hybrid,
+    }
 }
 
 /// Construct the production [`AgentPoolBabyStepExecutor`] for callers that
@@ -222,6 +485,29 @@ where
         gateway,
         rpc_server,
     ))
+}
+
+/// C-13 — build the production [`InProcessHookDispatcher`] with the
+/// [`elai_plugins::post_tool_use::RuffPostToolUseRunner`] installed.
+///
+/// The returned `Arc<InProcessHookDispatcher>` is suitable for direct
+/// assignment to [`RuntimeWiring::hook_dispatcher`] (coerces to
+/// `Arc<dyn HookDispatcher>` at the assignment site). It uses the
+/// `OsClock` default — no test seam needed at production wiring sites.
+///
+/// `tiered` is `None` for now: the production TieredAnalysis bundle is
+/// constructed elsewhere (see `plugins::TieredAnalysis::new`) and is not
+/// part of C-13's wiring scope. When `None` the dispatcher returns empty
+/// findings lists; the ruff path still fires for `.py` writes thanks to
+/// the `with_ruff_runner` installation below.
+///
+/// Plan reference: C-13 task 2 + DECISION D3 option 3A
+/// (workflow/reasoning/C-13-decisions.md).
+#[must_use]
+pub fn build_production_hook_dispatcher() -> Arc<InProcessHookDispatcher> {
+    let ruff = Arc::new(elai_plugins::post_tool_use::RuffPostToolUseRunner::new());
+    let dispatcher = InProcessHookDispatcher::new(None).with_ruff_runner(ruff);
+    Arc::new(dispatcher)
 }
 
 /// Locate the `elai_cc_agent[.exe]` binary.

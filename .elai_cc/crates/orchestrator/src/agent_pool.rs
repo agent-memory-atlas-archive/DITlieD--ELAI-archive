@@ -48,6 +48,20 @@ pub enum AgentStatus {
 pub trait ModelPool: Send + Sync {
     /// Available VRAM in bytes. u64::MAX means unconstrained (no GPU check).
     fn available_vram(&self) -> u64;
+
+    /// C-9 — Whether the pool can fit a model of the given size in bytes.
+    /// Default impl compares against [`available_vram`]; concrete pools can
+    /// override when they have richer accounting (e.g. fragmented VRAM
+    /// reservation, per-device residency).
+    ///
+    /// Consumed by [`crate::autonomous_gate::AutonomousGate::decide`] before
+    /// emitting [`crate::autonomous_gate::AutonomyDecision::SubstituteModel`]
+    /// so a fallback that won't fit fires
+    /// [`crate::autonomous_gate::EscalationTrigger::SubstituteModelFailed`]
+    /// instead of an unconstrained swap. Source: phase-4G.txt §4G.5.
+    fn can_fit_llm(&self, model_size_bytes: u64) -> bool {
+        self.available_vram() >= model_size_bytes
+    }
 }
 
 // ---------------------------------------------------------------------------

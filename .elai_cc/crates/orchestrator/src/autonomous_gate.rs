@@ -21,12 +21,15 @@
 //! Source: docs/specs/guide/steps/phase-4G.txt §§4G.1-4G.8;
 //! docs/specs/guide/steps/phase-index-3A-4J.txt §Phase 4G.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::agent_pool::ModelPool;
 use crate::gate::{InteractiveGate, RiskLevel};
 
 // ---------------------------------------------------------------------------
@@ -79,6 +82,22 @@ impl GateMode {
             "interactive" => Some(GateMode::Interactive),
             "autonomous" => Some(GateMode::Autonomous),
             _ => None,
+        }
+    }
+
+    /// C-9 — resolve the gate mode from a parsed `--mode <value>` CLI flag.
+    /// Accepts the same three labels as [`crate::cli_mode::CliGateMode`]:
+    /// `interactive`, `autonomous`, `hybrid`. `hybrid` resolves to
+    /// [`GateMode::Interactive`] for the gate itself (hybrid mode is enforced
+    /// at the dispatcher tier — the gate only knows two modes today).
+    /// Returns [`GateMode::Interactive`] when `raw` is `None` to preserve the
+    /// pre-C-9 default at the production wiring point.
+    pub fn from_cli_args(raw: Option<&str>) -> Self {
+        match raw.map(|s| s.trim().to_ascii_lowercase()) {
+            Some(ref v) if v == "autonomous" => GateMode::Autonomous,
+            Some(ref v) if v == "interactive" => GateMode::Interactive,
+            Some(ref v) if v == "hybrid" => GateMode::Interactive,
+            _ => GateMode::Interactive,
         }
     }
 }
@@ -370,6 +389,13 @@ impl Evidence {
 // ---------------------------------------------------------------------------
 
 /// Discriminant for [`AutonomyDecision::Escalate`]. Source: phase-4G.txt §4G.4.
+///
+/// C-9: extended to 6 variants per spec §4G.1. `SubstituteModelFailed` fires
+/// when the gate exhausts `model_fallback_chain` (or when
+/// [`ModelPool::can_fit_llm`] reports the target won't fit in available VRAM).
+/// `SplitTaskFailed` fires when [`crate::research_tree::ResearchTree::split_step`]
+/// produces an empty sub-task vector for a non-empty plan, or when the runner
+/// has no `ResearchTree` handle wired to dispatch against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EscalationTrigger {
     /// [`crate::anti_spiral::AntiSpiralDetector`] reported `spiral_detected`.
@@ -381,6 +407,15 @@ pub enum EscalationTrigger {
     /// The autonomous gate has already auto-advanced
     /// `circuit_breaker_limit` times this session.
     CircuitBreaker,
+    /// C-9: the SUBSTITUTE_MODEL protocol could not satisfy the request —
+    /// either the fallback chain is exhausted OR the target model exceeds
+    /// available VRAM per [`ModelPool::can_fit_llm`].
+    SubstituteModelFailed,
+    /// C-9: the SPLIT_TASK dispatch could not produce sub-tasks — either
+    /// the ResearchTree handle is unavailable to the gate's caller OR
+    /// `ResearchTree::split_step` returned an empty vector for a non-empty
+    /// `SplitTaskPlan`.
+    SplitTaskFailed,
 }
 
 impl EscalationTrigger {
@@ -392,7 +427,376 @@ impl EscalationTrigger {
             EscalationTrigger::HighRisk => "high_risk",
             EscalationTrigger::ReplanMajor => "replan_major",
             EscalationTrigger::CircuitBreaker => "circuit_breaker",
+            EscalationTrigger::SubstituteModelFailed => "substitute_model_failed",
+            EscalationTrigger::SplitTaskFailed => "split_task_failed",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-9 — FsmTransition discriminant for AutoAdvanceEvaluator
+// ---------------------------------------------------------------------------
+
+/// Named FSM-style transitions the [`AutoAdvanceEvaluator`] gates. Each variant
+/// keys a registered [`EvidenceCheck`] in the evaluator's `gate_checks` map.
+/// Source: phase-4G.txt §4G.1; consumed by the gate's evaluator dispatch.
+///
+/// The variant names mirror `EscalationTrigger` labels for the first four
+/// entries so the per-transition check semantics map 1:1 onto the existing
+/// trigger taxonomy; `AutoAdvance` is the catch-all key the gate consults
+/// when no escalation trigger is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FsmTransition {
+    /// Anti-spiral trigger boundary. Maps to the `anti_spiral_fired` field
+    /// in [`GateContext`].
+    AntiSpiral,
+    /// Risk-level boundary (HIGH). Maps to `risk_level` in [`GateContext`].
+    HighRisk,
+    /// Replan-major boundary. Maps to `replan_major` in [`GateContext`].
+    ReplanMajor,
+    /// Circuit-breaker boundary (per-session auto-advance cap reached).
+    CircuitBreaker,
+    /// Default boundary — all evidence checks pass. Maps to
+    /// [`Evidence::all_passed`].
+    AutoAdvance,
+}
+
+impl FsmTransition {
+    /// Snake-case label for logging and SSB summaries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FsmTransition::AntiSpiral => "anti_spiral",
+            FsmTransition::HighRisk => "high_risk",
+            FsmTransition::ReplanMajor => "replan_major",
+            FsmTransition::CircuitBreaker => "circuit_breaker",
+            FsmTransition::AutoAdvance => "auto_advance",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-9 — EvidenceVerdict + EvidenceCheck + AutoAdvanceEvaluator
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single [`EvidenceCheck::check_fn`] invocation.
+/// Source: phase-4G.txt §4G.1 (the three-state evidence verdict).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EvidenceVerdict {
+    /// The check passed — auto-advance is permitted on this axis.
+    Pass,
+    /// The check failed. `reason` is the snake-case label of the failing
+    /// underlying evidence field for logging + SSB row labelling.
+    Fail { reason: String },
+    /// No registered check fires for this transition. The evaluator treats
+    /// `Missing` as "no opinion" — caller falls back to
+    /// [`Evidence::all_passed`] via [`AutoAdvanceEvaluator::evaluate_all`].
+    Missing,
+}
+
+impl EvidenceVerdict {
+    /// Snake-case label used in SSB row reasons and `EscalationFired.trigger`
+    /// strings. Returns `pass`, `fail`, or `missing`; the inner `reason` of
+    /// `Fail { reason }` is exposed separately by callers when they need it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EvidenceVerdict::Pass => "pass",
+            EvidenceVerdict::Fail { .. } => "fail",
+            EvidenceVerdict::Missing => "missing",
+        }
+    }
+
+    /// True iff the verdict permits auto-advance.
+    pub fn is_pass(&self) -> bool {
+        matches!(self, EvidenceVerdict::Pass)
+    }
+}
+
+/// A single check registered against an [`FsmTransition`]. `check_fn` is a
+/// pure function over a snapshot of [`Evidence`] — no async, no SSB access,
+/// no clock — so the evaluator stays unit-testable without spinning up the
+/// runtime. The caller (gate's `derive_autonomous_evidence`) is responsible
+/// for populating `Evidence` from the SSB stream BEFORE the evaluator runs.
+///
+/// `description` is a human-readable label rendered in dashboard
+/// AutoAdvanceStats reason strings; `artifact_path` records the optional
+/// source-of-truth artefact (e.g. `metrics/phase_4G.toml`) the check is
+/// gated on so the evaluator can attribute a failure to a missing file.
+#[derive(Clone)]
+pub struct EvidenceCheck {
+    /// Optional artefact path the check is gated on (for diagnostic display).
+    pub artifact_path: Option<PathBuf>,
+    /// Human-readable description of the check.
+    pub description: &'static str,
+    /// Pure check function. Implementations consult fields on `Evidence`
+    /// and return one of [`EvidenceVerdict::Pass`] / `Fail { reason }` /
+    /// `Missing`. Use `Missing` when the check is not applicable in the
+    /// current context (e.g. per-level audit zero-blocks for a non-Concepts
+    /// transition).
+    pub check_fn: fn(&Evidence) -> EvidenceVerdict,
+}
+
+impl std::fmt::Debug for EvidenceCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvidenceCheck")
+            .field("artifact_path", &self.artifact_path)
+            .field("description", &self.description)
+            .field("check_fn", &"<fn>")
+            .finish()
+    }
+}
+
+impl PartialEq for EvidenceCheck {
+    /// Equality compares the artefact path and description; function
+    /// pointers do not have stable equality on every platform.
+    fn eq(&self, other: &Self) -> bool {
+        self.artifact_path == other.artifact_path
+            && self.description == other.description
+    }
+}
+
+/// Consolidates the four evidence-check axes registered against
+/// [`FsmTransition`] variants. Wraps [`Evidence::all_passed`] via
+/// [`AutoAdvanceEvaluator::evaluate_all`] so the gate's evaluator dispatch
+/// stays a single named type.
+///
+/// Source: phase-4G.txt §4G.1; consolidates the existing
+/// [`TreeAutoAdvancePolicy`] + [`Evidence::all_passed`] semantics behind one
+/// named struct so callers can program against `AutoAdvanceEvaluator::evaluate`
+/// instead of poking individual fields.
+#[derive(Debug, Clone)]
+pub struct AutoAdvanceEvaluator {
+    /// Map of FSM transitions to their evidence-check predicates.
+    pub gate_checks: FxHashMap<FsmTransition, EvidenceCheck>,
+}
+
+impl Default for AutoAdvanceEvaluator {
+    /// Pre-populate one check per [`EscalationTrigger`] axis plus an
+    /// `AutoAdvance` catch-all that defers to [`Evidence::all_passed`].
+    fn default() -> Self {
+        let mut gate_checks: FxHashMap<FsmTransition, EvidenceCheck> =
+            FxHashMap::with_capacity_and_hasher(5, Default::default());
+        gate_checks.insert(
+            FsmTransition::AntiSpiral,
+            EvidenceCheck {
+                artifact_path: None,
+                description: "anti-spiral detector not firing",
+                // AntiSpiral is sourced from the GateContext, not Evidence;
+                // the check defers to Pass (the gate's decide() inspects
+                // ctx.anti_spiral_fired separately and emits Escalate).
+                check_fn: |_ev: &Evidence| EvidenceVerdict::Pass,
+            },
+        );
+        gate_checks.insert(
+            FsmTransition::HighRisk,
+            EvidenceCheck {
+                artifact_path: None,
+                description: "risk-level below HIGH",
+                check_fn: |_ev: &Evidence| EvidenceVerdict::Pass,
+            },
+        );
+        gate_checks.insert(
+            FsmTransition::ReplanMajor,
+            EvidenceCheck {
+                artifact_path: None,
+                description: "no replan-major pending",
+                check_fn: |_ev: &Evidence| EvidenceVerdict::Pass,
+            },
+        );
+        gate_checks.insert(
+            FsmTransition::CircuitBreaker,
+            EvidenceCheck {
+                artifact_path: None,
+                description: "session circuit breaker not tripped",
+                check_fn: |_ev: &Evidence| EvidenceVerdict::Pass,
+            },
+        );
+        gate_checks.insert(
+            FsmTransition::AutoAdvance,
+            EvidenceCheck {
+                artifact_path: None,
+                description: "all evidence checks passing",
+                check_fn: |ev: &Evidence| {
+                    if ev.all_passed() {
+                        EvidenceVerdict::Pass
+                    } else {
+                        EvidenceVerdict::Fail {
+                            reason: ev.failed_checks().join(","),
+                        }
+                    }
+                },
+            },
+        );
+        Self { gate_checks }
+    }
+}
+
+impl AutoAdvanceEvaluator {
+    /// Look up and run the check registered for `transition`. Returns
+    /// [`EvidenceVerdict::Missing`] when no entry exists for that transition.
+    pub fn evaluate(
+        &self,
+        transition: &FsmTransition,
+        evidence: &Evidence,
+    ) -> EvidenceVerdict {
+        match self.gate_checks.get(transition) {
+            Some(check) => (check.check_fn)(evidence),
+            None => EvidenceVerdict::Missing,
+        }
+    }
+
+    /// Run every registered check against `evidence`. Returns
+    /// [`EvidenceVerdict::Pass`] iff EVERY check returns `Pass`. The first
+    /// non-`Pass` verdict short-circuits the result. `Missing` verdicts are
+    /// ignored (they represent "no opinion"). This mirrors the semantic of
+    /// [`Evidence::all_passed`] but routes through the named evaluator type.
+    pub fn evaluate_all(&self, evidence: &Evidence) -> EvidenceVerdict {
+        for (_t, check) in &self.gate_checks {
+            let v = (check.check_fn)(evidence);
+            match v {
+                EvidenceVerdict::Pass | EvidenceVerdict::Missing => continue,
+                EvidenceVerdict::Fail { .. } => return v,
+            }
+        }
+        EvidenceVerdict::Pass
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-9 — EscalationPolicy + SplitTaskPlan + SubTask + MergeStrategy
+// ---------------------------------------------------------------------------
+
+/// Policy knobs governing when the autonomous gate fires
+/// [`AutonomyDecision::Escalate`]. Source: phase-4G.txt §4G.1.
+///
+/// Coexists with the legacy `circuit_breaker_limit` on
+/// [`AutonomousGateConfig`] — `max_auto_advances_per_phase` mirrors that field
+/// via [`AutonomousGateConfig::default`] so existing callers keep working.
+/// C-9 decision (T15.d): EscalationPolicy is the source of truth; the legacy
+/// field stays for backward compatibility but new callers should consult
+/// `escalation_policy` directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EscalationPolicy {
+    /// Number of identical failed-hypothesis cycles before the gate emits
+    /// [`EscalationTrigger::AntiSpiral`]. The anti-spiral detector itself
+    /// reads this when deciding whether to surface a hard-stop signal.
+    pub anti_spiral_threshold: u32,
+    /// When true, every HIGH-risk transition pauses the runner and emits
+    /// [`AutonomyDecision::RequestHuman`]. Defaults to true (spec §4G.4).
+    pub high_risk_pauses: bool,
+    /// Per-phase auto-advance cap. Mirrors the legacy `circuit_breaker_limit`
+    /// on [`AutonomousGateConfig`] and is the source of truth going forward.
+    pub max_auto_advances_per_phase: u32,
+    /// C-30 (blast-radius gate): when the SurgicalDecomposer estimates more
+    /// than this many LOC across the AffectedSet, the autonomous gate fires
+    /// [`AutonomyDecision::RequestHuman`] (Interactive) or
+    /// [`AutonomyDecision::Escalate`] (Autonomous), depending on
+    /// `autonomous_refuse_above_loc`. Mirrors
+    /// [`crate::surgical_decomposer::SURGICAL_LOC_WARN_THRESHOLD`].
+    pub autonomous_confirm_above_loc: u32,
+    /// C-30 (blast-radius gate): when the SurgicalDecomposer estimates more
+    /// than this many LOC in Autonomous mode, the gate refuses the plan and
+    /// escalates immediately. Mirrors
+    /// [`crate::surgical_decomposer::SURGICAL_LOC_ESCALATE_THRESHOLD`].
+    pub autonomous_refuse_above_loc: u32,
+}
+
+impl Default for EscalationPolicy {
+    fn default() -> Self {
+        Self {
+            anti_spiral_threshold: 3,
+            high_risk_pauses: true,
+            max_auto_advances_per_phase: 10,
+            // C-30: blast-radius defaults mirror surgical_decomposer constants.
+            autonomous_confirm_above_loc: 500,
+            autonomous_refuse_above_loc: 1000,
+        }
+    }
+}
+
+/// Sub-task carrier for [`AutonomyDecision::SplitTask`]. Source: phase-4G.txt
+/// §4G.1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubTask {
+    /// Stable identifier (parent step id + suffix). Conventional format
+    /// `<parent_step_id>.subN` matches the deterministic-fallback path in
+    /// `task_runner::emit_autonomous_decision` so SSB consumers see
+    /// consistent ids regardless of which code path produced them.
+    pub task_id: String,
+    /// Free-form description of the sub-task scope.
+    pub scope: String,
+    /// Per-sub-task context-token budget for the dispatcher. 0 = inherit
+    /// from parent.
+    pub context_budget: u32,
+    /// Sub-task ids this entry depends on (DAG edges). Empty = no edges.
+    pub depends_on: Vec<String>,
+}
+
+/// Merge strategy for re-assembling the outputs of a [`SplitTaskPlan`].
+/// Source: phase-4G.txt §4G.1.
+///
+/// C-9 ships only `Sequential`. Parallel fan-out is deferred until C-10
+/// anti-spiral primitives are stable so the gate has stagnation signals to
+/// arbitrate against (see workflow/reasoning/C-9-decisions.md DECISION-B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeStrategy {
+    /// Execute sub-tasks one at a time in `sub_tasks` order, halting on the
+    /// first failure.
+    Sequential,
+}
+
+/// Plan carried by [`AutonomyDecision::SplitTask`]. Source: phase-4G.txt
+/// §4G.1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitTaskPlan {
+    /// Identifier of the parent phase/step being split (matches
+    /// [`GateContext::step_id`]).
+    pub parent_phase: String,
+    /// Ordered sub-tasks.
+    pub sub_tasks: Vec<SubTask>,
+    /// Merge strategy for re-assembling sub-task outputs.
+    pub merge_strategy: MergeStrategy,
+    /// Maximum recursion depth (caps unbounded splits).
+    pub max_depth: u8,
+    /// Current recursion depth (incremented on each successive split).
+    pub current_depth: u8,
+}
+
+impl SplitTaskPlan {
+    /// Build a default plan with `n` deterministic sub-tasks under the
+    /// `<parent>.subN` naming convention. Preserves the Batch-3B fallback
+    /// id format that the existing SSB `task_split` consumer expects.
+    pub fn deterministic(parent_phase: &str, n: u32, depth: u8) -> Self {
+        let sub_tasks: Vec<SubTask> = (0..n)
+            .map(|i| SubTask {
+                task_id: format!("{parent_phase}.sub{i}"),
+                scope: format!("auto-split sub-task {} of {}", i + 1, n),
+                context_budget: 0,
+                depends_on: Vec::new(),
+            })
+            .collect();
+        Self {
+            parent_phase: parent_phase.to_owned(),
+            sub_tasks,
+            merge_strategy: MergeStrategy::Sequential,
+            max_depth: 2,
+            current_depth: depth,
+        }
+    }
+
+    /// Convenience accessor — the legacy gate emitted `sub_task_count` and
+    /// `depth` as bare fields. C-9's SplitTaskPlan carries richer data but
+    /// downstream SSB consumers still want the integer counts.
+    pub fn sub_task_count(&self) -> u32 {
+        // NARROWING-OK: u32::try_from on Vec::len. Vec capacity practically
+        // cannot exceed u32::MAX for plan sub-tasks (max_depth=2, 4 splits
+        // per node). Saturate on overflow to preserve forward progress
+        // rather than panic.
+        u32::try_from(self.sub_tasks.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Convenience accessor — current depth.
+    pub fn depth(&self) -> u8 {
+        self.current_depth
     }
 }
 
@@ -418,10 +822,14 @@ pub enum AutonomyDecision {
         evidence: Evidence,
     },
     /// Context budget reached Terminal (see `crate::context_budget`). Split
-    /// the active task into `sub_task_count` (≤4) sub-tasks at `depth` (≤2).
+    /// the active task per the carried [`SplitTaskPlan`].
+    ///
+    /// C-9: variant payload replaced from bare `sub_task_count: u32, depth: u8`
+    /// to `split_plan: SplitTaskPlan`. The struct exposes `.sub_task_count()`
+    /// and `.depth()` accessors so existing SSB row producers stay compatible
+    /// — see `task_runner::emit_autonomous_decision`.
     SplitTask {
-        sub_task_count: u32,
-        depth: u8,
+        split_plan: SplitTaskPlan,
     },
     /// max_restarts exhausted. Swap the active model identifier from `from`
     /// to `to` via the ModelPool / provider config. Emits a `ModelSwap`
@@ -444,7 +852,7 @@ pub enum AutonomyDecision {
 
 /// Inputs the gate needs to make a decision. Composed by the caller
 /// (task_runner) from SSB snapshots + current pipeline position.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GateContext {
     /// Current pipeline level.
     pub level: PipelineLevel,
@@ -471,6 +879,54 @@ pub struct GateContext {
     /// Diagnostic label for the step / transition being evaluated. Used
     /// verbatim in the `GateDecision.step_id` SSB field.
     pub step_id: String,
+    /// C-9 — optional [`ModelPool`] handle. When `Some`, the gate consults
+    /// [`ModelPool::can_fit_llm`] BEFORE emitting
+    /// [`AutonomyDecision::SubstituteModel`] so a fallback that won't fit in
+    /// available VRAM fires
+    /// [`EscalationTrigger::SubstituteModelFailed`] instead. When `None`,
+    /// the legacy unconstrained substitution path is preserved (no VRAM
+    /// gating). Keeps the gate stateless w.r.t. provider concerns — every
+    /// caller supplies their own pool snapshot.
+    pub model_pool: Option<Arc<dyn ModelPool>>,
+    /// C-10 — per-task attempt history fed into
+    /// [`crate::anti_spiral_extended::StagnationDetection::detect_pattern`].
+    /// Defaulted to an empty buffer so pre-C-10 callers compile unchanged
+    /// (zero-allocation default). The task_runner caller populates this
+    /// before each `decide()` invocation.
+    pub execution_history: crate::anti_spiral_extended::ExecutionHistory,
+    /// C-10 — current attempt index in the per-task loop. Used by SSB
+    /// emissions to keyed stagnation rows. Defaulted to 0.
+    pub attempt_index: u32,
+    /// C-10 — set by the task_runner caller (DRIFT-7 / DECISION-PLACEMENT
+    /// in workflow/reasoning/C-10-decisions.md) when
+    /// `StagnationDetection::detect_pattern` returns `Some(pattern)`. The
+    /// gate reads this on `decide()` to know which persona prefix to thread
+    /// into the next baby_step prompt. Defaulted to `None` so existing
+    /// contract tests compile unchanged.
+    pub suggested_prompt_prefix: Option<&'static str>,
+}
+
+impl std::fmt::Debug for GateContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateContext")
+            .field("level", &self.level)
+            .field("risk_level", &self.risk_level)
+            .field("evidence", &self.evidence)
+            .field("anti_spiral_fired", &self.anti_spiral_fired)
+            .field("replan_major", &self.replan_major)
+            .field("max_restarts_exhausted", &self.max_restarts_exhausted)
+            .field("context_budget_terminal", &self.context_budget_terminal)
+            .field(
+                "auto_advance_count_for_concept",
+                &self.auto_advance_count_for_concept,
+            )
+            .field("step_id", &self.step_id)
+            .field("model_pool", &self.model_pool.as_ref().map(|_| "<ModelPool>"))
+            .field("execution_history_len", &self.execution_history.len())
+            .field("attempt_index", &self.attempt_index)
+            .field("suggested_prompt_prefix", &self.suggested_prompt_prefix)
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,24 +936,47 @@ pub struct GateContext {
 /// Runtime configuration for [`AutonomousGate`]. Defaults per spec §4G.1:
 /// Interactive mode, circuit breaker limit 10 per session, default tree
 /// policy, two-model fallback chain (7B → 3B).
+///
+/// C-9: gains `escalation_policy: EscalationPolicy` (source of truth going
+/// forward) and `estimated_model_sizes: FxHashMap<String, u64>` (consulted by
+/// the SUBSTITUTE_MODEL guard via [`ModelPool::can_fit_llm`]).
 #[derive(Debug, Clone)]
 pub struct AutonomousGateConfig {
     pub mode: GateMode,
+    /// Legacy circuit breaker count (kept for backward compatibility).
+    /// `escalation_policy.max_auto_advances_per_phase` is the canonical
+    /// source of truth — `Default::default()` keeps both in sync at 10.
     pub circuit_breaker_limit: u32,
     pub tree_auto_advance_policy: TreeAutoAdvancePolicy,
     pub model_fallback_chain: Vec<String>,
+    /// C-9 — escalation policy knobs. New callers consult this field
+    /// directly; the legacy `circuit_breaker_limit` mirrors
+    /// `escalation_policy.max_auto_advances_per_phase` for backward
+    /// compatibility (see C-9-decisions.md DECISION-D).
+    pub escalation_policy: EscalationPolicy,
+    /// C-9 — estimated model size in bytes for each entry in
+    /// `model_fallback_chain`. Consulted by the SUBSTITUTE_MODEL guard via
+    /// [`ModelPool::can_fit_llm`] BEFORE emitting `AutonomyDecision::
+    /// SubstituteModel`. When a target model has no entry here, the guard
+    /// defaults to "fits" so the legacy unconstrained behaviour is preserved
+    /// for callers that have not opted in (Default::default() keeps the map
+    /// empty).
+    pub estimated_model_sizes: FxHashMap<String, u64>,
 }
 
 impl Default for AutonomousGateConfig {
     fn default() -> Self {
+        let policy = EscalationPolicy::default();
         Self {
             mode: GateMode::Interactive,
-            circuit_breaker_limit: 10,
+            circuit_breaker_limit: policy.max_auto_advances_per_phase,
             tree_auto_advance_policy: TreeAutoAdvancePolicy::default(),
             model_fallback_chain: vec![
                 "qwen2.5-coder-7b".to_owned(),
                 "qwen2.5-coder-3b".to_owned(),
             ],
+            escalation_policy: policy,
+            estimated_model_sizes: FxHashMap::default(),
         }
     }
 }
@@ -598,9 +1077,11 @@ impl AutonomousGate {
 
         // 3. Context budget Terminal → SplitTask (autonomous mode only).
         if mode == GateMode::Autonomous && ctx.context_budget_terminal {
+            // C-9: variant now carries a SplitTaskPlan. Produce a
+            // deterministic 4-way plan at depth=2; richer plans are built by
+            // ResearchTree::split_step at the task_runner dispatch site.
             return AutonomyDecision::SplitTask {
-                sub_task_count: 4,
-                depth: 2,
+                split_plan: SplitTaskPlan::deterministic(&ctx.step_id, 4, 2),
             };
         }
 
@@ -611,14 +1092,27 @@ impl AutonomousGate {
                     let m = self.active_model.read().await;
                     m.clone()
                 };
-                return AutonomyDecision::SubstituteModel {
-                    from,
-                    to: next,
+                // C-9: VRAM-guard via ModelPool::can_fit_llm. When the
+                // caller supplied a model_pool and the target size is known
+                // AND the pool reports the target won't fit, fire
+                // SubstituteModelFailed instead of attempting the swap.
+                let estimated_size = {
+                    let cfg = self.config.read().await;
+                    cfg.estimated_model_sizes.get(&next).copied()
                 };
+                if let (Some(pool), Some(size)) = (ctx.model_pool.as_ref(), estimated_size) {
+                    if !pool.can_fit_llm(size) {
+                        return AutonomyDecision::Escalate {
+                            trigger: EscalationTrigger::SubstituteModelFailed,
+                        };
+                    }
+                }
+                return AutonomyDecision::SubstituteModel { from, to: next };
             }
-            // No fallback left — escalate instead.
+            // No fallback left — fire SubstituteModelFailed (C-9 expanded
+            // taxonomy; previously fell back to HighRisk).
             return AutonomyDecision::Escalate {
-                trigger: EscalationTrigger::HighRisk,
+                trigger: EscalationTrigger::SubstituteModelFailed,
             };
         }
 
@@ -773,6 +1267,14 @@ mod tests {
             context_budget_terminal: false,
             auto_advance_count_for_concept: 0,
             step_id: "step-1".into(),
+            // C-9: ModelPool is opt-in. Tests that need VRAM gating supply
+            // their own; the default keeps the legacy unconstrained path.
+            model_pool: None,
+            // C-10: anti-spiral extended fields default to empty/None for
+            // pre-C-10 in-module tests.
+            execution_history: crate::anti_spiral_extended::ExecutionHistory::default(),
+            attempt_index: 0,
+            suggested_prompt_prefix: None,
         }
     }
 
@@ -875,13 +1377,19 @@ mod tests {
         let mut ctx = ctx_with(PipelineLevel::Step, RiskLevel::Low);
         ctx.context_budget_terminal = true;
         let decision = gate.decide(&ctx).await;
-        assert_eq!(
-            decision,
-            AutonomyDecision::SplitTask {
-                sub_task_count: 4,
-                depth: 2,
+        // C-9: AutonomyDecision::SplitTask now carries SplitTaskPlan; verify
+        // both the carrier shape and the legacy count/depth accessors.
+        match decision {
+            AutonomyDecision::SplitTask { split_plan } => {
+                assert_eq!(split_plan.sub_task_count(), 4);
+                assert_eq!(split_plan.depth(), 2);
+                assert_eq!(split_plan.merge_strategy, MergeStrategy::Sequential);
+                assert_eq!(split_plan.parent_phase, "step-1");
+                assert_eq!(split_plan.sub_tasks.len(), 4);
+                assert!(split_plan.sub_tasks[0].task_id.starts_with("step-1.sub"));
             }
-        );
+            other => panic!("expected SplitTask, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1017,5 +1525,211 @@ mod tests {
         assert_eq!(PipelineLevel::Phase.default_risk(), RiskLevel::Medium);
         assert_eq!(PipelineLevel::Step.default_risk(), RiskLevel::Low);
         assert_eq!(PipelineLevel::BabyStep.default_risk(), RiskLevel::Low);
+    }
+
+    // -----------------------------------------------------------------
+    // C-9 — AutoAdvanceEvaluator + EscalationPolicy + SubstituteModelFailed
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn c9_escalation_policy_defaults() {
+        let p = EscalationPolicy::default();
+        assert_eq!(p.anti_spiral_threshold, 3);
+        assert!(p.high_risk_pauses);
+        assert_eq!(p.max_auto_advances_per_phase, 10);
+    }
+
+    #[test]
+    fn c9_auto_advance_evaluator_defaults_populated() {
+        let ev = AutoAdvanceEvaluator::default();
+        assert_eq!(ev.gate_checks.len(), 5);
+        assert!(ev.gate_checks.contains_key(&FsmTransition::AutoAdvance));
+        assert!(ev.gate_checks.contains_key(&FsmTransition::AntiSpiral));
+        assert!(ev.gate_checks.contains_key(&FsmTransition::HighRisk));
+        assert!(ev.gate_checks.contains_key(&FsmTransition::ReplanMajor));
+        assert!(ev.gate_checks.contains_key(&FsmTransition::CircuitBreaker));
+    }
+
+    #[test]
+    fn c9_evaluator_evaluate_pass_when_evidence_passes() {
+        let ev = AutoAdvanceEvaluator::default();
+        let e = all_pass_evidence();
+        let v = ev.evaluate(&FsmTransition::AutoAdvance, &e);
+        assert_eq!(v, EvidenceVerdict::Pass);
+        assert!(v.is_pass());
+    }
+
+    #[test]
+    fn c9_evaluator_evaluate_fail_when_evidence_fails() {
+        let ev = AutoAdvanceEvaluator::default();
+        let mut e = all_pass_evidence();
+        e.zero_ungrounded = false;
+        let v = ev.evaluate(&FsmTransition::AutoAdvance, &e);
+        match v {
+            EvidenceVerdict::Fail { reason } => {
+                assert!(reason.contains("zero_ungrounded"));
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c9_evaluator_evaluate_all_pass_when_evidence_passes() {
+        let ev = AutoAdvanceEvaluator::default();
+        let e = all_pass_evidence();
+        assert!(ev.evaluate_all(&e).is_pass());
+    }
+
+    #[test]
+    fn c9_evaluator_evaluate_all_fail_when_evidence_fails() {
+        let ev = AutoAdvanceEvaluator::default();
+        let mut e = all_pass_evidence();
+        e.knowledge_readiness = false;
+        let v = ev.evaluate_all(&e);
+        assert!(!v.is_pass());
+    }
+
+    #[test]
+    fn c9_evidence_verdict_as_str_labels() {
+        assert_eq!(EvidenceVerdict::Pass.as_str(), "pass");
+        assert_eq!(
+            EvidenceVerdict::Fail {
+                reason: "x".to_owned()
+            }
+            .as_str(),
+            "fail"
+        );
+        assert_eq!(EvidenceVerdict::Missing.as_str(), "missing");
+    }
+
+    #[test]
+    fn c9_escalation_trigger_new_variants_as_str() {
+        assert_eq!(
+            EscalationTrigger::SubstituteModelFailed.as_str(),
+            "substitute_model_failed"
+        );
+        assert_eq!(
+            EscalationTrigger::SplitTaskFailed.as_str(),
+            "split_task_failed"
+        );
+    }
+
+    #[test]
+    fn c9_split_task_plan_deterministic_shape() {
+        let plan = SplitTaskPlan::deterministic("step-1", 4, 2);
+        assert_eq!(plan.parent_phase, "step-1");
+        assert_eq!(plan.sub_task_count(), 4);
+        assert_eq!(plan.depth(), 2);
+        assert_eq!(plan.merge_strategy, MergeStrategy::Sequential);
+        assert_eq!(plan.sub_tasks.len(), 4);
+        for (i, sub) in plan.sub_tasks.iter().enumerate() {
+            assert_eq!(sub.task_id, format!("step-1.sub{i}"));
+            assert!(sub.depends_on.is_empty());
+        }
+    }
+
+    #[test]
+    fn c9_gate_mode_from_cli_args() {
+        assert_eq!(GateMode::from_cli_args(None), GateMode::Interactive);
+        assert_eq!(
+            GateMode::from_cli_args(Some("autonomous")),
+            GateMode::Autonomous
+        );
+        assert_eq!(
+            GateMode::from_cli_args(Some("interactive")),
+            GateMode::Interactive
+        );
+        // hybrid resolves to Interactive at the gate tier (hybrid is enforced
+        // at the dispatcher).
+        assert_eq!(
+            GateMode::from_cli_args(Some("hybrid")),
+            GateMode::Interactive
+        );
+        // Unknown labels fall back to default.
+        assert_eq!(
+            GateMode::from_cli_args(Some("rogue")),
+            GateMode::Interactive
+        );
+    }
+
+    struct FixedVramPool(u64);
+    impl crate::agent_pool::ModelPool for FixedVramPool {
+        fn available_vram(&self) -> u64 {
+            self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn c9_substitute_model_failed_when_no_fallback() {
+        let gate = AutonomousGate::new(
+            AutonomousGateConfig {
+                mode: GateMode::Autonomous,
+                model_fallback_chain: vec!["only-one".into()],
+                ..AutonomousGateConfig::default()
+            },
+            None,
+        );
+        let mut ctx = ctx_with(PipelineLevel::Step, RiskLevel::Low);
+        ctx.max_restarts_exhausted = true;
+        let d = gate.decide(&ctx).await;
+        assert_eq!(
+            d,
+            AutonomyDecision::Escalate {
+                trigger: EscalationTrigger::SubstituteModelFailed,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn c9_substitute_model_failed_when_vram_insufficient() {
+        let mut sizes = FxHashMap::default();
+        sizes.insert("big".to_owned(), 8 * 1024 * 1024 * 1024); // 8 GiB
+        let gate = AutonomousGate::new(
+            AutonomousGateConfig {
+                mode: GateMode::Autonomous,
+                model_fallback_chain: vec!["small".into(), "big".into()],
+                estimated_model_sizes: sizes,
+                ..AutonomousGateConfig::default()
+            },
+            None,
+        );
+        let mut ctx = ctx_with(PipelineLevel::Step, RiskLevel::Low);
+        ctx.max_restarts_exhausted = true;
+        // Pool reports 2 GiB — `big` (8 GiB) does not fit.
+        ctx.model_pool = Some(Arc::new(FixedVramPool(2 * 1024 * 1024 * 1024)));
+        let d = gate.decide(&ctx).await;
+        assert_eq!(
+            d,
+            AutonomyDecision::Escalate {
+                trigger: EscalationTrigger::SubstituteModelFailed,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn c9_substitute_model_proceeds_when_vram_sufficient() {
+        let mut sizes = FxHashMap::default();
+        sizes.insert("small".to_owned(), 1 * 1024 * 1024 * 1024); // 1 GiB
+        sizes.insert("smaller".to_owned(), 512 * 1024 * 1024);
+        let gate = AutonomousGate::new(
+            AutonomousGateConfig {
+                mode: GateMode::Autonomous,
+                model_fallback_chain: vec!["small".into(), "smaller".into()],
+                estimated_model_sizes: sizes,
+                ..AutonomousGateConfig::default()
+            },
+            None,
+        );
+        let mut ctx = ctx_with(PipelineLevel::Step, RiskLevel::Low);
+        ctx.max_restarts_exhausted = true;
+        ctx.model_pool = Some(Arc::new(FixedVramPool(4 * 1024 * 1024 * 1024)));
+        let d = gate.decide(&ctx).await;
+        match d {
+            AutonomyDecision::SubstituteModel { from, to } => {
+                assert_eq!(from, "small");
+                assert_eq!(to, "smaller");
+            }
+            other => panic!("expected SubstituteModel, got {other:?}"),
+        }
     }
 }

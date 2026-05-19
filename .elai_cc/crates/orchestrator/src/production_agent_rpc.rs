@@ -15,19 +15,23 @@
 // No .unwrap() / .expect() outside #[cfg(test)] or const init.
 // All error paths propagate via ToolOutcome::Failed / InferOutcome::Failed.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use elai_core::clock::{ClockProvider, OsClock};
 use elai_core::tool_dispatcher::{
     EditRequest, FailureInput, GitBranchPolicy, GitCommitRequest, IncrementalRequest,
     ToolDispatcher, ValidateRequest,
 };
 use elai_ipc_types::{
-    EntryPointsRequest, ListArtifactsRequest, RemoveArtifactsRequest, SearchArtifactsRequest,
-    SymbolContextRequest, SymbolFlowRequest, SymbolImpactRequest, SymbolListRequest,
-    TOOL_CLASSIFY, TOOL_COMPILE_CHECK, TOOL_EDIT, TOOL_ENTRY_POINTS, TOOL_FILE_READ,
-    TOOL_GIT_BRANCH, TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS,
+    EntryPointsRequest, ExportGraphMermaidRequest, IndexArtifactsRequest, ListArtifactsRequest,
+    RemoveArtifactsRequest, SearchArtifactsRequest, SymbolContextRequest, SymbolFlowRequest,
+    SymbolImpactRequest, SymbolListRequest, TOOL_CLASSIFY, TOOL_COMPILE_CHECK,
+    TOOL_DKG_CALLERS, TOOL_DKG_DATA_FLOW, TOOL_DKG_DEPENDENTS, TOOL_DKG_SUBGRAPH, TOOL_EDIT,
+    TOOL_ENTRY_POINTS, TOOL_EXPORT_GRAPH_MERMAID, TOOL_FILE_READ, TOOL_GIT_BRANCH,
+    TOOL_GIT_COMMIT, TOOL_GIT_UNDO, TOOL_INDEX_ARTIFACTS, TOOL_LIST_ARTIFACTS,
     TOOL_REMOVE_ARTIFACTS, TOOL_SEARCH_ARTIFACTS, TOOL_SYMBOL_CONTEXT, TOOL_SYMBOL_FLOW,
     TOOL_SYMBOL_IMPACT, TOOL_SYMBOL_LIST, TOOL_VALIDATE,
 };
@@ -41,7 +45,11 @@ use elai_knowledge::symbol_graph::{
     sharding::SYMBOL_FILE_LRU_SIZE,
     traversal::{compute_call_flow, compute_impact_radius, compute_symbol_context, list_symbols, SymbolFilter},
 };
-use elai_providers::{AnthropicClient, InputMessage, MessageRequest, OutputContentBlock};
+use elai_providers::{
+    AnthropicClient, InputMessage, MessageRequest, OutputContentBlock, SystemBlock, ToolChoice,
+    ToolDefinition,
+};
+use serde_json::Value;
 
 use crate::ipc_accept::{AgentRpcServer, InferOutcome, ToolOutcome};
 
@@ -59,6 +67,30 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// view from `dispatch_file_read_outline`. Matches
 /// `elai_tools::dispatcher::OUTLINE_LINE_THRESHOLD`.
 const OUTLINE_LINE_THRESHOLD: usize = 300;
+
+/// patch-R5 — canonical system prompt biasing Sonnet into invoking tools
+/// from the 6-tool wire catalog. Without this, B3 cloud E2E observed Sonnet
+/// returning text-only responses and the agent's `run_react_turn` exiting
+/// after one iteration with zero `TOOL_USE` markers parsed and no
+/// `FileWrite` SSB row written (see R4 handoff `e2e_cloud_sonnet_run_v9.log`,
+/// L737 panic `fw_rows=0`).
+///
+/// Production call sites (B3 e2e, CLI `elai task`, dashboard "Run" button)
+/// pass this constant via `ProductionAgentRpcServer::new(...).with_system_prompt(
+/// DEFAULT_BABY_STEP_SYSTEM_PROMPT)`. The wire catalog (R3) only publishes
+/// the six tools enumerated below; their exact names match the
+/// `elai_ipc_types::TOOL_*` wire IDs.
+pub const DEFAULT_BABY_STEP_SYSTEM_PROMPT: &str = "You are an autonomous coding agent embedded in the ELAI orchestrator runtime. \
+Your single job is to complete the user's coding task by invoking tools from the catalog provided in this request. \
+The catalog has fourteen tools (wire IDs in lowercase): edit, file_read, validate, compile_check, classify, git_commit, symbol_impact, symbol_flow, symbol_context, symbol_list, dkg_callers, dkg_dependents, dkg_data_flow, dkg_subgraph. \
+The four symbol_* tools query the project's symbol-graph (call edges + reverse-dependency index) — use them when you need to know all callers of a function before editing it, or to discover symbols in a file. \
+The four dkg_* tools query the dependency knowledge graph (callers / dependents / data-flow edges / BFS subgraph) when you need symbol-level traversal beyond the symbol-graph reverse index. \
+Hard rules: (1) every turn that performs work MUST include a tool call -- prose-only replies produce no file changes and waste the turn; \
+(2) the edit tool requires the target file to already exist on disk and replaces an exact `old_text` fragment with `new_text` -- so the first thing you usually need is a file_read of the existing scaffold (e.g. src/App.jsx) to learn what to replace; \
+(3) provide complete arguments matching each tool's input_schema (file_path, old_text, new_text for edit; file_path for file_read; etc.); \
+(4) issue at most one tool call per turn -- after a tool result comes back, decide the next call; \
+(5) when the requested artifact exists with the correct content, reply WITHOUT any tool call and the loop will terminate. \
+Project paths are repo-relative unless absolute. Do not call validate / compile_check / git_commit until at least one edit has succeeded.";
 
 // ---------------------------------------------------------------------------
 // ProductionAgentRpcServer
@@ -88,6 +120,29 @@ pub struct ProductionAgentRpcServer {
     /// per-project VectorModules can be selected by db_path. Set via
     /// `with_artifact_vm` at server startup.
     artifact_vm: Option<Arc<dyn elai_knowledge::vector::VectorModule + Send + Sync>>,
+    /// patch-R5 — optional system prompt forwarded as a one-block
+    /// `SystemBlock` array on every `MessageRequest`. `None` (the default)
+    /// preserves R3.1 behaviour (`request.system = None`, no leak into the
+    /// 10+ existing 4-arg call sites). Production wires
+    /// `DEFAULT_BABY_STEP_SYSTEM_PROMPT` via `with_system_prompt(...)` so
+    /// Sonnet emits `ToolUse` blocks instead of text-only replies.
+    system_prompt: Option<String>,
+    /// patch-R3 — per-server stash of `OutputContentBlock::ToolUse.input` JSON
+    /// values, keyed by tool name and ordered FIFO for repeated names.
+    /// `handle_infer_request` populates this when Sonnet returns ToolUse
+    /// blocks (emitting `"TOOL_USE: <name>"` markers in the response text per
+    /// agent_loop.rs:79 contract); `handle_tool_request` pops a value when the
+    /// agent sends `ToolRequest.arguments = Vec::new()` (agent_loop.rs:170) and
+    /// converts JSON -> postcard via `convert_json_input_to_postcard`.
+    /// `tokio::sync::Mutex` mandated because the lock is held across `.await`
+    /// in `handle_infer_request` (push loop after `send_message` resolves);
+    /// `std::sync::Mutex` would prevent `ProductionAgentRpcServer` from being
+    /// usable behind `Arc<dyn AgentRpcServer>` whose methods are async.
+    pub pending_tool_args: Arc<tokio::sync::Mutex<HashMap<String, VecDeque<Value>>>>,
+    /// C-15: ClockProvider used for all timing inside tool dispatch (latency
+    /// measurement, artifact indexing `now_secs`). Defaults to `OsClock`;
+    /// callers can override via `with_clock()` for deterministic tests.
+    clock: Arc<dyn ClockProvider>,
 }
 
 impl ProductionAgentRpcServer {
@@ -105,13 +160,36 @@ impl ProductionAgentRpcServer {
             max_tokens,
             ssb: None,
             artifact_vm: None,
+            system_prompt: None,
+            pending_tool_args: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            clock: Arc::new(OsClock),
         }
+    }
+
+    /// C-15: builder-style setter for the `ClockProvider`. Production keeps the
+    /// `OsClock` default; deterministic tests pass `SeededClock`.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn ClockProvider>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Builder-style setter for the SSB writer used by symbol-graph tool arms.
     /// Returns `self` so call sites can chain.
     pub fn with_ssb(mut self, ssb: Arc<crate::ssb::Ssb>) -> Self {
         self.ssb = Some(ssb);
+        self
+    }
+
+    /// patch-R5 — builder-style setter for the system prompt forwarded on
+    /// every `MessageRequest.system`. Production passes
+    /// `DEFAULT_BABY_STEP_SYSTEM_PROMPT`; tests pass whatever string they
+    /// want to assert on. Existing 4-arg `new()` call sites that don't
+    /// chain `.with_system_prompt(...)` keep shipping `system: None`,
+    /// preserving R3.1 wire behaviour.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
         self
     }
 
@@ -124,6 +202,460 @@ impl ProductionAgentRpcServer {
     ) -> Self {
         self.artifact_vm = Some(vm);
         self
+    }
+
+    /// patch-R3 — Tool catalog published in `MessageRequest.tools` so Sonnet
+    /// can decide which tool to call. Names are the wire IDs from
+    /// `elai_ipc_types::TOOL_*` constants (NOT dispatcher method names).
+    /// `input_schema` keys mirror the matching `elai_ipc_types::*Request`
+    /// struct fields verbatim so `convert_json_input_to_postcard` can
+    /// `serde_json::from_value::<*Request>` without rename overhead.
+    ///
+    /// Included with reduced schema (rationale per context-package):
+    ///   - `TOOL_FILE_READ`: schema omits `offset`/`limit` because the
+    ///     dispatcher arm at `translate_tool_request` rejects either being
+    ///     `Some` (windowed reads unsupported).
+    ///
+    /// C-24 (DECISION-14): the 4 B-29 Phase 5 symbol-graph tools
+    /// (`symbol_impact`, `symbol_flow`, `symbol_context`, `symbol_list`) are
+    /// NOW INCLUDED. Their dispatcher arms at translate_tool_request
+    /// (lines ~907-1072) are wired and `convert_json_input_to_postcard`
+    /// also has matching arms — the agent can self-select them and the
+    /// JSON->postcard bridge will succeed.
+    ///
+    /// Excluded entirely (would yield guaranteed-failure tool calls):
+    ///   - `TOOL_INDEX_ARTIFACTS`: dispatcher arm returns `Err` (Phase C stub).
+    ///   - `TOOL_GIT_UNDO`, `TOOL_GIT_BRANCH`: dispatcher arms return `Err`
+    ///     ("not implemented in ProductionAgentRpcServer (B2c)").
+    ///   - Artifact-store tools (`list_artifacts`, `search_artifacts`,
+    ///     `remove_artifacts`, `entry_points`): deferred to a follow-up
+    ///     catalog patch — their dispatcher arms exist but no matching
+    ///     `convert_json_input_to_postcard` mapping yet.
+    fn build_tool_catalog(&self) -> Vec<ToolDefinition> {
+        let edit = ToolDefinition {
+            name: TOOL_EDIT.to_string(),
+            description: Some(
+                "Apply a literal text replacement to a file. Requires a single \
+                 exact match of `old_text` inside the file at `file_path`."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Absolute or repo-relative path to the file to edit."
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact text fragment to be replaced (must occur once)."
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text."
+                    }
+                },
+                "required": ["file_path", "old_text", "new_text"]
+            }),
+            cache_control: None,
+        };
+        let file_read = ToolDefinition {
+            name: TOOL_FILE_READ.to_string(),
+            description: Some(
+                "Read a file as an outline (signatures + imports for files larger \
+                 than 300 lines, otherwise the full content). Windowed reads \
+                 (offset/limit) are not supported by this dispatcher."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to read."
+                    }
+                },
+                "required": ["file_path"]
+            }),
+            cache_control: None,
+        };
+        let validate = ToolDefinition {
+            name: TOOL_VALIDATE.to_string(),
+            description: Some(
+                "Run the tiered validator (determinism / quality-AST / unit) for \
+                 the project directory that contains `file_path`."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path inside the project directory to validate."
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Source language (e.g. rust, python, typescript, go)."
+                    }
+                },
+                "required": ["file_path", "language"]
+            }),
+            cache_control: None,
+        };
+        let compile_check = ToolDefinition {
+            name: TOOL_COMPILE_CHECK.to_string(),
+            description: Some(
+                "Run an incremental compile check for the project directory that \
+                 contains `file_path` (cargo check / tsc --noEmit / equivalent)."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path inside the project directory to check."
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Source language (e.g. rust, python, typescript)."
+                    },
+                    "retry_round": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255,
+                        "description": "Retry counter; 0 on first invocation."
+                    }
+                },
+                "required": ["file_path", "language", "retry_round"]
+            }),
+            cache_control: None,
+        };
+        let classify = ToolDefinition {
+            name: TOOL_CLASSIFY.to_string(),
+            description: Some(
+                "Classify a raw build / test failure string into one of the known \
+                 failure categories. Returns `null` when no classifier matches."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "error_output": {
+                        "type": "string",
+                        "description": "Raw build / test failure output to classify."
+                    },
+                    "file_path": {
+                        "type": ["string", "null"],
+                        "description": "Optional source file the failure refers to."
+                    }
+                },
+                "required": ["error_output"]
+            }),
+            cache_control: None,
+        };
+        let git_commit = ToolDefinition {
+            name: TOOL_GIT_COMMIT.to_string(),
+            description: Some(
+                "Commit the supplied paths under the active per-plan branch. \
+                 Requires at least one path."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message."
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "Repo-relative paths to stage and commit."
+                    }
+                },
+                "required": ["message", "paths"]
+            }),
+            cache_control: None,
+        };
+        // C-24 (DECISION-1): the 4 B-29 Phase 5 symbol-graph tools.
+        // Schema field names mirror the wire structs in
+        // `elai_ipc_types::Symbol*Request` (lines 542-571) verbatim so
+        // `convert_json_input_to_postcard` can `serde_json::from_value`
+        // without rename overhead — same patch-R3 contract as the 6
+        // tools above.
+        //
+        // `project_root` is required on every request — the dispatcher arms
+        // (translate_tool_request L907-1072) Err immediately if the file_name
+        // of the path is empty, because that's how `project_id` is derived
+        // before opening the SymbolGraphCache. The agent's system prompt
+        // surface (DEFAULT_BABY_STEP_SYSTEM_PROMPT) does not currently
+        // inject `project_root`; the spawned agent is expected to mirror
+        // the absolute project root surfaced via the task brief.
+        let symbol_impact = ToolDefinition {
+            name: TOOL_SYMBOL_IMPACT.to_string(),
+            description: Some(
+                "Compute the reverse-dependency blast radius of a symbol (BFS \
+                 over the symbol call-graph). Returns the set of files that \
+                 transitively call `target`, partitioned by hop distance up \
+                 to `depth`."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root \
+                         (used to derive project_id + locate the symbol-graph DB)."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Qualified symbol name to start the reverse traversal at."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16,
+                        "description": "BFS depth cap (recommended default: 2)."
+                    }
+                },
+                "required": ["project_root", "target", "depth"]
+            }),
+            cache_control: None,
+        };
+        let symbol_flow = ToolDefinition {
+            name: TOOL_SYMBOL_FLOW.to_string(),
+            description: Some(
+                "Compute the forward call-flow from an entrypoint symbol (DFS \
+                 over the symbol call-graph). Returns the call tree rooted at \
+                 `entrypoint_id` truncated to `depth` levels."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root \
+                         (used to derive project_id + locate the symbol-graph DB)."
+                    },
+                    "entrypoint_id": {
+                        "type": "string",
+                        "description": "Stable symbol id (typically qualified symbol name) \
+                         to start the call-flow traversal at."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16,
+                        "description": "DFS depth cap (recommended default: 5)."
+                    }
+                },
+                "required": ["project_root", "entrypoint_id", "depth"]
+            }),
+            cache_control: None,
+        };
+        let symbol_context = ToolDefinition {
+            name: TOOL_SYMBOL_CONTEXT.to_string(),
+            description: Some(
+                "Return a 360-degree view of a symbol definition: matching \
+                 symbol(s) (by simple or qualified name) with file/line, kind, \
+                 and a short callers/callees neighbourhood. Useful before edits \
+                 to a symbol whose call-site count you do not yet know."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Symbol name (simple or qualified) to look up."
+                    },
+                    "file_hint": {
+                        "type": ["string", "null"],
+                        "description": "Optional file path to disambiguate when multiple \
+                         symbols share the same name."
+                    }
+                },
+                "required": ["project_root", "name"]
+            }),
+            cache_control: None,
+        };
+        let symbol_list = ToolDefinition {
+            name: TOOL_SYMBOL_LIST.to_string(),
+            description: Some(
+                "List symbols defined in the project, optionally filtered by \
+                 file and/or fuzzy query string. Use when planning before edits \
+                 to know which symbols already exist. Server caps `limit` at 500."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "file": {
+                        "type": ["string", "null"],
+                        "description": "Optional file path to scope the listing."
+                    },
+                    "query": {
+                        "type": ["string", "null"],
+                        "description": "Optional substring filter on symbol name."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "description": "Result cap (server clamps at 500)."
+                    }
+                },
+                "required": ["project_root", "limit"]
+            }),
+            cache_control: None,
+        };
+        // C-30: four new DKG query tools (callers / dependents / data_flow /
+        // subgraph). Input schema mirrors the helper signatures on
+        // `DkgQuerierAdapter`: `target` (string) + `max_depth` (u8) for
+        // callers/dependents/data_flow; `root` (string) + `depth` (u8) for
+        // subgraph. `project_root` is included so the dispatcher arm
+        // (translate_tool_request) can locate the per-project DKG db.
+        let dkg_callers = ToolDefinition {
+            name: TOOL_DKG_CALLERS.to_string(),
+            description: Some(
+                "Return the symbols that CALL `target` (inbound CALLS edges \
+                 in the dependency knowledge graph). Useful for change-impact \
+                 analysis before editing a function. Depth is capped at 8."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root \
+                         (used to locate the per-project DKG database)."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Qualified symbol name to start inbound traversal at."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8,
+                        "description": "BFS depth cap (recommended default: 3)."
+                    }
+                },
+                "required": ["project_root", "target", "max_depth"]
+            }),
+            cache_control: None,
+        };
+        let dkg_dependents = ToolDefinition {
+            name: TOOL_DKG_DEPENDENTS.to_string(),
+            description: Some(
+                "Return the symbols / files that `target` depends on (outbound \
+                 IMPORTS / USES edges). Use when planning to refactor a module \
+                 to see what it touches transitively. Depth is capped at 8."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Qualified symbol name to start outbound traversal at."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8,
+                        "description": "BFS depth cap (recommended default: 3)."
+                    }
+                },
+                "required": ["project_root", "target", "max_depth"]
+            }),
+            cache_control: None,
+        };
+        let dkg_data_flow = ToolDefinition {
+            name: TOOL_DKG_DATA_FLOW.to_string(),
+            description: Some(
+                "Return the data-flow edges (PARAMETER / RETURN / ASSIGNMENT / \
+                 FIELD_ACCESS) reachable from `target`. Each result is a \
+                 (source, target, variable, flow_type) tuple. Depth is capped \
+                 at 8."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Symbol to start data-flow traversal at."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8,
+                        "description": "BFS depth cap (recommended default: 3)."
+                    }
+                },
+                "required": ["project_root", "target", "max_depth"]
+            }),
+            cache_control: None,
+        };
+        let dkg_subgraph = ToolDefinition {
+            name: TOOL_DKG_SUBGRAPH.to_string(),
+            description: Some(
+                "BFS-extract the subgraph rooted at `root` up to `depth` hops. \
+                 Returns nodes + edges for compact agent-context rendering. \
+                 Depth is capped at 8."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_root": {
+                        "type": "string",
+                        "description": "Absolute path to the project root."
+                    },
+                    "root": {
+                        "type": "string",
+                        "description": "Symbol to seed the BFS at."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8,
+                        "description": "BFS depth cap (recommended default: 2)."
+                    }
+                },
+                "required": ["project_root", "root", "depth"]
+            }),
+            cache_control: None,
+        };
+        vec![
+            edit, file_read, validate, compile_check, classify, git_commit,
+            // C-24: B-29 Phase 5 symbol-graph tools, now agent-visible.
+            symbol_impact, symbol_flow, symbol_context, symbol_list,
+            // C-30: dependency-knowledge-graph query tools, now agent-visible.
+            dkg_callers, dkg_dependents, dkg_data_flow, dkg_subgraph,
+        ]
     }
 
     /// Construct from environment variables, mirroring the `task_runner.rs`
@@ -181,32 +713,84 @@ impl AgentRpcServer for ProductionAgentRpcServer {
             } else {
                 max_tokens
             };
+            // patch-R5 — wire system_prompt (when set) as a one-block
+            // `SystemBlock` array, and pin `tool_choice` to `Auto`. R3 always
+            // publishes the 6-tool catalog, so `tool_choice` must always be
+            // explicit; `Auto` lets Sonnet interleave reasoning text with
+            // ToolUse blocks (per Anthropic docs, `Any` would prefill the
+            // assistant turn and suppress natural-language reasoning).
+            let system = self
+                .system_prompt
+                .as_ref()
+                .map(|p| vec![SystemBlock::text(p.clone())]);
             let request = MessageRequest {
                 model: self.model.clone(),
                 max_tokens: effective_max_tokens,
                 messages: vec![InputMessage::user_text(prompt)],
-                system: None,
-                tools: None,
-                tool_choice: None,
+                system,
+                tools: Some(self.build_tool_catalog()),
+                tool_choice: Some(ToolChoice::Auto),
                 stream: false,
                 seed: None,
             };
 
             match self.client.send_message(&request).await {
                 Ok(response) => {
-                    let text = response.content.iter().find_map(|block| {
-                        if let OutputContentBlock::Text { text } = block {
-                            Some(text.clone())
-                        } else {
-                            None
+                    // patch-R3 — collapse `response.content` into the agent's
+                    // text-based ReAct surface:
+                    //   - Each `Text` block contributes its text verbatim.
+                    //   - Each `ToolUse` block contributes a `"TOOL_USE: <name>"`
+                    //     marker line (agent_loop.rs:79 marker contract) and
+                    //     stashes its `input` under `name` for the upcoming
+                    //     `ToolRequest` whose `arguments` are empty
+                    //     (agent_loop.rs:170).
+                    //   - `Thinking` / `RedactedThinking` blocks are dropped
+                    //     (the agent has no parser for them today).
+                    let mut text_blocks: Vec<String> = Vec::new();
+                    let mut markers: Vec<String> = Vec::new();
+                    let mut to_stash: Vec<(String, Value)> = Vec::new();
+
+                    for block in response.content.into_iter() {
+                        match block {
+                            OutputContentBlock::Text { text } => text_blocks.push(text),
+                            OutputContentBlock::ToolUse { id: _, name, input } => {
+                                markers.push(format!("TOOL_USE: {name}"));
+                                to_stash.push((name, input));
+                            }
+                            OutputContentBlock::Thinking { .. }
+                            | OutputContentBlock::RedactedThinking { .. } => {}
                         }
-                    });
-                    match text {
-                        Some(t) => InferOutcome::Response(t),
-                        None => InferOutcome::Failed(
-                            "provider returned no text content block".to_string(),
-                        ),
                     }
+
+                    if text_blocks.is_empty() && markers.is_empty() {
+                        return InferOutcome::Failed(
+                            "provider returned no text or tool_use content blocks"
+                                .to_string(),
+                        );
+                    }
+
+                    // Single lock acquisition for all pushes; dropped before
+                    // we build the response string. Never held across the
+                    // earlier `send_message().await`.
+                    if !to_stash.is_empty() {
+                        let mut pending = self.pending_tool_args.lock().await;
+                        for (name, value) in to_stash {
+                            pending.entry(name).or_default().push_back(value);
+                        }
+                    }
+
+                    let separator = if !text_blocks.is_empty() && !markers.is_empty() {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    let combined = format!(
+                        "{}{}{}",
+                        text_blocks.join("\n"),
+                        separator,
+                        markers.join("\n")
+                    );
+                    InferOutcome::Response(combined)
                 }
                 Err(e) => InferOutcome::Failed(format!("{e:?}")),
             }
@@ -219,12 +803,38 @@ impl AgentRpcServer for ProductionAgentRpcServer {
         arguments: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
+            // patch-R3 — `agent_loop` sends `ToolRequest.arguments = Vec::new()`
+            // (agent_loop.rs:170) because its in-text `TOOL_USE: <id>` marker
+            // carries no payload. When `arguments` is empty, try to pop the
+            // corresponding stash entry seeded by `handle_infer_request` and
+            // convert the JSON input to the postcard bytes the dispatcher arms
+            // expect. A stash miss falls through to `translate_tool_request`
+            // with the original empty `arguments`, which yields either
+            // `"unknown tool_id:"` (preserves the test-c contract) or a
+            // postcard decode error for a real-but-empty tool_id.
+            let effective_arguments: Vec<u8> = if arguments.is_empty() {
+                let popped = {
+                    let mut pending = self.pending_tool_args.lock().await;
+                    pending.get_mut(&tool_id).and_then(|q| q.pop_front())
+                };
+                match popped {
+                    Some(value) => match convert_json_input_to_postcard(&tool_id, value) {
+                        Ok(bytes) => bytes,
+                        Err(reason) => return ToolOutcome::Failed(reason),
+                    },
+                    None => arguments,
+                }
+            } else {
+                arguments
+            };
+
             match translate_tool_request(
                 &tool_id,
-                &arguments,
+                &effective_arguments,
                 self.dispatcher.as_ref(),
                 self.ssb.as_ref(),
                 self.artifact_vm.as_ref().map(Arc::as_ref),
+                &self.clock,
             )
             .await
             {
@@ -232,6 +842,120 @@ impl AgentRpcServer for ProductionAgentRpcServer {
                 Err(reason) => ToolOutcome::Failed(reason),
             }
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// convert_json_input_to_postcard — patch-R3
+// ---------------------------------------------------------------------------
+
+/// patch-R3 — Convert a Sonnet `OutputContentBlock::ToolUse.input` JSON value
+/// into the postcard-encoded wire bytes the matching dispatcher arm expects.
+///
+/// Each known `tool_id` is decoded into its `elai_ipc_types::*Request` wire
+/// struct first (the typed deserialisation is itself the input-validation
+/// gate — attacker-controlled JSON cannot synthesise an arbitrary postcard
+/// frame because every field must satisfy the struct's `serde` schema), then
+/// `postcard::to_allocvec` produces the byte payload that
+/// `translate_tool_request` re-decodes.
+///
+/// Returns `Err(String)` for an unknown `tool_id`, JSON decode failure, or
+/// postcard encode failure. Errors propagate as `ToolOutcome::Failed` so the
+/// agent records the failure and continues its ReAct loop.
+fn convert_json_input_to_postcard(tool_id: &str, input: Value) -> Result<Vec<u8>, String> {
+    match tool_id {
+        TOOL_EDIT => {
+            let req: elai_ipc_types::EditRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_FILE_READ => {
+            let req: elai_ipc_types::FileReadRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_VALIDATE => {
+            let req: elai_ipc_types::ValidateRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_COMPILE_CHECK => {
+            let req: elai_ipc_types::CompileCheckRequest =
+                serde_json::from_value(input).map_err(|e| {
+                    format!(
+                        "convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}"
+                    )
+                })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_CLASSIFY => {
+            let req: elai_ipc_types::ClassifyRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_GIT_COMMIT => {
+            let req: elai_ipc_types::GitCommitRequest =
+                serde_json::from_value(input).map_err(|e| {
+                    format!(
+                        "convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}"
+                    )
+                })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        // C-24 (DRIFT-12): JSON->postcard bridge for the 4 B-29 Phase 5
+        // symbol-graph tools now exposed in the catalog. Field names
+        // match the wire structs in ipc-types verbatim — see DECISION-1.
+        TOOL_SYMBOL_IMPACT => {
+            let req: SymbolImpactRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_SYMBOL_FLOW => {
+            let req: SymbolFlowRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_SYMBOL_CONTEXT => {
+            let req: SymbolContextRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        TOOL_SYMBOL_LIST => {
+            let req: SymbolListRequest = serde_json::from_value(input).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' input decode error: {e}")
+            })?;
+            postcard::to_allocvec(&req).map_err(|e| {
+                format!("convert_json_input_to_postcard: tool '{tool_id}' postcard encode error: {e}")
+            })
+        }
+        unknown => Err(format!(
+            "convert_json_input_to_postcard: no mapping for tool_id '{unknown}'"
+        )),
     }
 }
 
@@ -252,6 +976,30 @@ impl AgentRpcServer for ProductionAgentRpcServer {
 /// Distinct from per-baby-step agent IDs so dashboard filters can isolate
 /// symbol-graph activity from regular agent tool calls.
 const SSB_AGENT_SYMBOL_GRAPH: &str = "symbol_graph_tool";
+
+/// C-8 Task #5: walk up from a `context_*.db` path to the project root.
+/// Typical layout is `<project_root>/.elai/indexes/context_*.db`, so the
+/// project root is the grandparent's parent. Returns `None` if the path
+/// lacks at least three ancestor levels.
+fn derive_project_root_from_db_path(db_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    db_path
+        .parent()? // .elai/indexes
+        .parent()? // .elai
+        .parent() // <project_root>
+        .map(|p| p.to_path_buf())
+}
+
+/// C-8 Task #5: derive a stable project_id from the canonical project root
+/// path. Mirrors `metadata::project_id_from_path` semantics without pulling
+/// the helper into the public surface — we just need the file_name as the
+/// project_id label on the SSB payload.
+fn derive_project_id_from_root(project_root: &std::path::Path) -> String {
+    project_root
+        .file_name()
+        .and_then(|os| os.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
 
 /// Best-effort SSB write — never fails the tool call. Logs a warn on error.
 async fn emit_symbol_query(
@@ -283,12 +1031,20 @@ async fn emit_symbol_query(
     }
 }
 
-async fn translate_tool_request(
+// C-18 D1: visibility raised from private to `pub(crate)` so the in-crate
+// integration tests under `crates/orchestrator/tests/` can reach it via
+// the public test-helper alias `translate_tool_request_for_test` (gated by
+// `test-support` feature). No change to the function body. The crate-public
+// surface stays the same for downstream crates (they cannot name `pub(crate)`
+// items either way), and the production agent loop continues to call this
+// function directly from within the same crate.
+pub(crate) async fn translate_tool_request(
     tool_id: &str,
     arguments: &[u8],
     dispatcher: &dyn ToolDispatcher,
     ssb: Option<&Arc<crate::ssb::Ssb>>,
     artifact_vm: Option<&(dyn elai_knowledge::vector::VectorModule + Send + Sync)>,
+    clock: &Arc<dyn ClockProvider>,
 ) -> Result<Vec<u8>, String> {
     match tool_id {
         TOOL_EDIT => {
@@ -387,7 +1143,7 @@ async fn translate_tool_request(
             // WARN-3: use GitBranchPolicy::default() (BranchPerPlan) instead of Main.
             // plan_id: wire GitCommitRequest has no plan_id field; fall back to a
             // UUIDv4 string so the per-plan branch has a unique non-empty name.
-            let plan_id = uuid::Uuid::new_v4().to_string();
+            let plan_id = uuid::Uuid::new_v4().to_string(); // entropy-allow: branch-name only, no EntropySource threaded
             let req = GitCommitRequest {
                 anchor_path,
                 files,
@@ -490,10 +1246,10 @@ async fn translate_tool_request(
             let db_path = elai_core::paths::dkg_db_path(&project_root);
             let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
                 .map_err(|e| format!("tool symbol_impact: cache open failed: {e}"))?;
-            let t0 = std::time::Instant::now();
+            let t0 = clock.now();
             let result = compute_impact_radius(&mut cache, &wire.target, wire.depth)
                 .map_err(|e| format!("tool symbol_impact: traversal error: {e}"))?;
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
             let total_files_u32: u32 = result.total_files.try_into().unwrap_or(u32::MAX);
             emit_symbol_query(
                 ssb,
@@ -526,10 +1282,10 @@ async fn translate_tool_request(
             let db_path = elai_core::paths::dkg_db_path(&project_root);
             let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
                 .map_err(|e| format!("tool symbol_flow: cache open failed: {e}"))?;
-            let t0 = std::time::Instant::now();
+            let t0 = clock.now();
             let result = compute_call_flow(&mut cache, &wire.entrypoint_id, wire.depth)
                 .map_err(|e| format!("tool symbol_flow: traversal error: {e}"))?;
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
             // For flow queries, total_files is set to the number of unique files
             // referenced in the flow tree (root + descendants); 0 if Option<FlowNode> is None.
             let total_files_u32: u32 = match &result {
@@ -567,14 +1323,14 @@ async fn translate_tool_request(
             let db_path = elai_core::paths::dkg_db_path(&project_root);
             let mut cache = SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
                 .map_err(|e| format!("tool symbol_context: cache open failed: {e}"))?;
-            let t0 = std::time::Instant::now();
+            let t0 = clock.now();
             let contexts = compute_symbol_context(
                 &mut cache,
                 &wire.name,
                 wire.file_hint.as_deref(),
             )
             .map_err(|e| format!("tool symbol_context: traversal error: {e}"))?;
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
             let total_files_u32: u32 = contexts.len().try_into().unwrap_or(u32::MAX);
             emit_symbol_query(
                 ssb,
@@ -616,10 +1372,10 @@ async fn translate_tool_request(
                 query: wire.query.clone(),
                 limit: capped_limit as usize,
             };
-            let t0 = std::time::Instant::now();
+            let t0 = clock.now();
             let symbols = list_symbols(&mut cache, filter)
                 .map_err(|e| format!("tool symbol_list: traversal error: {e}"))?;
-            let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let latency_ms = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
             let total_files_u32: u32 = symbols.len().try_into().unwrap_or(u32::MAX);
             let target_label = wire
                 .query
@@ -674,16 +1430,159 @@ async fn translate_tool_request(
         }
 
         TOOL_INDEX_ARTIFACTS => {
-            // STUB: full artifact re-indexing is deferred to Phase C, which will wire
-            // ArtifactIndexer + VectorModule via a service-locator pattern.
-            // Returning Err prevents agents from calling this tool and silently
-            // receiving an empty artifact store (previous "cleared" status was misleading).
-            // Use the CLI `elai index-artifacts` command for on-demand indexing.
-            return Err(
-                "tool index_artifacts: full indexing deferred to Phase C; \
-                 use the CLI `elai index-artifacts` command for now"
-                    .to_string(),
-            );
+            // C-8 Task #5: real implementation (replaces the previous deferred
+            // Err stub). Singular per wire frame (IndexArtifactsRequest carries
+            // one artifact_name), but the handler treats it as a one-element
+            // Vec<IndexArtifactsRequest> internally per C-8 directive so future
+            // bulk-frame upgrades only need to change the decode step.
+            //
+            // Pipeline:
+            //   1. Decode IndexArtifactsRequest.
+            //   2. Derive project_root from db_path (parent-of-parent walk —
+            //      typical layout is <project_root>/.elai/indexes/context_*.db).
+            //   3. Load ArtifactManifest::load(project_root). Filter to the
+            //      named artifact; missing name => empty result, not an error.
+            //   4. Open ArtifactStore + ArtifactIndexer, invoke index_artifact
+            //      per filtered spec on a spawn_blocking thread.
+            //   5. Emit one ArtifactsIndexed SSB row carrying the indexed +
+            //      up_to_date partition + total chunk count + elapsed_ms.
+            //   6. Return Ok JSON { project_id, artifact_count, chunk_count,
+            //      elapsed_ms, indexed[], up_to_date[] }.
+            //
+            // Errors from individual specs are non-fatal (mirror
+            // index_all_artifacts semantics). A genuine setup error (manifest
+            // load failure, store open failure) maps to ToolError so the
+            // agent sees the failure.
+            let wire: IndexArtifactsRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool index_artifacts: decode error: {e}"))?;
+            let pending: Vec<IndexArtifactsRequest> = vec![wire];
+
+            let db_path = std::path::PathBuf::from(&pending[0].db_path);
+            let project_root = derive_project_root_from_db_path(&db_path)
+                .ok_or_else(|| {
+                    format!(
+                        "tool index_artifacts: cannot derive project_root from db_path \
+                         {} (expected <project_root>/.elai/indexes/context_*.db layout)",
+                        pending[0].db_path
+                    )
+                })?;
+
+            let project_id = derive_project_id_from_root(&project_root);
+            let names: Vec<String> = pending.iter().map(|r| r.artifact_name.clone()).collect();
+
+            let start_ms = clock.now();
+            // C-15: capture `now_secs` BEFORE spawning the blocking task so the
+            // injected `ClockProvider` is the source of truth even inside the
+            // `move` closure (we cannot move &Arc<dyn ClockProvider> across the
+            // spawn_blocking boundary cheaply).
+            let now_secs_for_indexer = clock.now_secs().try_into().unwrap_or(i64::MAX);
+            let (indexed_names, up_to_date_names, total_chunks) =
+                tokio::task::spawn_blocking({
+                    let project_root = project_root.clone();
+                    let db_path = db_path.clone();
+                    let names = names.clone();
+                    move || -> Result<(Vec<String>, Vec<String>, usize), String> {
+                        let manifest = elai_knowledge::artifacts::ArtifactManifest::load(
+                            &project_root,
+                        )
+                        .map_err(|e| {
+                            format!("tool index_artifacts: manifest load failed: {e}")
+                        })?;
+
+                        let store = elai_knowledge::artifacts::store::ArtifactStore::open(
+                            &db_path,
+                        )
+                        .map_err(|e| {
+                            format!("tool index_artifacts: store open failed: {e}")
+                        })?;
+                        // No VectorModule on this RPC path (agents do not pass
+                        // it through); embedding-less indexing is the
+                        // documented graceful-degrade behaviour (chunks stored
+                        // with embedding=None per artifacts/indexer.rs:18-21).
+                        let indexer = elai_knowledge::artifacts::indexer::ArtifactIndexer::new(
+                            &store, None,
+                        );
+                        // C-15: now_secs sourced from injected ClockProvider above
+                        // (see `now_secs_for_indexer`). Keeps determinism under
+                        // SeededClock.
+                        let now_secs = now_secs_for_indexer;
+
+                        let target_specs: Vec<&elai_knowledge::artifacts::ArtifactSpec> = manifest
+                            .items
+                            .iter()
+                            .filter(|s| names.iter().any(|n| n == &s.name))
+                            .collect();
+
+                        let mut indexed = Vec::new();
+                        let mut up_to_date = Vec::new();
+                        let mut total = 0usize;
+                        for spec in target_specs {
+                            match indexer.index_artifact(spec, None, now_secs) {
+                                Ok(state) => {
+                                    total = total.saturating_add(state.chunk_count);
+                                    match state.status {
+                                        elai_knowledge::artifacts::ArtifactStatus::Indexed => {
+                                            indexed.push(state.name);
+                                        }
+                                        _ => {
+                                            up_to_date.push(state.name);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        artifact = %spec.name,
+                                        error = %e,
+                                        "tool index_artifacts: index_artifact failed (non-fatal)"
+                                    );
+                                }
+                            }
+                        }
+                        Ok((indexed, up_to_date, total))
+                    }
+                })
+                .await
+                .map_err(|e| format!("tool index_artifacts: spawn_blocking error: {e}"))??;
+
+            let elapsed_ms = u64::try_from(clock.elapsed_since(start_ms).as_millis()).unwrap_or(u64::MAX);
+            let artifact_count = u32::try_from(indexed_names.len() + up_to_date_names.len())
+                .unwrap_or(u32::MAX);
+
+            // Emit ONE ArtifactsIndexed SSB row (existing B-34 variant —
+            // payload struct fields {project_id, indexed, up_to_date,
+            // total_chunks, latency_ms} match exactly). Non-fatal SSB
+            // write — log on failure but still return Ok to the agent.
+            if let Some(ssb_arc) = ssb {
+                let payload = crate::ssb::SsbPayload::ArtifactsIndexed(
+                    crate::ssb::ArtifactsIndexedPayload {
+                        project_id: project_id.clone(),
+                        indexed: indexed_names.clone(),
+                        up_to_date: up_to_date_names.clone(),
+                        total_chunks,
+                        latency_ms: elapsed_ms,
+                    },
+                );
+                if let Err(e) = ssb_arc
+                    .write_payload("agent_rpc", 0, payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "tool index_artifacts: ArtifactsIndexed SSB write failed (non-fatal)"
+                    );
+                }
+            }
+
+            let value = serde_json::json!({
+                "project_id": project_id,
+                "artifact_count": artifact_count,
+                "chunk_count": total_chunks,
+                "elapsed_ms": elapsed_ms,
+                "indexed": indexed_names,
+                "up_to_date": up_to_date_names,
+            });
+            serde_json::to_vec(&value)
+                .map_err(|e| format!("tool index_artifacts: serialise error: {e}"))
         }
 
         TOOL_SEARCH_ARTIFACTS => {
@@ -784,7 +1683,7 @@ async fn translate_tool_request(
             let db_path = elai_core::paths::dkg_db_path(&project_root);
 
             // All SymbolGraphCache operations are synchronous (no async I/O).
-            let t0 = std::time::Instant::now();
+            let t0 = clock.now();
             let result: Result<Vec<DetectedEntryPoint>, String> = (|| {
                 let mut cache =
                     SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE)
@@ -853,7 +1752,7 @@ async fn translate_tool_request(
             })();
 
             let entries = result?;
-            let latency_ms: u32 = t0.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            let latency_ms: u32 = clock.elapsed_since(t0).as_millis().try_into().unwrap_or(u32::MAX);
             let summary = EntryPointSummary::from_entries(&entries);
 
             // Convert to wire DTOs.
@@ -913,7 +1812,101 @@ async fn translate_tool_request(
                 .map_err(|e| format!("tool entry_points: serialise error: {e}"))
         }
 
+        // C-24 (DRIFT-5, DECISION-4): Mermaid graph-export tool. Mirrors the
+        // Tauri command `export_graph_mermaid` (dashboard-v2 commands.rs:1805)
+        // and the shared `export_graph_mermaid_impl` (C-18 D2 extraction).
+        // Only `file` and `symbol` modes are reachable here: `decomposition`
+        // mode requires in-memory `DecompositionTreeSnapshot` from the
+        // dashboard `AppState` (no orchestrator dep). Callers that need
+        // decomposition mode must use the Tauri command.
+        TOOL_EXPORT_GRAPH_MERMAID => {
+            let wire: ExportGraphMermaidRequest = postcard::from_bytes(arguments)
+                .map_err(|e| format!("tool export_graph_mermaid: decode error: {e}"))?;
+            let project_root = std::path::PathBuf::from(&wire.project_root);
+            let project_id = project_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "tool export_graph_mermaid: cannot derive project_id from project_root={:?}",
+                        wire.project_root
+                    )
+                })?
+                .to_string();
+            // Build VizData via the knowledge crate's shared view builders
+                // (extracted from dashboard-v2/src-tauri/src/commands.rs in C-24).
+            let data = match wire.mode.as_str() {
+                "file" => elai_knowledge::visualization::views::build_file_view(
+                    &project_root,
+                    &project_id,
+                )?,
+                "symbol" => elai_knowledge::visualization::views::build_symbol_view(
+                    &project_root,
+                    &project_id,
+                )?,
+                "decomposition" => {
+                    return Err(
+                        "tool export_graph_mermaid: `decomposition` mode requires \
+                         in-memory DecompositionTreeSnapshot from the dashboard \
+                         AppState; use the Tauri export_graph_mermaid command \
+                         instead of the IPC tool surface for that mode"
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "tool export_graph_mermaid: unknown mode `{other}`; \
+                         expected file/symbol/decomposition"
+                    ));
+                }
+            };
+            // Match the B-33 default cap when the caller passes None.
+            const B33_DEFAULT_MERMAID_MAX_NODES: usize = 200;
+            let cap = wire
+                .max_nodes
+                .map(|n| n as usize)
+                .unwrap_or(B33_DEFAULT_MERMAID_MAX_NODES);
+            let mermaid = elai_knowledge::visualization::mermaid::generate_mermaid(&data, cap);
+            // Return as JSON `{"mermaid": "..."}` so the agent can parse a
+            // single field without dealing with a raw string envelope.
+            let value = serde_json::json!({ "mermaid": mermaid });
+            serde_json::to_vec(&value)
+                .map_err(|e| format!("tool export_graph_mermaid: serialise error: {e}"))
+        }
+
         unknown => Err(format!("unknown tool_id: {unknown}")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// C-18 D1: public test-helper alias for `translate_tool_request`.
+//
+// Production callers stay inside the orchestrator crate and use the
+// `pub(crate)` symbol directly. Contract/integration tests in
+// `crates/orchestrator/tests/` link against the orchestrator as an external
+// crate (rustc treats `tests/*.rs` as a separate compilation unit), so they
+// cannot reach `pub(crate)` items.
+//
+// Gating on `any(test, feature = "test-support")`:
+//   * `test` is set inside `lib.rs` integration tests (in-crate `#[cfg(test)]`).
+//   * `test-support` is the orchestrator feature already used by
+//     `tests/production_agent_rpc_contract.rs` (Cargo.toml dev-dep
+//     `elai-orchestrator = { path = ".", features = ["test-support"] }`),
+//     so this alias surfaces automatically for the C-18 dispatch test.
+//
+// The alias is a thin pass-through — no behaviour duplication, no extra
+// allocation. If the underlying signature changes, the build breaks here
+// first, which is the desired locking property.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn translate_tool_request_for_test(
+    tool_id: &str,
+    arguments: &[u8],
+    dispatcher: &dyn ToolDispatcher,
+    ssb: Option<&Arc<crate::ssb::Ssb>>,
+    artifact_vm: Option<&(dyn elai_knowledge::vector::VectorModule + Send + Sync)>,
+    clock: &Arc<dyn ClockProvider>,
+) -> Result<Vec<u8>, String> {
+    translate_tool_request(tool_id, arguments, dispatcher, ssb, artifact_vm, clock).await
 }
 

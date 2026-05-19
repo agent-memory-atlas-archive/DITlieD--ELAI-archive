@@ -85,7 +85,7 @@
     outline: none;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    font-size: 11px;
+    font-size: 10px;
     transition: color var(--dur-fast) var(--ease-std);
   }
 

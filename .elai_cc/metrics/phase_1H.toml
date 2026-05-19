@@ -15,3 +15,7 @@ splade_query_latency_p50_ms = 15
 splade_query_latency_p95_ms = 16
 model_load_time_s = 0.94
 binary_size_delta_mb = 3.62
+
+# Appended by `elai measure --scope phase_1H` (C-20 backfill).
+generated_at_unix_secs = 1779116381
+verified_by = "elai measure (C-20)"

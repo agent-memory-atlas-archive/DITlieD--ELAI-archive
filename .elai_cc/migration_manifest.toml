@@ -494,3 +494,811 @@ action = "KEEP"
 source_crate = "runtime"
 target_crate = "orchestrator"
 rationale = "Integration tests. Move with runtime to orchestrator."
+
+# ---------------------------------------------------------------------------
+# C-14 — slash-command taxonomy. Enumerates every variant of `SlashCommand`
+# in `crates/cli/src/commands.rs` and classifies it as KEPT / STRIPPED /
+# DEFERRED per the C-14 plan rule set (re-scoped 2026-05-17). Status values:
+#   KEPT      — wired into the elai_cc production flow (has a handler that
+#               does meaningful work and ships to end users).
+#   STRIPPED  — upstream-only feature with no elai_cc equivalent; UI surface
+#               either prints a stub or routes through Unknown.
+#   DEFERRED  — decision postponed; re-evaluate at the C-series close
+#               (e.g. /plan, /review which overlap planning-workflow tooling).
+# Source-of-truth: `pub enum SlashCommand` (commands.rs:1102).
+# ---------------------------------------------------------------------------
+
+[[command]]
+name = "Help"
+status = "KEPT"
+rationale = "Renders REPL help text. Core UX."
+
+[[command]]
+name = "Status"
+status = "KEPT"
+rationale = "Prints runtime/session status. Live in live_cli."
+
+[[command]]
+name = "Sandbox"
+status = "KEPT"
+rationale = "Sandbox status surface; wired to elai_core::sandbox."
+
+[[command]]
+name = "Compact"
+status = "KEPT"
+rationale = "Calls compact_session (orchestrator). Shipped feature."
+
+[[command]]
+name = "Bughunter"
+status = "STRIPPED"
+rationale = "Upstream-only bughunt workflow. No elai_cc handler."
+
+[[command]]
+name = "Commit"
+status = "KEPT"
+rationale = "Git commit helper. Used by COMMITTING FSM phase."
+
+[[command]]
+name = "Pr"
+status = "STRIPPED"
+rationale = "GitHub PR creation. Upstream-only."
+
+[[command]]
+name = "Issue"
+status = "STRIPPED"
+rationale = "GitHub issue creation. Upstream-only."
+
+[[command]]
+name = "Ultraplan"
+status = "STRIPPED"
+rationale = "Upstream long-horizon planning UX. Superseded by planning-workflow skill."
+
+[[command]]
+name = "Teleport"
+status = "STRIPPED"
+rationale = "Upstream workspace teleport. No elai_cc equivalent."
+
+[[command]]
+name = "DebugToolCall"
+status = "STRIPPED"
+rationale = "Upstream tool-call debug REPL. No elai_cc handler."
+
+[[command]]
+name = "Model"
+status = "KEPT"
+rationale = "Switch active model alias. Live (cloud / sidecar / runtime)."
+
+[[command]]
+name = "Permissions"
+status = "KEPT"
+rationale = "Permission-mode switch. Wired to ResolvedPermissionMode."
+
+[[command]]
+name = "Clear"
+status = "KEPT"
+rationale = "Reset session context. Used by REPL."
+
+[[command]]
+name = "Cost"
+status = "KEPT"
+rationale = "Cost summary. Sources pricing from elai_providers::pricing post-C-14."
+
+[[command]]
+name = "Resume"
+status = "KEPT"
+rationale = "Resume session from JSONL transcript. Live."
+
+[[command]]
+name = "Continue"
+status = "KEPT"
+rationale = "B-9 T3 — rehydrate SessionDag handoff snapshot. Live."
+
+[[command]]
+name = "Config"
+status = "KEPT"
+rationale = "Print / set RuntimeConfig section. Live."
+
+[[command]]
+name = "Mcp"
+status = "KEPT"
+rationale = "MCP server admin (list / add / remove). Live via mcp_stdio."
+
+[[command]]
+name = "Runtime"
+status = "KEPT"
+rationale = "B-37D Phase 4M — per-role runtime adapter selection. Live."
+
+[[command]]
+name = "Memory"
+status = "KEPT"
+rationale = "memory-bank read/write surface. Live."
+
+[[command]]
+name = "Init"
+status = "KEPT"
+rationale = "CLAUDE.md scaffolding. Live via init.rs."
+
+[[command]]
+name = "Diff"
+status = "KEPT"
+rationale = "Git diff renderer. Live."
+
+[[command]]
+name = "Version"
+status = "KEPT"
+rationale = "Print elai_cc version. Live."
+
+[[command]]
+name = "Export"
+status = "KEPT"
+rationale = "Session export (text or JSONL). Live."
+
+[[command]]
+name = "Session"
+status = "KEPT"
+rationale = "Session admin (list / claim / release). Live via mcp_session_*."
+
+[[command]]
+name = "Plugins"
+status = "KEPT"
+rationale = "Plugin admin. Live via elai_plugins."
+
+[[command]]
+name = "Agents"
+status = "KEPT"
+rationale = "Spawn / list .claude/agents. Live."
+
+[[command]]
+name = "Skills"
+status = "KEPT"
+rationale = "Spawn / list .claude/skills. Live."
+
+[[command]]
+name = "Doctor"
+status = "KEPT"
+rationale = "Diagnostic surface. Live via doctor.rs."
+
+[[command]]
+name = "Login"
+status = "KEPT"
+rationale = "OAuth interactive flow. Live via elai_providers::oauth + cli/auth.rs."
+
+[[command]]
+name = "Logout"
+status = "KEPT"
+rationale = "OAuth credential wipe. Live."
+
+[[command]]
+name = "Vim"
+status = "STRIPPED"
+rationale = "Upstream vim-mode REPL toggle. No elai_cc handler."
+
+[[command]]
+name = "Upgrade"
+status = "STRIPPED"
+rationale = "Upstream self-update. elai_cc ships via cargo build."
+
+[[command]]
+name = "Stats"
+status = "STRIPPED"
+rationale = "Upstream usage stats. No elai_cc handler."
+
+[[command]]
+name = "Share"
+status = "STRIPPED"
+rationale = "Upstream session-share URL. No elai_cc handler."
+
+[[command]]
+name = "Feedback"
+status = "STRIPPED"
+rationale = "Upstream feedback channel. No elai_cc handler."
+
+[[command]]
+name = "Files"
+status = "STRIPPED"
+rationale = "Upstream file-list UX. Superseded by /context."
+
+[[command]]
+name = "Fast"
+status = "STRIPPED"
+rationale = "Upstream fast-mode toggle. No elai_cc handler."
+
+[[command]]
+name = "Exit"
+status = "DEFERRED"
+rationale = "Re-evaluate at C-series close — REPL exit semantics may consolidate."
+
+[[command]]
+name = "Summary"
+status = "STRIPPED"
+rationale = "Upstream session summary. Superseded by SSB / export."
+
+[[command]]
+name = "Desktop"
+status = "STRIPPED"
+rationale = "Upstream desktop UI hook. No elai_cc handler."
+
+[[command]]
+name = "Brief"
+status = "STRIPPED"
+rationale = "Upstream brief-mode toggle. No elai_cc handler."
+
+[[command]]
+name = "Advisor"
+status = "STRIPPED"
+rationale = "Upstream advisor surface. No elai_cc handler."
+
+[[command]]
+name = "Stickers"
+status = "STRIPPED"
+rationale = "Upstream UI ornament. No elai_cc handler."
+
+[[command]]
+name = "Insights"
+status = "STRIPPED"
+rationale = "Upstream insights panel. No elai_cc handler."
+
+[[command]]
+name = "Thinkback"
+status = "STRIPPED"
+rationale = "Upstream thinkback log. No elai_cc handler."
+
+[[command]]
+name = "ReleaseNotes"
+status = "STRIPPED"
+rationale = "Upstream release notes viewer. No elai_cc handler."
+
+[[command]]
+name = "SecurityReview"
+status = "STRIPPED"
+rationale = "Upstream security-review flow. Superseded by /security-review skill."
+
+[[command]]
+name = "Keybindings"
+status = "STRIPPED"
+rationale = "Upstream keybindings UI. No elai_cc handler."
+
+[[command]]
+name = "PrivacySettings"
+status = "STRIPPED"
+rationale = "Upstream privacy panel. No elai_cc handler."
+
+[[command]]
+name = "Plan"
+status = "DEFERRED"
+rationale = "Overlaps planning-workflow skill — re-evaluate at C-series close."
+
+[[command]]
+name = "Review"
+status = "DEFERRED"
+rationale = "Overlaps /review skill — re-evaluate at C-series close."
+
+[[command]]
+name = "Tasks"
+status = "DEFERRED"
+rationale = "Overlaps task_runner — re-evaluate at C-series close."
+
+[[command]]
+name = "Theme"
+status = "STRIPPED"
+rationale = "Upstream theme picker. Dashboard owns theming."
+
+[[command]]
+name = "Voice"
+status = "STRIPPED"
+rationale = "Upstream voice-mode toggle. No elai_cc handler."
+
+[[command]]
+name = "Usage"
+status = "KEPT"
+rationale = "Token-usage view. Sources UsageTracker / pricing post-C-14."
+
+[[command]]
+name = "Rename"
+status = "STRIPPED"
+rationale = "Upstream session-rename UX. Session ID is canonical in elai_cc."
+
+[[command]]
+name = "Copy"
+status = "STRIPPED"
+rationale = "Upstream clipboard helper. No elai_cc handler."
+
+[[command]]
+name = "Hooks"
+status = "KEPT"
+rationale = "Plugin hooks admin. Live via elai_plugins::hooks."
+
+[[command]]
+name = "Context"
+status = "KEPT"
+rationale = "ProjectContext view / refresh. Live."
+
+[[command]]
+name = "Color"
+status = "STRIPPED"
+rationale = "Upstream color scheme picker. Dashboard owns theming."
+
+[[command]]
+name = "Effort"
+status = "DEFERRED"
+rationale = "Effort/budget knob — overlaps GRC budget; re-evaluate."
+
+[[command]]
+name = "Branch"
+status = "KEPT"
+rationale = "Session branch admin (SessionDag). Live."
+
+[[command]]
+name = "Rewind"
+status = "KEPT"
+rationale = "Step rewind on SessionDag. Live."
+
+[[command]]
+name = "Ide"
+status = "STRIPPED"
+rationale = "Upstream IDE bridge. No elai_cc handler."
+
+[[command]]
+name = "Tag"
+status = "KEPT"
+rationale = "Tag SessionDag snapshots. Live."
+
+[[command]]
+name = "OutputStyle"
+status = "KEPT"
+rationale = "SystemPromptBuilder output-style toggle. Live."
+
+[[command]]
+name = "Profile"
+status = "KEPT"
+rationale = "ProjectProfile view / load. Live."
+
+[[command]]
+name = "AddDir"
+status = "KEPT"
+rationale = "Add directory to ProjectContext. Live."
+
+[[command]]
+name = "Research"
+status = "KEPT"
+rationale = "B-40 Idea-Framer entry point. Live."
+
+[[command]]
+name = "Ask"
+status = "KEPT"
+rationale = "Ad-hoc question pipeline. Alias of /research; wired in live_cli.rs. Live."
+
+[[command]]
+name = "Explore"
+status = "KEPT"
+rationale = "Integration-explorer spawn. Live."
+
+[[command]]
+name = "Task"
+status = "KEPT"
+rationale = "B-37 task_runner entry point. Live (cloud + sidecar)."
+
+[[command]]
+name = "Mode"
+status = "KEPT"
+rationale = "B-22 Phase 4G — INTERACTIVE / AUTONOMOUS gate-mode switch. Live."
+
+[[command]]
+name = "Reason"
+status = "KEPT"
+rationale = "B-39 / B-39C — Chat REFLECT pipeline toggle. Live."
+
+[[command]]
+name = "EntryPoints"
+status = "KEPT"
+rationale = "B-34 — detect project entry points. Live."
+
+[[command]]
+name = "Unknown"
+status = "STRIPPED"
+rationale = "Catch-all for unparsed slash inputs. Not a user-facing command."
+
+# ---------------------------------------------------------------------------
+# C-33 extension. Slash command catalog extended to match
+# slash_command_specs().len() == 152 (commands.rs:4899). Adds the 5 enum
+# variants that landed after the C-14 cut-off (Ask, GraphMermaid, Measure,
+# Pipeline, WiringAudit) plus the lower-cased spec-only entries that route
+# through SlashCommand::Unknown (no structured dispatch, surface only).
+# Convention: PascalCase name = mapped to a SlashCommand enum variant;
+# lowercase / kebab-case name = spec entry without enum variant (routes
+# through Unknown). Status values KEPT / STRIPPED / DEFERRED as in C-14.
+# ---------------------------------------------------------------------------
+
+[[command]]
+name = "GraphMermaid"
+status = "KEPT"
+rationale = "C-24 deterministic Mermaid graph export. Live via /graph."
+
+[[command]]
+name = "Measure"
+status = "KEPT"
+rationale = "C-20 test-infra metrics backfill. Live via /measure."
+
+[[command]]
+name = "Pipeline"
+status = "KEPT"
+rationale = "C-25 compiled-pipeline cache inspection. Live via /pipeline."
+
+[[command]]
+name = "WiringAudit"
+status = "KEPT"
+rationale = "T-0 deterministic wiring contract audit (no LLM). Live via /wiring."
+
+# Spec-only entries (no enum variant; route through Unknown). All STRIPPED
+# from structured dispatch by definition. Listed here so the manifest
+# enumerates the full slash_command_specs() catalog.
+
+[[command]]
+name = "plugin"
+status = "STRIPPED"
+rationale = "Spec-only alias for Plugins. Routes through Unknown."
+
+[[command]]
+name = "allowed-tools"
+status = "STRIPPED"
+rationale = "Upstream allowed-tools UX. No elai_cc handler (routes via Unknown)."
+
+[[command]]
+name = "api-key"
+status = "STRIPPED"
+rationale = "Upstream API-key set/clear UX. No elai_cc handler."
+
+[[command]]
+name = "approve"
+status = "STRIPPED"
+rationale = "Upstream approval-prompt shortcut. No elai_cc handler."
+
+[[command]]
+name = "deny"
+status = "STRIPPED"
+rationale = "Upstream denial-prompt shortcut. No elai_cc handler."
+
+[[command]]
+name = "undo"
+status = "STRIPPED"
+rationale = "Upstream undo of last edit. Superseded by /rewind."
+
+[[command]]
+name = "stop"
+status = "STRIPPED"
+rationale = "Upstream cancel-current shortcut. No elai_cc handler."
+
+[[command]]
+name = "retry"
+status = "STRIPPED"
+rationale = "Upstream retry-last shortcut. No elai_cc handler."
+
+[[command]]
+name = "paste"
+status = "STRIPPED"
+rationale = "Upstream clipboard paste. No elai_cc handler."
+
+[[command]]
+name = "screenshot"
+status = "STRIPPED"
+rationale = "Upstream screenshot capture. No elai_cc handler."
+
+[[command]]
+name = "image"
+status = "STRIPPED"
+rationale = "Upstream inline-image insert. No elai_cc handler."
+
+[[command]]
+name = "terminal-setup"
+status = "STRIPPED"
+rationale = "Upstream terminal-setup wizard. No elai_cc handler."
+
+[[command]]
+name = "search"
+status = "STRIPPED"
+rationale = "Upstream local-search UX. Superseded by /research + RAG search."
+
+[[command]]
+name = "listen"
+status = "STRIPPED"
+rationale = "Upstream voice-listen toggle. No elai_cc handler."
+
+[[command]]
+name = "speak"
+status = "STRIPPED"
+rationale = "Upstream voice-speak toggle. No elai_cc handler."
+
+[[command]]
+name = "language"
+status = "STRIPPED"
+rationale = "Upstream interface-language switch. No elai_cc handler."
+
+[[command]]
+name = "max-tokens"
+status = "STRIPPED"
+rationale = "Upstream max-tokens setter. Superseded by /config max_tokens."
+
+[[command]]
+name = "temperature"
+status = "STRIPPED"
+rationale = "Upstream temperature setter. Superseded by /config temperature."
+
+[[command]]
+name = "system-prompt"
+status = "STRIPPED"
+rationale = "Upstream system-prompt editor. Superseded by SystemPromptBuilder."
+
+[[command]]
+name = "tool-details"
+status = "STRIPPED"
+rationale = "Upstream tool-details panel. Superseded by /tools (skill)."
+
+[[command]]
+name = "format"
+status = "STRIPPED"
+rationale = "Upstream code-format shortcut. No elai_cc handler."
+
+[[command]]
+name = "pin"
+status = "STRIPPED"
+rationale = "Upstream pin-message UX. No elai_cc handler."
+
+[[command]]
+name = "unpin"
+status = "STRIPPED"
+rationale = "Upstream unpin-message UX. No elai_cc handler."
+
+[[command]]
+name = "bookmarks"
+status = "STRIPPED"
+rationale = "Upstream bookmarks panel. No elai_cc handler."
+
+[[command]]
+name = "workspace"
+status = "STRIPPED"
+rationale = "Upstream workspace switch. Superseded by /add-dir."
+
+[[command]]
+name = "history"
+status = "STRIPPED"
+rationale = "Upstream history viewer. Superseded by /session + /export."
+
+[[command]]
+name = "tokens"
+status = "STRIPPED"
+rationale = "Upstream token-count viewer. Superseded by /cost + /usage."
+
+[[command]]
+name = "cache"
+status = "STRIPPED"
+rationale = "Upstream cache-admin shortcut. No elai_cc handler."
+
+[[command]]
+name = "providers"
+status = "STRIPPED"
+rationale = "Upstream providers list. Superseded by /runtime list."
+
+[[command]]
+name = "notifications"
+status = "STRIPPED"
+rationale = "Upstream notifications panel. No elai_cc handler."
+
+[[command]]
+name = "changelog"
+status = "STRIPPED"
+rationale = "Upstream changelog viewer. Dashboard owns this surface."
+
+[[command]]
+name = "test"
+status = "STRIPPED"
+rationale = "Upstream cargo-test shortcut. Auditor owns test execution."
+
+[[command]]
+name = "lint"
+status = "STRIPPED"
+rationale = "Upstream lint shortcut. Hooks own lint enforcement."
+
+[[command]]
+name = "build"
+status = "STRIPPED"
+rationale = "Upstream cargo-build shortcut. Auditor owns build execution."
+
+[[command]]
+name = "run"
+status = "STRIPPED"
+rationale = "Upstream cargo-run shortcut. No elai_cc handler."
+
+[[command]]
+name = "git"
+status = "STRIPPED"
+rationale = "Upstream raw-git passthrough. Superseded by /commit + /diff + /branch."
+
+[[command]]
+name = "stash"
+status = "STRIPPED"
+rationale = "Upstream git-stash shortcut. No elai_cc handler."
+
+[[command]]
+name = "blame"
+status = "STRIPPED"
+rationale = "Upstream git-blame viewer. No elai_cc handler."
+
+[[command]]
+name = "log"
+status = "STRIPPED"
+rationale = "Upstream git-log viewer. No elai_cc handler."
+
+[[command]]
+name = "cron"
+status = "STRIPPED"
+rationale = "Upstream cron-job admin. No elai_cc handler."
+
+[[command]]
+name = "team"
+status = "STRIPPED"
+rationale = "Upstream team admin. No elai_cc handler."
+
+[[command]]
+name = "benchmark"
+status = "STRIPPED"
+rationale = "Absorbed into benches/model_capability/run_benchmark.py standalone binary (phase-3J-BASELINE)."
+
+[[command]]
+name = "migrate"
+status = "STRIPPED"
+rationale = "Upstream schema-migrate shortcut. SSB owns its own migrations."
+
+[[command]]
+name = "reset"
+status = "STRIPPED"
+rationale = "Upstream session-reset shortcut. Superseded by /clear."
+
+[[command]]
+name = "telemetry"
+status = "STRIPPED"
+rationale = "Upstream telemetry panel. Dashboard owns telemetry."
+
+[[command]]
+name = "env"
+status = "STRIPPED"
+rationale = "Upstream env-vars viewer. Superseded by /doctor."
+
+[[command]]
+name = "project"
+status = "STRIPPED"
+rationale = "Upstream project-switch shortcut. Superseded by /profile."
+
+[[command]]
+name = "templates"
+status = "STRIPPED"
+rationale = "Upstream prompt-templates UI. No elai_cc handler."
+
+[[command]]
+name = "explain"
+status = "STRIPPED"
+rationale = "Upstream code-explain shortcut. Routes through Unknown."
+
+[[command]]
+name = "refactor"
+status = "STRIPPED"
+rationale = "Upstream refactor shortcut. Superseded by /task --surgical."
+
+[[command]]
+name = "docs"
+status = "STRIPPED"
+rationale = "Upstream docs viewer. No elai_cc handler."
+
+[[command]]
+name = "fix"
+status = "STRIPPED"
+rationale = "Upstream auto-fix shortcut. Fixer agent owns this surface."
+
+[[command]]
+name = "perf"
+status = "STRIPPED"
+rationale = "Upstream perf-profile shortcut. No elai_cc handler."
+
+[[command]]
+name = "chat"
+status = "STRIPPED"
+rationale = "Upstream chat-only mode. REPL is chat-mode by default."
+
+[[command]]
+name = "focus"
+status = "STRIPPED"
+rationale = "Upstream focus-toggle shortcut. No elai_cc handler."
+
+[[command]]
+name = "unfocus"
+status = "STRIPPED"
+rationale = "Upstream unfocus-toggle shortcut. No elai_cc handler."
+
+[[command]]
+name = "web"
+status = "STRIPPED"
+rationale = "Upstream web-browse shortcut. Superseded by WebFetch + SearXNG."
+
+[[command]]
+name = "map"
+status = "STRIPPED"
+rationale = "Upstream code-map shortcut. Superseded by .claude/tools/elai.map."
+
+[[command]]
+name = "symbols"
+status = "STRIPPED"
+rationale = "Upstream symbols list. Superseded by DKG queries."
+
+[[command]]
+name = "references"
+status = "STRIPPED"
+rationale = "Upstream references list. Superseded by DKG query_callers."
+
+[[command]]
+name = "definition"
+status = "STRIPPED"
+rationale = "Upstream go-to-def shortcut. Superseded by SCIP indices."
+
+[[command]]
+name = "hover"
+status = "STRIPPED"
+rationale = "Upstream LSP hover. No elai_cc handler."
+
+[[command]]
+name = "diagnostics"
+status = "STRIPPED"
+rationale = "Upstream diagnostics viewer. Auditor owns this surface."
+
+[[command]]
+name = "autofix"
+status = "STRIPPED"
+rationale = "Upstream auto-fix-on-save. Hooks own this surface."
+
+[[command]]
+name = "multi"
+status = "STRIPPED"
+rationale = "Upstream multi-agent toggle. Agent-pool is always-on in elai_cc."
+
+[[command]]
+name = "macro"
+status = "STRIPPED"
+rationale = "Upstream prompt-macro UX. No elai_cc handler."
+
+[[command]]
+name = "alias"
+status = "STRIPPED"
+rationale = "Upstream alias admin. No elai_cc handler."
+
+[[command]]
+name = "parallel"
+status = "STRIPPED"
+rationale = "Upstream parallel-mode toggle. Orchestrator owns parallelism."
+
+[[command]]
+name = "agent"
+status = "STRIPPED"
+rationale = "Upstream single-agent spawn. Superseded by /agents."
+
+[[command]]
+name = "subagent"
+status = "STRIPPED"
+rationale = "Upstream subagent admin. Agent-pool owns this surface."
+
+[[command]]
+name = "reasoning"
+status = "STRIPPED"
+rationale = "Upstream reasoning toggle. Superseded by /reason (B-39)."
+
+[[command]]
+name = "budget"
+status = "STRIPPED"
+rationale = "Upstream budget setter. Superseded by /effort + /config."
+
+[[command]]
+name = "rate-limit"
+status = "STRIPPED"
+rationale = "Upstream rate-limit admin. Provider crate owns rate-limit."
+
+[[command]]
+name = "metrics"
+status = "STRIPPED"
+rationale = "Upstream metrics viewer. Dashboard owns metrics surface."

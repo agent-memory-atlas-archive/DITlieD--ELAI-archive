@@ -175,7 +175,10 @@ impl ProposalEngine {
             let class_b = SelfModProposal {
                 variant_id: synthetic_variant_id(pipeline_mode, "freshness", &evidence_seqs),
                 parent_id: String::new(),
-                target_config_key: AllowedConfigKey::Parameter("freshness_half_life".into()),
+                // C-21 Task 7 — typed closed-enum ParameterKey.
+                target_config_key: AllowedConfigKey::Parameter(
+                    crate::self_mod_safety::ParameterKey::FreshnessHalfLife,
+                ),
                 proposed_change: ProposedChange::UpdateKey {
                     key: "freshness_half_life".into(),
                     old_value: "180".into(),

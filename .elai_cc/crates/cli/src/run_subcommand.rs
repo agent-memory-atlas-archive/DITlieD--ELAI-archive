@@ -24,6 +24,19 @@ pub(crate) struct RunArgs {
     /// Project root the runner should bind to. Defaults to the CWD when
     /// the user does not pass `--project-root`.
     pub project_root: PathBuf,
+    /// C-9 — `--mode autonomous|interactive|hybrid`. `None` resolves to
+    /// `GateMode::Interactive` at the wiring site
+    /// ([`elai_orchestrator::GateMode::from_cli_args`]). Unknown values are
+    /// rejected at parse time in [`crate::args::parse_run_subcommand_args`].
+    pub mode: Option<String>,
+    /// C-5 — `--provider local|cloud|hybrid`. Maps to
+    /// [`elai_orchestrator::dispatcher::BackendMode`] at the wiring site:
+    ///   * `local`  -> `BackendMode::Local`
+    ///   * `cloud`  -> `BackendMode::Api`
+    ///   * `hybrid` -> `BackendMode::Hybrid` (local-first, cloud-escalate)
+    /// `None` => use the toml default from `[cloud].default_mode`.
+    /// Unknown values are rejected at parse time.
+    pub provider: Option<String>,
 }
 
 /// Synchronous entry consumed by the `CliAction::Run` match arm. Owns its
@@ -55,6 +68,39 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     );
 
     let mut wiring = build_task_runner_wiring(&project_root, &session_id).await?;
+    // C-9 — resolve the autonomous-gate mode from the parsed `--mode` flag.
+    // `GateMode::from_cli_args(None)` returns Interactive so omitting the
+    // flag preserves the pre-C-9 default. With this assignment the
+    // `apply_task_runner_wiring` chokepoint installs a real
+    // `AutonomousGate` on TaskRunnerConfig.autonomous_gate (was always
+    // `None` before C-9 per phase_4G.toml notes:165).
+    wiring.gate_mode = Some(elai_orchestrator::GateMode::from_cli_args(
+        args.mode.as_deref(),
+    ));
+    tracing::info!(
+        gate_mode = ?wiring.gate_mode,
+        "elai run: autonomous-gate mode resolved"
+    );
+
+    // C-5 — load `[cloud]` from `elai_cc.toml` and stash on the wiring so
+    // `apply_task_runner_wiring` can construct the CloudModeRouter +
+    // RedactingBabyStepExecutor + spend-cap enforcement. The CLI
+    // `--provider` flag overrides the toml `[cloud].default_mode`; absent
+    // a flag and absent a toml file we still ship a default CloudConfig
+    // so the router is always constructable and the dashboard CloudPanel
+    // never sees a "router not wired" state.
+    let elai_config = crate::runtime_config::load_elai_config(&project_root);
+    let cloud_config = elai_config.cloud.to_cloud_config();
+    tracing::info!(
+        provider_override = ?args.provider,
+        toml_default_mode = ?cloud_config.default_mode,
+        privacy_profile = ?cloud_config.privacy_profile,
+        air_gapped = cloud_config.air_gapped,
+        spend_cap_daily_usd = ?cloud_config.spend_cap_daily_usd,
+        "elai run: cloud-mode router resolved"
+    );
+    wiring.cloud_config = Some(cloud_config);
+    wiring.provider_override = args.provider.clone();
 
     // Cursor lives under <project_root>/.elai_cc/sessions/<sid>/cursor.json
     // so the runner can resume across CLI invocations from the same
@@ -145,15 +191,37 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
                                     std::sync::Arc::new(NoOpIntegrationRunner),
                                     "rust",
                                 );
-                                std::sync::Arc::new(
+                                // C-13 — wrap the real InProcessToolDispatcher in the
+                                // IpcToolDispatcherAdapter shim so every production
+                                // tool call (a) passes the IpcToolRegistry FSM gate
+                                // and (b) emits the 10 missing DAIRA markers via
+                                // AdaptiveTool. See workflow/reasoning/C-13-decisions.md
+                                // (D1 Option B).
+                                let inner: std::sync::Arc<
+                                    dyn elai_core::tool_dispatcher::ToolDispatcher,
+                                > = std::sync::Arc::new(
                                     elai_tools::dispatcher::InProcessToolDispatcher::new(
                                         std::sync::Arc::new(validator),
                                     ),
+                                );
+                                std::sync::Arc::new(
+                                    elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
+                                        inner,
+                                        wiring.ssb.clone(),
+                                    ),
                                 )
                             };
+                            // patch-R5 — wire the canonical baby-step system
+                            // prompt so Sonnet emits ToolUse blocks instead of
+                            // text-only replies (otherwise the agent's
+                            // run_react_turn parses zero TOOL_USE markers,
+                            // exits, and writes no files).
                             std::sync::Arc::new(
                                 elai_orchestrator::ProductionAgentRpcServer::new(
                                     client, dispatcher, model, max_tokens,
+                                )
+                                .with_system_prompt(
+                                    elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
                                 ),
                             )
                         }
@@ -217,15 +285,33 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
                             std::sync::Arc::new(NoOpIntegrationRunner),
                             "rust",
                         );
-                        std::sync::Arc::new(
+                        // C-13 — wrap the real InProcessToolDispatcher in the
+                        // IpcToolDispatcherAdapter shim (sidecar arm). See
+                        // workflow/reasoning/C-13-decisions.md (D1 Option B).
+                        let inner: std::sync::Arc<
+                            dyn elai_core::tool_dispatcher::ToolDispatcher,
+                        > = std::sync::Arc::new(
                             elai_tools::dispatcher::InProcessToolDispatcher::new(
                                 std::sync::Arc::new(validator),
                             ),
+                        );
+                        std::sync::Arc::new(
+                            elai_tools::adaptive_tool::IpcToolDispatcherAdapter::new(
+                                inner,
+                                wiring.ssb.clone(),
+                            ),
                         )
                     };
-                    std::sync::Arc::new(elai_orchestrator::ProductionAgentRpcServer::new(
-                        client, dispatcher, model, max_tokens,
-                    ))
+                    // patch-R5 — same canonical baby-step system prompt as
+                    // the cloud-credentials arm above (see L154 comment).
+                    std::sync::Arc::new(
+                        elai_orchestrator::ProductionAgentRpcServer::new(
+                            client, dispatcher, model, max_tokens,
+                        )
+                        .with_system_prompt(
+                            elai_orchestrator::production_agent_rpc::DEFAULT_BABY_STEP_SYSTEM_PROMPT,
+                        ),
+                    )
                 };
                 let executor = elai_orchestrator::build_default_baby_step_executor(
                     OsEntropy,
@@ -248,6 +334,16 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
             }
         }
     }
+
+    // C-13 — install the production hook dispatcher BEFORE wiring is
+    // applied so apply_task_runner_wiring threads it onto
+    // TaskRunnerConfig.hook_dispatcher (Tier-1 surface). See
+    // workflow/reasoning/C-13-decisions.md (DECISION D3 option 3A).
+    wiring.hook_dispatcher =
+        Some(elai_orchestrator::runtime_setup::build_production_hook_dispatcher());
+    tracing::info!(
+        "elai run: production InProcessHookDispatcher with RuffPostToolUseRunner installed"
+    );
 
     let ssb_writer: Arc<elai_orchestrator::Ssb> = wiring.ssb.clone();
     let cfg = apply_task_runner_wiring(cursor_path, &wiring);

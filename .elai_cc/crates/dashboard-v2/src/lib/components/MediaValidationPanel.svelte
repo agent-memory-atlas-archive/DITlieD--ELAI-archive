@@ -379,7 +379,7 @@
   }
 
   .mvp-count {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -389,7 +389,7 @@
     border-radius: var(--r-sm);
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     cursor: pointer;
     transition: border-color var(--dur-fast) var(--ease-std), color var(--dur-fast) var(--ease-std);
@@ -411,7 +411,7 @@
   }
 
   .mvp-error {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fail);
     padding: var(--s-1) var(--s-1);
   }
@@ -531,7 +531,7 @@
   }
 
   .mvp-meta {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -546,7 +546,7 @@
     align-items: center;
     gap: 4px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 8px;
     border-radius: var(--r-xs);
     border: 1px solid;
@@ -572,12 +572,12 @@
   .mvp-details summary {
     cursor: pointer;
     color: var(--text-ghost);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 0;
   }
 
   .mvp-json {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-all;
@@ -651,7 +651,7 @@
     color: var(--text-ghost);
   }
   .mvp-iter-summary {
-    font-size: 11px;
+    font-size: 10px;
   }
   .mvp-iter-issues {
     grid-column: 2;

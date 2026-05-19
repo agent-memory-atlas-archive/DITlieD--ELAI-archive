@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use elai_core::ClockProvider;
+use elai_core::{ClockProvider, OsClock};
 use elai_knowledge::metadata::{
     self, IndexingStatus, ProjectMetadataStore, METADATA_DB_FILENAME,
 };
@@ -51,6 +51,13 @@ use crate::ssb::{IndexCancelPayload, Ssb, SsbPayload};
 /// cancellation flag before force-releasing OS locks. Matches SocratiCode
 /// startup.ts:153 (`awaitActiveIndexing(60_000)`).
 pub const STARTUP_SHUTDOWN_DEADLINE_SECS: u64 = 60;
+
+/// C-17 (DRIFT-L): canonical `Duration` form of the shutdown deadline.
+/// Pinned by `crates/contracts/tests/c17_indexing_resilience_contract.rs`
+/// so a future renaming or magic-number relapse trips the contract.
+/// Constraint: 30s..=120s; the current 30s value keeps a single SIGINT
+/// responsive while still letting in-flight batch flushes complete.
+pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Poll cadence inside the shutdown wait loop. Small enough to make a 60s
 /// deadline feel responsive; large enough not to dominate CPU when the only
@@ -316,7 +323,62 @@ pub async fn auto_resume_indexed_projects(
     }
 
     tracing::info!(?report, "auto_resume_indexed_projects: finished");
+
+    // C-17 (DRIFT-F closure): start a FileWatcherService per indexed
+    // project so LockScope::Watch is held while the host process is
+    // alive. The watcher guard is intentionally leaked into the global
+    // sink — we want the lock for the lifetime of the process, and
+    // `graceful_shutdown`'s force_release loop already iterates both
+    // LockScope::Index and LockScope::Watch on deadline expiry.
+    //
+    // Failure modes:
+    //   * Another live process already holds the Watch lock — log and
+    //     skip; the running process will keep watching.
+    //   * Lock plumbing error — log and continue; the indexing run is
+    //     already done so a missing watcher is observable but non-fatal.
+    for (db_path, project_indexes_dir) in discover_metadata_dbs(&indexes_root) {
+        let _ = db_path; // db_path informational here.
+        let project_root = match grandparent(&project_indexes_dir) {
+            Some(p) => p,
+            None => continue,
+        };
+        match crate::watcher_service::FileWatcherService::start(
+            &project_root,
+            Arc::clone(&clock),
+        ) {
+            Ok(svc) => {
+                tracing::info!(
+                    project_root = %svc.project_root().display(),
+                    holder_pid = svc.holder_pid(),
+                    "auto_resume: FileWatcherService started (Watch lock held)"
+                );
+                stash_watcher(svc);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    project_root = %project_root.display(),
+                    error = %e,
+                    "auto_resume: FileWatcherService start skipped (Watch lock unavailable)"
+                );
+            }
+        }
+    }
+
     report
+}
+
+// C-17: process-global stash for the per-project FileWatcherService
+// guards. Push-only; entries are dropped (releasing the Watch lock) on
+// process exit OR when `graceful_shutdown` runs its force_release loop.
+fn watcher_stash_slot() -> &'static StdMutex<Vec<crate::watcher_service::FileWatcherService>> {
+    static SLOT: OnceLock<StdMutex<Vec<crate::watcher_service::FileWatcherService>>> = OnceLock::new();
+    SLOT.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+fn stash_watcher(svc: crate::watcher_service::FileWatcherService) {
+    if let Ok(mut g) = watcher_stash_slot().lock() {
+        g.push(svc);
+    }
 }
 
 /// Synchronous body of one DB's resume cycle. Runs inside spawn_blocking.
@@ -588,9 +650,11 @@ pub async fn graceful_shutdown(
 
     // Wait loop: poll the persisted metadata for any project still
     // InProgress. Done when none remain or `deadline` elapses.
-    let start = std::time::Instant::now();
+    // C-15: OsClock-backed deadline arithmetic (raw Instant).
+    let shutdown_clock = OsClock;
+    let start = shutdown_clock.instant_now();
     loop {
-        if start.elapsed() >= deadline {
+        if shutdown_clock.instant_now().saturating_duration_since(start) >= deadline {
             report.deadline_exceeded = true;
             break;
         }

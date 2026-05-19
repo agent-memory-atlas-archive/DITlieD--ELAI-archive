@@ -17,6 +17,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use elai_core::ClockProvider;
+use elai_orchestrator::{CatchLayer, StaleApiCatch};
 use elai_rules::schema::{open_rules_db, upsert_deprecated_pattern};
 
 // ---------------------------------------------------------------------------
@@ -550,6 +551,36 @@ fn parse_version_parts(version: &str) -> Option<(u64, u64)> {
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     Some((major, minor))
+}
+
+// ---------------------------------------------------------------------------
+// C-21 Task 4 — Bridge dep-audit results to FullPipelineOutcome.stale_api_catches.
+// ---------------------------------------------------------------------------
+
+/// Convert a [`DepAuditResult`] into the [`StaleApiCatch`] rows that
+/// `FullPipelineOutcome` carries. Each `DepAuditEntry` becomes a single
+/// catch with `caught_by = CatchLayer::DepAudit`.
+///
+/// `file_path` is left as `PathBuf::new()` because dep-audit operates at
+/// the manifest level, not the per-file level — downstream consumers
+/// (self_mod_bridge::proposals_from_full_outcome) already key on
+/// (deprecated_name, ecosystem) so the empty path does not cause grouping
+/// collisions.
+///
+/// Spec phase-4H.txt section 4H.3B path A (deprecated_patterns from
+/// stale_api_catches).
+pub fn dep_audit_to_stale_catches(report: &DepAuditResult) -> Vec<StaleApiCatch> {
+    report
+        .entries
+        .iter()
+        .map(|entry| StaleApiCatch {
+            file_path: std::path::PathBuf::new(),
+            deprecated_name: entry.name.clone(),
+            replacement_name: format!("{} >= {}", entry.name, entry.latest_version),
+            ecosystem: entry.ecosystem.clone(),
+            caught_by: CatchLayer::DepAudit,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

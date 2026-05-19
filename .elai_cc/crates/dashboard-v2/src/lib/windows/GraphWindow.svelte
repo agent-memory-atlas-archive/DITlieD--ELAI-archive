@@ -190,6 +190,96 @@
           selector: 'node:selected',
           style: { 'border-color': '#0bf', 'border-width': 3 },
         },
+        // -------------------------------------------------------------
+        // C-24 (DRIFT-7 Path A) — decomposition-mode shape selectors.
+        //
+        // VizFile.level is populated by b33_build_decomposition_view
+        // (Concept | Phase | Step | BabyStep). rebuildCytoscape passes
+        // it through as `data.level`. The selectors are scoped to the
+        // node[level=...] attribute, so they apply only when the
+        // decomposition view publishes the field — file + symbol modes
+        // leave level = undefined and these selectors are inert.
+        // -------------------------------------------------------------
+        {
+          selector: 'node[level = "Concept"]',
+          style: {
+            'shape': 'round-rectangle',
+            'width': 180,
+            'height': 60,
+            'border-width': 3,
+            'background-color': '#283c5a',
+            'color': '#fff',
+            'font-size': 12,
+          },
+        },
+        {
+          selector: 'node[level = "Phase"]',
+          style: {
+            'shape': 'round-rectangle',
+            'width': 140,
+            'height': 48,
+            'border-width': 2,
+            'background-color': '#3b5a8a',
+            'color': '#fff',
+            'font-size': 11,
+          },
+        },
+        {
+          selector: 'node[level = "Step"]',
+          style: {
+            'shape': 'round-rectangle',
+            'width': 100,
+            'height': 36,
+            'border-width': 1,
+            'background-color': '#4f7eb7',
+            'color': '#fff',
+            'font-size': 10,
+          },
+        },
+        {
+          selector: 'node[level = "BabyStep"]',
+          style: {
+            'shape': 'ellipse',
+            'width': 60,
+            'height': 60,
+            'border-width': 1,
+            'background-color': '#7fa9d9',
+            'color': '#fff',
+            'font-size': 9,
+          },
+        },
+        // C-24 (DRIFT-7 Path A) — per-status color classes for the
+        // decomposition view. VizFile.status (when present) maps to one
+        // of pending|running|passed|failed|blocked; rebuildCytoscape
+        // adds the matching `.status-*` class so these overrides win
+        // over the level-shape background-color above.
+        {
+          selector: 'node.status-pending',
+          style: { 'background-color': '#9e9e9e' },
+        },
+        {
+          selector: 'node.status-running',
+          style: {
+            'background-color': '#1976d2',
+            'border-color': '#0bf',
+            'border-width': 3,
+            // cytoscape transitions: cycle border-color for a pulse hint.
+            'transition-property': 'border-color',
+            'transition-duration': 500,
+          },
+        },
+        {
+          selector: 'node.status-passed',
+          style: { 'background-color': '#388e3c' },
+        },
+        {
+          selector: 'node.status-failed',
+          style: { 'background-color': '#d32f2f' },
+        },
+        {
+          selector: 'node.status-blocked',
+          style: { 'background-color': '#f57c00' },
+        },
       ],
     });
     cy.on('tap', 'node', (evt: any) => onNodeTap(evt.target));
@@ -199,14 +289,38 @@
 
   function rebuildCytoscape(data: VizData) {
     if (!cy) return;
+    // C-24 (DRIFT-7 Path A) — publish optional `level` + `status` data
+    // attributes so the cytoscape `node[level = "Concept" | ...]` and
+    // `.status-*` selectors can match. Both fields are populated only by
+    // the decomposition view today (file/symbol views leave them
+    // undefined and the selectors are inert). `classes` is set in the
+    // initial add() so cytoscape applies the status background-color
+    // override before the first paint.
+    const nodeElements = data.files.map((f) => {
+      const ndata: Record<string, unknown> = {
+        id: f.id,
+        label: f.label,
+        language: f.language,
+      };
+      // VizFile.level / status are Option<String> from Rust — they may be
+      // undefined / null / "". Only forward truthy strings so the
+      // cytoscape selector `node[level = ...]` predicate stays clean.
+      if (typeof f.level === 'string' && f.level.length > 0) {
+        ndata.level = f.level;
+      }
+      if (typeof f.status === 'string' && f.status.length > 0) {
+        ndata.status = f.status;
+      }
+      const classes =
+        typeof f.status === 'string' && f.status.length > 0
+          ? `status-${f.status}`
+          : undefined;
+      return classes !== undefined
+        ? { data: ndata, classes }
+        : { data: ndata };
+    });
     const elements = [
-      ...data.files.map((f) => ({
-        data: {
-          id: f.id,
-          label: f.label,
-          language: f.language,
-        },
-      })),
+      ...nodeElements,
       ...data.file_edges.map((e, i) => ({
         data: {
           id: `e-${i}-${e.source}->${e.target}`,
@@ -483,7 +597,7 @@
     background: var(--bg-base);
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     overflow: hidden;
   }
   .header {
@@ -512,7 +626,7 @@
     color: var(--teal);
     border-radius: var(--r-sm);
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
   }
   .modes button.active {
@@ -569,7 +683,7 @@
     border-radius: var(--r-sm);
     color: var(--text-primary);
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
   }
   .footer .layout {
     display: flex;
@@ -583,7 +697,7 @@
     border-radius: var(--r-sm);
     color: var(--text-primary);
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 6px;
   }
   .footer button {
@@ -594,7 +708,7 @@
     border-radius: var(--r-sm);
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
   }
   .footer button:hover {
     background: var(--teal-ghost);

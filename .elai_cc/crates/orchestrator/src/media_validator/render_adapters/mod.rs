@@ -20,10 +20,10 @@ pub mod types;
 pub mod ui_screenshot;
 pub mod web;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
 
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 pub use self::animation::AnimationRenderAdapter;
@@ -122,12 +122,12 @@ pub trait MediaRenderAdapter: Send + Sync {
 /// `OutputType` MUST be rejected — silent replacement would mask plugin
 /// conflicts. We expose two registration entry points:
 ///   * `register` — last-write-wins (kept for backward compatibility
-///     with the bare HashMap API). Returns the previous adapter.
+///     with the bare FxHashMap API). Returns the previous adapter.
 ///   * `register_unique` — errors on duplicate registration.
 ///
 /// Tests live under `media_validator_rce_contract.rs`.
 pub struct AdapterRegistry {
-    adapters: HashMap<OutputType, Box<dyn MediaRenderAdapter>>,
+    adapters: FxHashMap<OutputType, Box<dyn MediaRenderAdapter>>,
 }
 
 impl Default for AdapterRegistry {
@@ -139,7 +139,7 @@ impl Default for AdapterRegistry {
 impl AdapterRegistry {
     pub fn new() -> Self {
         Self {
-            adapters: HashMap::new(),
+            adapters: FxHashMap::default(),
         }
     }
 

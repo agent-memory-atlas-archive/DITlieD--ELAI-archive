@@ -35,6 +35,10 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 tree-sitter-svelte-ng = "1.0"
 tree-sitter-astro-next = { version = "0.1", optional = true }
+# C-17 (DRIFT-H): Kotlin grammar from official tree-sitter-grammars org.
+# Anti-slopsquatting verified 2026-05-18 via `cargo search tree-sitter-kotlin`
+# (repository: github.com/tree-sitter-grammars/tree-sitter-kotlin).
+tree-sitter-kotlin-ng = "1.1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 blake3 = "1.8"
 regex.workspace = true

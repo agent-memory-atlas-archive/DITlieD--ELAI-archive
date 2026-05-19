@@ -136,6 +136,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "measure",
+        aliases: &[],
+        summary: "Run the test-infra measurement suite (C-20)",
+        argument_hint: Some("[--scope all|phase_4G|phase_4F|phase_4B|phase_4M|phase_4C|phase_b29_5] [--cloud] [--output toml|json]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "memory",
         aliases: &[],
         summary: "Inspect loaded ELAI instruction memory files",
@@ -222,8 +229,10 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "session",
         aliases: &[],
-        summary: "List, switch, or fork managed local sessions",
-        argument_hint: Some("[list|switch <session-id>|fork [branch-name]]"),
+        summary: "List, switch, fork, merge, or close managed local sessions",
+        argument_hint: Some(
+            "[list|switch <session-id>|fork [branch-name]|merge <branch-id>|close <branch-id>]",
+        ),
         resume_supported: false,
     },
     SlashCommandSpec {
@@ -1096,6 +1105,34 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("[project-root]"),
         resume_supported: false,
     },
+    // C-24 — Mermaid export over the symbol/file/decomposition graph.
+    // Deterministic (zero-LLM) renderer; mirrors the dashboard Tauri command.
+    SlashCommandSpec {
+        name: "graph",
+        aliases: &[],
+        summary: "Render the project graph as Mermaid (file/symbol/decomposition mode; deterministic)",
+        argument_hint: Some("mermaid [--mode file|symbol|decomposition] [--max-nodes N] [project-root]"),
+        resume_supported: false,
+    },
+    // C-25 — compiled-pipeline cache inspection + reset.
+    SlashCommandSpec {
+        name: "pipeline",
+        aliases: &[],
+        summary: "Inspect or reset the compiled-pipeline cache (C-25)",
+        argument_hint: Some("[list|reset]"),
+        resume_supported: false,
+    },
+    // C-27 — Testing-trust T(-1)+T-0 wiring contract audit. Deterministic
+    // (zero-LLM) — sole subcommand `audit` runs the three auditors and
+    // writes WiringEvidence/WiringViolation rows to SSB; exit 0 on clean,
+    // exit 1 on any violation.
+    SlashCommandSpec {
+        name: "wiring",
+        aliases: &[],
+        summary: "Run T-0 wiring contract audit (deterministic; no LLM)",
+        argument_hint: Some("audit [--scope all|stub-ban|dkg-reachability|observable-effect] [--output toml|json]"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1305,6 +1342,48 @@ pub enum SlashCommand {
     EntryPoints {
         project_root: Option<String>,
     },
+    /// C-24: Render the project graph as Mermaid. Mode is `file` (default),
+    /// `symbol`, or `decomposition`. `max_nodes` caps the rendered subset
+    /// (default 200). `project_root` is the optional path; defaults to the
+    /// current working directory when omitted. Deterministic, zero-LLM —
+    /// the same generator the dashboard Tauri command uses (export_graph_mermaid).
+    GraphMermaid {
+        mode: String,
+        max_nodes: usize,
+        project_root: Option<String>,
+    },
+    /// C-20: Run the test-infra measurement suite. `scope` selects which
+    /// metrics TOML to backfill (`all`, `phase_4G`, `phase_4F`, `phase_4B`,
+    /// `phase_4M`, `phase_4C`, `phase_b29_5`, `scale`, `cloud`). `cloud` is
+    /// `true` when `--cloud` is passed; the handler then fires one canary
+    /// `claude-sonnet-4-6` call via [`elai_orchestrator::CloudGroundingClient`]
+    /// and records p50/p99 + cost into phase_4M.toml. Validation lives at
+    /// the handler boundary so the parser stays string-typed (matches
+    /// `/runtime`, `/mode`, `/research` patterns).
+    Measure {
+        scope: String,
+        cloud: bool,
+        output_format: String,
+    },
+    /// C-25: inspect or reset the compiled-pipeline cache. `action` is the
+    /// lower-cased subcommand string (`"list"` | `"reset"`). Following the
+    /// `/runtime` pattern (DRIFT-G Option A): named-field, string-typed,
+    /// validation lives at the handler boundary.
+    Pipeline {
+        action: Option<String>,
+    },
+    /// C-27: run the T-0 wiring contract audit. `scope` is one of `all` /
+    /// `stub-ban` / `dkg-reachability` / `observable-effect` (lower-cased
+    /// snake-case OR dash variants both accepted by the orchestrator-side
+    /// `WiringAuditScope::parse`). `config_path` overrides `elai_cc.toml`;
+    /// `contracts_dir` overrides the C-27 default
+    /// `crates/orchestrator/tests/`. Following the Measure/Pipeline pattern
+    /// (string-typed, validation at handler boundary).
+    WiringAudit {
+        scope: Option<String>,
+        config_path: Option<String>,
+        contracts_dir: Option<String>,
+    },
     Unknown(String),
 }
 
@@ -1411,6 +1490,8 @@ pub fn validate_slash_command_input(
         },
         "mcp" => parse_mcp_command(&args)?,
         "runtime" => parse_runtime_command(&args)?,
+        "measure" => parse_measure_command(&args)?,
+        "pipeline" => parse_pipeline_command(&args)?,
         "memory" => {
             validate_no_args(command, &args)?;
             SlashCommand::Memory
@@ -1579,9 +1660,184 @@ pub fn validate_slash_command_input(
             on_off: remainder.unwrap_or_else(|| "on".to_string()),
         },
         "entry_points" => SlashCommand::EntryPoints { project_root: remainder },
+        // C-24: /graph mermaid [--mode file|symbol|decomposition] [--max-nodes N] [project-root]
+        //
+        // Validation lives at the dispatch site so the parser stays
+        // string-typed (matches /runtime, /mode, /measure shape).
+        "graph" => parse_graph_command(&args, remainder.as_deref())?,
+        // C-27: /wiring audit [--scope <scope>] [--config <path>] [--contracts <path>]
+        "wiring" => parse_wiring_command(&args)?,
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
+
+// C-24: /graph parser. Accepts:
+//   /graph mermaid                              -> mode=file,   max=200,        root=None
+//   /graph mermaid SsbActionType                -> mode=file,   max=200,        root="SsbActionType" (passed through as project_root override)
+//   /graph mermaid --mode symbol                -> mode=symbol, max=200,        root=None
+//   /graph mermaid --mode decomposition --max-nodes 500
+//
+// Subcommand `mermaid` is required; any other subcommand is an error.
+fn parse_graph_command(
+    args: &[&str],
+    _remainder: Option<&str>,
+) -> Result<SlashCommand, SlashCommandParseError> {
+    if args.is_empty() {
+        return Err(SlashCommandParseError::new(
+            "/graph requires a subcommand: `/graph mermaid [--mode <file|symbol|decomposition>] \
+             [--max-nodes <N>] [<project-root>]`",
+        ));
+    }
+    let sub = args[0];
+    if sub != "mermaid" {
+        return Err(SlashCommandParseError::new(format!(
+            "/graph: unknown subcommand `{sub}`; expected `mermaid`"
+        )));
+    }
+    let mut mode = String::from("file");
+    let mut max_nodes: usize = 200;
+    let mut project_root: Option<String> = None;
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = args[i];
+        match arg {
+            "--mode" => {
+                if i + 1 >= args.len() {
+                    return Err(SlashCommandParseError::new(
+                        "/graph mermaid --mode requires a value (file|symbol|decomposition)",
+                    ));
+                }
+                let v = args[i + 1];
+                if v != "file" && v != "symbol" && v != "decomposition" {
+                    return Err(SlashCommandParseError::new(format!(
+                        "/graph mermaid --mode: unknown value `{v}`; \
+                         expected file|symbol|decomposition"
+                    )));
+                }
+                mode = v.to_string();
+                i += 2;
+            }
+            "--max-nodes" => {
+                if i + 1 >= args.len() {
+                    return Err(SlashCommandParseError::new(
+                        "/graph mermaid --max-nodes requires a positive integer",
+                    ));
+                }
+                match args[i + 1].parse::<usize>() {
+                    Ok(n) if n > 0 => {
+                        max_nodes = n;
+                        i += 2;
+                    }
+                    _ => {
+                        return Err(SlashCommandParseError::new(format!(
+                            "/graph mermaid --max-nodes: `{}` is not a positive integer",
+                            args[i + 1]
+                        )));
+                    }
+                }
+            }
+            other => {
+                // Positional argument = optional project_root override. We
+                // accept only one; mirrors /entry_points [project-root] shape.
+                if project_root.is_some() {
+                    return Err(SlashCommandParseError::new(format!(
+                        "/graph mermaid: unexpected extra argument `{other}` \
+                         (project-root already supplied)"
+                    )));
+                }
+                project_root = Some(other.to_string());
+                i += 1;
+            }
+        }
+    }
+    Ok(SlashCommand::GraphMermaid {
+        mode,
+        max_nodes,
+        project_root,
+    })
+}
+
+// C-27: /wiring audit [--scope <scope>] [--config <path>] [--contracts <path>]
+//
+// Validation lives at the handler boundary (mirrors /runtime, /mode,
+// /measure, /pipeline). `scope` strings are normalized lower-case; the
+// orchestrator-side parser
+// (`elai_orchestrator::WiringAuditScope::parse`) is the source of truth
+// for valid values.
+fn parse_wiring_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    if args.is_empty() {
+        return Err(SlashCommandParseError::new(
+            "/wiring requires a subcommand: `/wiring audit [--scope <scope>] \
+             [--config <path>] [--contracts <path>]`",
+        ));
+    }
+    let sub = args[0];
+    if sub != "audit" {
+        return Err(SlashCommandParseError::new(format!(
+            "/wiring: unknown subcommand `{sub}`; expected `audit`"
+        )));
+    }
+    let mut scope: Option<String> = None;
+    let mut config_path: Option<String> = None;
+    let mut contracts_dir: Option<String> = None;
+    let mut i = 1usize;
+    while i < args.len() {
+        let arg = args[i];
+        match arg {
+            "--scope" => {
+                if i + 1 >= args.len() {
+                    return Err(SlashCommandParseError::new(
+                        "/wiring audit --scope requires a value \
+                         (all|stub-ban|dkg-reachability|observable-effect)",
+                    ));
+                }
+                scope = Some(args[i + 1].to_ascii_lowercase());
+                i += 2;
+            }
+            flag if flag.starts_with("--scope=") => {
+                scope = Some(flag[8..].to_ascii_lowercase());
+                i += 1;
+            }
+            "--config" => {
+                if i + 1 >= args.len() {
+                    return Err(SlashCommandParseError::new(
+                        "/wiring audit --config requires a path value",
+                    ));
+                }
+                config_path = Some(args[i + 1].to_string());
+                i += 2;
+            }
+            flag if flag.starts_with("--config=") => {
+                config_path = Some(flag[9..].to_string());
+                i += 1;
+            }
+            "--contracts" => {
+                if i + 1 >= args.len() {
+                    return Err(SlashCommandParseError::new(
+                        "/wiring audit --contracts requires a path value",
+                    ));
+                }
+                contracts_dir = Some(args[i + 1].to_string());
+                i += 2;
+            }
+            flag if flag.starts_with("--contracts=") => {
+                contracts_dir = Some(flag[12..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(SlashCommandParseError::new(format!(
+                    "/wiring audit: unknown argument `{other}`. Use --scope, --config, --contracts."
+                )));
+            }
+        }
+    }
+    Ok(SlashCommand::WiringAudit {
+        scope,
+        config_path,
+        contracts_dir,
+    })
+}
+
 fn validate_no_args(command: &str, args: &[&str]) -> Result<(), SlashCommandParseError> {
     if args.is_empty() {
         return Ok(());
@@ -1678,7 +1934,10 @@ fn parse_session_command(args: &[&str]) -> Result<SlashCommand, SlashCommandPars
             action: Some("list".to_string()),
             target: None,
         }),
-        ["list", ..] => Err(usage_error("session", "[list|switch <session-id>|fork [branch-name]]")),
+        ["list", ..] => Err(usage_error(
+            "session",
+            "[list|switch <session-id>|fork [branch-name]|merge <branch-id>|close <branch-id>]",
+        )),
         ["switch"] => Err(usage_error("session switch", "<session-id>")),
         ["switch", target] => Ok(SlashCommand::Session {
             action: Some("switch".to_string()),
@@ -1702,12 +1961,36 @@ fn parse_session_command(args: &[&str]) -> Result<SlashCommand, SlashCommandPars
             "session",
             "/session fork [branch-name]",
         )),
+        // C-23: /session merge <branch-id> — closes one of the active
+        // branches by promoting it to trunk via merge_branch_with_ssb.
+        ["merge"] => Err(usage_error("session merge", "<branch-id>")),
+        ["merge", target] => Ok(SlashCommand::Session {
+            action: Some("merge".to_string()),
+            target: Some((*target).to_string()),
+        }),
+        ["merge", ..] => Err(command_error(
+            "Unexpected arguments for /session merge.",
+            "session",
+            "/session merge <branch-id>",
+        )),
+        // C-23: /session close <branch-id> — closes an active branch
+        // without merging (abandons all snapshots tagged for the branch).
+        ["close"] => Err(usage_error("session close", "<branch-id>")),
+        ["close", target] => Ok(SlashCommand::Session {
+            action: Some("close".to_string()),
+            target: Some((*target).to_string()),
+        }),
+        ["close", ..] => Err(command_error(
+            "Unexpected arguments for /session close.",
+            "session",
+            "/session close <branch-id>",
+        )),
         [action, ..] => Err(command_error(
             &format!(
-                "Unknown /session action '{action}'. Use list, switch <session-id>, or fork [branch-name]."
+                "Unknown /session action '{action}'. Use list, switch <session-id>, fork [branch-name], merge <branch-id>, or close <branch-id>."
             ),
             "session",
-            "/session [list|switch <session-id>|fork [branch-name]]",
+            "/session [list|switch <session-id>|fork [branch-name]|merge <branch-id>|close <branch-id>]",
         )),
     }
 }
@@ -1868,6 +2151,131 @@ fn parse_runtime_set_flags(args: &[&str]) -> Result<SlashCommand, SlashCommandPa
             target: Some(backend),
         }),
         _ => Err(usage_error("runtime set", "--role <name> --backend <name>")),
+    }
+}
+
+/// C-20: parse the `/measure` slash command:
+/// - `/measure`                       -> scope=all, cloud=false
+/// - `/measure --scope <name>`        -> scope=<name>, cloud=false
+/// - `/measure --cloud`               -> scope=all, cloud=true
+/// - `/measure --scope X --cloud`     -> scope=X, cloud=true
+/// - `/measure --output toml|json`    -> set output_format
+///
+/// Scope validation (whitelist of phase names) lives in the handler boundary
+/// in [`crate::measure::run_measure`] so the parser stays string-typed and
+/// free of any orchestrator type dependency, matching `/runtime` / `/mode`.
+fn parse_measure_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    let mut scope: Option<String> = None;
+    let mut cloud = false;
+    let mut output_format: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "--scope" => {
+                if scope.is_some() {
+                    return Err(command_error(
+                        "Duplicate --scope flag for /measure.",
+                        "measure",
+                        "/measure [--scope <name>] [--cloud] [--output toml|json]",
+                    ));
+                }
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error("measure", "--scope <name>"));
+                };
+                if value.starts_with("--") {
+                    return Err(command_error(
+                        "Missing value for --scope.",
+                        "measure",
+                        "/measure [--scope <name>] [--cloud] [--output toml|json]",
+                    ));
+                }
+                scope = Some((*value).to_string());
+                i += 2;
+            }
+            flag if flag.starts_with("--scope=") => {
+                if scope.is_some() {
+                    return Err(command_error(
+                        "Duplicate --scope flag for /measure.",
+                        "measure",
+                        "/measure [--scope <name>] [--cloud] [--output toml|json]",
+                    ));
+                }
+                scope = Some(flag[8..].to_string());
+                i += 1;
+            }
+            "--cloud" => {
+                cloud = true;
+                i += 1;
+            }
+            "--output" => {
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error("measure", "--output toml|json"));
+                };
+                if !matches!(*value, "toml" | "json") {
+                    return Err(command_error(
+                        &format!(
+                            "Invalid --output value '{value}' for /measure (expected toml|json)."
+                        ),
+                        "measure",
+                        "/measure --output toml|json",
+                    ));
+                }
+                output_format = Some((*value).to_string());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                let value = &flag[9..];
+                if !matches!(value, "toml" | "json") {
+                    return Err(command_error(
+                        &format!(
+                            "Invalid --output value '{value}' for /measure (expected toml|json)."
+                        ),
+                        "measure",
+                        "/measure --output toml|json",
+                    ));
+                }
+                output_format = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(command_error(
+                    &format!("Unknown argument '{other}' for /measure."),
+                    "measure",
+                    "/measure [--scope <name>] [--cloud] [--output toml|json]",
+                ));
+            }
+        }
+    }
+    Ok(SlashCommand::Measure {
+        scope: scope.unwrap_or_else(|| "all".to_string()),
+        cloud,
+        output_format: output_format.unwrap_or_else(|| "toml".to_string()),
+    })
+}
+
+/// C-25 — parse `/pipeline [list|reset]`. Mirrors the `/runtime` parser
+/// shape: action stays as Option<String>, string validation lives at the
+/// handler boundary (run_subcommand.rs). Bare `/pipeline` defaults to
+/// action=None which handlers render as the `list` view.
+fn parse_pipeline_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    match args {
+        [] => Ok(SlashCommand::Pipeline { action: None }),
+        ["list" | "show"] => Ok(SlashCommand::Pipeline {
+            action: Some("list".to_string()),
+        }),
+        ["reset" | "clear"] => Ok(SlashCommand::Pipeline {
+            action: Some("reset".to_string()),
+        }),
+        ["help" | "-h" | "--help"] => Ok(SlashCommand::Pipeline {
+            action: Some("help".to_string()),
+        }),
+        [action, ..] => Err(command_error(
+            &format!(
+                "Unknown /pipeline action '{action}'. Use list, reset, or help."
+            ),
+            "pipeline",
+            "/pipeline [list|reset|help]",
+        )),
     }
 }
 
@@ -2117,9 +2525,8 @@ fn slash_command_category(name: &str) -> &'static str {
         }
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
-        "research" | "ask" | "explore" | "task" | "mode" | "entry_points" | "runtime" => {
-            "Routing & modes"
-        }
+        "research" | "ask" | "explore" | "task" | "mode" | "entry_points" | "runtime"
+        | "measure" | "pipeline" => "Routing & modes",
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -4008,6 +4415,10 @@ pub fn handle_slash_command(
         | SlashCommand::Mode { .. }
         | SlashCommand::Reason { .. }
         | SlashCommand::EntryPoints { .. }
+        | SlashCommand::GraphMermaid { .. }
+        | SlashCommand::Measure { .. }
+        | SlashCommand::Pipeline { .. }
+        | SlashCommand::WiringAudit { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -4323,6 +4734,25 @@ mod tests {
                 target: Some("incident-review".to_string())
             }))
         );
+        // C-23: /session merge <branch-id> and /session close <branch-id>.
+        assert_eq!(
+            SlashCommand::parse("/session merge feature-x"),
+            Ok(Some(SlashCommand::Session {
+                action: Some("merge".to_string()),
+                target: Some("feature-x".to_string())
+            }))
+        );
+        assert_eq!(
+            SlashCommand::parse("/session close experiment-y"),
+            Ok(Some(SlashCommand::Session {
+                action: Some("close".to_string()),
+                target: Some("experiment-y".to_string())
+            }))
+        );
+        // C-23: missing branch-id must return a parse error, not a
+        // Session command with None target.
+        assert!(SlashCommand::parse("/session merge").is_err());
+        assert!(SlashCommand::parse("/session close").is_err());
     }
 
     #[test]
@@ -4451,7 +4881,9 @@ mod tests {
         assert!(help.contains("/diff"));
         assert!(help.contains("/version"));
         assert!(help.contains("/export [file]"));
-        assert!(help.contains("/session [list|switch <session-id>|fork [branch-name]]"));
+        assert!(help.contains(
+            "/session [list|switch <session-id>|fork [branch-name]|merge <branch-id>|close <branch-id>]"
+        ));
         assert!(help.contains("/sandbox"));
         assert!(help.contains(
             "/plugin [list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]"
@@ -4461,7 +4893,10 @@ mod tests {
         assert!(help.contains("/skills [list|install <path>|help]"));
         // B-39 bumped 146 -> 147 (added /reason).
         // B-37 bumped 147 -> 149 (added /runtime + 1 follow-on spec in Wave-1C).
-        assert_eq!(slash_command_specs().len(), 149);
+        // C-20 bumped 149 -> 150 (added /measure for test-infra metrics backfill).
+        // C-24 bumped 150 -> 151 (added /graph mermaid for deterministic Mermaid export).
+        // C-25 bumped 151 -> 152 (added /pipeline for compiled-pipeline cache inspection).
+        assert_eq!(slash_command_specs().len(), 152);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

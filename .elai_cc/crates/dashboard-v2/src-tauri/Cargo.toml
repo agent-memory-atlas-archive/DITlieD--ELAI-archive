@@ -33,6 +33,7 @@ blake3 = { workspace = true }
 git2 = { version = "0.20.4", default-features = false }
 rusqlite = { workspace = true }
 toml = { workspace = true }
+rustc-hash = { workspace = true }
 elai-core = { path = "../../core" }
 # B-37D Wave-2A: AgentRole + IpcMessageType are referenced by the
 # set_role_runtime / list_runtimes Tauri commands. Transitive promotion —

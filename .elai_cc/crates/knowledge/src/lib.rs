@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 pub mod artifacts;
 // B-42 Phase 1: cross-project cosmos artifact tier (~/.elai/cosmos/)
 pub mod cosmos_worker;
+// C-8 Task #10: pipeline integration for the cosmos artifact tier.
+pub mod cosmos_stage;
 // B-35 Phase A: knowledge-crate runtime config (ArtifactsConfig, KnowledgeRuntimeConfig)
 pub mod runtime_config;
 
@@ -21,6 +23,7 @@ pub mod error;
 pub mod fix_templates;
 pub mod freshness;
 pub mod hyde;
+pub mod knowledge_ssb_sink;
 pub mod incremental_profile;
 pub mod index_manifest;
 pub mod index_version;
@@ -291,5 +294,17 @@ pub use fix_templates::{
 };
 pub use shortcoder::ShortCoder;
 // B-42 dashboard surface — per-artifact status snapshot + standalone helper.
-pub use cosmos_worker::{cosmos_status_snapshot_standalone, CosmosArtifactStatusJson};
+// C-2: re-export CosmosWorker so the orchestrator `trigger_cosmos_refresh`
+// helper can drive a one-shot refresh per task entry (DRIFT-3).
+pub use cosmos_worker::{
+    cosmos_status_snapshot_standalone, default_cosmos_root, CosmosArtifact,
+    CosmosArtifactStatusJson, CosmosClock, CosmosError, CosmosManifest, CosmosWorker,
+    DEFAULT_TICK_INTERVAL_SECS, NoopResearchDispatcher, ResearchDispatcher, SystemCosmosClock,
+    // C-16: real-data refresh outcome + sync SSB emitter trait. The
+    // production `SsbEmitterAdapter` (orchestrator) implements `SsbEmitter`
+    // and bridges to async `Ssb::write_payload`.
+    RefreshOutcome, SsbEmitter,
+};
+// C-8 Task #10: cosmos artifact retrieval stage for QueryPipeline.
+pub use cosmos_stage::CosmosStage;
 pub use telescope::{assemble_telescope, TelescopeContext};

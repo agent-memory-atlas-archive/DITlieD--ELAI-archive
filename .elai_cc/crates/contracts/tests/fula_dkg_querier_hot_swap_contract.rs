@@ -183,8 +183,14 @@ fn task_runner_config_accepts_dkg_querier_swap() {
         irreversible_classifier: None,
         dkg_querier_swap: Some(slot.clone()),
         task_splitter: None,
+        research_tree: None,
         pipeline_grc: None,
         model_capability_profile: None,
+        cloud_router: None,
+        cloud_spend_cap_daily_usd: None,
+        crystallizer: None,
+        compiled_pipeline_store: None,
+        background_task_manager: None,
     };
     assert!(populated.dkg_querier_swap.is_some());
 }

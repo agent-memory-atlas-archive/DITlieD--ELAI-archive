@@ -8,6 +8,9 @@
   import StatusBar from '../layout/StatusBar.svelte';
   import Drawer from '../layout/Drawer.svelte';
   import CommandPalette from '../layout/CommandPalette.svelte';
+  // C-7: closed-tab recovery surface — DRIFT-1 mount location is the
+  // Workspace overlay snippet (not AppShell which only plumbs snippets).
+  import RecoveryModal from '../components/RecoveryModal.svelte';
   import RemoteSidecarBootOverlay from './RemoteSidecarBootOverlay.svelte';
   import { workspace } from '../state/workspace.svelte';
   import { session } from '../state/session.svelte';
@@ -66,10 +69,44 @@
     plan.bootstrap();
     activity.bootstrap();
 
+    // C-7: viewport-width auto-collapse for narrow viewports.
+    // Below 800px the secondary panel auto-collapses (single-panel view)
+    // so the primary panel takes full width. ResizeObserver watches the
+    // .panels-area container — driven by viewport changes AND by sidebar-
+    // hamburger toggles that change the available area.
+    //
+    // The observer does NOT fight user intent: once the viewport rises
+    // back above the threshold we re-expand. If the user closes a tab
+    // in secondary (which already collapses via the existing closeTab
+    // logic), this observer doesn't interfere.
+    const NARROW_BREAKPOINT_PX = 800;
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      const panelsEl = document.querySelector<HTMLElement>('.panels-area');
+      if (panelsEl) {
+        resizeObserver = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            const width = entry.contentRect.width;
+            if (width < NARROW_BREAKPOINT_PX && !workspace.secondaryCollapsed) {
+              workspace.setSecondaryCollapsed(true);
+            } else if (
+              width >= NARROW_BREAKPOINT_PX &&
+              workspace.secondaryCollapsed &&
+              workspace.secondary.tabs.length > 0
+            ) {
+              workspace.setSecondaryCollapsed(false);
+            }
+          }
+        });
+        resizeObserver.observe(panelsEl);
+      }
+    }
+
     return () => {
       fsm.teardown();
       plan.teardown();
       activity.teardown();
+      if (resizeObserver) resizeObserver.disconnect();
     };
   });
 </script>
@@ -136,6 +173,9 @@
     {/if}
     {#if workspace.commandPaletteOpen}
       <CommandPalette onClose={() => workspace.closeCommandPalette()} />
+    {/if}
+    {#if workspace.showRecoveryModal}
+      <RecoveryModal />
     {/if}
   {/snippet}
 </AppShell>

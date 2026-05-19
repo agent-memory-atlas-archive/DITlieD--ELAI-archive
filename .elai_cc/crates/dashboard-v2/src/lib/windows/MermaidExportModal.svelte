@@ -140,7 +140,7 @@
     border-radius: var(--r-sm);
     color: var(--teal);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
   }
   .actions button:hover {
@@ -153,7 +153,7 @@
     background: var(--bg-base);
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     overflow: auto;
     white-space: pre;
     flex: 1 1 auto;

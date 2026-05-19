@@ -312,7 +312,7 @@ impl Tier1Validator for ImageValidator {
         capabilities: ToolCapabilityFlags,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Tier1Result> + Send + 'a>> {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             let mut checks: Vec<CheckResult> = Vec::new();
 
             let header = read_head(&request.file_path, 1024);
@@ -469,7 +469,7 @@ impl Tier1Validator for Model3DValidator {
         capabilities: ToolCapabilityFlags,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Tier1Result> + Send + 'a>> {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             if !capabilities.contains(ToolCapabilityFlags::BLENDER) {
                 // DEGRADED — no panic. Test is gated on BLENDER capability.
                 return single_check(
@@ -514,7 +514,7 @@ impl Tier1Validator for AudioValidator {
         capabilities: ToolCapabilityFlags,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Tier1Result> + Send + 'a>> {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             let mut checks: Vec<CheckResult> = Vec::new();
 
             // Read enough bytes for the header + worst-case PCM scan
@@ -613,7 +613,7 @@ impl Tier1Validator for UiScreenshotValidator {
         capabilities: ToolCapabilityFlags,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Tier1Result> + Send + 'a>> {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             let mut checks: Vec<CheckResult> = Vec::new();
 
             let header = read_head(&request.file_path, 1024);

@@ -562,9 +562,99 @@ pub(crate) fn handle_session_command(
             );
             Ok(true)
         }
+        // C-23: merge an active branch into trunk via
+        // SessionDag::merge_branch_with_ssb. Emits a typed `BranchMerged`
+        // SSB row on success (SCHEMA_VERSION 55).
+        Some("merge") => {
+            let Some(target) = target else {
+                println!("Usage: /session merge <branch-id>");
+                return Ok(false);
+            };
+            let Some(dag) = cli.session_dag.as_mut() else {
+                eprintln!(
+                    "/session merge requires a SessionDag for the active session."
+                );
+                return Ok(false);
+            };
+            let ssb_ref = cli.ssb.as_deref();
+            // The CLI REPL dispatcher is sync; spin up a short-lived
+            // current-thread runtime to drive the async SSB write. The DAG
+            // call itself is sync (SQLite) but the SSB writer .write_payload
+            // is async. The handle is current-thread because the REPL never
+            // holds a global runtime.
+            let merge_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for /session merge");
+            let result = merge_rt.block_on(dag.merge_branch_with_ssb(
+                target,
+                &mut OsEntropy,
+                &elai_core::OsClock,
+                ssb_ref,
+            ));
+            match result {
+                Ok(elai_orchestrator::MergeResult::Winner { branch, abandoned }) => {
+                    println!(
+                        "Session merged (DAG)\n  Branch           {}\n  Trunk snapshot   {}\n  Abandoned        {}",
+                        branch.name,
+                        branch.tip_snap_id,
+                        abandoned
+                            .iter()
+                            .map(|b| b.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                    Ok(false)
+                }
+                Ok(elai_orchestrator::MergeResult::Conflict { reason }) => {
+                    eprintln!("Session merge conflict: {reason}");
+                    Ok(false)
+                }
+                Err(e) => {
+                    eprintln!("Session merge failed: {e}");
+                    Ok(false)
+                }
+            }
+        }
+        // C-23: close an active branch without merging via
+        // SessionDag::close_branch_with_ssb. Emits a typed `BranchClosed`
+        // SSB row on success (SCHEMA_VERSION 55).
+        Some("close") => {
+            let Some(target) = target else {
+                println!("Usage: /session close <branch-id>");
+                return Ok(false);
+            };
+            let Some(dag) = cli.session_dag.as_mut() else {
+                eprintln!(
+                    "/session close requires a SessionDag for the active session."
+                );
+                return Ok(false);
+            };
+            let ssb_ref = cli.ssb.as_deref();
+            let close_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for /session close");
+            let result = close_rt.block_on(dag.close_branch_with_ssb(
+                target,
+                "cli:/session close",
+                &elai_core::OsClock,
+                ssb_ref,
+            ));
+            match result {
+                Ok(()) => {
+                    println!("Session branch closed\n  Branch           {target}");
+                    Ok(false)
+                }
+                Err(e) => {
+                    eprintln!("Session close failed: {e}");
+                    Ok(false)
+                }
+            }
+        }
         Some(other) => {
             println!(
-                "Unknown /session action '{other}'. Use /session list, /session switch <session-id>, or /session fork [branch-name]."
+                "Unknown /session action '{other}'. Use /session list, /session switch <session-id>, /session fork [branch-name], /session merge <branch-id>, or /session close <branch-id>."
             );
             Ok(false)
         }

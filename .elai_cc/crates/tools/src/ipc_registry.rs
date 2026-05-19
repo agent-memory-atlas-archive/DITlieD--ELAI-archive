@@ -142,7 +142,13 @@ impl IpcToolRegistry {
     }
 
     /// Whether write tools are allowed in this FSM state.
-    fn write_tools_allowed(state: FsmState) -> bool {
+    ///
+    /// `pub` since C-13 so the [`crate::adaptive_tool`] adapter shim
+    /// (`IpcToolDispatcherAdapter`) can replicate the registry's
+    /// write-side FSM gate without going through the async `dispatch`
+    /// path. The function is intentionally a pure check on `FsmState`;
+    /// no per-instance state is consulted.
+    pub fn write_tools_allowed(state: FsmState) -> bool {
         matches!(state, FsmState::Executing | FsmState::Auditing)
     }
 

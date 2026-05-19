@@ -72,6 +72,11 @@ impl fmt::Display for DiffHash {
 
 /// Coarse failure categories from the FailureTaxonomy (reasoning Layer 1).
 /// Each variant maps to a deterministic diagnosis path.
+///
+/// C-21 Task 10 (Q6 decision): added T1Block / T2Block / PreToolBlock to
+/// distinguish gate-driven failures from compiler / test / logic failures.
+/// Allows downstream MistakeBook readers to bucket "block" mistakes
+/// without parsing root_cause_json.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCategory {
@@ -89,6 +94,18 @@ pub enum FailureCategory {
     LogicError,
     Timeout,
     Unknown,
+    /// C-21 Task 10 — Tier 1 pre-tool-use hook fired BLOCK (rule
+    /// evaluator / lazy-code / size cap caught the action before the
+    /// agent could run). Source string in synthetic Failed reason:
+    /// "T1_BLOCK".
+    T1Block,
+    /// C-21 Task 10 — Tier 2 hook fired BLOCK (deprecated AST imports,
+    /// banned syntax, etc.). Source string: "T2_BLOCK".
+    T2Block,
+    /// C-21 Task 10 — generic PreToolUse hook fired BLOCK without a
+    /// specific tier discriminant (e.g. irreversible classifier,
+    /// non-T1/T2 PreToolUse rule). Source string: "PRE_TOOL_BLOCK".
+    PreToolBlock,
 }
 
 impl FailureCategory {
@@ -108,6 +125,9 @@ impl FailureCategory {
             Self::LogicError => "logic_error",
             Self::Timeout => "timeout",
             Self::Unknown => "unknown",
+            Self::T1Block => "t1_block",
+            Self::T2Block => "t2_block",
+            Self::PreToolBlock => "pre_tool_block",
         }
     }
 }

@@ -220,6 +220,9 @@ impl DkgEngine {
         // blocks + CSS @import extraction from <style> blocks.
         let _ = registry.try_register("vue", || Box::new(VueGrammar) as Box<dyn LanguageGrammar>);
         let _ = registry.try_register("java", || Box::new(JavaGrammar) as Box<dyn LanguageGrammar>);
+        // C-17: Kotlin (.kt / .kts) via tree-sitter-kotlin-ng. Closes B-30
+        // MISSING gap for JVM coverage parity with Java/Scala.
+        let _ = registry.try_register("kotlin", || Box::new(KotlinGrammar) as Box<dyn LanguageGrammar>);
         let _ = registry.try_register("csharp", || Box::new(CSharpGrammar) as Box<dyn LanguageGrammar>);
         let _ = registry.try_register("ruby", || Box::new(RubyGrammar) as Box<dyn LanguageGrammar>);
         let _ = registry.try_register("javascript", || Box::new(JavaScriptGrammar) as Box<dyn LanguageGrammar>);
@@ -2034,6 +2037,166 @@ fn java_kind_to_symbol(kind: &str) -> SymbolKind {
 }
 
 // ---------------------------------------------------------------------------
+// KotlinGrammar (C-17: closes B-30 MISSING for .kt/.kts coverage)
+// ---------------------------------------------------------------------------
+//
+// Uses the official tree-sitter-grammars/tree-sitter-kotlin grammar via the
+// tree-sitter-kotlin-ng crate. Kind names follow that grammar's node
+// inventory: `function_declaration`, `class_declaration`, `object_declaration`,
+// `interface_declaration`, `property_declaration`, `import_header`,
+// `package_header`, `enum_class_body`, `enum_entry`, `secondary_constructor`,
+// `primary_constructor`. The walker mirrors JavaGrammar's structural pattern
+// (recursive cursor walk + parent_idx chaining).
+
+pub struct KotlinGrammar;
+
+const KOTLIN_KINDS: &[&str] = &[
+    "function_declaration",
+    "primary_constructor",
+    "secondary_constructor",
+    "class_declaration",
+    "object_declaration",
+    "interface_declaration",
+    "import_header",
+    "package_header",
+    "property_declaration",
+    "enum_entry",
+    "type_alias",
+    "anonymous_initializer",
+];
+
+impl LanguageGrammar for KotlinGrammar {
+    fn language_id(&self) -> &'static str { "kotlin" }
+
+    fn tree_sitter_language(&self) -> tree_sitter::Language {
+        tree_sitter_kotlin_ng::LANGUAGE.into()
+    }
+
+    fn extract_nodes(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<DkgNode> {
+        let mut nodes = Vec::new();
+        let mut cursor = tree.root_node().walk();
+        kotlin_extract_recursive(&mut cursor, source, &mut nodes, None);
+        nodes
+    }
+}
+
+fn kotlin_extract_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    nodes: &mut Vec<DkgNode>,
+    parent_idx: Option<usize>,
+) {
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let mut current_parent = parent_idx;
+
+        if KOTLIN_KINDS.contains(&kind) {
+            let name = kotlin_extract_name(&node, source, kind);
+            let signature = kotlin_build_signature(&node, source, kind, &name);
+            let symbol_kind = kotlin_kind_to_symbol(kind);
+            let start_line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX).saturating_add(1);
+            let end_line = u32::try_from(node.end_position().row).unwrap_or(u32::MAX).saturating_add(1);
+
+            let idx = nodes.len();
+            nodes.push(DkgNode {
+                name,
+                kind: symbol_kind,
+                signature,
+                start_line,
+                end_line,
+                parent_idx,
+            });
+            current_parent = Some(idx);
+        }
+
+        if cursor.goto_first_child() {
+            kotlin_extract_recursive(cursor, source, nodes, current_parent);
+            cursor.goto_parent();
+        }
+
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
+fn kotlin_extract_name(node: &tree_sitter::Node, source: &[u8], kind: &str) -> String {
+    match kind {
+        "import_header" | "package_header" => {
+            // Carry the raw declaration text so clean_import_name's
+            // kotlin arm (dkg/mod.rs ~L3279) can strip the leading
+            // `import ` / `package ` keyword on the resolver side.
+            node.utf8_text(source).unwrap_or("").trim().to_string()
+        }
+        "primary_constructor" | "secondary_constructor" | "anonymous_initializer" => {
+            // Anonymous initialisers and primary constructors have no
+            // explicit name in Kotlin grammar; synthesize a stable label.
+            kind.to_string()
+        }
+        _ => {
+            node.child_by_field_name("name")
+                .or_else(|| {
+                    // Fallback: scan children for a `simple_identifier` /
+                    // `type_identifier` node — grammar field naming varies
+                    // across tree-sitter-kotlin versions.
+                    let mut i = 0u32;
+                    let max = u32::try_from(node.child_count()).unwrap_or(u32::MAX);
+                    while i < max {
+                        if let Some(c) = node.child(i) {
+                            if c.kind() == "simple_identifier" || c.kind() == "type_identifier" {
+                                return Some(c);
+                            }
+                        }
+                        i = i.saturating_add(1);
+                    }
+                    None
+                })
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("?")
+                .to_string()
+        }
+    }
+}
+
+fn kotlin_build_signature(node: &tree_sitter::Node, source: &[u8], kind: &str, name: &str) -> String {
+    match kind {
+        "function_declaration" => {
+            let params = node
+                .child_by_field_name("parameters")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(...)");
+            let ret = node
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(source).ok());
+            match ret {
+                Some(r) => format!("fun {}{}: {}", name, params, r),
+                None => format!("fun {}{}", name, params),
+            }
+        }
+        "class_declaration" => format!("class {}", name),
+        "object_declaration" => format!("object {}", name),
+        "interface_declaration" => format!("interface {}", name),
+        "property_declaration" => format!("val/var {}", name),
+        "enum_entry" => format!("enum_entry {}", name),
+        "type_alias" => format!("typealias {}", name),
+        _ => format!("{} {}", kind, name),
+    }
+}
+
+fn kotlin_kind_to_symbol(kind: &str) -> SymbolKind {
+    match kind {
+        "function_declaration" | "primary_constructor" | "secondary_constructor"
+        | "anonymous_initializer" => SymbolKind::Function,
+        "class_declaration" | "object_declaration" => SymbolKind::Struct,
+        "interface_declaration" => SymbolKind::Trait,
+        "import_header" | "package_header" => SymbolKind::Module,
+        "property_declaration" => SymbolKind::Static,
+        "enum_entry" => SymbolKind::Enum,
+        "type_alias" => SymbolKind::Struct,
+        _ => SymbolKind::Function,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CSharpGrammar
 // ---------------------------------------------------------------------------
 
@@ -3226,7 +3389,7 @@ const EXCLUDED_DIRS: &[&str] = &["target", ".git", ".cargo", "node_modules", "__
 
 /// Extensions that have a registered grammar.
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "go", "ts", "tsx", "svelte", "vue", "java", "cs", "rb",
+    "rs", "py", "go", "ts", "tsx", "svelte", "vue", "java", "kt", "kts", "cs", "rb",
     "js", "c", "cpp", "cc", "cxx", "scala", "php", "swift", "sh",
 ];
 
@@ -3245,6 +3408,9 @@ pub fn ext_to_lang_id(ext: &str) -> Option<&'static str> {
         // Pass D: Vue SFC — HTML parse for structure + TS re-parse + CSS @import.
         "vue" => Some("vue"),
         "java" => Some("java"),
+        // C-17: Kotlin source + Gradle Kotlin DSL scripts both route through
+        // KotlinGrammar. tree-sitter-kotlin-ng parses both surfaces.
+        "kt" | "kts" => Some("kotlin"),
         "cs" => Some("csharp"),
         "rb" => Some("ruby"),
         "js" => Some("javascript"),

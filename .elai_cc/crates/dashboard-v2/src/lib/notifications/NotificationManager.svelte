@@ -186,7 +186,7 @@
     border-radius: 4px;
     color: var(--teal, #1e8a7a);
     font-family: var(--font-sans, sans-serif);
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px 10px;
     cursor: pointer;
     transition: background 120ms ease;
@@ -198,7 +198,7 @@
     border: none;
     color: var(--text-ghost, rgba(255,255,255,0.3));
     font-family: var(--font-sans, sans-serif);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
     padding: 2px 4px;
   }

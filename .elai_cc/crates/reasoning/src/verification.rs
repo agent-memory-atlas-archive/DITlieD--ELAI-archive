@@ -227,6 +227,14 @@ pub struct LocalVerifier {
     /// path. Orchestrator injects a real closure backed by the cosmos store.
     cosmos_lookup:
         Option<Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>>,
+    /// C-2 (DRIFT-3): optional post-lookup notification fired after every
+    /// `CosmosCheck` dispatch (success and miss alike). Signature:
+    /// `(artifact_name, claim_category, query, score, matched)`. Wired to
+    /// `CosmosWorker::record_grounding_used` so a live cloud run produces
+    /// at least one `cosmos_grounding_used` SSB row even though the
+    /// background `tick()` loop is still deferred (C-16).
+    cosmos_grounding_callback:
+        Option<Arc<dyn Fn(&str, &str, &str, f32, bool) + Send + Sync>>,
 }
 
 impl LocalVerifier {
@@ -236,6 +244,7 @@ impl LocalVerifier {
             test_runner,
             artifact_lookup: None,
             cosmos_lookup: None,
+            cosmos_grounding_callback: None,
         }
     }
 
@@ -258,6 +267,21 @@ impl LocalVerifier {
         f: Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>,
     ) -> Self {
         self.cosmos_lookup = Some(f);
+        self
+    }
+
+    /// C-2 (DRIFT-3): builder-style setter for the cosmos grounding
+    /// notification callback. Fires on every `CosmosCheck` dispatch with
+    /// `(artifact_name, claim_category, query, score, matched)` after the
+    /// lookup closure returns. Orchestrator wires this to
+    /// `CosmosWorker::record_grounding_used` so the
+    /// `cosmos_grounding_used` SSB row is emitted on a live run even
+    /// before the C-16 tick loop lands.
+    pub fn with_cosmos_grounding_callback(
+        mut self,
+        f: Arc<dyn Fn(&str, &str, &str, f32, bool) + Send + Sync>,
+    ) -> Self {
+        self.cosmos_grounding_callback = Some(f);
         self
     }
 }
@@ -391,6 +415,18 @@ impl Verifier for LocalVerifier {
                 match &self.cosmos_lookup {
                     Some(lookup) => {
                         let passes = lookup(&artifact_name, &query, &claim_category);
+                        // C-2 (DRIFT-3): fire the grounding-used notification
+                        // so the orchestrator can write a
+                        // `cosmos_grounding_used` SSB row via
+                        // `CosmosWorker::record_grounding_used`. The score
+                        // is a binary 1.0/0.0 today because the lookup
+                        // closure exposes a bool; future cosine-similarity
+                        // wiring can swap in a continuous value without
+                        // changing this surface.
+                        if let Some(cb) = &self.cosmos_grounding_callback {
+                            let score = if passes { 1.0_f32 } else { 0.0_f32 };
+                            cb(&artifact_name, &claim_category, &query, score, passes);
+                        }
                         let method_used = VerificationMethod::CosmosCheck {
                             artifact_name: artifact_name.clone(),
                             query: query.clone(),

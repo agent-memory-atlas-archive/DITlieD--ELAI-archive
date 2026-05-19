@@ -256,7 +256,7 @@
 <style>
   .section-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -292,7 +292,7 @@
 
   .artifact-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     flex: 1;
     min-width: 0;

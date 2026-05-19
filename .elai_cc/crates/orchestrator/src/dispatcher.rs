@@ -60,11 +60,25 @@ pub const CONSTRAINTS_BLOCK_HEADER: &str = "CONSTRAINTS:";
 // BackendMode
 // ---------------------------------------------------------------------------
 
+/// C-5: provider-routing mode for the orchestrator's task runner.
+///
+/// `Api` and `Local` predate C-5 and remain the canonical pin states for
+/// "always cloud" / "always local sidecar". The new `Hybrid` variant is
+/// the production wiring for the cloud-mode escalation loop: the runner
+/// first attempts the local sidecar and, on retry exhaustion or an
+/// explicit escalation rule, promotes the baby step to the cloud via
+/// [`crate::cloud_mode::CloudModeRouter`].
+///
+/// The CLI `--provider local|cloud|hybrid` flag is the source of truth
+/// for selecting between these three at runtime. The dashboard's
+/// `set_execution_mode` Tauri command accepts the matching upper-case
+/// labels (`"LOCAL"`, `"CLOUD"`, `"HYBRID"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendMode {
     Api,
     Local,
+    Hybrid,
 }
 
 impl Default for BackendMode {
@@ -78,8 +92,9 @@ impl FromStr for BackendMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "api" => Ok(Self::Api),
+            "api" | "cloud" => Ok(Self::Api),
             "local" => Ok(Self::Local),
+            "hybrid" | "auto" => Ok(Self::Hybrid),
             other => Err(DispatchError::Config(format!(
                 "unknown backend mode: {other}"
             ))),
@@ -92,6 +107,7 @@ impl std::fmt::Display for BackendMode {
         match self {
             Self::Api => write!(f, "api"),
             Self::Local => write!(f, "local"),
+            Self::Hybrid => write!(f, "hybrid"),
         }
     }
 }

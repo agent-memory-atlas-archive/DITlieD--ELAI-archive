@@ -39,3 +39,11 @@ mcp = ["dep:reqwest"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# C-19 §Phase-4C: tiered analysis benchmark. Matches workspace precedent
+# (knowledge/, reasoning/ crates): harness=false + std::time::Instant, no
+# criterion dep (orchestrator D2 / DRIFT-2; CLAUDE.md "no new dependencies
+# without confirmation").
+[[bench]]
+name = "tiered_analysis_bench"
+harness = false

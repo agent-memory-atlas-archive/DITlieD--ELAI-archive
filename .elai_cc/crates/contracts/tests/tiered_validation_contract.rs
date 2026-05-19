@@ -129,7 +129,9 @@ fn validator(det: bool, syn: bool, int: (bool, bool, bool), delay: Duration) -> 
 async fn every_tier_fires_on_clean_run() {
     let v = validator(true, true, (true, true, true), Duration::ZERO);
     let out = v.run_all(&req(None)).await;
-    assert_eq!(out.len(), 5);
+    // C-28: ValidationTier::ordered() grew to 6 elements (Mutation added
+    // between Unit and Integration).
+    assert_eq!(out.len(), 6);
     let tiers: Vec<_> = out.iter().map(|r| r.tier).collect();
     assert_eq!(tiers, ValidationTier::ordered().to_vec());
     assert!(out.iter().all(|r| r.passed));

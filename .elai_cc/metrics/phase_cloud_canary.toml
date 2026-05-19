@@ -1,0 +1,21 @@
+# Cloud canary scope — written by `elai measure --scope cloud`.
+# Source: crates/cli/src/measure.rs::measure_cloud_scope.
+# Distinct from the --cloud flag which layers a canary onto phase_4M.
+# This standalone scope ALWAYS exercises the path and is recorded as a
+# first-class entry in last_measure_run.toml (matches plan ACCEPTANCE
+# scopes_run literal "cloud").
+
+scope = "cloud"
+generated_at_unix_secs = 1779116381
+generator = "elai measure (C-20)"
+
+[cloud_canary]
+fired = true
+known = true
+model = "claude-sonnet-4-6"
+prompt = "hello"
+latency_ms = 1702.8826
+response_chars = 32
+response_preview = "Hello! How can I help you today?"
+error = ""
+started_at_unix_secs = 1779116381

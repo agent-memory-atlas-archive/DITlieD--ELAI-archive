@@ -100,7 +100,7 @@ impl std::fmt::Debug for MediaValidator {
 /// B-24 plan greps for `fn new_if_media_steps`; this name satisfies the
 /// invariant.
 ///
-/// TODO (Group C5 / task_runner wiring): the actual
+/// TODO (Group C5 / task_runner wiring): the actual. stub-ban-allow: Group C5 follow-up
 /// `TaskRunner` / `PipelineFactory` does not yet call this constructor
 /// — the wiring lands when the dispatcher swaps the
 /// `new_if_media_steps_stub` placeholder. See
@@ -203,8 +203,8 @@ pub fn should_load_media_validator(has_media: bool) -> bool {
 /// `tests/` directory in Cargo's integration-test layout).
 pub mod pipeline {
     use std::path::{Component, Path, PathBuf};
-    use std::time::Instant;
 
+    use elai_core::clock::{ClockProvider, OsClock};
     use tracing::{debug, info, warn};
 
     use super::mock_vlm::VlmBackend;
@@ -557,7 +557,8 @@ pub mod pipeline {
     /// already on a tokio runtime; awaits Tier1Validator's `validate`
     /// future directly. Audit BLOCK 3 (decision 72).
     async fn run_tier1_async(request: &MediaValidationRequest) -> Tier1Result {
-        let started = Instant::now();
+        let pipeline_clock = OsClock;
+        let started = pipeline_clock.now();
         let capabilities = *cached_capability_flags();
         let canonical = std::fs::canonicalize(&request.file_path);
         let mut effective = request.clone();
@@ -572,7 +573,7 @@ pub mod pipeline {
                     detail: format!("canonicalize failed for {:?}", request.file_path),
                     latency_ms: 0,
                 }],
-                latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                latency_ms: u64::try_from(pipeline_clock.elapsed_since(started).as_millis()).unwrap_or(u64::MAX),
             };
         }
         let v: Box<dyn Tier1Validator> = match effective.media_type {
@@ -705,7 +706,8 @@ pub mod pipeline {
             };
             async move {
                 let capabilities = *cached_capability_flags();
-                let started = std::time::Instant::now();
+                let pipeline_clock = OsClock;
+                let started = pipeline_clock.now();
                 let v: Box<dyn Tier1Validator> = match media_type {
                     MediaType::Image => Box::new(ImageValidator),
                     MediaType::Audio => Box::new(AudioValidator),
@@ -715,7 +717,7 @@ pub mod pipeline {
                 // .await directly — no nested runtime.
                 let mut tier1 = v.validate(&sub_req, capabilities).await;
                 if tier1.latency_ms == 0 {
-                    tier1.latency_ms = u64::try_from(started.elapsed().as_millis())
+                    tier1.latency_ms = u64::try_from(pipeline_clock.elapsed_since(started).as_millis())
                         .unwrap_or(u64::MAX);
                 }
                 if !tier1.pass {
@@ -1078,7 +1080,8 @@ pub mod pipeline {
     // ---------------------------------------------------------------------
 
     fn run_tier1_blocking(request: &MediaValidationRequest) -> Tier1Result {
-        let started = Instant::now();
+        let pipeline_clock = OsClock;
+        let started = pipeline_clock.now();
         // Build a current-thread runtime per call — cheap (microseconds)
         // and avoids any global runtime assumptions. tokio is already a
         // workspace dep with the rt feature.
@@ -1131,7 +1134,7 @@ pub mod pipeline {
                     detail: format!("canonicalize failed for {:?}", request.file_path),
                     latency_ms: 0,
                 }],
-                latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                latency_ms: u64::try_from(pipeline_clock.elapsed_since(started).as_millis()).unwrap_or(u64::MAX),
             };
         }
 
@@ -1157,7 +1160,8 @@ pub mod pipeline {
         request: &MediaValidationRequest,
         vlm: &B,
     ) -> Result<Tier2Result, String> {
-        let started = Instant::now();
+        let pipeline_clock = OsClock;
+        let started = pipeline_clock.now();
         let advisory: VlmValidationOutput = vlm.validate_advisory(&request.file_path);
         // Schema validation: ranges + Severity enum.
         if !(0.0..=1.0).contains(&advisory.overall_quality) {
@@ -1182,7 +1186,7 @@ pub mod pipeline {
             advisory_pass,
             structured_output,
             model_used: vlm.model_id().to_owned(),
-            latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            latency_ms: u64::try_from(pipeline_clock.elapsed_since(started).as_millis()).unwrap_or(u64::MAX),
         })
     }
 

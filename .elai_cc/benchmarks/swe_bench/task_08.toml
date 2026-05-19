@@ -1,0 +1,11 @@
+id = "task_08"
+description = """
+A Rust hashing routine uses `blake2::Blake2b512::new()` plus `update`/
+`finalize` to hash file contents. blake3 is now the project standard.
+Replace the blake2 path with `blake3::Hasher::new()` + the corresponding
+update/finalize calls and update the digest length constant.
+"""
+expected_output = "blake3::Hasher"
+timeout_s = 120
+stage = 3
+is_canary = false

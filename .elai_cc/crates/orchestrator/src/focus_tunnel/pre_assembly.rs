@@ -30,7 +30,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use elai_core::clock::{ClockProvider, OsClock};
 
 use crate::cloud_mode::ExecMode;
 use crate::context_budget::ModelFeatures;
@@ -83,16 +84,13 @@ pub struct SystemTimeClock;
 
 impl Clock for SystemTimeClock {
     fn now_ms(&self) -> u64 {
-        // Use `unwrap_or` instead of `.unwrap()` so a clock skew (system
-        // clock pre-1970) does not panic the orchestrator. Zero is an
-        // acceptable degraded value here — the field is informational.
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
+        // C-15: delegate to OsClock so the entropy quarantine scanner stays
+        // clean. The fallback to 0 on pre-1970 skew is preserved by `OsClock::
+        // now_ms()`'s saturating implementation.
+        let millis_u128 = OsClock.now_ms();
         // Saturating-cast to u64 ms. u128 → u64 narrows safely for any value
         // representable in current epoch; `try_into` would panic on overflow
         // which is the wrong failure mode for an informational metric.
-        let millis_u128 = duration.as_millis();
         if millis_u128 > u128::from(u64::MAX) {
             u64::MAX
         } else {
@@ -567,6 +565,8 @@ mod tests {
             preferred_mode: None,
             target_file: None,
             edit_region: None,
+            intent_pairs: crate::intent_pair::IntentPairSet::default(),
+            file_plan: None,
         }
     }
 

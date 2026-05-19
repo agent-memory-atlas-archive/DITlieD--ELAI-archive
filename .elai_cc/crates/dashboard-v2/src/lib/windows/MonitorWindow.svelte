@@ -9,6 +9,10 @@
     SupervisionEvent,
     AutoAdvanceStats,
     CloudSpendInfo,
+    // C-28: T-1 mutation testing gauge surfaced in the Monitor.
+    MutationGaugeInfo,
+    // C-32: Code-Completeness Layer 2 completeness_ratio gauge.
+    CompletenessRatioInfo,
     // B-40: Idea-Framer state (read for critic-rounds badge).
     IdeaFramingState,
     // B-42: cosmos artifact freshness counts for the monitor badge.
@@ -60,6 +64,17 @@
   // B-27: cloud-mode spend gauge. Spec D-4:308 — rows are conditionally
   // hidden when both task_usd and day_usd are 0 (no "$0.00" display).
   let cloudSpend = $state<CloudSpendInfo | null>(null);
+  // C-28: T-1 mutation gauge. Null = no mutation run yet (renders a grey
+  // placeholder row); populated value renders green (score >= threshold)
+  // or amber (score < threshold). Polled every 5s with the rest.
+  let mutationGauge = $state<MutationGaugeInfo | null>(null);
+  // C-32: Code-Completeness Layer 2 completeness_ratio gauge. Audit-C32
+  // W2 close-out: the wire shape is now an envelope `{ known: false }` |
+  // `{ known: true, ratio, blank_count, last_path }`. `{ known: false }`
+  // renders the grey placeholder; `{ known: true }` drives the gauge
+  // colour per workflow/reasoning/C-32-decisions.md D3 / plan §Task 6.
+  // Polled every 5s with the rest.
+  let completenessRatio = $state<CompletenessRatioInfo>({ known: false });
   // B-42: cosmos artifact tier counts (fresh/stale/decayed), polled every 30s
   // while the FSM is in a PLANNING-adjacent substate.
   let cosmosArtifacts = $state<CosmosArtifactStatus[]>([]);
@@ -276,7 +291,7 @@
 
     async function poll() {
       try {
-        const [fsm, sys, log, stats, spend, framing] = await Promise.all([
+        const [fsm, sys, log, stats, spend, framing, mutation, completeness] = await Promise.all([
           stub.get_fsm_state(),
           stub.get_system_status(),
           stub.get_supervision_log(),
@@ -284,6 +299,10 @@
           stub.get_cloud_spend(),
           // B-40: critic-rounds badge data source.
           stub.get_idea_framing_state(),
+          // C-28: T-1 mutation gauge readback.
+          stub.get_mutation_gauge(),
+          // C-32: Code-Completeness Layer 2 completeness_ratio gauge.
+          stub.get_completeness_ratio(),
         ]);
         if (!alive) return;
         fsmSnap = fsm;
@@ -292,6 +311,8 @@
         autoStats = stats;
         cloudSpend = spend;
         framingState = framing;
+        mutationGauge = mutation;
+        completenessRatio = completeness;
         loadError = null;
       } catch (e) {
         if (!alive) return;
@@ -430,6 +451,92 @@
       </div>
     </section>
   {/if}
+
+  <!-- C-32: Code-Completeness Layer 2 completeness_ratio gauge. Four states:
+       (a) null     -> grey "no skeleton flushed yet" placeholder.
+       (b) >= 0.9   -> green "ok" metric class.
+       (c) 0.5..0.9 -> amber "warn" metric class.
+       (d) < 0.5    -> red "fail" tone (re-uses --warn class — there is no
+                       --fail class on auto-advance__metric today; the red
+                       tone is the dashboard's current "below threshold"
+                       treatment, see workflow/reasoning/C-32-decisions.md
+                       D3). The gauge updates on every poll (5s); the
+                       underlying source of truth is the latest
+                       `skeleton_flushed` SSB row. -->
+  <section class="monitor-section completeness-gauge" aria-label="Completeness ratio">
+    <div class="auto-advance__header">
+      <span class="auto-advance__label mono">completeness</span>
+    </div>
+    {#if !completenessRatio.known}
+      <div class="auto-advance__row">
+        <span class="auto-advance__metric mono" title="No skeleton flushed for this session yet">
+          <span class="auto-advance__unit">no skeleton flushed yet</span>
+        </span>
+      </div>
+    {:else}
+      <div class="auto-advance__row">
+        <span
+          class="auto-advance__metric mono"
+          class:auto-advance__metric--warn={completenessRatio.ratio < 0.9}
+          class:auto-advance__metric--ok={completenessRatio.ratio >= 0.9}
+          title="Completeness ratio (non-blocked fills / total blanks). Red < 0.5, yellow 0.5..0.9, green >= 0.9."
+        >
+          <span class="auto-advance__pct">{(completenessRatio.ratio * 100).toFixed(1)}%</span>
+          <span class="auto-advance__unit">ratio ({completenessRatio.blank_count} blanks)</span>
+        </span>
+        {#if completenessRatio.last_path}
+          <span
+            class="auto-advance__metric mono"
+            title="Most recent skeleton flush path"
+          >
+            <span class="auto-advance__unit">{completenessRatio.last_path}</span>
+          </span>
+        {/if}
+      </div>
+    {/if}
+  </section>
+
+  <!-- C-28: T-1 mutation testing gauge. Three states:
+       (a) null      -> grey "no mutation run yet" placeholder.
+       (b) score >= threshold -> green "ok" metric class.
+       (c) score < threshold  -> amber "warn" metric class. -->
+  <section class="monitor-section mutation-gauge" aria-label="Mutation score">
+    <div class="auto-advance__header">
+      <span class="auto-advance__label mono">mutation</span>
+    </div>
+    {#if mutationGauge === null}
+      <div class="auto-advance__row">
+        <span class="auto-advance__metric mono" title="No mutation run recorded for this session yet">
+          <span class="auto-advance__unit">no mutation run yet</span>
+        </span>
+      </div>
+    {:else}
+      <div class="auto-advance__row">
+        <span
+          class="auto-advance__metric mono"
+          class:auto-advance__metric--warn={mutationGauge.score_pct < mutationGauge.threshold_pct}
+          class:auto-advance__metric--ok={mutationGauge.score_pct >= mutationGauge.threshold_pct}
+          title="Mutation score (caught / (caught + survived + timeout))"
+        >
+          <span class="auto-advance__pct">{mutationGauge.score_pct.toFixed(1)}%</span>
+          <span class="auto-advance__unit">score (threshold {mutationGauge.threshold_pct.toFixed(0)}%)</span>
+        </span>
+        {#if mutationGauge.cache_hits > 0}
+          <span
+            class="auto-advance__metric mono"
+            title="Mutants served from EquivalentMutantCache (skipped re-run)"
+          >
+            <span class="auto-advance__num">{mutationGauge.cache_hits}</span>
+            <span class="auto-advance__unit">cache hit</span>
+          </span>
+        {/if}
+        <span class="auto-advance__metric mono" title="Total mutants run this session">
+          <span class="auto-advance__num">{mutationGauge.total_run}</span>
+          <span class="auto-advance__unit">total</span>
+        </span>
+      </div>
+    {/if}
+  </section>
 
   {#if !isRunning}
     <div class="monitor__empty">
@@ -637,7 +744,7 @@
     text-align: center;
   }
   .identity-elapsed {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -734,7 +841,7 @@
     align-items: baseline;
   }
   .snap-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     min-width: 72px;
     flex-shrink: 0;
@@ -816,7 +923,7 @@
     pointer-events: none;
   }
   .diff-pre {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     padding: var(--s-2) var(--s-3) var(--s-2) calc(var(--s-3) + 3px);
     white-space: pre-wrap;
@@ -914,13 +1021,13 @@
   .tl-row:focus-visible { box-shadow: var(--ring); }
 
   .tl-time {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-disabled);
     flex-shrink: 0;
     min-width: 36px;
   }
   .tl-body {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -948,7 +1055,7 @@
   .tl-row--pass { animation: step-flash 100ms ease-in-out; }
 
   .tl-empty {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: 4px var(--s-1);
   }
@@ -1044,7 +1151,7 @@
     gap: 8px;
     margin: 8px 0;
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 10px;
     border-radius: 3px;
     background: rgba(95, 168, 255, 0.08);
     color: #5fa8ff;

@@ -84,7 +84,7 @@ pub struct MediaSsbEvent {
 pub fn spawn_subscriber(
     app: tauri::AppHandle,
     ssb_writer: Arc<Ssb>,
-    media_state: Arc<tokio::sync::RwLock<std::collections::HashMap<String, MediaValidationEntry>>>,
+    media_state: Arc<tokio::sync::RwLock<rustc_hash::FxHashMap<String, MediaValidationEntry>>>,
 ) {
     let mut rx = ssb_writer.subscribe();
     // tauri::async_runtime::spawn (not tokio::spawn) because lib.rs
@@ -138,7 +138,7 @@ fn is_media_action(t: &SsbActionType) -> bool {
 async fn handle_media_row(
     entry: &SsbEntry,
     media_state: &Arc<
-        tokio::sync::RwLock<std::collections::HashMap<String, MediaValidationEntry>>,
+        tokio::sync::RwLock<rustc_hash::FxHashMap<String, MediaValidationEntry>>,
     >,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
@@ -176,7 +176,7 @@ async fn handle_media_row(
 async fn fold_media_row_into_state(
     entry: &SsbEntry,
     media_state: &Arc<
-        tokio::sync::RwLock<std::collections::HashMap<String, MediaValidationEntry>>,
+        tokio::sync::RwLock<rustc_hash::FxHashMap<String, MediaValidationEntry>>,
     >,
 ) -> Result<String, String> {
     let ts_ms = u64::try_from(entry.created_at).unwrap_or(0);
@@ -423,10 +423,10 @@ pub async fn subscribe_media_ssb_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
-    fn fresh_state() -> Arc<tokio::sync::RwLock<HashMap<String, MediaValidationEntry>>> {
-        Arc::new(tokio::sync::RwLock::new(HashMap::new()))
+    fn fresh_state() -> Arc<tokio::sync::RwLock<FxHashMap<String, MediaValidationEntry>>> {
+        Arc::new(tokio::sync::RwLock::new(FxHashMap::default()))
     }
 
     /// Inserting a `MediaValidationStartedPayload` creates a new row.

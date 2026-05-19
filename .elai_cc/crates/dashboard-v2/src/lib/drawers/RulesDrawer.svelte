@@ -289,7 +289,7 @@
 
   .section-heading {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-secondary);
@@ -458,7 +458,7 @@
 
   .deprecated-pattern {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     flex: 1;
     overflow: hidden;
@@ -548,7 +548,7 @@
 
   .empty-note {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: var(--s-2) 0;
   }

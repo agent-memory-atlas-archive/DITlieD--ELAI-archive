@@ -186,8 +186,10 @@ fn test_4a_isolation_pid_namespace_real() {
         }
     };
 
-    // Spawn /bin/true as the sandboxed process
-    let result = sandbox.launch_agent(&handle, "/bin/true", &[], &scratch);
+    // C-11: spawn /bin/sleep 1 so the child lives long enough for us to
+    // read /proc/{pid}/status. /bin/true is too fast (exits before we can
+    // open the proc file on slow CI).
+    let result = sandbox.launch_agent(&handle, "/bin/sleep", &["1".into()], &scratch);
     let _ = std::fs::remove_dir_all(&scratch);
 
     match result {
@@ -195,7 +197,83 @@ fn test_4a_isolation_pid_namespace_real() {
             // Real test: PID must be > 1 (not a placeholder zero or nil)
             assert!(proc.process_id > 1,
                 "sandboxed process must have real OS PID > 1, got: {}", proc.process_id);
+
+            // C-11 task 6: NSpid check. /proc/{pid}/status lists PIDs from
+            // outermost ns to innermost; the LAST entry is the PID inside
+            // the deepest namespace. With CLONE_NEWPID the child sees itself
+            // as PID 1, while the outer PID (what we have) is > 1 — so the
+            // first and last entries differ.
+            let status_path = format!("/proc/{}/status", proc.process_id);
+            match std::fs::read_to_string(&status_path) {
+                Ok(status) => {
+                    let nspid_line = status
+                        .lines()
+                        .find(|l| l.starts_with("NSpid:"))
+                        .map(|l| l.to_string());
+                    if let Some(line) = nspid_line {
+                        // Format: "NSpid:\t<outer>\t<inner>" (man 5 proc).
+                        let pids: Vec<&str> = line
+                            .split_whitespace()
+                            .skip(1) // skip "NSpid:"
+                            .collect();
+                        assert!(
+                            pids.len() >= 2,
+                            "NSpid must list >= 2 PIDs (outer + inner) when CLONE_NEWPID active; got: {line}"
+                        );
+                        let outer = pids.first().copied().unwrap_or("");
+                        let inner = pids.last().copied().unwrap_or("");
+                        assert_ne!(
+                            outer, inner,
+                            "outer PID ({outer}) must differ from inner PID ({inner}) under CLONE_NEWPID"
+                        );
+                        // Inner PID should be 1 (first process in the new PID namespace).
+                        assert_eq!(
+                            inner, "1",
+                            "inner PID under CLONE_NEWPID must be 1, got: {inner}"
+                        );
+                    } else {
+                        // Older kernels without CONFIG_PROC_PID_NS may omit
+                        // the NSpid field; we don't fail in that case.
+                        eprintln!("note: /proc/{}/status has no NSpid line — kernel without PID namespace support?", proc.process_id);
+                    }
+                }
+                Err(e) => {
+                    // Race: child may have exited before we read. Acceptable.
+                    eprintln!("note: could not read {status_path}: {e}");
+                }
+            }
+
+            // C-11 task 7: RLIMIT_AS visibility via /proc/{pid}/limits.
+            // Format: "Max address space         536870912            536870912            bytes"
+            let limits_path = format!("/proc/{}/limits", proc.process_id);
+            match std::fs::read_to_string(&limits_path) {
+                Ok(limits) => {
+                    let as_line = limits
+                        .lines()
+                        .find(|l| l.starts_with("Max address space"));
+                    if let Some(line) = as_line {
+                        // The hard limit is the 2nd numeric column. Tokens are
+                        // whitespace-separated; "Max address space" spans 3 tokens.
+                        let toks: Vec<&str> = line.split_whitespace().collect();
+                        // ["Max", "address", "space", "<soft>", "<hard>", "bytes"]
+                        assert!(toks.len() >= 6, "unexpected limits line shape: {line}");
+                        let hard: u64 = toks[4].parse().unwrap_or(0);
+                        const EXPECTED_AS_BYTES: u64 = 512 * 1024 * 1024;
+                        assert_eq!(
+                            hard, EXPECTED_AS_BYTES,
+                            "Max address space hard limit must be {EXPECTED_AS_BYTES} (512 MiB); got: {hard}"
+                        );
+                    } else {
+                        eprintln!("note: /proc/{}/limits has no 'Max address space' line", proc.process_id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("note: could not read {limits_path}: {e}");
+                }
+            }
+
             // Cleanup: wait for the process to avoid zombie
+            let _ = sandbox.kill_agent(proc.agent_id);
             let _ = sandbox.wait_agent(proc.agent_id);
         }
         Err(e) => {
@@ -203,6 +281,148 @@ fn test_4a_isolation_pid_namespace_real() {
             eprintln!("note: sandbox launch returned err (may need CAP_SYS_ADMIN): {e}");
         }
     }
+}
+
+/// C-11 task 8 (Windows): GetTokenInformation(TokenAppContainerSid) on the
+/// spawned process token, not just the sandbox-handle SID. This proves the
+/// AppContainer was APPLIED to the child process, not merely that the profile
+/// was created. On unprivileged CI the test skips on create() error.
+#[cfg(target_os = "windows")]
+#[test]
+fn test_4a_isolation_appcontainer_process_token_sid() {
+    use elai_orchestrator::sandbox::{
+        AgentSandbox, AppContainerConfig, WindowsAppContainerSandbox,
+    };
+    use elai_orchestrator::agent_pool::AgentRole;
+    use uuid::Uuid;
+
+    let sandbox = WindowsAppContainerSandbox::with_fallback();
+    let agent_id = Uuid::new_v4();
+    let scratch = std::env::temp_dir().join(format!("elai_ac_tokensid_{}", agent_id));
+    let _ = std::fs::create_dir_all(&scratch);
+
+    let config = AppContainerConfig::new(
+        agent_id,
+        AgentRole::Executor,
+        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
+        scratch.clone(),
+    );
+
+    let handle = match sandbox.create(&config) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!(
+                "skipping test_4a_isolation_appcontainer_process_token_sid: create failed: {e}"
+            );
+            let _ = std::fs::remove_dir_all(&scratch);
+            return;
+        }
+    };
+
+    // Spawn cmd.exe /c "ping -n 2 127.0.0.1 >NUL" so the process lives long
+    // enough for us to open its token. ping is a stable Windows shipped exe.
+    let result = sandbox.launch_agent(
+        &handle,
+        "cmd.exe",
+        &[
+            "/c".to_string(),
+            "ping -n 2 127.0.0.1 >NUL".to_string(),
+        ],
+        &scratch,
+    );
+
+    match result {
+        Ok(proc) => {
+            // SAFETY: raw Win32 FFI. Requires user review per C-11 §Safety gate.
+            // We open the spawned process by PID, fetch its token, and query
+            // TokenAppContainerSid. NULL/error indicates not AppContainer
+            // (fallback restricted-token mode). We log but never hard-fail
+            // because with_fallback() is the CI norm.
+            use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HANDLE, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::Security::{
+                GetTokenInformation, TokenAppContainerSid, TOKEN_QUERY,
+                TOKEN_APPCONTAINER_INFORMATION,
+            };
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
+            };
+
+            unsafe {
+                let h_proc: HANDLE = OpenProcess(
+                    PROCESS_QUERY_INFORMATION,
+                    0,
+                    proc.process_id,
+                );
+                if h_proc.is_null() || h_proc == INVALID_HANDLE_VALUE {
+                    eprintln!(
+                        "note: OpenProcess({}) failed: {}",
+                        proc.process_id,
+                        std::io::Error::last_os_error()
+                    );
+                } else {
+                    let mut h_tok: HANDLE = std::ptr::null_mut();
+                    let opt_ok: BOOL = OpenProcessToken(h_proc, TOKEN_QUERY, &mut h_tok);
+                    if opt_ok == 0 {
+                        eprintln!(
+                            "note: OpenProcessToken failed: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    } else {
+                        // First call: discover buffer size.
+                        let mut needed: u32 = 0;
+                        let _ = GetTokenInformation(
+                            h_tok,
+                            TokenAppContainerSid,
+                            std::ptr::null_mut(),
+                            0,
+                            &mut needed,
+                        );
+                        if needed == 0 {
+                            eprintln!(
+                                "note: GetTokenInformation(TokenAppContainerSid) returned zero size — process not in AppContainer (fallback mode)"
+                            );
+                        } else {
+                            let mut buf: Vec<u8> = vec![0u8; needed as usize];
+                            let mut got: u32 = 0;
+                            let gti_ok: BOOL = GetTokenInformation(
+                                h_tok,
+                                TokenAppContainerSid,
+                                buf.as_mut_ptr() as *mut _,
+                                needed,
+                                &mut got,
+                            );
+                            if gti_ok == 0 {
+                                eprintln!(
+                                    "note: GetTokenInformation failed: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                            } else {
+                                let info = &*(buf.as_ptr() as *const TOKEN_APPCONTAINER_INFORMATION);
+                                if info.TokenAppContainer.is_null() {
+                                    eprintln!(
+                                        "note: TokenAppContainerSid is NULL — process is not in AppContainer (fallback mode)"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "C-11: AppContainer SID present on spawned process token (full isolation)"
+                                    );
+                                }
+                            }
+                        }
+                        let _ = CloseHandle(h_tok);
+                    }
+                    let _ = CloseHandle(h_proc);
+                }
+            }
+            let _ = sandbox.kill_agent(proc.agent_id);
+            let _ = sandbox.wait_agent(proc.agent_id);
+        }
+        Err(e) => {
+            eprintln!("note: launch_agent returned err: {e}");
+        }
+    }
+    let _ = sandbox.cleanup(&handle);
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 #[test]

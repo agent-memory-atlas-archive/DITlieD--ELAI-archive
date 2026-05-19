@@ -1,0 +1,11 @@
+id = "task_06"
+description = """
+A Rust test fails intermittently because it depends on iteration order of
+a `HashMap<String, usize>`. Convert the underlying collection to
+`BTreeMap<String, usize>` so iteration is deterministic and the test
+becomes flake-free.
+"""
+expected_output = "BTreeMap"
+timeout_s = 90
+stage = 2
+is_canary = false

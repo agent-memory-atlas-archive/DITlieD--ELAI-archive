@@ -1,5 +1,8 @@
 // Phase 4B: IPC tool modules (real implementations, not facade re-exports)
 pub mod ipc_registry;
+// C-13 — AdaptiveTool<T> wrapper + IpcToolDispatcherAdapter shim. Together
+// they fulfil D1 Option B (adapter shim) + the 10 missing DAIRA markers.
+pub mod adaptive_tool;
 pub mod git_tool;
 pub mod validation;
 pub mod trace;

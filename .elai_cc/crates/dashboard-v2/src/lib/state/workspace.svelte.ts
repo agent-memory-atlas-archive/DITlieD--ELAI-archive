@@ -6,7 +6,18 @@ import type { WindowType, DrawerKey, TabModel, GateMode } from '../api/types';
 import { logStub } from '../api/stub';
 
 const STORAGE_KEY = 'elai.dashboard-v2.workspace.v1';
-const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline']);
+const VALID_WINDOW_TYPES = new Set<string>(['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore']);
+
+/** C-7: closed-tab recovery stack max length. FIFO ring-buffer eviction. */
+const CLOSED_TABS_MAX = 10;
+
+/** C-7: one entry per closed tab. Identity-by-type semantics — restore re-opens
+ *  a fresh tab of the same WindowType (NOT a state-restore of the original tab). */
+export interface ClosedTabEntry {
+  type: WindowType;
+  title: string;
+  closedAt: number;
+}
 
 function makeTabId(): string {
   // Stable UUID across hydrate cycles. crypto.randomUUID is universally available
@@ -86,6 +97,15 @@ function createWorkspace() {
    * Used to expose drop zone for collapsed secondary.
    */
   let tabDragging = $state<boolean>(false);
+  /**
+   * C-7: ring buffer of recently-closed tabs (newest at index 0).
+   * Bounded at CLOSED_TABS_MAX; oldest entry evicted on overflow.
+   * Populated by closeTab(); read by RecoveryModal via the exported getter.
+   */
+  let closedTabs = $state<ClosedTabEntry[]>([]);
+  /** C-7: RecoveryModal visibility flag. Toggled by openWindowRecovery() /
+   *  closeWindowRecovery(). Mounted inside Workspace.svelte overlay snippet. */
+  let showRecoveryModal = $state<boolean>(false);
 
   // Debounced persist machinery.
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -191,6 +211,12 @@ function createWorkspace() {
   }
 
   function closeTab(panelId: 'primary' | 'secondary', tabId: string) {
+    // C-7: capture the closing tab BEFORE mutation so RecoveryModal can re-open it.
+    // Identity-by-type semantics (DRIFT-5): only WindowType + title are preserved;
+    // window-internal state is NOT restored.
+    const sourcePanel = panelId === 'primary' ? primary : secondary;
+    const closingTab = sourcePanel.tabs.find((t) => t.id === tabId);
+
     if (panelId === 'primary') {
       const remaining = primary.tabs.filter((t) => t.id !== tabId);
       // Primary panel must always have at least one tab (no empty primary).
@@ -213,9 +239,35 @@ function createWorkspace() {
         secondary = { ...secondary, tabs: remaining, activeTabId };
       }
     }
+
+    // C-7: push to closedTabs ring buffer (FIFO eviction at CLOSED_TABS_MAX).
+    // Only records tabs that were actually removed (closing-the-only-primary-tab
+    // returns early above, so closingTab here always refers to a removed tab).
+    if (closingTab) {
+      const entry: ClosedTabEntry = {
+        type: closingTab.type,
+        title: closingTab.label,
+        closedAt: Date.now(),
+      };
+      const next = [entry, ...closedTabs];
+      closedTabs = next.length > CLOSED_TABS_MAX ? next.slice(0, CLOSED_TABS_MAX) : next;
+    }
+
     userCustomized = true;
     logStub('workspace.closeTab', { panelId, tabId });
     schedulePersist();
+  }
+
+  // C-7: RecoveryModal visibility actions. Mounted inside Workspace.svelte
+  // overlay snippet (DRIFT-1). Triggered by the Ctrl+Shift+H shortcut.
+  function openWindowRecovery() {
+    showRecoveryModal = true;
+    logStub('workspace.openWindowRecovery', { count: closedTabs.length });
+  }
+
+  function closeWindowRecovery() {
+    showRecoveryModal = false;
+    logStub('workspace.closeWindowRecovery');
   }
 
   function selectTab(panelId: 'primary' | 'secondary', tabId: string) {
@@ -428,6 +480,9 @@ function createWorkspace() {
     get newTabPickerOpen() { return newTabPickerOpen; },
     get newTabPickerTarget() { return newTabPickerTarget; },
     get tabDragging() { return tabDragging; },
+    // C-7: closed-tab recovery surface.
+    get closedTabs() { return closedTabs; },
+    get showRecoveryModal() { return showRecoveryModal; },
 
     openTab,
     closeTab,
@@ -447,6 +502,16 @@ function createWorkspace() {
     closeNewTabPicker,
     setTabDragging,
     expandSecondary,
+    // C-7: window-recovery actions.
+    openWindowRecovery,
+    closeWindowRecovery,
+    /** C-7: set secondaryCollapsed externally (used by ResizeObserver in
+     *  Workspace.svelte to auto-collapse below 800px viewport). */
+    setSecondaryCollapsed(v: boolean) {
+      if (secondaryCollapsed === v) return;
+      secondaryCollapsed = v;
+      schedulePersist();
+    },
 
     // Persistence API
     serialize,
@@ -461,6 +526,7 @@ function createWorkspace() {
       activeDrawer = null;
       commandPaletteOpen = false;
       newTabPickerOpen = false;
+      showRecoveryModal = false;
       logStub('workspace.closeOverlay');
     },
     /** Alias for CommandPalette.svelte compatibility. */

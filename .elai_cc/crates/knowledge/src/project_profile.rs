@@ -1130,6 +1130,81 @@ fn merge_overrides(profile: &mut ProjectProfile, overrides: &toml::Table) {
     debug!("applied project profile overrides");
 }
 
+/// C-21 Task 8 — append BLOCK-severity deprecated_patterns rows from
+/// rules.db as constraint entries. Format: `"DO NOT USE {deprecated}.
+/// Use {replacement}."`. De-duplicated on deprecated_name across the
+/// existing constraint set (so TOML overrides do not get clobbered by
+/// rules-db rows naming the same deprecated symbol).
+///
+/// Silent fallthrough: if `rules_db_path` is `None` or the open fails,
+/// the function returns Ok(()) without modifying `profile.constraints`.
+/// The caller can therefore treat this as an additive enrichment with
+/// no risk of aborting the profile assembly.
+///
+/// Spec: phase-4H.txt anti-staleness enforcement section 2.2 +
+/// rules/src/schema.rs `query_deprecated_patterns(conn, Some("BLOCK"))`.
+pub fn append_constraints_from_rules_db(
+    profile: &mut ProjectProfile,
+    rules_db_path: &Path,
+) -> Result<(), ProjectProfileError> {
+    // Silent skip when the rules.db file is absent — profile assembly
+    // must succeed before any rule is ever recorded.
+    if !rules_db_path.exists() {
+        debug!(
+            path = %rules_db_path.display(),
+            "rules.db not present; skipping constraint enrichment"
+        );
+        return Ok(());
+    }
+    let clock = OsClock;
+    let conn = match elai_rules::schema::open_rules_db(rules_db_path, &clock) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                error = %e,
+                path = %rules_db_path.display(),
+                "open_rules_db failed; skipping constraint enrichment"
+            );
+            return Ok(());
+        }
+    };
+    let entries = match elai_rules::schema::query_deprecated_patterns(&conn, Some("BLOCK")) {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "query_deprecated_patterns failed; skipping constraint enrichment"
+            );
+            return Ok(());
+        }
+    };
+    // Build a de-dup set keyed on the deprecated_name token already
+    // mentioned in any existing constraint string. Conservative substring
+    // match so TOML entries phrased differently still de-dup.
+    let mut appended = 0usize;
+    for entry in entries {
+        let already_present = profile
+            .constraints
+            .iter()
+            .any(|c| c.contains(&entry.deprecated_name));
+        if already_present {
+            continue;
+        }
+        let constraint = format!(
+            "DO NOT USE {}. Use {}.",
+            entry.deprecated_name, entry.replacement_name
+        );
+        profile.constraints.push(constraint);
+        appended += 1;
+    }
+    debug!(
+        appended,
+        "appended {} BLOCK-severity deprecated_patterns rows to constraints",
+        appended
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Coverage tool detection (spec section 2D, A-32)
 // ---------------------------------------------------------------------------

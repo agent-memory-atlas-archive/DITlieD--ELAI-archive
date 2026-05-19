@@ -234,7 +234,7 @@ fn validate_artifact_extension(artifact: &Path) -> Result<(), RenderAdapterError
 
 fn make_tempdir(prefix: &str) -> Result<PathBuf, RenderAdapterError> {
     let base = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
     let dir = base.join(format!("{prefix}-{id}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -265,7 +265,7 @@ impl MediaRenderAdapter for BlenderRenderAdapter {
         >,
     > {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             validate_artifact_extension(artifact)?;
 
             // 1. Write the embedded Python script (or test-only override)
@@ -439,7 +439,7 @@ mod tests {
         ));
         let cfg = RenderConfig::default();
         let dir = std::env::temp_dir();
-        let obj = dir.join(format!("elai-obj-stub-{}.obj", uuid::Uuid::new_v4()));
+        let obj = dir.join(format!("elai-obj-stub-{}.obj", uuid::Uuid::new_v4())); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
         let _ = std::fs::write(&obj, b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
         let r = a.render(&obj, &cfg).await;
         let _ = std::fs::remove_file(&obj);

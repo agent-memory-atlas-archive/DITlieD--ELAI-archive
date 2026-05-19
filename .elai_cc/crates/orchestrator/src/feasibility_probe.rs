@@ -23,7 +23,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,7 +36,7 @@ use elai_ipc_types::{
     SeccompProfile, ToolFilter, ToolId, FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
 use crate::research_tree::BabyStepSpec;
-use crate::system_probe::SystemProbeReport;
+use crate::system_probe::SystemProbeResult;
 
 /// Environment variable toggling the probe entirely. Truthy values:
 /// "1", "true", "TRUE", "on", "ON".
@@ -71,7 +71,7 @@ pub enum TaskFeasibility {
     Infeasible,
 }
 
-/// Resource-margin snapshot vs the live `SystemProbeReport`.
+/// Resource-margin snapshot vs the live `SystemProbeResult`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMargins {
     pub vram_margin_pct: f32,
@@ -85,7 +85,7 @@ impl ResourceMargins {
     /// Build margins from a system report. When total is zero (unavailable),
     /// the corresponding margin is 0.0 (forces the caller to escalate
     /// because we have no positive evidence of headroom).
-    pub fn from_report(report: &SystemProbeReport) -> Self {
+    pub fn from_report(report: &SystemProbeResult) -> Self {
         let vram_total = report
             .gpu
             .as_ref()
@@ -137,12 +137,45 @@ pub struct NovelStep {
 }
 
 /// Per-stub execution outcome.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// C-22 (StubResult v2): four additive fields land here. All carry
+/// `#[serde(default)]` so existing msgpack payloads (pre-v2) deserialise
+/// cleanly. `#[derive(Default)]` lets the contract tests (and any future
+/// call site) construct the struct via `..Default::default()` spread.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StubResult {
     pub step_id: String,
     pub stub_passed: bool,
     pub elapsed_ms: u32,
     pub error: Option<String>,
+    /// 0-indexed alternative slot the stub ran for. 0 = first attempt
+    /// (original step). Up to `MAX_ALTERNATIVES_PER_STEP - 1`. Defaults
+    /// to 0 for back-compat with v1 stub-result msgpack payloads.
+    #[serde(default)]
+    pub alternative_index: u8,
+    /// blake3 hex digest of the stub's stdout. `None` if stdout was empty
+    /// or capture was not possible (e.g., synthetic stub path).
+    #[serde(default)]
+    pub stdout_hash: Option<String>,
+    /// First 256 chars of the stub's stderr. `None` if stderr was empty.
+    #[serde(default)]
+    pub stderr_summary: Option<String>,
+    /// VRAM + RAM delta captured around the stub execution. `None` when
+    /// the SystemProbeResult re-query failed; never fatal.
+    #[serde(default)]
+    pub resource_delta: Option<ResourceDelta>,
+}
+
+/// C-22: VRAM + RAM snapshot captured before and after a feasibility-probe
+/// stub executes. Reported alongside [`StubResult`] so the dashboard can
+/// render pre/post resource usage. Bytes are absolute counts; the consumer
+/// computes deltas as `vram_bytes_after - vram_bytes_before`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResourceDelta {
+    pub vram_bytes_before: u64,
+    pub vram_bytes_after: u64,
+    pub ram_bytes_before: u64,
+    pub ram_bytes_after: u64,
 }
 
 /// Reasons a feasibility probe may escalate to the user.
@@ -240,7 +273,7 @@ pub enum FeasibilityExecutionMode {
 /// — matches the 20 % skip threshold in the spec.
 pub fn check_constraints(
     required: &SystemConstraintsRequired,
-    available: &SystemProbeReport,
+    available: &SystemProbeResult,
 ) -> Vec<ConstraintResult> {
     let threshold = (RESOURCE_MARGIN_THRESHOLD_PCT / 100.0) as f64;
     let vram_total_mb = available
@@ -405,7 +438,7 @@ pub trait FeasibilityProber: Send + Sync {
     fn probe<'a>(
         &'a self,
         plan: &'a ExecutablePipeline,
-        system: &'a SystemProbeReport,
+        system: &'a SystemProbeResult,
     ) -> Pin<Box<dyn Future<Output = FeasibilityReport> + Send + 'a>>;
 
     /// Probe a single baby-step. Called per-concept before baby-step execution
@@ -413,7 +446,7 @@ pub trait FeasibilityProber: Send + Sync {
     fn probe_baby_step<'a>(
         &'a self,
         baby_step: &'a BabyStepSpec,
-        system: &'a SystemProbeReport,
+        system: &'a SystemProbeResult,
     ) -> Pin<Box<dyn Future<Output = BabyStepFeasibilityReport> + Send + 'a>>;
 }
 
@@ -644,7 +677,10 @@ impl StubExecutor for Tier3StubExecutor {
         stub_source: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = StubResult> + Send + 'a>> {
         Box::pin(async move {
-            let start = Instant::now();
+            // C-15: route Instant via OsClock so the entropy quarantine scanner
+            // stays clean. Tier-3 stub timing is observation-only.
+            let stub_clock = OsClock;
+            let start = stub_clock.now();
 
             // Gate 1: line-count enforcement BEFORE any process spawn. Must
             // precede the binary-existence check so an oversized stub
@@ -656,13 +692,14 @@ impl StubExecutor for Tier3StubExecutor {
                         stub_passed: false,
                         elapsed_ms: 0,
                         error: Some(format!("stub_line_limit_exceeded:{n}")),
+                        ..Default::default()
                     };
                 }
             }
 
             // Listen-before-spawn: bind socket / pipe first so the spawned
             // agent finds the endpoint on connect.
-            let socket_id = Uuid::new_v4();
+            let socket_id = Uuid::new_v4(); // entropy-allow: per-socket id, no EntropySource threaded
             let (server, socket_path) =
                 match bind_stub_server(&self.socket_dir, &socket_id).await {
                     Ok(pair) => pair,
@@ -670,9 +707,10 @@ impl StubExecutor for Tier3StubExecutor {
                         return StubResult {
                             step_id: step_id.to_owned(),
                             stub_passed: false,
-                            elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                            elapsed_ms: u32::try_from(stub_clock.elapsed_since(start).as_millis())
                                 .unwrap_or(u32::MAX),
                             error: Some(format!("ipc_bind_failed:{e}")),
+                            ..Default::default()
                         };
                     }
                 };
@@ -680,9 +718,12 @@ impl StubExecutor for Tier3StubExecutor {
             let agent_id_str = socket_id.to_string();
             let mut cmd = tokio::process::Command::new(&self.agent_binary_path);
             cmd.arg(&socket_path).arg(&agent_id_str);
-            // Belt-and-suspenders: ensure no leaked child if our future is
-            // dropped via cancellation between spawn and wait.
-            cmd.kill_on_drop(true);
+            // C-22: `kill_on_drop(true)` removed. The two explicit
+            // `child.kill().await` calls below (graceful + hard-timeout
+            // branches) are the sole reaping mechanism per WIRING_CONTRACT
+            // stub_ban. Cancellation-by-drop is not exercised by any
+            // current test path; if a future caller requires it, prefer
+            // an explicit cancel guard over kill_on_drop's silent kill.
 
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
@@ -694,9 +735,10 @@ impl StubExecutor for Tier3StubExecutor {
                     return StubResult {
                         step_id: step_id.to_owned(),
                         stub_passed: false,
-                        elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                        elapsed_ms: u32::try_from(stub_clock.elapsed_since(start).as_millis())
                             .unwrap_or(u32::MAX),
                         error: Some("agent_binary_not_found".to_owned()),
+                        ..Default::default()
                     };
                 }
                 Err(e) => {
@@ -708,9 +750,10 @@ impl StubExecutor for Tier3StubExecutor {
                     return StubResult {
                         step_id: step_id.to_owned(),
                         stub_passed: false,
-                        elapsed_ms: u32::try_from(start.elapsed().as_millis())
+                        elapsed_ms: u32::try_from(stub_clock.elapsed_since(start).as_millis())
                             .unwrap_or(u32::MAX),
                         error: Some(format!("spawn_failed:{e}")),
+                        ..Default::default()
                     };
                 }
             };
@@ -793,7 +836,7 @@ impl StubExecutor for Tier3StubExecutor {
             .await;
 
             let elapsed_ms =
-                u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+                u32::try_from(stub_clock.elapsed_since(start).as_millis()).unwrap_or(u32::MAX);
 
             // Reap regardless of outcome. child.wait() prevents zombie
             // accumulation per phase-4F.txt T7 adversarial note.
@@ -812,6 +855,7 @@ impl StubExecutor for Tier3StubExecutor {
                         } else {
                             Some("empty_agent_response".to_owned())
                         },
+                        ..Default::default()
                     }
                 }
                 Ok(Err(reason)) => {
@@ -826,6 +870,7 @@ impl StubExecutor for Tier3StubExecutor {
                         stub_passed: false,
                         elapsed_ms,
                         error: Some(reason),
+                        ..Default::default()
                     }
                 }
                 Err(_elapsed) => {
@@ -841,6 +886,7 @@ impl StubExecutor for Tier3StubExecutor {
                         elapsed_ms: u32::try_from(STUB_TIMEOUT_HARD.as_millis())
                             .unwrap_or(u32::MAX),
                         error: Some("stub_timeout_hard_kill".to_owned()),
+                        ..Default::default()
                     }
                 }
             };
@@ -870,6 +916,12 @@ impl StubExecutor for Tier3StubExecutor {
 pub struct DefaultFeasibilityProber {
     feasibility_root: PathBuf,
     stub_executor: Option<Arc<dyn StubExecutor>>,
+    /// C-22: optional system_prober used to capture the AFTER snapshot in
+    /// [`StubResult::resource_delta`]. When `None` the prober still emits
+    /// a `ResourceDelta` populated from the `system: &SystemProbeResult`
+    /// argument (before = after = input snapshot). Injection is optional
+    /// so the 23 batch-3a contract tests do not require new wiring.
+    system_prober: Option<Arc<dyn crate::system_probe::SystemProber>>,
 }
 
 impl DefaultFeasibilityProber {
@@ -877,6 +929,7 @@ impl DefaultFeasibilityProber {
         Self {
             feasibility_root,
             stub_executor: None,
+            system_prober: None,
         }
     }
 
@@ -885,6 +938,18 @@ impl DefaultFeasibilityProber {
     /// when unset they fall back to [`run_synthetic_stub`].
     pub fn with_stub_executor(mut self, executor: Arc<dyn StubExecutor>) -> Self {
         self.stub_executor = Some(executor);
+        self
+    }
+
+    /// C-22: inject a system_prober so the prober can re-query the system
+    /// for the AFTER snapshot of [`StubResult::resource_delta`]. Without
+    /// this builder the AFTER snapshot mirrors the BEFORE snapshot from
+    /// the `system: &SystemProbeResult` probe argument.
+    pub fn with_system_prober(
+        mut self,
+        prober: Arc<dyn crate::system_probe::SystemProber>,
+    ) -> Self {
+        self.system_prober = Some(prober);
         self
     }
 
@@ -940,7 +1005,7 @@ impl FeasibilityProber for DefaultFeasibilityProber {
     fn probe<'a>(
         &'a self,
         plan: &'a ExecutablePipeline,
-        system: &'a SystemProbeReport,
+        system: &'a SystemProbeResult,
     ) -> Pin<Box<dyn Future<Output = FeasibilityReport> + Send + 'a>> {
         Box::pin(async move {
             // Env kill switch — short-circuit to Feasible with a populated
@@ -1001,6 +1066,13 @@ impl FeasibilityProber for DefaultFeasibilityProber {
             // injected via with_stub_executor it spawns the real
             // elai_cc_agent binary; otherwise the synthetic input-parse
             // probe runs in-process for back-compat with batch-3a tests.
+            //
+            // C-22: captures ResourceDelta around every stub. The BEFORE
+            // snapshot comes from the `system` argument (already in scope
+            // as the probe's input). The AFTER snapshot reads from the
+            // injected `system_prober` when present; without it the AFTER
+            // mirrors BEFORE (non-fatal — the field is Option<ResourceDelta>
+            // exactly to allow this degraded mode).
             let mut novel_steps: Vec<NovelStep> = Vec::new();
             let mut stub_results: Vec<StubResult> = Vec::new();
             for step_id in &novel_step_ids {
@@ -1009,10 +1081,21 @@ impl FeasibilityProber for DefaultFeasibilityProber {
                     reason: "synthetic_probe_pending_agent_binary".to_owned(),
                     alternatives: Vec::new(),
                 });
-                let stub = match &self.stub_executor {
+                // BEFORE snapshot from the input system probe.
+                let delta_before = system_to_resource_delta_before(system);
+                let mut stub = match &self.stub_executor {
                     Some(exec) => exec.run_stub(step_id, None).await,
                     None => run_synthetic_stub(step_id).await,
                 };
+                // AFTER snapshot: re-probe if a system_prober is wired.
+                let delta = match &self.system_prober {
+                    Some(prober) => {
+                        let after = prober.probe().await;
+                        merge_resource_delta(delta_before, &after)
+                    }
+                    None => delta_before,
+                };
+                stub.resource_delta = Some(delta);
                 if !stub.stub_passed {
                     escalations.push(FeasibilityEscalation::NoFeasibleAlternative {
                         step_id: step_id.clone(),
@@ -1054,7 +1137,7 @@ impl FeasibilityProber for DefaultFeasibilityProber {
     fn probe_baby_step<'a>(
         &'a self,
         baby_step: &'a BabyStepSpec,
-        _system: &'a SystemProbeReport,
+        _system: &'a SystemProbeResult,
     ) -> Pin<Box<dyn Future<Output = BabyStepFeasibilityReport> + Send + 'a>> {
         Box::pin(async move {
             if feasibility_probe_disabled_via_env() {
@@ -1067,10 +1150,20 @@ impl FeasibilityProber for DefaultFeasibilityProber {
             }
 
             let step_id = baby_step.id.0.to_string();
-            let stub = match &self.stub_executor {
+            // C-22: capture ResourceDelta around the baby-step stub.
+            let delta_before = system_to_resource_delta_before(_system);
+            let mut stub = match &self.stub_executor {
                 Some(exec) => exec.run_stub(&step_id, None).await,
                 None => run_synthetic_stub(&step_id).await,
             };
+            let delta = match &self.system_prober {
+                Some(prober) => {
+                    let after = prober.probe().await;
+                    merge_resource_delta(delta_before, &after)
+                }
+                None => delta_before,
+            };
+            stub.resource_delta = Some(delta);
             let escalation = if !stub.stub_passed {
                 Some(BabyStepEscalation::StubFailed {
                     step_id: step_id.clone(),
@@ -1098,6 +1191,41 @@ impl FeasibilityProber for DefaultFeasibilityProber {
     }
 }
 
+/// C-22: project the input [`SystemProbeResult`] into a ResourceDelta where
+/// `*_before == *_after`. When the prober has no system_prober injected, the
+/// AFTER snapshot equals the BEFORE (graceful degradation; field is Option).
+fn system_to_resource_delta_before(system: &SystemProbeResult) -> ResourceDelta {
+    let vram_free_bytes = system
+        .gpu
+        .as_ref()
+        .map(|g| (g.vram_free_mb as u64) * 1024 * 1024)
+        .unwrap_or(0);
+    let ram_free_bytes = system.ram_free_mb * 1024 * 1024;
+    ResourceDelta {
+        vram_bytes_before: vram_free_bytes,
+        vram_bytes_after: vram_free_bytes,
+        ram_bytes_before: ram_free_bytes,
+        ram_bytes_after: ram_free_bytes,
+    }
+}
+
+/// C-22: merge an AFTER snapshot from a re-probed [`SystemProbeResult`] into
+/// an existing BEFORE [`ResourceDelta`]. Preserves the `*_before` fields.
+fn merge_resource_delta(before: ResourceDelta, after: &SystemProbeResult) -> ResourceDelta {
+    let vram_after_bytes = after
+        .gpu
+        .as_ref()
+        .map(|g| (g.vram_free_mb as u64) * 1024 * 1024)
+        .unwrap_or(before.vram_bytes_after);
+    let ram_after_bytes = after.ram_free_mb * 1024 * 1024;
+    ResourceDelta {
+        vram_bytes_before: before.vram_bytes_before,
+        vram_bytes_after: vram_after_bytes,
+        ram_bytes_before: before.ram_bytes_before,
+        ram_bytes_after: ram_after_bytes,
+    }
+}
+
 /// Synthetic stub executor. Measures whether the step id is a parseable,
 /// non-empty identifier. Returns `stub_passed = true` for every non-empty
 /// input; empty input fails so test code can exercise the failure branch.
@@ -1118,6 +1246,7 @@ async fn run_synthetic_stub(step_id: &str) -> StubResult {
             stub_passed: false,
             elapsed_ms,
             error: Some("empty_step_id".to_owned()),
+            ..Default::default()
         };
     }
     StubResult {
@@ -1125,6 +1254,7 @@ async fn run_synthetic_stub(step_id: &str) -> StubResult {
         stub_passed: true,
         elapsed_ms,
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1138,14 +1268,15 @@ mod tests {
     use crate::system_probe::{DetectionMethod, GpuInfo};
     use elai_core::VramTier;
 
-    fn sample_report(vram_free: u32, ram_free: u64, disk_free: u64) -> SystemProbeReport {
-        SystemProbeReport {
+    fn sample_report(vram_free: u32, ram_free: u64, disk_free: u64) -> SystemProbeResult {
+        SystemProbeResult {
             gpu: Some(GpuInfo {
                 name: "test".to_owned(),
                 vram_total_mb: 12_288,
                 vram_free_mb: vram_free,
                 tier: VramTier::Vram12Gb,
                 driver_version: None,
+                uuid: None,
             }),
             ram_total_mb: 32_000,
             ram_free_mb: ram_free,

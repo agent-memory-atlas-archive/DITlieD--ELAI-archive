@@ -223,6 +223,40 @@ pub(crate) fn run_dep_audit_command(
                 "timestamp": result.timestamp,
             }))?
         ),
+        // C-21 Task 6 — `--output-format toml`. The TOML report is always
+        // emitted to `metrics/dep_audit_<YYYY-MM-DD>.toml` inside
+        // `run_dep_audit`. In Toml mode we additionally emit
+        // `metrics/dep_audit_latest.toml` (copy of the dated file) so
+        // self_mod_layer1a::trigger_dep_audit_background can locate the
+        // most recent run by a stable path.
+        CliOutputFormat::Toml => {
+            let metrics_dir = project_dir.join("metrics");
+            let date_part = &result.timestamp[..10];
+            let dated_path = metrics_dir.join(format!("dep_audit_{date_part}.toml"));
+            let latest_path = metrics_dir.join("dep_audit_latest.toml");
+            // Windows-friendly copy (symlink would require elevated perms).
+            if dated_path.exists() {
+                if let Err(e) = std::fs::copy(&dated_path, &latest_path) {
+                    tracing::warn!(
+                        error = %e,
+                        dated = %dated_path.display(),
+                        latest = %latest_path.display(),
+                        "failed to copy dated dep-audit report to latest path; continuing"
+                    );
+                } else {
+                    tracing::info!(
+                        path = %latest_path.display(),
+                        "wrote dep_audit_latest.toml"
+                    );
+                }
+            }
+            println!(
+                "dep-audit: {} ecosystem(s) scanned, {} outdated; report at {}",
+                result.ecosystems_scanned.len(),
+                result.total_outdated,
+                latest_path.display()
+            );
+        }
     }
     Ok(())
 }
@@ -231,7 +265,7 @@ pub(crate) fn run_doctor(output_format: CliOutputFormat) -> Result<(), anyhow::E
     let report = render_doctor_report()?;
     let message = report.render();
     match output_format {
-        CliOutputFormat::Text => println!("{message}"),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("{message}"),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({

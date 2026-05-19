@@ -9,7 +9,9 @@
 //! the actual task pipeline via elai.exe; v2 dashboard observes via SSB rows
 //! and sidecar HTTP probes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -104,7 +106,7 @@ pub struct IterationSnapshot {
 /// Top-level entry surfaced by `get_media_validations`. One per `step_id`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaValidationEntry {
-    /// Step id from the originating pipeline step. Used as the HashMap key.
+    /// Step id from the originating pipeline step. Used as the FxHashMap key.
     pub step_id: String,
     /// Optional request id (uuid stringified). The MediaValidationStarted
     /// payload does not currently carry it, so we mirror the step_id when
@@ -291,7 +293,7 @@ pub struct AppState {
     /// SSB subscriber updates it under an async task while Tauri commands
     /// read it; per CLAUDE.md rule "tokio::sync::Mutex in async (std::sync::
     /// Mutex only if provably sync-only)".
-    pub media_validation: Arc<tokio::sync::RwLock<HashMap<String, MediaValidationEntry>>>,
+    pub media_validation: Arc<tokio::sync::RwLock<FxHashMap<String, MediaValidationEntry>>>,
     /// Phase A1b: live `start_task_runner` join handle. `None` until the
     /// Tauri `setup()` callback spawns the runner (which it only does when
     /// `writer.is_some()` — fresh installs without an SSB DB still have a
@@ -333,6 +335,26 @@ pub struct AppState {
     /// `RuntimeOrchestrator` is internally `RwLock`-guarded, so no
     /// outer `Mutex` is needed at this layer.
     pub runtime_orchestrator: Arc<RuntimeOrchestrator>,
+    /// C-29: per-BabyStep `IntentPairSet` registry keyed by `step_id`.
+    /// Populated by the PlanWindow IntentPairEditor (via `add_intent_pair`)
+    /// and read back by `get_intent_pairs`. `confirm_intent_pairs` flips
+    /// the contained `IntentPairSet::confirmed` flag + emits an
+    /// `IntentConfirmed` SSB row via `writer`. `std::sync::Mutex` is
+    /// sufficient because all readers/writers are sync Tauri command
+    /// handlers — no guard is held across `.await`. BTreeMap (not
+    /// HashMap) per CLAUDE.md coding standards.
+    pub intent_pairs: Arc<Mutex<BTreeMap<u64, elai_orchestrator::IntentPairSet>>>,
+    /// C-23: optional resolved path to the active SessionDag's `dag.db`.
+    /// Per-call DAG open trade-off: dashboard-v2 does not hold a long-
+    /// lived `SessionDag` handle (Q3 orchestrator decision). Each
+    /// `branch_fork` / `branch_merge` / `branch_close` / `load_handoff`
+    /// invocation opens the SQLite DB, performs the operation, and
+    /// drops the handle. Trade-off: ~5 ms open cost per call vs.
+    /// avoiding `Arc<Mutex<SessionDag>>` lifetime entanglement with the
+    /// CLI process. `None` when the dashboard launched without an
+    /// active session (the per-call resolver will then refuse the
+    /// command with a typed `DagBranchError::NoActiveSession`).
+    pub dag_db_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl AppState {
@@ -468,7 +490,7 @@ impl AppState {
             remote_sidecar_progress: Arc::new(Mutex::new(None)),
             dev_servers: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             feasibility_prober,
-            media_validation: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            media_validation: Arc::new(tokio::sync::RwLock::new(FxHashMap::default())),
             // Phase A1b: runner handles default to None. Populated by the
             // Tauri setup() callback in lib.rs when writer.is_some(); the
             // RunEvent::ExitRequested closure takes them back out on shutdown.
@@ -488,6 +510,53 @@ impl AppState {
             runtime_orchestrator: Arc::new(RuntimeOrchestrator::new(
                 RuntimeBackendConfig::default(),
             )),
+            // C-23: dag_db_path is populated lazily by the per-call
+            // resolver in commands.rs (`resolve_active_dag_path`). Left
+            // None at startup so a fresh install with no sessions does
+            // not falsely advertise a DAG.
+            dag_db_path: Arc::new(Mutex::new(None)),
+            // C-29: empty IntentPair registry at startup. PlanWindow
+            // populates it via the `add_intent_pair` command.
+            intent_pairs: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    /// C-29 helper: snapshot the IntentPairSet for `step_id`. Returns the
+    /// stored set or `IntentPairSet::default()` (empty unconfirmed) when
+    /// no entry exists. Wraps the brief mutex acquisition so command
+    /// handlers stay readable. Lock is released before any `.await`.
+    pub fn get_baby_step_intent_pairs(
+        &self,
+        step_id: u64,
+    ) -> elai_orchestrator::IntentPairSet {
+        match self.intent_pairs.lock() {
+            Ok(g) => g.get(&step_id).cloned().unwrap_or_default(),
+            Err(_) => elai_orchestrator::IntentPairSet::default(),
+        }
+    }
+
+    /// C-23: snapshot helper for the dag.db path. Returns the cached path
+    /// when set, or `None` if no active SessionDag has been resolved.
+    /// Callers should use `commands::resolve_active_dag_path` to populate
+    /// this lazily on first use.
+    pub fn dag_db_path_snapshot(&self) -> Option<PathBuf> {
+        self.dag_db_path.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// C-23: set the cached dag.db path. Returns `true` if the value
+    /// changed. Idempotent — repeated calls with the same path are
+    /// no-ops. Silent no-op on mutex poison (the lookup re-resolves on
+    /// the next call).
+    pub fn set_dag_db_path(&self, path: PathBuf) -> bool {
+        match self.dag_db_path.lock() {
+            Ok(mut g) => {
+                let changed = g.as_ref() != Some(&path);
+                if changed {
+                    *g = Some(path);
+                }
+                changed
+            }
+            Err(_) => false,
         }
     }
 

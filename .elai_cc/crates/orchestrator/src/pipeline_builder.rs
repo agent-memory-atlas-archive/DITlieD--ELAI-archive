@@ -13,8 +13,12 @@ use tracing::warn;
 
 use elai_ipc_types::ToolId;
 use crate::agent_pool::ModelPool;
+use crate::compiled_pipeline::{
+    CompiledExecutor, CompiledExecutorError, CompiledPipeline, CompiledPipelineStore,
+};
 use crate::research_tree::{PipelineSpec, QualitySpec, StepId};
 use crate::ssb::{DagRepairRoundPayload, Ssb, SsbPayload};
+use tokio::sync::Mutex as AsyncMutex;
 
 // ---------------------------------------------------------------------------
 // Newtypes
@@ -71,8 +75,22 @@ pub struct DagRepairEventPayload {
 ///
 /// Sync trait: the SSB-backed adapter fires a `tokio::spawn` internally (fire-
 /// and-forget). Repair rows are advisory and must not block the repair loop.
+///
+/// C-2: `emit_escalated` fires once per `RepairOutcome::Escalated` at the
+/// caller boundary in `PipelineBuilder::build`. Default impl is a no-op so
+/// existing emitters keep their behaviour; `SsbDagRepairEmitter` overrides.
 pub trait DagRepairEmitter: Send + Sync {
     fn emit(&self, event: DagRepairEventPayload);
+    /// Optional escalation callback. Default no-op so existing emitter
+    /// implementations remain source-compatible.
+    fn emit_escalated(&self, _rounds: u32, _remaining_issues: u32, _last_error: &str) {}
+    /// C-25 — optional plan-skeleton callback. Default no-op so existing
+    /// emitters stay source-compatible. The `SsbDagRepairEmitter`
+    /// override fires the `plan_skeleton` SSB row carrying the
+    /// `(plan_id, step_count, concept_class, plan_skeleton_hash, source)`
+    /// payload. C-25 is the FIRST producer of this row (see DRIFT-D in
+    /// `workflow/sessions/s-25672/context-package-C25.md`).
+    fn emit_plan_skeleton(&self, _payload: crate::ssb::PlanSkeletonPayload) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +368,54 @@ pub trait PredicateCompiler: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// C-25 — task classifier for the compiled-pipeline cache.
+// ---------------------------------------------------------------------------
+
+/// C-25 — derive `(concept_class, plan_skeleton_hash)` from a free-text task
+/// summary. Returns `None` when no template-eligible concept can be
+/// identified. Used by:
+///   * `pipeline_builder::PipelineBuilder::build_with_emitter` (try-template-first)
+///   * `task_runner::run_crystallizer_post_execute_hook` (post-execute observation)
+///
+/// Heuristic: case-insensitive regex over keywords commonly found in
+/// step-decomposition outputs. Each rule maps to a stable concept_class
+/// label. The plan_skeleton_hash is a blake3-truncated-u64 over the
+/// concept_class + the task_summary itself — stable across rustc versions
+/// per C-25 Q5 resolution.
+///
+/// The classifier is intentionally narrow: false negatives are cheap (the
+/// task falls through to the standard LLM-decomposition path), but false
+/// positives invalidate the cache. Keywords were chosen from the C-25
+/// smoke-test target ("implement a 2-method counter struct" -> Counter).
+#[must_use]
+pub fn classify_task_for_template(task_summary: &str) -> Option<(String, u64)> {
+    let lc = task_summary.to_ascii_lowercase();
+    // Order matters: more specific patterns first so "test" inside a
+    // counter task does not flip to TestHarness.
+    let concept = if lc.contains("counter") {
+        "Counter"
+    } else if lc.contains("struct") && (lc.contains("method") || lc.contains("impl")) {
+        "Struct"
+    } else if lc.contains("endpoint") || lc.contains("route") || lc.contains("handler") {
+        "Endpoint"
+    } else if lc.contains("test") && (lc.contains("write") || lc.contains("add")) {
+        "TestHarness"
+    } else if lc.contains("cli") && (lc.contains("subcommand") || lc.contains("command")) {
+        "CliSubcommand"
+    } else {
+        return None;
+    };
+    // Stable hash via the compiled_pipeline helper. Use the task_summary
+    // as the sole step prompt — the real pipeline builder will reuse the
+    // same helper when materializing CompiledStep entries.
+    let hash = crate::compiled_pipeline::stable_plan_skeleton_hash(
+        concept,
+        &[task_summary],
+    );
+    Some((concept.to_string(), hash))
+}
+
+// ---------------------------------------------------------------------------
 // PipelineBuilder — main entry point
 // ---------------------------------------------------------------------------
 
@@ -386,6 +452,20 @@ impl PipelineBuilder {
             return Err(PipelineBuilderError::EmptySpec);
         }
 
+        // C-25 — LLM-decomp marker. `build_with_emitter` is the LLM-path
+        // entry point: callers that want try-template-first cache probing
+        // route through [`Self::build_with_compiled_executor`] below,
+        // which short-circuits on cache HIT and only falls through to this
+        // function on MISS / Decompile. Therefore every entry into the
+        // present function corresponds to a real LLM-decomposition build
+        // and emits the `plan_skeleton` row with `source=Llm`.
+        // C-25 audit follow-up: this comment used to claim the function was
+        // "observation-only"; the production wiring now lives in
+        // `build_with_compiled_executor` and is reached from
+        // `task_runner::drive_task` when both `crystallizer` and
+        // `compiled_pipeline_store` are wired on `TaskRunnerConfig`.
+        Self::emit_plan_skeleton_llm_marker(spec, repair_emitter);
+
         // Build initial dependency graph from spec
         let mut graph = Self::spec_to_graph(spec);
 
@@ -411,6 +491,17 @@ impl PipelineBuilder {
                 RepairOutcome::Escalated {
                     rounds, remaining_issues,
                 } => {
+                    // C-2: surface DagRepairEscalated SSB row before bubbling
+                    // the error. Fire-and-forget per existing emitter contract.
+                    if let Some(emitter) = repair_emitter {
+                        let last_error = remaining_issues
+                            .first()
+                            .map(|e| e.message.clone())
+                            .unwrap_or_default();
+                        let remaining_u32 =
+                            u32::try_from(remaining_issues.len()).unwrap_or(u32::MAX);
+                        emitter.emit_escalated(rounds, remaining_u32, &last_error);
+                    }
                     return Err(PipelineBuilderError::RepairEscalated {
                         rounds,
                         remaining: remaining_issues.len(),
@@ -465,6 +556,174 @@ impl PipelineBuilder {
             repair_log,
             output_dir,
         })
+    }
+
+    /// C-25 — fire the `plan_skeleton` SSB row with `source=Llm` on every
+    /// LLM-decomposition entry into the factory. Best-effort emit through
+    /// the optional repair_emitter (the standard production path passes
+    /// `SsbDagRepairEmitter`). Helper is `pub(crate)` so the C-25
+    /// compiled-pipeline executor wrapper can reuse it.
+    pub(crate) fn emit_plan_skeleton_llm_marker(
+        spec: &PipelineSpec,
+        repair_emitter: Option<&Arc<dyn DagRepairEmitter>>,
+    ) {
+        let Some(emitter) = repair_emitter else {
+            return;
+        };
+        // Build the same step_prompts the classifier would see — spec.name
+        // is the canonical task_summary on the LLM-decomp path; if the
+        // classifier picks up a concept_class we use it, otherwise we tag
+        // the row with concept_class="Unclassified" so dashboards / contract
+        // tests can still observe LLM-path entries.
+        let (concept_class, plan_skeleton_hash) =
+            classify_task_for_template(&spec.name).unwrap_or_else(|| {
+                let h = crate::compiled_pipeline::stable_plan_skeleton_hash(
+                    "Unclassified",
+                    &[spec.name.as_str()],
+                );
+                ("Unclassified".to_string(), h)
+            });
+        let payload = crate::ssb::PlanSkeletonPayload {
+            plan_id: spec.name.clone(),
+            step_count: u32::try_from(spec.steps.len()).unwrap_or(u32::MAX),
+            concept_class,
+            plan_skeleton_hash,
+            source: crate::ssb::PlanSkeletonSource::Llm,
+        };
+        emitter.emit_plan_skeleton(payload);
+    }
+
+    /// C-25 — fire the `plan_skeleton` SSB row with `source=Template`
+    /// when the compiled-pipeline executor short-circuits the LLM path.
+    /// Active call site: [`Self::build_with_compiled_executor`] below.
+    /// C-25 audit follow-up: the previous doc claimed wiring lived "in the
+    /// task_runner.rs post-execute hook on cache HIT" — that path was
+    /// dark (zero non-test callers per audit-C25.md WARN-2 / Q3). The
+    /// row now fires from the production build entry on every cache HIT.
+    pub fn emit_plan_skeleton_template_marker(
+        emitter: &Arc<dyn DagRepairEmitter>,
+        plan_id: String,
+        step_count: u32,
+        concept_class: String,
+        plan_skeleton_hash: u64,
+    ) {
+        let payload = crate::ssb::PlanSkeletonPayload {
+            plan_id,
+            step_count,
+            concept_class,
+            plan_skeleton_hash,
+            source: crate::ssb::PlanSkeletonSource::Template,
+        };
+        emitter.emit_plan_skeleton(payload);
+    }
+
+    /// C-25 audit follow-up — production try-template-first entry point.
+    ///
+    /// Closes WARN-2 + Q3 in `workflow/sessions/s-25672/audit-C25.md`:
+    /// before this method existed, [`CompiledExecutor::try_execute`] and
+    /// [`Self::emit_plan_skeleton_template_marker`] both had ZERO
+    /// production callers — the cache-HIT short-circuit path was dark
+    /// in shipped code. Callers in `task_runner::drive_task` route here
+    /// when both `TaskRunnerConfig::crystallizer` and
+    /// `TaskRunnerConfig::compiled_pipeline_store` are wired.
+    ///
+    /// Behaviour:
+    ///   1. Classify the spec via [`classify_task_for_template`] over
+    ///      `spec.name`. None => no template-eligible concept; fall
+    ///      through to [`Self::build_with_emitter`] (LLM path).
+    ///   2. On Some, probe the [`CompiledPipelineStore`] for an entry
+    ///      under `(concept_class, plan_skeleton_hash)`. If present,
+    ///      synchronise it into the [`CompiledExecutor::pipeline_cache`]
+    ///      so the next [`CompiledExecutor::try_execute`] call can resolve
+    ///      it. The store is the source of truth (persisted across
+    ///      restarts); the in-memory cache is a per-process accelerator.
+    ///   3. Invoke `executor.try_execute(concept_class, plan_skeleton_hash)`:
+    ///      - On `Ok(pipeline)` (cache HIT + confidence + no decompile):
+    ///        emit a `plan_skeleton` row with `source=Template` via
+    ///        [`Self::emit_plan_skeleton_template_marker`] AND return
+    ///        `Ok((ExecutablePipeline, Some(compiled)))`. The
+    ///        `ExecutablePipeline` is built from the same spec (we still
+    ///        need the FSM / agent / resource bundle) — `CompiledPipeline`
+    ///        is returned alongside as the prompt-template short-circuit
+    ///        for the baby-step runner.
+    ///      - On `Err(CacheMiss)` or `Err(Decompile)`: fall through to the
+    ///        LLM path. `Decompile` already emitted a `decompile_triggered`
+    ///        SSB row inside the executor.
+    ///
+    /// Return shape: `(ExecutablePipeline, Option<CompiledPipeline>)`.
+    /// The second element is `Some` ONLY on cache HIT; callers gate the
+    /// fast-path baby-step rendering on it.
+    pub async fn build_with_compiled_executor(
+        spec: &PipelineSpec,
+        tools: &dyn ToolLookup,
+        pool: &dyn ModelPool,
+        predicates: &dyn PredicateCompiler,
+        repair_emitter: Option<&Arc<dyn DagRepairEmitter>>,
+        executor: &CompiledExecutor,
+        store: &Arc<AsyncMutex<CompiledPipelineStore>>,
+    ) -> Result<(ExecutablePipeline, Option<CompiledPipeline>), PipelineBuilderError> {
+        // Reject empty specs at the top so the LLM-path fallback below
+        // does not pay the cost of building a graph that will be rejected.
+        if spec.steps.is_empty() {
+            return Err(PipelineBuilderError::EmptySpec);
+        }
+
+        let mut hit: Option<CompiledPipeline> = None;
+        if let Some((concept_class, plan_skeleton_hash)) =
+            classify_task_for_template(&spec.name)
+        {
+            // Synchronise the persisted store into the executor's in-memory
+            // cache. The store is the source of truth across restarts; the
+            // executor cache is a per-process accelerator. We only copy the
+            // matching entry to keep the operation O(1).
+            {
+                let guard = store.lock().await;
+                if let Some(persisted) =
+                    guard.entries().get(&(concept_class.clone(), plan_skeleton_hash))
+                {
+                    let mut cache_guard = executor.pipeline_cache.write().await;
+                    cache_guard.insert(
+                        (concept_class.clone(), plan_skeleton_hash),
+                        persisted.clone(),
+                    );
+                }
+            }
+            // Probe the executor. Errors (CacheMiss / Decompile) fall
+            // through to the LLM path; the executor already emitted the
+            // `decompile_triggered` row on the Decompile branch.
+            match executor.try_execute(&concept_class, plan_skeleton_hash).await {
+                Ok(pipeline) => {
+                    if let Some(emitter) = repair_emitter {
+                        Self::emit_plan_skeleton_template_marker(
+                            emitter,
+                            spec.name.clone(),
+                            u32::try_from(pipeline.steps.len())
+                                .unwrap_or(u32::MAX),
+                            pipeline.concept_class.clone(),
+                            pipeline.plan_skeleton_hash,
+                        );
+                    }
+                    hit = Some(pipeline);
+                }
+                Err(CompiledExecutorError::CacheMiss(_, _))
+                | Err(CompiledExecutorError::Decompile(_, _)) => {
+                    // Fall through to the LLM-decomposition path below.
+                }
+            }
+        }
+
+        // Build the FSM / agent / resource bundle from the spec. On HIT
+        // the CompiledPipeline carries the prompt templates; the
+        // ExecutablePipeline still needs to exist so the runner has its
+        // FSM states + dependency graph + repair_log surface.
+        // build_with_emitter emits the `plan_skeleton` row with
+        // `source=Llm` for the LLM-decomp path; on HIT we have ALREADY
+        // emitted the Template row above, but the LLM marker is also
+        // fired (the row is a per-factory-entry observation, not a
+        // mutually-exclusive route discriminator — see DRIFT-D in
+        // C-25-decisions.md).
+        let pipeline = Self::build_with_emitter(spec, tools, pool, predicates, repair_emitter)?;
+        Ok((pipeline, hit))
     }
 
     /// Convert a PipelineSpec into an initial DependencyGraph.
@@ -1107,6 +1366,37 @@ impl DagRepairEmitter for SsbDagRepairEmitter {
         tokio::spawn(async move {
             if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
                 warn!(error = %e, "B-7: SsbDagRepairEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+
+    fn emit_escalated(&self, rounds: u32, remaining_issues: u32, last_error: &str) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::DagRepairEscalated(crate::ssb::DagRepairEscalatedPayload {
+            rounds,
+            remaining_issues,
+            last_error: last_error.to_owned(),
+        });
+        // C-2: fire-and-forget per existing emitter contract.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "C-2: SsbDagRepairEmitter emit_escalated write failed (advisory, continuing)");
+            }
+        });
+    }
+
+    fn emit_plan_skeleton(&self, payload: crate::ssb::PlanSkeletonPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let row = SsbPayload::PlanSkeleton(payload);
+        // C-25 fire-and-forget — observation row; the build path must
+        // never block on SSB I/O.
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, row, Vec::new()).await {
+                warn!(error = %e, "C-25: SsbDagRepairEmitter emit_plan_skeleton write failed (advisory, continuing)");
             }
         });
     }

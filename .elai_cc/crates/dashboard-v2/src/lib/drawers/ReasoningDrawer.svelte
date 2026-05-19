@@ -3,7 +3,7 @@
   import { reasoningData } from '../state/drawers.svelte';
   import { Card, Badge, Button, UnwiredNote } from '$lib/ui';
   import { logStub } from '../api/stub';
-  import type { FeasibilityOutcome } from '../api/types';
+  import FeasibilityPanel from '$lib/components/FeasibilityPanel.svelte';
 
   // B-39D: live REFLECT pipeline timeline. Subscribes to the singleton
   // `reflect-progress` Tauri event emitted by TauriEventSink. Each stage
@@ -18,10 +18,35 @@
   let reflectTimeline = $state<ReflectStage[]>([]);
   let reflectCurrentStream = $state<string | null>(null);
 
+  // C-32 MINI-CRITIC -- per-blank verdict rows. Subscribes to the
+  // `mini_critic_verdict` SSB event surface (mounted alongside the existing
+  // SSB activity listener that the dashboard already plumbs). Buffer is
+  // bounded to the last 24 rows so a long-running session does not run the
+  // drawer out of memory. Toggle defaults to ON per workflow/reasoning/
+  // C-32-decisions.md and plan §Task 7.
+  type MiniCriticRow = {
+    ts: number;
+    blank_id: number;
+    verdict: 'pass' | 'warn' | 'block';
+    reason: string;
+    language: string;
+  };
+  let miniCriticRows = $state<MiniCriticRow[]>([]);
+  let showMiniCritic = $state(true);
+
+  function miniCriticVerdictTone(v: 'pass' | 'warn' | 'block'): 'teal' | 'warn' | 'fail' {
+    switch (v) {
+      case 'pass': return 'teal';
+      case 'warn': return 'warn';
+      case 'block': return 'fail';
+    }
+  }
+
   onMount(() => {
     reasoningData.bootstrap();
 
     let unlistenReflect: (() => void) | null = null;
+    let unlistenMiniCritic: (() => void) | null = null;
     (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
@@ -41,10 +66,27 @@
       } catch (err) {
         console.debug('[ReasoningDrawer] reflect-progress listen failed', err);
       }
+
+      // C-32: subscribe to mini_critic_verdict SSB events. Backend wires
+      // these through the existing ssb-event broadcast channel; the
+      // dashboard receives a serialized MiniCriticVerdictPayload.
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlistenMiniCritic = await listen<MiniCriticRow>('mini-critic-verdict', (e) => {
+          const incoming = e.payload as MiniCriticRow;
+          miniCriticRows = [
+            ...miniCriticRows,
+            { ...incoming, ts: Date.now() },
+          ].slice(-24);
+        });
+      } catch (err) {
+        console.debug('[ReasoningDrawer] mini-critic-verdict listen failed', err);
+      }
     })();
 
     return () => {
       try { unlistenReflect?.(); } catch (err) { console.debug('reflect unlisten', err); }
+      try { unlistenMiniCritic?.(); } catch (err) { console.debug('mini-critic unlisten', err); }
       reasoningData.teardown();
     };
   });
@@ -90,37 +132,8 @@
     return new Date(ts).toISOString().slice(11, 19);
   }
 
-  function feasibilityTone(outcome: FeasibilityOutcome): string {
-    if (outcome === 'PASS') return 'teal';
-    if (outcome === 'FAIL') return 'fail';
-    return 'warn';
-  }
-
-  // Last 3 feasibility outcomes from results (most recent last)
-  const feasOutcomes = $derived(
-    d.feasibility.results.slice(-3).map(r => ({
-      outcome: r.outcome,
-      ts: fmtTs(r.ts),
-    }))
-  );
-
-  // Full live feasibility table (most recent first, capped at 12 rows so the
-  // drawer stays scrollable). null detail renders as em-dash.
-  const feasRows = $derived(
-    [...d.feasibility.results]
-      .reverse()
-      .slice(0, 12)
-      .map(r => ({
-        id: r.id,
-        check: r.check,
-        outcome: r.outcome,
-        // PITFALL RUST_OPTION_SERDE_JSON_NULL_VS_TS_UNDEFINED: detail can be null.
-        detail: r.detail == null ? '—' : r.detail,
-        ts: fmtTs(r.ts),
-      }))
-  );
-
-  const hasFeasResults = $derived(d.feasibility.results.length > 0);
+  // C-22: feasibilityTone / feasOutcomes / feasRows / hasFeasResults removed —
+  // the dedicated FeasibilityPanel component now owns the rendering logic.
 
   // CSQ entries
   const hasCsqs = $derived(d.csqPending.length > 0);
@@ -249,45 +262,10 @@
     {/if}
   </Card>
 
-  <!-- 4. INLINE FEASIBILITY (B-21 4F: live, SSB-backed) -->
+  <!-- 4. INLINE FEASIBILITY (C-22: rendered via FeasibilityPanel component) -->
   <Card variant="plain" padding={12}>
     <div class="section-label">INLINE FEASIBILITY</div>
-    {#if d.unwired.feasibility}
-      <UnwiredNote
-        phase="4F (B-21)"
-        feature="last 3 inline-feasibility outcomes (PASS / FAIL / BLOCKED)"
-        note="get_feasibility_report returns static-shape PASS; FeasibilityProbe not yet implemented"
-      />
-    {:else if !hasFeasResults}
-      <div class="feasibility-empty">
-        <Badge tone={feasibilityTone(d.feasibility.overall)} size="xs">{d.feasibility.overall}</Badge>
-        <span class="ghost-text">no feasibility checks recorded yet</span>
-      </div>
-    {:else}
-      <div class="feasibility-overall">
-        <span class="feasibility-overall-label">overall</span>
-        <Badge tone={feasibilityTone(d.feasibility.overall)} size="xs">{d.feasibility.overall}</Badge>
-        <span class="ghost-text">probed {fmtTs(d.feasibility.probed_at)}</span>
-      </div>
-      <div class="feasibility-chips">
-        {#each feasOutcomes as f}
-          <div class="feasibility-chip">
-            <Badge tone={feasibilityTone(f.outcome)} size="xs">{f.outcome}</Badge>
-            <span class="ghost-text">{f.ts}</span>
-          </div>
-        {/each}
-      </div>
-      <div class="feasibility-rows">
-        {#each feasRows as r (r.id)}
-          <div class="feasibility-row">
-            <span class="feasibility-check">{r.check}</span>
-            <Badge tone={feasibilityTone(r.outcome)} size="xs">{r.outcome}</Badge>
-            <span class="feasibility-detail" title={r.detail}>{r.detail}</span>
-            <span class="ghost-text">{r.ts}</span>
-          </div>
-        {/each}
-      </div>
-    {/if}
+    <FeasibilityPanel report={d.feasibility} />
   </Card>
 
   <!-- 5. MISTAKE BOOK -->
@@ -304,6 +282,35 @@
         </button>
       {/each}
     </div>
+  </Card>
+
+  <!-- 5b. C-32 MINI-CRITIC VERDICTS -- per-blank PASS / WARN / BLOCK rows.
+       Toggle defaults to ON per plan §Task 7. Color-coded via Badge tone:
+       PASS=teal, WARN=warn, BLOCK=fail. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">
+      MINI-CRITIC
+      <label class="mini-critic-toggle">
+        <input type="checkbox" bind:checked={showMiniCritic} />
+        Show MiniCritic
+      </label>
+    </div>
+    {#if showMiniCritic}
+      {#if miniCriticRows.length === 0}
+        <span class="ghost-text">no mini_critic_verdict rows yet</span>
+      {:else}
+        <div class="mini-critic-list">
+          {#each miniCriticRows as row, i (i + '-' + row.ts + '-' + row.blank_id)}
+            <div class="mini-critic-row">
+              <Badge tone={miniCriticVerdictTone(row.verdict)} size="xs">{row.verdict.toUpperCase()}</Badge>
+              <span class="mini-critic-blank">BLANK_{row.blank_id}</span>
+              <span class="mini-critic-reason">{row.reason}</span>
+              <span class="mini-critic-lang">{row.language}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
   </Card>
 
   <!-- 6. GG SIGNALS -->
@@ -385,7 +392,7 @@
 
   .section-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -407,7 +414,7 @@
 
   .grc-role {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     width: 100px;
     flex-shrink: 0;
@@ -502,7 +509,7 @@
 
   .sweep-claim {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: 3px 0;
     border-bottom: 1px solid var(--border-subtle);
@@ -526,7 +533,7 @@
 
   .csq-question {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     line-height: 1.4;
   }
@@ -536,78 +543,7 @@
     gap: 4px;
   }
 
-  /* Feasibility */
-  .feasibility-chips {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .feasibility-chip {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    padding: 6px 8px;
-    background: var(--bg-input);
-    border-radius: var(--r-sm);
-  }
-
-  .feasibility-empty {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .feasibility-overall {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }
-
-  .feasibility-overall-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--text-ghost);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .feasibility-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 8px;
-    max-height: 220px;
-    overflow-y: auto;
-  }
-
-  .feasibility-row {
-    display: grid;
-    grid-template-columns: minmax(80px, max-content) auto 1fr max-content;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 6px;
-    background: var(--bg-input);
-    border-radius: var(--r-xs);
-  }
-
-  .feasibility-check {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: nowrap;
-  }
-
-  .feasibility-detail {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-ghost);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  /* C-22: feasibility CSS moved into FeasibilityPanel.svelte. */
 
   /* Mistake book */
   .mistake-list {
@@ -637,7 +573,7 @@
 
   .mistake-line {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     display: block;
     overflow: hidden;
@@ -664,7 +600,7 @@
 
   .gg-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -720,7 +656,7 @@
 
   .reflect-key {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     width: 90px;
     flex-shrink: 0;
@@ -728,7 +664,7 @@
 
   .reflect-val {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     display: flex;
     flex-direction: column;
@@ -749,5 +685,50 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* C-32 MiniCritic verdict rows */
+  .mini-critic-toggle {
+    margin-left: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+  }
+
+  .mini-critic-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .mini-critic-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .mini-critic-blank {
+    color: var(--text-secondary);
+    font-weight: 600;
+    min-width: 64px;
+  }
+
+  .mini-critic-reason {
+    color: var(--text-secondary);
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mini-critic-lang {
+    color: var(--text-ghost);
+    flex-shrink: 0;
   }
 </style>

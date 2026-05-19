@@ -14,19 +14,31 @@
 //! string when no SSB writer is reachable.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 // Required for AppHandle::emit() calls in submit_chat_message streaming path.
 use tauri::Emitter;
 
+// C-15: replace bare SystemTime::now / Instant::now with ClockProvider-backed
+// equivalents so the entropy quarantine scanner stays clean. Dashboard reads
+// are observation-only (UI latency timing, SSB row timestamps); no per-call
+// determinism contract — but we route through OsClock to enforce the policy.
+use elai_core::clock::{ClockProvider, OsClock};
+
 use elai_orchestrator::{
-    ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
+    ChangeDecisionPayload, ChatMessagePayload, ChatResponsePayload, ContextBudgetComputedPayload,
     ExecutionModeChangedPayload, FeasibilityReportRow, FeasibilitySummary,
     InterventionCredentials, InterventionKeyword,
     InterventionOption, InterventionResponsePayload, InterventionRetry,
-    ModeChangedPayload, NovelStepRow, ReflectState, SsbActionType, SsbPayload, StubRunRow,
-    TaskSubmittedPayload,
+    MergeResult, ModeChangedPayload, NovelStepRow, ReflectState, SearchModeChangedPayload,
+    SessionDag, SessionDagError, SsbActionType,
+    SsbPayload, StubRunRow, TaskSubmittedPayload,
 };
+// C-23: per-call DAG open uses OsEntropy / OsClock for the merge path
+// (merge_branch_with_ssb needs entropy + clock). create_branch_with_ssb /
+// close_branch_with_ssb take the same providers for consistency.
+use elai_core::{OsClock as DagOsClock, OsEntropy, paths::sessions_dir_path};
 // B-28 follow-up — Focus-tunnel side-panel deleted; only the per-baby-step
 // command remains, and it consumes the mode-distribution aggregator only
 // (early-term + micro-step counts are folded inline here so we don't drag
@@ -495,10 +507,34 @@ pub fn get_feasibility_report(state: State<'_, AppState>) -> CmdResult<Value> {
         None => "PASS",
     };
 
+    // C-22: aggregate counts surfaced for FeasibilityPanel.
+    //  - probe_count: distinct (FeasibilityReportRow) snapshots backing this
+    //    view. Currently 1 when a latest_report exists, 0 otherwise — the
+    //    underlying viewer keeps only the most-recent report.
+    //  - alternatives_explored: alternative slots attempted across all
+    //    stub_runs in window. With v1 stub data this collapses to the
+    //    number of stub_runs (one alt slot per stub); StubRunPayload does
+    //    not yet carry alternative_index, so the count below is a faithful
+    //    PROXY rather than an exact slot tally. The dashboard renders it
+    //    as "alternatives attempted".
+    //  - novel_step_count: surfaced for symmetry with the FeasibilityPanel
+    //    spec.
+    let probe_count = if summary.latest_report.is_some() { 1u32 } else { 0u32 };
+    let alternatives_explored = u32::try_from(summary.stub_runs.len()).unwrap_or(u32::MAX);
+    let novel_step_count = u32::try_from(summary.novel_steps.len()).unwrap_or(u32::MAX);
+    let skip_reason = summary
+        .latest_report
+        .as_ref()
+        .and_then(|r| r.skip_reason.clone());
+
     Ok(json!({
         "overall": overall,
         "results": results,
         "probed_at": probed_at,
+        "probe_count": probe_count,
+        "alternatives_explored": alternatives_explored,
+        "novel_step_count": novel_step_count,
+        "skip_reason": skip_reason,
     }))
 }
 
@@ -800,10 +836,11 @@ pub async fn get_mcp_status(state: State<'_, AppState>) -> CmdResult<Value> {
     let mut connected = false;
     let mut ping_ms: Option<i64> = None;
     if enabled && !url.is_empty() {
-        let t0 = std::time::Instant::now();
+        let ping_clock = OsClock;
+        let t0 = ping_clock.now();
         if let Ok(r) = state.http.get(&url).send().await {
             connected = r.status().is_success();
-            ping_ms = Some(t0.elapsed().as_millis() as i64);
+            ping_ms = Some(ping_clock.elapsed_since(t0).as_millis() as i64);
         }
     }
     Ok(json!({
@@ -822,18 +859,302 @@ pub async fn get_mcp_status(state: State<'_, AppState>) -> CmdResult<Value> {
 
 #[tauri::command]
 pub fn get_query_trace_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
-    // No first-class QueryTrace SSB row today — return empty.
-    let _ = (state, n);
-    Ok(json!([]))
+    // C-1: read the most recent `query_trace` rows written by
+    // `QueryPipeline::query_with_tier`. Returns `[]` when no SSB DB is
+    // reachable OR no rows have been written yet. Each row carries the
+    // QueryTracePayload reshaped for the dashboard KnowledgeDrawer.
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = (n as usize).max(QUERY_TRACE_DEFAULT_LIMIT);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::QueryTrace.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("QueryTrace")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "query_id": inner.get("query_id").cloned().unwrap_or(Value::Null),
+            "tier": inner.get("tier").cloned().unwrap_or(Value::Null),
+            "stage_count": inner.get("stage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "result_count": inner
+                .get("result_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            "total_latency_ms": inner
+                .get("total_latency_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// C-1: default row count returned by `get_query_trace_recent` when the
+/// caller passes `n=0`. Named constant per codeRules baseline.
+const QUERY_TRACE_DEFAULT_LIMIT: usize = 20;
+
+/// C-3: default top-N count for `get_pagerank_top` when `n=0`.
+const PAGERANK_DEFAULT_LIMIT: usize = 20;
+
+/// C-3: maximum row count accepted for `get_pagerank_top`. The viewer's
+/// own DRAWER_QUERY_HARD_CAP (500) is the absolute ceiling; the dashboard
+/// surface keeps a tighter dashboard-side limit so a frontend bug cannot
+/// pull thousands of rows over IPC.
+const PAGERANK_HARD_CAP: usize = 200;
+
+/// C-3: read the top-N persistent PageRank entries via
+/// [`SsbViewer::pagerank_top`]. DRIFT-1 fallback: when the persistent
+/// `dkg_nodes_pagerank` table does not yet exist, the viewer probes
+/// `sqlite_master` and returns an empty vector — the command therefore
+/// returns `[]` (not an error), and the dashboard renders "no data".
+#[tauri::command]
+pub fn get_pagerank_top(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let limit = match n as usize {
+        0 => PAGERANK_DEFAULT_LIMIT,
+        v => v.min(PAGERANK_HARD_CAP),
+    };
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({"known": false, "rows": []}));
+    };
+    match viewer.pagerank_top(limit) {
+        Ok(entries) => {
+            let rows: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "symbol": e.symbol,
+                        "path": e.path,
+                        "score": e.score,
+                    })
+                })
+                .collect();
+            // `known` is true when at least one row was found OR when the
+            // probe ran without error (empty arr still means "table absent
+            // OR empty"; the dashboard treats both as graceful-empty).
+            Ok(json!({
+                "known": !rows.is_empty(),
+                "rows": rows,
+            }))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "get_pagerank_top: viewer query failed");
+            Ok(json!({"known": false, "rows": []}))
+        }
+    }
+}
+
+/// C-3: read the latest FreshnessState from the SSB viewer. DRIFT-4
+/// fallback: the freshness producer is not yet wired (no SSB row type
+/// emits decay_rate/access_boost) AND AppState carries no ConfigManager
+/// handle, so the viewer's stub returns `known: false` and we forward
+/// that shape verbatim. When a producer lands (see C-1 follow-up), the
+/// upgrade is a one-line change to the viewer body — no command change.
+#[tauri::command]
+pub fn get_freshness_state(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "known": false,
+            "decay_rate": 0.0,
+            "access_boost": 0.0,
+            "last_recalc_ms": 0,
+        }));
+    };
+    match viewer.freshness_state() {
+        Ok(fs) => Ok(json!({
+            "known": fs.known,
+            "decay_rate": fs.decay_rate,
+            "access_boost": fs.access_boost,
+            "last_recalc_ms": fs.last_recalc_ms,
+        })),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_freshness_state: viewer query failed");
+            Ok(json!({
+                "known": false,
+                "decay_rate": 0.0,
+                "access_boost": 0.0,
+                "last_recalc_ms": 0,
+            }))
+        }
+    }
+}
+
+/// C-3: latest canary-drift snapshot. DRIFT-2: no `SsbActionType::CanaryDrift`
+/// variant exists yet (C-1 added 7 row types but canary_drift was not
+/// among them; the closest neighbour is the C-2 `GoalDriftWarning` whose
+/// producer is deferred to C-10). Until a canary_drift row type lands,
+/// the command unconditionally returns `{known: false}` with zeroed
+/// fields. When C-10 emits the row, swap the body to
+/// `viewer.latest_action_of_type("canary_drift")`.
+#[tauri::command]
+pub fn get_canary_drift(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Touch state so the parameter is not flagged dead-code; mirrors the
+    // pattern used by `get_search_mode` (commands.rs:867).
+    let _ = state;
+    Ok(json!({
+        "known": false,
+        "delta_ms": 0,
+        "baseline_ms": 0,
+        "current_ms": 0,
+        "drift_pct": 0.0,
+        "ts": 0,
+    }))
+}
+
+/// C-3: thin Tauri wrapper around the existing
+/// [`SsbViewer::research_budget_snapshot`] stub. The viewer returns
+/// `known: false` zeros until a `research_budget_*` SSB row type lands
+/// (C-1 scope) so the dashboard renders "no data yet" without erroring.
+#[tauri::command]
+pub fn get_research_budget(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "known": false,
+            "admitted": 0,
+            "pruned": 0,
+            "tokens_used": 0,
+            "tokens_max": 0,
+        }));
+    };
+    match viewer.research_budget_snapshot() {
+        Ok(snap) => Ok(json!({
+            "known": snap.known,
+            "admitted": snap.admitted,
+            "pruned": snap.pruned,
+            "tokens_used": snap.tokens_used,
+            "tokens_max": snap.tokens_max,
+        })),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_research_budget: viewer query failed");
+            Ok(json!({
+                "known": false,
+                "admitted": 0,
+                "pruned": 0,
+                "tokens_used": 0,
+                "tokens_max": 0,
+            }))
+        }
+    }
+}
+
+/// C-3: thin Tauri wrapper around the existing
+/// [`SsbViewer::source_tier_distribution`] stub. The viewer returns
+/// `known: false` zeros until a source-tier producer lands; same
+/// graceful-empty pattern as [`get_research_budget`].
+#[tauri::command]
+pub fn get_source_tier_distribution(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "known": false,
+            "t1": 0,
+            "t2": 0,
+            "t3": 0,
+            "t4": 0,
+            "t5": 0,
+        }));
+    };
+    match viewer.source_tier_distribution() {
+        Ok(d) => Ok(json!({
+            "known": d.known,
+            "t1": d.t1,
+            "t2": d.t2,
+            "t3": d.t3,
+            "t4": d.t4,
+            "t5": d.t5,
+        })),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_source_tier_distribution: viewer query failed");
+            Ok(json!({
+                "known": false,
+                "t1": 0,
+                "t2": 0,
+                "t3": 0,
+                "t4": 0,
+                "t5": 0,
+            }))
+        }
+    }
 }
 
 #[tauri::command]
 pub fn get_search_mode(state: State<'_, AppState>) -> CmdResult<Value> {
-    let _ = state;
+    // C-8 Task #7: read the most-recent SearchModeChanged SSB row. The CLI
+    // process emits one row per cascade transition (and one at startup);
+    // this command reads them back cross-process so the dashboard renders
+    // the live mode instead of the previous hardcoded "HYBRID".
+    //
+    // Graceful empty fallback: when the viewer is absent (no DB yet) or
+    // no row exists, return `mode = "hybrid"` so the dashboard's
+    // SearchModeBadge keeps rendering. The frontend uppercases the label
+    // (drawers.svelte.ts:126 binds `sm.mode` -> `searchMode = SearchMode`
+    // enum), so the lowercase wire tag matches the original contract.
+    let live = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.latest_action_of_type("search_mode_changed").ok().flatten());
+    if let Some(detail) = live {
+        if let Some(mode) = detail
+            .payload_json
+            .get("mode")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_owned())
+        {
+            let history = detail
+                .payload_json
+                .get("history")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            return Ok(json!({
+                "mode": mode,
+                "history": history,
+            }));
+        }
+    }
     Ok(json!({
-        "mode": "HYBRID",
+        "mode": "hybrid",
         "history": [],
     }))
+}
+
+/// C-8 Task #7: dashboard-originated SearchModeChanged emitter. Reviewers /
+/// operators can pin the search mode for diagnostic purposes via this
+/// command; the CLI process picks up the latest row on subsequent reads.
+///
+/// Returns `{ ok: true, seq }` on success, or an error string when the SSB
+/// writer is unavailable.
+#[tauri::command]
+pub async fn set_search_mode(
+    state: State<'_, AppState>,
+    mode: String,
+    history: Option<Vec<String>>,
+) -> CmdResult<Value> {
+    let normalised = match mode.to_ascii_lowercase().as_str() {
+        "hybrid" | "lexical" | "semantic" | "ann" => mode.to_ascii_lowercase(),
+        other => {
+            return Err(format!(
+                "set_search_mode: unknown mode '{other}' (expected hybrid|lexical|semantic|ann)"
+            ));
+        }
+    };
+    let writer = state
+        .writer
+        .as_ref()
+        .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
+    let payload = SsbPayload::SearchModeChanged(SearchModeChangedPayload {
+        mode: normalised,
+        history: history.unwrap_or_default(),
+    });
+    let seq = writer
+        .write_payload("dashboard-v2", 0, payload, Vec::new())
+        .await
+        .map_err(map_err)?;
+    Ok(json!({ "ok": true, "seq": seq }))
 }
 
 #[tauri::command]
@@ -1030,251 +1351,37 @@ const B33_DEFAULT_IMPACT_DEPTH: u32 = 3;
 /// Default truncation cap for Mermaid export when the caller passes None.
 const B33_DEFAULT_MERMAID_MAX_NODES: usize = 200;
 
-/// Internal helper: produce an empty VizData payload with a reason-bearing
-/// SymbolMode::Omitted. Centralising this guarantees the stub_ban contract
-/// (no non-Full SymbolMode without a populated reason).
-fn b33_empty_viz(project_id: &str, reason: &str) -> elai_knowledge::visualization::types::VizData {
-    elai_knowledge::visualization::types::VizData::empty(
-        project_id.to_string(),
-        elai_knowledge::visualization::types::SymbolMode::Omitted {
-            reason: reason.to_string(),
-        },
-    )
-}
+// C-24 (DECISION-4): `b33_empty_viz` moved to
+// `elai_knowledge::visualization::views::empty_viz` so the orchestrator
+// IPC tool surface + the dashboard share the same code path. No call
+// sites here reference it after `b33_build_file_view`/`b33_build_symbol_view`
+// were re-pointed at the knowledge crate helpers above.
 
 /// Build the `file` mode VizData by walking DkgEngine nodes + edges.
 /// Per-file symbol_count is filled from SymbolGraphCache.meta when available.
+///
+/// C-24 (DECISION-4): the bulk of this implementation now lives in
+/// `elai_knowledge::visualization::views::build_file_view` so the orchestrator
+/// IPC tool surface (translate_tool_request `TOOL_EXPORT_GRAPH_MERMAID` arm)
+/// can call the same code path without a dashboard-crate dep. The Tauri
+/// wrapper kept this name so call sites at L1745/L1844 are unchanged.
 fn b33_build_file_view(
     project_root: &std::path::Path,
     project_id: &str,
 ) -> CmdResult<elai_knowledge::visualization::types::VizData> {
-    use elai_knowledge::visualization::types::{
-        SymbolMode, VizData, VizEdgeKind, VizFile, VizFileEdge, VizProject,
-        MAX_VIZ_SYMBOLS,
-    };
-    use std::collections::BTreeMap;
-
-    let dkg_path = elai_core::paths::dkg_db_path(project_root);
-    if !dkg_path.exists() {
-        return Ok(b33_empty_viz(project_id, "no index yet — run /index"));
-    }
-
-    // Open DkgEngine in read mode (now_secs unused on read-only paths).
-    let engine = elai_knowledge::DkgEngine::new(&dkg_path, None, 0)
-        .map_err(|e| format!("DkgEngine open failed: {e}"))?;
-    let nodes = engine
-        .nodes()
-        .map_err(|e| format!("DkgEngine::nodes failed: {e}"))?;
-    let edges_raw = engine
-        .edges()
-        .map_err(|e| format!("DkgEngine::edges failed: {e}"))?;
-
-    // Aggregate file -> { language, symbol_count, in/out counts } via BTreeMap
-    // (deterministic iteration; C2 BTREEMAP gotcha).
-    let mut by_file: BTreeMap<String, (String, usize)> = BTreeMap::new();
-    let mut node_to_file: BTreeMap<i64, String> = BTreeMap::new();
-
-    for n in &nodes {
-        let path_str = n.file_path.to_string_lossy().to_string();
-        node_to_file.insert(n.node_id, path_str.clone());
-        let lang = n
-            .file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(elai_knowledge::dkg::ext_to_lang_id)
-            .unwrap_or("other")
-            .to_string();
-        let entry = by_file.entry(path_str).or_insert((lang, 0));
-        entry.1 += 1;
-    }
-
-    // File-import edges (filter by edge_type=="imports") and per-file dep counts.
-    let mut deps_count: BTreeMap<String, usize> = BTreeMap::new();
-    let mut dependents_count: BTreeMap<String, usize> = BTreeMap::new();
-    let mut file_edges: Vec<VizFileEdge> = Vec::new();
-    let mut seen_edges: std::collections::BTreeSet<(String, String)> =
-        std::collections::BTreeSet::new();
-    for (src_id, tgt_id, kind) in &edges_raw {
-        if kind != "imports" {
-            continue;
-        }
-        let (src_file, tgt_file) = match (node_to_file.get(src_id), node_to_file.get(tgt_id)) {
-            (Some(s), Some(t)) => (s.clone(), t.clone()),
-            _ => continue,
-        };
-        if src_file == tgt_file {
-            continue;
-        }
-        if !seen_edges.insert((src_file.clone(), tgt_file.clone())) {
-            continue;
-        }
-        *deps_count.entry(src_file.clone()).or_insert(0) += 1;
-        *dependents_count.entry(tgt_file.clone()).or_insert(0) += 1;
-        file_edges.push(VizFileEdge {
-            source: src_file,
-            target: tgt_file,
-            kind: VizEdgeKind::Import,
-            cyclic: false,
-        });
-    }
-
-    // Try to attach SymbolGraphCache meta for symbol mode resolution + symbol_count fields.
-    let mut symbol_mode = SymbolMode::Full;
-    let mut total_symbols: Option<usize> = None;
-    let mut total_call_edges: Option<usize> = None;
-    let mut built_at: Option<i64> = None;
-    if let Ok(cache) = elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
-        &dkg_path,
-        project_id,
-        elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
-    ) {
-        let meta = cache.meta();
-        let symbol_count = usize::try_from(meta.symbol_count).unwrap_or(usize::MAX);
-        if symbol_count > MAX_VIZ_SYMBOLS {
-            symbol_mode = SymbolMode::Omitted {
-                reason: format!(
-                    "symbol count {symbol_count} exceeds {MAX_VIZ_SYMBOLS} cap; symbol mode disabled"
-                ),
-            };
-        }
-        total_symbols = Some(symbol_count);
-        total_call_edges = Some(usize::try_from(meta.edge_count).unwrap_or(usize::MAX));
-        built_at = Some(meta.built_at);
-    } else {
-        // No symbol_graph_meta row yet — surface as Omitted with an actionable reason.
-        symbol_mode = SymbolMode::Omitted {
-            reason: "symbol graph not built yet — symbol mode disabled".to_string(),
-        };
-    }
-
-    let files: Vec<VizFile> = by_file
-        .iter()
-        .map(|(path, (lang, sym_count))| {
-            let basename = std::path::Path::new(path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(path)
-                .to_string();
-            VizFile {
-                id: path.clone(),
-                label: basename,
-                language: lang.clone(),
-                deps: deps_count.get(path).copied().unwrap_or(0),
-                dependents: dependents_count.get(path).copied().unwrap_or(0),
-                symbol_count: *sym_count,
-            }
-        })
-        .collect();
-
-    Ok(VizData {
-        project: VizProject {
-            name: project_id.to_string(),
-            files: files.len(),
-            edges: file_edges.len(),
-            symbols: total_symbols,
-            call_edges: total_call_edges,
-            built_at,
-        },
-        files,
-        file_edges,
-        symbols: Vec::new(),
-        symbol_edges: Vec::new(),
-        symbols_by_file: std::collections::BTreeMap::new(),
-        symbol_mode,
-    })
+    elai_knowledge::visualization::views::build_file_view(project_root, project_id)
 }
 
 /// Build the `symbol` mode VizData by walking SymbolGraphCache file payloads.
 /// Falls back to file mode + Capped reason when total edge count exceeds the cap.
+///
+/// C-24 (DECISION-4): delegated to `elai_knowledge::visualization::views::build_symbol_view`
+/// (same rationale as `b33_build_file_view`).
 fn b33_build_symbol_view(
     project_root: &std::path::Path,
     project_id: &str,
 ) -> CmdResult<elai_knowledge::visualization::types::VizData> {
-    use elai_knowledge::visualization::types::{
-        SymbolMode, VizSymbol, VizSymbolEdge, MAX_VIZ_EDGES, MAX_VIZ_SYMS_PER_FILE,
-    };
-    use std::collections::BTreeMap;
-
-    let mut data = b33_build_file_view(project_root, project_id)?;
-    // If file mode already returned an Omitted reason (no index), short-circuit.
-    if matches!(data.symbol_mode, SymbolMode::Omitted { .. }) {
-        return Ok(data);
-    }
-
-    let dkg_path = elai_core::paths::dkg_db_path(project_root);
-    let mut cache = match elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
-        &dkg_path,
-        project_id,
-        elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
-    ) {
-        Ok(c) => c,
-        Err(_) => {
-            data.symbol_mode = SymbolMode::Omitted {
-                reason: "symbol graph not built yet — symbol mode disabled".to_string(),
-            };
-            return Ok(data);
-        }
-    };
-
-    // Iterate file ids from the file-mode payload and load per-file symbol payloads.
-    let file_ids: Vec<String> = data.files.iter().map(|f| f.id.clone()).collect();
-    let mut total_edges = 0usize;
-    let mut symbols_by_file: BTreeMap<String, Vec<VizSymbol>> = BTreeMap::new();
-    let mut all_symbols: Vec<VizSymbol> = Vec::new();
-    let mut symbol_edges: Vec<VizSymbolEdge> = Vec::new();
-
-    for fid in &file_ids {
-        let payload = match cache.get_or_load_payload(fid) {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => continue,
-        };
-        let mut file_symbols: Vec<VizSymbol> = Vec::new();
-        for s in &payload.symbols {
-            if file_symbols.len() >= MAX_VIZ_SYMS_PER_FILE {
-                break;
-            }
-            let viz = VizSymbol {
-                id: s.id.clone(),
-                file: s.file.clone(),
-                name: s.name.clone(),
-                qualified_name: s.qualified_name.clone(),
-                kind: format!("{:?}", s.kind),
-                line: s.line,
-            };
-            file_symbols.push(viz.clone());
-            all_symbols.push(viz);
-        }
-        for e in &payload.outgoing_calls {
-            if total_edges >= MAX_VIZ_EDGES {
-                break;
-            }
-            // Only emit edges with at least one resolved candidate.
-            for callee in &e.callee_candidates {
-                symbol_edges.push(VizSymbolEdge {
-                    source: e.caller_id.clone(),
-                    target: callee.clone(),
-                    confidence: e.confidence,
-                });
-                total_edges += 1;
-                if total_edges >= MAX_VIZ_EDGES {
-                    break;
-                }
-            }
-        }
-        if !file_symbols.is_empty() {
-            symbols_by_file.insert(fid.clone(), file_symbols);
-        }
-    }
-
-    if total_edges >= MAX_VIZ_EDGES {
-        data.symbol_mode = SymbolMode::Capped {
-            reason: format!("edge count reached {MAX_VIZ_EDGES} cap; symbol mode capped"),
-        };
-    }
-    data.symbols = all_symbols;
-    data.symbol_edges = symbol_edges;
-    data.symbols_by_file = symbols_by_file;
-    Ok(data)
+    elai_knowledge::visualization::views::build_symbol_view(project_root, project_id)
 }
 
 /// Build the `decomposition` mode VizData by reshaping the live decomposition
@@ -1314,6 +1421,33 @@ fn b33_build_decomposition_view(
         parent: Option<&str>,
         edges: &mut Vec<VizFileEdge>,
     ) {
+        // C-24 (DRIFT-7 Path A) — DECISION-6: also populate the dedicated
+        // `level` data field so the GraphWindow cytoscape selectors
+        // (node[level = "Concept" | "Phase" | "Step" | "BabyStep"]) can
+        // pick the right shape without parsing the label-prefix.
+        // The label prefix is kept for textual backwards-compat (existing
+        // mermaid renderer output + snapshot tests still rely on it).
+        // The selectors use the data attribute, so an upstream rename of
+        // the prefix format won't break the styling.
+        let level_attr = match level {
+            "concept" => Some("Concept".to_string()),
+            "phase" => Some("Phase".to_string()),
+            "step" => Some("Step".to_string()),
+            "baby_step" => Some("BabyStep".to_string()),
+            // Defense-in-depth: any future decomposition level not in the
+            // enumerated set falls through with the level field preserved
+            // (lossless capitalisation). Cytoscape selector miss is
+            // silent — node uses the default shape, no panic.
+            other => Some({
+                let mut s = String::with_capacity(other.len());
+                let mut up = true;
+                for c in other.chars() {
+                    if c == '_' { up = true; continue; }
+                    if up { s.extend(c.to_uppercase()); up = false; } else { s.push(c); }
+                }
+                s
+            }),
+        };
         files.push(VizFile {
             id: id.to_string(),
             label: format!("{level}: {label}"),
@@ -1321,6 +1455,13 @@ fn b33_build_decomposition_view(
             deps: 0,
             dependents: 0,
             symbol_count: 0,
+            level: level_attr,
+            // C-24 (DECISION-6): status colors source from per-baby-step
+            // execution state. That pipeline is deferred (cosmos_worker /
+            // spawn_loop dispatcher scope per B-42 memo). The cytoscape
+            // selectors EXIST in GraphWindow style array, so the moment
+            // status flows here, visual feedback ships automatically.
+            status: None,
         });
         if let Some(p) = parent {
             edges.push(VizFileEdge {
@@ -1410,6 +1551,13 @@ fn b33_resolve_project_id(state: &AppState) -> String {
 ///
 /// Returns an empty payload + `SymbolMode::Omitted{reason}` when no index
 /// exists yet rather than erroring (frontend renders a placeholder).
+///
+/// C-24 (DECISION-10): the Tauri wrapper resolves the State-bound inputs
+/// (project_root snapshot + project_id fallback + decomposition view from
+/// AppState) eagerly so the implementation function below has no Tauri
+/// dependency. Mirrors the C-18 D2 pattern used for `export_graph_mermaid_impl`
+/// — lets integration tests in `crates/dashboard-v2/src-tauri/tests/` call
+/// the impl directly without constructing a Tauri runtime.
 #[tauri::command]
 pub async fn get_graph_view_data(
     state: State<'_, AppState>,
@@ -1420,24 +1568,69 @@ pub async fn get_graph_view_data(
     let pid = project_id
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| b33_resolve_project_id(&state));
-    let result = match mode.as_str() {
-        "file" => b33_build_file_view(&project_root, &pid),
-        "symbol" => b33_build_symbol_view(&project_root, &pid),
-        "decomposition" => Ok(b33_build_decomposition_view(&state, &pid)),
+    // C-24: decomposition mode requires AppState — resolve here so the impl
+    // function below is Tauri-free.
+    let decomposition_data = if mode.as_str() == "decomposition" {
+        Some(b33_build_decomposition_view(&state, &pid))
+    } else {
+        None
+    };
+    get_graph_view_data_impl(&project_root, &pid, &mode, decomposition_data)
+}
+
+/// C-24 (DECISION-10): Tauri-free implementation of `get_graph_view_data`.
+/// For `file` and `symbol` modes the function is fully self-contained
+/// (walks on-disk DKG/Symbol stores rooted at `project_root`). For
+/// `decomposition` mode the caller must supply the pre-built VizData
+/// (the Tauri command resolves it from AppState before delegating here).
+pub fn get_graph_view_data_impl(
+    project_root: &std::path::Path,
+    project_id: &str,
+    mode: &str,
+    decomposition_data: Option<elai_knowledge::visualization::types::VizData>,
+) -> CmdResult<elai_knowledge::visualization::types::VizData> {
+    match mode {
+        "file" => b33_build_file_view(project_root, project_id),
+        "symbol" => b33_build_symbol_view(project_root, project_id),
+        "decomposition" => decomposition_data.ok_or_else(|| {
+            "get_graph_view_data_impl: decomposition mode requires \
+             `decomposition_data` to be supplied by the caller (the Tauri \
+             command resolves it from AppState before delegating here)"
+                .to_owned()
+        }),
         other => Err(format!(
             "unknown mode `{other}`; expected file/symbol/decomposition"
         )),
-    };
-    result
+    }
 }
 
 /// `get_impact_overlay` — call traversal::compute_impact_radius and reshape
 /// the ImpactResult into a JSON shape the frontend can consume directly.
+///
+/// C-24 (DECISION-10): same impl-fn extraction pattern as
+/// `get_graph_view_data` above.
 #[tauri::command]
 pub async fn get_impact_overlay(
     state: State<'_, AppState>,
     project_id: Option<String>,
     target: String,
+    depth: u32,
+) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let pid = project_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| b33_resolve_project_id(&state));
+    get_impact_overlay_impl(&project_root, &pid, &target, depth)
+}
+
+/// C-24 (DECISION-10): Tauri-free implementation of `get_impact_overlay`.
+/// Returns the empty-overlay JSON shape (`{files:[], by_depth:{}, ...}`)
+/// when no DKG / SymbolGraphCache exists yet so the frontend renders a
+/// placeholder without erroring.
+pub fn get_impact_overlay_impl(
+    project_root: &std::path::Path,
+    project_id: &str,
+    target: &str,
     depth: u32,
 ) -> CmdResult<Value> {
     let empty = json!({
@@ -1447,25 +1640,27 @@ pub async fn get_impact_overlay(
         "max_depth_reached": 0,
         "truncated": false,
     });
-    let project_root = state.project_root_snapshot();
-    let pid = project_id
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| b33_resolve_project_id(&state));
-    let dkg_path = elai_core::paths::dkg_db_path(&project_root);
+    let dkg_path = elai_core::paths::dkg_db_path(project_root);
     if !dkg_path.exists() {
         return Ok(empty);
     }
     let mut cache = match elai_knowledge::symbol_graph::cache::SymbolGraphCache::new(
         &dkg_path,
-        &pid,
+        project_id,
         elai_knowledge::symbol_graph::SYMBOL_FILE_LRU_SIZE,
     ) {
         Ok(c) => c,
         Err(_) => return Ok(empty),
     };
-    let depth = if depth == 0 { B33_DEFAULT_IMPACT_DEPTH } else { depth };
+    let effective_depth = if depth == 0 {
+        B33_DEFAULT_IMPACT_DEPTH
+    } else {
+        depth
+    };
     let impact = elai_knowledge::symbol_graph::traversal::compute_impact_radius(
-        &mut cache, &target, depth,
+        &mut cache,
+        target,
+        effective_depth,
     )
     .map_err(|e| format!("compute_impact_radius failed: {e}"))?;
     Ok(json!({
@@ -1491,10 +1686,43 @@ pub async fn export_graph_mermaid(
     let pid = project_id
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| b33_resolve_project_id(&state));
-    let data = match mode.as_str() {
-        "file" => b33_build_file_view(&project_root, &pid)?,
-        "symbol" => b33_build_symbol_view(&project_root, &pid)?,
-        "decomposition" => b33_build_decomposition_view(&state, &pid),
+    let decomposition_data = if mode.as_str() == "decomposition" {
+        Some(b33_build_decomposition_view(&state, &pid))
+    } else {
+        None
+    };
+    export_graph_mermaid_impl(&project_root, &pid, &mode, max_nodes, decomposition_data)
+}
+
+/// C-18 D2: Tauri-free implementation of `export_graph_mermaid`.
+///
+/// The Tauri command above wraps this function with the `State<'_, AppState>`
+/// indirection for the `decomposition` mode (which needs in-memory dashboard
+/// state). For `file` and `symbol` modes the function is fully self-contained:
+/// it walks the on-disk DKG/Symbol stores rooted at `project_root` and
+/// produces a Mermaid string. Integration tests call this `*_impl` form
+/// directly because Tauri `State<>` cannot be constructed outside the runtime.
+///
+/// `decomposition_data` is `Some` only when `mode == "decomposition"`; for the
+/// two other modes the parameter is ignored and may be `None`. The Tauri
+/// command resolves the dashboard-state-backed view eagerly so this function
+/// has no dependency on `AppState`.
+pub fn export_graph_mermaid_impl(
+    project_root: &std::path::Path,
+    project_id: &str,
+    mode: &str,
+    max_nodes: Option<usize>,
+    decomposition_data: Option<elai_knowledge::visualization::types::VizData>,
+) -> CmdResult<String> {
+    let data = match mode {
+        "file" => b33_build_file_view(project_root, project_id)?,
+        "symbol" => b33_build_symbol_view(project_root, project_id)?,
+        "decomposition" => decomposition_data.ok_or_else(|| {
+            "export_graph_mermaid_impl: decomposition mode requires \
+             `decomposition_data` to be supplied by the caller (the Tauri \
+             command resolves it from AppState before delegating here)"
+                .to_owned()
+        })?,
         other => {
             return Err(format!(
                 "unknown mode `{other}`; expected file/symbol/decomposition"
@@ -1563,20 +1791,281 @@ pub fn get_grc_budgets(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 #[tauri::command]
-pub fn get_grounding_sweep(_state: State<'_, AppState>) -> CmdResult<Value> {
-    // GroundingSweepGate producer is unwired today (per
-    // DETAILED_SUMMARY_02 Phase 2B). Return empty sweep.
-    Ok(json!({
+pub fn get_grounding_sweep(state: State<'_, AppState>) -> CmdResult<Value> {
+    // C-1: read the most recent `grounding_sweep_result` row written by
+    // `task_runner::drive_task_inner` immediately after
+    // `PipelineGrc::ground_plan` returns. Falls back to the zero shape
+    // when no SSB DB is reachable OR no row has been written yet.
+    let zero = json!({
         "grounded": 0,
         "verify_needed": 0,
         "ungrounded": 0,
         "claims": [],
+        "top_claim": Value::Null,
+    });
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(zero);
+    };
+    let detail = match viewer.latest_action_of_type(
+        SsbActionType::GroundingSweepResult.as_sql_str(),
+    ) {
+        Ok(Some(d)) => d,
+        Ok(None) => return Ok(zero),
+        Err(_) => return Ok(zero),
+    };
+    // Reshape payload_json to match the legacy GroundingSweep TS shape.
+    let p = &detail.payload_json;
+    // SsbPayload::GroundingSweepResult serializes as
+    // {"GroundingSweepResult":{...}}; pull out the inner object.
+    let inner = p
+        .get("GroundingSweepResult")
+        .cloned()
+        .unwrap_or_else(|| p.clone());
+    let grounded = inner.get("grounded").and_then(|v| v.as_u64()).unwrap_or(0);
+    let verify_needed = inner
+        .get("verify_needed")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let ungrounded = inner.get("ungrounded").and_then(|v| v.as_u64()).unwrap_or(0);
+    let top_claim = inner.get("top_claim").cloned().unwrap_or(Value::Null);
+    Ok(json!({
+        "grounded": grounded,
+        "verify_needed": verify_needed,
+        "ungrounded": ungrounded,
+        "claims": [],
+        "top_claim": top_claim,
+        "seq": detail.seq,
+        "ts": detail.ts,
     }))
 }
 
 #[tauri::command]
-pub fn get_csq_pending(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_csq_pending(state: State<'_, AppState>) -> CmdResult<Value> {
+    // C-1: list `csq_evaluated` rows where `blocked = true`. These are
+    // the pre-tool CSQ verdicts that gated a baby step (Critical without
+    // guard). Returns `[]` when no SSB DB is reachable OR no blocked
+    // rows exist yet.
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::CsqEvaluated.as_sql_str(),
+            CSQ_PENDING_QUERY_LIMIT,
+        )
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::new();
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("CsqEvaluated")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let blocked = inner
+            .get("blocked")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !blocked {
+            continue;
+        }
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "severity": inner.get("severity").cloned().unwrap_or(Value::Null),
+            "guard_present": inner
+                .get("guard_present")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "blocked": blocked,
+            "check_count": inner
+                .get("check_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// C-1: hard cap on the per-call CSQ-pending fetch. SsbViewer's own
+/// `DRAWER_QUERY_HARD_CAP` (500) is the absolute ceiling; we set a
+/// smaller dashboard-side limit so a flood of csq_evaluated rows can't
+/// stall the drawer refresh path.
+const CSQ_PENDING_QUERY_LIMIT: usize = 50;
+
+/// C-3: row cap for `get_csq_log` (full CSQ verdict log, not just
+/// blocked ones). Matches CSQ_PENDING_QUERY_LIMIT for symmetry —
+/// every blocked row is also in the log.
+const CSQ_LOG_QUERY_LIMIT: usize = 50;
+
+/// C-3: row cap for `get_feasibility_log`. The existing
+/// `get_feasibility_report` command reads up to 64 rows for the v2
+/// PASS/FAIL summary; the raw log is bounded smaller because it ships
+/// the full payload per row.
+const FEASIBILITY_LOG_QUERY_LIMIT: usize = 20;
+
+/// C-3: full CSQ verdict log (distinct from [`get_csq_pending`] which
+/// filters `blocked = true`). Reads the most recent N
+/// `csq_evaluated` SSB rows and exposes every verdict the GRC engine
+/// emitted regardless of whether it gated the baby step. Returns `[]`
+/// when no SSB DB is reachable OR no rows exist yet.
+#[tauri::command]
+pub fn get_csq_log(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::CsqEvaluated.as_sql_str(),
+            CSQ_LOG_QUERY_LIMIT,
+        )
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("CsqEvaluated")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "csq_id": detail.seq.to_string(),
+            "seq": detail.seq,
+            "ts_ms": detail.ts,
+            "conclusion": inner.get("severity").cloned().unwrap_or(Value::Null),
+            "guard_present": inner
+                .get("guard_present")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "blocked": inner
+                .get("blocked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "check_count": inner
+                .get("check_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// C-3: raw feasibility-report log (distinct from
+/// [`get_feasibility_report`] which returns the v2 PASS/FAIL
+/// summary shape from `feasibility_summary`). DRIFT-3: the SSB
+/// action_type is `feasibility_report`, NOT `feasibility_check` (no
+/// such variant exists). Reshape per row mirrors
+/// [`FeasibilityReportPayload`]; the dashboard reads `task_id`
+/// (derived from `seq`), `verdict`, `score`, and `ts_ms` defensively.
+#[tauri::command]
+pub fn get_feasibility_log(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let rows = viewer
+        .recent_rows_of_type(
+            SsbActionType::FeasibilityReport.as_sql_str(),
+            FEASIBILITY_LOG_QUERY_LIMIT,
+        )
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("FeasibilityReport")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let verdict = inner
+            .get("task_feasibility")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let vram_bp = inner
+            .get("vram_margin_bp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as f64;
+        out.push(json!({
+            "task_id": detail.seq.to_string(),
+            "seq": detail.seq,
+            "ts_ms": detail.ts,
+            "verdict": verdict,
+            // basis-point -> percent (2000 bp = 20.00%) for dashboard display.
+            "score": vram_bp / 100.0,
+            "skip_reason": inner.get("skip_reason").cloned().unwrap_or(Value::Null),
+            "novel_step_count": inner
+                .get("novel_step_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            "escalations_count": inner
+                .get("escalations_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            "vram_margin_pct": inner
+                .get("vram_margin_bp")
+                .and_then(|v| v.as_u64())
+                .map(|bp| bp as f64 / 100.0)
+                .unwrap_or(0.0),
+            "ram_margin_pct": inner
+                .get("ram_margin_bp")
+                .and_then(|v| v.as_u64())
+                .map(|bp| bp as f64 / 100.0)
+                .unwrap_or(0.0),
+            "disk_margin_pct": inner
+                .get("disk_margin_bp")
+                .and_then(|v| v.as_u64())
+                .map(|bp| bp as f64 / 100.0)
+                .unwrap_or(0.0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// C-3: per-role GRC config table. Compile-time static read from
+/// [`elai_orchestrator::default_grc_config`]; no SSB read needed because
+/// the canonical table is computed at process start from the reasoning
+/// crate's config loader. DRIFT-5: `AgentGrcConfig` carries no
+/// `topic_prefix` field, so the dashboard shape uses `role` (the
+/// role string) as the topic key per `reasoning::engine` semantics —
+/// every agent's GRC topic is keyed by its role string. The 16-variant
+/// `AgentRole` enum guarantees the returned array length >= 8 (plan
+/// acceptance).
+#[tauri::command]
+pub fn get_agent_grc_config(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Touch state so the parameter is not flagged dead-code; the data
+    // source is compile-time, not SSB-driven.
+    let _ = state;
+    use elai_ipc_types::AgentRole;
+    use elai_orchestrator::default_grc_config;
+    let roles = [
+        AgentRole::Executor,
+        AgentRole::Auditor,
+        AgentRole::Researcher,
+        AgentRole::Designer,
+        AgentRole::PromptEngineer,
+        AgentRole::ContextCompiler,
+        AgentRole::MemoryWriter,
+        AgentRole::MediaValidator,
+        AgentRole::IdeaFramer,
+        AgentRole::IdeaCritic,
+        AgentRole::AuditorConcepts,
+        AgentRole::AuditorPhases,
+        AgentRole::AuditorSteps,
+        AgentRole::AuditorBabySteps,
+        AgentRole::AuditorBabyStepDetail,
+    ];
+    let entries: Vec<Value> = roles
+        .iter()
+        .map(|role| {
+            let cfg = default_grc_config(role);
+            json!({
+                "role": cfg.role.clone(),
+                "max_calls": cfg.budget.max_calls,
+                "max_chars": cfg.budget.max_chars,
+                // DRIFT-5: role doubles as the topic key (no separate
+                // topic_prefix field on AgentGrcConfig).
+                "topic_prefix": cfg.role,
+            })
+        })
+        .collect();
+    Ok(json!(entries))
 }
 
 #[tauri::command]
@@ -1653,9 +2142,39 @@ pub fn get_evidence_gates(state: State<'_, AppState>) -> CmdResult<Value> {
 
 #[tauri::command]
 pub fn get_agents(state: State<'_, AppState>) -> CmdResult<Value> {
-    // Aggregate from per-role GRC budget rows + spawn events; fall back to
-    // an "all idle" 8-role list.
-    let _ = state.viewer.as_ref();
+    // C-2: live query SSB for the latest `agent_status_changed` row per
+    // agent_id (replaces the hardcoded 8-role IDLE list). When the SSB has
+    // zero rows yet (cold-start / no spawn) we fall back to the canonical
+    // 8-role IDLE list so the OrchestrationDrawer AGENTS section never
+    // empty-renders. The fallback is INSIDE the live-read path; the
+    // stub_ban rule forbids the always-static path that existed pre-C-2.
+    let live_rows: Vec<Value> = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_agent_status_changes(64).ok())
+        .map(|rows| {
+            rows.iter()
+                .map(|r| {
+                    let lifecycle = lifecycle_label(&r.state);
+                    json!({
+                        "role": &r.role,
+                        "lifecycle": lifecycle,
+                        "pid": null,
+                        "last_heartbeat_ms": r.timestamp_ms as i64,
+                        "grc_budget_used_pct": 0,
+                        "death_classification": r.death_class,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !live_rows.is_empty() {
+        return Ok(Value::Array(live_rows));
+    }
+
+    // Cold-start fallback: 8 canonical roles in IDLE. Honest empty-state
+    // representation; not a mock, because no SSB rows exist yet.
     Ok(json!([
         {"role":"executor",         "lifecycle":"IDLE","pid":null,"last_heartbeat_ms":0,"grc_budget_used_pct":0,"death_classification":null},
         {"role":"auditor",          "lifecycle":"IDLE","pid":null,"last_heartbeat_ms":0,"grc_budget_used_pct":0,"death_classification":null},
@@ -1666,6 +2185,17 @@ pub fn get_agents(state: State<'_, AppState>) -> CmdResult<Value> {
         {"role":"memory-writer",    "lifecycle":"IDLE","pid":null,"last_heartbeat_ms":0,"grc_budget_used_pct":0,"death_classification":null},
         {"role":"media-validator",  "lifecycle":"IDLE","pid":null,"last_heartbeat_ms":0,"grc_budget_used_pct":0,"death_classification":null},
     ]))
+}
+
+/// C-2: map SSB `state` discriminant onto the dashboard `AgentLifecycle`
+/// enum used by OrchestrationDrawer.svelte. `spawned`/`ready` map to
+/// `RUNNING`; `exited` maps to `DEAD` or `IDLE` depending on death class.
+fn lifecycle_label(state: &str) -> &'static str {
+    match state {
+        "spawned" | "ready" => "RUNNING",
+        "exited" => "DEAD",
+        _ => "IDLE",
+    }
 }
 
 #[tauri::command]
@@ -1843,41 +2373,247 @@ pub fn get_session_branches(state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(json!(arr))
 }
 
-// B-9: fork/merge/close branch commands.
-// AppState holds no SessionDag handle (dashboard is a read-out surface; the
-// CLI process owns the DAG). These commands return an explicit error so the
-// frontend can show a useful message instead of a silent no-op.
-// Deferral: wiring requires adding Arc<Mutex<SessionDag>> to AppState (state.rs)
-// and a DAG DB path resolver — tracked as B-9 DEFERRED: dag-write-in-dashboard.
+// C-23 — SessionDag branch-UI commands.
+// Per-call DAG open: AppState caches a `dag_db_path` once resolved (see
+// `resolve_active_dag_path`) but does NOT hold a long-lived SessionDag
+// handle. Each command opens the DB, performs the operation, drops the
+// handle. Trade-off documented in workflow/reasoning/C-23-decisions.md:
+//   * pro: zero lifetime entanglement with the CLI process
+//   * pro: stateless across project switches
+//   * con: ~5 ms SQLite open per call (negligible for branch ops)
+// All four commands return a typed `DagBranchError` that maps from
+// `SessionDagError` (thiserror#[from]) and Display-coerces to the
+// dashboard's `CmdResult<T, String>` rejection shape.
 
-#[tauri::command]
-pub fn fork_session_branch(
-    _state: State<'_, AppState>,
-    _name: String,
-) -> CmdResult<Value> {
-    Err(
-        "SessionDag not available from dashboard — use CLI: /session fork <name>".to_owned(),
-    )
+/// C-23: typed wrapper around `SessionDagError` for the dashboard branch
+/// commands. Carries `#[from]` so a SessionDag call site can early-return
+/// with `?`. The dashboard surface flattens this back to a string via
+/// `map_dag_err` so the Tauri rejection JSON stays a plain string per
+/// existing dashboard convention.
+#[derive(Debug, thiserror::Error)]
+pub enum DagBranchError {
+    /// No active SessionDag has been resolved. Returned when
+    /// `resolve_active_dag_path` cannot locate a session under
+    /// `<project_root>/.elai_cc/sessions/` or the resolved path's
+    /// `dag.db` does not exist.
+    #[error("no active SessionDag: the dashboard has not resolved a session.dag.db path yet")]
+    NoActiveSession,
+    /// The SessionDag database was found but `SessionDag::open` failed.
+    #[error("failed to open SessionDag at {path}: {source}")]
+    OpenFailed {
+        path: String,
+        #[source]
+        source: SessionDagError,
+    },
+    /// A branch-mutation call failed at the orchestrator level.
+    #[error("session_dag error: {0}")]
+    Dag(#[from] SessionDagError),
+    /// `merge_branch_with_ssb` returned `MergeResult::Conflict`.
+    #[error("merge conflict: {0}")]
+    MergeConflict(String),
+    /// `load_handoff` returned `Ok(None)` — no handoff snapshot exists
+    /// for the active session. Distinct from `SnapshotNotFound` which is
+    /// a missing-pointer error inside the DAG.
+    #[error("no handoff snapshot available for the active session")]
+    NoHandoff,
+}
+
+fn map_dag_err(e: DagBranchError) -> String {
+    e.to_string()
+}
+
+/// C-23: locate the active session's dag.db path. Caches the resolved
+/// path in AppState so subsequent calls are O(1). Resolution order:
+///   1. `state.dag_db_path_snapshot()` — cached value (fast path).
+///   2. Newest `<project_root>/.elai_cc/sessions/<session-id>/dag.db`
+///      by mtime, restricted to entries whose `dag.db` exists.
+///   3. Fail with `DagBranchError::NoActiveSession`.
+/// The resolver does NOT create new sessions. The dashboard is a
+/// read-out / mutation surface for sessions already created by the CLI.
+fn resolve_active_dag_path(state: &AppState) -> Result<(String, PathBuf), DagBranchError> {
+    if let Some(cached) = state.dag_db_path_snapshot() {
+        if cached.exists() {
+            if let Some(session_id) = cached
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_owned())
+            {
+                return Ok((session_id, cached));
+            }
+        }
+    }
+
+    let project_root = state.project_root_snapshot();
+    let sessions_dir = sessions_dir_path(&project_root);
+    if !sessions_dir.exists() {
+        return Err(DagBranchError::NoActiveSession);
+    }
+
+    let mut best: Option<(std::time::SystemTime, String, PathBuf)> = None;
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(it) => it,
+        Err(_) => return Err(DagBranchError::NoActiveSession),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dag_path = path.join("dag.db");
+        if !dag_path.exists() {
+            continue;
+        }
+        let Some(session_id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_owned())
+        else {
+            continue;
+        };
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        match &best {
+            None => best = Some((mtime, session_id, dag_path)),
+            Some((cur_mtime, _, _)) if mtime > *cur_mtime => {
+                best = Some((mtime, session_id, dag_path));
+            }
+            _ => {}
+        }
+    }
+
+    let (_, session_id, dag_path) = best.ok_or(DagBranchError::NoActiveSession)?;
+    let _ = state.set_dag_db_path(dag_path.clone());
+    Ok((session_id, dag_path))
+}
+
+/// C-23: open a SessionDag for the active session. Wrapper that uniformly
+/// surfaces `DagBranchError::OpenFailed` on SQLite open failure so the
+/// callsites can propagate via `?` cleanly.
+fn open_active_dag(state: &AppState) -> Result<(String, SessionDag), DagBranchError> {
+    let (session_id, dag_path) = resolve_active_dag_path(state)?;
+    let dag = SessionDag::open(&session_id, &dag_path).map_err(|e| {
+        DagBranchError::OpenFailed {
+            path: dag_path.display().to_string(),
+            source: e,
+        }
+    })?;
+    Ok((session_id, dag))
 }
 
 #[tauri::command]
-pub fn merge_session_branch(
-    _state: State<'_, AppState>,
-    _name: String,
+pub async fn fork_session_branch(
+    state: State<'_, AppState>,
+    name: String,
 ) -> CmdResult<Value> {
-    Err(
-        "SessionDag not available from dashboard — use CLI: /session merge <name>".to_owned(),
-    )
+    let (_session_id, mut dag) = open_active_dag(&state).map_err(map_dag_err)?;
+    // Snap to fork from: prefer the current branch tip if one exists,
+    // otherwise the latest snapshot via latest_snapshot(None). If neither
+    // is present, surface a typed error rather than silently creating a
+    // root snapshot.
+    let from_snap_id = match dag.list_branches().first() {
+        Some(br) => br.tip_snap_id.clone(),
+        None => {
+            let latest = dag
+                .latest_snapshot(None)
+                .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?
+                .ok_or_else(|| {
+                    map_dag_err(DagBranchError::Dag(SessionDagError::SnapshotNotFound))
+                })?;
+            latest.snap_id
+        }
+    };
+    let ssb_writer = state.writer.clone();
+    let ssb_ref = ssb_writer.as_deref();
+    let branch = dag
+        .create_branch_with_ssb(
+            &name,
+            &from_snap_id,
+            &mut OsEntropy,
+            &DagOsClock,
+            ssb_ref,
+        )
+        .await
+        .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?;
+    Ok(json!({
+        "branch_name": branch.name,
+        "tip_snap_id": branch.tip_snap_id,
+        "parent_snap_id": from_snap_id,
+        "created_at": branch.created_at,
+    }))
 }
 
 #[tauri::command]
-pub fn close_session_branch(
-    _state: State<'_, AppState>,
-    _name: String,
+pub async fn merge_session_branch(
+    state: State<'_, AppState>,
+    name: String,
 ) -> CmdResult<Value> {
-    Err(
-        "SessionDag not available from dashboard — use CLI: /session close <name>".to_owned(),
+    let (_session_id, mut dag) = open_active_dag(&state).map_err(map_dag_err)?;
+    let ssb_writer = state.writer.clone();
+    let ssb_ref = ssb_writer.as_deref();
+    let result = dag
+        .merge_branch_with_ssb(&name, &mut OsEntropy, &DagOsClock, ssb_ref)
+        .await
+        .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?;
+    match result {
+        MergeResult::Winner { branch, abandoned } => Ok(json!({
+            "winner_name": branch.name,
+            "trunk_snap_id": branch.tip_snap_id,
+            "abandoned_names": abandoned.iter().map(|b| b.name.clone()).collect::<Vec<_>>(),
+        })),
+        MergeResult::Conflict { reason } => {
+            Err(map_dag_err(DagBranchError::MergeConflict(reason)))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn close_session_branch(
+    state: State<'_, AppState>,
+    name: String,
+) -> CmdResult<Value> {
+    let (_session_id, mut dag) = open_active_dag(&state).map_err(map_dag_err)?;
+    let ssb_writer = state.writer.clone();
+    let ssb_ref = ssb_writer.as_deref();
+    dag.close_branch_with_ssb(
+        &name,
+        "dashboard:close_session_branch",
+        &DagOsClock,
+        ssb_ref,
     )
+    .await
+    .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?;
+    Ok(json!({ "branch_name": name, "closed": true }))
+}
+
+/// C-23: dashboard /continue handler — loads the latest handoff snapshot
+/// from the active SessionDag without rehydrating an in-memory session
+/// (that belongs to the CLI). Returns metadata so the CommandWindow can
+/// render a status card; the actual session resumption happens on the
+/// next CLI invocation that opens the same dag.db. This satisfies the
+/// C-23 acceptance requirement that `/continue` calls a real Tauri
+/// command, not a textarea prepopulate.
+#[tauri::command]
+pub async fn load_handoff(state: State<'_, AppState>) -> CmdResult<Value> {
+    let (session_id, dag) = open_active_dag(&state).map_err(map_dag_err)?;
+    let loaded = dag
+        .load_handoff()
+        .map_err(|e| map_dag_err(DagBranchError::Dag(e)))?
+        .ok_or_else(|| map_dag_err(DagBranchError::NoHandoff))?;
+    let (snapshot, messages) = loaded;
+    let chain_len = dag
+        .parent_chain(&snapshot.snap_id)
+        .map(|c| c.len())
+        .unwrap_or(0);
+    Ok(json!({
+        "session_id": session_id,
+        "snap_id": snapshot.snap_id,
+        "fsm_state": snapshot.fsm_state,
+        "message_count": messages.len(),
+        "parent_chain_len": chain_len,
+    }))
 }
 
 #[tauri::command]
@@ -2042,9 +2778,38 @@ pub fn get_bubble_up_events(state: State<'_, AppState>) -> CmdResult<Value> {
     serde_json::to_value(&rows).map_err(|e| e.to_string())
 }
 
+/// C-4: replace stub with live SSB read. Walks the decomposition tree
+/// (concept_decomposition_node rows) and emits an ordered list of leaf
+/// baby-steps with their concept/phase/step ancestry. Returns `[]` when
+/// no rows exist yet — the dashboard renders a "no decomposition yet"
+/// placeholder.
 #[tauri::command]
-pub fn get_executable_pipeline(_state: State<'_, AppState>) -> CmdResult<Value> {
-    Ok(json!([]))
+pub fn get_executable_pipeline(state: State<'_, AppState>) -> CmdResult<Value> {
+    let snapshot = match state.viewer.as_ref() {
+        Some(v) => v.decomposition_tree(None).map_err(map_err)?,
+        None => return Ok(json!([])),
+    };
+    let mut steps: Vec<Value> = Vec::new();
+    for concept in &snapshot.concepts {
+        for phase in &concept.phases {
+            for step in &phase.steps {
+                for baby in &step.baby_steps {
+                    steps.push(json!({
+                        "baby_step_id": baby.id,
+                        "baby_step_title": baby.title,
+                        "status": baby.status,
+                        "step_id": step.id,
+                        "step_title": step.title,
+                        "phase_id": phase.id,
+                        "phase_title": phase.title,
+                        "concept_id": concept.id,
+                        "concept_title": concept.title,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(Value::Array(steps))
 }
 
 #[tauri::command]
@@ -2991,7 +3756,9 @@ fn dashboard_cli_session_id() -> &'static str {
         // uniform-looking UUIDv4. We don't need cryptographic randomness here,
         // just a stable per-process identifier that *looks* like crypto.randomUUID().
         let pid = std::process::id();
-        let ts = std::time::SystemTime::now()
+        // C-15: OsClock-backed nanos for the synthetic session-id seed. This is
+        // a one-shot per-process identifier; not part of any deterministic test.
+        let ts = OsClock.system_now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
@@ -3299,24 +4066,93 @@ pub fn set_cloud_model(
 /// still under follow-up). MonitorWindow.svelte conditionally hides the rows
 /// when both `task_usd` and `day_usd` are zero per spec D-4:308.
 ///
-/// Aggregation is intentionally inline here (no `SsbViewer::cloud_spend_summary`
-/// method) because B-27 ANTI-BLOATSHEET defers premature abstractions.
+/// C-4: live aggregation over `cloud_spend` SSB rows via
+/// `SsbViewer::cloud_spend_summary`. `task_usd` is the most recent row's
+/// `cost_usd`; `day_usd` plus the two cache token counters sum across
+/// today's rows. `redaction_count` is 0 today (no source SSB row) — wired
+/// in for a future `redaction_event` action type (C-4-decisions.md Q5).
 #[tauri::command]
-pub fn get_cloud_spend(_state: State<'_, AppState>) -> CmdResult<Value> {
-    // TODO(B-27.5): replace this default-zero stub with an SSB query that
-    // sums today's CloudSpend rows for `day_usd` and grabs the latest
-    // CloudSpend row for `task_usd`. The Tauri surface, the Svelte poll
-    // loop, and the wire contract are all in place — only the SsbViewer
-    // aggregation method (cloud_spend_summary) is missing. The state arg
-    // is intentionally `_state` until the aggregation lands; do not
-    // remove it from the signature — Tauri's macro requires it as a
-    // recognised State<'_, T> parameter for proper invoke wiring.
+pub fn get_cloud_spend(state: State<'_, AppState>) -> CmdResult<Value> {
+    let now = now_ms(&state);
+    let summary = match state.viewer.as_ref() {
+        Some(v) => v.cloud_spend_summary(now).map_err(map_err)?,
+        None => elai_orchestrator::CloudSpendSummary::default(),
+    };
+    serde_json::to_value(&summary).map_err(map_err)
+}
+
+/// C-28: Mutation gauge readback for MonitorWindow.
+///
+/// Returns `null` when no `mutation_survived` SSB row has been emitted
+/// in the current session (i.e. either Step 6 hasn't run yet OR every
+/// mutant was caught — both indistinguishable from this surface).
+///
+/// Backend wiring is deferred to a follow-up that reads the latest
+/// MutationResult from session state. For now the command returns
+/// `Value::Null`, matching the contract test pin
+/// (DECISION-D9 in C-28-decisions.md).
+#[tauri::command]
+pub fn get_mutation_gauge(state: State<'_, AppState>) -> CmdResult<Value> {
+    // Touch state to keep the signature stable for future wiring.
+    let _ = state;
+    Ok(serde_json::Value::Null)
+}
+
+/// C-32 — Code-Completeness Layer 2 completeness_ratio gauge readback for
+/// MonitorWindow. Returns `{ "known": false }` when no `skeleton_flushed`
+/// SSB row exists yet (no skeleton-first path has activated). When
+/// populated, the JSON shape is:
+/// `{ "known": true, "ratio": f32, "blank_count": u32, "last_path": String | null }`.
+///
+/// Closes audit-C32 W2: reads the latest `skeleton_flushed` row via
+/// [`elai_orchestrator::SsbViewer::latest_action_of_type`] and projects
+/// the `path` + `completeness_ratio` fields onto the dashboard wire
+/// shape. `blank_count` is not carried by SkeletonFlushedPayload itself
+/// (it lives on SkeletonGeneratedPayload); the latest matching row's
+/// blank_count is looked up best-effort and falls back to 0 when no
+/// SkeletonGenerated row is found.
+#[tauri::command]
+pub fn get_completeness_ratio(state: State<'_, AppState>) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({ "known": false }));
+    };
+    let flushed = match viewer.latest_action_of_type("skeleton_flushed") {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return Ok(json!({ "known": false })),
+        Err(e) => return Err(map_err(e)),
+    };
+    // SkeletonFlushedPayload -> { path, completeness_ratio }. Extract
+    // both fields with defensive fallbacks so a future payload shape
+    // bump does not panic the dashboard.
+    let payload = &flushed.payload_json;
+    let ratio = payload
+        .get("completeness_ratio")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+    let last_path = payload
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // Best-effort blank_count: peek at the latest skeleton_generated row.
+    // When absent (skeleton_flushed without a matching skeleton_generated)
+    // we surface 0 so the dashboard renders the gauge but the explanation
+    // tooltip notes "no blank count available".
+    let blank_count = viewer
+        .latest_action_of_type("skeleton_generated")
+        .ok()
+        .flatten()
+        .and_then(|d| {
+            d.payload_json
+                .get("blank_count")
+                .and_then(|v| v.as_u64())
+                .map(|u| u as u32)
+        })
+        .unwrap_or(0u32);
     Ok(json!({
-        "task_usd": 0.0,
-        "day_usd": 0.0,
-        "cache_creation_tokens": 0u64,
-        "cache_read_tokens": 0u64,
-        "redaction_count": 0u64,
+        "known": true,
+        "ratio": ratio,
+        "blank_count": blank_count,
+        "last_path": last_path,
     }))
 }
 
@@ -4224,6 +5060,134 @@ pub async fn get_indexing_progress(
 }
 
 // ---------------------------------------------------------------------------
+// C-17 (DRIFT-J) — Indexing resilience snapshot.
+// ---------------------------------------------------------------------------
+//
+// Surfaces the C-17 lifecycle state to IndexingProgressPanel.svelte:
+//   * `auto_resume_enabled` — `true` when the per-project metadata DB
+//     exists at all (the auto_resume_indexed_projects pipeline is wired
+//     by definition; the panel uses this to surface "auto-resume is on").
+//   * `watch_locks_held` — number of active Watch-scope lock files on
+//     disk for this project (probed via lock files on disk, NOT by
+//     calling `try_acquire` which would compete with the live holder).
+//   * `last_checkpoint_unix_secs` — mirror of get_indexing_progress's
+//     last_checkpoint_at.
+//   * `last_resume_from_batch` / `last_resume_files_skipped` — pulled
+//     from the most recent IndexResume SSB row (None when no resume
+//     row has been emitted yet this session).
+//   * `lock_contested_count` — count of LockContested SSB rows in this
+//     session.
+//   * `shutdown_deadline_secs` — surfaced literal of
+//     `elai_orchestrator::startup::SHUTDOWN_DEADLINE` so the dashboard
+//     stays in lockstep with the constant.
+//   * `last_batch_duration_ms` — `batch_duration_ms` field of the most
+//     recent IndexCheckpoint SSB row (None when older payloads lack the
+//     C-17 optional field).
+
+#[tauri::command]
+pub async fn get_indexing_resilience(
+    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Value> {
+    let project_root = state.project_root_snapshot();
+    let clock = state.clock.clone();
+    let resolved_project_id =
+        elai_knowledge::metadata::project_id_from_path(&project_root);
+
+    // Probe the metadata DB + on-disk lock files synchronously inside
+    // spawn_blocking so the async tauri task does not stall.
+    let project_root_for_locks = project_root.clone();
+    let resolved_project_id_for_blocking = resolved_project_id.clone();
+    let (auto_resume_enabled, last_checkpoint_unix_secs, watch_locks_held) =
+        tokio::task::spawn_blocking(move || -> (bool, i64, u32) {
+            let indexes_dir = project_root_for_locks
+                .join(elai_core::paths::ELAI_DATA_DIR_NAME)
+                .join(elai_core::paths::INDEXES_DIR_NAME);
+            let db_path = indexes_dir.join(elai_knowledge::metadata::METADATA_DB_FILENAME);
+            let mut last_ckpt: i64 = 0;
+            let auto_resume = db_path.exists();
+            if auto_resume {
+                if let Ok(store) =
+                    elai_knowledge::metadata::ProjectMetadataStore::open(&db_path, clock)
+                {
+                    if let Ok(Some(meta)) = store.load(&resolved_project_id_for_blocking) {
+                        last_ckpt = meta.last_checkpoint_at;
+                    }
+                }
+            }
+            // Count watch lock files at the per-scope path. The Watch-scope
+            // filename is "watch.lock" (LockScope::filename); look in the
+            // indexes dir AND in any nested per-project subdirs.
+            let mut watch_locks: u32 = 0;
+            let watch_filename = elai_orchestrator::lock::LockScope::Watch.filename();
+            // Direct path.
+            if indexes_dir.join(&watch_filename).is_file() {
+                watch_locks = watch_locks.saturating_add(1);
+            }
+            // Nested per-project subdir layout (dashboard multi-project case).
+            if let Ok(read) = std::fs::read_dir(&indexes_dir) {
+                for entry in read.flatten() {
+                    let candidate = entry.path().join(&watch_filename);
+                    if candidate.is_file() {
+                        watch_locks = watch_locks.saturating_add(1);
+                    }
+                }
+            }
+            (auto_resume, last_ckpt, watch_locks)
+        })
+        .await
+        .map_err(|e| format!("get_indexing_resilience probe panicked: {e}"))?;
+
+    // Pull resume + contested + batch_duration_ms metrics from the SSB
+    // viewer. Each lookup is best-effort; missing rows simply produce
+    // None / 0 in the response.
+    let mut last_resume_from_batch: Option<u32> = None;
+    let mut last_resume_files_skipped: Option<u64> = None;
+    let mut lock_contested_count: u32 = 0;
+    let mut last_batch_duration_ms: Option<u64> = None;
+
+    if let Some(viewer) = state.viewer.as_ref() {
+        const RESILIENCE_PER_TYPE_LIMIT: usize = 50;
+        if let Ok(rows) = viewer.recent_rows_of_type("index_resume", RESILIENCE_PER_TYPE_LIMIT) {
+            // recent_rows_of_type returns DESC by ts; first row is latest.
+            if let Some(row) = rows.first() {
+                last_resume_from_batch = row
+                    .payload_json
+                    .get("resumed_from_batch")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| u32::try_from(n).ok());
+                last_resume_files_skipped =
+                    row.payload_json.get("files_skipped").and_then(|v| v.as_u64());
+            }
+        }
+        if let Ok(rows) = viewer.recent_rows_of_type("lock_contested", RESILIENCE_PER_TYPE_LIMIT) {
+            lock_contested_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        }
+        if let Ok(rows) = viewer.recent_rows_of_type("index_checkpoint", RESILIENCE_PER_TYPE_LIMIT) {
+            if let Some(row) = rows.first() {
+                last_batch_duration_ms = row
+                    .payload_json
+                    .get("batch_duration_ms")
+                    .and_then(|v| v.as_u64());
+            }
+        }
+    }
+
+    let _ = resolved_project_id; // retained for future per-project filtering.
+
+    Ok(json!({
+        "auto_resume_enabled": auto_resume_enabled,
+        "watch_locks_held": watch_locks_held,
+        "last_checkpoint_unix_secs": last_checkpoint_unix_secs,
+        "last_resume_from_batch": last_resume_from_batch,
+        "last_resume_files_skipped": last_resume_files_skipped,
+        "lock_contested_count": lock_contested_count,
+        "shutdown_deadline_secs": elai_orchestrator::startup::SHUTDOWN_DEADLINE.as_secs(),
+        "last_batch_duration_ms": last_batch_duration_ms,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // D.2 — RUN PLANNING TASK
 // ---------------------------------------------------------------------------
 //
@@ -4623,7 +5587,8 @@ pub async fn obscura_test_fetch(url: String) -> CmdResult<Value> {
         Err(e) => return Ok(json!({ "ok": false, "error": e })),
     };
 
-    let start = std::time::Instant::now();
+    let fetch_clock = OsClock;
+    let start = fetch_clock.now();
 
     let mut child = match tokio::process::Command::new(&binary)
         .arg("fetch")
@@ -4699,7 +5664,7 @@ pub async fn obscura_test_fetch(url: String) -> CmdResult<Value> {
         return Ok(json!({ "ok": false, "error": "obscura returned empty output" }));
     }
 
-    let fetch_time_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let fetch_time_ms = u64::try_from(fetch_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
     let html = String::from_utf8_lossy(&buf).into_owned();
 
     Ok(json!({
@@ -5137,10 +6102,9 @@ use crate::remote_sidecar_helpers as rsh;
 use crate::state::RemoteSidecarProgress;
 
 fn now_ms_raw() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    // C-15: OsClock-backed so the entropy scanner stays clean. Used by the
+    // remote-sidecar progress timestamps that the UI displays.
+    i64::try_from(OsClock.now_ms()).unwrap_or(i64::MAX)
 }
 
 fn set_progress(state: &AppState, step: &str, status: &str, error: Option<String>) {
@@ -6100,6 +7064,98 @@ pub async fn get_idea_framing_state(
     }))
 }
 
+/// C-10 — flattened DTO surfaced by [`get_stagnation_events`]. One row per
+/// anti-spiral / lateral-thinking / goal-drift / watchdog SSB row, sorted
+/// by timestamp DESC. Optional fields are populated by the variant-specific
+/// match arms below; consumers branch on `action_type` for type-specific
+/// rendering.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StagnationEventDto {
+    pub timestamp_ms: i64,
+    pub action_type: String,
+    pub agent_id: String,
+    /// Set on StagnationSpinningDetected / StagnationOscillationDetected
+    /// (carries `spinning | oscillation | no_drift | diminishing_returns`).
+    pub pattern: Option<String>,
+    /// Set on LateralThinkingActivated / LateralThinkingSucceeded /
+    /// LateralThinkingExhausted.
+    pub persona: Option<String>,
+    /// Set on GoalDriftWarning / GoalDriftBlock — Jaccard similarity in
+    /// the plan-direction reading (higher = aligned, lower = drifted).
+    pub drift_score: Option<f32>,
+    /// Set on WatchdogTimeout — elapsed since task start, ms.
+    pub elapsed_ms: Option<u64>,
+    pub detail: String,
+}
+
+/// C-10 — return the last N stagnation / lateral-thinking / goal-drift /
+/// watchdog events for the OrchestrationDrawer StagnationSection.
+/// Flattens 8 SsbActionType variant shapes into a single DTO so the
+/// Svelte side has one row type.
+#[tauri::command]
+pub async fn get_stagnation_events(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<StagnationEventDto>> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    const PER_TYPE_LIMIT: usize = 50;
+    let action_type_strs = [
+        "stagnation_spinning_detected",
+        "stagnation_oscillation_detected",
+        "lateral_thinking_activated",
+        "lateral_thinking_succeeded",
+        "lateral_thinking_exhausted",
+        "goal_drift_warning",
+        "goal_drift_block",
+        "watchdog_timeout",
+    ];
+
+    let mut out: Vec<StagnationEventDto> = Vec::new();
+    for at in action_type_strs {
+        let rows = match viewer.recent_rows_of_type(at, PER_TYPE_LIMIT) {
+            Ok(rs) => rs,
+            Err(_) => continue,
+        };
+        for row in rows {
+            let p = &row.payload_json;
+            let pattern = p
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned());
+            let persona = p
+                .get("persona")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned());
+            let drift_score = p.get("drift_score").and_then(|v| v.as_f64()).map(|d| d as f32);
+            let elapsed_ms = p.get("elapsed_ms").and_then(|v| v.as_u64());
+            let detail = p
+                .get("detail")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            out.push(StagnationEventDto {
+                timestamp_ms: row.ts,
+                action_type: row.action_type,
+                agent_id: row.agent_id,
+                pattern,
+                persona,
+                drift_score,
+                elapsed_ms,
+                detail,
+            });
+        }
+    }
+
+    // Sort by timestamp DESC and cap at the last 50 rows.
+    out.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    if out.len() > 50 {
+        out.truncate(50);
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn submit_tradeoff_responses(
     state: State<'_, AppState>,
@@ -6550,33 +7606,89 @@ pub async fn list_entry_points(
 // continuous ambiguity gate (B-38). The shape mirrors `AmbiguityState` in
 // `crates/dashboard-v2/src/lib/api/types.ts`.
 //
-// MOCK DATA: the real producer (AmbiguityScorer wired into task_runner.rs)
-// is intentionally OUT OF SCOPE for B-38 per the plan ("minimal B-38
-// contract"). When the producer lands in a follow-up B-N, this command will
-// read the latest `ambiguity_scored` / `ambiguity_floor_failed` /
-// `ambiguity_streak_advanced` SSB rows from `state.viewer` and shape them
-// into the response.  Until then the command returns a stable mock so the
-// frontend GatesPanel can render its layout end-to-end.
+// C-2: replaced the B-38 placeholder mock body with a live SSB read of
+// `ambiguity_scored` / `ambiguity_floor_failed` / `ambiguity_streak_advanced`
+// rows. When no rows exist yet (cold-start, pre-first-task), the command
+// returns the same shape with zero score + empty floor_failures + 0-streak so
+// the GatesPanel can render an "awaiting data" layout without crashing.
+// The producer (AmbiguityScorer wired into task_runner) lands in C-8 per
+// plan §Out-of-scope; in the meantime any task-runner ground_plan call that
+// chooses to populate `ctx.ambiguity_score` will surface here automatically.
 #[tauri::command]
-pub fn get_ambiguity_state(_state: State<'_, AppState>) -> CmdResult<Value> {
+pub fn get_ambiguity_state(state: State<'_, AppState>) -> CmdResult<Value> {
+    use elai_reasoning::{
+        AMBIGUITY_THRESHOLD, AUTO_COMPLETE_STREAK_REQUIRED, CONSTRAINT_CLARITY_FLOOR,
+        CONSTRAINT_CLARITY_WEIGHT, GOAL_CLARITY_FLOOR, GOAL_CLARITY_WEIGHT,
+        SUCCESS_CRITERIA_CLARITY_FLOOR, SUCCESS_CRITERIA_CLARITY_WEIGHT,
+    };
+
+    let viewer_opt = state.viewer.as_ref();
+
+    let latest_scored = viewer_opt.and_then(|v| v.latest_ambiguity_scored().ok().flatten());
+    let latest_floor = viewer_opt.and_then(|v| v.latest_ambiguity_floor_failed().ok().flatten());
+    let latest_streak = viewer_opt.and_then(|v| v.latest_ambiguity_streak().ok().flatten());
+
+    let threshold = AMBIGUITY_THRESHOLD;
+    let streak_required = AUTO_COMPLETE_STREAK_REQUIRED as u32;
+
+    let (score, milestone, brownfield, goal, constraint, success, context_value) =
+        if let Some(s) = &latest_scored {
+            (
+                s.score,
+                s.milestone.clone(),
+                s.brownfield,
+                s.goal,
+                s.constraint,
+                s.success,
+                s.context,
+            )
+        } else {
+            (
+                0.0_f32,
+                "initial".to_owned(),
+                false,
+                0.0_f32,
+                0.0_f32,
+                0.0_f32,
+                None,
+            )
+        };
+
+    let floor_failures: Vec<String> = latest_floor
+        .as_ref()
+        .map(|f| f.failed_dimensions.clone())
+        .unwrap_or_default();
+
+    let streak_current = latest_streak.as_ref().map(|s| s.current_streak).unwrap_or(0);
+    let qualifies_for_advance = score <= threshold && floor_failures.is_empty();
+
+    let context_clarity = context_value
+        .map(|c| {
+            json!({
+                "score": c,
+                "weight": 0.15_f32,
+                "floor": 0.60_f32,
+            })
+        })
+        .unwrap_or(Value::Null);
+
     Ok(json!({
-        "score": 0.18_f32,
-        "milestone": "ready",
-        "threshold": 0.2_f32,
-        "brownfield": false,
+        "score": score,
+        "milestone": milestone,
+        "threshold": threshold,
+        "brownfield": brownfield,
         "components": {
-            "goal_clarity":             { "score": 0.92_f32, "weight": 0.40_f32, "floor": 0.75_f32 },
-            "constraint_clarity":       { "score": 0.83_f32, "weight": 0.30_f32, "floor": 0.65_f32 },
-            "success_criteria_clarity": { "score": 0.88_f32, "weight": 0.30_f32, "floor": 0.70_f32 },
-            "context_clarity":          null
+            "goal_clarity":             { "score": goal, "weight": GOAL_CLARITY_WEIGHT, "floor": GOAL_CLARITY_FLOOR },
+            "constraint_clarity":       { "score": constraint, "weight": CONSTRAINT_CLARITY_WEIGHT, "floor": CONSTRAINT_CLARITY_FLOOR },
+            "success_criteria_clarity": { "score": success, "weight": SUCCESS_CRITERIA_CLARITY_WEIGHT, "floor": SUCCESS_CRITERIA_CLARITY_FLOOR },
+            "context_clarity":          context_clarity,
         },
-        "floor_failures": Vec::<String>::new(),
+        "floor_failures": floor_failures,
         "streak": {
-            "current": 1_u32,
-            "required": 2_u32
+            "current": streak_current,
+            "required": streak_required,
         },
-        "qualifies_for_advance": false,
-        "mock": true
+        "qualifies_for_advance": qualifies_for_advance,
     }))
 }
 
@@ -6590,13 +7702,16 @@ pub fn get_ambiguity_state(_state: State<'_, AppState>) -> CmdResult<Value> {
 // purely to call `status_snapshot`, which never invokes the dispatcher.
 // Cold-start returns an empty Vec (no cosmos root yet).
 //
-// `trigger_cosmos_refresh` is intentionally an explicit `Err(...)` — the
-// production ResearchDispatcher wiring (orchestrator::research_tree::ResearchTree
-// adapted to the ResearchDispatcher trait) is documented as BLOCK-WIRING /
-// BLOCK-TAURI-COMMANDS in workflow/reasoning/B-42-decisions.md. Per CLAUDE.md
-// stub_ban rule, returning a NotImplemented error is honest; returning a fake
-// success would be mock data. The frontend renders this error inline next to
-// the Refresh button.
+// C-16 (DECISION-D + DECISION-G): `trigger_cosmos_refresh` is now wired to
+// the production `task_runner::trigger_cosmos_refresh` helper via an ad-hoc
+// CosmosWorker built from the user-global cosmos root + manifest. Returns
+// `TriggerCosmosRefreshResponse` with the count of refreshed artifacts and
+// wall-clock brackets. The previous B-42 NotImplemented stub is replaced by
+// the implementation below.
+//
+// `subscribe_cosmos_events` (C-16 DECISION-C) is the new live-update path
+// — poll-based for now; a real Tauri `listen()` push channel is a future
+// UI infrastructure phase.
 
 /// Per-artifact cosmos status for the dashboard drawer.
 /// Read-only: filesystem snapshot of ~/.elai/cosmos/ — no research, no mutation.
@@ -6605,18 +7720,206 @@ pub async fn get_cosmos_status() -> Result<Vec<elai_knowledge::CosmosArtifactSta
     Ok(elai_knowledge::cosmos_status_snapshot_standalone())
 }
 
-/// Trigger an on-demand refresh of one cosmos artifact.
+/// C-16 (DECISION-D): typed response shape for the on-demand cosmos refresh.
 ///
-/// Returns an explicit NotImplemented `Err` until the production
-/// ResearchDispatcher is wired (see workflow/reasoning/B-42-decisions.md
-/// BLOCK-TAURI-COMMANDS / BLOCK-WIRING). This is NOT mock data — per
-/// stub_ban, a fake "ok=true" would be a lie; an explicit error is honest.
+/// `refreshed_count` is the number of artifacts whose body actually changed
+/// (idempotent re-research with identical blake3 does NOT increment this
+/// counter — matches the SSB CosmosArtifactUpdated emission contract).
+/// `started_at_ms` / `completed_at_ms` are Unix epoch milliseconds bracketing
+/// the refresh call, derived from the system clock at the Tauri command
+/// entry/exit.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TriggerCosmosRefreshResponse {
+    pub refreshed_count: u32,
+    pub started_at_ms: i64,
+    pub completed_at_ms: i64,
+}
+
+/// C-16 (DECISION-C): cosmos SSB event row for the live subscription path.
+/// `seq` is the monotonic SSB sequence number — frontend stores the highest
+/// it has seen and passes back as `last_seq` on the next poll to receive
+/// only the delta. `kind` is one of:
+/// `"refresh_started" | "artifact_updated" | "artifact_decayed" |
+/// "grounding_used"`. `payload` is the JSON-serialised typed payload (see
+/// orchestrator::ssb::CosmosRefreshStartedPayload etc.).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CosmosEvent {
+    pub seq: i64,
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
+/// C-16 (DECISION-C): typed response shape for subscribe_cosmos_events.
+/// `last_seq` is the highest seq across `events`; the frontend uses it as
+/// the next call's `last_seq` argument.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CosmosEventBatch {
+    pub last_seq: i64,
+    pub events: Vec<CosmosEvent>,
+}
+
+/// Trigger an on-demand refresh of cosmos artifacts.
+///
+/// C-16 (DECISION-D + DECISION-G): wires the orphan
+/// `task_runner::trigger_cosmos_refresh` helper into the dashboard. Builds
+/// an ad-hoc CosmosWorker rooted at `default_cosmos_root()` with the
+/// production `HttpCosmosResearchDispatcher`, then invokes the helper which
+/// emits `CosmosRefreshStarted` + per-artifact `CosmosArtifactUpdated` SSB
+/// rows.
+///
+/// `_name` is accepted for backward compat with the B-42 stub signature but
+/// is currently advisory: the refresh sweep covers the whole manifest
+/// (per-artifact targeting is a follow-up). Returns
+/// [`TriggerCosmosRefreshResponse`] with the count of artifacts actually
+/// refreshed + wall-clock brackets. Returns `Err(String)` when the SSB
+/// writer is unavailable (cold-start dashboard) — honest "wiring
+/// unavailable" failure, NOT mock data.
 #[tauri::command]
-pub async fn trigger_cosmos_refresh(_name: String) -> Result<(), String> {
-    Err(
-        "cosmos refresh dispatcher not yet wired — see B-42-decisions BLOCK-5"
-            .into(),
-    )
+pub async fn trigger_cosmos_refresh(
+    _name: Option<String>,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<TriggerCosmosRefreshResponse, String> {
+    let started_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let writer = state
+        .writer
+        .clone()
+        .ok_or_else(|| "cosmos refresh: SSB writer unavailable (no SSB DB)".to_string())?;
+
+    // Resolve cosmos root + manifest. Cold-start (no manifest) returns a
+    // refreshed_count=0 success — not an error.
+    let cosmos_root = elai_knowledge::default_cosmos_root()
+        .map_err(|e| format!("cosmos refresh: resolve root failed: {e}"))?;
+    if !cosmos_root.exists() {
+        let completed_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        return Ok(TriggerCosmosRefreshResponse {
+            refreshed_count: 0,
+            started_at_ms,
+            completed_at_ms,
+        });
+    }
+
+    let manifest_path = cosmos_root.join("manifest.toml");
+    let manifest = elai_knowledge::CosmosManifest::load(&manifest_path)
+        .map_err(|e| format!("cosmos refresh: manifest load failed: {e}"))?;
+    if manifest.artifacts.is_empty() {
+        let completed_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        return Ok(TriggerCosmosRefreshResponse {
+            refreshed_count: 0,
+            started_at_ms,
+            completed_at_ms,
+        });
+    }
+
+    // C-16 (DECISION-B): production dispatcher.
+    let sidecar_base = std::env::var("ELAI_SIDECAR_URL")
+        .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
+        .unwrap_or_else(|_| elai_orchestrator::DEFAULT_SIDECAR_SEARCH_URL.to_string());
+    let research: std::sync::Arc<dyn elai_knowledge::ResearchDispatcher> =
+        match elai_orchestrator::HttpCosmosResearchDispatcher::new(sidecar_base) {
+            Ok(d) => std::sync::Arc::new(d),
+            Err(e) => return Err(format!("cosmos refresh: dispatcher init failed: {e}")),
+        };
+    let clock: std::sync::Arc<dyn elai_knowledge::CosmosClock> =
+        std::sync::Arc::new(elai_knowledge::SystemCosmosClock);
+    let worker = elai_knowledge::CosmosWorker::new(cosmos_root, manifest, clock, research)
+        .map_err(|e| format!("cosmos refresh: worker init failed: {e}"))?;
+
+    // DECISION-G: invoke the previously-orphan helper. It emits the SSB
+    // rows itself; we just count the result.
+    let refreshed_count = elai_orchestrator::trigger_cosmos_refresh(&writer, &worker).await;
+
+    let completed_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok(TriggerCosmosRefreshResponse {
+        refreshed_count,
+        started_at_ms,
+        completed_at_ms,
+    })
+}
+
+/// C-16 (DECISION-C): poll-based SSB subscription for cosmos drawer.
+///
+/// Returns all `cosmos_*` SSB rows with `seq > last_seq`, capped at 64 rows
+/// per call to bound the IPC payload size (matches the
+/// `PREVIEW_AVAILABLE_HARD_CAP` pattern in SsbViewer). Frontend polls this
+/// at a 5s cadence (down from the previous 30s status poll) and re-renders
+/// the drawer reactively. Pass `last_seq = 0` on initial mount to receive
+/// the full backlog (still capped at 64 newest rows).
+///
+/// Returns `Err(String)` when the SsbViewer is unavailable (cold-start).
+#[tauri::command]
+pub async fn subscribe_cosmos_events(
+    last_seq: i64,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<CosmosEventBatch, String> {
+    const MAX_COSMOS_EVENTS: usize = 64;
+
+    let viewer = state
+        .viewer
+        .clone()
+        .ok_or_else(|| "cosmos subscribe: SsbViewer unavailable (no SSB DB)".to_string())?;
+
+    // recent_actions returns newest-first across ALL action types. We filter
+    // client-side here for cosmos_*. The 4x multiplier on the limit allows
+    // for non-cosmos rows interleaved in the same window without dropping
+    // cosmos events.
+    let pulled = viewer
+        .recent_actions(MAX_COSMOS_EVENTS.saturating_mul(8), 0)
+        .map_err(|e| format!("cosmos subscribe: recent_actions failed: {e}"))?;
+
+    let mut events: Vec<CosmosEvent> = Vec::with_capacity(MAX_COSMOS_EVENTS);
+    let mut new_last_seq = last_seq;
+    for row in pulled {
+        if row.seq <= last_seq {
+            continue;
+        }
+        let kind = match row.action_type {
+            elai_orchestrator::SsbActionType::CosmosRefreshStarted => "refresh_started",
+            elai_orchestrator::SsbActionType::CosmosArtifactUpdated => "artifact_updated",
+            elai_orchestrator::SsbActionType::CosmosArtifactDecayed => "artifact_decayed",
+            elai_orchestrator::SsbActionType::CosmosGroundingUsed => "grounding_used",
+            _ => continue,
+        };
+        // recent_actions returns the truncated `summary` string, not the
+        // typed payload. For the drawer's needs (just badge + name +
+        // timestamp), the summary is sufficient. We wrap it in a JSON
+        // object so the frontend has a stable shape.
+        let payload = serde_json::json!({ "summary": row.summary });
+        events.push(CosmosEvent {
+            seq: row.seq,
+            timestamp_ms: row.timestamp,
+            kind: kind.to_string(),
+            payload,
+        });
+        if row.seq > new_last_seq {
+            new_last_seq = row.seq;
+        }
+        if events.len() >= MAX_COSMOS_EVENTS {
+            break;
+        }
+    }
+    // Oldest-first for the frontend (easier to append-on-poll without
+    // re-sorting client-side).
+    events.reverse();
+
+    Ok(CosmosEventBatch {
+        last_seq: new_last_seq,
+        events,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -6658,19 +7961,117 @@ pub struct AuditFindingJson {
     pub source: Option<String>,
 }
 
-/// Return the per-level audit verdicts for `task_id`. Cold start returns
-/// `Ok(Vec::new())`. Live wiring sources verdicts from the SSB
-/// PerLevelAuditVerdict rows + replays the `LevelAuditVerdict` struct.
+/// C-12 — Internal helper that turns SSB rows into the
+/// `LevelAuditVerdictJson` shape consumed by `AuditTimelineWindow.svelte`.
 ///
-/// `_task_id` is accepted but currently unused — the implementation will
-/// filter by session_id once the TaskRunner exposes per-task SSB readers.
-/// Returning an empty Vec is NOT a mock — it matches the cold-start
-/// behaviour observed by `task_runner::derive_*_zero_blocks` helpers.
+/// Pulls every `per_level_audit_verdict` row (cap 500) and every
+/// `per_level_audit_cascade` row (used to up-flag the `cascade_to_parent`
+/// bit when a verdict row was emitted *before* its cascade was decided).
+/// Rows are filtered to the latest session_id discovered across either
+/// row family (mirrors `get_idea_framing_state`'s session resolution).
+///
+/// DRIFT-1 resolution (a): the SSB `PerLevelAuditVerdictPayload` only
+/// carries `findings_count`. The full `Finding` list is persisted to disk
+/// as Markdown by `auditor_mode::persist_verdict` and is NOT recoverable
+/// from SSB alone. Returning an empty `findings: []` per row is the
+/// documented cold-start path; `AuditTimelineWindow.svelte`'s findings
+/// popover already renders "No findings recorded for this verdict." in
+/// that branch (line 174 of the component).
+///
+/// `task_id_filter` is accepted for future per-task scoping. When
+/// `"active"` (the dashboard default), `""`, or any value, the helper
+/// resolves to the latest observed session_id — matching DRIFT-6.
+pub fn compute_per_level_verdicts(
+    viewer: &elai_orchestrator::SsbViewer,
+    task_id_filter: &str,
+) -> Result<Vec<LevelAuditVerdictJson>, String> {
+    let verdict_rows = query_rows_by_action_type(viewer, SsbActionType::PerLevelAuditVerdict)?;
+    let cascade_rows = query_rows_by_action_type(viewer, SsbActionType::PerLevelAuditCascade)?;
+
+    if verdict_rows.is_empty() && cascade_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Resolve session_id. The dashboard sends "active" by default — map
+    // that (and empty) to "latest session that produced any audit row".
+    // An explicit caller-supplied session id is honoured verbatim.
+    let session_id: String = if task_id_filter.is_empty() || task_id_filter == "active" {
+        verdict_rows
+            .last()
+            .map(|(s, _)| s.clone())
+            .or_else(|| cascade_rows.last().map(|(s, _)| s.clone()))
+            .unwrap_or_default()
+    } else {
+        task_id_filter.to_owned()
+    };
+
+    if session_id.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Pre-compute the set of (mode, tier, node_id) keys that have at
+    // least one cascade row in this session — used to up-flag the
+    // cascade_to_parent bit on the corresponding verdict row even when
+    // the row was written BEFORE the cascade decision landed.
+    use std::collections::BTreeSet;
+    let mut cascaded_keys: BTreeSet<(String, String, u64)> = BTreeSet::new();
+    for (sid, bytes) in &cascade_rows {
+        if *sid != session_id {
+            continue;
+        }
+        let Ok(payload) =
+            elai_orchestrator::decode_ssb_payload_bytes::<SsbPayload>(bytes.as_slice())
+        else {
+            continue;
+        };
+        if let SsbPayload::PerLevelAuditCascade(p) = payload {
+            cascaded_keys.insert((p.mode, p.tier, p.node_id));
+        }
+    }
+
+    let mut out: Vec<LevelAuditVerdictJson> = Vec::new();
+    for (sid, bytes) in &verdict_rows {
+        if *sid != session_id {
+            continue;
+        }
+        let Ok(payload) =
+            elai_orchestrator::decode_ssb_payload_bytes::<SsbPayload>(bytes.as_slice())
+        else {
+            continue;
+        };
+        let SsbPayload::PerLevelAuditVerdict(p) = payload else {
+            continue;
+        };
+        let cascade_to_parent = p.cascade_to_parent
+            || cascaded_keys.contains(&(p.mode.clone(), p.tier.clone(), p.node_id));
+        out.push(LevelAuditVerdictJson {
+            mode: p.mode,
+            tier_node_id: TierNodeIdJson {
+                tier: p.tier,
+                id: p.node_id,
+            },
+            findings: Vec::new(),
+            verdict: p.verdict,
+            respawned_once: p.respawned_once,
+            cascade_to_parent,
+        });
+    }
+    Ok(out)
+}
+
+/// Return the per-level audit verdicts for `task_id`. Live SSB read — no
+/// mock. Cold start (no rows) returns an empty Vec. `task_id` is mapped
+/// to the latest session_id when "active"/empty (DRIFT-6: per-task
+/// scoping waits on a TaskRunner-side reader exposing real task ids).
 #[tauri::command]
 pub async fn get_per_level_verdicts(
-    _task_id: String,
+    state: State<'_, AppState>,
+    task_id: String,
 ) -> Result<Vec<LevelAuditVerdictJson>, String> {
-    Ok(Vec::new())
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(Vec::new());
+    };
+    compute_per_level_verdicts(viewer.as_ref(), &task_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -6730,33 +8131,51 @@ const RUNTIME_SUPPORTED_ROLES: &[&str] = &[
 /// snake_case to match the rest of the dashboard DTO surface (e.g.
 /// LevelAuditVerdictJson above) and the serde rename_all="snake_case" on
 /// `RuntimeBackend`/`RuntimeHealth` in providers::runtime.
+///
+/// C-4 (DRIFT-9 fix): aligned with `RuntimeInfo` interface in
+/// dashboard-v2/src/lib/api/types.ts -> `health` is now the typed
+/// `RuntimeHealth` (`{status, reason?}`), `stub` is renamed `is_stub`,
+/// and `canonical_name` is emitted alongside `backend`. Frontend
+/// `RuntimePanel.svelte` consumers expect this shape.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct RuntimeInfo {
-    /// Canonical backend identifier (snake_case, e.g. "sidecar",
-    /// "anthropic_api"). Round-trips through `resolve_backend`.
+    /// Display label; equal to `canonical_name` today. Kept distinct so a
+    /// future "human label" override doesn't break wire compatibility.
     pub backend: String,
+    /// Canonical snake_case backend identifier (round-trips through
+    /// `resolve_backend`). Added in C-4 (DRIFT-9) to match the TS
+    /// `RuntimeBackendId` discriminator.
+    pub canonical_name: String,
     /// AgentRole canonical names (snake_case) currently routed to this
     /// backend. Empty when no role maps here.
     pub roles: Vec<String>,
-    /// One of "healthy" / "degraded" / "unavailable". Derived from the
-    /// `RuntimeHealth` tag.
-    pub health: String,
-    /// Reason string from `Degraded` / `Unavailable`. `None` for `Ready`.
-    pub health_reason: Option<String>,
+    /// Typed health snapshot (`{status, reason?}`); serialises via
+    /// `RuntimeHealth`'s `tag = "status"` rename_all = "snake_case".
+    pub health: elai_providers::runtime::RuntimeHealth,
     /// True when the backend is a stub adapter — `Unavailable` with a
     /// reason mentioning "not implemented" / "stub" (per B-37 DECISION-8).
-    pub stub: bool,
+    #[serde(rename = "is_stub")]
+    pub is_stub: bool,
     /// Health-probe latency in milliseconds (None if the snapshot path did
     /// not measure per-row latency).
     pub latency_ms: Option<u32>,
 }
 
 /// Live health-probe report returned by `test_runtime`.
+///
+/// C-4 (DRIFT-9 fix): aligned with `TestReport` interface in
+/// dashboard-v2/src/lib/api/types.ts -> emits `backend` (canonical
+/// snake_case id) and the typed `health: RuntimeHealth` alongside the
+/// existing `ok` / `latency_ms` / `error` triple.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TestReport {
+    /// Canonical backend identifier (`RuntimeBackendId` on the TS side).
+    pub backend: String,
     /// True iff the backend reports `RuntimeHealth::Ready` within the
     /// 5-second timeout. `Degraded` and `Unavailable` both yield false.
     pub ok: bool,
+    /// Typed health snapshot (`{status, reason?}`).
+    pub health: elai_providers::runtime::RuntimeHealth,
     /// Elapsed wall-clock milliseconds from probe start to outcome.
     pub latency_ms: u32,
     /// Failure reason. `None` on success. SecretString contents are
@@ -6804,9 +8223,10 @@ pub async fn list_runtimes(
     // measure total elapsed and report it on every row — health_snapshot
     // does not expose per-row timings and we want to avoid an additional
     // sequential probe loop (11 separate 5s timeouts).
-    let probe_start = std::time::Instant::now();
+    let probe_clock = OsClock;
+    let probe_start = probe_clock.now();
     let snapshot = state.runtime_orchestrator.health_snapshot().await;
-    let total_latency_ms = u32::try_from(probe_start.elapsed().as_millis()).ok();
+    let total_latency_ms = u32::try_from(probe_clock.elapsed_since(probe_start).as_millis()).ok();
     let by_backend: BTreeMap<RuntimeBackend, RuntimeHealth> = snapshot.into_iter().collect();
 
     // Iterate `RuntimeBackend::all()` so the rendered order is stable
@@ -6820,14 +8240,10 @@ pub async fn list_runtimes(
                 reason: "backend missing from snapshot".to_string(),
             });
 
-        let (health_label, health_reason, is_stub) = match &health {
-            RuntimeHealth::Ready => ("healthy".to_string(), None, false),
-            RuntimeHealth::Degraded { reason } => {
-                ("degraded".to_string(), Some(reason.clone()), false)
-            }
+        let is_stub = match &health {
+            RuntimeHealth::Ready | RuntimeHealth::Degraded { .. } => false,
             RuntimeHealth::Unavailable { reason } => {
-                let stub_marker = reason.contains("not implemented") || reason.contains("stub");
-                ("unavailable".to_string(), Some(reason.clone()), stub_marker)
+                reason.contains("not implemented") || reason.contains("stub")
             }
         };
 
@@ -6836,12 +8252,13 @@ pub async fn list_runtimes(
             .cloned()
             .unwrap_or_default();
 
+        let canonical = backend.canonical_name().to_string();
         out.push(RuntimeInfo {
-            backend: backend.canonical_name().to_string(),
+            backend: canonical.clone(),
+            canonical_name: canonical,
             roles,
-            health: health_label,
-            health_reason,
-            stub: is_stub,
+            health,
+            is_stub,
             latency_ms: total_latency_ms,
         });
     }
@@ -6865,26 +8282,34 @@ pub async fn test_runtime(backend: String) -> Result<TestReport, String> {
         create_runtime, resolve_backend, RuntimeFactoryConfig, RuntimeHealth,
     };
 
-    let probe_start = std::time::Instant::now();
+    let test_clock = OsClock;
+    let probe_start = test_clock.now();
     let resolved = match resolve_backend(&backend) {
         Ok(b) => b,
         Err(err) => {
+            let reason = redact_secret_substrings(&err.to_string());
             return Ok(TestReport {
+                backend: backend.clone(),
                 ok: false,
-                latency_ms: u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX),
-                error: Some(redact_secret_substrings(&err.to_string())),
+                health: RuntimeHealth::Unavailable { reason: reason.clone() },
+                latency_ms: u32::try_from(test_clock.elapsed_since(probe_start).as_millis()).unwrap_or(u32::MAX),
+                error: Some(reason),
             });
         }
     };
 
+    let canonical = resolved.canonical_name().to_string();
     let cfg = RuntimeFactoryConfig::for_backend(resolved);
     let adapter = match create_runtime(cfg) {
         Ok(a) => a,
         Err(err) => {
+            let reason = redact_secret_substrings(&err.to_string());
             return Ok(TestReport {
+                backend: canonical,
                 ok: false,
-                latency_ms: u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX),
-                error: Some(redact_secret_substrings(&err.to_string())),
+                health: RuntimeHealth::Unavailable { reason: reason.clone() },
+                latency_ms: u32::try_from(test_clock.elapsed_since(probe_start).as_millis()).unwrap_or(u32::MAX),
+                error: Some(reason),
             });
         }
     };
@@ -6898,17 +8323,17 @@ pub async fn test_runtime(backend: String) -> Result<TestReport, String> {
         reason: "health probe timeout (>5s)".to_string(),
     });
 
-    let latency_ms = u32::try_from(probe_start.elapsed().as_millis()).unwrap_or(u32::MAX);
-    let (ok, error) = match health {
+    let latency_ms = u32::try_from(test_clock.elapsed_since(probe_start).as_millis()).unwrap_or(u32::MAX);
+    let (ok, error) = match &health {
         RuntimeHealth::Ready => (true, None),
         RuntimeHealth::Degraded { reason } => {
-            (false, Some(redact_secret_substrings(&reason)))
+            (false, Some(redact_secret_substrings(reason)))
         }
         RuntimeHealth::Unavailable { reason } => {
-            (false, Some(redact_secret_substrings(&reason)))
+            (false, Some(redact_secret_substrings(reason)))
         }
     };
-    Ok(TestReport { ok, latency_ms, error })
+    Ok(TestReport { backend: canonical, ok, health, latency_ms, error })
 }
 
 /// Persist a new (`AgentRole` -> `RuntimeBackend`) mapping. Mutates the
@@ -7101,4 +8526,502 @@ fn redact_secret_substrings(input: &str) -> String {
         out.push(' ');
     }
     out.trim_end().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// C-4: ORCHESTRATION + CLOUD SPEND SURFACE
+// ---------------------------------------------------------------------------
+// Thin Tauri-command wrappers over SsbViewer methods already shipped by C-2/C-3
+// (phase_detail, baby_step_detail, phase_progress, recent_actions, file_changes,
+// get_action_detail, decomposition_tree), plus a greenfield projects.json
+// surface and the cloud_spend_summary aggregation. Every command returns a
+// {known: bool, ...} or empty-vec graceful-empty shape — never a panic — when
+// the SSB is fresh / the row does not exist yet.
+//
+// Wiring contract: see workflow/reasoning/C-4-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// C-4: phase metadata fetched on PlanWindow node click. Forwards to
+/// [`SsbViewer::phase_detail`] which scans `phase_complete` rows for a
+/// matching id. Returns `{known: false, phase_id}` when the phase is not
+/// present in the SSB (cold-start or never-completed phase).
+#[tauri::command]
+pub fn get_phase_detail(state: State<'_, AppState>, phase_id: String) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({"known": false, "phase_id": phase_id}));
+    };
+    match viewer.phase_detail(&phase_id) {
+        Ok(detail) => {
+            let mut v = serde_json::to_value(&detail).map_err(map_err)?;
+            if let Value::Object(ref mut map) = v {
+                map.insert("known".to_string(), Value::Bool(true));
+            }
+            Ok(v)
+        }
+        Err(elai_orchestrator::SsbViewerError::NotFound { kind: _, id }) => {
+            Ok(json!({"known": false, "phase_id": id}))
+        }
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+/// C-4: full BabyStep view on PlanWindow leaf click. The C-4 viewer body
+/// scans `baby_step_ready` rows (C-2) and partial-populates concept /
+/// phase / step names by walking the decomposition tree. Returns
+/// `{known: false, baby_step_id}` when the id is not present in the SSB.
+#[tauri::command]
+pub fn get_baby_step_detail(
+    state: State<'_, AppState>,
+    baby_step_id: String,
+) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({"known": false, "baby_step_id": baby_step_id}));
+    };
+    match viewer.baby_step_detail(&baby_step_id) {
+        Ok(detail) => {
+            let mut v = serde_json::to_value(&detail).map_err(map_err)?;
+            if let Value::Object(ref mut map) = v {
+                map.insert("known".to_string(), Value::Bool(true));
+            }
+            Ok(v)
+        }
+        Err(elai_orchestrator::SsbViewerError::NotFound { kind: _, id }) => {
+            Ok(json!({"known": false, "baby_step_id": id}))
+        }
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+/// C-4: per-phase progress aggregation over `phase_complete` rows. Empty
+/// Vec when no phase has completed yet.
+#[tauri::command]
+pub fn get_phase_progress(state: State<'_, AppState>) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.phase_progress().ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(map_err)
+}
+
+/// C-4: recent SSB rows as compact summaries. `limit` defaults to 50
+/// and is hard-capped at [`MAX_LIMIT`].
+#[tauri::command]
+pub fn get_recent_actions(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> CmdResult<Value> {
+    let lim = limit.unwrap_or(50) as usize;
+    let lim = lim.min(MAX_LIMIT).max(1);
+    let off = offset.unwrap_or(0) as usize;
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.recent_actions(lim, off).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(map_err)
+}
+
+/// C-4: every file touched in a session via `ssb_files JOIN ssb`. Empty
+/// Vec when the session has not written any file rows yet.
+#[tauri::command]
+pub fn get_file_changes(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CmdResult<Value> {
+    let rows = state
+        .viewer
+        .as_ref()
+        .and_then(|v| v.file_changes(&session_id).ok())
+        .unwrap_or_default();
+    serde_json::to_value(&rows).map_err(map_err)
+}
+
+/// C-4: full row detail (typed payload + touched-file list) for one
+/// SSB seq. Returns `{known: false, seq}` when no row matches.
+#[tauri::command]
+pub fn get_action_detail(state: State<'_, AppState>, seq: i64) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({"known": false, "seq": seq}));
+    };
+    match viewer.get_action_detail(seq) {
+        Ok(detail) => {
+            let mut v = serde_json::to_value(&detail).map_err(map_err)?;
+            if let Value::Object(ref mut map) = v {
+                map.insert("known".to_string(), Value::Bool(true));
+            }
+            Ok(v)
+        }
+        Err(elai_orchestrator::SsbViewerError::Validation(_)) => {
+            Ok(json!({"known": false, "seq": seq}))
+        }
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+/// C-4: per-node research history. `research_node_stage` SSB action type
+/// is a documented C-5+ deferral (no emitter shipped). Returns empty Vec
+/// today; the wire shape is stable so the frontend can poll without
+/// branching once the producer lands.
+#[tauri::command]
+pub fn get_research_node_history(
+    _state: State<'_, AppState>,
+    _session_id: String,
+    _node_id: String,
+) -> CmdResult<Value> {
+    // C-4 DRIFT-6: research_node_stage emitter not yet wired (deferred
+    // to C-5 per context-package-C4.md). Return empty Vec rather than
+    // an error so the frontend ResearchTree drawer renders normally.
+    Ok(Value::Array(Vec::new()))
+}
+
+// ---------------------------------------------------------------------------
+// C-7: REVIEW WINDOW DECISIONS (mutations)
+// ---------------------------------------------------------------------------
+// Each command writes one ChangeDecision SSB row (SCHEMA_VERSION 49) so the
+// dashboard ReviewWindow + downstream auditors see reviewer verdicts as
+// first-class SSB events. The live diff itself remains carried by FileWrite
+// rows (SsbActionType::FileWrite); these commands record only the verdict.
+//
+// `hunk_id` is `None` for file-level verdicts (full-file accept/decline) and
+// `Some(id)` for per-hunk verdicts. The id is opaque to the orchestrator;
+// the dashboard derives it from the FileWrite diff (typically the
+// `@@ -N,M +P,Q @@` header content).
+
+/// C-7: record a reviewer "accept" verdict on a file or hunk. Emits one
+/// ChangeDecision SSB row with `decision = "accepted"`. Returns
+/// `{ok: true, seq}` on success or an error string when the SSB writer is
+/// unavailable (no session db open).
+#[tauri::command]
+pub async fn accept_change(
+    state: State<'_, AppState>,
+    path: String,
+    hunk_id: Option<String>,
+) -> CmdResult<Value> {
+    emit_change_decision(&state, "accepted", path, hunk_id, None).await
+}
+
+/// C-7: record a reviewer "decline" verdict on a file or hunk. Emits one
+/// ChangeDecision SSB row with `decision = "declined"`. Returns
+/// `{ok: true, seq}` on success.
+#[tauri::command]
+pub async fn decline_change(
+    state: State<'_, AppState>,
+    path: String,
+    hunk_id: Option<String>,
+) -> CmdResult<Value> {
+    emit_change_decision(&state, "declined", path, hunk_id, None).await
+}
+
+/// C-7: record a reviewer "retry" verdict on a file or hunk. Emits one
+/// ChangeDecision SSB row with `decision = "retried"` plus the optional
+/// reviewer note. Returns `{ok: true, seq}` on success.
+#[tauri::command]
+pub async fn retry_audit(
+    state: State<'_, AppState>,
+    path: String,
+    hunk_id: Option<String>,
+    note: Option<String>,
+) -> CmdResult<Value> {
+    emit_change_decision(&state, "retried", path, hunk_id, note).await
+}
+
+/// Shared emitter for the three C-7 reviewer-verdict commands. Centralises
+/// writer-availability handling and payload construction so the three
+/// public Tauri commands above remain one-liners.
+async fn emit_change_decision(
+    state: &AppState,
+    decision: &str,
+    path: String,
+    hunk_id: Option<String>,
+    note: Option<String>,
+) -> CmdResult<Value> {
+    let writer = state
+        .writer
+        .as_ref()
+        .ok_or_else(|| "ssb writer unavailable; no session db open".to_owned())?;
+    let payload = SsbPayload::ChangeDecision(ChangeDecisionPayload {
+        decision: decision.to_owned(),
+        path: path.clone(),
+        hunk_id,
+        note,
+    });
+    let seq = writer
+        .write_payload("dashboard-v2", 0, payload, vec![path])
+        .await
+        .map_err(map_err)?;
+    Ok(json!({ "ok": true, "seq": seq }))
+}
+
+// ---------------------------------------------------------------------------
+// C-4: PROJECTS SURFACE (greenfield projects.json)
+// ---------------------------------------------------------------------------
+// Persistence path: <app_data_dir>/projects.json — per Tauri 2 convention
+// (decision-Q4). When the file is missing/empty we return an empty Vec so
+// the dashboard's "Open project" picker renders the empty state. Writes
+// use the atomic-temp-then-rename pattern from runtime_cmd.rs.
+
+/// Wire row in `projects.json`. Matches the dashboard's frontend
+/// expectation: `name` (display), `path` (resolved fs path), and
+/// `last_opened_ms` (epoch ms for sort ordering).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ProjectEntry {
+    pub name: String,
+    pub path: String,
+    pub last_opened_ms: i64,
+}
+
+/// Resolve the canonical `projects.json` path beneath the Tauri-managed
+/// app data directory. Falls back to `<project_root>/.elai_cc/projects.json`
+/// when the path resolver is unavailable (rare — generally only in
+/// non-Tauri contexts such as unit tests).
+fn projects_json_path(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    match app.path().app_data_dir() {
+        Ok(dir) => Ok(dir.join("projects.json")),
+        Err(_) => {
+            // Fallback path co-located with the active project (covers the
+            // bare-cwd case used by elai.bat).
+            let root = state.project_root_snapshot();
+            Ok(root.join(".elai_cc").join("projects.json"))
+        }
+    }
+}
+
+/// C-4: list every project recorded in `<app_data_dir>/projects.json`.
+/// Returns `{known: true, projects: []}` when the file is missing or
+/// empty — graceful-empty shape per orchestrator decision Q4.
+#[tauri::command]
+pub fn list_projects(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<Value> {
+    let path = projects_json_path(&app, &state)?;
+    if !path.exists() {
+        return Ok(json!({"known": true, "projects": []}));
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "list_projects: read failed");
+            return Ok(json!({"known": false, "projects": []}));
+        }
+    };
+    if bytes.is_empty() {
+        return Ok(json!({"known": true, "projects": []}));
+    }
+    let entries: Vec<ProjectEntry> = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "list_projects: parse failed");
+            return Ok(json!({"known": false, "projects": []}));
+        }
+    };
+    Ok(json!({"known": true, "projects": entries}))
+}
+
+/// C-4: create a new project directory and append it to `projects.json`.
+///
+/// Steps:
+///   1. Validate `name` (non-empty, no path separators, no `..`).
+///   2. `create_dir_all(parent_path/name)` — idempotent; existing dir OK.
+///   3. Write a minimal `elai_cc.toml` placeholder if not present.
+///   4. Atomic-rewrite `projects.json` with the new entry prepended.
+///
+/// Returns the created [`ProjectEntry`] on success.
+#[tauri::command]
+pub fn create_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    parent_path: String,
+) -> CmdResult<Value> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("project name is empty".to_string());
+    }
+    if trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains("..")
+    {
+        return Err(format!("invalid project name: {trimmed}"));
+    }
+    let parent = std::path::PathBuf::from(parent_path.trim());
+    if parent.as_os_str().is_empty() {
+        return Err("parent_path is empty".to_string());
+    }
+    let project_dir = parent.join(trimmed);
+    std::fs::create_dir_all(&project_dir)
+        .map_err(|e| format!("create_dir_all({}): {e}", project_dir.display()))?;
+
+    // Stub elai_cc.toml so the dashboard's "open" path can immediately
+    // canonicalise the new project (the runtime config writer expects
+    // a TOML file to exist).
+    let toml_path = project_dir.join("elai_cc.toml");
+    if !toml_path.exists() {
+        let stub = format!("# Auto-generated by create_project — {trimmed}\n");
+        std::fs::write(&toml_path, stub.as_bytes())
+            .map_err(|e| format!("write {}: {e}", toml_path.display()))?;
+    }
+
+    let resolved = std::fs::canonicalize(&project_dir).unwrap_or(project_dir);
+    #[cfg(windows)]
+    let resolved = {
+        let s = resolved.to_string_lossy().to_string();
+        match s.strip_prefix(r"\\?\") {
+            Some(rest) if !rest.starts_with("UNC\\") => std::path::PathBuf::from(rest),
+            _ => resolved,
+        }
+    };
+
+    let entry = ProjectEntry {
+        name: trimmed.to_string(),
+        path: resolved.to_string_lossy().into_owned(),
+        last_opened_ms: now_ms(&state),
+    };
+
+    // Atomic merge into projects.json.
+    let path = projects_json_path(&app, &state)?;
+    if let Some(parent_dir) = path.parent() {
+        std::fs::create_dir_all(parent_dir)
+            .map_err(|e| format!("create_dir_all({}): {e}", parent_dir.display()))?;
+    }
+    let mut entries: Vec<ProjectEntry> = if path.exists() {
+        match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => {
+                serde_json::from_slice(&bytes).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    // De-duplicate on path (case-sensitive — caller controls casing).
+    entries.retain(|e| e.path != entry.path);
+    entries.insert(0, entry.clone());
+
+    let serialized = serde_json::to_vec_pretty(&entries)
+        .map_err(|e| format!("serialize projects.json: {e}"))?;
+    let tmp = {
+        let mut p = path.clone();
+        let mut name_os = p
+            .file_name()
+            .map(|s| s.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("projects.json"));
+        name_os.push(".tmp");
+        p.set_file_name(name_os);
+        p
+    };
+    std::fs::write(&tmp, &serialized)
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+
+    serde_json::to_value(&entry).map_err(map_err)
+}
+
+// ---------------------------------------------------------------------------
+// C-29 (SCHEMA_VERSION 61) — INTENT-PAIRS (T-2) Tauri commands.
+// add_intent_pair: append a single IntentPair to the per-step set.
+// confirm_intent_pairs: flip confirmed=true + emit `IntentConfirmed` SSB row.
+// get_intent_pairs: read back the per-step set for the PlanWindow editor.
+// All three follow the existing `CmdResult<Value>` shape; arg names are
+// snake_case in both Rust and JS per the project convention (Tauri's
+// auto-camelCase translation is disabled — see context-package-C29 S10).
+// ---------------------------------------------------------------------------
+
+/// C-29: append an IntentPair to the per-BabyStep set held in AppState.
+/// Returns `{ pair_count: N }` on success. Validation surface:
+///   * Rejects empty `natural_language_intent` / `concrete_test_assertion`
+///     via `IntentPair::new` (DRIFT-C29-7).
+///   * Enforces char bounds 120/120/80.
+#[tauri::command]
+pub fn add_intent_pair(
+    state: State<'_, AppState>,
+    step_id: u64,
+    natural_language_intent: String,
+    concrete_test_assertion: String,
+) -> CmdResult<Value> {
+    let baby_step_ref = format!("bs-{step_id}");
+    let pair = elai_orchestrator::IntentPair::new(
+        natural_language_intent,
+        concrete_test_assertion,
+        baby_step_ref,
+    )
+    .map_err(map_err)?;
+    let count = {
+        let mut g = state.intent_pairs.lock().map_err(|_| "intent_pairs lock poisoned".to_owned())?;
+        let set = g.entry(step_id).or_default();
+        set.push(pair)
+    };
+    Ok(json!({ "pair_count": count, "step_id": step_id }))
+}
+
+/// C-29: confirm the per-BabyStep IntentPairSet. Returns Err when the
+/// stored count is below the active `min_pairs` threshold (default 3).
+/// On success emits one `SsbActionType::IntentConfirmed` row carrying
+/// `confirmed_by="user"` + the canonical `pair_count`. The `min_pairs`
+/// argument defaults to 3 when absent on the JS call so the editor can
+/// stay synchronous with the gate's default; future wiring will thread
+/// the actual `[testing.intent].min_pairs` value through.
+#[tauri::command]
+pub async fn confirm_intent_pairs(
+    state: State<'_, AppState>,
+    step_id: u64,
+    min_pairs: Option<usize>,
+) -> CmdResult<Value> {
+    let threshold = min_pairs.unwrap_or(3);
+    // Mutate the set under a brief lock. Drop the guard BEFORE the
+    // .await on the SSB write (lock is std::sync::Mutex — never held
+    // across .await per CLAUDE.md).
+    let pair_count = {
+        let mut g = state
+            .intent_pairs
+            .lock()
+            .map_err(|_| "intent_pairs lock poisoned".to_owned())?;
+        let set = g.entry(step_id).or_default();
+        set.confirm(threshold).map_err(map_err)?;
+        set.len()
+    };
+    // SSB emit (best-effort: when writer is absent we still return Ok so
+    // the dashboard reflects state).
+    let seq = if let Some(writer) = state.writer.as_ref() {
+        let pair_count_u8 =
+            u8::try_from(pair_count).map_err(|_| "pair_count overflows u8".to_owned())?;
+        let payload = SsbPayload::IntentConfirmed(elai_orchestrator::ssb::IntentConfirmedPayload {
+            step_id,
+            pair_count: pair_count_u8,
+            confirmed_by: "user".to_owned(),
+        });
+        Some(
+            writer
+                .write_payload("dashboard-v2", 0, payload, vec![])
+                .await
+                .map_err(map_err)?,
+        )
+    } else {
+        None
+    };
+    Ok(json!({
+        "ok": true,
+        "step_id": step_id,
+        "pair_count": pair_count,
+        "seq": seq,
+    }))
+}
+
+/// C-29: read back the per-BabyStep IntentPairSet for the PlanWindow
+/// editor. Returns the JSON-shape `{ pairs: [...], confirmed: bool,
+/// confirmed_at_ms: number|null }` — matching `IntentPairSet`'s serde
+/// derivation. Empty set when no entry exists for the requested step_id.
+#[tauri::command]
+pub fn get_intent_pairs(state: State<'_, AppState>, step_id: u64) -> CmdResult<Value> {
+    let set = state.get_baby_step_intent_pairs(step_id);
+    serde_json::to_value(&set).map_err(map_err)
 }

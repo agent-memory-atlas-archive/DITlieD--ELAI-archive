@@ -24,6 +24,7 @@ fn index_checkpoint_round_trip_and_action_type() {
         batches_total: Some(4),
         files_processed: 100,
         last_checkpoint_at: 1_700_000_000,
+        batch_duration_ms: Some(180),
     });
     let decoded = round_trip(payload.clone());
     assert_eq!(decoded, payload);

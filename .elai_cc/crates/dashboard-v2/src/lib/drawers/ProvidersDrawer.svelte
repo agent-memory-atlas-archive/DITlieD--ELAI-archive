@@ -280,7 +280,7 @@
 
   .section-heading {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     color: var(--text-secondary);
@@ -337,7 +337,7 @@
 
   .gpu-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -347,7 +347,7 @@
 
   .gpu-pct {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
     flex-shrink: 0;
   }
@@ -418,7 +418,7 @@
 
   .sidecar-perf {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -470,7 +470,7 @@
 
   .mcp-status-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.06em;
   }
@@ -536,14 +536,14 @@
 
   .colocate-desc {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     line-height: 1.4;
   }
 
   .empty-note {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
     padding: var(--s-2) 0;
   }

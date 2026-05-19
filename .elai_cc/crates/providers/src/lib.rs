@@ -1,8 +1,11 @@
 mod client;
+// C-26: constrained-decoding mode + per-role defaults. Re-exports below.
+pub mod decoding;
 mod error;
 pub mod layer_config;
 pub mod multiplexing;
 pub mod oauth;
+pub mod pricing;
 mod prompt_cache;
 mod providers;
 pub mod runtime;
@@ -27,6 +30,10 @@ pub use oauth::{
     is_valid_cloud_model_id, load_cloud_model_id, load_oauth_credentials,
     save_cloud_model_id, save_oauth_credentials, CLOUD_MODEL_ID_ALLOWLIST,
     DEFAULT_CLOUD_MODEL_ID,
+};
+pub use decoding::{
+    crane_adaptive_eligible, default_decoding_for, ConstrainedDecodingConfig, DecodingMode,
+    RoleDecoding, PER_ROLE_DECODING_DEFAULTS,
 };
 pub use error::ApiError;
 pub use prompt_cache::{
@@ -54,6 +61,13 @@ pub use vllm_client::{
     InferenceBackend, VllmConfig, VllmHealthStatus, VllmModelPool, VllmProvider,
 };
 pub use sse::{parse_frame, SseParser};
+// C-14 — pricing/cost helpers re-exported at crate root so external consumers
+// (elai_orchestrator umbrella + cli/* via that umbrella) keep their existing
+// import names. Originals lived in `elai_core::usage` pre-C-14.
+pub use pricing::{
+    estimate_cost_usd, estimate_cost_usd_with_pricing, format_usd, pricing_for_model,
+    summary_lines, summary_lines_for_model, ModelPricing, UsageCostEstimate,
+};
 pub use vram_tier::{detect_vram_tier, VramDetectionError};
 pub use types::{
     CacheControl, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,

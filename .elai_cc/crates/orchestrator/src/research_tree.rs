@@ -8,13 +8,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use elai_core::clock::{ClockProvider, LogicalInstant};
+use elai_core::clock::{ClockProvider, LogicalInstant, OsClock};
 
 use crate::grounding_client::{GroundingClient, GroundingError, ResearchLevel};
 use crate::ssb::{
@@ -1158,6 +1158,65 @@ impl ResearchTree {
         &self.multi_root_ids
     }
 
+    /// C-9 — Realise a [`crate::autonomous_gate::SplitTaskPlan`] against this
+    /// research tree. Returns the plan's sub-tasks with `task_id` rewritten
+    /// to use the plan's `parent_phase` as the namespace prefix so SSB
+    /// consumers see consistent ids regardless of which code path produced
+    /// them. The active research node is located by name match against
+    /// `plan.parent_phase`; if no match is found we still return the plan's
+    /// `sub_tasks` (with corrected ids) because the gate's caller may be
+    /// driving a non-tree split (e.g. a phase boundary that has no
+    /// ResearchTree node yet).
+    ///
+    /// Anti-stub (per WIRING_CONTRACT.stub_ban): this method MUST NOT return
+    /// an empty `Vec` when `plan.sub_tasks` is non-empty. The caller
+    /// (task_runner SplitTask dispatch) is responsible for emitting
+    /// [`crate::autonomous_gate::EscalationTrigger::SplitTaskFailed`] when
+    /// the returned vec is empty.
+    ///
+    /// Source: phase-4G.txt §4G.1 (SPLIT_TASK protocol).
+    pub fn split_step(
+        &self,
+        plan: &crate::autonomous_gate::SplitTaskPlan,
+    ) -> Vec<crate::autonomous_gate::SubTask> {
+        // Empty input — propagate empty so the caller emits SplitTaskFailed.
+        if plan.sub_tasks.is_empty() {
+            return Vec::new();
+        }
+        // Cap recursion: if current_depth has reached max_depth, refuse to
+        // recurse further so the gate emits SplitTaskFailed.
+        if plan.current_depth >= plan.max_depth {
+            return Vec::new();
+        }
+        // Locate the active node by name match against plan.parent_phase.
+        // The match is informational — if it succeeds we re-stamp sub-task
+        // ids to use the matched node's question as the namespace prefix.
+        // When no match is found we keep plan.parent_phase as the prefix.
+        let prefix = self
+            .state
+            .nodes
+            .values()
+            .find(|n| n.question == plan.parent_phase)
+            .map(|_n| plan.parent_phase.as_str())
+            .unwrap_or(plan.parent_phase.as_str());
+        // Re-stamp ids to the parent_phase prefix so the SSB row producer
+        // sees stable identifiers. Preserves scope/budget/depends_on.
+        plan.sub_tasks
+            .iter()
+            .enumerate()
+            .map(|(i, src)| crate::autonomous_gate::SubTask {
+                task_id: if src.task_id.starts_with(prefix) {
+                    src.task_id.clone()
+                } else {
+                    format!("{prefix}.sub{i}")
+                },
+                scope: src.scope.clone(),
+                context_budget: src.context_budget,
+                depends_on: src.depends_on.clone(),
+            })
+            .collect()
+    }
+
     /// Run the FlashResearch loop. Returns a report on completion.
     ///
     /// Deterministic tree processing:
@@ -1701,6 +1760,24 @@ pub struct BabyStepSpec {
     /// the source of truth for the splice boundary.
     #[serde(default)]
     pub edit_region: Option<crate::focus_tunnel::EditRegion>,
+    /// C-29 — Testing-Trust Tier T-2 (IntentPair formalization). Per-step
+    /// `IntentPairSet` populated by the dashboard IntentPairEditor or the
+    /// autonomous gate auto-confirm path. Default = empty unconfirmed set
+    /// so existing serialized `BabyStepSpec` JSON deserializes unchanged
+    /// (no schema bump on the JSON side — the SSB SCHEMA_VERSION still
+    /// bumps 60 -> 61). The PLANNING -> TESTING_FIRST evidence gate
+    /// (`IntentPairsGate` in `evidence.rs`) reads `intent_pairs.pairs.len()`
+    /// against `IntentConfig.min_pairs` (default 3, configurable via
+    /// `[testing.intent] min_pairs` in `elai_cc.toml`).
+    #[serde(default)]
+    pub intent_pairs: crate::intent_pair::IntentPairSet,
+    /// C-31 — Layer 1 FILE_PLAN block. Optional `FilePlan` carrying
+    /// per-file write intentions with LOC budgets so the orchestrator
+    /// can enforce size contracts before generation.
+    /// `#[serde(default)]` keeps every legacy serialized `BabyStepSpec`
+    /// deserialisable without a schema bump (SCHEMA_VERSION stays at 53).
+    #[serde(default)]
+    pub file_plan: Option<elai_core::file_plan::FilePlan>,
 }
 
 /// Track A.5: BabyStepGrounding derives Default so that BabyStepSpec.grounding
@@ -2065,10 +2142,13 @@ async fn ground_or_cached<C: GroundingClient>(
     level: ResearchLevel,
     ssb: Option<&Arc<Ssb>>,
 ) -> Result<ResearchReport, ResearchTreeError> {
-    let t0 = Instant::now();
+    // C-15: OsClock-backed timing. Cache-event SSB row carries microsecond
+    // latency for diagnostic dashboards; not a determinism-bearing field.
+    let cache_clock = OsClock;
+    let t0 = cache_clock.now();
 
     if let Some(cached) = cache.peek(cache_key) {
-        let elapsed_us = t0.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        let elapsed_us = cache_clock.elapsed_since(t0).as_micros().try_into().unwrap_or(u64::MAX);
         if let Some(writer) = ssb {
             let key_fingerprint = blake3::hash(cache_key.as_bytes())
                 .to_hex()
@@ -2097,7 +2177,7 @@ async fn ground_or_cached<C: GroundingClient>(
         .map_err(|source| ResearchTreeError::GroundingFailed { level, source })?;
     cache.put(cache_key, report.clone());
 
-    let elapsed_us = t0.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+    let elapsed_us = cache_clock.elapsed_since(t0).as_micros().try_into().unwrap_or(u64::MAX);
     if let Some(writer) = ssb {
         let key_fingerprint = blake3::hash(cache_key.as_bytes())
             .to_hex()
@@ -2240,6 +2320,8 @@ pub fn decompose_to_baby_steps(
             preferred_mode: None,
             target_file: None,
             edit_region: None,
+            intent_pairs: crate::intent_pair::IntentPairSet::default(),
+            file_plan: None,
         });
     } else {
         // Split: divide description into chunks that fit within MAX_BABY_STEP_TOKENS
@@ -2280,6 +2362,8 @@ pub fn decompose_to_baby_steps(
                 preferred_mode: None,
                 target_file: None,
                 edit_region: None,
+                intent_pairs: crate::intent_pair::IntentPairSet::default(),
+                file_plan: None,
             });
             next_id += 1;
         }

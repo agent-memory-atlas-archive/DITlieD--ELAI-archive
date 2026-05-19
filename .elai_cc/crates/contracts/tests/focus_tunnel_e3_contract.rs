@@ -237,6 +237,8 @@ fn build_step_context_from_create_keyword_marks_create_file() {
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
     let ctx = build_step_context_from(&spec);
     assert_eq!(ctx.action, StepAction::CreateFile);
@@ -254,6 +256,8 @@ fn build_step_context_from_edit_keyword_marks_edit_existing() {
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
     let ctx = build_step_context_from(&spec);
     assert_eq!(ctx.action, StepAction::EditExisting);
@@ -271,6 +275,8 @@ fn build_step_context_from_ambiguous_task_falls_through_safely() {
         preferred_mode: None,
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
     let ctx = build_step_context_from(&spec);
     // Conservative default: edit_existing with no region + count=1 -> STRUCTURED.
@@ -379,6 +385,8 @@ fn baby_step_spec_preferred_mode_round_trips_serde() {
         preferred_mode: Some(GenerationMode::Fim),
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize spec");
     let parsed: BabyStepSpec = serde_json::from_str(&json).expect("deserialize spec");
@@ -412,6 +420,8 @@ fn baby_step_spec_preferred_mode_round_trips_serde() {
         preferred_mode: Some(GenerationMode::Diff),
         target_file: None,
         edit_region: None,
+        intent_pairs: elai_orchestrator::IntentPairSet::default(),
+        file_plan: None,
     };
     let ctx = build_step_context_from(&spec_with_hint);
     assert_eq!(ctx.preferred_mode, Some(GenerationMode::Diff));

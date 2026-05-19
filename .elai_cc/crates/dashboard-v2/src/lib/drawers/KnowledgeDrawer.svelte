@@ -6,7 +6,7 @@
   // B-35 Phase C: Context Artifacts panel.
   import ArtifactsPanel from '../components/ArtifactsPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
-  import { get_impact_analysis, type ImpactAnalysis } from '../api/stub';
+  import { get_impact_analysis, submit_task, type ImpactAnalysis } from '../api/stub';
   // B-33 — Visualize button cross-link: open GraphWindow + push impact target.
   import { graph } from '../state/graph.svelte';
   import { workspace } from '../state/workspace.svelte';
@@ -16,6 +16,26 @@
     graph.set_mode('file');
     graph.request_impact(target);
     workspace.openTab('primary', 'graph');
+  }
+
+  // C-24 (Task 3) — /symbol_impact target input. Sends a task to the agent
+  // via submit_task("/symbol_impact target=<...>") so the agent's tool
+  // surface (which now includes symbol_impact per build_tool_catalog C-24
+  // expansion) can self-select the tool. The next poll of
+  // get_impact_analysis() picks up the new SymbolQuery row and populates
+  // the IMPACT ANALYSIS card body below.
+  let symbolImpactInput = $state<string>('');
+  let symbolImpactRunning = $state<boolean>(false);
+
+  async function runSymbolImpact() {
+    const target = symbolImpactInput.trim();
+    if (target.length === 0) return;
+    symbolImpactRunning = true;
+    try {
+      await submit_task(`/symbol_impact target=${target}`);
+    } finally {
+      symbolImpactRunning = false;
+    }
   }
 
   let impact = $state<ImpactAnalysis>({ target: '', total_files: 0, hop_bands: [], unresolved_pct: 0.0 });
@@ -120,7 +140,11 @@
     </div>
   </Card>
 
-  <!-- B-31 Phase 4 (Cycle B): indexing progress + cancel surface. -->
+  <!-- B-31 Phase 4 (Cycle B): indexing progress + cancel surface.
+       C-17 (DRIFT-J): IndexingProgressPanel also renders the resilience
+       sub-block now — auto_resume status, Watch-scope lock count, last
+       IndexResume banner, LockContested banner, and per-batch duration
+       parsed from the C-17 batch_duration_ms field. -->
   <IndexingProgressPanel />
 
   <!-- 2. LANGUAGES LOADED -->
@@ -289,10 +313,41 @@
   <!-- B-29 Phase 5: IMPACT ANALYSIS panel -->
   <Card variant="plain" padding={12}>
     <div class="section-label">IMPACT ANALYSIS</div>
+
+    <!-- C-24 (Task 3) — /symbol_impact runner. The agent's tool catalog
+         includes symbol_impact (C-24 build_tool_catalog expansion), so the
+         submit_task() helper drops the agent into a 1-iteration tool call
+         that emits a SymbolQuery SSB row. The 5s poll picks it up and
+         re-renders the card body below. -->
+    <div class="impact-runner">
+      <input
+        class="impact-runner__input mono"
+        type="text"
+        placeholder="symbol target (e.g. SsbActionType)"
+        bind:value={symbolImpactInput}
+        onkeydown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            void runSymbolImpact();
+          }
+        }}
+        data-testid="impact-target-input"
+        disabled={symbolImpactRunning}
+      />
+      <button
+        class="impact-runner__btn"
+        onclick={() => void runSymbolImpact()}
+        disabled={symbolImpactRunning || symbolImpactInput.trim().length === 0}
+        data-testid="impact-run"
+      >
+        {symbolImpactRunning ? 'running...' : 'Run /symbol_impact'}
+      </button>
+    </div>
+
     {#if !impactLoaded}
       <div class="muted-small">loading...</div>
     {:else if !impact.target}
-      <div class="muted-small">No symbol_query rows yet — run /symbol_impact via task agent or `elai symbol_graph build` first.</div>
+      <div class="muted-small">No symbol_query rows yet — type a symbol above + Run, or invoke the agent's `symbol_impact` tool elsewhere.</div>
     {:else}
       <div class="impact-summary">
         <div class="impact-row">
@@ -369,12 +424,51 @@
     color: var(--teal);
     border-radius: var(--r-sm);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     cursor: pointer;
   }
   .b33-visualize:hover {
     background: var(--teal-ghost);
     color: var(--teal-bright);
+  }
+  /* C-24 (Task 3) — /symbol_impact runner row. */
+  .impact-runner {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .impact-runner__input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-xs);
+    color: var(--text-primary);
+    font-size: 11px;
+    padding: 3px 8px;
+    outline: none;
+    transition: border-color var(--dur-fast) var(--ease-std);
+  }
+  .impact-runner__input:focus { border-color: var(--teal); }
+  .impact-runner__input::placeholder { color: var(--text-ghost); }
+  .impact-runner__input:disabled { opacity: 0.6; }
+  .impact-runner__btn {
+    padding: 3px 10px;
+    background: transparent;
+    border: 1px solid var(--teal-line);
+    color: var(--teal);
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .impact-runner__btn:hover:not(:disabled) {
+    background: var(--teal-ghost);
+    color: var(--teal-bright);
+  }
+  .impact-runner__btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .impact-value {
     color: var(--text-primary);
@@ -382,7 +476,7 @@
   }
   .impact-value.mono {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
   }
   .impact-hop-table {
     margin-top: 6px;
@@ -414,13 +508,13 @@
   }
   .muted-small {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 10px;
     font-style: italic;
   }
 
   .section-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -442,7 +536,7 @@
 
   .index-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     width: 56px;
     flex-shrink: 0;
@@ -450,7 +544,7 @@
 
   .index-metric {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
   }
 
@@ -509,13 +603,13 @@
 
   .trace-hits {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
   .trace-latency {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-ghost);
   }
 
@@ -629,13 +723,13 @@
 
   .lang-count {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
   }
 
   .lang-failed {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--fail);
   }
 

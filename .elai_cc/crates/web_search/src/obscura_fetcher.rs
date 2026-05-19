@@ -16,7 +16,7 @@
 // check, usable from CLI `elai doctor` (see crates/cli/src/doctor.rs).
 
 use std::path::PathBuf;
-use std::time::Instant;
+use elai_core::clock::{ClockProvider, OsClock};
 
 use tokio::io::AsyncReadExt;
 use tracing::{debug, warn};
@@ -134,7 +134,9 @@ impl ObscuraFetcher {
 
         debug!(url = %url, binary = %self.binary_path.display(), timeout_secs = self.timeout_secs, "obscura fetch start");
 
-        let start = Instant::now();
+        // C-15: OsClock-backed fetch timer. Observation-only diagnostic.
+        let fetch_clock = OsClock;
+        let start = fetch_clock.now();
         let html = run_obscura_streaming(
             &self.binary_path,
             url,
@@ -142,7 +144,7 @@ impl ObscuraFetcher {
         )
         .await?;
 
-        let fetch_time_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let fetch_time_ms = u64::try_from(fetch_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
         debug!(url = %url, fetch_time_ms, "obscura fetch complete");
 
         Ok(FetchedPage {

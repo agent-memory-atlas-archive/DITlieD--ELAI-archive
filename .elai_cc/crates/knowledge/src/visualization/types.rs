@@ -104,6 +104,25 @@ pub struct VizFile {
     pub dependents: usize,
     /// Number of symbols defined inside this file.
     pub symbol_count: usize,
+    /// C-24 (DRIFT-7 Path A): decomposition-level discriminator. Set by
+    /// the decomposition-view builder to one of `"concept"`, `"phase"`,
+    /// `"step"`, or `"baby_step"` so the GraphWindow cytoscape selectors
+    /// (`node[level = "Concept"]` etc.) can pick the right shape. File +
+    /// symbol modes leave this `None`. Additive `Option<String>` so
+    /// existing serde-derived fixtures still decode without an explicit
+    /// SCHEMA_VERSION bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    /// C-24 (DRIFT-7 Path A): execution-state discriminator for cytoscape
+    /// `.status-pending|running|passed|failed|blocked` classes. Sourced
+    /// from per-baby-step status (driven by the SSB `FileWrite` payload
+    /// path / spawn_loop dispatcher). Today the decomposition builder
+    /// leaves this `None` — the dashboard selectors EXIST so the moment
+    /// a per-node status source is wired, visual feedback ships without
+    /// further GraphWindow changes. See workflow/reasoning/C-24-decisions.md
+    /// DECISION-6 for the deferred status-source rationale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 /// One file-level edge in the dashboard graph.

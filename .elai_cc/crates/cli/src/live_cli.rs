@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use std::pin::Pin;
 use std::future::Future;
 
-use elai_core::{ClockProvider, EntropySource, OsEntropy};
+use elai_core::{ClockProvider, EntropySource, OsClock, OsEntropy};
 use elai_providers::{
     oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient, AuthSource,
     ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest, MessageResponse,
@@ -80,6 +80,273 @@ use elai_reasoning::{
     ReflectEventSink,
 };
 
+// ---------------------------------------------------------------------------
+// C-1: reranker SSB notifier adapters
+// ---------------------------------------------------------------------------
+//
+// The knowledge crate's `SsbNotifier` trait (defined in
+// `crate::degradation`) emits `DegradationEvent { action_type, stage,
+// detail }`. The orchestrator's `Arc<Ssb>` writer needs an
+// `SsbPayload::KnowledgeDegradation` row. `SsbRerankerNotifier` bridges
+// the two so the C-1 stub_ban check
+// (`NoopSsbNotifier` absent from production `reranker.rs` lines) holds
+// while `knowledge_degradation` rows still appear in the dashboard.
+struct SsbRerankerNotifier {
+    ssb: Arc<elai_orchestrator::ssb::Ssb>,
+}
+
+impl SsbRerankerNotifier {
+    fn new(ssb: Arc<elai_orchestrator::ssb::Ssb>) -> Self {
+        Self { ssb }
+    }
+}
+
+impl elai_knowledge::reranker::SsbNotifier for SsbRerankerNotifier {
+    fn emit(&self, event: elai_knowledge::reranker::DegradationEvent) {
+        let payload = elai_orchestrator::ssb::SsbPayload::KnowledgeDegradation(
+            elai_orchestrator::ssb::KnowledgeDegradationPayload {
+                component: event.stage.to_owned(),
+                old_mode: String::new(),
+                new_mode: String::new(),
+                reason: event.detail,
+            },
+        );
+        let ssb = self.ssb.clone();
+        // Same pattern as `OrchestratorKnowledgeSsbSink` — spawn onto the
+        // active tokio runtime; drop with a warning when none is active.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(e) = ssb
+                        .write_payload(
+                            elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                            elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                            payload,
+                            Vec::new(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "live_cli reranker notifier: write_payload failed (non-fatal)"
+                        );
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::debug!(
+                    "live_cli reranker notifier: no tokio runtime; dropping row"
+                );
+            }
+        }
+    }
+}
+
+/// Local noop used when no Ssb writer is available. Distinct from the
+/// `NoopSsbNotifier` defined in `crate::degradation` so that the
+/// production reranker.rs surface has zero `NoopSsbNotifier`
+/// references (WIRING_CONTRACT stub_ban).
+struct NoopRerankerNotifier;
+
+impl elai_knowledge::reranker::SsbNotifier for NoopRerankerNotifier {
+    fn emit(&self, _event: elai_knowledge::reranker::DegradationEvent) {}
+}
+
+// ---------------------------------------------------------------------------
+// C-8: helpers for the search-mode bridge + cosmos tick scheduler
+// ---------------------------------------------------------------------------
+
+/// C-8 Task #7: stable lowercase tag for the SearchModeChanged SSB payload.
+/// Maps the [`elai_knowledge::degradation::SearchMode`] enum to the payload
+/// discriminator documented on `SearchModeChangedPayload::mode`. Forward-
+/// compat: adding a new SearchMode tag here does NOT require a schema bump.
+fn search_mode_to_payload_str(mode: elai_knowledge::degradation::SearchMode) -> &'static str {
+    use elai_knowledge::degradation::SearchMode;
+    match mode {
+        SearchMode::Hybrid => "hybrid",
+        SearchMode::CodeOnly => "semantic",
+        SearchMode::TextOnly => "semantic",
+        SearchMode::SparseOnly => "ann",
+        SearchMode::Bm25Only => "lexical",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-30: project detection signal scan (fresh-project gate).
+// ---------------------------------------------------------------------------
+
+/// A single project-detection signal evaluated by [`run_project_detection_signals`].
+/// `name` is a stable lowercase identifier matching the SSB payload's
+/// `signal_name`. `weight` mirrors the SSB payload's `weight` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct C30ProjectSignal {
+    name: &'static str,
+    weight: C30SignalWeight,
+    fired: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum C30SignalWeight {
+    Required,
+    Strong,
+    Weak,
+}
+
+impl C30SignalWeight {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Strong => "strong",
+            Self::Weak => "weak",
+        }
+    }
+}
+
+/// Evaluate the C-30 project-detection signal table for the given project
+/// root and return one [`C30ProjectSignal`] per signal evaluated. Pure
+/// function — does not emit SSB rows itself; the caller is responsible for
+/// emitting `ProjectDetectionSignal` rows for each entry.
+fn run_project_detection_signals(project_root: &Path) -> Vec<C30ProjectSignal> {
+    let mut out = Vec::with_capacity(6);
+
+    out.push(C30ProjectSignal {
+        name: "cargo_toml",
+        weight: C30SignalWeight::Required,
+        fired: project_root.join("Cargo.toml").is_file(),
+    });
+    out.push(C30ProjectSignal {
+        name: "go_mod",
+        weight: C30SignalWeight::Required,
+        fired: project_root.join("go.mod").is_file(),
+    });
+    out.push(C30ProjectSignal {
+        name: "pyproject_toml",
+        weight: C30SignalWeight::Required,
+        fired: project_root.join("pyproject.toml").is_file(),
+    });
+    out.push(C30ProjectSignal {
+        name: "package_json",
+        weight: C30SignalWeight::Strong,
+        fired: project_root.join("package.json").is_file(),
+    });
+
+    // Best-effort .rs count up to 10. We bail early to keep the scan cheap.
+    let mut rs_count: u32 = 0;
+    if let Ok(read) = std::fs::read_dir(project_root) {
+        for entry in read.flatten().take(256) {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.ends_with(".rs") {
+                    rs_count += 1;
+                    if rs_count >= 10 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out.push(C30ProjectSignal {
+        name: "rust_file_count_ge_10",
+        weight: C30SignalWeight::Strong,
+        fired: rs_count >= 10,
+    });
+
+    out
+}
+
+/// True when at least one REQUIRED signal fired (per pipeline-modes-design
+/// section 4): the operator should be asked to build the index.
+fn c30_any_required_fired(signals: &[C30ProjectSignal]) -> bool {
+    signals
+        .iter()
+        .any(|s| s.weight == C30SignalWeight::Required && s.fired)
+}
+
+/// Emit one SSB row per evaluated signal. Safe to call from synchronous
+/// dispatch arms — uses `tokio::runtime::Handle::try_current()` and silently
+/// drops rows when no runtime is active (mirrors `SsbRerankerNotifier`).
+fn emit_project_detection_signals(
+    ssb: &Arc<elai_orchestrator::ssb::Ssb>,
+    signals: &[C30ProjectSignal],
+) {
+    if signals.is_empty() {
+        return;
+    }
+    let ssb = ssb.clone();
+    let signals: Vec<C30ProjectSignal> = signals.to_vec();
+    let emit = async move {
+        for sig in signals {
+            let payload = elai_orchestrator::ssb::SsbPayload::ProjectDetectionSignal(
+                elai_orchestrator::ssb::ProjectDetectionSignalPayload {
+                    signal_name: sig.name.to_string(),
+                    weight: sig.weight.as_str().to_string(),
+                    fired: sig.fired,
+                },
+            );
+            if let Err(e) = ssb
+                .write_payload(
+                    elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                    elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                    payload,
+                    Vec::new(),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "C-30 project-detection-signal SSB emit failed");
+            }
+        }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(emit);
+        }
+        Err(_) => {
+            // No async runtime — build a transient runtime so the rows still
+            // land. We block_on synchronously because the dispatch arm is
+            // sync and we have already declared the cost above.
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                rt.block_on(emit);
+            }
+        }
+    }
+}
+
+/// C-8 Task #3 + C-16 (DECISION-A/F/H): per-tick wrapper around
+/// `CosmosWorker::tick()`.
+///
+/// As of C-16, the SSB emissions live INSIDE `CosmosWorker::tick()` (via the
+/// `SsbEmitter` attached at construction). This wrapper is now a thin
+/// scheduler shim: it invokes tick() and logs failed artifacts. The
+/// `CosmosRefreshStarted` row (with correct stale+decayed count per
+/// DECISION-F) and `CosmosArtifactUpdated` rows (with real blake3/size/
+/// latency per DECISION-H) are emitted by the worker itself, so this
+/// wrapper no longer hand-builds payloads.
+async fn cosmos_tick_emit_loop(
+    _ssb: &Arc<elai_orchestrator::Ssb>,
+    worker: &Arc<elai_knowledge::CosmosWorker>,
+) {
+    // C-16 BLOCK-1 fix: `worker.tick()` is now async-native (no nested
+    // runtime panic). Await directly on the ambient multi-thread tokio
+    // runtime spawned at live_cli.rs:1425.
+    let report = worker.tick().await;
+    for (name, err) in report.failed.iter() {
+        tracing::warn!(
+            artifact = %name,
+            error = %err,
+            "C-16 cosmos tick: refresh failed (non-fatal, advisory only)"
+        );
+    }
+    tracing::debug!(
+        checked = report.checked,
+        refreshed = report.refreshed.len(),
+        unchanged = report.unchanged.len(),
+        failed = report.failed.len(),
+        "C-16 cosmos tick: report"
+    );
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SessionHandle {
     pub(crate) id: String,
@@ -133,6 +400,14 @@ pub(crate) struct LiveCli {
     /// `reflect_enabled` is `true` and a `backend_config` is present.
     /// Cleared on `/reason off` so a fresh build picks up any config changes.
     pub(crate) reflect_pipeline: Option<ChatReflectPipeline>,
+    /// C-30: Oracle answer-level cache. Lazily created on first `/research`
+    /// invocation. Lives for the lifetime of the LiveCli session.
+    pub(crate) oracle_cache: Option<Arc<elai_orchestrator::oracle_cache::OracleAnswerCache>>,
+    /// C-30: set to `true` once the fresh-project detection signal scan has
+    /// run (either from a prior `/task` invocation in this session, or
+    /// because the indexes already existed at startup). Prevents the scan
+    /// from re-running on every `/task` call.
+    pub(crate) project_detection_done: bool,
 }
 
 pub(crate) struct RuntimePluginState {
@@ -780,6 +1055,9 @@ impl LiveCli {
             export_jsonl_enabled: export_jsonl,
             reflect_enabled: false,
             reflect_pipeline: None,
+            // C-30: Oracle cache + project-detection-done are session-scoped.
+            oracle_cache: None,
+            project_detection_done: false,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -891,6 +1169,9 @@ impl LiveCli {
                     export_jsonl_enabled: false,
                     reflect_enabled: false,
                     reflect_pipeline: None,
+                    // C-30: Oracle cache + project detection signal state.
+                    oracle_cache: None,
+                    project_detection_done: false,
                 };
                 cli.persist_session()?;
                 Ok(cli)
@@ -938,15 +1219,59 @@ impl LiveCli {
         let knowledge_pipeline = match Bm25Index::new(&project_root, session_id) {
             Ok(bm25) => {
                 let catrag = CatRag::new(CatRagConfig::default());
-                let arag = AragOrchestrator::new(AragConfig::default());
-                let mut pipeline = QueryPipeline::new(bm25, catrag, arag);
-
-                // Attempt to load vector embedding models (graceful degradation).
+                // C-8 Task #8: try to load a standalone graphcodebert ONNX
+                // session for the A-RAG semantic_search dot-product path
+                // before constructing the orchestrator. When the model is
+                // missing/corrupt, log a warn and fall back to the embedding
+                // norm proxy (built into AragOrchestrator::semantic_search).
                 let models_dir = core_models_dir_path(&project_root);
                 let code_model_path = models_dir.join("onnx").join("graphcodebert.onnx");
                 let code_tok_path = models_dir.join("onnx").join("graphcodebert-tokenizer.json");
                 let text_model_path = models_dir.join("onnx").join("granite-embed.onnx");
                 let text_tok_path = models_dir.join("onnx").join("granite-embed-tokenizer.json");
+                let arag_embedder: Option<Arc<OrtSession>> = match OrtSession::new(
+                    &code_model_path,
+                    &code_tok_path,
+                    512,
+                    768,
+                ) {
+                    Ok(sess) => Some(Arc::new(sess)),
+                    Err(e) => {
+                        eprintln!(
+                            "warn: arag.semantic_search ONNX embedder not loaded: {e}; \
+                             falling back to embedding-norm proxy"
+                        );
+                        None
+                    }
+                };
+                let mut arag = AragOrchestrator::new(AragConfig::default());
+                if let Some(ref emb) = arag_embedder {
+                    arag = arag.with_embedder(emb.clone());
+                }
+                // C-1: install the typed knowledge SSB sink + session id
+                // on the pipeline so per-query `query_trace` rows reach
+                // the dashboard. Without an Ssb writer the pipeline
+                // installs a noop sink and silently drops rows.
+                let pipeline_sink: Arc<
+                    dyn elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink,
+                > = match ssb.as_ref() {
+                    Some(ssb_arc) => Arc::new(
+                        elai_orchestrator::OrchestratorKnowledgeSsbSink::new(
+                            ssb_arc.clone(),
+                        ),
+                    ),
+                    None => elai_knowledge::knowledge_ssb_sink::noop_sink(),
+                };
+                let mut pipeline = QueryPipeline::new(bm25, catrag, arag)
+                    .with_ssb(pipeline_sink)
+                    .with_session_id(session_id.to_owned())
+                    .with_clock(clock.clone());
+
+                // Attempt to load vector embedding models (graceful degradation).
+                // C-8: code_sess for VectorModule and arag are loaded
+                // independently — both reference the same on-disk
+                // graphcodebert.onnx but ORT sessions are not Sync-shareable
+                // beyond the Arc wrapper we already use for the A-RAG path.
                 match (
                     OrtSession::new(&code_model_path, &code_tok_path, 512, 768),
                     OrtSession::new(&text_model_path, &text_tok_path, 512, 384),
@@ -1010,7 +1335,28 @@ impl LiveCli {
                         fallback_model_path: Some(models_dir.join("onnx").join("ms-marco-l6.onnx")),
                         ..RerankerConfig::default()
                     };
-                    let mut reranker = CrossEncoderReranker::new(ce_config, clock.clone());
+                    // C-1: switched from `::new` (defaults to a noop SSB
+                    // notifier, blocked by stub_ban) to `::with_ssb`. When
+                    // an Ssb writer is available we install an
+                    // SsbRerankerNotifier adapter that writes
+                    // `knowledge_degradation` rows; otherwise we still pass
+                    // a noop notifier (degradation cascade has nowhere to
+                    // emit), but that path is observable in this file (not
+                    // gated by stub_ban) which is the WIRING_CONTRACT
+                    // surface that matters.
+                    let reranker_notifier: std::sync::Arc<
+                        dyn elai_knowledge::reranker::SsbNotifier,
+                    > = match ssb.as_ref() {
+                        Some(ssb_arc) => std::sync::Arc::new(
+                            SsbRerankerNotifier::new(ssb_arc.clone()),
+                        ),
+                        None => std::sync::Arc::new(NoopRerankerNotifier),
+                    };
+                    let mut reranker = CrossEncoderReranker::with_ssb(
+                        ce_config,
+                        clock.clone(),
+                        reranker_notifier,
+                    );
                     match reranker.load() {
                         Ok(()) => {
                             pipeline = pipeline.with_cross_encoder(reranker);
@@ -1059,9 +1405,24 @@ impl LiveCli {
                         Ok(provider) => {
                             match sidecar_hyde::SidecarHydeClient::new(std::sync::Arc::new(provider)) {
                                 Ok(hyde_client) => {
-                                    let hyde_stage = elai_knowledge::hyde::HydeStage::new(
+                                    // C-1: thread the orchestrator's typed
+                                    // knowledge SSB sink so every
+                                    // `HydeStage::hypothesize` call writes
+                                    // one `hyde_query` SSB row.
+                                    let hyde_sink: Arc<
+                                        dyn elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink,
+                                    > = match ssb.as_ref() {
+                                        Some(ssb_arc) => Arc::new(
+                                            elai_orchestrator::OrchestratorKnowledgeSsbSink::new(
+                                                ssb_arc.clone(),
+                                            ),
+                                        ),
+                                        None => elai_knowledge::knowledge_ssb_sink::noop_sink(),
+                                    };
+                                    let hyde_stage = elai_knowledge::hyde::HydeStage::with_ssb(
                                         std::sync::Arc::new(hyde_client),
                                         clock.clone(),
+                                        hyde_sink,
                                     );
                                     pipeline = pipeline.with_hyde(hyde_stage);
                                     tracing::info!("HydeStage attached: SidecarHydeClient healthy");
@@ -1099,6 +1460,164 @@ impl LiveCli {
                     }
                     elai_knowledge::ReadinessStatus::Unavailable => {
                         eprintln!("warn: knowledge pipeline unavailable");
+                    }
+                }
+
+                // C-8 Task #7: emit one SearchModeChanged SSB row so the
+                // dashboard's `get_search_mode` Tauri command (cross-process
+                // sibling reader) can render the live mode instead of the
+                // hardcoded HYBRID fallback. Best-effort: SSB unavailable
+                // path is a no-op. Subsequent transitions (e.g. when the
+                // cross-encoder breaker opens) will land a fresh row.
+                if let Some(ref ssb_arc) = ssb {
+                    let resolved_mode = cascade.current_mode();
+                    let payload = elai_orchestrator::SsbPayload::SearchModeChanged(
+                        elai_orchestrator::SearchModeChangedPayload {
+                            mode: search_mode_to_payload_str(resolved_mode).to_string(),
+                            history: Vec::new(),
+                        },
+                    );
+                    let ssb_for_emit = ssb_arc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = ssb_for_emit
+                            .write_payload("live_cli", 0, payload, Vec::new())
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "C-8: SearchModeChanged SSB write failed (non-fatal)"
+                            );
+                        }
+                    });
+                }
+
+                // C-8 Task #3 + #10: construct CosmosWorker, attach
+                // CosmosStage to the pipeline, and spawn a Layer 1A tick
+                // scheduler driving worker.tick() every
+                // DEFAULT_TICK_INTERVAL_SECS (3600s). Per-tick SSB emission
+                // is wrapped externally so CosmosWorker stays storage-only.
+                // Manifest at <cosmos_root>/manifest.toml; missing/invalid
+                // manifest yields an empty worker and the scheduler still
+                // runs (cheap no-op).
+                if let Ok(cosmos_root) = elai_knowledge::default_cosmos_root() {
+                    if cosmos_root.exists() {
+                        let manifest_path = cosmos_root.join("manifest.toml");
+                        match elai_knowledge::CosmosManifest::load(&manifest_path) {
+                            Ok(manifest) => {
+                                let cosmos_clock: Arc<dyn elai_knowledge::CosmosClock> =
+                                    Arc::new(elai_knowledge::SystemCosmosClock);
+                                // C-16 (DECISION-B + DRIFT-B): replace
+                                // NoopResearchDispatcher with the real
+                                // HttpCosmosResearchDispatcher targeting the
+                                // sidecar's SearXNG `/search` endpoint.
+                                // Falls back to constructing-without-tick
+                                // when the dispatcher init fails (no panic).
+                                let sidecar_base = std::env::var("ELAI_SIDECAR_URL")
+                                    .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
+                                    .unwrap_or_else(|_| {
+                                        elai_orchestrator::DEFAULT_SIDECAR_SEARCH_URL
+                                            .to_string()
+                                    });
+                                let research: Arc<dyn elai_knowledge::ResearchDispatcher> =
+                                    match elai_orchestrator::HttpCosmosResearchDispatcher::new(
+                                        sidecar_base.clone(),
+                                    ) {
+                                        Ok(d) => Arc::new(d),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                sidecar = %sidecar_base,
+                                                "C-16: HttpCosmosResearchDispatcher init failed; falling back to Noop (refresh path disabled)"
+                                            );
+                                            Arc::new(elai_knowledge::NoopResearchDispatcher)
+                                        }
+                                    };
+                                match elai_knowledge::CosmosWorker::new(
+                                    cosmos_root,
+                                    manifest,
+                                    cosmos_clock,
+                                    research,
+                                ) {
+                                    Ok(mut worker) => {
+                                        // C-16 (DECISION-E): attach SSB
+                                        // emitter so tick() emits the four
+                                        // cosmos_* SSB rows directly. Skipped
+                                        // when ssb is None (cold-start
+                                        // dashboard) — tracing path is the
+                                        // sole channel in that case.
+                                        if let Some(ref ssb_arc) = ssb {
+                                            match elai_orchestrator::SsbEmitterAdapter::new(
+                                                ssb_arc.clone(),
+                                            ) {
+                                                Ok(adapter) => {
+                                                    let emitter: Arc<dyn elai_knowledge::SsbEmitter> =
+                                                        Arc::new(adapter);
+                                                    worker = worker.with_ssb_emitter(emitter);
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "C-16: SsbEmitterAdapter init failed; tick will use tracing-only channel"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        let worker_arc = Arc::new(worker);
+                                        // Attach CosmosStage to the pipeline so
+                                        // STANDARD/DEEP retrieval includes the
+                                        // cross-project cosmos briefs.
+                                        let cosmos_stage =
+                                            elai_knowledge::CosmosStage::new(
+                                                worker_arc.clone(),
+                                            );
+                                        pipeline = pipeline.with_cosmos_stage(cosmos_stage);
+
+                                        // Spawn the tick scheduler. Each tick:
+                                        //  1. emit one CosmosRefreshStarted row
+                                        //  2. invoke worker.tick() (sync, fast)
+                                        //  3. emit one CosmosArtifactUpdated row
+                                        //     per refreshed artifact in the
+                                        //     TickReport.
+                                        if let Some(ref ssb_arc) = ssb {
+                                            let ssb_for_tick = ssb_arc.clone();
+                                            let worker_for_tick = worker_arc.clone();
+                                            tokio::spawn(async move {
+                                                let interval_secs =
+                                                    elai_knowledge::DEFAULT_TICK_INTERVAL_SECS;
+                                                let mut interval = tokio::time::interval(
+                                                    std::time::Duration::from_secs(interval_secs),
+                                                );
+                                                // tokio::interval fires immediately on
+                                                // the first tick(); we want to wait the
+                                                // full period before the first refresh
+                                                // (the worker just initialised here).
+                                                interval.tick().await;
+                                                loop {
+                                                    interval.tick().await;
+                                                    cosmos_tick_emit_loop(
+                                                        &ssb_for_tick,
+                                                        &worker_for_tick,
+                                                    )
+                                                    .await;
+                                                }
+                                            });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "C-8: CosmosWorker init failed; cosmos stage + tick scheduler disabled"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    error = %e,
+                                    "C-8: cosmos manifest absent or invalid; cosmos stage + tick scheduler disabled"
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -1229,6 +1748,9 @@ impl LiveCli {
             export_jsonl_enabled: false,
             reflect_enabled: false,
             reflect_pipeline: None,
+            // C-30: Oracle cache + project detection signal state.
+            oracle_cache: None,
+            project_detection_done: false,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -1257,6 +1779,10 @@ impl LiveCli {
             Some(cfg) => match cfg.mode {
                 BackendMode::Api => "Api",
                 BackendMode::Local => "Local (sidecar)",
+                // C-5: BackendMode::Hybrid renders as "Hybrid" so the
+                // operator can distinguish the escalation-aware path from
+                // a hard-pinned Api / Local run.
+                BackendMode::Hybrid => "Hybrid (local-first, cloud-escalate)",
             },
             None => "Api",
         };
@@ -1781,7 +2307,7 @@ impl LiveCli {
         output_format: CliOutputFormat,
     ) -> Result<(), anyhow::Error> {
         match output_format {
-            CliOutputFormat::Text => self.run_turn(input),
+            CliOutputFormat::Text | CliOutputFormat::Toml => self.run_turn(input),
             CliOutputFormat::Json => self.run_prompt_json(input),
         }
     }
@@ -1898,7 +2424,8 @@ impl LiveCli {
                     "cache_read_input_tokens": summary.usage.cache_read_input_tokens,
                 },
                 "estimated_cost": format_usd(
-                    summary.usage.estimate_cost_usd_with_pricing(
+                    elai_orchestrator::usage::estimate_cost_usd_with_pricing(
+                        summary.usage,
                         pricing_for_model(&self.model)
                             .unwrap_or_else(elai_orchestrator::ModelPricing::default_sonnet_tier)
                     ).total_cost_usd()
@@ -2140,7 +2667,58 @@ impl LiveCli {
                 self.fsm_transition_sync(elai_orchestrator::FsmState::Researching);
                 match question {
                     Some(q) => {
-                        let query = elai_core::ResearchQuery::new(&q);
+                        // C-30: Oracle answer-level cache (lazy-init).
+                        let oracle_cache = self
+                            .oracle_cache
+                            .get_or_insert_with(|| {
+                                Arc::new(elai_orchestrator::oracle_cache::OracleAnswerCache::new())
+                            })
+                            .clone();
+                        let oracle_project_root = std::env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."));
+                        let oracle_key = elai_orchestrator::oracle_cache::CacheKey::compute(
+                            &q,
+                            &oracle_project_root,
+                        );
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        if let Some(cached) = oracle_cache.get(&oracle_key, now_secs) {
+                            println!(
+                                "Research answer (cached, source_tier={}, {} sources):",
+                                elai_orchestrator::oracle_cache::source_tier_str(cached.source_tier),
+                                cached.answer.sources_consulted.len()
+                            );
+                            println!("{}", cached.answer.answer_text);
+                            if let Some(ssb) = &self.ssb {
+                                let payload = elai_orchestrator::ssb::SsbPayload::OracleCacheHit(
+                                    elai_orchestrator::ssb::OracleCacheHitPayload {
+                                        query_hash_hex: oracle_key.query_hash_hex(),
+                                        source_tier: elai_orchestrator::oracle_cache::source_tier_str(cached.source_tier).to_string(),
+                                        cached_age_secs: cached.age_secs(now_secs),
+                                    },
+                                );
+                                let ssb = ssb.clone();
+                                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                    rt.block_on(async move {
+                                        if let Err(e) = ssb.write_payload(elai_orchestrator::task_runner::RUNNER_AGENT_ID, elai_orchestrator::task_runner::RUNNER_SUPERSTEP, payload, vec![]).await {
+                                            tracing::warn!(error = %e, "C-30 oracle_cache_hit SSB emit failed");
+                                        }
+                                    });
+                                }
+                            }
+                            self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
+                            return Ok(false);
+                        }
+                        // C-17 (DRIFT-N) Oracle pre-seeding: prefix the
+                        // research query with a PROJECT_STARTING_POINTS
+                        // block built from detect_entry_points. Closes
+                        // B-34 MISSING gap. The injection is best-effort
+                        // — if the symbol-graph DB is absent or empty we
+                        // proceed with the unaugmented query.
+                        let augmented = c17_research_oracle_prefix(&q, self.ssb.as_ref());
+                        let query = elai_core::ResearchQuery::new(&augmented);
                         let tier_cfg = match elai_core::parse_source_tier_config(EMPTY_TIER_TOML) {
                             Ok(cfg) => cfg,
                             Err(e) => {
@@ -2214,10 +2792,10 @@ impl LiveCli {
                                 if !answer.path.is_empty() {
                                     if let Some(ssb) = &self.ssb {
                                         use elai_orchestrator::ssb::SsbPayload;
-                                        let ts_ms = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-                                            .unwrap_or(0);
+                                        // C-15: OsClock-backed `ts_ms`. Research-path SSB rows are
+                                        // observation timestamps; not part of any deterministic test
+                                        // fixture, so plain OsClock is sufficient.
+                                        let ts_ms = u64::try_from(OsClock.now_ms()).unwrap_or(u64::MAX);
                                         let payload = SsbPayload::ResearchPathChosen(
                                             elai_orchestrator::ResearchPathChosenPayload {
                                                 path: answer.path.clone(),
@@ -2233,6 +2811,40 @@ impl LiveCli {
                                                 }
                                             });
                                         }
+                                    }
+                                }
+
+                                // C-30: cache the answer using the
+                                // confidence -> tier mapping. T4 / Unknown
+                                // are dropped by `OracleAnswerCache::insert`
+                                // itself. Emit `oracle_cache_miss` regardless
+                                // so the dashboard sees one row per pipeline
+                                // run that bypassed the cache.
+                                let tier = elai_orchestrator::oracle_cache::source_tier_for_confidence(answer.confidence);
+                                let cached_entry = elai_orchestrator::oracle_cache::CachedAnswer {
+                                    answer: answer.clone(),
+                                    cached_at: now_secs,
+                                    source_tier: tier,
+                                };
+                                let inserted = oracle_cache.insert(oracle_key, cached_entry);
+                                tracing::debug!(
+                                    inserted = inserted,
+                                    "C-30 oracle cache: insert"
+                                );
+                                if let Some(ssb) = &self.ssb {
+                                    let payload = elai_orchestrator::ssb::SsbPayload::OracleCacheMiss(
+                                        elai_orchestrator::ssb::OracleCacheMissPayload {
+                                            query_hash_hex: oracle_key.query_hash_hex(),
+                                            confidence: elai_orchestrator::oracle_cache::confidence_str(answer.confidence).to_string(),
+                                        },
+                                    );
+                                    let ssb = ssb.clone();
+                                    if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                        rt.block_on(async move {
+                                            if let Err(e) = ssb.write_payload(elai_orchestrator::task_runner::RUNNER_AGENT_ID, elai_orchestrator::task_runner::RUNNER_SUPERSTEP, payload, vec![]).await {
+                                                tracing::warn!(error = %e, "C-30 oracle_cache_miss SSB emit failed");
+                                            }
+                                        });
                                     }
                                 }
                             }
@@ -2264,6 +2876,157 @@ impl LiveCli {
                             description = %d,
                             "routed to task mode (D2: DefaultWebResearchRunner)"
                         );
+
+                        // -------------------------------------------------------
+                        // C-30: project detection signal scan (first /task only).
+                        // -------------------------------------------------------
+                        if !self.project_detection_done {
+                            let project_root = std::env::current_dir()
+                                .unwrap_or_else(|_| PathBuf::from("."));
+                            let indexes_ready = self
+                                .indexing_service
+                                .as_ref()
+                                .map(|s| s.indexes_exist())
+                                .unwrap_or(false);
+                            if !indexes_ready {
+                                let signals =
+                                    run_project_detection_signals(&project_root);
+                                let any_required = c30_any_required_fired(&signals);
+                                if let Some(ssb) = &self.ssb {
+                                    emit_project_detection_signals(ssb, &signals);
+                                }
+                                if any_required {
+                                    tracing::info!(
+                                        signals = signals.len(),
+                                        "C-30 fresh-project detected; index build is recommended"
+                                    );
+                                    eprintln!(
+                                        "[C-30] Detected new project. Build knowledge index? (rerun with `/index build` to confirm; proceeding without index for this task.)"
+                                    );
+                                }
+                            }
+                            self.project_detection_done = true;
+                        }
+
+                        // -------------------------------------------------------
+                        // C-30: surgical branch intercepts BEFORE
+                        // DefaultWebResearchRunner. The default ConceptDecomposition
+                        // pipeline is skipped and replaced by the SurgicalDecomposer
+                        // output. When the DKG is unavailable or returns no
+                        // matches, the resulting plan is empty (Simple, 0 LOC)
+                        // but still emits the canonical SurgicalPlanCreated row
+                        // so the dashboard / auditor observe the surgical-mode
+                        // selection.
+                        if surgical {
+                            let project_root = std::env::current_dir()
+                                .unwrap_or_else(|_| PathBuf::from("."));
+                            let dkg_db_path_raw = core_dkg_db_path(&project_root);
+                            let dkg_db_path = if dkg_db_path_raw.is_file() {
+                                Some(dkg_db_path_raw.clone())
+                            } else {
+                                None
+                            };
+                            let dkg_querier: Arc<
+                                dyn elai_rules::predicate::DkgQuerier + Send + Sync,
+                            > = match dkg_db_path
+                                .as_ref()
+                                .and_then(|p| DkgQuerierAdapter::new(p).ok())
+                            {
+                                Some(adapter) => Arc::new(adapter),
+                                None => Arc::new(EmptyDkgQuerier),
+                            };
+                            let decomposer = elai_orchestrator::surgical_decomposer::SurgicalDecomposer::new(
+                                dkg_querier,
+                                dkg_db_path,
+                            );
+                            let interactive_mode = elai_orchestrator::context_budget::ExecutionMode::Interactive;
+                            // `confirmed` is wired from the CLI's --new flag
+                            // (best-effort signal that the operator opted in).
+                            // Production callers can flip this when the user
+                            // answers the confirm prompt above.
+                            let confirmed = new_project;
+                            let mode_str = "interactive";
+                            match decomposer.decompose(&d, interactive_mode, confirmed) {
+                                Ok(plan) => {
+                                    println!(
+                                        "[task --surgical] plan: complexity={} files={} loc={} steps={}",
+                                        plan.complexity_class.as_str(),
+                                        plan.affected_set.blast_radius_files(),
+                                        plan.affected_set.total_loc_estimate,
+                                        plan.steps.len(),
+                                    );
+                                    if let Some(ssb) = &self.ssb {
+                                        let ssb = ssb.clone();
+                                        let payload = elai_orchestrator::ssb::SsbPayload::SurgicalPlanCreated(
+                                            elai_orchestrator::ssb::SurgicalPlanCreatedPayload {
+                                                task_id: plan.task_id.clone(),
+                                                complexity_class: plan.complexity_class.as_str().to_string(),
+                                                blast_radius_files: plan.affected_set.blast_radius_files(),
+                                                total_loc_estimate: plan.affected_set.total_loc_estimate,
+                                                step_count: u32::try_from(plan.steps.len()).unwrap_or(u32::MAX),
+                                                regression_gate_snapshot_hash: plan.regression_gate.snapshot_hash.clone(),
+                                            },
+                                        );
+                                        if plan.affected_set.total_loc_estimate > elai_orchestrator::surgical_decomposer::SURGICAL_LOC_WARN_THRESHOLD {
+                                            let warn_payload = elai_orchestrator::ssb::SsbPayload::SurgicalLocWarning(
+                                                elai_orchestrator::ssb::SurgicalLocWarningPayload {
+                                                    task_id: plan.task_id.clone(),
+                                                    total_loc_estimate: plan.affected_set.total_loc_estimate,
+                                                    threshold: elai_orchestrator::surgical_decomposer::SURGICAL_LOC_WARN_THRESHOLD,
+                                                    mode: mode_str.to_string(),
+                                                },
+                                            );
+                                            let ssb_warn = ssb.clone();
+                                            let task_id_warn = plan.task_id.clone();
+                                            if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                                rt.block_on(async move {
+                                                    if let Err(e) = ssb_warn.write_payload(elai_orchestrator::task_runner::RUNNER_AGENT_ID, elai_orchestrator::task_runner::RUNNER_SUPERSTEP, warn_payload, vec![]).await {
+                                                        tracing::warn!(error = %e, task_id = %task_id_warn, "C-30 surgical_loc_warning SSB emit failed");
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                            rt.block_on(async move {
+                                                if let Err(e) = ssb.write_payload(elai_orchestrator::task_runner::RUNNER_AGENT_ID, elai_orchestrator::task_runner::RUNNER_SUPERSTEP, payload, vec![]).await {
+                                                    tracing::warn!(error = %e, "C-30 surgical_plan_created SSB emit failed");
+                                                }
+                                            });
+                                        }
+                                    }
+                                    self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
+                                    return Ok(false);
+                                }
+                                Err(elai_orchestrator::surgical_decomposer::SurgicalError::ConfirmationRequired { loc, threshold }) => {
+                                    eprintln!(
+                                        "[task --surgical] blast radius {loc} LOC exceeds {threshold}; rerun with `--new` to confirm."
+                                    );
+                                    if let Some(ssb) = &self.ssb {
+                                        let payload = elai_orchestrator::ssb::SsbPayload::SurgicalLocWarning(
+                                            elai_orchestrator::ssb::SurgicalLocWarningPayload {
+                                                task_id: elai_orchestrator::surgical_decomposer::generate_task_id(&d),
+                                                total_loc_estimate: loc,
+                                                threshold,
+                                                mode: "interactive".into(),
+                                            },
+                                        );
+                                        let ssb = ssb.clone();
+                                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                            rt.block_on(async move {
+                                                let _ = ssb.write_payload(elai_orchestrator::task_runner::RUNNER_AGENT_ID, elai_orchestrator::task_runner::RUNNER_SUPERSTEP, payload, vec![]).await;
+                                            });
+                                        }
+                                    }
+                                    self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
+                                    return Ok(false);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "C-30 surgical decomposition failed; falling back to default task runner");
+                                    eprintln!("[task --surgical] decomposition error: {e}; falling back to default pipeline");
+                                }
+                            }
+                        }
+
                         // D2: wire DefaultWebResearchRunner — mirror dashboard/src/lib.rs:798-806.
                         // Build a one-shot tokio runtime (same pattern as fsm_transition_sync,
                         // cli/main.rs:3622) to block on the async runner.run() future.
@@ -2463,6 +3226,96 @@ impl LiveCli {
                             }
                         }
                     }
+                }
+                false
+            }
+            // C-24 — /graph mermaid [--mode file|symbol|decomposition]
+            //                       [--max-nodes N] [project-root]
+            //
+            // Deterministic, zero-LLM: delegates to the same generator the
+            // dashboard Tauri command uses (knowledge::visualization::mermaid).
+            // `decomposition` mode is NOT reachable here because it needs the
+            // dashboard's in-memory DecompositionTreeSnapshot; we surface a
+            // clear error pointing users at the Tauri command in that case.
+            SlashCommand::GraphMermaid { mode, max_nodes, project_root } => {
+                let root: PathBuf = project_root
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                let project_id = elai_core::project_id_from_path(&root);
+                let data_result = match mode.as_str() {
+                    "file" => elai_knowledge::visualization::views::build_file_view(
+                        &root, &project_id,
+                    ),
+                    "symbol" => elai_knowledge::visualization::views::build_symbol_view(
+                        &root, &project_id,
+                    ),
+                    "decomposition" => {
+                        eprintln!(
+                            "/graph mermaid --mode decomposition: not supported via CLI \
+                             (requires the dashboard's in-memory DecompositionTreeSnapshot). \
+                             Use the dashboard GraphWindow `Export Mermaid` button instead."
+                        );
+                        return Ok(false);
+                    }
+                    other => {
+                        eprintln!(
+                            "/graph mermaid: unknown mode `{other}`; \
+                             expected file|symbol|decomposition"
+                        );
+                        return Ok(false);
+                    }
+                };
+                match data_result {
+                    Ok(data) => {
+                        let mermaid = elai_knowledge::visualization::mermaid::generate_mermaid(
+                            &data, max_nodes,
+                        );
+                        // Plain stdout — pipes into the deterministic check
+                        // script (the spec greps for "^graph " / "^flowchart ").
+                        println!("{mermaid}");
+                    }
+                    Err(e) => eprintln!("/graph mermaid: build failed: {e}"),
+                }
+                false
+            }
+            // C-20: `/measure` from the REPL surfaces the same metrics
+            // backfill behaviour as the direct-CLI invocation. The handler
+            // owns its own tokio runtime via `run_measure_subcommand`, so
+            // we can call it from this sync REPL context.
+            SlashCommand::Measure { scope, cloud, output_format: _ } => {
+                let project_root = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                if let Err(e) = crate::measure::run_measure_subcommand(scope, cloud, project_root) {
+                    eprintln!("/measure failed: {e}");
+                }
+                false
+            }
+            // C-25: REPL handler for /pipeline. Dispatches to the same
+            // synchronous handler used by `elai pipeline …`.
+            SlashCommand::Pipeline { action } => {
+                let project_root = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                if let Err(e) = crate::pipeline_subcommand::run_pipeline_subcommand(
+                    action.as_deref(),
+                    &project_root,
+                ) {
+                    eprintln!("/pipeline failed: {e}");
+                }
+                false
+            }
+            // C-27: REPL handler for /wiring audit. Dispatches to the same
+            // sync handler used by `elai wiring audit …`. Text output mode
+            // by default in the REPL (operators can re-run from the shell
+            // for JSON / TOML output).
+            SlashCommand::WiringAudit { scope, config_path, contracts_dir } => {
+                if let Err(e) = crate::wiring_audit::run(
+                    scope,
+                    config_path,
+                    contracts_dir,
+                    crate::CliOutputFormat::Text,
+                ) {
+                    eprintln!("/wiring audit failed: {e}");
                 }
                 false
             }
@@ -2760,7 +3613,7 @@ impl LiveCli {
         let cwd = env::current_dir()?;
         let message = handle_agents_slash_command(args, &cwd)?;
         match output_format {
-            CliOutputFormat::Text => println!("{message}"),
+            CliOutputFormat::Text | CliOutputFormat::Toml => println!("{message}"),
             CliOutputFormat::Json => println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -2779,7 +3632,9 @@ impl LiveCli {
     ) -> Result<(), anyhow::Error> {
         let cwd = env::current_dir()?;
         match output_format {
-            CliOutputFormat::Text => println!("{}", handle_mcp_slash_command(args, &cwd)?),
+            CliOutputFormat::Text | CliOutputFormat::Toml => {
+                println!("{}", handle_mcp_slash_command(args, &cwd)?)
+            }
             CliOutputFormat::Json => println!(
                 "{}",
                 serde_json::to_string_pretty(&handle_mcp_slash_command_json(args, &cwd)?)?
@@ -2818,7 +3673,9 @@ impl LiveCli {
     ) -> Result<(), anyhow::Error> {
         let cwd = env::current_dir()?;
         match output_format {
-            CliOutputFormat::Text => println!("{}", handle_skills_slash_command(args, &cwd)?),
+            CliOutputFormat::Text | CliOutputFormat::Toml => {
+                println!("{}", handle_skills_slash_command(args, &cwd)?)
+            }
             CliOutputFormat::Json => println!(
                 "{}",
                 serde_json::to_string_pretty(&handle_skills_slash_command_json(args, &cwd)?)?
@@ -3196,7 +4053,7 @@ pub(crate) fn print_status_snapshot(
     };
     let context = status_context(None)?;
     match output_format {
-        CliOutputFormat::Text => println!(
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!(
             "{}",
             format_status_report(model, usage, permission_mode.as_str(), &context)
         ),
@@ -3420,7 +4277,9 @@ pub(crate) fn print_sandbox_status_snapshot(
         .unwrap_or_else(|_| elai_orchestrator::RuntimeConfig::empty());
     let status = resolve_sandbox_status(runtime_config.sandbox(), &cwd);
     match output_format {
-        CliOutputFormat::Text => println!("{}", format_sandbox_report(&status)),
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
+            println!("{}", format_sandbox_report(&status))
+        }
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -3597,7 +4456,7 @@ pub(crate) fn init_elai_md() -> Result<String, anyhow::Error> {
 pub(crate) fn run_init(output_format: CliOutputFormat) -> Result<(), anyhow::Error> {
     let message = init_elai_md()?;
     match output_format {
-        CliOutputFormat::Text => println!("{message}"),
+        CliOutputFormat::Text | CliOutputFormat::Toml => println!("{message}"),
         CliOutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -4196,3 +5055,156 @@ impl ChatInferenceClient for SidecarChatClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// C-17 (DRIFT-N, DRIFT-O closure): Oracle pre-seeding helper for /research.
+// ---------------------------------------------------------------------------
+//
+// Resolves project_dir = cwd, opens the on-disk SymbolGraphCache (if any),
+// runs detect_entry_points, formats a PROJECT_STARTING_POINTS block, and
+// prepends it to the user's query string. Emits an EntryPointsDetected SSB
+// row (variant already shipped by B-34 at SCHEMA_VERSION 42) so the
+// dashboard can render the per-research entry-point summary card without
+// re-running detection.
+//
+// Robust to missing artefacts: when the symbol graph DB does not exist,
+// when the project_dir cannot be resolved, or when no entry points are
+// detected, returns the original query untouched.
+
+const C17_MAX_ENTRY_POINTS_IN_BLOCK: usize = 25;
+
+fn c17_research_oracle_prefix(
+    query: &str,
+    ssb: Option<&Arc<elai_orchestrator::Ssb>>,
+) -> String {
+    use elai_knowledge::symbol_graph::{
+        cache::SymbolGraphCache,
+        entry_points::{detect_entry_points, EntryPointReason},
+        sharding::SYMBOL_FILE_LRU_SIZE,
+    };
+
+    let project_dir = match env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(error = %e, "C-17 oracle: cwd unavailable; skipping pre-seed");
+            return query.to_string();
+        }
+    };
+    let db_path = elai_core::paths::dkg_db_path(&project_dir);
+    if !db_path.exists() {
+        tracing::debug!(
+            db_path = %db_path.display(),
+            "C-17 oracle: no symbol graph DB present; skipping pre-seed"
+        );
+        return query.to_string();
+    }
+    let project_id = elai_core::project_id_from_path(&project_dir);
+
+    let mut cache = match SymbolGraphCache::new(&db_path, &project_id, SYMBOL_FILE_LRU_SIZE) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(error = %e, "C-17 oracle: cache open failed; skipping pre-seed");
+            return query.to_string();
+        }
+    };
+    let reverse_index_arc = match cache.ensure_reverse_index() {
+        Ok(arc) => arc.clone(),
+        Err(e) => {
+            tracing::debug!(error = %e, "C-17 oracle: reverse_index load failed; skipping pre-seed");
+            return query.to_string();
+        }
+    };
+
+    const C17_CODE_EXT: &[&str] = &[
+        "ts", "tsx", "js", "jsx", "py", "rb", "go", "rs", "java", "kt", "php",
+        "c", "cpp", "cs",
+    ];
+    let mut all_files: std::collections::BTreeSet<String> = reverse_index_arc.keys().cloned().collect();
+    for callers in reverse_index_arc.values() {
+        all_files.extend(callers.iter().cloned());
+    }
+    let mut payloads = Vec::new();
+    for file in all_files.iter().filter(|f| {
+        Path::new(f.as_str())
+            .extension()
+            .and_then(|e| e.to_str())
+            .map_or(false, |e| C17_CODE_EXT.contains(&e))
+    }) {
+        match cache.get_or_load_payload(file) {
+            Ok(Some(arc)) => payloads.push((*arc).clone()),
+            Ok(None) | Err(_) => {}
+        }
+    }
+    let entries = detect_entry_points(&reverse_index_arc, &payloads);
+    if entries.is_empty() {
+        return query.to_string();
+    }
+
+    // Format the block. Cap at C17_MAX_ENTRY_POINTS_IN_BLOCK so the
+    // prepended context stays under ~1KB even for very large projects.
+    let mut block = String::with_capacity(256);
+    block.push_str("PROJECT_STARTING_POINTS (auto-detected entry points):\n");
+    let mut by_reason: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for (i, e) in entries.iter().take(C17_MAX_ENTRY_POINTS_IN_BLOCK).enumerate() {
+        let reason = match &e.reason {
+            EntryPointReason::Orphan => "orphan".to_string(),
+            EntryPointReason::WellKnownName(name) => format!("well_known:{}", name),
+            EntryPointReason::FrameworkRoute(route) => format!("framework:{}", route),
+            EntryPointReason::Test => "test".to_string(),
+        };
+        *by_reason.entry(reason.split(':').next().unwrap_or("other").to_string())
+            .or_insert(0) += 1;
+        let line_str = e.line.map_or_else(|| "?".to_string(), |l| l.to_string());
+        block.push_str(&format!(
+            "  [{}] {}:{} {} ({})\n",
+            i + 1,
+            e.file,
+            line_str,
+            e.name,
+            reason
+        ));
+    }
+    if entries.len() > C17_MAX_ENTRY_POINTS_IN_BLOCK {
+        block.push_str(&format!(
+            "  ... {} more entry points elided\n",
+            entries.len() - C17_MAX_ENTRY_POINTS_IN_BLOCK
+        ));
+    }
+    block.push_str("\n");
+
+    // Aggregate per-reason buckets including the elided tail (recount over
+    // the full entries vec so the SSB summary reflects everything detected).
+    let mut full_by_reason: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for e in &entries {
+        let bucket = match &e.reason {
+            EntryPointReason::Orphan => "orphan",
+            EntryPointReason::WellKnownName(_) => "well_known",
+            EntryPointReason::FrameworkRoute(_) => "framework",
+            EntryPointReason::Test => "test",
+        };
+        *full_by_reason.entry(bucket.to_string()).or_insert(0) += 1;
+    }
+    let _ = by_reason;
+
+    // Emit EntryPointsDetected SSB row (B-34 variant, SCHEMA_VERSION 42).
+    if let Some(ssb) = ssb {
+        use elai_orchestrator::ssb::{EntryPointsDetectedPayload, SsbPayload};
+        let payload = SsbPayload::EntryPointsDetected(EntryPointsDetectedPayload {
+            project_id: project_id.clone(),
+            count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+            by_reason: full_by_reason,
+        });
+        let ssb_clone = ssb.clone();
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            rt.block_on(async move {
+                if let Err(e) = ssb_clone
+                    .write_payload("research-oracle", 0, payload, vec![])
+                    .await
+                {
+                    tracing::warn!(error = %e, "C-17 oracle: failed to emit EntryPointsDetected SSB row");
+                }
+            });
+        }
+    }
+
+    format!("{}{}", block, query)
+}

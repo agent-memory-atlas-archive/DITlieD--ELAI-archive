@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use elai_knowledge::reranker::{CrossEncoderReranker, RerankerConfig};
 use elai_knowledge::arag::RetrievalResult;
+use elai_knowledge::degradation::{NoopSsbNotifier, SsbNotifier};
 use elai_core::ClockProvider;
 use elai_core::SeededClock;
 use ort::session::builder::GraphOptimizationLevel;
@@ -142,7 +143,8 @@ fn build_loaded_reranker(
     config.enable_deterministic_compute = true;
     config.skip_threshold = skip_threshold;
     let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
-    let mut reranker = CrossEncoderReranker::new(config, clock);
+    let ssb: Arc<dyn SsbNotifier> = Arc::new(NoopSsbNotifier);
+    let mut reranker = CrossEncoderReranker::with_ssb(config, clock, ssb);
     reranker.load().expect("model load should succeed");
     reranker
 }
@@ -516,7 +518,8 @@ fn optimization_sweep() {
     cold_reranker_config.tokenizer_path = tokenizer_path();
     cold_reranker_config.intra_op_threads = best_threads;
     let clock: Arc<dyn ClockProvider> = Arc::new(SeededClock::new());
-    let mut cold_reranker = CrossEncoderReranker::new(cold_reranker_config, clock);
+    let ssb: Arc<dyn SsbNotifier> = Arc::new(NoopSsbNotifier);
+    let mut cold_reranker = CrossEncoderReranker::with_ssb(cold_reranker_config, clock, ssb);
     cold_reranker.load().expect("cold start load should succeed");
     let cold_start_ms = cold_start.elapsed().as_secs_f64() * 1000.0;
 

@@ -66,7 +66,7 @@ pub fn system_probe_disabled_via_env() -> bool {
 /// want to pattern-match directly; `Serialize` / `Deserialize` are NOT
 /// derived on `GpuInfo` because `elai_core::VramTier` does not (yet) derive
 /// serde — adding derives there is a cross-crate change that CLAUDE.md
-/// requires user confirmation for. `SystemProbeReport` round-trips go via
+/// requires user confirmation for. `SystemProbeResult` round-trips go via
 /// `SystemProbePayload` instead (see crates/orchestrator/src/ssb.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuInfo {
@@ -77,6 +77,13 @@ pub struct GpuInfo {
     /// [`classify_vram_tier`].
     pub tier: VramTier,
     pub driver_version: Option<String>,
+    /// C-22: stable hardware UUID exposed by `nvidia-smi --query-gpu=uuid`.
+    /// Format is the canonical `GPU-<32-hex with 4 dashes>` per NVML.
+    /// `None` when the shell-out failed or the value did not match the
+    /// expected pattern (env-fallback / Unavailable paths). Read once per
+    /// probe; no separate shell-out — uuid is fetched in the same
+    /// query-gpu CSV row as the other GPU fields per C-22 decision (one-shell).
+    pub uuid: Option<String>,
 }
 
 /// How the probe produced its data.
@@ -109,7 +116,7 @@ impl DetectionMethod {
 /// non-serde `VramTier`. SSB emission goes through `SystemProbePayload`
 /// which holds a string tier label.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemProbeReport {
+pub struct SystemProbeResult {
     pub gpu: Option<GpuInfo>,
     pub ram_total_mb: u64,
     pub ram_free_mb: u64,
@@ -151,7 +158,7 @@ pub fn classify_vram_tier(total_mb: u32) -> VramTier {
 pub trait SystemProber: Send + Sync {
     fn probe<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = SystemProbeReport> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = SystemProbeResult> + Send + 'a>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +186,7 @@ pub struct DefaultSystemProber {
 }
 
 struct CachedReport {
-    report: SystemProbeReport,
+    report: SystemProbeResult,
     cached_at: elai_core::LogicalInstant,
 }
 
@@ -222,7 +229,7 @@ impl DefaultSystemProber {
 impl SystemProber for DefaultSystemProber {
     fn probe<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = SystemProbeReport> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SystemProbeResult> + Send + 'a>> {
         Box::pin(async move {
             // Fast-return on env kill switch — emit Unavailable so downstream
             // code always has a report and never has to special-case `Option`.
@@ -259,10 +266,11 @@ impl SystemProber for DefaultSystemProber {
                     vram_free_mb: 0,
                     tier: VramTier::Vram12Gb,
                     driver_version: None,
+                    uuid: None,
                 });
                 let (ram_total, ram_free) = ram_opt.unwrap_or((0, 0));
                 let (disk_total, disk_free) = disk_opt.unwrap_or((0, 0));
-                SystemProbeReport {
+                SystemProbeResult {
                     gpu: Some(gpu),
                     ram_total_mb: ram_total,
                     ram_free_mb: ram_free,
@@ -297,10 +305,12 @@ impl SystemProber for DefaultSystemProber {
 
 async fn probe_gpu_shell_out() -> Option<GpuInfo> {
     // First GPU only per batch-3a spec. `--format=csv,noheader,nounits`
-    // yields lines like "NVIDIA GeForce RTX 3060, 12288, 11392, 552.22".
+    // yields lines like "NVIDIA GeForce RTX 3060, 12288, 11392, 552.22, GPU-xxxx".
+    // C-22: uuid added as the 5th column (single shell-out per C-22 decision —
+    // avoids the doubled p50 latency of a second `-q -d UUID` invocation).
     let fut = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,memory.total,memory.free,driver_version",
+            "--query-gpu=name,memory.total,memory.free,driver_version,uuid",
             "--format=csv,noheader,nounits",
         ])
         .output();
@@ -321,6 +331,10 @@ async fn probe_gpu_shell_out() -> Option<GpuInfo> {
     let vram_total_mb: u32 = fields[1].parse().ok()?;
     let vram_free_mb: u32 = fields[2].parse().ok()?;
     let driver_version = fields.get(3).map(|s| s.to_string());
+    // uuid: validate format `GPU-` + 32 hex with 4 dashes. Anything else
+    // (e.g. nvidia-smi returned `[Not Supported]` on an older driver)
+    // becomes None — never propagate a malformed UUID to consumers.
+    let uuid = fields.get(4).and_then(|raw| parse_gpu_uuid(raw));
     let tier = classify_vram_tier(vram_total_mb);
     Some(GpuInfo {
         name,
@@ -328,7 +342,32 @@ async fn probe_gpu_shell_out() -> Option<GpuInfo> {
         vram_free_mb,
         tier,
         driver_version,
+        uuid,
     })
+}
+
+/// C-22: stdlib-only parser for an NVML UUID line. Expected shape:
+///   `GPU-<8 hex>-<4 hex>-<4 hex>-<4 hex>-<12 hex>` (36 chars + `GPU-`).
+/// Returns the canonical string when the input matches; `None` otherwise.
+/// No regex crate dependency (CLAUDE.md no-new-deps).
+fn parse_gpu_uuid(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    let rest = s.strip_prefix("GPU-")?;
+    // Expect 32 hex chars + 4 dashes = 36 chars; segment lengths 8-4-4-4-12.
+    let segs: Vec<&str> = rest.split('-').collect();
+    if segs.len() != 5 {
+        return None;
+    }
+    let expected_lens = [8usize, 4, 4, 4, 12];
+    for (seg, &expected) in segs.iter().zip(expected_lens.iter()) {
+        if seg.len() != expected {
+            return None;
+        }
+        if !seg.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    Some(s.to_owned())
 }
 
 #[cfg(target_os = "windows")]
@@ -469,7 +508,7 @@ fn read_env_gb(name: &str) -> Option<u64> {
 fn build_env_fallback_report(
     probed_at_ms: i64,
     shell_gpu: Option<GpuInfo>,
-) -> Option<SystemProbeReport> {
+) -> Option<SystemProbeResult> {
     let vram_total_gb = read_env_gb(ELAI_VRAM_GB_ENV);
     let vram_free_gb = read_env_gb(ELAI_VRAM_FREE_GB_ENV);
     let ram_free_gb = read_env_gb(ELAI_FREE_RAM_GB_ENV);
@@ -495,13 +534,14 @@ fn build_env_fallback_report(
             vram_free_mb: free_mb,
             tier: classify_vram_tier(total_mb),
             driver_version: None,
+            uuid: None,
         })
     });
 
     let ram_free_mb = ram_free_gb.map(|g| g * 1024).unwrap_or(0);
     let disk_free_mb = disk_free_gb.map(|g| g * 1024).unwrap_or(0);
 
-    Some(SystemProbeReport {
+    Some(SystemProbeResult {
         gpu,
         ram_total_mb: ram_free_mb,
         ram_free_mb,
@@ -512,14 +552,15 @@ fn build_env_fallback_report(
     })
 }
 
-fn build_unavailable_report(probed_at_ms: i64) -> SystemProbeReport {
-    SystemProbeReport {
+fn build_unavailable_report(probed_at_ms: i64) -> SystemProbeResult {
+    SystemProbeResult {
         gpu: Some(GpuInfo {
             name: "unavailable".to_owned(),
             vram_total_mb: DEFAULT_VRAM_TOTAL_MB,
             vram_free_mb: 0,
             tier: VramTier::Vram12Gb,
             driver_version: None,
+            uuid: None,
         }),
         ram_total_mb: 0,
         ram_free_mb: 0,

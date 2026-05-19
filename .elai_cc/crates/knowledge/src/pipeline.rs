@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use elai_core::{ClockProvider, OsClock};
 
 use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
 use crate::hyde::HydeStage;
+use crate::knowledge_ssb_sink::{noop_sink, KnowledgeSsbSink, QueryTraceEvent};
 use crate::query_expansion::{self, ExpansionStrategy};
 use crate::QueryTier;
 
@@ -10,12 +14,14 @@ use crate::arag::{AragOrchestrator, RetrievalResult};
 use crate::artifacts::ArtifactStage;
 use crate::bm25::Bm25Index;
 use crate::catrag::CatRag;
+use crate::cosmos_stage::CosmosStage;
 use crate::degradation::SearchMode;
 use crate::dkg::DkgEngine;
 use crate::pagerank::{compute_repo_map, DkgSnapshot, PageRankConfig};
 use crate::query_trace::{QueryTrace, StageTrace};
 use crate::query_validator::QueryValidator;
 use crate::reranker::CrossEncoderReranker;
+use crate::vector::cache::VectorCache;
 use crate::vector::VectorModule;
 use crate::vector::indexer::VectorIndexer;
 use crate::ReadinessStatus;
@@ -23,15 +29,22 @@ use crate::ReadinessStatus;
 #[cfg(feature = "splade")]
 use crate::splade::SpladeExpander;
 
+/// C-1: default session id surfaced on `vector_cache_hit_rate` SSB rows
+/// when the orchestrator did not call [`QueryPipeline::with_session_id`].
+/// Named constant per codeRules baseline (no magic strings in code).
+const DEFAULT_SESSION_ID: &str = "unknown";
+
 // ---------------------------------------------------------------------------
 // PipelineStage
 // ---------------------------------------------------------------------------
 
 /// Result of a single stage in the retrieval pipeline.
 ///
-/// Maps to knowledge.txt Section 12 StageTrace. `latency_ms` is always 0 here;
-/// callers measure wall time externally (entropy quarantine: raw Instant confined
-/// to core/src/clock.rs).
+/// Maps to knowledge.txt Section 12 StageTrace. `latency_ms` is measured
+/// per-stage via the injected `ClockProvider` (C-8 Task #9). The entropy
+/// quarantine is preserved — the pipeline never touches `std::time::Instant`
+/// directly; all clock reads go through `core::clock::ClockProvider`. In
+/// tests a `SeededClock` makes per-stage latencies fully deterministic.
 #[derive(Debug, Clone)]
 pub struct PipelineStage {
     pub stage: String,
@@ -61,6 +74,11 @@ pub struct QueryPipeline {
     /// Optional context-artifact search stage (B-35 Phase B, Task 8).
     /// Runs after catrag for STANDARD and DEEP tiers; skipped for FAST.
     pub artifact_stage: Option<ArtifactStage>,
+    /// Optional cosmos artifact stage (C-8 Task #10). Inserted between the
+    /// artifact stage and the A-RAG stage for STANDARD + DEEP tiers; FAST
+    /// queries skip it. Pulls fresh cross-project cosmos briefs that match
+    /// the query via the name-router policy in `cosmos_stage.rs`.
+    pub cosmos_stage: Option<CosmosStage>,
     #[cfg(feature = "splade")]
     pub splade: Option<SpladeExpander>,
     /// Current degradation cascade mode. Updated at startup by the cascade
@@ -68,6 +86,28 @@ pub struct QueryPipeline {
     /// Used as the diagnostic label in QueryTrace so per-query traces reflect
     /// the actual mode rather than the default Hybrid sentinel.
     pub search_mode: SearchMode,
+    /// C-1: typed SSB sink for `query_trace` beacons. One row emitted per
+    /// successful `query_with_tier` call. `noop_sink()` by default; the
+    /// production wiring site in `cli::live_cli` calls
+    /// [`QueryPipeline::with_ssb`] to install the orchestrator adapter.
+    ssb_sink: Arc<dyn KnowledgeSsbSink>,
+    /// C-1: optional shared `VectorCache` whose hits/misses counters are
+    /// flushed via [`VectorCache::flush_hit_rate_ssb`] after every
+    /// `query_with_tier` returns. None by default; the orchestrator
+    /// installs this in `cli::live_cli` so a `vector_cache_hit_rate` SSB
+    /// row is emitted per query (skipped automatically when zero
+    /// lookups happened since last flush).
+    vector_cache: Option<Arc<VectorCache>>,
+    /// C-1: session id used as the `session_id` field on every emitted
+    /// `vector_cache_hit_rate` SSB row. Defaults to `"unknown"` until
+    /// the orchestrator sets it via [`QueryPipeline::with_session_id`].
+    session_id: String,
+    /// C-8 Task #9: shared `ClockProvider` used to measure per-stage
+    /// latencies. Defaults to a process-local `OsClock`; the orchestrator
+    /// can swap a deterministic `SeededClock` in via
+    /// [`QueryPipeline::with_clock`]. The entropy quarantine is preserved
+    /// — no `std::time::Instant` reads occur in this module.
+    clock: Arc<dyn ClockProvider>,
 }
 
 impl QueryPipeline {
@@ -81,6 +121,7 @@ impl QueryPipeline {
             freshness_db: None,
             hyde_stage: None,
             artifact_stage: None,
+            cosmos_stage: None,
             #[cfg(feature = "splade")]
             splade: None,
             // Default to Hybrid until the degradation cascade has run its
@@ -88,7 +129,34 @@ impl QueryPipeline {
             // cascade can update this field before each query via
             // `pipeline.search_mode = cascade.evaluate(...)`.
             search_mode: SearchMode::Hybrid,
+            ssb_sink: noop_sink(),
+            vector_cache: None,
+            session_id: DEFAULT_SESSION_ID.to_owned(),
+            clock: Arc::new(OsClock),
         }
+    }
+
+    /// C-1: builder-style installer for the knowledge SSB sink. Production
+    /// wiring at `cli::live_cli::build_local_knowledge_stack` invokes this
+    /// with `Arc::new(OrchestratorKnowledgeSsbSink::new(ssb_arc))` so
+    /// per-query SSB beacons reach the dashboard.
+    pub fn with_ssb(mut self, sink: Arc<dyn KnowledgeSsbSink>) -> Self {
+        self.ssb_sink = sink;
+        self
+    }
+
+    /// C-1: builder-style installer for the shared `VectorCache` whose
+    /// hit/miss counters are flushed after every query.
+    pub fn with_vector_cache(mut self, cache: Arc<VectorCache>) -> Self {
+        self.vector_cache = Some(cache);
+        self
+    }
+
+    /// C-1: install the session id surfaced on every
+    /// `vector_cache_hit_rate` SSB row.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = session_id.into();
+        self
     }
 
     /// Set the current degradation cascade mode. Call this after each cascade
@@ -134,6 +202,25 @@ impl QueryPipeline {
     /// FAST tier queries skip this stage entirely.
     pub fn with_artifact_stage(mut self, stage: ArtifactStage) -> Self {
         self.artifact_stage = Some(stage);
+        self
+    }
+
+    /// Attach a cosmos artifact retrieval stage (C-8 Task #10).
+    ///
+    /// When set, the stage runs after the artifact stage and before the
+    /// A-RAG stage for STANDARD and DEEP tiers (FAST queries skip it). The
+    /// stage pulls cross-project cosmos briefs whose name or research_query
+    /// shares a token with the query.
+    pub fn with_cosmos_stage(mut self, stage: CosmosStage) -> Self {
+        self.cosmos_stage = Some(stage);
+        self
+    }
+
+    /// C-8 Task #9: install a shared `ClockProvider` used for per-stage
+    /// latency measurement. Production callers pass `Arc::new(OsClock)`;
+    /// tests pass an `Arc<SeededClock>` for deterministic latencies.
+    pub fn with_clock(mut self, clock: Arc<dyn ClockProvider>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -184,7 +271,13 @@ impl QueryPipeline {
 
         let mut stages = Vec::with_capacity(10);
 
+        // C-8 Task #9: per-stage latency measurement via injected ClockProvider.
+        // Each stage marks `start = self.clock.now()` before work and computes
+        // `self.clock.elapsed_since(start).as_millis() as u64` at push time. No
+        // raw `std::time::Instant` reads — the entropy quarantine stays clean.
+
         // Phase 3K.2: template-based multi-query expansion (DEEP only).
+        let qx_start = self.clock.now();
         let expansion_texts: Vec<String> = if use_expansion {
             let expansions = query_expansion::expand_query(query);
             let expansion_count = expansions.len();
@@ -206,7 +299,7 @@ impl QueryPipeline {
                         tool_used: "query_expansion".to_string(),
                     })
                     .collect(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(qx_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
@@ -217,7 +310,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "query_expansion".to_string(),
                 results: Vec::new(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(qx_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
@@ -225,6 +318,7 @@ impl QueryPipeline {
         };
 
         // Phase 3K.3: HyDE (DEEP only).
+        let hyde_start = self.clock.now();
         let hyde_hypothesis = if use_hyde {
             let (hyp, breaker_state, error) = match self.hyde_stage {
                 Some(ref hyde) => {
@@ -255,7 +349,7 @@ impl QueryPipeline {
                         tool_used: "hyde".to_string(),
                     }])
                     .unwrap_or_default(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(hyde_start).as_millis() as u64,
                 circuit_breaker_state: breaker_state,
                 error,
             });
@@ -264,7 +358,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "hyde".to_string(),
                 results: Vec::new(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(hyde_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
@@ -272,6 +366,7 @@ impl QueryPipeline {
         };
 
         // Stage 0: BM25 — always runs (all tiers).
+        let bm25_start = self.clock.now();
         let mut bm25_seen: HashSet<String> = HashSet::new();
         let mut bm25_results: Vec<RetrievalResult> = Vec::new();
         for eq in &expansion_texts {
@@ -291,12 +386,13 @@ impl QueryPipeline {
         stages.push(PipelineStage {
             stage: "bm25".to_string(),
             results: bm25_results,
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(bm25_start).as_millis() as u64,
             circuit_breaker_state: None,
             error: None,
         });
 
         // Stage 1: vector (STANDARD + DEEP only).
+        let vector_start = self.clock.now();
         if use_vector {
             // B-4 DEEP-tier MRR fix: always include original query as anchor signal.
             // HyDE hypothesis may be off-domain (sidecar degraded); dropping original
@@ -358,7 +454,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "vector".to_string(),
                 results: vector_results,
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(vector_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: vector_error,
             });
@@ -366,7 +462,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "vector".to_string(),
                 results: Vec::new(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(vector_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
@@ -379,6 +475,7 @@ impl QueryPipeline {
         if use_vector {
             if let (Some(vm), Some(indexer)) = (&self.vector_module, &self.vector_indexer) {
                 if indexer.has_code_index() {
+                    let code_vector_start = self.clock.now();
                     let mut code_seen: HashSet<String> = HashSet::new();
                     let mut code_results: Vec<RetrievalResult> = Vec::new();
                     let mut code_error: Option<String> = None;
@@ -418,7 +515,7 @@ impl QueryPipeline {
                     stages.push(PipelineStage {
                         stage: "code_vector".to_string(),
                         results: code_results,
-                        latency_ms: 0,
+                        latency_ms: self.clock.elapsed_since(code_vector_start).as_millis() as u64,
                         circuit_breaker_state: None,
                         error: code_error,
                     });
@@ -429,6 +526,7 @@ impl QueryPipeline {
         // Stage 1.5: splade keyword expansion (STANDARD + DEEP)
         #[cfg(feature = "splade")]
         {
+            let splade_start = self.clock.now();
             let splade_results = if use_vector {
                 if let Some(ref expander) = self.splade {
                     let expanded = expander.expand_query(query);
@@ -460,13 +558,14 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "splade".to_string(),
                 results: splade_results,
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(splade_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
         }
 
         // Stage 2: pagerank (STANDARD + DEEP)
+        let pagerank_start = self.clock.now();
         let snapshot = if use_vector {
             let (snap, pagerank_results, pagerank_error) = match self.dkg_engine {
                 Some(ref engine) => match DkgSnapshot::from_engine(engine) {
@@ -500,7 +599,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "pagerank".to_string(),
                 results: pagerank_results,
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(pagerank_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: pagerank_error,
             });
@@ -510,7 +609,7 @@ impl QueryPipeline {
             stages.push(PipelineStage {
                 stage: "pagerank".to_string(),
                 results: Vec::new(),
-                latency_ms: 0,
+                latency_ms: self.clock.elapsed_since(pagerank_start).as_millis() as u64,
                 circuit_breaker_state: None,
                 error: None,
             });
@@ -518,13 +617,14 @@ impl QueryPipeline {
         };
 
         // Stage 3: catrag (STANDARD + DEEP)
+        let catrag_start = self.clock.now();
         if use_vector {
             let _overlay = self.catrag.compute_overlay(query, &snapshot, &[])?;
         }
         stages.push(PipelineStage {
             stage: "catrag".to_string(),
             results: Vec::new(),
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(catrag_start).as_millis() as u64,
             circuit_breaker_state: None,
             error: None,
         });
@@ -534,6 +634,7 @@ impl QueryPipeline {
         // FAST tier is excluded: artifact search requires embedding (no VectorModule budget).
         if use_vector {
             if let Some(ref artifact) = self.artifact_stage {
+                let artifact_start = self.clock.now();
                 let (artifact_results, artifact_error) = match artifact.run(query, None) {
                     Ok(results) => {
                         tracing::debug!(
@@ -551,14 +652,38 @@ impl QueryPipeline {
                 stages.push(PipelineStage {
                     stage: "artifacts".to_string(),
                     results: artifact_results,
-                    latency_ms: 0,
+                    latency_ms: self.clock.elapsed_since(artifact_start).as_millis() as u64,
                     circuit_breaker_state: None,
                     error: artifact_error,
                 });
             }
         }
 
+        // Stage 3c: cosmos artifact retrieval (C-8 Task #10, STANDARD + DEEP).
+        // Inserted between the artifact stage and the A-RAG stage. FAST is
+        // skipped — cosmos provides cross-project curated briefs, not the
+        // low-latency grep-style hits FAST callers need.
+        if use_vector {
+            if let Some(ref cosmos) = self.cosmos_stage {
+                let cosmos_start = self.clock.now();
+                let cosmos_results = cosmos.run(query);
+                tracing::debug!(
+                    count = cosmos_results.len(),
+                    "cosmos_stage: returned {} results",
+                    cosmos_results.len()
+                );
+                stages.push(PipelineStage {
+                    stage: "cosmos".to_string(),
+                    results: cosmos_results,
+                    latency_ms: self.clock.elapsed_since(cosmos_start).as_millis() as u64,
+                    circuit_breaker_state: None,
+                    error: None,
+                });
+            }
+        }
+
         // Stage 4: arag (STANDARD + DEEP)
+        let arag_start = self.clock.now();
         let arag_results = if use_vector {
             self.arag.query_pipeline(query, &snapshot)?
         } else {
@@ -567,22 +692,24 @@ impl QueryPipeline {
         stages.push(PipelineStage {
             stage: "arag".to_string(),
             results: arag_results,
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(arag_start).as_millis() as u64,
             circuit_breaker_state: None,
             error: None,
         });
 
         // Stage 5: rerank (RRF fusion — all tiers, but FAST has only BM25 input)
+        let rerank_start = self.clock.now();
         let reranked = self.rrf_rerank(&stages);
         stages.push(PipelineStage {
             stage: "rerank".to_string(),
             results: reranked,
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(rerank_start).as_millis() as u64,
             circuit_breaker_state: None,
             error: None,
         });
 
         // Stage 6: cross_encoder (STANDARD + DEEP only)
+        let ce_start = self.clock.now();
         let ce_input = stages.last().map(|s| s.results.clone()).unwrap_or_default();
         let (ce_results, ce_breaker_state, ce_error) = if use_reranker {
             if let Some(ref ce) = self.cross_encoder {
@@ -606,12 +733,13 @@ impl QueryPipeline {
         stages.push(PipelineStage {
             stage: "cross_encoder".to_string(),
             results: ce_results,
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(ce_start).as_millis() as u64,
             circuit_breaker_state: ce_breaker_state,
             error: ce_error,
         });
 
         // Stage 7: token_fit (passthrough — budget enforcement is A-RAG internal)
+        let token_fit_start = self.clock.now();
         let token_fit_results = if let Some(ce_stage) = stages.last() {
             ce_stage.results.clone()
         } else {
@@ -620,7 +748,7 @@ impl QueryPipeline {
         stages.push(PipelineStage {
             stage: "token_fit".to_string(),
             results: token_fit_results,
-            latency_ms: 0,
+            latency_ms: self.clock.elapsed_since(token_fit_start).as_millis() as u64,
             circuit_breaker_state: None,
             error: None,
         });
@@ -643,6 +771,34 @@ impl QueryPipeline {
             results = trace.result_count,
             "query_trace"
         );
+
+        // C-1: emit one `query_trace` SSB row per call. Sum per-stage
+        // latencies into total_latency_ms because the trace struct
+        // already carries `total_latency_ms=0` (pipelines do not measure
+        // wall time directly here per the entropy-quarantine note above).
+        // The sum is a conservative upper bound that the dashboard
+        // surfaces as "approximate".
+        let total_latency_ms: u64 = trace
+            .stages
+            .iter()
+            .fold(0u64, |acc, s| acc.saturating_add(s.latency_ms));
+        let stage_count = u32::try_from(trace.stages.len()).unwrap_or(u32::MAX);
+        let result_count_u32 = u32::try_from(trace.result_count).unwrap_or(u32::MAX);
+        self.ssb_sink.emit_query_trace(QueryTraceEvent {
+            query_id: trace.query_id.to_string(),
+            tier: format!("{resolved_tier}"),
+            stage_count,
+            result_count: result_count_u32,
+            total_latency_ms,
+        });
+
+        // C-1: flush the vector-cache hit/miss counters to SSB. The
+        // flush is a no-op when no lookups happened since the last call
+        // (see `VectorCache::flush_hit_rate_ssb` doc-comment) so query
+        // tiers that bypass the cache do not flood the dashboard.
+        if let Some(cache) = self.vector_cache.as_ref() {
+            cache.flush_hit_rate_ssb(&self.session_id);
+        }
 
         Ok(stages)
     }

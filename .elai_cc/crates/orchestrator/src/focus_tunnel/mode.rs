@@ -22,8 +22,7 @@
 //! [`ModeSelector::select`] call immediately before the executor dispatch
 //! at the `baby_step_executor.execute(exec_ctx)` callsite).
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_mode::ExecMode;
@@ -380,8 +379,8 @@ fn mentions_multiple_regions(lower_task: &str) -> bool {
 #[must_use]
 pub fn mode_distribution_for_payloads(
     payloads: &[&SsbPayload],
-) -> HashMap<GenerationMode, u32> {
-    let mut out: HashMap<GenerationMode, u32> = HashMap::new();
+) -> FxHashMap<GenerationMode, u32> {
+    let mut out: FxHashMap<GenerationMode, u32> = FxHashMap::default();
     for payload in payloads {
         if let SsbPayload::GenerationModeSelected(p) = payload {
             if let Some(mode) = parse_generation_mode_str(&p.mode) {

@@ -1,0 +1,11 @@
+id = "task_03"
+description = """
+A Rust function that parses a CSV row with `split(',')` panics on rows
+containing escaped commas inside quoted fields. Switch the function to
+use the `csv` crate's `Reader::from_reader` API so quoted commas parse as
+part of a single field.
+"""
+expected_output = "csv::Reader"
+timeout_s = 90
+stage = 2
+is_canary = false

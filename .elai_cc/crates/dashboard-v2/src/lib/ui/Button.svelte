@@ -94,7 +94,7 @@
   .btn--sm {
     height: 24px;
     padding: 0 10px;
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .btn--md {

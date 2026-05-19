@@ -22,8 +22,8 @@ use crate::bsp::channels::{
     UNTRACKED_DEFAULT_LIMIT_BYTES, UNTRACKED_FORCE_CLEAR_MULTIPLIER,
 };
 use crate::ssb::{
-    AgentLifecyclePayload, BspSuperstepPayload, CheckpointPayload, DeathEventPayload,
-    MemoryMonitoringPayload, Ssb, SsbActionType, SsbPayload, SsbReader,
+    AgentLifecyclePayload, AgentStatusChangedPayload, BspSuperstepPayload, CheckpointPayload,
+    DeathEventPayload, MemoryMonitoringPayload, Ssb, SsbActionType, SsbPayload, SsbReader,
 };
 
 // ---------------------------------------------------------------------------
@@ -239,9 +239,10 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                 )
                 .await?;
                 // B-7b: AgentLifecycle "exited" — timeout death path.
+                let role_str = agent_role_str(handle.role);
                 let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
                     agent_id: agent_id_str.clone(),
-                    role: agent_role_str(handle.role),
+                    role: role_str.clone(),
                     state: "exited".to_owned(),
                     death_class: Some("timeout".to_owned()),
                 });
@@ -255,15 +256,28 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         "bsp_engine: AgentLifecycle exited(timeout) SSB write failed (non-fatal)"
                     );
                 }
+                // C-2: co-emit AgentStatusChanged (DRIFT-5: single state field).
+                emit_agent_status_changed(
+                    ssb,
+                    &self.clock,
+                    &lifecycle_emitter,
+                    superstep_i64,
+                    &agent_id_str,
+                    &role_str,
+                    "exited",
+                    Some("timeout".to_owned()),
+                )
+                .await;
                 node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
             }
 
             // Mark completed nodes and emit AgentLifecycle "exited" (clean_exit). B-7b.
             for (node_id, handle) in &completed_handles {
                 let agent_id_str = handle.agent_id.to_string();
+                let role_str = agent_role_str(handle.role);
                 let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
                     agent_id: agent_id_str.clone(),
-                    role: agent_role_str(handle.role),
+                    role: role_str.clone(),
                     state: "exited".to_owned(),
                     death_class: Some("clean_exit".to_owned()),
                 });
@@ -277,6 +291,18 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                         "bsp_engine: AgentLifecycle exited(clean_exit) SSB write failed (non-fatal)"
                     );
                 }
+                // C-2: co-emit AgentStatusChanged (DRIFT-5: single state field).
+                emit_agent_status_changed(
+                    ssb,
+                    &self.clock,
+                    &lifecycle_emitter,
+                    superstep_i64,
+                    &agent_id_str,
+                    &role_str,
+                    "exited",
+                    Some("clean_exit".to_owned()),
+                )
+                .await;
                 node_statuses.insert(node_id.clone(), NodeStatus::Complete);
             }
 
@@ -314,9 +340,10 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                 // B-7b: deferred clean_exit — AgentLifecycle "exited" for each completed deferred agent.
                 for (node_id, handle) in &deferred_completed {
                     let agent_id_str = handle.agent_id.to_string();
+                    let role_str = agent_role_str(handle.role);
                     let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
                         agent_id: agent_id_str.clone(),
-                        role: agent_role_str(handle.role),
+                        role: role_str.clone(),
                         state: "exited".to_owned(),
                         death_class: Some("clean_exit".to_owned()),
                     });
@@ -330,6 +357,18 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                             "bsp_engine: AgentLifecycle exited(clean_exit) deferred SSB write failed (non-fatal)"
                         );
                     }
+                    // C-2: co-emit AgentStatusChanged.
+                    emit_agent_status_changed(
+                        ssb,
+                        &self.clock,
+                        &lifecycle_emitter,
+                        superstep_i64,
+                        &agent_id_str,
+                        &role_str,
+                        "exited",
+                        Some("clean_exit".to_owned()),
+                    )
+                    .await;
                     node_statuses.insert(node_id.clone(), NodeStatus::Complete);
                 }
 
@@ -350,9 +389,10 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     )
                     .await?;
                     // B-7b: deferred timeout — AgentLifecycle "exited".
+                    let role_str = agent_role_str(handle.role);
                     let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
                         agent_id: agent_id_str.clone(),
-                        role: agent_role_str(handle.role),
+                        role: role_str.clone(),
                         state: "exited".to_owned(),
                         death_class: Some("timeout".to_owned()),
                     });
@@ -366,6 +406,18 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                             "bsp_engine: AgentLifecycle exited(timeout) deferred SSB write failed (non-fatal)"
                         );
                     }
+                    // C-2: co-emit AgentStatusChanged.
+                    emit_agent_status_changed(
+                        ssb,
+                        &self.clock,
+                        &lifecycle_emitter,
+                        superstep_i64,
+                        &agent_id_str,
+                        &role_str,
+                        "exited",
+                        Some("timeout".to_owned()),
+                    )
+                    .await;
                     node_statuses.insert(node_id.clone(), NodeStatus::TimedOut);
                 }
             }
@@ -506,12 +558,26 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
         let superstep_i64_lc = i64::try_from(superstep).unwrap_or(i64::MAX);
         let bsp_agent_id_lc = format!("bsp_engine:{}", self.config.session_id);
         for handle in &handles {
+            let agent_id_str = handle.agent_id.to_string();
+            let role_str = agent_role_str(handle.role);
             let payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
-                agent_id: handle.agent_id.to_string(),
-                role: agent_role_str(handle.role),
+                agent_id: agent_id_str.clone(),
+                role: role_str.clone(),
                 state: "spawned".to_owned(),
                 death_class: None,
             });
+            // C-2: co-emit AgentStatusChanged for the spawned event.
+            emit_agent_status_changed(
+                ssb,
+                &self.clock,
+                &bsp_agent_id_lc,
+                superstep_i64_lc,
+                &agent_id_str,
+                &role_str,
+                "spawned",
+                None,
+            )
+            .await;
             if let Err(e) = ssb
                 .write_payload(&bsp_agent_id_lc, superstep_i64_lc, payload, vec![])
                 .await
@@ -577,15 +643,29 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     // B-7b: emit AgentLifecycle crash for all unaccounted spawned agents.
                     for (i, (_orig_idx, _node_id, role, _task)) in task_meta.iter().enumerate() {
                         if !completed_indices.contains(&i) {
+                            let agent_id_str = format!("unknown-crash-{i}");
+                            let role_str = agent_role_str(*role);
                             let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
-                                agent_id: format!("unknown-crash-{i}"),
-                                role: agent_role_str(*role),
+                                agent_id: agent_id_str.clone(),
+                                role: role_str.clone(),
                                 state: "exited".to_owned(),
                                 death_class: Some("crash".to_owned()),
                             });
                             let _ = ssb
                                 .write_payload(&bsp_agent_id_lc, superstep_i64_lc, lc_payload, vec![])
                                 .await;
+                            // C-2: co-emit AgentStatusChanged for the crash.
+                            emit_agent_status_changed(
+                                ssb,
+                                &self.clock,
+                                &bsp_agent_id_lc,
+                                superstep_i64_lc,
+                                &agent_id_str,
+                                &role_str,
+                                "exited",
+                                Some("crash".to_owned()),
+                            )
+                            .await;
                         }
                     }
                     return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
@@ -596,15 +676,29 @@ impl<P: AgentPool, C: ClockProvider> BspEngine<P, C> {
                     // B-7b: emit AgentLifecycle crash for all unaccounted spawned agents.
                     for (i, (_orig_idx, _node_id, role, _task)) in task_meta.iter().enumerate() {
                         if !completed_indices.contains(&i) {
+                            let agent_id_str = format!("unknown-crash-{i}");
+                            let role_str = agent_role_str(*role);
                             let lc_payload = SsbPayload::AgentLifecycle(AgentLifecyclePayload {
-                                agent_id: format!("unknown-crash-{i}"),
-                                role: agent_role_str(*role),
+                                agent_id: agent_id_str.clone(),
+                                role: role_str.clone(),
                                 state: "exited".to_owned(),
                                 death_class: Some("crash".to_owned()),
                             });
                             let _ = ssb
                                 .write_payload(&bsp_agent_id_lc, superstep_i64_lc, lc_payload, vec![])
                                 .await;
+                            // C-2: co-emit AgentStatusChanged for the crash.
+                            emit_agent_status_changed(
+                                ssb,
+                                &self.clock,
+                                &bsp_agent_id_lc,
+                                superstep_i64_lc,
+                                &agent_id_str,
+                                &role_str,
+                                "exited",
+                                Some("crash".to_owned()),
+                            )
+                            .await;
                         }
                     }
                     return Err(BspError::AgentPool(AgentPoolError::SpawnFailed(
@@ -891,6 +985,46 @@ pub fn recover_from_checkpoint(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// C-2: co-emit an [`AgentStatusChanged`] SSB row alongside every
+/// [`AgentLifecycle`] write. Timestamp is sourced from the engine's
+/// [`ClockProvider`] (never `SystemTime::now`) per ENTROPY_QUARANTINE.
+/// Fire-and-forget: emitter agent_id mirrors the AgentLifecycle row so the
+/// dashboard `AGENTS` panel can correlate the two streams by `agent_id`.
+async fn emit_agent_status_changed(
+    ssb: &Ssb,
+    clock: &dyn ClockProvider,
+    lifecycle_emitter: &str,
+    superstep_i64: i64,
+    agent_id: &str,
+    role: &str,
+    state: &str,
+    death_class: Option<String>,
+) {
+    let now = clock.system_now();
+    let ts_ms_u128 = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO)
+        .as_millis();
+    let timestamp_ms = u64::try_from(ts_ms_u128).unwrap_or(u64::MAX);
+    let payload = SsbPayload::AgentStatusChanged(AgentStatusChangedPayload {
+        agent_id: agent_id.to_owned(),
+        role: role.to_owned(),
+        state: state.to_owned(),
+        death_class,
+        timestamp_ms,
+    });
+    if let Err(e) = ssb
+        .write_payload(lifecycle_emitter, superstep_i64, payload, vec![])
+        .await
+    {
+        tracing::warn!(
+            agent_id = %agent_id,
+            error = %e,
+            "bsp_engine: AgentStatusChanged co-emit SSB write failed (non-fatal)"
+        );
+    }
+}
 
 /// Convert AgentRole to its canonical snake_case string for SSB payloads.
 fn agent_role_str(role: AgentRole) -> String {
@@ -1758,5 +1892,155 @@ mod tests {
         assert_eq!(completed[0].0, "node_0");
         assert_eq!(completed[1].0, "node_1");
         assert_eq!(completed[2].0, "node_2");
+    }
+
+    // -----------------------------------------------------------------------
+    // C-18 phase-3D backfill — checkpoint round-trip + 5-superstep mixed-channel
+    // -----------------------------------------------------------------------
+    //
+    // The plan's wording "build a BspCheckpoint with all three channel types
+    // (LastValue<String>, Topic<u64>, EphemeralValue<bool>)" is interpreted
+    // as: populate the `channel_state: BTreeMap<String, ChannelState>` with
+    // one entry of each variant — `LastValue(bytes)`, `Topic(Vec<bytes>)`,
+    // `Ephemeral(Some(bytes))`. The on-the-wire shape is
+    // `BTreeMap<String, ChannelState>`, not generic types; the bytes payloads
+    // are produced by `rmp_serde::to_vec_named` of the typed value as a
+    // documented invariant from
+    // `InMemoryChannelRegistry::snapshot_for_scheduling` (channels.rs:641).
+
+    use crate::bsp::channels::ChannelState;
+
+    fn encode_msgpack<T: serde::Serialize>(v: &T) -> Vec<u8> {
+        rmp_serde::to_vec_named(v).expect("rmp_serde::to_vec_named in test setup")
+    }
+
+    /// test_checkpoint_roundtrip — build a BspCheckpoint with three
+    /// distinct ChannelState variants, serialise via rmp_serde, deserialise,
+    /// assert PartialEq holds AND the second serialise produces byte-identical
+    /// output (the rmp-serde `to_vec_named` path is canonical for sorted
+    /// BTreeMap keys, so a stable input must produce a stable wire form).
+    #[test]
+    fn test_checkpoint_roundtrip() {
+        let mut channel_state: BTreeMap<String, ChannelState> = BTreeMap::new();
+        channel_state.insert(
+            "ch_lastvalue_string".to_owned(),
+            ChannelState::LastValue(encode_msgpack(&"hello".to_owned())),
+        );
+        channel_state.insert(
+            "ch_topic_u64".to_owned(),
+            ChannelState::Topic(vec![
+                encode_msgpack(&1u64),
+                encode_msgpack(&2u64),
+                encode_msgpack(&3u64),
+            ]),
+        );
+        channel_state.insert(
+            "ch_ephemeral_bool".to_owned(),
+            ChannelState::Ephemeral(Some(encode_msgpack(&true))),
+        );
+
+        let mut node_statuses: BTreeMap<String, NodeStatus> = BTreeMap::new();
+        node_statuses.insert("node_0".to_owned(), NodeStatus::Complete);
+        node_statuses.insert("node_1".to_owned(), NodeStatus::Complete);
+
+        let checkpoint = BspCheckpoint {
+            superstep: 3,
+            channel_state: channel_state.clone(),
+            node_statuses: node_statuses.clone(),
+            created_at_secs: 1_700_000_000,
+        };
+
+        let bytes_first =
+            rmp_serde::to_vec_named(&checkpoint).expect("serialize must succeed");
+        let decoded: BspCheckpoint =
+            rmp_serde::from_slice(&bytes_first).expect("deserialize must succeed");
+
+        // Structural equality is the strongest contract we get — `PartialEq`
+        // on BspCheckpoint compares all fields including the BTreeMaps.
+        assert_eq!(
+            decoded, checkpoint,
+            "round-tripped BspCheckpoint must be structurally equal to the original"
+        );
+
+        // Byte-identical re-serialisation of the decoded checkpoint locks the
+        // determinism contract (no clock state, no random ordering).
+        let bytes_second =
+            rmp_serde::to_vec_named(&decoded).expect("re-serialize must succeed");
+        assert_eq!(
+            bytes_first, bytes_second,
+            "round-trip must be byte-identical (BTreeMap iteration order + msgpack canonical)"
+        );
+
+        // And each ChannelState variant must still match its variant.
+        match decoded.channel_state.get("ch_lastvalue_string") {
+            Some(ChannelState::LastValue(_)) => {}
+            other => panic!("expected ChannelState::LastValue; got {other:?}"),
+        }
+        match decoded.channel_state.get("ch_topic_u64") {
+            Some(ChannelState::Topic(entries)) if entries.len() == 3 => {}
+            other => panic!("expected ChannelState::Topic with 3 entries; got {other:?}"),
+        }
+        match decoded.channel_state.get("ch_ephemeral_bool") {
+            Some(ChannelState::Ephemeral(Some(_))) => {}
+            other => panic!("expected ChannelState::Ephemeral(Some(_)); got {other:?}"),
+        }
+    }
+
+    /// test_5_superstep_mixed_channels — drive `BspEngine::run` for 5
+    /// sequential nodes (chain: each depends on the previous), confirming
+    /// the superstep counter reaches 5 and every node terminates as
+    /// `Completed`.  The agents do not currently produce channel writes
+    /// (see comment at line 1137 of this file), so the test focuses on the
+    /// scheduler-side invariants:
+    ///   - supersteps_completed == 5
+    ///   - all 5 nodes report Completed
+    ///   - no untracked memory force-clear fires (channels stay empty)
+    ///
+    /// This is the closest implementable form of the plan's
+    /// "5 supersteps with agents writing LastValue, Topic, EphemeralValue"
+    /// given the current agent surface; the channel-write path is exercised
+    /// in test_checkpoint_roundtrip above where we construct each variant
+    /// explicitly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_5_superstep_mixed_channels() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = test_config(tmp.path().join("checkpoints_5"));
+        let pool = test_pool();
+        let clock = SeededClock::new();
+        let ssb = test_ssb().await;
+        let mut channels = InMemoryChannelRegistry::new();
+
+        let nodes = simple_nodes(5);
+        let mut engine = BspEngine::new(config, pool, clock);
+
+        let result = engine
+            .run(nodes, &mut channels, &ssb)
+            .await
+            .expect("5-superstep run must succeed");
+
+        assert_eq!(
+            result.supersteps_completed, 5,
+            "5-node chain must complete in exactly 5 supersteps; got {}",
+            result.supersteps_completed,
+        );
+
+        // Every node must report Completed.
+        for i in 0..5 {
+            let key = format!("node_{i}");
+            match result.node_statuses.get(&key) {
+                Some(NodeStatus::Complete) => {}
+                other => panic!(
+                    "node {key} did not complete; status = {other:?}",
+                    other = other,
+                ),
+            }
+        }
+
+        // No untracked channels were ever written, so the registry's
+        // untracked-size iterator must be empty (no force-clear path fired).
+        assert!(
+            channels.iter_untracked_sizes().is_empty(),
+            "untracked channels must remain empty for the agent set used by this test",
+        );
     }
 }

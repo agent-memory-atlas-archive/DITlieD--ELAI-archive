@@ -57,7 +57,7 @@ impl MediaRenderAdapter for UiScreenshotAdapter {
         >,
     > {
         Box::pin(async move {
-            let started = Instant::now();
+            let started = Instant::now(); // entropy-allow: C-15 deferred — render-adapter Clock plumbing scheduled
             // 1. Path validity.
             let metadata = std::fs::metadata(artifact).map_err(|_| {
                 RenderAdapterError::ArtifactPathInvalid {

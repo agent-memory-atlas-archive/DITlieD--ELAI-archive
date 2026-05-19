@@ -25,7 +25,7 @@ use elai_knowledge::metadata::{
 use elai_knowledge::{DkgEngine, KnowledgeError};
 
 use crate::ssb::{
-    IndexCancelPayload, IndexCheckpointPayload, IndexResumePayload,
+    ArtifactsIndexedPayload, IndexCancelPayload, IndexCheckpointPayload, IndexResumePayload,
     MinifiedFileChunkedPayload, Ssb, SsbPayload, SymbolGraphUpdatedPayload,
 };
 
@@ -451,6 +451,13 @@ impl IndexingService {
         let mut indexed_files_total: u64 = 0;
 
         for chunk in work_queue.chunks(batch_size as usize) {
+            // C-17 (DRIFT-I): per-batch wall-clock entry point. Sourced
+            // from the injected ClockProvider via `instant_now()` so the
+            // entropy quarantine stays intact and the contract test can
+            // pin the field via SSB. The duration is computed at the
+            // checkpoint emit site below.
+            let batch_start = clock.instant_now();
+
             // B-31.5 (DECISION-B31.5-3): debug-mode hook for the Tier D
             // "graceful-shutdown forced-release" benchmark. Reads the env
             // var once per batch; zero / unset is the hot-path no-op.
@@ -537,6 +544,25 @@ impl IndexingService {
             };
             store.save(&checkpoint_meta)?;
 
+            // C-17 (DRIFT-I): per-batch wall-clock duration in ms. Saturating
+            // cast avoids overflow on pathological clock skew (e.g. ntpd
+            // adjustments mid-batch). Emitted alongside the checkpoint so
+            // run_tier_a.sh and the scale benchmark TOMLs can parse p50/p99
+            // directly from SSB rows.
+            let batch_duration_ms_value: u64 = {
+                let elapsed = clock
+                    .instant_now()
+                    .saturating_duration_since(batch_start);
+                elapsed.as_millis().try_into().unwrap_or(u64::MAX)
+            };
+            tracing::info!(
+                target: "indexing_service",
+                project_id = %project_id,
+                batches_processed,
+                batch_duration_ms = batch_duration_ms_value,
+                "batch_complete"
+            );
+
             // B-31.5: emit IndexCheckpoint SSB row after every persisted batch.
             self.emit_ssb_payload(SsbPayload::IndexCheckpoint(IndexCheckpointPayload {
                 project_id: project_id.to_string(),
@@ -544,6 +570,7 @@ impl IndexingService {
                 batches_total: Some(batches_total),
                 files_processed: indexed_files_total,
                 last_checkpoint_at: checkpoint_at,
+                batch_duration_ms: Some(batch_duration_ms_value),
             }));
         }
 
@@ -566,55 +593,127 @@ impl IndexingService {
         );
         drop(dkg);
 
-        // 7b. B-29 Phase 4: build the symbol graph (sharded callee/caller
-        //     payloads + name index) on top of the just-built DKG. Best-effort —
-        //     a symbol-graph failure must NOT break the DKG pipeline, since the
-        //     DKG is the source of truth and the symbol graph is a derived layer.
+        // 7b. B-29 Phase 4 + C-24 (DRIFT-3): build the symbol graph on top of
+        //     the just-built DKG. On `is_resume` (work_queue/stale-prune carry
+        //     a real change-set), thread `changed_paths` + `removed_paths`
+        //     through `update_changed_files_symbol_graph` — that fn handles
+        //     INCREMENTAL_SYMBOL_THRESHOLD internally and falls back to a
+        //     full build above it. On cold start (`is_resume == false`),
+        //     keep the unconditional `build_symbol_graph` call path so the
+        //     first-index BuildSummary stats still flow through to SSB.
+        //     Best-effort either way — a symbol-graph failure must NOT break
+        //     the DKG pipeline, since the DKG is the source of truth and the
+        //     symbol graph is a derived layer.
         let symbol_clock_ms = clock_unix_millis(&clock).unwrap_or(0);
-        match elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph(
-            project_id,
-            &self.project_root,
-            &self.dkg_db_path,
-            symbol_clock_ms,
-        ) {
-            Ok(summary) => {
-                tracing::info!(
-                    target = "symbol_graph",
-                    files = summary.files,
-                    symbols = summary.symbols,
-                    edges = summary.edges,
-                    unresolved_pct = summary.unresolved_pct,
-                    "symbol_graph build complete"
-                );
-                // B-33 follow-up (SCHEMA_VERSION 40): emit SymbolGraphUpdated
-                // SSB row exactly once per successful symbol-graph build with
-                // a non-empty file count. Replaces the 30s setInterval poll
-                // fallback that B-33 GraphWindow shipped while ssb.rs was
-                // locked. Empty-file builds are intentionally skipped: they
-                // happen when the project has no parseable source under
-                // project_root, and emitting a row would just spam the
-                // dashboard with noise. Best-effort: failures are logged
-                // by `emit_ssb_payload` and never propagated.
-                if summary.files > 0 {
-                    let file_count: u32 = u32::try_from(summary.files).unwrap_or(u32::MAX);
-                    let symbol_count: u64 = u64::try_from(summary.symbols).unwrap_or(u64::MAX);
-                    let edge_count: u64 = u64::try_from(summary.edges).unwrap_or(u64::MAX);
+        if is_resume {
+            // C-24 (DRIFT-3): materialise the change-set from the work_queue
+            // (changed/new) + the stale-prune set captured below. work_queue
+            // tuples are (abs_path, rel_path, hash); the symbol-graph fn
+            // accepts absolute paths because its grammar dispatch and file
+            // read both operate on disk.
+            let changed_paths: Vec<PathBuf> = work_queue
+                .iter()
+                .map(|t| t.0.clone())
+                .collect();
+            // Removed-paths source: the prior_hashes keys that did NOT appear
+            // in seen_rel_paths (i.e. the same set we delete-then-forget at
+            // L401-404 above). We recompute the diff here because the original
+            // loop streams the delete; the symbol-graph fn needs the materialised
+            // vec to know which name shards / file_payload rows to vacate.
+            let removed_paths: Vec<PathBuf> = prior_hashes
+                .keys()
+                .filter(|p| !seen_rel_paths.contains(*p))
+                .map(|p| self.project_root.join(p))
+                .collect();
+            match elai_knowledge::symbol_graph::build_pipeline::update_changed_files_symbol_graph(
+                project_id,
+                &changed_paths,
+                &removed_paths,
+                &self.dkg_db_path,
+                &self.project_root,
+                symbol_clock_ms,
+            ) {
+                Ok(update_summary) => {
+                    tracing::info!(
+                        target = "symbol_graph",
+                        files_changed = update_summary.files_changed,
+                        files_removed = update_summary.files_removed,
+                        rebuild_triggered = update_summary.rebuild_triggered,
+                        "symbol_graph incremental update complete"
+                    );
+                    // C-24: emit SymbolGraphUpdated with is_incremental=true so
+                    // dashboard consumers can distinguish resume-driven updates
+                    // from cold-start builds. UpdateSummary lacks the
+                    // file/symbol/edge stats produced by BuildSummary, so we
+                    // emit a row carrying the change-set counters in file_count
+                    // and zero for the cumulative stats (the GraphWindow refresh
+                    // event listener does not parse these — it just invalidates).
+                    let file_count: u32 =
+                        u32::try_from(update_summary.files_changed + update_summary.files_removed)
+                            .unwrap_or(u32::MAX);
                     self.emit_ssb_payload(SsbPayload::SymbolGraphUpdated(
                         SymbolGraphUpdatedPayload {
                             project_id: project_id.to_string(),
                             file_count,
-                            symbol_count,
-                            edge_count,
+                            symbol_count: 0,
+                            edge_count: 0,
                             built_ms: symbol_clock_ms,
+                            is_incremental: Some(true),
                         },
                     ));
                 }
+                Err(e) => tracing::warn!(
+                    target = "symbol_graph",
+                    error = %e,
+                    "symbol_graph incremental update failed (DKG remains functional)"
+                ),
             }
-            Err(e) => tracing::warn!(
-                target = "symbol_graph",
-                error = %e,
-                "symbol_graph build failed (DKG remains functional)"
-            ),
+        } else {
+            match elai_knowledge::symbol_graph::build_pipeline::build_symbol_graph(
+                project_id,
+                &self.project_root,
+                &self.dkg_db_path,
+                symbol_clock_ms,
+            ) {
+                Ok(summary) => {
+                    tracing::info!(
+                        target = "symbol_graph",
+                        files = summary.files,
+                        symbols = summary.symbols,
+                        edges = summary.edges,
+                        unresolved_pct = summary.unresolved_pct,
+                        "symbol_graph build complete"
+                    );
+                    // B-33 follow-up (SCHEMA_VERSION 40): emit SymbolGraphUpdated
+                    // SSB row exactly once per successful symbol-graph build
+                    // with a non-empty file count. Replaces the 30s setInterval
+                    // poll fallback that B-33 GraphWindow shipped. Empty-file
+                    // builds are intentionally skipped to avoid dashboard noise.
+                    if summary.files > 0 {
+                        let file_count: u32 = u32::try_from(summary.files).unwrap_or(u32::MAX);
+                        let symbol_count: u64 =
+                            u64::try_from(summary.symbols).unwrap_or(u64::MAX);
+                        let edge_count: u64 = u64::try_from(summary.edges).unwrap_or(u64::MAX);
+                        self.emit_ssb_payload(SsbPayload::SymbolGraphUpdated(
+                            SymbolGraphUpdatedPayload {
+                                project_id: project_id.to_string(),
+                                file_count,
+                                symbol_count,
+                                edge_count,
+                                built_ms: symbol_clock_ms,
+                                // C-24 (DRIFT-4): cold-start full build leaves
+                                // the flag at None (skipped on the wire).
+                                is_incremental: None,
+                            },
+                        ));
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target = "symbol_graph",
+                    error = %e,
+                    "symbol_graph build failed (DKG remains functional)"
+                ),
+            }
         }
 
         // 7c. B-32: walk the indexed candidates once more and emit one
@@ -649,6 +748,13 @@ impl IndexingService {
             schema_version: METADATA_SCHEMA_VERSION,
         };
         store.save(&completed_meta)?;
+
+        // C-8 Task #4: non-fatal artifact-indexing hook. Loads the manifest
+        // and calls index_all_artifacts; failures are logged via warn! and
+        // do NOT propagate (artifact indexing is observability scaffolding,
+        // never a load-bearing pipeline stage). Emits one ArtifactsIndexed
+        // SSB row on completion (when the SSB writer is attached).
+        self.maybe_index_artifacts(project_id);
 
         // Clear the cancellation flag on successful completion so a future
         // run on the same project starts clean. The Cancelled-return path
@@ -685,6 +791,101 @@ impl IndexingService {
         } else {
             Ok(IndexResult::Completed { summary })
         }
+    }
+
+    /// C-8 Task #4: best-effort artifact-indexing hook called at the tail
+    /// of `build_index_resumable`. Loads the project's `[[knowledge.artifacts]]`
+    /// manifest (or `.elai_artifacts.json` fallback) and invokes
+    /// `index_all_artifacts` for every spec. Per-spec failures are logged
+    /// via `tracing::warn!` and swallowed. Emits a single ArtifactsIndexed
+    /// SSB row on completion (when an SSB writer is attached).
+    ///
+    /// Manifest absent / empty → no-op (no SSB row, no error). This keeps
+    /// projects without a context artifacts manifest unaffected by C-8.
+    fn maybe_index_artifacts(&self, project_id: &str) {
+        let project_root = self.project_root.clone();
+        let context_db_path = self.indexes_dir.join(format!("context_{project_id}.db"));
+
+        // C-15: route Instant timing via OsClock so the entropy scanner stays
+        // clean. Artifact-index hook is observation-only.
+        let artifact_clock = OsClock;
+        let start = artifact_clock.now();
+        let manifest = match elai_knowledge::artifacts::ArtifactManifest::load(&project_root) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    project_id,
+                    error = %e,
+                    "C-8: artifact manifest load failed; skipping non-fatal artifact hook"
+                );
+                return;
+            }
+        };
+        if manifest.items.is_empty() {
+            tracing::debug!(
+                project_id,
+                "C-8: artifact manifest empty; skipping non-fatal artifact hook"
+            );
+            return;
+        }
+
+        let store = match elai_knowledge::artifacts::store::ArtifactStore::open(
+            &context_db_path,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    project_id,
+                    path = %context_db_path.display(),
+                    error = %e,
+                    "C-8: artifact store open failed; skipping non-fatal artifact hook"
+                );
+                return;
+            }
+        };
+
+        // VectorModule unavailable at this call site (IndexingService is
+        // synchronous and does not own one); chunks are stored without
+        // embeddings per the documented graceful-degrade behaviour at
+        // artifacts/indexer.rs:18-21.
+        let indexer = elai_knowledge::artifacts::indexer::ArtifactIndexer::new(&store, None);
+        // C-15: OsClock-backed `now_secs` for artifact freshness checks.
+        let now_secs = i64::try_from(artifact_clock.now_secs()).unwrap_or(i64::MAX);
+
+        let mut indexed_names: Vec<String> = Vec::new();
+        let mut up_to_date_names: Vec<String> = Vec::new();
+        let mut total_chunks: usize = 0;
+        for spec in &manifest.items {
+            match indexer.index_artifact(spec, None, now_secs) {
+                Ok(state) => {
+                    total_chunks = total_chunks.saturating_add(state.chunk_count);
+                    match state.status {
+                        elai_knowledge::artifacts::ArtifactStatus::Indexed => {
+                            indexed_names.push(state.name);
+                        }
+                        _ => {
+                            up_to_date_names.push(state.name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        artifact = %spec.name,
+                        error = %e,
+                        "C-8: artifact indexing failed for spec (non-fatal)"
+                    );
+                }
+            }
+        }
+
+        let elapsed_ms = u64::try_from(artifact_clock.elapsed_since(start).as_millis()).unwrap_or(u64::MAX);
+        self.emit_ssb_payload(SsbPayload::ArtifactsIndexed(ArtifactsIndexedPayload {
+            project_id: project_id.to_string(),
+            indexed: indexed_names,
+            up_to_date: up_to_date_names,
+            total_chunks,
+            latency_ms: elapsed_ms,
+        }));
     }
 
     /// B-31.5: emit a single [`SsbPayload`] via the optional SSB writer.

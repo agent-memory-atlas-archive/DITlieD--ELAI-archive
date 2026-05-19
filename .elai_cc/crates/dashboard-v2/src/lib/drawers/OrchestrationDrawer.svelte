@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { orchestrationData } from '../state/drawers.svelte';
   import { Card, Badge, Button } from '$lib/ui';
   import { logStub, get_sandbox_status } from '../api/stub';
   import { tooltip } from '$lib/ui/tooltip';
-  import type { FsmState, GateVerdict, AgentLifecycle, BspSuperstep, SandboxStatus, SandboxTier } from '../api/types';
+  import type {
+    FsmState, GateVerdict, AgentLifecycle, BspSuperstep, SandboxStatus, SandboxTier,
+    AmbiguityState, AmbiguityComponent,
+  } from '../api/types';
 
   onMount(() => {
     orchestrationData.bootstrap();
@@ -129,10 +133,105 @@
     }
   });
 
+  // C-2: ambiguity gate snapshot — replaces the legacy B-38 mock with the
+  // live SSB-backed `get_ambiguity_state` Tauri command. Refreshed every 5s
+  // so the AGENTS/AMBIGUITY/EVIDENCE-GATES rows stay in step.
+  let ambig = $state<AmbiguityState | null>(null);
+  let ambigError = $state<string | null>(null);
+
+  async function refreshAmbiguity() {
+    try {
+      ambig = await invoke<AmbiguityState>('get_ambiguity_state');
+      ambigError = null;
+    } catch (e) {
+      ambigError = String(e);
+    }
+  }
+
+  $effect(() => {
+    refreshAmbiguity();
+    const id = setInterval(refreshAmbiguity, 5_000);
+    return () => clearInterval(id);
+  });
+
+  function ambigPct(x: number): string {
+    return `${Math.round(x * 100)}%`;
+  }
+
+  const ambigRows = $derived.by(() => {
+    if (!ambig) return [] as { name: string; c: AmbiguityComponent | null }[];
+    const r: { name: string; c: AmbiguityComponent | null }[] = [
+      { name: 'Goal', c: ambig.components.goal_clarity },
+      { name: 'Constraint', c: ambig.components.constraint_clarity },
+      { name: 'Success criteria', c: ambig.components.success_criteria_clarity },
+    ];
+    if (ambig.brownfield) {
+      r.push({ name: 'Context', c: ambig.components.context_clarity });
+    }
+    return r;
+  });
+
+  const ambigScoreColor = $derived.by(() => {
+    if (!ambig) return 'var(--text-ghost)';
+    return ambig.score <= ambig.threshold ? 'var(--teal)' : 'var(--fail)';
+  });
+
   function sandboxTierTone(tier: SandboxTier): string {
     if (tier === 'C-Windows' || tier === 'C-Linux') return 'teal';
     if (tier === 'A++') return 'warn';
     return 'ghost';
+  }
+
+  // C-10: anti-spiral StagnationSection — mirrors the AMBIGUITY card
+  // pattern (5s poll, single-DTO row list, color-coded badges via the
+  // existing GatesPanel tokens — no new tokens introduced).
+  type StagnationEvent = {
+    timestamp_ms: number;
+    action_type: string;
+    agent_id: string;
+    pattern: string | null;
+    persona: string | null;
+    drift_score: number | null;
+    elapsed_ms: number | null;
+    detail: string;
+  };
+
+  let stagEvents = $state<StagnationEvent[]>([]);
+  let stagError = $state<string | null>(null);
+
+  async function refreshStagnation() {
+    try {
+      stagEvents = await invoke<StagnationEvent[]>('get_stagnation_events');
+      stagError = null;
+    } catch (e) {
+      stagError = String(e);
+    }
+  }
+
+  $effect(() => {
+    refreshStagnation();
+    const id = setInterval(refreshStagnation, 5_000);
+    return () => clearInterval(id);
+  });
+
+  function stagBadgeTone(action_type: string): string {
+    if (action_type.startsWith('stagnation_')) return 'warn';
+    if (action_type.startsWith('lateral_thinking_')) return 'teal';
+    if (action_type.startsWith('goal_drift_')) return 'warn';
+    if (action_type === 'watchdog_timeout') return 'fail';
+    return 'ghost';
+  }
+
+  function stagBadgeLabel(action_type: string): string {
+    if (action_type === 'stagnation_spinning_detected') return 'spin';
+    if (action_type === 'stagnation_oscillation_detected') return 'osc';
+    if (action_type === 'lateral_thinking_activated') return 'switch';
+    if (action_type === 'lateral_thinking_succeeded') return 'win';
+    if (action_type === 'lateral_thinking_exhausted') return 'exhausted';
+    if (action_type === 'goal_drift_warning') return 'drift';
+    if (action_type === 'goal_drift_block') return 'block';
+    if (action_type === 'watchdog_timeout') return 'wd-to';
+    return action_type;
   }
 </script>
 
@@ -171,6 +270,112 @@
         </div>
       {/each}
     </div>
+  </Card>
+
+  <!-- 2b. AMBIGUITY GATE (C-2) — mirrors GatesPanel layout at
+       lib/components/GatesPanel.svelte:91-148 (DRIFT-4 corrected path). -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">AMBIGUITY</div>
+    {#if ambigError}
+      <p class="ambig-error">{ambigError}</p>
+    {:else if !ambig}
+      <p class="ambig-loading">Loading…</p>
+    {:else}
+      <div class="ambig-overall">
+        <span class="ambig-score-label">overall</span>
+        <span class="ambig-score" style="color: {ambigScoreColor};">
+          {ambig.score.toFixed(4)}
+        </span>
+        <span class="ambig-threshold">≤ {ambig.threshold.toFixed(2)}</span>
+        <Badge tone={ambig.qualifies_for_advance ? 'teal' : 'ghost'} size="xs">
+          {ambig.milestone}
+        </Badge>
+      </div>
+      <table class="ambig-components">
+        <thead>
+          <tr>
+            <th>dimension</th>
+            <th>clarity</th>
+            <th>weight</th>
+            <th>floor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each ambigRows as row (row.name)}
+            {#if row.c}
+              <tr class:floor-fail={row.c.score < row.c.floor}>
+                <td>{row.name}</td>
+                <td>
+                  <div class="ambig-bar">
+                    <div
+                      class="ambig-bar-fill"
+                      style="width: {ambigPct(row.c.score)};"
+                    ></div>
+                    <span>{ambigPct(row.c.score)}</span>
+                  </div>
+                </td>
+                <td>{ambigPct(row.c.weight)}</td>
+                <td>{ambigPct(row.c.floor)}</td>
+              </tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
+      {#if ambig.floor_failures.length > 0}
+        <p class="ambig-floor-warning">
+          floors breached: {ambig.floor_failures.join(', ')}
+        </p>
+      {/if}
+      <div class="ambig-streak">
+        <span>streak</span>
+        <strong>{ambig.streak.current}/{ambig.streak.required}</strong>
+        <em>
+          {#if ambig.qualifies_for_advance}
+            ready to advance
+          {:else}
+            needs more readiness
+          {/if}
+        </em>
+      </div>
+    {/if}
+  </Card>
+
+  <!-- 2c. STAGNATION (C-10 anti-spiral primitives) — mirrors the AMBIGUITY
+       card layout. Sources: get_stagnation_events Tauri command flattens
+       8 SsbActionType variants into a single DTO. Badge tones reuse the
+       existing GatesPanel.svelte tokens (warn=amber, teal=lateral,
+       fail=red); no new color tokens introduced. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">STAGNATION</div>
+    {#if stagError}
+      <p class="stag-error">{stagError}</p>
+    {:else if stagEvents.length === 0}
+      <p class="stag-empty">no anti-spiral events</p>
+    {:else}
+      <div class="stag-rows">
+        {#each stagEvents.slice(0, 8) as ev}
+          <div class="stag-row">
+            <span class="stag-ts">{fmtTs(ev.timestamp_ms)}</span>
+            <Badge tone={stagBadgeTone(ev.action_type)} size="xs">{stagBadgeLabel(ev.action_type)}</Badge>
+            {#if ev.pattern}
+              <span class="stag-tag">{ev.pattern}</span>
+            {/if}
+            {#if ev.persona}
+              <span class="stag-tag">{ev.persona}</span>
+            {/if}
+            {#if ev.drift_score !== null && ev.drift_score !== undefined}
+              <span class="stag-tag">j={ev.drift_score.toFixed(2)}</span>
+            {/if}
+            {#if ev.elapsed_ms !== null && ev.elapsed_ms !== undefined}
+              <span class="stag-tag">{Math.round(ev.elapsed_ms / 1000)}s</span>
+            {/if}
+            {#if ev.detail}
+              <span class="stag-detail">{ev.detail.slice(0, 60)}{ev.detail.length > 60 ? '...' : ''}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   </Card>
 
   <!-- 3. AGENTS -->
@@ -278,7 +483,7 @@
 
   .section-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -328,6 +533,163 @@
     to   { opacity: 1; }
   }
 
+  /* C-2: Ambiguity gate section (mirrors GatesPanel.svelte layout) */
+  .ambig-error,
+  .ambig-loading {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    margin: 4px 0;
+  }
+
+  .ambig-overall {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .ambig-score-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    text-transform: uppercase;
+  }
+
+  .ambig-score {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .ambig-threshold {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+
+  .ambig-components {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    margin-bottom: 6px;
+  }
+
+  .ambig-components th {
+    text-align: left;
+    color: var(--text-ghost);
+    text-transform: uppercase;
+    font-weight: 400;
+    padding: 2px 4px;
+  }
+
+  .ambig-components td {
+    padding: 2px 4px;
+    color: var(--text-primary);
+  }
+
+  .ambig-components tr.floor-fail {
+    background: rgba(176, 69, 69, 0.08);
+  }
+
+  .ambig-bar {
+    position: relative;
+    width: 100%;
+    height: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .ambig-bar-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: var(--teal);
+    opacity: 0.6;
+  }
+
+  .ambig-bar span {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-primary);
+    font-size: 9px;
+  }
+
+  .ambig-floor-warning {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fail);
+    margin: 4px 0;
+  }
+
+  .ambig-streak {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .ambig-streak strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .ambig-streak em {
+    color: var(--text-ghost);
+    font-style: normal;
+  }
+
+  /* C-10: STAGNATION section — reuse the agent-row / supervision-row
+     visual cadence (no new tokens). */
+  .stag-error,
+  .stag-empty {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    margin: 4px 0;
+  }
+
+  .stag-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .stag-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .stag-ts {
+    color: var(--text-ghost);
+    font-size: 9px;
+  }
+
+  .stag-tag {
+    color: var(--text-primary);
+    font-size: 10px;
+  }
+
+  .stag-detail {
+    color: var(--text-ghost);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   /* Evidence gates */
   .gate-rows {
     display: flex;
@@ -350,7 +712,7 @@
 
   .gate-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-primary);
     flex: 1;
     min-width: 120px;
@@ -458,7 +820,7 @@
   /* Context budget */
   .ctx-used {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     margin-bottom: 6px;
   }

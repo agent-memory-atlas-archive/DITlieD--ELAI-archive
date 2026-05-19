@@ -165,12 +165,92 @@ pub enum BubbleUpAction {
 }
 
 /// Policy controlling when failures bubble up at each decomposition level.
+///
+/// C-26 (s-25672) extends this struct with `retry_strategy` so the runtime
+/// has a single source of truth for `(per-attempt temperature, same-error
+/// futility threshold, decompose-on-failure flag)`. The field carries
+/// `#[serde(default)]` so persisted v57 state files deserialize cleanly.
+/// `Default::default()` propagates a sensible no-op `RetryStrategy` so the
+/// 5 existing `BubbleUpPolicy::default()` call sites (4 in this file +
+/// `examples/measure_4e_tree.rs:191`) keep compiling unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleUpPolicy {
     pub max_retries_baby_step: u32,
     pub max_retries_step: u32,
     pub max_retries_phase: u32,
     pub max_retries_concept: u32,
+    /// C-26 — retry/futility policy applied INSIDE
+    /// `max_retries_baby_step`. Determines per-attempt temperature
+    /// (staged-warming schedule), the same-error futility threshold, and
+    /// whether bubble-up should decompose-on-failure rather than retry
+    /// at-level.
+    #[serde(default)]
+    pub retry_strategy: RetryStrategy,
+}
+
+/// C-26 — per-attempt retry policy nested inside [`BubbleUpPolicy`].
+///
+/// `temperature_schedule` is consulted via [`Self::temperature_for_attempt`]
+/// each retry; `[0.0, 0.2, 0.5]` (the default) implements staged warming
+/// — attempt 0 is deterministic, attempt 1 explores mildly, attempt 2+
+/// explores more aggressively. The schedule is saturating: any attempt
+/// index past `len()` returns the last entry. Empty schedule defaults to
+/// 0.0 (no panic — see plan §Task 2 stub_ban).
+///
+/// `futility_same_error_threshold` is the per-baby-step window length the
+/// NavigatorTree watches for "same `FailureRecord.reason` repeated N
+/// times". Crossing the threshold emits `SsbActionType::FutilityDetected`
+/// and escalates via `BubbleUpAction::Escalate`.
+///
+/// `decompose_on_failure` is a forward-compat flag (false by default).
+/// When `true`, the NavigatorTree should bubble up by re-decomposing the
+/// parent step rather than retrying at-level. The hook is wired but the
+/// re-decompose handler itself ships in a follow-up patch (DECISION-C).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryStrategy {
+    pub temperature_schedule: Vec<f32>,
+    pub futility_same_error_threshold: u8,
+    pub decompose_on_failure: bool,
+}
+
+impl Eq for RetryStrategy {}
+
+impl Default for RetryStrategy {
+    fn default() -> Self {
+        Self {
+            temperature_schedule: vec![0.0, 0.2, 0.5],
+            futility_same_error_threshold: 3,
+            decompose_on_failure: false,
+        }
+    }
+}
+
+impl RetryStrategy {
+    /// Saturating lookup. Returns the temperature for `attempt` (0-indexed).
+    /// On overflow past `len()`, returns the last entry. Empty schedule
+    /// defaults to `0.0` rather than panicking — matches C-26 plan §Task 2
+    /// stub_ban (`MUST NOT panic on empty schedule`).
+    pub fn temperature_for_attempt(&self, attempt: u32) -> f32 {
+        if self.temperature_schedule.is_empty() {
+            return 0.0;
+        }
+        let idx = attempt as usize;
+        // Saturating index — fall back to the last entry on overflow.
+        // Both branches use `.copied().unwrap_or(0.0)` so an empty
+        // schedule (guarded above) cannot panic even if the guard is
+        // ever removed by a future refactor.
+        if idx < self.temperature_schedule.len() {
+            self.temperature_schedule
+                .get(idx)
+                .copied()
+                .unwrap_or(0.0)
+        } else {
+            self.temperature_schedule
+                .last()
+                .copied()
+                .unwrap_or(0.0)
+        }
+    }
 }
 
 impl Default for BubbleUpPolicy {
@@ -180,6 +260,7 @@ impl Default for BubbleUpPolicy {
             max_retries_step: DEFAULT_MAX_RETRIES_STEP,
             max_retries_phase: DEFAULT_MAX_RETRIES_PHASE,
             max_retries_concept: DEFAULT_MAX_RETRIES_CONCEPT,
+            retry_strategy: RetryStrategy::default(),
         }
     }
 }
@@ -285,6 +366,36 @@ pub struct TreeNavigatorState {
     pub phase_integration_failure_counts: BTreeMap<PhaseId, u32>,
     #[serde(default)]
     pub concept_integration_failure_counts: BTreeMap<ConceptId, u32>,
+    /// C-26 — per-baby-step rolling window of `FailureRecord.reason`
+    /// strings. Saturation == `futility_same_error_threshold` triggers
+    /// the futility-detected SSB row.
+    #[serde(default)]
+    pub same_error_window: BTreeMap<BabyStepId, std::collections::VecDeque<String>>,
+    /// C-26 — last passing/failing output text per baby step, fed into
+    /// `GoalDriftCanary::compute` on the next outcome to detect
+    /// output-stagnation futility.
+    #[serde(default)]
+    pub last_output: BTreeMap<BabyStepId, String>,
+    /// C-26 — suggested ThinkingPersona switch from the most recent
+    /// output-stagnation futility emission. Read by the orchestrator
+    /// dispatcher on the next dispatch. Snake-case persona label
+    /// (`"hacker"`, `"researcher"`, etc) so the field round-trips through
+    /// serde without depending on the `anti_spiral_extended` re-export.
+    #[serde(default)]
+    pub suggested_persona: Option<String>,
+    /// C-31 — per-baby-step cumulative LOC written. Populated by
+    /// [`Self::record_lines_written`] at every successful step write so
+    /// the FilePlan T2 Check 3 guard can cross-reference declared vs
+    /// realized line counts.
+    #[serde(default)]
+    pub cumulative_lines_by_step: BTreeMap<BabyStepId, u32>,
+    /// C-31 — monotonic write-generation counter. Incremented before
+    /// every line-tracker mutation; readers compare expected vs current
+    /// to detect concurrent updates (TOCTOU). Forward-looking insurance
+    /// for parallel step execution (Sequential is the only current
+    /// MergeStrategy per C-9 DECISION-B, see C-31-decisions §DRIFT-12).
+    #[serde(default)]
+    pub step_write_generation: u64,
 }
 
 impl TreeNavigatorState {
@@ -310,7 +421,81 @@ impl Default for TreeNavigatorState {
             step_integration_failure_counts: BTreeMap::new(),
             phase_integration_failure_counts: BTreeMap::new(),
             concept_integration_failure_counts: BTreeMap::new(),
+            same_error_window: BTreeMap::new(),
+            last_output: BTreeMap::new(),
+            suggested_persona: None,
+            cumulative_lines_by_step: BTreeMap::new(),
+            step_write_generation: 0,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-31 — FileLineTracker
+//
+// LOC accounting + TOCTOU-safe write generation on TreeNavigatorState. The
+// guard returns Err on stale generation tokens so the orchestrator can
+// detect concurrent updates before they corrupt cumulative line counts.
+// ---------------------------------------------------------------------------
+
+/// Errors emitted by the C-31 FileLineTracker methods on
+/// [`TreeNavigatorState`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NavigatorError {
+    /// The supplied `expected_generation` did not match the state's
+    /// current `step_write_generation`. Caller observed a stale snapshot
+    /// and must reload before retrying.
+    #[error(
+        "step_write_generation mismatch (expected {expected}, found {found}) — \
+         concurrent update detected"
+    )]
+    WriteGeneration { expected: u64, found: u64 },
+}
+
+impl TreeNavigatorState {
+    /// Begin a tracker mutation. Returns the current write-generation
+    /// token, which the caller must pass back to [`Self::record_lines_written`].
+    ///
+    /// C-31 §Task 4 — TOCTOU prevention. The orchestrator captures the
+    /// token before generating output, then commits the line count via
+    /// `record_lines_written`. A concurrent mutation between capture and
+    /// commit increments `step_write_generation`, causing the commit to
+    /// return `Err(NavigatorError::WriteGeneration)`.
+    pub fn begin_line_write(&self) -> u64 {
+        self.step_write_generation
+    }
+
+    /// Commit `lines` written for `step_id`. The `expected_generation`
+    /// MUST equal the token captured by a prior [`Self::begin_line_write`]
+    /// call. Mismatch returns `Err(NavigatorError::WriteGeneration)`.
+    ///
+    /// On success, `step_write_generation` increments and `lines` are
+    /// added (saturating) to the per-step cumulative total.
+    pub fn record_lines_written(
+        &mut self,
+        step_id: BabyStepId,
+        lines: u32,
+        expected_generation: u64,
+    ) -> Result<(), NavigatorError> {
+        if self.step_write_generation != expected_generation {
+            return Err(NavigatorError::WriteGeneration {
+                expected: expected_generation,
+                found: self.step_write_generation,
+            });
+        }
+        let entry = self.cumulative_lines_by_step.entry(step_id).or_insert(0);
+        *entry = entry.saturating_add(lines);
+        self.step_write_generation = self.step_write_generation.saturating_add(1);
+        Ok(())
+    }
+
+    /// Sum of every per-step cumulative LOC entry. Saturating semantics
+    /// match `record_lines_written`.
+    pub fn total_lines_written(&self) -> u32 {
+        self.cumulative_lines_by_step
+            .values()
+            .copied()
+            .fold(0u32, |acc, v| acc.saturating_add(v))
     }
 }
 
@@ -426,6 +611,95 @@ impl NavigatorTree {
         self.integration_specs.get(&(level, node_id))
     }
 
+    /// C-26 — record a `FailureRecord.reason` into the per-baby-step
+    /// rolling window and return [`FutilityVerdict::Detected`] if the
+    /// last N entries in the window are all equal AND N has reached the
+    /// configured `futility_same_error_threshold` (default 3). N=0 or
+    /// N=1 thresholds are coerced to "always detected on first repeat".
+    ///
+    /// Pure on `state` — callers issue the `BubbleUpAction::Escalate`
+    /// and emit the `FutilityDetected` SSB row themselves so the
+    /// navigator stays free of SSB-writer references (matches the
+    /// existing BubbleUpEventEmitter side-table pattern).
+    ///
+    /// Returns the consecutive-count at the verdict moment when
+    /// `Detected`, otherwise `NotYet`.
+    pub fn record_failure_reason(
+        &self,
+        state: &mut TreeNavigatorState,
+        baby_step_id: BabyStepId,
+        reason: &str,
+    ) -> FutilityVerdict {
+        let threshold = self.policy.retry_strategy.futility_same_error_threshold.max(1);
+        let capacity = threshold as usize;
+        let window = state
+            .same_error_window
+            .entry(baby_step_id)
+            .or_insert_with(std::collections::VecDeque::new);
+        window.push_back(reason.to_string());
+        while window.len() > capacity {
+            window.pop_front();
+        }
+        if window.len() == capacity
+            && window.iter().all(|r| r.as_str() == reason)
+        {
+            FutilityVerdict::Detected {
+                consecutive_count: capacity as u32,
+            }
+        } else {
+            FutilityVerdict::NotYet
+        }
+    }
+
+    /// C-26 — record the latest output text and run a Jaccard-similarity
+    /// check against the prior recorded output for the same baby step.
+    /// Returns [`StagnationVerdict::Stagnated`] when similarity exceeds
+    /// `threshold` (default 0.90). On stagnation, the caller is expected
+    /// to:
+    ///   1. emit a `FutilityOutputStagnation` SSB row,
+    ///   2. set `state.suggested_persona` (mirrors the verdict's
+    ///      `new_persona` for convenience),
+    ///   3. issue a `BubbleUpAction::Escalate` or retry as policy dictates.
+    ///
+    /// This method always updates `state.last_output` to the current text
+    /// (even on stagnation) so the next call has a fresh baseline.
+    ///
+    /// Uses `crate::anti_spiral_extended::GoalDriftCanary::compute` for
+    /// the similarity primitive (Jaccard over token sets — order-insensitive,
+    /// deterministic via BTreeSet). Per C-10 D4 affinity table,
+    /// `StagnationPattern::NoDrift -> ThinkingPersona::Hacker`.
+    pub fn record_output(
+        &self,
+        state: &mut TreeNavigatorState,
+        baby_step_id: BabyStepId,
+        output: &str,
+        threshold: f32,
+    ) -> StagnationVerdict {
+        use crate::anti_spiral_extended::{
+            suggest_persona_for_pattern, GoalDriftCanary, StagnationPattern,
+        };
+        let canary = GoalDriftCanary::default();
+        let verdict = match state.last_output.get(&baby_step_id) {
+            Some(prev) => {
+                let similarity = canary.compute(prev, output);
+                if similarity > threshold {
+                    let persona = suggest_persona_for_pattern(StagnationPattern::NoDrift);
+                    let persona_label = persona.as_str().to_string();
+                    state.suggested_persona = Some(persona_label.clone());
+                    StagnationVerdict::Stagnated {
+                        similarity,
+                        new_persona: persona_label,
+                    }
+                } else {
+                    StagnationVerdict::NotYet { similarity }
+                }
+            }
+            None => StagnationVerdict::NotYet { similarity: 0.0 },
+        };
+        state.last_output.insert(baby_step_id, output.to_string());
+        verdict
+    }
+
     /// Look up the baby step spec by ID.
     pub fn find_baby_step(&self, id: BabyStepId) -> Option<&BabyStepSpec> {
         let loc = self.location_index.get(&id)?;
@@ -442,6 +716,20 @@ impl NavigatorTree {
         let phase = concept.phases.iter().find(|p| p.id == loc.phase_id)?;
         phase.steps.iter().find(|s| s.id == loc.step_id)
     }
+}
+
+/// C-26 — verdict returned by [`NavigatorTree::record_failure_reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FutilityVerdict {
+    NotYet,
+    Detected { consecutive_count: u32 },
+}
+
+/// C-26 — verdict returned by [`NavigatorTree::record_output`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum StagnationVerdict {
+    NotYet { similarity: f32 },
+    Stagnated { similarity: f32, new_persona: String },
 }
 
 /// Compute depth-first traversal order.
@@ -1705,6 +1993,8 @@ mod tests {
             preferred_mode: None,
             target_file: None,
             edit_region: None,
+            intent_pairs: crate::intent_pair::IntentPairSet::default(),
+            file_plan: None,
         }
     }
 
@@ -2006,11 +2296,14 @@ mod tests {
         let decomp = make_decomposition(vec![concept]);
 
         // Custom policy: only 1 retry at baby-step level
+        // C-26: struct-update spreads `retry_strategy: RetryStrategy::default()`
+        // so this literal stays in sync with the field added to BubbleUpPolicy.
         let policy = BubbleUpPolicy {
             max_retries_baby_step: 1,
             max_retries_step: 1,
             max_retries_phase: 1,
             max_retries_concept: 1,
+            ..Default::default()
         };
         let tree = NavigatorTree::new(decomp, policy);
         let nav = DepthFirstNavigator::from_tree(&tree);

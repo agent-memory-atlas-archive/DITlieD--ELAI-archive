@@ -44,6 +44,85 @@ calibration_target_model = "Qwen2.5-Coder-7B"
 # before LLM auditor. Default: true. Set false only for rapid iteration debugging.
 deterministic_first = true
 
+# ============================================================================
+# C-27: Testing-Trust Tier T-0 — Wiring Contract closed entrypoint set.
+# ============================================================================
+# The `elai wiring audit` subcommand reads [wiring.entrypoints].symbols and
+# uses each entry as a BFS root for the DkgReachabilityAuditor. Each declared
+# `produces_symbol` in a B-N / C-N WIRING_CONTRACT block must be reachable
+# from at least one configured entrypoint, otherwise a
+# WiringViolation(UnreachableSymbol) row is emitted to SSB and the CLI exits 1.
+#
+# Section absence is NON-FATAL (loader returns an empty WiringEntrypointSet
+# plus tracing::warn!) — uncomment + populate when the project is ready to
+# enforce strict reachability.
+#
+# Spec ref: docs/thefinalglance/C-plan/C-27_testing_trust_t0_wiring_contract.md
+# Decision doc: workflow/reasoning/C-27-decisions.md (DECISION-NAMING /
+# DECISION-D5).
+# ============================================================================
+
+# [wiring.entrypoints]
+# symbols = [
+#     "crates/cli/src/main.rs::main",
+#     "crates/dashboard-v2/src-tauri/src/main.rs::main",
+# ]
+
+# ============================================================================
+# C-28: Testing-Trust Tier T-1 — Mutation testing gate config.
+# ============================================================================
+# Step 6 of `DeterministicAuditor::run_all` (runs only after Build /
+# VersionGate / FileSizeCensus / LazyCode / Completeness all pass) consults
+# `[testing.mutation]`. When `enabled = true` and at least one .rs / .py
+# file is in the changed set, the RustMutationRunner / PythonMutationRunner
+# shells out to cargo-mutants (Rust) / mutmut (Python) and computes
+# `mutation_score_pct`. Score < `threshold_pct` produces a
+# DeterministicFinding::Block which the AUDITING -> MEMORIZING transition
+# rejects via FsmError::AuditingBlocked. One SsbActionType::MutationSurvived
+# row is emitted per Survived mutant; Caught / Timeout / Skipped emit zero
+# rows (stub_ban contract).
+#
+# cargo-mutants and mutmut are NOT Cargo dependencies — they are CLI tools
+# that must be installed separately. See `scripts/install_dev_tools.sh`
+# for the canonical install commands.
+#
+# Spec ref: docs/thefinalglance/C-plan/C-28_testing_trust_t1_mutation.md
+# Decision doc: workflow/reasoning/C-28-decisions.md
+# ============================================================================
+[testing.mutation]
+enabled = true
+threshold_pct = 60.0
+timeout_per_mutant_sec = 30
+max_mutants_per_session = 100
+
+# ============================================================================
+# C-29: Testing-Trust Tiers T-2 (IntentPair) + T-3 (basic Metamorphic).
+# ============================================================================
+# [testing.intent]: PLANNING -> TESTING_FIRST gate enforces
+# `IntentPairSet.len() >= min_pairs` per active BabyStep (default 3, per
+# docs/specs/guide/testing-trust-design.txt L567 "require SSB action
+# INTENT_CONFIRMED with at least 3 pairs per baby step"). Set
+# `min_pairs = 0` to disable the gate entirely (dev ergonomics, not the
+# default).
+#
+# [testing.metamorphic]: DeterministicAuditor Step 7 (post-Mutation)
+# runs the relations listed in `relations`. Unknown names log a
+# `tracing::warn!` and are skipped. `permutation_invariance` is OPT-IN
+# (false positives on non-commutative ops, per spec L605-606).
+# `sample_size` flows into `MrResult.sample_size` + the SSB `mr_violated`
+# row when a relation fails.
+#
+# Spec ref: docs/thefinalglance/C-plan/C-29_testing_trust_t2_t3_intent_metamorphic.md
+# Decision doc: workflow/reasoning/C-29-decisions.md
+# ============================================================================
+[testing.intent]
+min_pairs = 3
+
+[testing.metamorphic]
+enabled = true
+relations = ["identity", "inverse"]
+sample_size = 100
+
 # 4D.13: Trusted domain classification for Oracle research pipeline.
 # Loaded by SourceQualityTable::new_from_elai_cc_toml().
 # T1 = authoritative primary sources. T2 = strong community sources.
@@ -287,6 +366,105 @@ tier4_patterns = [
     'auto-blog\\.',
     'content-farm\\.',
 ]
+
+# C-30 (4D.15): per-VRAM-tier research pipeline configuration. Mirrors the
+# `ResearchTierConfig` struct in
+# `crates/orchestrator/src/research_tier.rs` (model, quant, context_ceiling,
+# research_context_budget, chunk_size, breadth_factor, depth_limit, phi_min,
+# psi_min, embedding_device, max_sources_per_node, max_concurrent_fetches,
+# speculative_depth). Presence-only for now — `research_config_for_tier` is
+# the runtime source of truth; a future loader can read this section to
+# override the hardcoded tier configs without code changes.
+# DETERMINISTIC_CHECK passes when >=5 entries are present.
+[research.vram_tiers.vram_8gb]
+model = "Qwen2.5-Coder-3B"
+quant = "NF4"
+context_ceiling = 16384
+research_context_budget = 12000
+chunk_size = 300
+breadth_factor = 2
+depth_limit = 3
+phi_min = 0.8
+psi_min = 0.7
+embedding_device = "cpu"
+max_sources_per_node = 5
+max_concurrent_fetches = 2
+speculative_depth = 0
+
+[research.vram_tiers.vram_12gb]
+model = "Qwen2.5-Coder-3B"
+quant = "NF4+FA2"
+context_ceiling = 40000
+research_context_budget = 30000
+chunk_size = 500
+breadth_factor = 3
+depth_limit = 4
+phi_min = 0.7
+psi_min = 0.6
+embedding_device = "cpu"
+max_sources_per_node = 10
+max_concurrent_fetches = 4
+speculative_depth = 0
+
+[research.vram_tiers.vram_16gb]
+model = "Qwen2.5-Coder-7B"
+quant = "NF4+FA2"
+context_ceiling = 40000
+research_context_budget = 30000
+chunk_size = 500
+breadth_factor = 3
+depth_limit = 5
+phi_min = 0.7
+psi_min = 0.6
+embedding_device = "gpu"
+max_sources_per_node = 10
+max_concurrent_fetches = 4
+speculative_depth = 0
+
+[research.vram_tiers.vram_24gb]
+model = "Qwen2.5-Coder-14B"
+quant = "NF4+FA2"
+context_ceiling = 25000
+research_context_budget = 18000
+chunk_size = 500
+breadth_factor = 3
+depth_limit = 5
+phi_min = 0.6
+psi_min = 0.5
+embedding_device = "gpu"
+max_sources_per_node = 10
+max_concurrent_fetches = 4
+speculative_depth = 0
+
+[research.vram_tiers.vram_48gb]
+model = "Qwen2.5-Coder-32B"
+quant = "NF4+FA2"
+context_ceiling = 24000
+research_context_budget = 18000
+chunk_size = 600
+breadth_factor = 4
+depth_limit = 5
+phi_min = 0.6
+psi_min = 0.5
+embedding_device = "gpu"
+max_sources_per_node = 15
+max_concurrent_fetches = 6
+speculative_depth = 2
+
+[research.vram_tiers.cloud]
+model = "Qwen2.5-Coder-32B"
+quant = "NF4+FA2"
+context_ceiling = 24000
+research_context_budget = 18000
+chunk_size = 600
+breadth_factor = 4
+depth_limit = 5
+phi_min = 0.6
+psi_min = 0.5
+embedding_device = "gpu"
+max_sources_per_node = 15
+max_concurrent_fetches = 6
+speculative_depth = 0
 
 # B-28 E-6: per-ecosystem allowlist consumed by
 # `elai_orchestrator::focus_tunnel::dep_resolver::DependencyResolver`.
