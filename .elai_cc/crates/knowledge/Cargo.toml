@@ -54,7 +54,7 @@ toml.workspace = true
 uuid.workspace = true
 ignore = "0.4"
 globset = "0.4"
-usearch = { version = "2", default-features = false, optional = true }
+usearch = { version = "2.25.2", default-features = false, optional = true }
 
 [features]
 default = []
