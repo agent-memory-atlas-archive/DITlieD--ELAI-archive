@@ -1,4 +1,5 @@
 pub mod ambiguity;
+pub mod chat_memory_reflect;
 pub mod chat_reflect;
 pub mod config;
 pub mod engine;
@@ -17,13 +18,21 @@ pub use ambiguity::{
     SUCCESS_CRITERIA_CLARITY_FLOOR, SUCCESS_CRITERIA_CLARITY_WEIGHT,
 };
 
+pub use chat_memory_reflect::{
+    reflect as chat_memory_reflect_run, should_reflect as should_chat_memory_reflect,
+    summarize_window as chat_memory_summarize_window,
+    ReflectConfig as ChatMemoryReflectConfig, ReflectError as ChatMemoryReflectError,
+    ReflectResult as ChatMemoryReflectResult, DEFAULT_REFLECT_EVERY_N_TURNS,
+};
 pub use chat_reflect::{
     ChatFuture, ChatInferenceClient, ChatReflectConfig, ChatReflectPipeline, ReflectError,
     ReflectEvent, ReflectEventSink, ReflectOutput, ReflectTokenSummary, TurnClass, N_CANDIDATES,
     REFINE_CAP,
 };
 pub use config::{agent_grc_config_for_role, AgentGrcConfigLoader, TomlConfigLoader};
-pub use engine::{BasicGrcEngine, GrcEngine};
+pub use engine::{
+    extract_intrinsic_signals, BasicGrcEngine, ExtractedIntrinsicSignals, GrcEngine, InferenceOutput,
+};
 pub use types::{
     AgentGrcConfig, CsqCheck, CsqResult, CsqSeverity, FeasibilityMethod, FeasibilityOutcome,
     GrcBudget, GrcDefaults, GrcError, GrcState, GroundingLevel, GroundingResult,

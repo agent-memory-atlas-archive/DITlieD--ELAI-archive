@@ -46,6 +46,7 @@ elai-reasoning = { path = "../../reasoning" }
 elai-rules = { path = "../../rules" }
 elai-plugins = { path = "../../plugins" }
 elai-tools = { path = "../../tools" }
+elai-memory = { path = "../../memory" }
 elai-web-validator = { path = "../../web_validator" }
 scaffold = { path = "../../scaffold" }
 

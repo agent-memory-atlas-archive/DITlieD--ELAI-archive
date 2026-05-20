@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 elai-core = { path = "../core" }
 elai-providers = { path = "../providers" }
+elai-memory = { path = "../memory" }
 rustc-hash.workspace = true
 thiserror.workspace = true
 serde.workspace = true

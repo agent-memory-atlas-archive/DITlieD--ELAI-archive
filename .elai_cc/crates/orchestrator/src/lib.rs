@@ -1,6 +1,11 @@
 pub mod agent_pool;
+pub mod agent_role;
 pub mod agent_role_dispatcher;
 pub mod agent_template;
+// D-13: adversary role + cross-family heterogeneous-verifier check.
+// Producer side of the adversarial-verification pass; consumed by
+// `agent_pool::run_adversarial_pass`. Grounding: arxiv:2403.07974 (T1).
+pub mod adversary;
 // Phase B4 — Artifacts Pipeline (library skeleton). Filesystem-only write
 // helper for context artifacts + JSON manifests. SSB `ArtifactPublished`
 // row emission is INTENTIONALLY deferred to a follow-up patch (see
@@ -194,11 +199,138 @@ pub mod self_mod_orchestrator;
 pub mod self_mod_safety;
 pub mod self_mod_types;
 pub mod ssb;
+// D-1: ReasoningTemplate typed schema + Blake3 content-hash + L3-frozen
+// closed-enum mutation surface. Bounded-capacity replacement for the
+// string-literal reasoning patterns (DGM §H unbounded-mutation gap).
+// See workflow/reasoning/D-1-decisions.md.
+pub mod reasoning_template;
+// D-2: PPM (Process Preference Model) sidecar hook + client. Heterogeneous
+// verifier substrate per rStar-Math (arxiv:2501.04519, T1) §3.2 — separate
+// improving model artefact (Qwen2.5-Math-PRM-7B) on port 8101, distinct
+// from the policy SLM on port 8100. See workflow/reasoning/D-2-decisions.md.
+pub mod sidecar_ppm_hook;
+pub mod ppm_client;
+// D-1: append-only ArchiveChain backing reasoning-template lifecycle.
+// JSON Lines on disk, Blake3 self_hash + parent_hash chain. Consumed by the
+// FSM gate + Tauri MutationArchivePanel.
+pub mod archive_chain;
+// D-19: PRMBench adversarial-gaming benchmark runner. Lives under
+// `benchmarks::prmbench_runner`; siblings (D-20..D-25) land in the same
+// `benchmarks` module. See workflow/reasoning/D-19-decisions.md.
+pub mod benchmarks;
+// D-3: VerificationResult aggregator + closed-enum ConsensusRule. Heterogeneous
+// verifier substrate composed into a single AggregateVerdict consumed by the
+// pre-promotion chain gate. See workflow/reasoning/D-3-decisions.md.
+pub mod verification_result;
+// D-4: Tripwire stack — sliding-window KL + Δρ + IQR + perplexity + DDM
+// detectors with auto-revert wiring into archive_chain on threshold cross.
+// Consumed by agent_pool post-consensus. See module doc for paper grounding.
+pub mod tripwire;
+// D-5: Beta-posterior Thompson sampling for ReasoningTemplate promotion.
+// Consumes D-1 ArchiveChain + StagedEvalResult; produces BaiArmUpdated +
+// TemplatePromoted / TemplateCandidateRejected SSB rows via
+// `bai::emit_bai_round`. arXiv:2104.05593 (fixed-confidence BAI) +
+// Audibert COLT 2010 stopping rule.
+pub mod bai;
+// D-6: Time-windowed held-out task store + 9-gram contamination filter.
+// LiveCodeBench-style (arxiv:2403.07974, T1) contamination defense for
+// the BAI promotion-gate eval pool. Sibling of `bai.rs`; consumed by
+// `agent_pool::sample_held_out_task` which forwards into BAI as the
+// eval source. Produces HeldOutTaskAdded + HeldOutTaskUsed SSB rows.
+pub mod held_out;
+// D-7: Cross-domain transfer canary — 5 orthogonal task families
+// (CodeFix / MathProof / ProseReason / PlanningDecomposition / ToolUse).
+// NanoFlux-style (arxiv:2509.23252, T1) defense: every L2 mutation
+// candidate is evaluated across ALL 5 families before BAI promotion.
+// Sibling of `held_out.rs` (held-out tasks feed the canary). Produces
+// CanaryRunCompleted + CanaryFamilyEvaluated SSB rows via
+// `canary::emit_canary_run`. Consumed by `agent_pool::recent_canary_status`
+// (read surface for BAI gate + dashboard).
+pub mod canary;
 // C-27: Testing-trust Tier T(-1) DeterminismConfig + Tier T-0 WiringContract.
 // Surface re-exports below for the CLI driver and contract crate. See
 // workflow/reasoning/C-27-decisions.md.
 pub mod determinism;
 pub mod wiring_contract;
+// D-9: L3 frozen-surface access-control auditor. Companion to the
+// wiring_contract module — registry-backed file/line lock walker.
+// See docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md.
+pub mod locked_keys_auditor;
+// E-46: Hierarchical decomposition tuning — three additive modules.
+//   * dual_ledger: Magentic-One TaskLedger + ProgressLedger atomic
+//     advancement primitive (arxiv:2411.04468 / arxiv:2412.21154).
+//   * agentless_shortcut: AGENTLESS leaf-shortcut eligibility predicate
+//     (arxiv:2407.01489 — 32.00% SWE-bench Lite at $0.70/issue).
+//   * goal_drift_canary: intra-decomposition Jaccard-distance drift
+//     canary (arxiv:2505.02709 — goal-drift PRM supervision).
+// Producer wiring lives in `agent_pool::process_task_advancement` (free
+// functions); Tauri read surface in
+// `dashboard-v2/src-tauri/src/commands_e46.rs`.
+pub mod dual_ledger;
+pub mod agentless_shortcut;
+pub mod goal_drift_canary;
+// D-10: mode-routing predicate (orchestrator picks the grounding
+// mode for every novel claim — the policy model has no input). The
+// three modules are pure data + pure logic; D-9 LockedKeysRegistry
+// freezes `select_grounding_mode` + `ClaimType` so the agent cannot
+// self-modify the routing table (Cohen Boxed Myopic / Everitt
+// current-RF, arxiv:1908.04734). See
+// docs/thefinalglance/D-plan/D-10_mode_routing_predicate.md.
+pub mod claim;
+pub mod grounding_mode;
+pub mod orch_context;
+// D-11 — Constructive-checker registry (Mode A operational substrate).
+// Lives next to `claim` + `grounding_mode` so the routing predicate
+// dispatches into the same module surface. See
+// docs/thefinalglance/D-plan/D-11_constructive_checker_registry.md.
+// Grounding: arxiv:2310.04406 (constructive proof checking), arxiv:2211.12588
+// (PoT), arxiv:2402.01030 (CodeAct).
+pub mod checker_registry;
+// D-12 — OperationalizationCheck baby-step predicate. Co-locates the
+// typed BabyStep + MeasurableProcedure + ExpectedResult value objects
+// with the `is_operationalized` predicate the auditor gates on, and
+// the `dispatch_check_for_baby_step` helper that routes the
+// procedure through the D-11 checker registry. See
+// docs/thefinalglance/D-plan/D-12_operationalization_check_predicate.md.
+// Grounding: arxiv:2305.16291 Voyager (T1) skill-with-measurable-effect;
+// arxiv:2407.01489 AGENTLESS (T1) single-step verification.
+pub mod baby_step;
+// D-16 — UniCR conformal-refusal calibration (formal Mode E grounding).
+// Pure tau-computation + decide() + SSB-emitting producer surface. The
+// L3-locked TauUpdater + persisted tau.txt + CLI subcommands are deferred
+// to a follow-up patch per the orchestrator-scoped MVP. See
+// docs/thefinalglance/D-plan/D-16_unicr_conformal_refusal.md.
+// Grounding: arXiv:2503.01345 (UniCR — unified conformal refusal),
+// Vovk et al. *Algorithmic Learning in a Random World* (2005) §2.2.
+pub mod conformal_calibration;
+// D-17: Honest-refusal SLA monitoring. Sliding-window monitor over the
+// D-16 RefusalDecision stream + classify against operator-configured
+// healthy band + two SSB beacons (refusal_rate_snapshot +
+// refusal_sla_breach). See workflow/reasoning/D-17-decisions.md.
+// Grounding: arXiv:2503.01345 (UniCR honest refusal);
+// docs/specs/guide/real-problem-solving-grounded-2026-05-19.md §4.6.
+pub mod refusal_sla;
+// D-15: Discovery-vs-search labeling — pure `NoveltyClass` predicate over
+// caller-supplied `NoveltyEvidence`, plus the producer surface
+// (`emit_novelty_classified`) and read-side projection
+// (`recent_novelty_rows`, `novelty_distribution`) the dashboard
+// NoveltyPanel reads. No new external dep. Grounding: arXiv:2406.05761
+// (LLM novelty detection three-bucket classification);
+// docs/specs/guide/real-problem-solving-grounded-2026-05-19.md §1 Mode C
+// + §4.8. See workflow/reasoning/D-15-decisions.md.
+pub mod novelty;
+// D-18 — Typed ObservableEffect predicate (Mode D upgrade extension of
+// C-22 FeasibilityProber). Ships closed-enum TriggerSpec /
+// TypedObservation / SandboxTier + ConfoundFlags struct + SandboxExecutor
+// trait (native async-fn-in-trait via Pin<Box<dyn Future>>, no
+// async-trait crate per CLAUDE.md anti-stale-training) +
+// verify_observable_effect producer emitting one
+// `observable_effect_verified` SSB row per dispatch. Plan:
+// docs/thefinalglance/D-plan/D-18_observable_effect_typed.md (full
+// EffectSet + orthogonality + sandbox-vs-production labeling deferred
+// to a follow-up session; this pass ships the minimum-viable typed
+// predicate end-to-end including dashboard wiring).
+pub mod observable_effect;
 // C-28: Testing-trust Tier T-1 mutation testing — MutationRunner,
 // MutationResult, EquivalentMutantCache, MutationConfig. Lives next to
 // `wiring_contract` so the deterministic_auditor can consult both. See
@@ -556,6 +688,22 @@ pub use agent_pool::{
     default_grc_config, role_default_allowed_paths, AgentHandle, AgentMessage, AgentPool,
     AgentPoolConfig, AgentPoolError, AgentRole, AgentStatus, InProcessAgentPool, ModelPool,
     VRAM_MIN_BYTES,
+    // D-2: PPM verifier-consensus call site.
+    run_ppm_verifier_check,
+    // D-10: mode-routing producer surface (`route_claim` wraps the
+    // pure predicate, emits the SSB row, returns an RAII guard).
+    recent_claim_routings, route_claim, ClaimRoutedEmitter, ClaimRoutedRow, EmissionGuard,
+    VecClaimRoutedEmitter,
+    // D-11: constructive-checker dispatch producer surface
+    // (`dispatch_constructive_checkers` runs the registry + emits
+    // one `checker_result_emitted` SSB row per result).
+    dispatch_constructive_checkers, recent_checker_results, CheckerResultEmitter,
+    CheckerResultRow, VecCheckerResultEmitter,
+    // D-12: OperationalizationCheck baby-step predicate gate +
+    // `baby_step_dispatched` SSB row emitter + dashboard read surface.
+    emit_baby_step_dispatched, recent_baby_step_dispatches, run_operational_check,
+    BabyStepDispatchedEmitter, BabyStepDispatchedRow, OperationalError,
+    VecBabyStepDispatchedEmitter,
 };
 pub use agent_template::{
     build_agent_prompt, build_agent_system_preamble, AgentOutputFormat, AgentPromptContext,
@@ -695,6 +843,28 @@ pub use ssb::{
     // payloads without reaching into `orchestrator::ssb::*` directly.
     WiringEvidencePayload, WiringViolationPayload, DeterminismDriftPayload,
     WiringViolationKind,
+    // D-2 (SCHEMA_VERSION 66): PPM verifier beacons. Re-exported so the
+    // ppm_client emitter + dashboard PpmScoresPanel commands can construct
+    // payloads without reaching into `orchestrator::ssb::*` directly.
+    PpmScoredPayload, PpmGatingFailedPayload,
+    // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon. Re-exported
+    // so the agent_pool producer + contract crate + dashboard-v2
+    // ModeRoutingPanel commands can construct the payload without
+    // reaching into `orchestrator::ssb::*` directly.
+    ClaimRoutedPayload,
+    // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+    // Re-exported so the agent_pool dispatch producer + dashboard-v2
+    // CheckerRegistryPanel commands can construct the payload directly.
+    CheckerResultEmittedPayload,
+};
+// D-2: PPM client + sidecar hook public surface.
+pub use ppm_client::{
+    apply_ppm_gate, emit_ppm_score, PpmClient, PpmClientError, PpmScore,
+    PpmSsbEmitter, VecPpmSsbEmitter,
+};
+pub use sidecar_ppm_hook::{
+    MockSidecarPpmHook, PpmHookError, PpmMode, PpmScoreRequest, PpmScoreResponse,
+    SidecarPpmHook,
 };
 // C-27 — Testing-Trust T(-1) DeterminismConfig public surface.
 pub use determinism::{
@@ -708,6 +878,37 @@ pub use wiring_contract::{
     ReachabilityGraph, StubBanAuditor, StubBanEntry, WiringAuditCmd, WiringAuditError,
     WiringAuditReport, WiringAuditScope, WiringContract, WiringContractError,
     WiringEntrypointSet, WiringEntrypointSetLoader,
+};
+// D-9 — L3 frozen-surface access-control public surface.
+pub use locked_keys_auditor::{
+    status_snapshot as locked_keys_status_snapshot, AuditResult as LockedKeysAuditResult,
+    LockedKey, LockedKeysAuditError, LockedKeysAuditor, LockedKeysRegistry, LockedKeysSink,
+    LockedKeysStatusEntry, LockedKeysStatusSnapshot, Violation as LockedKeysViolation,
+    LOCKED_KEY_FULL_FILE,
+};
+// D-10 — mode-routing predicate public surface. The `select_grounding_mode`
+// symbol is L3-locked via the locked_keys_registry; the agent cannot edit it.
+pub use claim::{Claim, ClaimType, EvidenceKind, EvidenceRef};
+pub use grounding_mode::{select_grounding_mode, GroundingMode};
+pub use orch_context::{OrchContext, OrchPhase, OrchUserRole};
+// D-11 — Constructive-checker registry public surface. The
+// Mode A constructive grading path dispatches claims through
+// `CheckerRegistry::run_all_applicable` and emits one SSB row per
+// `(checker_id, kind, result)` triple. See
+// docs/thefinalglance/D-plan/D-11_constructive_checker_registry.md.
+pub use checker_registry::{
+    Checker, CheckerId, CheckerKind, CheckerRegistry, CheckerResult, CompileRustChecker,
+    JsonSchemaDeferredChecker, NumericRangeChecker, RegexMatchChecker, SympyChecker,
+    Z3DeferredChecker,
+};
+// D-12 — OperationalizationCheck baby-step predicate public surface.
+// `is_operationalized` is the predicate the auditor gates on;
+// `dispatch_check_for_baby_step` routes the procedure through the
+// D-11 registry; `parse_baby_step` reads the babystep-author markdown
+// surface. See docs/thefinalglance/D-plan/D-12_operationalization_check_predicate.md.
+pub use baby_step::{
+    dispatch_check_for_baby_step, is_operationalized, parse_baby_step, BabyStep, BabyStepError,
+    DispatchOutcome as BabyStepDispatchOutcome, ExpectedKind, ExpectedResult, MeasurableProcedure,
 };
 // C-28 — Testing-Trust T-1 mutation testing public surface.
 pub use mutation_testing::{

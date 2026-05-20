@@ -1,0 +1,20 @@
+{"tuple_id":"seed-0","claim_id":"c-seed-0","claim_text":"the orchestrator routes Mode A claims through the constructive checker registry","ground_truth":true,"predicted_score":0.92,"ts_ms":1747699200000}
+{"tuple_id":"seed-1","claim_id":"c-seed-1","claim_text":"blake3 hash output length is 64 bytes by default","ground_truth":false,"predicted_score":0.18,"ts_ms":1747699201000}
+{"tuple_id":"seed-2","claim_id":"c-seed-2","claim_text":"tokio::sync::Mutex must be used across .await points in async code","ground_truth":true,"predicted_score":0.88,"ts_ms":1747699202000}
+{"tuple_id":"seed-3","claim_id":"c-seed-3","claim_text":"rust std::collections::HashMap preserves insertion order","ground_truth":false,"predicted_score":0.22,"ts_ms":1747699203000}
+{"tuple_id":"seed-4","claim_id":"c-seed-4","claim_text":"the D-9 LockedKeysAuditor emits one SSB row per audit invocation","ground_truth":true,"predicted_score":0.95,"ts_ms":1747699204000}
+{"tuple_id":"seed-5","claim_id":"c-seed-5","claim_text":"rust thiserror::Error derive supports lifetime parameters trivially","ground_truth":false,"predicted_score":0.30,"ts_ms":1747699205000}
+{"tuple_id":"seed-6","claim_id":"c-seed-6","claim_text":"GroundingMode is a closed enum with 5 variants","ground_truth":true,"predicted_score":0.90,"ts_ms":1747699206000}
+{"tuple_id":"seed-7","claim_id":"c-seed-7","claim_text":"u32::MAX is exactly 4_000_000_000","ground_truth":false,"predicted_score":0.12,"ts_ms":1747699207000}
+{"tuple_id":"seed-8","claim_id":"c-seed-8","claim_text":"the SCHEMA_VERSION constant lives in crates/orchestrator/src/ssb.rs","ground_truth":true,"predicted_score":0.85,"ts_ms":1747699208000}
+{"tuple_id":"seed-9","claim_id":"c-seed-9","claim_text":"rand 0.8 is the current stable major version","ground_truth":false,"predicted_score":0.25,"ts_ms":1747699209000}
+{"tuple_id":"seed-10","claim_id":"c-seed-10","claim_text":"the orchestrator emits ConformalTauComputed rows after compute_tau Ok returns","ground_truth":true,"predicted_score":0.87,"ts_ms":1747699210000}
+{"tuple_id":"seed-11","claim_id":"c-seed-11","claim_text":"native async fn in traits requires the async-trait crate","ground_truth":false,"predicted_score":0.16,"ts_ms":1747699211000}
+{"tuple_id":"seed-12","claim_id":"c-seed-12","claim_text":"the calibration corpus default epsilon is 0.1","ground_truth":true,"predicted_score":0.93,"ts_ms":1747699212000}
+{"tuple_id":"seed-13","claim_id":"c-seed-13","claim_text":"serde_json::Value::Null compares equal to false","ground_truth":false,"predicted_score":0.20,"ts_ms":1747699213000}
+{"tuple_id":"seed-14","claim_id":"c-seed-14","claim_text":"RefusalDecision::Abstain carries no payload","ground_truth":true,"predicted_score":0.91,"ts_ms":1747699214000}
+{"tuple_id":"seed-15","claim_id":"c-seed-15","claim_text":"Vec::sort is unstable by default in stable Rust","ground_truth":false,"predicted_score":0.28,"ts_ms":1747699215000}
+{"tuple_id":"seed-16","claim_id":"c-seed-16","claim_text":"the L3 frozen-surface registry lives under .elai_cc/scripts/locked_keys_registry.toml","ground_truth":true,"predicted_score":0.89,"ts_ms":1747699216000}
+{"tuple_id":"seed-17","claim_id":"c-seed-17","claim_text":"the f64 quantile of an empty slice is 0.0 by convention","ground_truth":false,"predicted_score":0.14,"ts_ms":1747699217000}
+{"tuple_id":"seed-18","claim_id":"c-seed-18","claim_text":"UniCR tau is computed as the (1 - epsilon) empirical quantile of the non-conformity scores","ground_truth":true,"predicted_score":0.94,"ts_ms":1747699218000}
+{"tuple_id":"seed-19","claim_id":"c-seed-19","claim_text":"tokio::time::sleep blocks the current thread","ground_truth":false,"predicted_score":0.10,"ts_ms":1747699219000}

@@ -7,6 +7,146 @@
 //! it should never grow beyond a builder + invoke_handler list + bootstrap.
 
 mod commands;
+// D-1: ReasoningTemplate ArchiveChain Tauri command surface. Additive — does
+// not refactor `commands.rs`. See workflow/reasoning/D-1-decisions.md.
+mod commands_d1;
+// E-1 dashboard slice: chat-memory / MemoryNotes + CoreBlock read-only
+// Tauri command surface. Separate module to avoid racing the other
+// E-plan orchestration sessions that are concurrently editing
+// commands.rs. See the W2-E1 fixer brief for the WIRING_CONTRACT
+// rationale.
+mod commands_e1;
+// D-2: PPM (Process Preference Model) read-only command surface. Additive —
+// does not refactor `commands.rs` (owned by other orchestration sessions).
+// See workflow/reasoning/D-2-decisions.md.
+mod commands_d2;
+// D-3: multi-verifier consensus read-only command surface. Additive — does
+// not refactor commands.rs / commands_d2.rs. See
+// workflow/reasoning/D-3-decisions.md.
+mod commands_d3;
+// D-4: tripwire stack read-only command surface. Additive — does not
+// refactor commands.rs / commands_d2.rs / commands_d3.rs. The orchestrator
+// producer (tripwire::TripwireMonitor::observe + tripwire::auto_revert) is
+// the sole writer of `tripwire_fired` + `template_auto_reverted` rows.
+mod commands_d4;
+// D-19: PRMBench adversarial-gaming benchmark read-only command surface.
+// Additive — does not refactor commands.rs / commands_d2.rs /
+// commands_d3.rs / commands_d4.rs. The orchestrator producer
+// (`benchmarks::prmbench_runner::PRMBenchRunner::run_all`) is the sole
+// writer of `prmbench_run_completed` rows.
+mod commands_d19;
+// D-5: BAI (Best-Arm Identification) Thompson-sampling promotion round
+// read-only command surface. Additive — does not refactor commands.rs /
+// commands_d{1,2,3,4,19}.rs. The orchestrator producer
+// (`bai::emit_bai_round`) is the sole writer of `bai_arm_updated` rows.
+mod commands_d5;
+// D-6: Time-windowed held-out task store + 9-gram contamination filter
+// read-only command surface. Additive — sibling of commands_d5. The
+// orchestrator producer (`held_out::insert_and_emit` +
+// `held_out::mark_used_and_emit`) is the sole writer of
+// `held_out_task_added` / `held_out_task_used` rows.
+mod commands_d6;
+// D-7: Cross-domain transfer canary read-only command surface. Additive
+// — sibling of commands_d6. The orchestrator producer
+// (`canary::emit_canary_run`) is the sole writer of
+// `canary_run_completed` / `canary_family_evaluated` rows.
+mod commands_d7;
+// D-9: L3 frozen-surface auditor read-only command surface. Additive
+// — sibling of commands_d7. The orchestrator producer
+// (`LockedKeysAuditor::audit_diff_ranged`) is the sole writer of
+// `locked_keys_audit_run` / `locked_keys_violation_detected` rows.
+mod commands_d9;
+// D-10: mode-routing predicate read-only command surface. Sibling of
+// commands_d9. The orchestrator producer (`agent_pool::route_claim`)
+// is the sole writer of `claim_routed` SSB rows; this module only reads.
+mod commands_d10;
+// D-21: mode-routing coverage benchmark read-only command surface.
+// Sibling of commands_d10. The orchestrator producer
+// (`benchmarks::mode_routing_runner::ModeRoutingBenchmark::run_all`) is
+// the sole writer of `mode_routing_bench_run_completed` rows; this
+// module only reads.
+mod commands_d21;
+// D-11: constructive-checker registry read-only command surface.
+// Sibling of commands_d10. The orchestrator producer
+// (`elai_orchestrator::dispatch_constructive_checkers`) is the sole
+// writer of `checker_result_emitted` SSB rows; this module only reads.
+mod commands_d11;
+// D-12: OperationalizationCheck baby-step predicate read-only command
+// surface. Sibling of commands_d10 / commands_d11. The orchestrator
+// producer (`elai_orchestrator::run_operational_check`) is the sole
+// writer of `baby_step_dispatched` SSB rows; this module only reads.
+mod commands_d12;
+// E-46: Hierarchical decomposition tuning read-only command surface.
+// Sibling of commands_d10. The orchestrator producers
+// (`agent_pool::process_task_advancement` /
+// `emit_agentless_shortcut_taken` / `emit_goal_drift_fired`) are the
+// sole writers of `task_advanced` / `agentless_shortcut_taken` /
+// `goal_drift_fired` rows; this module only reads.
+mod commands_e46;
+// E-35: grammar-compilation visibility command. New module to keep the
+// boundary clean — `commands.rs` is owned by other orchestration sessions
+// in parallel and merging there would race.
+mod commands_e35;
+// E-5: MemoryFacts read-only Tauri commands (get_memory_facts /
+// get_trust_score). Separate module to avoid racing the other E-plan
+// orchestration sessions that are concurrently editing commands.rs.
+mod commands_e5;
+// D-26: ReasoningTemplate + archive dashboard surface extension.
+// Adds get_archive_lineage + get_template_archive_combined read-only
+// composites on top of D-1 / D-4 / D-5. No producer logic; pure reads.
+// See workflow/reasoning/D-26-decisions.md (if generated by the
+// orchestrator's memory-writer pass).
+mod commands_d26;
+// D-27: Mode-routing + refusal-SLA dashboard composite read surface.
+// Adds get_mode_routing_refusal_combined on top of D-10 / D-15 /
+// D-16 / D-17. No producer logic; pure read composing the four
+// Wave-2 surfaces into a single dashboard refresh payload.
+// See workflow/reasoning/D-27-decisions.md.
+mod commands_d27;
+// D-13: adversary role + cross-family verifier read-only command surface.
+// Sibling of commands_d10 / commands_d11. The orchestrator producer
+// (`elai_orchestrator::agent_pool::run_adversarial_pass`) is the sole
+// writer of `adversary_generated` + `consensus_reevaluated_with_counter`
+// rows; this module only reads.
+mod commands_d13;
+// D-16: UniCR conformal-refusal calibration read-only command surface.
+// Sibling of commands_d10 / commands_d11 / commands_d13. The
+// orchestrator producers
+// (`elai_orchestrator::conformal_calibration::compute_tau_and_emit` +
+// `decide_and_emit`, both reachable via
+// `agent_pool::dispatch_conformal_refusal`) are the sole writers of
+// `conformal_tau_computed` + `conformal_refusal_decided` rows; this
+// module only reads.
+mod commands_d16;
+// D-15: discovery-vs-search NoveltyClass read-only command surface.
+// Sibling of commands_d11 / commands_d12 / commands_d13 / commands_d16.
+// The orchestrator producers
+// (`elai_orchestrator::novelty::emit_novelty_classified` +
+// `agent_pool::dispatch_novelty`) are the sole writers of
+// `novelty_classified` rows; this module only reads.
+mod commands_d15;
+// D-18 — typed-ObservableEffect predicate read surface. Carries the
+// `observable_effect_verified` SSB rows the orchestrator producer
+// (`elai_orchestrator::observable_effect::verify_observable_effect`)
+// emits; this module only reads.
+mod commands_d18;
+// D-17 — honest-refusal SLA monitoring read surface. Carries the
+// `refusal_rate_snapshot` + `refusal_sla_breach` SSB rows the
+// orchestrator producer
+// (`elai_orchestrator::refusal_sla::RefusalRateMonitor::emit_snapshot`,
+// reachable via `agent_pool::dispatch_refusal_sla_check`) emits; this
+// module only reads.
+mod commands_d17;
+// D-22 — conformal calibration validation read surface. Carries the
+// `conformal_validation_completed` SSB rows the orchestrator producer
+// (`elai_orchestrator::benchmarks::conformal_validation_runner::ConformalValidationRunner::run_all`)
+// emits; this module only reads.
+mod commands_d22;
+// D-20 — ARC-AGI-2 OOD probe read surface. Carries the
+// `arc_benchmark_completed` SSB rows the orchestrator producer
+// (`elai_orchestrator::benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`)
+// emits; this module only reads.
+mod commands_d20;
 mod media_validation;
 mod reflect_bridge;
 mod remote_sidecar_helpers;
@@ -344,6 +484,155 @@ pub fn run() {
             commands::retry_audit,
             commands::list_projects,
             commands::create_project,
+            // E-35 — GRAMMAR COMPILATION VISIBILITY (XGrammar substrate).
+            // Producer (sidecar grammar_cache_loaded SSB rows) lands in
+            // followups_for_other_sessions; the command surface is wired
+            // now so the Svelte panel renders an empty state cleanly.
+            commands_e35::get_grammar_compilations,
+            // E-5 — USER MODELING + LONG-TERM MEMORY (bi-temporal
+            // memory_facts store). Read-only surface for the Svelte
+            // MemoryFactsDrawer; mutation commands (ADD/UPDATE/DELETE/
+            // NOOP dispatcher) reserved for the follow-up vertical slice.
+            commands_e5::get_memory_facts,
+            commands_e5::get_trust_score,
+            // E-1 dashboard slice — CHAT-MEMORY (MemoryNotes + CoreBlock)
+            // read-only surface for the Svelte MemoryNotesPanel. Producer
+            // wiring (NoteStore::insert + CoreBlockStore::upsert emitters
+            // in task_runner.rs) is owned by another orchestration session
+            // — see followups_for_other_sessions in W2-E1 brief.
+            commands_e1::get_memory_notes,
+            commands_e1::get_chat_memory_state,
+            // D-1 — REASONING TEMPLATE ARCHIVE.
+            // Read-only surface for the Svelte MutationArchivePanel. The
+            // archive itself is appended by the orchestrator producer
+            // (archive_chain::append_and_emit_ssb); these commands only read.
+            commands_d1::get_archive_recent,
+            commands_d1::get_reasoning_template_by_id,
+            // D-2 — PPM (Process Preference Model) verifier scores.
+            // Read-only surface for the Svelte PpmScoresPanel. The rows
+            // are written by the orchestrator producer
+            // (ppm_client::emit_ppm_score); this command only reads from SSB.
+            commands_d2::get_ppm_recent_scores,
+            // D-3 — multi-verifier consensus rows.
+            // Read-only surface for the Svelte VerificationConsensusPanel.
+            // Rows are written by the orchestrator producer
+            // (agent_pool::run_consensus_pass).
+            commands_d3::get_recent_verifications,
+            // D-4 — tripwire stack rows.
+            // Read-only surface for the Svelte TripwirePanel. Rows are
+            // written by the orchestrator producer
+            // (tripwire::TripwireMonitor + tripwire::auto_revert).
+            commands_d4::get_recent_tripwires,
+            // D-19 — PRMBench adversarial-gaming benchmark rows.
+            // Read-only surface for the Svelte PrmBenchPanel. Rows are
+            // written by the orchestrator producer
+            // (benchmarks::prmbench_runner::PRMBenchRunner::run_all).
+            commands_d19::get_prmbench_recent,
+            // D-5 — BAI (Best-Arm Identification) Thompson-sampling
+            // promotion round rows. Read-only surface for the Svelte
+            // BaiArmsPanel. Rows are written by the orchestrator producer
+            // (bai::emit_bai_round) carrying the Beta(alpha, beta)
+            // posterior + n_pulls + mean_estimate + was_promoted.
+            commands_d5::get_bai_arms,
+            // D-6 — held-out task store rows + aggregate stats.
+            // Read-only surface for the Svelte HeldOutPanel. Rows are
+            // written by the orchestrator producer
+            // (held_out::insert_and_emit + held_out::mark_used_and_emit).
+            commands_d6::get_held_out_recent,
+            commands_d6::get_held_out_stats,
+            // D-7 — cross-domain transfer canary read surface. Rows
+            // are written by the orchestrator producer
+            // (canary::emit_canary_run); this surface only reads.
+            commands_d7::get_canary_recent,
+            commands_d7::get_canary_per_family_breakdown,
+            // D-9 — L3 frozen-surface auditor read surface. Rows are
+            // written by the orchestrator producer
+            // (LockedKeysAuditor::audit_diff_ranged); this surface
+            // only reads.
+            commands_d9::get_locked_keys_status,
+            commands_d9::get_locked_keys_recent_audits,
+            // D-10 — mode-routing predicate read surface. Rows are
+            // written by the orchestrator producer
+            // (`elai_orchestrator::route_claim`); this surface only reads.
+            commands_d10::get_recent_claim_routings,
+            // D-21 — mode-routing coverage benchmark read surface. Rows
+            // are written by the orchestrator producer
+            // (`benchmarks::mode_routing_runner::ModeRoutingBenchmark::run_all`);
+            // this surface only reads.
+            commands_d21::get_mode_routing_bench_recent,
+            // D-11 — constructive-checker registry read surface. Rows
+            // are written by the orchestrator producer
+            // (`elai_orchestrator::dispatch_constructive_checkers`);
+            // this surface only reads.
+            commands_d11::get_checker_results_recent,
+            commands_d11::get_checker_registry_state,
+            // D-12 — OperationalizationCheck baby-step predicate read
+            // surface. Rows are written by the orchestrator producer
+            // (`elai_orchestrator::run_operational_check`); this surface
+            // only reads.
+            commands_d12::get_baby_step_dispatches_recent,
+            // D-13 — adversary-run + cross-family verifier read surface.
+            // Rows are written by the orchestrator producer
+            // (`elai_orchestrator::agent_pool::run_adversarial_pass`);
+            // this surface only reads.
+            commands_d13::get_adversarial_runs_recent,
+            commands_d13::get_adversary_config,
+            // D-16 — UniCR conformal-refusal calibration read surface.
+            // Rows are written by the orchestrator producers
+            // (`elai_orchestrator::conformal_calibration::compute_tau_and_emit`
+            // + `decide_and_emit`); this surface only reads.
+            commands_d16::get_conformal_recent,
+            commands_d16::get_calibration_corpus_state,
+            // D-15 — discovery-vs-search NoveltyClass read surface. Rows
+            // are written by the orchestrator producers
+            // (`elai_orchestrator::novelty::emit_novelty_classified` +
+            // `agent_pool::dispatch_novelty`); this surface only reads.
+            commands_d15::get_novelty_recent,
+            commands_d15::get_novelty_distribution,
+            // D-18 — typed-ObservableEffect predicate read surface.
+            // Rows are written by the orchestrator producer
+            // (`elai_orchestrator::observable_effect::verify_observable_effect`);
+            // this surface only reads.
+            commands_d18::get_observable_effects_recent,
+            // D-17 — honest-refusal SLA monitoring read surface. Rows
+            // are written by the orchestrator producer
+            // (`elai_orchestrator::refusal_sla::RefusalRateMonitor::emit_snapshot`,
+            // reachable via `agent_pool::dispatch_refusal_sla_check`);
+            // this surface only reads.
+            commands_d17::get_refusal_sla_recent,
+            commands_d17::get_refusal_rate_current,
+            // D-22 — Conformal calibration validation read surface. Rows
+            // are written by the orchestrator producer
+            // (`benchmarks::conformal_validation_runner::ConformalValidationRunner::run_all`);
+            // this surface only reads.
+            commands_d22::get_conformal_validation_recent,
+            // D-20 — ARC-AGI-2 OOD probe read surface. Rows are written
+            // by the orchestrator producer
+            // (`benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`);
+            // this surface only reads.
+            commands_d20::get_arc_bench_recent,
+            // E-46 — Hierarchical decomposition tuning read surface.
+            // Rows are written by the orchestrator producers
+            // (`agent_pool::process_task_advancement` /
+            // `emit_agentless_shortcut_taken` / `emit_goal_drift_fired`);
+            // this surface only reads.
+            commands_e46::get_dual_ledger_state,
+            commands_e46::get_recent_agentless_shortcuts,
+            commands_e46::get_goal_drift_status,
+            // D-26 — ReasoningTemplate archive dashboard composite surface.
+            // get_archive_lineage walks the D-1 chain backwards from a
+            // template id; get_template_archive_combined fuses archive +
+            // tripwire + BAI summaries for the new ArchiveExplorerView.
+            // No producer logic — pure read.
+            commands_d26::get_archive_lineage,
+            commands_d26::get_template_archive_combined,
+            // D-27 — Mode-routing + refusal-SLA dashboard composite.
+            // Single read returns mode_breakdown (D-10) +
+            // refusal_rate_current (D-17) + discovery_queue (D-15
+            // filtered to discovery_candidate) + recent_classifications
+            // (D-15) so ModeRoutingDashboardView refreshes in one
+            // round-trip. No producer.
+            commands_d27::get_mode_routing_refusal_combined,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

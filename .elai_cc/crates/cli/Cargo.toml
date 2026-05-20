@@ -45,6 +45,12 @@ rusqlite = { workspace = true }
 # orchestrator + several other workspace crates).
 uuid = { workspace = true, features = ["v4", "serde"] }
 
+[dev-dependencies]
+# D-8: archive-verify in-crate unit tests + tests/archive_verify_smoke.rs
+# integration test build temporary JSONL archive fixtures. Same pin used by
+# elai-orchestrator + elai_cc_contracts (Cargo.toml L26 of contracts crate).
+tempfile = "3"
+
 [features]
 # D4: pass-through to orchestrator's obscura feature (headless-browser fetch via obscura subprocess).
 # Also enables elai-web-search/obscura directly so doctor.rs can call obscura_fetcher::doctor().

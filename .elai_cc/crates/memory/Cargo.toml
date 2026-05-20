@@ -1,0 +1,27 @@
+[package]
+name = "elai-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "E-5 user modeling + long-term memory: bi-temporal episodic store (memory_facts) with Mem0-style extract/update and trust-score temporal decay."
+
+[dependencies]
+elai-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+blake3 = { workspace = true }
+# D-8 unblock: pre-existing E-5 source uses rustc_hash::FxHashSet but the
+# dep was not declared. Workspace pin already exists at root Cargo.toml L45.
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -692,3 +692,302 @@ pub struct EntryPointsResponse {
     pub entries: Vec<EntryPointDto>,
     pub summary: EntryPointSummaryDto,
 }
+
+// ---------------------------------------------------------------------------
+// E-35 — Structured-output substrate (XGrammar + INSTRUCTOR mode + CodeAct).
+// ---------------------------------------------------------------------------
+//
+// These types are the Rust-side wire contract for the sidecar's
+// XGrammarLogitsProcessor (Python side — to be wired in a separate session;
+// see crates/providers/src/runtime/sidecar_xgrammar_hook.rs for the
+// authoritative interface description and `followups_for_other_sessions`).
+//
+// All variants are additive and DO NOT change the IpcMessageType discriminant
+// table — they ride inside ToolRequest.arguments / ToolResult.output via
+// postcard the same way EditRequest does. IPC_PROTOCOL_VERSION is unchanged.
+
+/// Structured-output mode selector. Maps to the CRANE
+/// (arxiv:2502.09061) split between unconstrained reasoning and
+/// constrained answer phases.
+///
+/// * `Instructor` — emit `<think>...</think>` unconstrained, then `<answer>`
+///   with the XGrammar mask applied. Default for reasoning roles (auditor,
+///   planner, decomposer, idea-framer).
+/// * `Grammar` — apply XGrammar mask directly, no `<think>` phase. Used for
+///   low-reasoning enum/header blocks (FailureTaxonomy enum, BabyStepSpec
+///   status enum, ReasoningTemplate type-tag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuredMode {
+    Instructor,
+    Grammar,
+}
+
+impl StructuredMode {
+    /// Stable snake_case label used in SSB beacons and log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Instructor => "instructor",
+            Self::Grammar => "grammar",
+        }
+    }
+}
+
+/// XGrammar tool-call envelope variant. Qwen2.5-Coder family uses
+/// `<tools>...</tools>` (hanXen/vllm-qwen2.5-coder-tool-parser);
+/// Qwen2.5-7B-Instruct (non-Coder) uses native hermes `<tool_call>`.
+/// The variant is resolved at sidecar boot from `model.config.name_or_path`
+/// or the explicit `ELAI_TOOL_PARSER_VARIANT` env override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolParserVariant {
+    /// `<tools>...</tools>` envelope. Qwen2.5-Coder-{3B,7B,32B}.
+    QwenTools,
+    /// Native hermes `<tool_call>...</tool_call>` envelope. Llama-3, Qwen2.5-Instruct
+    /// (non-Coder), DeepSeek-V2.
+    Hermes,
+}
+
+impl ToolParserVariant {
+    /// Stable snake_case label for SSB beacons and log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::QwenTools => "qwen_tools",
+            Self::Hermes => "hermes",
+        }
+    }
+}
+
+/// Request payload sent from the Rust orchestrator to the sidecar's
+/// XGrammarLogitsProcessor. The payload is postcard-serialized into
+/// ToolRequest.arguments (tool_id = TOOL_XGRAMMAR_INFER) and consumed
+/// by `python/elai_inference/server.py::XGrammarLogitsProcessor` (wired
+/// in a separate orchestration session — see
+/// `crates/providers/src/runtime/sidecar_xgrammar_hook.rs`).
+///
+/// The schema is identified by `schema_id` (the canonical key the sidecar
+/// pre-compiled at boot, format `"{role}.{block}"` e.g. `"auditor.findings"`)
+/// AND by `schema_hash` (`blake3(schema_canonical_json)`) so the sidecar
+/// can verify cache validity before applying the mask. If the hash does NOT
+/// match the cached entry, the sidecar MUST surface a CacheMiss error rather
+/// than silently recompile (per WIRING_CONTRACT::stub_ban).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XGrammarRequest {
+    /// Canonical "{role}.{block}" identifier of the pre-compiled grammar.
+    pub schema_id: String,
+    /// `blake3(schema_canonical_json)` of the schema the orchestrator used to
+    /// construct the request. The sidecar verifies this matches the cached
+    /// entry before applying the mask. CLAUDE.md anti-stale: blake3,
+    /// NEVER blake2/sha2.
+    pub schema_hash: String,
+    /// `StructuredMode::Instructor` triggers the `<think>...</think>`
+    /// pre-phase; `StructuredMode::Grammar` applies the mask immediately.
+    pub mode: StructuredMode,
+    /// Tool-call envelope variant when this request involves tool calls.
+    /// `None` for non-tool-call structured outputs.
+    pub tool_parser: Option<ToolParserVariant>,
+    /// The model prompt. Already rendered (template merged); the sidecar
+    /// does not template.
+    pub prompt: String,
+    /// Hard upper bound on emitted tokens. Caller (orchestrator) sizes this
+    /// against the role's GRC budget + `max_context`.
+    pub max_tokens: u32,
+}
+
+/// Response payload returned from the sidecar's XGrammarLogitsProcessor.
+/// Carries both the constrained `<answer>` body (always non-empty on success)
+/// and the optional unconstrained `<think>` body (None when mode == Grammar).
+///
+/// The sidecar guarantees:
+/// 1. `answer_text` parses as valid JSON against the schema identified by
+///    `(schema_id, schema_hash)` from the matching `XGrammarRequest`, OR the
+///    sidecar returns an error frame instead of an XGrammarResponse.
+/// 2. `mask_applied_count` > 0 — if the mask never fired the sidecar emits
+///    `LegacyJsonObjectRefused` SSB instead of returning success.
+/// 3. `think_text.is_some()` iff `mode == Instructor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XGrammarResponse {
+    /// Echoed from the request for cross-check at the consumer.
+    pub schema_id: String,
+    pub schema_hash: String,
+    /// Constrained body (parses against the schema).
+    pub answer_text: String,
+    /// Unconstrained reasoning body. Some iff `request.mode == Instructor`.
+    pub think_text: Option<String>,
+    /// Number of times the XGrammar mask was applied during decoding.
+    /// Used by `xgrammar_mask_applied` SSB beacon and contract tests.
+    pub mask_applied_count: u32,
+    /// Wall-clock generation time in milliseconds. Includes both `<think>`
+    /// and `<answer>` phases under Instructor mode.
+    pub generation_ms: u32,
+    /// `true` iff the schema_hash matched a pre-compiled cache entry at
+    /// the sidecar (no on-demand recompile). Per WIRING_CONTRACT::stub_ban
+    /// this MUST be true; on-demand compile is a misconfiguration and the
+    /// sidecar surfaces an error frame instead of returning success.
+    pub cache_hit: bool,
+}
+
+/// CodeAct (arxiv:2402.01030 ICML 2024) action payload — composes multiple
+/// tools in one Python action. Issued by `AgentRole::Runner` (registered in
+/// orchestrator AgentRole table — out-of-scope for the E-35 typed
+/// substrate; see `followups_for_other_sessions`).
+///
+/// Sandbox enforces:
+/// * `python_code.lines().count() <= 200` (anti-runaway cap)
+/// * every tool invocation in the script resolves to a `ToolId` ∈
+///   `tool_allowlist` (otherwise the sandbox rejects pre-execution)
+/// * fixed wall-clock timeout enforced by the dispatching crate (out-of-scope
+///   for the typed surface here)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeActAction {
+    /// Python source emitted by the model (already extracted from the
+    /// fenced code block).
+    pub python_code: String,
+    /// Tools the agent is permitted to invoke from `python_code`. Empty
+    /// allowlist == no tool calls allowed (script may still compute over
+    /// passed-in arguments).
+    pub tool_allowlist: Vec<ToolId>,
+    /// `blake3(python_code)`, recorded in the SSB row for audit. CLAUDE.md
+    /// anti-stale: blake3, NEVER blake2/sha2.
+    pub action_hash: String,
+}
+
+/// Hard line cap for a single `CodeActAction.python_code`. The sandbox
+/// rejects scripts exceeding this limit pre-execution.
+pub const CODEACT_MAX_LINES: usize = 200;
+
+/// Well-known tool ID for the sidecar-bound XGrammar inference call.
+pub const TOOL_XGRAMMAR_INFER: &str = "xgrammar_infer";
+
+/// Well-known tool ID for the CodeAct Python execution channel.
+pub const TOOL_CODEACT_EXEC: &str = "codeact_exec";
+
+// ---------------------------------------------------------------------------
+// E-35 / SearchReplace tier-1 typed action shapes.
+// The full matcher + DelimiterCollisionGuard implementation lives in
+// crates/tools/src/search_replace.rs (this crate stays IPC-only).
+// ---------------------------------------------------------------------------
+
+/// SEARCH/REPLACE tier-1 edit request. Uses custom non-git fence tokens
+/// (`<<< ELAI_SEARCH` / `=== ELAI_REPLACE` / `>>> ELAI_END`) deliberately
+/// chosen to NOT collide with git conflict markers, Rust/Python/Svelte/TS
+/// comment syntax. Source: arXiv:2510.12487 Diff-XYZ + aider polyglot
+/// leaderboard (Nov 2025).
+///
+/// The matching itself is implemented in `elai_tools::search_replace`; this
+/// type is the wire shape so the orchestrator can hand a structured patch
+/// to the tools crate without re-parsing fenced text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchReplaceTier1 {
+    /// File the patch targets. Resolved against the project root by the
+    /// dispatching crate.
+    pub file_path: String,
+    /// One or more (search, replace) blocks. Order matters — applied
+    /// top-to-bottom. Each block must match exactly once or the dispatcher
+    /// falls back to whole-file rewrite (see DelimiterCollisionGuard).
+    pub edits: Vec<SearchReplaceEdit>,
+}
+
+/// One SEARCH/REPLACE pair inside a `SearchReplaceTier1`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchReplaceEdit {
+    pub search: String,
+    pub replace: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tests — E-35 typed surface round-trips
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod e35_tests {
+    use super::*;
+
+    #[test]
+    fn structured_mode_round_trip() {
+        let m = StructuredMode::Instructor;
+        let bytes = postcard::to_allocvec(&m).expect("encode");
+        let back: StructuredMode = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(m, back);
+        assert_eq!(StructuredMode::Instructor.as_str(), "instructor");
+        assert_eq!(StructuredMode::Grammar.as_str(), "grammar");
+    }
+
+    #[test]
+    fn tool_parser_variant_labels_stable() {
+        assert_eq!(ToolParserVariant::QwenTools.as_str(), "qwen_tools");
+        assert_eq!(ToolParserVariant::Hermes.as_str(), "hermes");
+    }
+
+    #[test]
+    fn xgrammar_request_round_trips_postcard() {
+        let req = XGrammarRequest {
+            schema_id: "auditor.findings".to_string(),
+            schema_hash: "blake3:deadbeef".to_string(),
+            mode: StructuredMode::Instructor,
+            tool_parser: Some(ToolParserVariant::QwenTools),
+            prompt: "audit phase B-35".to_string(),
+            max_tokens: 1024,
+        };
+        let bytes = postcard::to_allocvec(&req).expect("encode");
+        let back: XGrammarRequest = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(req, back);
+    }
+
+    #[test]
+    fn xgrammar_response_round_trips_postcard() {
+        let resp = XGrammarResponse {
+            schema_id: "auditor.findings".to_string(),
+            schema_hash: "blake3:deadbeef".to_string(),
+            answer_text: "{\"findings\":[]}".to_string(),
+            think_text: Some("reasoning trail".to_string()),
+            mask_applied_count: 17,
+            generation_ms: 412,
+            cache_hit: true,
+        };
+        let bytes = postcard::to_allocvec(&resp).expect("encode");
+        let back: XGrammarResponse = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn codeact_action_respects_max_lines_constant() {
+        // The cap itself is enforced in the sandbox crate; here we just lock
+        // the constant against accidental change.
+        assert_eq!(CODEACT_MAX_LINES, 200);
+        let act = CodeActAction {
+            python_code: "for i in range(3): print(i)".to_string(),
+            tool_allowlist: vec![ToolId::new(TOOL_FILE_READ)],
+            action_hash: "blake3:cafebabe".to_string(),
+        };
+        let bytes = postcard::to_allocvec(&act).expect("encode");
+        let back: CodeActAction = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(act, back);
+    }
+
+    #[test]
+    fn search_replace_tier1_round_trips_postcard() {
+        let patch = SearchReplaceTier1 {
+            file_path: "src/lib.rs".to_string(),
+            edits: vec![
+                SearchReplaceEdit {
+                    search: "old".to_string(),
+                    replace: "new".to_string(),
+                },
+                SearchReplaceEdit {
+                    search: "abc".to_string(),
+                    replace: "xyz".to_string(),
+                },
+            ],
+        };
+        let bytes = postcard::to_allocvec(&patch).expect("encode");
+        let back: SearchReplaceTier1 = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(patch, back);
+    }
+
+    #[test]
+    fn well_known_tool_ids_stable() {
+        assert_eq!(TOOL_XGRAMMAR_INFER, "xgrammar_infer");
+        assert_eq!(TOOL_CODEACT_EXEC, "codeact_exec");
+    }
+}

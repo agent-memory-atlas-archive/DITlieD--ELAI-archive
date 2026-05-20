@@ -127,12 +127,23 @@ pub enum FsmSubstate {
     /// Exited when run_critic_loop converges (zero BLOCK findings within
     /// MAX_CRITIC_ROUNDS=3) AND the user has submitted tradeoff responses.
     Framing,
+    /// E-1: Memory-evolution / "sleep-time compute" pass under IDLE
+    /// (arXiv:2504.13171). The orchestrator transitions IDLE -> SLEEP_COMPUTE
+    /// when the user has been idle for >= 2s (default debounce) AND a
+    /// chat-reflect window is due. While in this substate the digest-writer
+    /// agent runs the [`elai_reasoning::chat_memory_reflect::reflect`] pass
+    /// (note insert + CoreBlock append + decay tick). The substate falls
+    /// through within 50ms on `user_input_committed`, and the orchestrator
+    /// transitions SLEEP_COMPUTE -> IDLE (top-level state unchanged at
+    /// IDLE — substate is the only marker).
+    SleepCompute,
 }
 
 impl FsmSubstate {
     pub fn as_str(self) -> &'static str {
         match self {
             FsmSubstate::Framing => "framing",
+            FsmSubstate::SleepCompute => "sleep_compute",
         }
     }
 }

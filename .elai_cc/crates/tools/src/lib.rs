@@ -26,6 +26,12 @@ pub mod dispatcher;
 // `dispatcher::try_edit_tiers` to attach a similarity hint when every
 // edit-matching tier fails.
 pub mod string_similarity;
+// E-35: SEARCH/REPLACE tier-1 matcher with custom non-git fences
+// (<<< ELAI_SEARCH / === ELAI_REPLACE / >>> ELAI_END). Pure parser + applier
+// + DelimiterCollisionGuard; dispatcher integration is owned by a separate
+// orchestration session (see crates/providers/src/runtime/sidecar_xgrammar_hook.rs
+// `followups_for_other_sessions`).
+pub mod search_replace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

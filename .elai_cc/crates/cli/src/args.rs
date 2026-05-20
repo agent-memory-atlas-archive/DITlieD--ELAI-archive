@@ -245,6 +245,85 @@ pub(crate) enum CliAction {
         contracts_dir: Option<String>,
         output_format: CliOutputFormat,
     },
+    /// D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`.
+    /// Surfaces D-1's ArchiveChain::verify_chain as a user-facing CLI +
+    /// CI hook. Exits 0 on clean chain, 1 on any tamper / broken-parent /
+    /// IO / malformed-JSON. Path default resolves to
+    /// `<cwd>/archive/reasoning-templates.jsonl` (matches D-1 writer).
+    ArchiveVerify {
+        path: Option<String>,
+        json: bool,
+        fail_fast: bool,
+    },
+    /// D-9: `elai audit-locked-keys [--registry PATH] [--staged | --files A,B]
+    /// [--json] [--fail-fast]` — run LockedKeysAuditor against the staged
+    /// diff (or an explicit file list) and exit non-zero on any violation.
+    /// Default `--staged` invokes `git diff --cached --name-only` to drive
+    /// the inputs; `--files` accepts a comma-separated list for CI /
+    /// scripted use. JSON output mirrors `archive verify --json`.
+    AuditLockedKeys {
+        registry_path: Option<String>,
+        files: Option<String>,
+        use_staged: bool,
+        json: bool,
+        fail_fast: bool,
+    },
+    /// D-19: `elai bench prmbench [--dataset PATH] [--hook mock|http://host:port]
+    /// [--output PATH] [--gating-threshold 0.30] [--category NAME]`
+    /// Runs the PRMBench adversarial-gaming benchmark against the PPM
+    /// verifier (or its mock). Exits 0 on Pass, 1 on Fail. JSON report is
+    /// written to `--output` (default stdout). Owns its own tokio runtime
+    /// (sync entrypoint pattern — mirrors `archive_verify`). Threshold is
+    /// carried as a String (CliAction derives Eq; f64 does not) and parsed
+    /// at the handler boundary.
+    BenchPrmbench {
+        dataset: Option<String>,
+        hook: String,
+        output: Option<String>,
+        gating_threshold: Option<String>,
+        category: Option<String>,
+    },
+    /// D-21: `elai bench mode-routing [--dataset PATH] [--output PATH]
+    /// [--macro-floor 0.85] [--per-mode-floor 0.70]`
+    /// Replays the hand-labeled mode-routing fixture through D-10's
+    /// `select_grounding_mode` predicate and gates pass iff macro F1 >=
+    /// macro-floor AND every per-mode F1 >= per-mode-floor. Exits 0/1.
+    /// Floor values are carried as String (CliAction derives Eq; f64 does
+    /// not) and parsed at the handler boundary.
+    BenchModeRouting {
+        dataset: Option<String>,
+        output: Option<String>,
+        macro_floor: Option<String>,
+        per_mode_floor: Option<String>,
+    },
+    /// D-22: `elai bench conformal [--dataset PATH] [--corpus PATH]
+    /// [--output PATH] [--epsilon 0.1]`. Runs the conformal calibration
+    /// validation benchmark against the calibration corpus + held-out
+    /// validation fixture. Exits 0 on Pass, 1 on Fail. JSON report is
+    /// written to `--output` (default stdout). Owns its own tokio
+    /// runtime (sync entrypoint pattern — mirrors bench_mode_routing).
+    /// Epsilon is carried as a String (CliAction derives Eq; f64 does
+    /// not) and parsed at the handler boundary.
+    BenchConformal {
+        dataset: Option<String>,
+        corpus: Option<String>,
+        output: Option<String>,
+        epsilon: Option<String>,
+    },
+    /// D-20: `elai bench arc [--dataset PATH] [--output PATH]
+    /// [--novelty-config PATH]`. Replays an ARC-AGI-2 fixture through
+    /// D-10's `select_grounding_mode` predicate and D-15's `classify`
+    /// predicate, then aggregates the pair-wise outcomes into the
+    /// closed [`ARCVerdict`] taxonomy (HonestlyEvaluated /
+    /// GameWithMemorization / Refused). Exits 0 on HonestlyEvaluated,
+    /// 1 otherwise. JSON report written to `--output` (default stdout).
+    /// Owns its own tokio runtime (sync entrypoint pattern — mirrors
+    /// `bench_mode_routing` + `bench_conformal`).
+    BenchArc {
+        dataset: Option<String>,
+        output: Option<String>,
+        novelty_config: Option<String>,
+    },
 }
 
 /// 1.1 — Minimal PartialEq-capable carrier for a local-backend URL.
@@ -575,6 +654,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "run" => parse_run_subcommand_args(&rest[1..]),
         "symbol_graph" | "symbol-graph" => parse_symbol_graph_args(&rest[1..]),
         "wip-squash" | "wip_squash" => parse_wip_squash_args(&rest[1..]),
+        // D-19: `elai bench prmbench ...` — PRMBench adversarial-gaming benchmark.
+        "bench" => parse_bench_subcommand_args(&rest[1..]),
         // C-20: route `elai measure …` through the slash-command parser so
         // the grammar is a single source of truth (mirrors the `runtime`
         // routing immediately above).
@@ -636,6 +717,15 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
+        // D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`
+        // Surfaces ArchiveChain::verify_chain (D-1) as a CLI subcommand +
+        // CI hook. Parser is local (no slash-command grammar needed --
+        // this is a top-level `elai archive verify` invocation, not a
+        // REPL slash command).
+        "archive" => parse_archive_subcommand_args(&rest[1..]),
+        // D-9 — `elai audit-locked-keys` is a top-level subcommand, not a
+        // slash command (CI + pre-commit hook want a simple argv shape).
+        "audit-locked-keys" => parse_audit_locked_keys_args(&rest[1..]),
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -797,6 +887,450 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
             "unknown `symbol_graph` sub-command: '{other}' (expected 'build' or 'stats')"
         )),
     }
+}
+
+/// D-8 — parse `elai archive verify [--path PATH] [--json] [--fail-fast]`.
+///
+/// Only one sub-verb is currently supported (`verify`). Other archive
+/// sub-verbs (e.g. compact, inspect) are out-of-scope; the parser errors out
+/// on unknown sub-verbs so a typo doesn't silently fall through to the
+/// fallback Prompt action.
+pub(crate) fn parse_archive_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub != "verify" {
+        return Err(format!(
+            "unknown `archive` sub-command: '{sub}' (expected 'verify')"
+        ));
+    }
+    let mut path: Option<String> = None;
+    let mut json = false;
+    let mut fail_fast = false;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--path" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --path".to_string())?;
+                path = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--path=") => {
+                path = Some(flag[7..].to_string());
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--fail-fast" => {
+                fail_fast = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `archive verify` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::ArchiveVerify {
+        path,
+        json,
+        fail_fast,
+    })
+}
+
+/// D-9 — parse `elai audit-locked-keys [--registry PATH] [--staged | --files A,B]
+/// [--json] [--fail-fast]`.
+///
+/// `--staged` and `--files` are mutually exclusive; `--staged` is the
+/// implicit default so pre-commit hooks can invoke the bare subcommand.
+/// CI callers wanting full control pass `--files file1,file2,...`.
+pub(crate) fn parse_audit_locked_keys_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut registry_path: Option<String> = None;
+    let mut files: Option<String> = None;
+    let mut use_staged = true;
+    let mut explicit_staged = false;
+    let mut json = false;
+    let mut fail_fast = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--registry" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --registry".to_string())?;
+                registry_path = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--registry=") => {
+                registry_path = Some(flag["--registry=".len()..].to_string());
+                i += 1;
+            }
+            "--files" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --files".to_string())?;
+                files = Some(value.clone());
+                use_staged = false;
+                i += 2;
+            }
+            flag if flag.starts_with("--files=") => {
+                files = Some(flag["--files=".len()..].to_string());
+                use_staged = false;
+                i += 1;
+            }
+            "--staged" => {
+                explicit_staged = true;
+                use_staged = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--fail-fast" => {
+                fail_fast = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `audit-locked-keys` argument: {other}"));
+            }
+        }
+    }
+    if explicit_staged && files.is_some() {
+        return Err("--staged and --files are mutually exclusive".to_string());
+    }
+    Ok(CliAction::AuditLockedKeys {
+        registry_path,
+        files,
+        use_staged,
+        json,
+        fail_fast,
+    })
+}
+
+/// D-19 — parse `elai bench prmbench [--dataset PATH] [--hook mock|http://host:port]
+/// [--output PATH] [--gating-threshold 0.30] [--category NAME]`.
+///
+/// Only one sub-verb is supported (`prmbench`). The flag grammar mirrors
+/// `archive verify`: long-form `--flag VALUE` and `--flag=VALUE` both
+/// accepted. Validation of the values (URL parsing for `--hook`, range
+/// check on `--gating-threshold`) lives in the bench_prmbench handler
+/// boundary so this parser stays free of orchestrator type deps.
+pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub == "mode-routing" {
+        return parse_bench_mode_routing_args(&rest[1..]);
+    }
+    if sub == "conformal" {
+        return parse_bench_conformal_args(&rest[1..]);
+    }
+    if sub == "arc" {
+        return parse_bench_arc_args(&rest[1..]);
+    }
+    if sub != "prmbench" {
+        return Err(format!(
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc')"
+        ));
+    }
+    let mut dataset: Option<String> = None;
+    let mut hook: String = "mock".to_string();
+    let mut output: Option<String> = None;
+    let mut gating_threshold: Option<String> = None;
+    let mut category: Option<String> = None;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--dataset" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --dataset".to_string())?;
+                dataset = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--dataset=") => {
+                dataset = Some(flag["--dataset=".len()..].to_string());
+                i += 1;
+            }
+            "--hook" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --hook".to_string())?;
+                hook = value.clone();
+                i += 2;
+            }
+            flag if flag.starts_with("--hook=") => {
+                hook = flag["--hook=".len()..].to_string();
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--gating-threshold" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --gating-threshold".to_string())?;
+                // Validate parseability up front so a malformed flag fails
+                // at the parser boundary instead of mid-run.
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --gating-threshold {value:?}: {e}"))?;
+                gating_threshold = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--gating-threshold=") => {
+                let value = &flag["--gating-threshold=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --gating-threshold {value:?}: {e}"))?;
+                gating_threshold = Some(value.to_string());
+                i += 1;
+            }
+            "--category" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --category".to_string())?;
+                category = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--category=") => {
+                category = Some(flag["--category=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench prmbench` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchPrmbench {
+        dataset,
+        hook,
+        output,
+        gating_threshold,
+        category,
+    })
+}
+
+/// D-21 — parse `elai bench mode-routing [--dataset PATH] [--output PATH]
+/// [--macro-floor 0.85] [--per-mode-floor 0.70]`. Mirrors the prmbench
+/// parser; hand-rolled per the CLAUDE.md "no new clap dep" rule.
+/// Validation of the floor values lives at the handler boundary.
+pub(crate) fn parse_bench_mode_routing_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut dataset: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut macro_floor: Option<String> = None;
+    let mut per_mode_floor: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--dataset" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --dataset".to_string())?;
+                dataset = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--dataset=") => {
+                dataset = Some(flag["--dataset=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--macro-floor" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --macro-floor".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --macro-floor {value:?}: {e}"))?;
+                macro_floor = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--macro-floor=") => {
+                let value = &flag["--macro-floor=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --macro-floor {value:?}: {e}"))?;
+                macro_floor = Some(value.to_string());
+                i += 1;
+            }
+            "--per-mode-floor" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --per-mode-floor".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --per-mode-floor {value:?}: {e}"))?;
+                per_mode_floor = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--per-mode-floor=") => {
+                let value = &flag["--per-mode-floor=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --per-mode-floor {value:?}: {e}"))?;
+                per_mode_floor = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench mode-routing` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchModeRouting {
+        dataset,
+        output,
+        macro_floor,
+        per_mode_floor,
+    })
+}
+
+/// D-22 — parse `elai bench conformal [--dataset PATH] [--corpus PATH]
+/// [--output PATH] [--epsilon 0.1]`. Mirrors the mode-routing parser;
+/// hand-rolled per the CLAUDE.md "no new clap dep" rule. Validation of
+/// the epsilon value lives at the handler boundary.
+pub(crate) fn parse_bench_conformal_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut dataset: Option<String> = None;
+    let mut corpus: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut epsilon: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--dataset" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --dataset".to_string())?;
+                dataset = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--dataset=") => {
+                dataset = Some(flag["--dataset=".len()..].to_string());
+                i += 1;
+            }
+            "--corpus" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --corpus".to_string())?;
+                corpus = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--corpus=") => {
+                corpus = Some(flag["--corpus=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--epsilon" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --epsilon".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --epsilon {value:?}: {e}"))?;
+                epsilon = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--epsilon=") => {
+                let value = &flag["--epsilon=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --epsilon {value:?}: {e}"))?;
+                epsilon = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench conformal` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchConformal {
+        dataset,
+        corpus,
+        output,
+        epsilon,
+    })
+}
+
+/// D-20 — parse `elai bench arc [--dataset PATH] [--output PATH]
+/// [--novelty-config PATH]`. Hand-rolled per the CLAUDE.md "no new clap
+/// dep" rule.
+pub(crate) fn parse_bench_arc_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut dataset: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut novelty_config: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--dataset" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --dataset".to_string())?;
+                dataset = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--dataset=") => {
+                dataset = Some(flag["--dataset=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--novelty-config" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --novelty-config".to_string())?;
+                novelty_config = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--novelty-config=") => {
+                novelty_config = Some(flag["--novelty-config=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench arc` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchArc {
+        dataset,
+        output,
+        novelty_config,
+    })
 }
 
 /// C-13 — parse `elai wip-squash [--project-root <path>]` arguments.

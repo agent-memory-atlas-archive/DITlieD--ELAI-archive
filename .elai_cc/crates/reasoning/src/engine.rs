@@ -765,3 +765,135 @@ impl GrcEngine for BasicGrcEngine {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// D-3: intrinsic-signal extraction helper
+// ---------------------------------------------------------------------------
+
+/// Lightweight inference-output bundle consumed by [`extract_intrinsic_signals`].
+///
+/// This struct deliberately mirrors the four scalars the multi-verifier
+/// consensus aggregator needs (D-3 `IntrinsicSignals`) without taking a
+/// dependency on `elai-orchestrator` (the orchestrator depends on
+/// `elai-reasoning`, not the other way around — pulling the orchestrator
+/// type in here would create a cycle).
+///
+/// Producer wiring (sidecar streaming / local generation) populates this
+/// struct from the actual forward-pass telemetry. For sidecar-served
+/// inferences `kl_to_base` stays `0.0` until steering is wired.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InferenceOutput {
+    /// Mean per-token log-probability of the produced chain.
+    pub logprob_mean: f32,
+    /// Variance of per-token log-probability across the chain.
+    pub logprob_var: f32,
+    /// Mean predictive entropy across positions (nats).
+    pub entropy: f32,
+    /// Number of reasoning steps the generator emitted.
+    pub step_count: u32,
+    /// KL divergence vs. the policy-mode baseline. `0.0` when no steering /
+    /// contrast measurement is configured.
+    pub kl_to_base: f32,
+}
+
+/// Extracted intrinsic signals. Mirrors `orchestrator::verification_result::
+/// IntrinsicSignals` but lives in the reasoning crate (zero cross-crate dep
+/// — orchestrator consumes from here, not the reverse).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtractedIntrinsicSignals {
+    pub logprob_mean: f32,
+    pub logprob_var: f32,
+    pub entropy: f32,
+    pub step_count: u32,
+    pub kl_to_base: f32,
+}
+
+/// Project an [`InferenceOutput`] into the scalar bundle the D-3
+/// verification aggregator consumes. Pure function — no I/O, no clock, no
+/// allocation. Production callers run this once per candidate before
+/// passing the result into `verification_result::IntrinsicSignals` (the
+/// orchestrator-side type conversion is a single struct-literal copy).
+///
+/// NaN policy: NaN scalars in `InferenceOutput` are coerced to neutral
+/// values (`logprob_mean = -10.0` so the intrinsic verdict registers as
+/// "fail" rather than silently passing; `entropy = f32::INFINITY` for the
+/// same reason). This matches the V-STaR §3.1 recommendation that
+/// uninterpretable telemetry should fail the gate, never pass it.
+#[must_use]
+pub fn extract_intrinsic_signals(output: &InferenceOutput) -> ExtractedIntrinsicSignals {
+    let logprob_mean = if output.logprob_mean.is_nan() {
+        -10.0
+    } else {
+        output.logprob_mean
+    };
+    let logprob_var = if output.logprob_var.is_nan() {
+        0.0
+    } else {
+        output.logprob_var
+    };
+    let entropy = if output.entropy.is_nan() {
+        f32::INFINITY
+    } else {
+        output.entropy
+    };
+    let kl_to_base = if output.kl_to_base.is_nan() {
+        0.0
+    } else {
+        output.kl_to_base
+    };
+    ExtractedIntrinsicSignals {
+        logprob_mean,
+        logprob_var,
+        entropy,
+        step_count: output.step_count,
+        kl_to_base,
+    }
+}
+
+#[cfg(test)]
+mod d3_intrinsic_tests {
+    use super::*;
+
+    #[test]
+    fn extract_passthrough_on_clean_input() {
+        let out = InferenceOutput {
+            logprob_mean: -1.2,
+            logprob_var: 0.4,
+            entropy: 2.1,
+            step_count: 4,
+            kl_to_base: 0.0,
+        };
+        let s = extract_intrinsic_signals(&out);
+        assert_eq!(s.logprob_mean, -1.2);
+        assert_eq!(s.logprob_var, 0.4);
+        assert_eq!(s.entropy, 2.1);
+        assert_eq!(s.step_count, 4);
+        assert_eq!(s.kl_to_base, 0.0);
+    }
+
+    #[test]
+    fn extract_coerces_nan_logprob_to_failing_floor() {
+        let out = InferenceOutput {
+            logprob_mean: f32::NAN,
+            logprob_var: 0.0,
+            entropy: 1.0,
+            step_count: 1,
+            kl_to_base: 0.0,
+        };
+        let s = extract_intrinsic_signals(&out);
+        assert_eq!(s.logprob_mean, -10.0);
+    }
+
+    #[test]
+    fn extract_coerces_nan_entropy_to_infinity() {
+        let out = InferenceOutput {
+            logprob_mean: -1.0,
+            logprob_var: 0.1,
+            entropy: f32::NAN,
+            step_count: 1,
+            kl_to_base: 0.0,
+        };
+        let s = extract_intrinsic_signals(&out);
+        assert!(s.entropy.is_infinite());
+    }
+}

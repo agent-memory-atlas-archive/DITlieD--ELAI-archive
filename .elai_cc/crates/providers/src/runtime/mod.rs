@@ -27,6 +27,11 @@ pub mod ollama;
 pub mod opencode;
 pub mod secret;
 pub mod sidecar;
+/// E-35: typed Rust-side hook for the sidecar's XGrammarLogitsProcessor.
+/// See `sidecar_xgrammar_hook.rs` for the wire-format contract + the
+/// `followups_for_other_sessions` block (Python sidecar wiring is owned by
+/// a separate orchestration session).
+pub mod sidecar_xgrammar_hook;
 pub mod types;
 pub mod vllm;
 
@@ -45,6 +50,10 @@ pub use ollama::OllamaRuntime;
 pub use opencode::OpenCodeRuntime;
 pub use secret::SecretString;
 pub use sidecar::SidecarRuntime;
+pub use sidecar_xgrammar_hook::{
+    build_xgrammar_request, verify_response_contract, xgrammar_cache_key, xgrammar_schema_id,
+    SidecarXGrammarHook, XGrammarHookError,
+};
 pub use vllm::VllmRuntime;
 pub use types::{
     unavailable, AuthSource, CompletionConfig, CompletionResponse, Message, MessageRole,

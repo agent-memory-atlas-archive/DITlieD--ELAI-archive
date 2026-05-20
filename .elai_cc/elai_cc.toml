@@ -695,3 +695,63 @@ query_template = "Mod distribution channels (Steam Workshop / NexusMods / GitHub
 min_source_tier = "T2"
 parallelism_budget = 2
 mandatory = false
+
+# D-1: ReasoningTemplate archive lifecycle configuration. Commented out by
+# default — runtime_config.rs falls back to these defaults if the section is
+# absent (archive_path = ".elai_cc/archive/reasoning-templates.jsonl",
+# bounded_string_max = 1024).
+# [reasoning.templates]
+# archive_path = ".elai_cc/archive/reasoning-templates.jsonl"
+# bounded_string_max = 1024
+
+# ============================================================================
+# D-2: PPM (Process Preference Model) sidecar configuration.
+# ============================================================================
+# Heterogeneous verifier substrate per rStar-Math (arxiv:2501.04519, T1) §3.2.
+# The PPM lives on a SEPARATE port (8101) from the policy SLM sidecar (8100)
+# and runs a different model family (Qwen2.5-Math-PRM-7B) so the verifier
+# decision is not coupled to the policy SLM's blind-spots
+# (arxiv:2504.16760, T1 heterogeneous-verifier requirement).
+#
+# Opt-in via ELAI_PPM_ENABLE=1 + this section uncommented. Without both,
+# the PPM is never contacted and the consensus path (D-3) falls back to
+# the existing pre-promotion chain gate.
+#
+# Spec ref: docs/thefinalglance/D-plan/D-2_ppm_sidecar_wiring.md
+# Decision doc: workflow/reasoning/D-2-decisions.md
+# ============================================================================
+# [runtime.ppm]
+# endpoint = "http://127.0.0.1:8101/v1/ppm/score"
+# timeout_secs = 30
+# max_retries = 3
+# model = "huihui-ai/Qwen2.5-Math-PRM-7B"
+# min_score_threshold = 0.7
+
+# ============================================================================
+# D-17: Honest-refusal SLA monitoring.
+# ============================================================================
+# Sliding-window monitor over the D-16 `RefusalDecision` stream. Counts the
+# fraction of `Abstain` decisions inside `window_size` recent decisions and
+# classifies the rate against the healthy band `[healthy_band_lo,
+# healthy_band_hi]`. Emits one `refusal_rate_snapshot` SSB row per snapshot
+# and one `refusal_sla_breach` SSB row whenever the rate leaves the band.
+#
+# Defaults (also the in-code defaults — section is OPTIONAL):
+#   window_size = 100
+#   target_rate = 0.10
+#   healthy_band_lo = 0.05
+#   healthy_band_hi = 0.20
+#   alarm_threshold_breaches = 3
+#
+# Spec ref: docs/thefinalglance/D-plan/D-17_honest_refusal_sla.md
+# Grounding: arXiv:2503.01345 (UniCR honest refusal); docs/specs/guide/
+# real-problem-solving-grounded-2026-05-19.md §4.6 (refusal rate as a
+# first-class quality metric).
+# ============================================================================
+# [refusal_sla]
+# window_size = 100
+# target_rate = 0.10
+# healthy_band_lo = 0.05
+# healthy_band_hi = 0.20
+# alarm_threshold_breaches = 3
+# verifier_id = "ppm_qwen25_math_prm_7b"

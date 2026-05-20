@@ -11,6 +11,9 @@
     Plug,
     Globe,
     Sparkles,
+    BookUser,
+    NotebookText,
+    Regex,
   } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
@@ -32,7 +35,10 @@
     | 'ANTI-STALENESS'
     | 'TOOLS-HOOKS'
     | 'WEB-QUALITY'
-    | 'COSMOS';
+    | 'COSMOS'
+    | 'MEMORY-FACTS'
+    | 'CHAT-MEMORY'
+    | 'GRAMMAR-COMPILE';
 
   interface DrawerItem {
     key: DrawerKeyUpper;
@@ -54,6 +60,12 @@
     { key: 'WEB-QUALITY',          lowerKey: 'web-quality',          label: 'WEB QUALITY',          Icon: Globe },
     // B-42 — Cosmos artifact tier (read-only status; refresh deferred).
     { key: 'COSMOS',               lowerKey: 'cosmos',               label: 'COSMOS',               Icon: Sparkles },
+    // E-5 — User modeling + long-term memory facts.
+    { key: 'MEMORY-FACTS',         lowerKey: 'memory-facts',         label: 'MEMORY FACTS',         Icon: BookUser },
+    // E-1 dashboard slice — chat-memory (MemoryNotes + CoreBlock).
+    { key: 'CHAT-MEMORY',          lowerKey: 'chat-memory',          label: 'CHAT MEMORY',          Icon: NotebookText },
+    // E-35 — XGrammar grammar-cache visibility.
+    { key: 'GRAMMAR-COMPILE',      lowerKey: 'grammar-compile',      label: 'GRAMMAR COMPILE',      Icon: Regex },
   ];
 
   function tooltip(node: HTMLElement, opts: { label: string }) {

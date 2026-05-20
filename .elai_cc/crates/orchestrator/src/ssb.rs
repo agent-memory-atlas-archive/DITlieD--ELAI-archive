@@ -490,7 +490,390 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // (no migration is provided because SSB rows are observational, capped at
 // PAYLOAD_MAX_BYTES, and have no downstream consumers that hold long-term
 // state).
-const SCHEMA_VERSION: i64 = 63;
+// D-1 (SCHEMA_VERSION 64): bumped 63 -> 64 for 4 new SsbActionType variants
+// emitting ReasoningTemplate ArchiveChain lifecycle beacons.
+//   * archive_entry_added            — one row per ArchiveChain::append.
+//   * archive_entry_retired          — one row per template retirement.
+//   * template_promoted              — one row per BAI promotion (D-5 producer
+//                                      lands in a later session; the wire
+//                                      surface is added now so the schema bump
+//                                      is atomic).
+//   * template_candidate_rejected    — one row per Candidate rejection.
+// Schema bump is destructive (existing v63 DBs are dropped on first open)
+// per the existing SSB convention documented in the v63 block above.
+//
+// E-5 (SCHEMA_VERSION 65): bumped 64 -> 65 for 2 new SsbActionType variants
+// emitting bi-temporal `memory_facts` lifecycle beacons (E-plan plan E-5
+// — user modeling + long-term memory). Variants:
+//   * memory_fact_extracted   — one row per FactStore::insert success
+//                               (Mem0-style ADD; UPDATE/DELETE/NOOP
+//                               dispatcher variants reserved for the
+//                               follow-up vertical slice).
+//   * memory_fact_superseded  — one row per FactStore::supersede success
+//                               (Zep bi-temporal close + replacement pair).
+// All 9 atomic lockstep sites are touched: enum L1773-1782, SQL CHECK arm,
+// as_sql_str arm, ssb_action_type_from_str arm, SsbPayload variant,
+// action_type() arm, payload struct, test_payload arm, all_test_payloads
+// arm. all_test_payloads().len() goes 140 -> 142 (+2 variants). Schema
+// bump is destructive (existing v64 DBs are dropped on first open) per
+// the existing SSB convention documented above.
+//
+// D-2 (SCHEMA_VERSION 66): bumped 65 -> 66 for 2 new SsbActionType variants
+// emitting PPM (Process Preference Model) verifier-side beacons (D-plan
+// plan D-2 — separable improving verifier). Variants:
+//   * ppm_scored           — one row per PpmClient::score success that
+//                            clears the configured threshold. Carries
+//                            (candidate_id, verifier_id, mode,
+//                             score_mean, score_var, num_steps,
+//                             latency_ms, cache_hit).
+//   * ppm_gating_failed    — one row per scoring that does NOT clear the
+//                            threshold. Carries (candidate_id,
+//                            verifier_id, mode, score_mean, threshold,
+//                            num_steps).
+// all_test_payloads().len() goes 142 -> 144 (+2 variants). Schema bump
+// is destructive per the SSB convention.
+//
+// E-1 (SCHEMA_VERSION 67): bumped 66 -> 67 for 2 new SsbActionType variants
+// emitting infinite-context chat illusion beacons (E-plan plan E-1 —
+// HippoRAG PPR + CoreBlock + SLEEP_COMPUTE FSM substate).
+//   * chat_reflection_completed — one row per
+//                                 `chat_memory_reflect::reflect()` Ok return.
+//                                 Carries (note_id, note_preview,
+//                                 facts_extracted, decay_rows_examined,
+//                                 decay_rows_updated, core_block_bytes).
+//   * memory_evolution_run      — one row per SLEEP_COMPUTE substate entry
+//                                 / exit. Carries (phase, duration_ms,
+//                                 notes_touched).
+// all_test_payloads().len() goes 144 -> 146 (+2 variants). Coordinated
+// with D-2 (which took 66 first) per the brief's last-writer convention.
+//
+// E-1 dashboard slice (SCHEMA_VERSION 68): bumped 67 -> 68 for 4 more
+// SsbActionType variants closing the WIRING_CONTRACT gap on the MemoryNotes
+// + CoreBlock surfaces (producer wiring in task_runner.rs is off-limits
+// this session — emitter sites listed in followups_for_other_sessions).
+//   * memory_note_inserted     — one row per `NoteStore::insert` Ok return.
+//                                Carries (note_id, scope, content_blake3,
+//                                link_count).
+//   * memory_note_evolved      — one row per A-MEM note evolution rewrite
+//                                (PPR-walker-attached link/edit pass).
+//                                Carries (note_id, old_content_blake3,
+//                                new_content_blake3, links_added,
+//                                links_removed).
+//   * memory_conflict_detected — one row per duplicate / contradiction
+//                                pair the conflict adjudicator emits.
+//                                Carries (fact_id_a, fact_id_b,
+//                                conflict_kind: "duplicate" |
+//                                "contradiction").
+//   * core_block_replaced      — one row per CoreBlockStore::upsert that
+//                                replaces an existing row (vs first
+//                                insert). Carries (user_id, old_blake3,
+//                                new_blake3, bytes).
+// all_test_payloads().len() goes 146 -> 150 (+4 variants).
+//
+// D-3 (SCHEMA_VERSION 69): bumped 68 -> 69 for 2 new SsbActionType variants
+// covering the multi-verifier consensus aggregator (see
+// .elai_cc/crates/orchestrator/src/verification_result.rs + the
+// run_consensus_pass producer in agent_pool.rs). Both writer-side lockstep
+// arms (enum / CHECK / as_sql_str / from_str / SsbPayload variant /
+// action_type() / test_payload / all_test_payloads / variant count) updated
+// atomically per CLAUDE.md SCHEMA hard rule.
+//   * verifier_consensus_pass    — one row per `run_consensus_pass` Ok
+//                                  return with verdict = Pass. Carries
+//                                  (candidate_id, template_id, verdict,
+//                                  verifier_count, pass_count, rule_id).
+//   * verifier_consensus_fail    — one row per `run_consensus_pass` Ok
+//                                  return with verdict != Pass. Carries
+//                                  (candidate_id, template_id,
+//                                  failing_verifier_ids, reason).
+// all_test_payloads().len() goes 150 -> 152 (+2 variants).
+//
+// D-4 (SCHEMA_VERSION 70): bumped 69 -> 70 for 2 new SsbActionType variants
+// covering the tripwire stack (see crates/orchestrator/src/tripwire.rs).
+// All 9 lockstep arms updated atomically per CLAUDE.md SCHEMA hard rule.
+//   * tripwire_fired             — one row per
+//                                  `TripwireMonitor::observe` firing.
+//                                  Carries (event_id, tripwire_kind,
+//                                  candidate_id, observed_value, threshold,
+//                                  fired_at_ms).
+//   * template_auto_reverted     — one row per `tripwire::auto_revert`
+//                                  success. Carries (template_id,
+//                                  parent_template_id, retirement_reason,
+//                                  fired_tripwire_id).
+// all_test_payloads().len() goes 152 -> 154 (+2 variants).
+//
+// D-19 (SCHEMA_VERSION 71): bumped 70 -> 71 for 1 new SsbActionType variant
+// covering the PRMBench adversarial-gaming benchmark runner (see
+// crates/orchestrator/src/benchmarks/prmbench_runner.rs). All 9 lockstep
+// arms updated atomically per CLAUDE.md SCHEMA hard rule.
+//   * prmbench_run_completed   — one row per `PRMBenchRunner::run_all`
+//                                (or `run_category`) Ok return. Carries
+//                                (total, accuracy, precision, recall,
+//                                gating_verdict, fixture_blake3,
+//                                category_count).
+// all_test_payloads().len() goes 154 -> 155 (+1 variant).
+//
+// D-5 (SCHEMA_VERSION 72): bumped 71 -> 72 for 1 new SsbActionType variant
+// covering the Beta-posterior Thompson sampling promotion round (see
+// crates/orchestrator/src/bai.rs). All 9 lockstep arms updated atomically per
+// CLAUDE.md SCHEMA hard rule.
+//   * bai_arm_updated            — one row per `bai::emit_bai_round` posterior
+//                                  update. Carries (template_id, alpha, beta,
+//                                  n_pulls, mean_estimate, was_promoted).
+// all_test_payloads().len() goes 155 -> 156 (+1 variant).
+//
+// D-6 (SCHEMA_VERSION 73): bumped 72 -> 73 for 2 new SsbActionType variants
+// covering the time-windowed held-out task store (see
+// crates/orchestrator/src/held_out.rs). LiveCodeBench-style
+// (arxiv:2403.07974, T1) 9-gram contamination defense + eligibility window.
+//   * held_out_task_added — one row per `held_out::insert_and_emit` Ok
+//                           (task_id, source, content_blake3, ngram_count,
+//                           ingested_ts_ms, eligibility_window_ms).
+//   * held_out_task_used  — one row per `held_out::mark_used_and_emit` Ok
+//                           (task_id, consumer_template_id, used_ts_ms).
+// all_test_payloads().len() goes 156 -> 158 (+2 variants).
+//
+// D-7 (SCHEMA_VERSION 74): bumped 73 -> 74 for 2 new SsbActionType variants
+// covering the cross-domain transfer canary (see
+// crates/orchestrator/src/canary.rs). NanoFlux-style
+// (arxiv:2509.23252, T1) defense: every L2 mutation runs through 5
+// orthogonal task families so a target-family win does not silently
+// regress an adjacent family. Producer is `canary::emit_canary_run`,
+// invoked from the BAI promotion gate.
+//   * canary_run_completed     — one row per `canary::emit_canary_run` Ok
+//                                (report_id, ts_ms, overall_transfer_score,
+//                                decision_kind, dominant_fail_family).
+//   * canary_family_evaluated  — one row per per-family evaluator pass
+//                                inside the same run (family, n, pass, fail,
+//                                transfer_score, baseline_score).
+// all_test_payloads().len() goes 158 -> 160 (+2 variants).
+//
+// D-9 (SCHEMA_VERSION 75): bumped 74 -> 75 for 2 new SsbActionType variants
+// covering the L3 frozen-surface access-control auditor (see
+// crates/orchestrator/src/locked_keys_auditor.rs). Everitt current-RF
+// principle (arxiv:1908.04734, T1): the agent must not edit the function
+// that grades it. Producer is `LockedKeysAuditor::audit_diff_ranged`,
+// invoked from the `elai audit-locked-keys` CLI subcommand which is
+// wired into the workspace pre-commit hook.
+//   * locked_keys_audit_run         — one row per `audit_diff_ranged`
+//                                     invocation (audit_id, ts_ms,
+//                                     n_audited, n_violations,
+//                                     registry_blake3, registry_path).
+//   * locked_keys_violation_detected — one row per overlap between a
+//                                     staged edit and a registry entry
+//                                     (audit_id, ts_ms, attempted_edit,
+//                                     attempted_lines, locked_key_path,
+//                                     locked_key_signature_blake3, reason).
+// all_test_payloads().len() goes 160 -> 162 (+2 variants).
+//
+// E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+//   * task_advanced — dual-ledger TaskLedger/ProgressLedger atomic update.
+//                     Carries a [`TaskAdvancedPayload`] (task_id,
+//                     parent_id, completion_pct, blocker, ts_ms).
+//   * agentless_shortcut_taken — AGENTLESS leaf-shortcut elected for a
+//                     task (single-file, ≤N LOC, no cross-crate / no
+//                     async network). Carries an
+//                     [`AgentlessShortcutTakenPayload`] (task_id, reason,
+//                     ts_ms). Grounding: arxiv:2407.01489 (AGENTLESS,
+//                     32.00% SWE-bench Lite at $0.70/issue).
+//   * goal_drift_fired — GoalDriftCanary fired (drift > threshold).
+//                     Carries a [`GoalDriftFiredPayload`]
+//                     (initial_goal_blake3, drift, threshold, ts_ms).
+//                     Grounding: arxiv:2412.21154 (Devin/SWE-bench
+//                     task-ledger pattern).
+// all_test_payloads().len() goes 162 -> 165 (+3 variants).
+//
+// D-10 (SCHEMA_VERSION 77): bumped 76 -> 77 for 1 new SsbActionType variant
+// covering the mode-routing predicate (orchestrator picks the grounding
+// mode for every novel claim — the policy model has no input). The
+// router function is L3-locked per Cohen Boxed Myopic / Everitt
+// current-RF (arxiv:1908.04734). Producer is `agent_pool::route_claim`,
+// which wraps `grounding_mode::select_grounding_mode` and emits the
+// row before any verifier runs.
+//   * claim_routed — one row per claim run through the router
+//                    (claim_id, claim_type, mode, ts_ms,
+//                    ctx_summary_blake3). The ctx blake3 hashes the
+//                    orchestrator-state snapshot the router saw, so
+//                    the dashboard can detect post-hoc context drift.
+// all_test_payloads().len() goes 165 -> 166 (+1 variant).
+//
+// D-21 (SCHEMA_VERSION 78): bumped 77 -> 78 for 1 new SsbActionType variant
+// covering the mode-routing coverage benchmark. The runner replays a
+// labeled fixture of synthetic claims through `select_grounding_mode`
+// and reports per-mode F1 / macro F1 / 5x5 confusion. Gate: macro F1
+// >= 0.85 AND every per-mode F1 >= 0.70 (no class collapse).
+//   * mode_routing_bench_run_completed -- one row per
+//                    `ModeRoutingBenchmark::run_all` Ok return (total,
+//                    accuracy, f1_macro, gating_verdict, fixture_blake3,
+//                    fixture_row_count). Producer is
+//                    `benchmarks::mode_routing_runner::ModeRoutingBenchmark`;
+//                    CI consumes the row's gating_verdict (and the
+//                    runner's exit code) via the `elai bench mode-routing`
+//                    subcommand.
+// all_test_payloads().len() goes 166 -> 167 (+1 variant).
+//
+// D-11 (SCHEMA_VERSION 79): bumped 78 -> 79 for 1 new SsbActionType variant
+// covering the constructive-checker registry (Mode A operational substrate).
+// When the D-10 router selects GroundingMode::Constructive,
+// `agent_pool::dispatch_constructive_checkers` runs
+// `CheckerRegistry::run_all_applicable` and emits one row per result.
+//   * checker_result_emitted -- one row per
+//                    (checker_id, checker_kind, result_kind, claim_id, ts_ms,
+//                    reason) triple returned by the registry. Producer is the
+//                    orchestrator (NOT the policy model). Grounding:
+//                    arxiv:2310.04406 (constructive proof checking),
+//                    arxiv:2211.12588 (PoT, T1), arxiv:2402.01030 (CodeAct, T1).
+// all_test_payloads().len() goes 167 -> 168 (+1 variant).
+//
+// D-13 (SCHEMA_VERSION 80): bumped 79 -> 80 for 2 new SsbActionType variants
+// covering the adversarial-verification pass (cross-family heterogeneous
+// verifier rerun). The pass calls
+// `crate::adversary::Adversary::generate_counter`, then re-runs the
+// verifier consensus on `(claim, counter_evidence)`. Producer is
+// `crate::agent_pool::run_adversarial_pass`. Per arxiv:2403.07974 (T1)
+// adversarial-verification + arxiv:2504.16760 (T1) lightweight latent
+// verifiers (heterogeneous-family verification as the documented
+// defense against same-family verifier-transfer failure).
+//   * adversary_generated -- one row per
+//                    `run_adversarial_pass` adversary-emit step.
+//                    Carries an [`AdversaryGeneratedPayload`]
+//                    (counter_id, claim_id, severity, model_family).
+//   * consensus_reevaluated_with_counter -- one row per re-run
+//                    consensus pass that includes the counter-evidence.
+//                    Carries a
+//                    [`ConsensusReevaluatedWithCounterPayload`]
+//                    (claim_id, original_verdict, post_counter_verdict).
+// all_test_payloads().len() goes 168 -> 170 (+2 variants).
+//
+// D-12 (SCHEMA_VERSION 81): bumped 80 -> 81 for 1 new SsbActionType variant
+// covering the OperationalizationCheck baby-step predicate
+// (`crate::baby_step::is_operationalized` +
+// `crate::baby_step::dispatch_check_for_baby_step`). Producer is
+// `crate::agent_pool::run_operational_check`, which guards the
+// MEMORIZING transition: if the predicate fails or the dispatch result
+// is non-Pass, the auditor BLOCKs. Per arxiv:2305.16291 Voyager (T1)
+// skill-with-measurable-effect pattern and arxiv:2407.01489 AGENTLESS
+// (T1) single-step verification.
+//   * baby_step_dispatched -- one row per
+//                    `dispatch_check_for_baby_step` outcome. Carries
+//                    [`BabyStepDispatchedPayload`] (step_id,
+//                    parent_task_id, checker_kinds_used, outcome,
+//                    ts_ms).
+// all_test_payloads().len() goes 170 -> 171 (+1 variant).
+//
+// D-16 (SCHEMA_VERSION 82): bumped 81 -> 82 for 2 new SsbActionType variants
+// covering the UniCR conformal-refusal calibration (formal Mode E grounding,
+// arXiv:2503.01345 + Vovk et al. 2005 §2.2). Producers live in
+// `crate::conformal_calibration` (pure compute + emit) and
+// `crate::agent_pool::dispatch_conformal_refusal` (one-shot consumer
+// that wires the D-10 GroundingMode::ConformalRefusal arm to a live
+// calibration corpus).
+//   * conformal_tau_computed     -- one row per `compute_tau_and_emit`
+//                                   Ok return. Carries
+//                                   [`ConformalTauComputedPayload`]
+//                                   (tau, epsilon, corpus_size, source,
+//                                   ts_ms). Source is the snake-case
+//                                   `CorpusSource` label.
+//   * conformal_refusal_decided  -- one row per `decide_and_emit` call.
+//                                   Carries
+//                                   [`ConformalRefusalDecidedPayload`]
+//                                   (claim_id, claim_score, tau,
+//                                   decision, confidence, ts_ms).
+// all_test_payloads().len() goes 171 -> 173 (+2 variants).
+//
+// D-15 (SCHEMA_VERSION 83): bumped 82 -> 83 for 1 new SsbActionType variant
+// covering the discovery-vs-search NoveltyClass labeling pass (real-
+// problem §1 Mode C honesty layer; arXiv:2406.05761 LLM novelty
+// detection three-bucket taxonomy). Producer lives in
+// `crate::novelty::emit_novelty_classified` (pure predicate + emit) and
+// `crate::agent_pool::dispatch_novelty` (one-shot consumer reachable
+// from the D-10 Constructive / OperationalFalsification arms).
+//   * novelty_classified         -- one row per `emit_novelty_classified`
+//                                   call. Carries
+//                                   [`NoveltyClassifiedPayload`]
+//                                   (template_id, class,
+//                                   dkg_match_count,
+//                                   near_duplicate_threshold, ts_ms).
+//                                   `class` is the snake-case
+//                                   `NoveltyClass` label
+//                                   (`search` / `distant_search` /
+//                                   `discovery_candidate`).
+// all_test_payloads().len() goes 173 -> 174 (+1 variant).
+//
+// D-18 (SCHEMA_VERSION 84): bumped 83 -> 84 for 1 new SsbActionType
+// variant covering the typed-ObservableEffect predicate (Mode D upgrade
+// extension of C-22 FeasibilityProber). Plan:
+// docs/thefinalglance/D-plan/D-18_observable_effect_typed.md. The full
+// 4-variant pack the plan calls for (ObservableEffectDispatched +
+// GoodhartRiskFlag + SandboxObservation +
+// ProductionObservationProposal) is deferred to a follow-up session;
+// this pass ships the minimum-viable single-variant beacon plus the
+// closed-enum typed surface in `crate::observable_effect`.
+//   * observable_effect_verified -- one row per
+//                                   `observable_effect::verify_observable_effect`
+//                                   call. Carries
+//                                   [`ObservableEffectVerifiedPayload`]
+//                                   (effect_id, trigger_kind,
+//                                   observation_kind, sandbox_tier,
+//                                   outcome, confound_flags,
+//                                   elapsed_us, ts_ms). Producer:
+//                                   `crates/orchestrator/src/observable_effect.rs`.
+// all_test_payloads().len() goes 174 -> 175 (+1 variant).
+//
+// D-17 (SCHEMA_VERSION 85): bumped 84 -> 85 for 2 new SsbActionType variants
+// covering the honest-refusal SLA monitoring surface. Plan:
+// docs/thefinalglance/D-plan/D-17_honest_refusal_sla.md. The MVP ships
+// a sliding-window `RefusalRateMonitor` that observes the
+// `ConformalRefusalDecided` decisions D-16 emits, computes a
+// per-snapshot refusal rate, and classifies it against an operator-
+// configured healthy band. Two beacons fire from the producer:
+//   * refusal_rate_snapshot   -- one row per `compute_snapshot` call
+//                                from the periodic
+//                                `dispatch_refusal_sla_check`
+//                                dispatcher. Carries
+//                                [`RefusalRateSnapshotPayload`]
+//                                (refusal_rate, window_total,
+//                                abstain_count, health_band, ts_ms).
+//   * refusal_sla_breach      -- one row per snapshot whose
+//                                `health_band != Healthy`. Carries
+//                                [`RefusalSlaBreachPayload`] (rate,
+//                                threshold, breach_kind, ts_ms) where
+//                                `breach_kind` is `above` | `below`.
+// all_test_payloads().len() goes 175 -> 177 (+2 variants). Grounding:
+// arXiv:2503.01345 (UniCR honest refusal — the SLA monitors the
+// formal Mode E surface D-16 ships); docs/specs/guide/real-problem-
+// solving-grounded-2026-05-19.md §4.6 (refusal rate as first-class
+// quality metric).
+//
+// D-22 (SCHEMA_VERSION 86): bumped 85 -> 86 for 1 new SsbActionType
+// variant — `ConformalValidationCompleted` — covering the conformal
+// calibration validation runner that gates the UniCR formal guarantee
+// (arXiv:2503.01345, T1) under distribution shift. Plan:
+// docs/thefinalglance/D-plan/D-22_conformal_calibration_validation.md.
+// One row per `ConformalValidationRunner::run_all` Ok return. Carries
+// [`ConformalValidationCompletedPayload`] (tau, epsilon,
+// empirical_refusal_rate, gating_verdict, fixture_blake3, total, ts_ms).
+// Producer:
+// `crates/orchestrator/src/benchmarks/conformal_validation_runner.rs`.
+// Consumer: `elai bench conformal` CLI exit code + dashboard
+// `ConformalValidationPanel`. all_test_payloads().len() goes 177 -> 178.
+//
+// D-20 (SCHEMA_VERSION 87): bumped 86 -> 87 for 1 new SsbActionType
+// variant — `ArcBenchmarkCompleted` — covering the ARC-AGI-2 OOD probe
+// harness that gates ELAI's mode-routing + novelty-classifier honesty
+// stack against ARC-style out-of-distribution claims. Plan:
+// docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md. One row per
+// `ARCAGI2Runner::run_all` Ok return. Carries
+// [`ARCBenchmarkCompletedPayload`] (total, honestly_evaluated_count,
+// gating_verdict, fixture_blake3, dominant_mode,
+// dominant_novelty_class, ts_ms). Producer:
+// `crates/orchestrator/src/benchmarks/arc_agi2_runner.rs`. Consumer:
+// `elai bench arc` CLI exit code + dashboard `ARCBenchPanel`.
+// TODO_DOC[D-20] — paper-ingestor follow-up to anchor against
+// arXiv:2412.04261 (ARC-AGI-2) and arXiv:2601.10904 (ARC Prize 2025
+// Tech Report); citations dropped from module doc per the anti-
+// citation-rot rule until paper-ingestor lands a workflow/papers/
+// entry. all_test_payloads().len() goes 178 -> 179.
+const SCHEMA_VERSION: i64 = 87;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -878,7 +1261,220 @@ CREATE TABLE IF NOT EXISTS ssb (
         'skeleton_generated', 'skeleton_flushed',
         'mini_critic_verdict',
         'structural_retry_stage_attempt',
-        'bridge_file_generated'
+        'bridge_file_generated',
+        -- D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle beacons.
+        -- archive_entry_added         -- one row per ArchiveChain::append (template_id,
+        --                                content_hash, parent_hash, domain, pattern_kind,
+        --                                archive_status).
+        -- archive_entry_retired       -- one row per template retirement (template_id,
+        --                                retired_at_ms, retirement_reason).
+        -- template_promoted           -- one row per BAI promotion (template_id, stage,
+        --                                pass_rate). D-5 producer lands later.
+        -- template_candidate_rejected -- one row per Candidate rejection (template_id,
+        --                                rejection_reason).
+        'archive_entry_added', 'archive_entry_retired',
+        'template_promoted', 'template_candidate_rejected',
+        -- E-5 (SCHEMA_VERSION 65): bi-temporal memory_facts lifecycle beacons.
+        -- memory_fact_extracted   -- one row per FactStore::insert success
+        --                            (Mem0-style ADD; full ADD/UPDATE/DELETE/NOOP
+        --                            dispatcher reserved for the follow-up vertical slice).
+        -- memory_fact_superseded  -- one row per FactStore::supersede success
+        --                            (Zep bi-temporal close + replacement pair).
+        'memory_fact_extracted', 'memory_fact_superseded',
+        -- D-2 (SCHEMA_VERSION 66): PPM (Process Preference Model) verifier-side
+        -- beacons. ppm_scored is emitted on every PpmClient::score success that
+        -- clears the configured threshold; ppm_gating_failed is emitted when
+        -- the gate trips.
+        'ppm_scored', 'ppm_gating_failed',
+        -- E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+        -- chat_reflection_completed -- one row per reflect() Ok return.
+        --                              Carries (note_id, note_preview,
+        --                              facts_extracted, decay rows examined /
+        --                              updated, core_block_bytes).
+        -- memory_evolution_run      -- one row per SLEEP_COMPUTE substate
+        --                              entry / exit. Carries (phase,
+        --                              duration_ms, notes_touched).
+        'chat_reflection_completed', 'memory_evolution_run',
+        -- E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+        -- producer + conflict beacons.
+        -- memory_note_inserted     -- one row per NoteStore::insert Ok.
+        -- memory_note_evolved      -- one row per A-MEM note evolution.
+        -- memory_conflict_detected -- one row per duplicate / contradiction
+        --                             adjudicator emission.
+        -- core_block_replaced      -- one row per CoreBlockStore::upsert
+        --                             replacing an existing row.
+        'memory_note_inserted', 'memory_note_evolved',
+        'memory_conflict_detected', 'core_block_replaced',
+        -- D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator beacons.
+        -- verifier_consensus_pass -- one row per run_consensus_pass Ok with
+        --                            verdict = Pass.
+        -- verifier_consensus_fail -- one row per run_consensus_pass Ok with
+        --                            verdict != Pass.
+        'verifier_consensus_pass', 'verifier_consensus_fail',
+        -- D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+        -- tripwire_fired          -- one row per TripwireMonitor::observe
+        --                            firing (KL / Δρ / IQR / perplexity /
+        --                            DDM).
+        -- template_auto_reverted  -- one row per tripwire::auto_revert
+        --                            success (template flipped to Retired
+        --                            with RetirementReason::Degradation).
+        'tripwire_fired', 'template_auto_reverted',
+        -- D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark runner beacon.
+        -- prmbench_run_completed -- one row per PRMBenchRunner::run_all (or
+        --                           run_category) Ok return (total, accuracy,
+        --                           precision, recall, gating_verdict,
+        --                           fixture_blake3, category_count).
+        'prmbench_run_completed',
+        -- D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+        -- bai_arm_updated         -- one row per `bai::emit_bai_round` posterior
+        --                            update (template_id, alpha, beta, n_pulls,
+        --                            mean_estimate, was_promoted).
+        'bai_arm_updated',
+        -- D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+        -- held_out_task_added     -- one row per `held_out::insert_and_emit` Ok
+        --                            (task_id, source, content_blake3,
+        --                            ngram_count, ingested_ts_ms,
+        --                            eligibility_window_ms).
+        -- held_out_task_used      -- one row per `held_out::mark_used_and_emit`
+        --                            Ok (task_id, consumer_template_id,
+        --                            used_ts_ms).
+        'held_out_task_added', 'held_out_task_used',
+        -- D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+        -- canary_run_completed     -- one row per `canary::emit_canary_run` Ok
+        --                             (report_id, ts_ms, overall_transfer_score,
+        --                             decision_kind, dominant_fail_family).
+        -- canary_family_evaluated  -- one row per per-family evaluator pass
+        --                             inside the same run (family, n, pass,
+        --                             fail, transfer_score, baseline_score).
+        'canary_run_completed', 'canary_family_evaluated',
+        -- D-9 (SCHEMA_VERSION 75): L3 frozen-surface access-control auditor.
+        -- locked_keys_audit_run         -- one row per LockedKeysAuditor
+        --                                  audit_diff_ranged() invocation
+        --                                  (audit_id, ts_ms, n_audited,
+        --                                  n_violations, registry_blake3,
+        --                                  registry_path).
+        -- locked_keys_violation_detected -- one row per registry overlap
+        --                                  on a staged edit (audit_id,
+        --                                  ts_ms, attempted_edit,
+        --                                  attempted_lines,
+        --                                  locked_key_path,
+        --                                  locked_key_signature_blake3,
+        --                                  reason).
+        'locked_keys_audit_run', 'locked_keys_violation_detected',
+        -- E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+        -- task_advanced              -- dual-ledger TaskLedger+ProgressLedger
+        --                              atomic advance (task_id, parent_id,
+        --                              completion_pct, status, blocker, ts_ms).
+        -- agentless_shortcut_taken   -- AGENTLESS leaf-shortcut elected
+        --                              (task_id, reason, ts_ms);
+        --                              arxiv:2407.01489.
+        -- goal_drift_fired           -- GoalDriftCanary fired
+        --                              (initial_goal_blake3, drift,
+        --                              threshold, step, ts_ms);
+        --                              arxiv:2505.02709 / arxiv:2412.21154.
+        'task_advanced', 'agentless_shortcut_taken', 'goal_drift_fired',
+        -- D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+        -- claim_routed -- one row per `agent_pool::route_claim` call
+        --                 (claim_id, claim_type, mode, ts_ms,
+        --                 ctx_summary_blake3). Orchestrator (NOT the
+        --                 policy model) is the sole emitter; the
+        --                 routing function is L3-locked per Everitt
+        --                 current-RF (arxiv:1908.04734).
+        'claim_routed',
+        -- D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+        -- mode_routing_bench_run_completed -- one row per
+        --                 `ModeRoutingBenchmark::run_all` Ok return
+        --                 (total, accuracy, f1_macro, gating_verdict,
+        --                 fixture_blake3, fixture_row_count). The runner
+        --                 replays a hand-labeled fixture through D-10's
+        --                 `select_grounding_mode` and gates pass iff
+        --                 macro F1 >= 0.85 AND every per-mode F1 >= 0.70.
+        'mode_routing_bench_run_completed',
+        -- D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+        -- checker_result_emitted -- one row per (checker_id, checker_kind,
+        --                 result_kind, claim_id, ts_ms, reason) triple emitted
+        --                 by `CheckerRegistry::run_all_applicable`. Producer
+        --                 is the orchestrator (NOT the policy model);
+        --                 grounding arxiv:2310.04406.
+        'checker_result_emitted',
+        -- D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+        -- adversary_generated                -- counter_id, claim_id,
+        --                                       severity, model_family.
+        -- consensus_reevaluated_with_counter -- claim_id, original_verdict,
+        --                                       post_counter_verdict.
+        'adversary_generated',
+        'consensus_reevaluated_with_counter',
+        -- D-12 (SCHEMA_VERSION 81): OperationalizationCheck baby-step
+        -- predicate dispatch beacon. Emitted by
+        -- `agent_pool::run_operational_check` after
+        -- `dispatch_check_for_baby_step` returns. Per arxiv:2305.16291
+        -- Voyager (T1) skill-with-measurable-effect + arxiv:2407.01489
+        -- AGENTLESS (T1) single-step verification.
+        'baby_step_dispatched',
+        -- D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal calibration
+        -- beacons. Per arXiv:2503.01345 (UniCR) + Vovk et al. 2005 §2.2.
+        -- conformal_tau_computed     -- tau, epsilon, corpus_size, source,
+        --                               ts_ms; emitted by
+        --                               `compute_tau_and_emit`.
+        -- conformal_refusal_decided  -- claim_id, claim_score, tau,
+        --                               decision, confidence, ts_ms;
+        --                               emitted by `decide_and_emit` and
+        --                               `agent_pool::dispatch_conformal_refusal`.
+        'conformal_tau_computed',
+        'conformal_refusal_decided',
+        -- D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass
+        -- labeling pass. Per arXiv:2406.05761 (LLM novelty detection)
+        -- + real-problem §1 Mode C honesty layer.
+        -- novelty_classified           -- template_id, class,
+        --                                 dkg_match_count,
+        --                                 near_duplicate_threshold,
+        --                                 ts_ms; emitted by
+        --                                 `novelty::emit_novelty_classified`
+        --                                 and `agent_pool::dispatch_novelty`.
+        'novelty_classified',
+        -- D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate
+        -- beacon. Per docs/thefinalglance/D-plan/D-18_observable_effect_typed.md.
+        -- observable_effect_verified -- effect_id, trigger_kind,
+        --                               observation_kind, sandbox_tier,
+        --                               outcome (pass|fail|skipped),
+        --                               confound_flags, elapsed_us,
+        --                               ts_ms; emitted by
+        --                               `observable_effect::verify_observable_effect`.
+        'observable_effect_verified',
+        -- D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+        -- Per docs/thefinalglance/D-plan/D-17_honest_refusal_sla.md.
+        -- refusal_rate_snapshot -- refusal_rate, window_total,
+        --                          abstain_count, health_band
+        --                          (below|healthy|above), ts_ms;
+        --                          emitted by
+        --                          `refusal_sla::RefusalRateMonitor::emit_snapshot`.
+        -- refusal_sla_breach     -- rate, threshold, breach_kind
+        --                          (above|below), ts_ms; emitted when
+        --                          `sla_breach(snapshot) == true`.
+        'refusal_rate_snapshot', 'refusal_sla_breach',
+        -- D-22 (SCHEMA_VERSION 86): conformal calibration validation beacon.
+        -- Per docs/thefinalglance/D-plan/D-22_conformal_calibration_validation.md.
+        -- conformal_validation_completed -- tau, epsilon,
+        --                                   empirical_refusal_rate,
+        --                                   gating_verdict, fixture_blake3,
+        --                                   total, ts_ms; emitted by
+        --                                   `benchmarks::conformal_validation_runner::ConformalValidationRunner::run_all`
+        --                                   after a successful run against
+        --                                   a held-out validation fixture.
+        'conformal_validation_completed',
+        -- D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+        -- Per docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md.
+        -- arc_benchmark_completed -- total, honestly_evaluated_count,
+        --                            gating_verdict (honestly_evaluated|
+        --                            game_with_memorization|refused),
+        --                            fixture_blake3, dominant_mode,
+        --                            dominant_novelty_class, ts_ms;
+        --                            emitted by
+        --                            `benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`
+        --                            after a successful run against an
+        --                            ARC-AGI-2 fixture (mini bundled or
+        --                            full 50-task subset).
+        'arc_benchmark_completed'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -1730,6 +2326,297 @@ pub enum SsbActionType {
     /// `BridgeFileTemplate::write_bridge` success. Carries a
     /// [`BridgeFileGeneratedPayload`] (kind, path, module_count).
     BridgeFileGenerated,
+    /// D-1 (SCHEMA_VERSION 64): one row per [`crate::archive_chain::ArchiveChain::append`]
+    /// call. Carries an [`ArchiveEntryAddedPayload`] (template_id, content_hash,
+    /// parent_hash, domain, pattern_kind, archive_status).
+    ArchiveEntryAdded,
+    /// D-1 (SCHEMA_VERSION 64): one row per template retirement transition.
+    /// Carries an [`ArchiveEntryRetiredPayload`] (template_id, retired_at_ms,
+    /// retirement_reason).
+    ArchiveEntryRetired,
+    /// D-1 (SCHEMA_VERSION 64): one row per BAI Thompson promotion (D-5
+    /// producer lands later; wire surface added now for atomic schema bump).
+    /// Carries a [`TemplatePromotedPayload`] (template_id, stage, pass_rate).
+    TemplatePromoted,
+    /// D-1 (SCHEMA_VERSION 64): one row per Candidate rejection. Carries a
+    /// [`TemplateCandidateRejectedPayload`] (template_id, rejection_reason).
+    TemplateCandidateRejected,
+    /// E-5 (SCHEMA_VERSION 65): one row per Mem0-style extraction emitting
+    /// a new currently-valid `memory_facts` row (the producer wrapper in
+    /// the orchestrator's per-turn extraction hook emits this row right
+    /// after `FactStore::insert` returns Ok). Carries a
+    /// [`MemoryFactExtractedPayload`] (fact_id, fact_type, scope,
+    /// trust_score, key).
+    MemoryFactExtracted,
+    /// E-5 (SCHEMA_VERSION 65): one row per `FactStore::supersede` Ok return —
+    /// emitted after the bi-temporal close + new-row insert pair completes
+    /// inside a single sqlite transaction. Carries a
+    /// [`MemoryFactSupersededPayload`] (old_fact_id, new_fact_id, valid_to_ms).
+    MemoryFactSuperseded,
+    /// D-2 (SCHEMA_VERSION 66): one row per
+    /// [`crate::ppm_client::PpmClient::score`] call that clears the
+    /// configured `min_score_threshold`. Carries a [`PpmScoredPayload`]
+    /// (candidate_id, verifier_id, mode, score_mean, score_var, num_steps,
+    /// latency_ms, cache_hit).
+    PpmScored,
+    /// D-2 (SCHEMA_VERSION 66): one row per PpmClient::score call whose
+    /// `score_mean` is below the configured threshold. Carries a
+    /// [`PpmGatingFailedPayload`] (candidate_id, verifier_id, mode,
+    /// score_mean, threshold, num_steps).
+    PpmGatingFailed,
+    /// E-1 (SCHEMA_VERSION 67): one row per
+    /// `elai_reasoning::chat_memory_reflect::reflect()` Ok return —
+    /// emitted by the orchestrator's chat-turn-committed hook right
+    /// after the reflect pass completes. Carries a
+    /// [`ChatReflectionCompletedPayload`] (note_id, note_preview,
+    /// facts_extracted, decay_rows_examined, decay_rows_updated,
+    /// core_block_bytes).
+    ChatReflectionCompleted,
+    /// E-1 (SCHEMA_VERSION 67): one row per SLEEP_COMPUTE substate
+    /// entry / exit. Carries a [`MemoryEvolutionRunPayload`] (phase
+    /// `"start"` | `"end"`, duration_ms, notes_touched).
+    MemoryEvolutionRun,
+    /// E-1 dashboard slice (SCHEMA_VERSION 68): one row per
+    /// `elai_memory::NoteStore::insert` Ok return — emitted by the
+    /// orchestrator's chat-turn-committed hook (producer wiring lives in
+    /// task_runner.rs and is owned by another session). Carries a
+    /// [`MemoryNoteInsertedPayload`] (note_id, scope, content_blake3,
+    /// link_count).
+    MemoryNoteInserted,
+    /// E-1 dashboard slice (SCHEMA_VERSION 68): one row per A-MEM note
+    /// evolution rewrite (PPR-walker-attached link/edit pass). Carries a
+    /// [`MemoryNoteEvolvedPayload`] (note_id, old_content_blake3,
+    /// new_content_blake3, links_added, links_removed).
+    MemoryNoteEvolved,
+    /// E-1 dashboard slice (SCHEMA_VERSION 68): one row per duplicate /
+    /// contradiction pair the conflict adjudicator emits. Carries a
+    /// [`MemoryConflictDetectedPayload`] (fact_id_a, fact_id_b,
+    /// conflict_kind: `"duplicate"` | `"contradiction"`).
+    MemoryConflictDetected,
+    /// E-1 dashboard slice (SCHEMA_VERSION 68): one row per
+    /// `CoreBlockStore::upsert` that replaces an existing row (vs first
+    /// insert). Carries a [`CoreBlockReplacedPayload`] (user_id,
+    /// old_blake3, new_blake3, bytes).
+    CoreBlockReplaced,
+    /// D-3 (SCHEMA_VERSION 69): one row per
+    /// [`crate::agent_pool::run_consensus_pass`] Ok return whose verdict is
+    /// `Pass`. Carries a [`VerifierConsensusPassPayload`] (candidate_id,
+    /// template_id, verdict, verifier_count, pass_count, rule_id).
+    VerifierConsensusPass,
+    /// D-3 (SCHEMA_VERSION 69): one row per
+    /// [`crate::agent_pool::run_consensus_pass`] Ok return whose verdict is
+    /// `Fail` / `Inconclusive`. Carries a [`VerifierConsensusFailPayload`]
+    /// (candidate_id, template_id, failing_verifier_ids, reason).
+    VerifierConsensusFail,
+    /// D-4 (SCHEMA_VERSION 70): one row per
+    /// [`crate::tripwire::TripwireMonitor::observe`] firing. Carries a
+    /// [`TripwireFiredPayload`] (event_id, tripwire_kind, candidate_id,
+    /// observed_value, threshold, fired_at_ms).
+    TripwireFired,
+    /// D-4 (SCHEMA_VERSION 70): one row per
+    /// [`crate::tripwire::auto_revert`] success. Carries a
+    /// [`TemplateAutoRevertedPayload`] (template_id, parent_template_id,
+    /// retirement_reason, fired_tripwire_id).
+    TemplateAutoReverted,
+    /// D-19 (SCHEMA_VERSION 71): one row per
+    /// [`crate::benchmarks::prmbench_runner::PRMBenchRunner::run_all`] (or
+    /// [`crate::benchmarks::prmbench_runner::PRMBenchRunner::run_category`])
+    /// Ok return. Carries a [`PrmBenchRunCompletedPayload`] (total,
+    /// accuracy, precision, recall, gating_verdict, fixture_blake3,
+    /// category_count).
+    PrmBenchRunCompleted,
+    /// D-5 (SCHEMA_VERSION 72): one row per `bai::emit_bai_round` posterior
+    /// update. Producer is [`crate::bai::emit_bai_round`]; the value carries
+    /// the BAI arm state after the Beta(alpha, beta) update and a
+    /// `was_promoted` flag mirroring whether the Thompson sample fired the
+    /// promotion rule on this round. See workflow/reasoning/D-5-decisions.md.
+    /// Carries a [`BaiArmUpdatedPayload`] (template_id, alpha, beta, n_pulls,
+    /// mean_estimate, was_promoted).
+    BaiArmUpdated,
+    /// D-6 (SCHEMA_VERSION 73): one row per `held_out::insert_and_emit` Ok
+    /// return — i.e. a fresh held-out task that passed the 9-gram
+    /// contamination filter and was inserted into the store. Producer is
+    /// [`crate::held_out::insert_and_emit`]. Carries a
+    /// [`HeldOutTaskAddedPayload`] (task_id, source, content_blake3,
+    /// ngram_count, ingested_ts_ms, eligibility_window_ms).
+    HeldOutTaskAdded,
+    /// D-6 (SCHEMA_VERSION 73): one row per `held_out::mark_used_and_emit`
+    /// Ok return — i.e. a held-out task consumed by a BAI eval round.
+    /// Producer is [`crate::held_out::mark_used_and_emit`] (called from
+    /// `agent_pool::sample_held_out_task`). Carries a
+    /// [`HeldOutTaskUsedPayload`] (task_id, consumer_template_id,
+    /// used_ts_ms).
+    HeldOutTaskUsed,
+    /// D-7 (SCHEMA_VERSION 74): one row per `canary::emit_canary_run` Ok
+    /// return — i.e. a completed cross-domain transfer canary report.
+    /// Producer is [`crate::canary::emit_canary_run`], invoked by the BAI
+    /// promotion gate. Carries a [`CanaryRunCompletedPayload`] (report_id,
+    /// ts_ms, overall_transfer_score, decision_kind,
+    /// dominant_fail_family).
+    CanaryRunCompleted,
+    /// D-7 (SCHEMA_VERSION 74): one row per per-family evaluator pass
+    /// inside a canary run — emitted alongside [`Self::CanaryRunCompleted`]
+    /// so the dashboard can render per-family deltas without parsing the
+    /// run's `per_family` array. Carries a
+    /// [`CanaryFamilyEvaluatedPayload`] (report_id, family, n_evaluated,
+    /// pass_count, fail_count, transfer_score, baseline_score).
+    CanaryFamilyEvaluated,
+    /// D-9 — one row per `LockedKeysAuditor::audit_diff_ranged`
+    /// invocation. Carries a [`LockedKeysAuditRunPayload`] (audit_id,
+    /// ts_ms, n_audited, n_violations, registry_blake3,
+    /// registry_path). The dashboard `LockedKeysPanel` joins these
+    /// run rows to per-violation [`LockedKeysViolationDetectedPayload`]
+    /// rows on `audit_id`. Producer:
+    /// `crates/orchestrator/src/locked_keys_auditor.rs`. Grounding:
+    /// arxiv:1908.04734 (Everitt current-RF principle).
+    LockedKeysAuditRun,
+    /// D-9 — one row per overlap between a staged edit and a
+    /// LockedKeysRegistry entry. Carries a
+    /// [`LockedKeysViolationDetectedPayload`] (audit_id, ts_ms,
+    /// attempted_edit, attempted_lines, locked_key_path,
+    /// locked_key_signature_blake3, reason). Producer:
+    /// `crates/orchestrator/src/locked_keys_auditor.rs`.
+    LockedKeysViolationDetected,
+    /// E-46 (SCHEMA_VERSION 76) — dual-ledger atomic advancement. One row
+    /// per `DualLedger::advance_task` call: TaskLedger.status +
+    /// ProgressLedger.completion_pct/blockers updated together. Carries a
+    /// [`TaskAdvancedPayload`]. Producer:
+    /// `crates/orchestrator/src/dual_ledger.rs`. Grounding:
+    /// arxiv:2412.21154 (Devin/SWE-bench task-ledger pattern).
+    TaskAdvanced,
+    /// E-46 (SCHEMA_VERSION 76) — AGENTLESS leaf-shortcut elected for a
+    /// task (single-file change, ≤N LOC, no cross-crate, no async
+    /// network). Carries an [`AgentlessShortcutTakenPayload`]. Producer:
+    /// `crates/orchestrator/src/agentless_shortcut.rs`. Grounding:
+    /// arxiv:2407.01489 (AGENTLESS, 32.00% SWE-bench Lite at $0.70/issue).
+    AgentlessShortcutTaken,
+    /// E-46 (SCHEMA_VERSION 76) — `GoalDriftCanary::fired()` evaluated
+    /// true (drift > threshold). Carries a [`GoalDriftFiredPayload`].
+    /// Producer: `crates/orchestrator/src/goal_drift_canary.rs`.
+    /// Grounding: arxiv:2505.02709 (goal-drift PRM supervision).
+    GoalDriftFired,
+    /// D-10 (SCHEMA_VERSION 77) — one row per `agent_pool::route_claim`
+    /// call. Carries a [`ClaimRoutedPayload`] (claim_id, claim_type,
+    /// mode, ts_ms, ctx_summary_blake3). Producer:
+    /// `crates/orchestrator/src/agent_pool.rs::route_claim`, which
+    /// wraps the pure predicate
+    /// `crates/orchestrator/src/grounding_mode.rs::select_grounding_mode`.
+    /// Grounding: arxiv:1908.04734 (Everitt current-RF principle).
+    ClaimRouted,
+    /// D-21 (SCHEMA_VERSION 78) — one row per
+    /// `crates/orchestrator/src/benchmarks/mode_routing_runner.rs::ModeRoutingBenchmark::run_all`
+    /// Ok return. Carries a [`ModeRoutingBenchRunCompletedPayload`]
+    /// (total, accuracy, f1_macro, gating_verdict, fixture_blake3,
+    /// fixture_row_count). The runner gates pass iff macro F1 >= 0.85
+    /// AND every per-mode F1 >= 0.70 (no class collapse). CI consumes
+    /// the row's gating_verdict via the `elai bench mode-routing`
+    /// subcommand exit code.
+    ModeRoutingBenchRunCompleted,
+    /// D-11 (SCHEMA_VERSION 79) — one row per
+    /// `CheckerRegistry::run_all_applicable` result triple emitted by
+    /// `crates/orchestrator/src/agent_pool.rs::dispatch_constructive_checkers`.
+    /// Carries a [`CheckerResultEmittedPayload`] (checker_id,
+    /// checker_kind, result_kind, claim_id, ts_ms, reason). Producer is
+    /// the orchestrator (NOT the policy model). Grounding:
+    /// arxiv:2310.04406 (constructive proof checking), arxiv:2211.12588
+    /// (PoT, T1), arxiv:2402.01030 (CodeAct, T1).
+    CheckerResultEmitted,
+    /// D-13 (SCHEMA_VERSION 80) — one row per
+    /// `agent_pool::run_adversarial_pass` adversary-emit step. Carries
+    /// an [`AdversaryGeneratedPayload`] (counter_id, claim_id,
+    /// severity, model_family). Producer:
+    /// `crates/orchestrator/src/agent_pool.rs::run_adversarial_pass`.
+    /// Grounding: arxiv:2403.07974 (T1) adversarial verification.
+    AdversaryGenerated,
+    /// D-13 (SCHEMA_VERSION 80) — one row per re-run verifier
+    /// consensus that includes adversary counter-evidence. Carries a
+    /// [`ConsensusReevaluatedWithCounterPayload`] (claim_id,
+    /// original_verdict, post_counter_verdict). Producer:
+    /// `crates/orchestrator/src/agent_pool.rs::run_adversarial_pass`.
+    /// Grounding: arxiv:2504.16760 (T1) lightweight latent verifiers
+    /// (heterogeneous-family verification).
+    ConsensusReevaluatedWithCounter,
+    /// D-12 (SCHEMA_VERSION 81) — one row per
+    /// `agent_pool::run_operational_check` invocation. Carries a
+    /// [`BabyStepDispatchedPayload`] (step_id, parent_task_id,
+    /// checker_kinds_used, outcome, ts_ms). Producer:
+    /// `crates/orchestrator/src/agent_pool.rs::run_operational_check`.
+    /// Grounding: arxiv:2305.16291 Voyager (T1)
+    /// skill-with-measurable-effect; arxiv:2407.01489 AGENTLESS (T1)
+    /// single-step verification.
+    BabyStepDispatched,
+    /// D-16 (SCHEMA_VERSION 82) — one row per
+    /// `conformal_calibration::compute_tau_and_emit` Ok return. Carries
+    /// a [`ConformalTauComputedPayload`] (tau, epsilon, corpus_size,
+    /// source, ts_ms). Producer:
+    /// `crates/orchestrator/src/conformal_calibration.rs`. Grounding:
+    /// arXiv:2503.01345 (UniCR) + Vovk et al. 2005 §2.2 quantile-based
+    /// conformal predictor.
+    ConformalTauComputed,
+    /// D-16 (SCHEMA_VERSION 82) — one row per
+    /// `conformal_calibration::decide_and_emit` call (and by extension
+    /// every `agent_pool::dispatch_conformal_refusal` invocation).
+    /// Carries a [`ConformalRefusalDecidedPayload`] (claim_id,
+    /// claim_score, tau, decision, confidence, ts_ms). Producer:
+    /// `crates/orchestrator/src/conformal_calibration.rs`. Grounding:
+    /// arXiv:2503.01345 (UniCR) — formal Mode E refusal rule.
+    ConformalRefusalDecided,
+    /// D-15 (SCHEMA_VERSION 83) — one row per
+    /// `novelty::emit_novelty_classified` call (and by extension every
+    /// `agent_pool::dispatch_novelty` invocation). Carries a
+    /// [`NoveltyClassifiedPayload`] (template_id, class,
+    /// dkg_match_count, near_duplicate_threshold, ts_ms). Producer:
+    /// `crates/orchestrator/src/novelty.rs`. Grounding:
+    /// arXiv:2406.05761 (LLM novelty detection three-bucket taxonomy);
+    /// docs/specs/guide/real-problem-solving-grounded-2026-05-19.md
+    /// §1 Mode C + §4.8.
+    NoveltyClassified,
+    /// D-18 (SCHEMA_VERSION 84) — one row per
+    /// `observable_effect::verify_observable_effect` call. Carries a
+    /// [`ObservableEffectVerifiedPayload`] (effect_id, trigger_kind,
+    /// observation_kind, sandbox_tier, outcome, confound_flags,
+    /// elapsed_us, ts_ms). Producer:
+    /// `crates/orchestrator/src/observable_effect.rs`. Plan:
+    /// docs/thefinalglance/D-plan/D-18_observable_effect_typed.md
+    /// (orthogonality + sandbox-vs-production-labeling + remaining
+    /// 3-variant pack from the plan deferred to a follow-up session).
+    ObservableEffectVerified,
+    /// D-17 (SCHEMA_VERSION 85) — one row per
+    /// `refusal_sla::RefusalRateMonitor::compute_snapshot` call (and by
+    /// extension every `agent_pool::dispatch_refusal_sla_check`
+    /// invocation). Carries a [`RefusalRateSnapshotPayload`]
+    /// (refusal_rate, window_total, abstain_count, health_band, ts_ms).
+    /// Producer: `crates/orchestrator/src/refusal_sla.rs`. Grounding:
+    /// arXiv:2503.01345 (UniCR honest refusal); docs/specs/guide/
+    /// real-problem-solving-grounded-2026-05-19.md §4.6.
+    RefusalRateSnapshot,
+    /// D-17 (SCHEMA_VERSION 85) — one row per snapshot whose
+    /// `HealthBand != Healthy`. Carries a [`RefusalSlaBreachPayload`]
+    /// (rate, threshold, breach_kind, ts_ms). `breach_kind` is the
+    /// snake-case `above` | `below` label. Producer:
+    /// `crates/orchestrator/src/refusal_sla.rs::sla_breach` emission
+    /// path.
+    RefusalSlaBreach,
+    /// D-22 (SCHEMA_VERSION 86) — one row per
+    /// [`crate::benchmarks::conformal_validation_runner::ConformalValidationRunner::run_all`]
+    /// Ok return. Carries a [`ConformalValidationCompletedPayload`]
+    /// (tau, epsilon, empirical_refusal_rate, gating_verdict,
+    /// fixture_blake3, total, ts_ms). Gates the UniCR distribution-free
+    /// guarantee (arXiv:2503.01345, T1) on a held-out validation fixture
+    /// split into in_domain / near_ood / far_ood buckets. Producer:
+    /// `crates/orchestrator/src/benchmarks/conformal_validation_runner.rs`.
+    /// Plan: docs/thefinalglance/D-plan/D-22_conformal_calibration_validation.md.
+    ConformalValidationCompleted,
+    /// D-20 (SCHEMA_VERSION 87) — one row per
+    /// [`crate::benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`]
+    /// Ok return. Carries an [`ARCBenchmarkCompletedPayload`] (total,
+    /// honestly_evaluated_count, gating_verdict, fixture_blake3,
+    /// dominant_mode, dominant_novelty_class, ts_ms). Gates ELAI's
+    /// mode-routing + novelty-classifier honesty stack against
+    /// ARC-AGI-2-style out-of-distribution claims. Producer:
+    /// `crates/orchestrator/src/benchmarks/arc_agi2_runner.rs`. Plan:
+    /// docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md.
+    ArcBenchmarkCompleted,
 }
 
 impl SsbActionType {
@@ -1972,6 +2859,73 @@ impl SsbActionType {
             Self::MiniCriticVerdict => "mini_critic_verdict",
             Self::StructuralRetryStageAttempt => "structural_retry_stage_attempt",
             Self::BridgeFileGenerated => "bridge_file_generated",
+            // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+            Self::ArchiveEntryAdded => "archive_entry_added",
+            Self::ArchiveEntryRetired => "archive_entry_retired",
+            Self::TemplatePromoted => "template_promoted",
+            Self::TemplateCandidateRejected => "template_candidate_rejected",
+            // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+            Self::MemoryFactExtracted => "memory_fact_extracted",
+            Self::MemoryFactSuperseded => "memory_fact_superseded",
+            // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+            Self::PpmScored => "ppm_scored",
+            Self::PpmGatingFailed => "ppm_gating_failed",
+            // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+            Self::ChatReflectionCompleted => "chat_reflection_completed",
+            Self::MemoryEvolutionRun => "memory_evolution_run",
+            // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+            // producer + conflict beacons.
+            Self::MemoryNoteInserted => "memory_note_inserted",
+            Self::MemoryNoteEvolved => "memory_note_evolved",
+            Self::MemoryConflictDetected => "memory_conflict_detected",
+            Self::CoreBlockReplaced => "core_block_replaced",
+            // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+            Self::VerifierConsensusPass => "verifier_consensus_pass",
+            Self::VerifierConsensusFail => "verifier_consensus_fail",
+            // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+            Self::TripwireFired => "tripwire_fired",
+            Self::TemplateAutoReverted => "template_auto_reverted",
+            // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark beacon.
+            Self::PrmBenchRunCompleted => "prmbench_run_completed",
+            // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+            Self::BaiArmUpdated => "bai_arm_updated",
+            // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+            Self::HeldOutTaskAdded => "held_out_task_added",
+            Self::HeldOutTaskUsed => "held_out_task_used",
+            // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+            Self::CanaryRunCompleted => "canary_run_completed",
+            Self::CanaryFamilyEvaluated => "canary_family_evaluated",
+            Self::LockedKeysAuditRun => "locked_keys_audit_run",
+            Self::LockedKeysViolationDetected => "locked_keys_violation_detected",
+            // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+            Self::TaskAdvanced => "task_advanced",
+            Self::AgentlessShortcutTaken => "agentless_shortcut_taken",
+            Self::GoalDriftFired => "goal_drift_fired",
+            // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+            Self::ClaimRouted => "claim_routed",
+            // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+            Self::ModeRoutingBenchRunCompleted => "mode_routing_bench_run_completed",
+            // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+            Self::CheckerResultEmitted => "checker_result_emitted",
+            // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+            Self::AdversaryGenerated => "adversary_generated",
+            Self::ConsensusReevaluatedWithCounter => "consensus_reevaluated_with_counter",
+            // D-12 (SCHEMA_VERSION 81): OperationalizationCheck beacon.
+            Self::BabyStepDispatched => "baby_step_dispatched",
+            // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal beacons.
+            Self::ConformalTauComputed => "conformal_tau_computed",
+            Self::ConformalRefusalDecided => "conformal_refusal_decided",
+            // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            Self::NoveltyClassified => "novelty_classified",
+            // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+            Self::ObservableEffectVerified => "observable_effect_verified",
+            // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+            Self::RefusalRateSnapshot => "refusal_rate_snapshot",
+            Self::RefusalSlaBreach => "refusal_sla_breach",
+            // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+            Self::ConformalValidationCompleted => "conformal_validation_completed",
+            // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+            Self::ArcBenchmarkCompleted => "arc_benchmark_completed",
         }
     }
 }
@@ -2220,6 +3174,75 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "mini_critic_verdict"            => Ok(SsbActionType::MiniCriticVerdict),
         "structural_retry_stage_attempt" => Ok(SsbActionType::StructuralRetryStageAttempt),
         "bridge_file_generated"          => Ok(SsbActionType::BridgeFileGenerated),
+        // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+        "archive_entry_added"            => Ok(SsbActionType::ArchiveEntryAdded),
+        "archive_entry_retired"          => Ok(SsbActionType::ArchiveEntryRetired),
+        "template_promoted"              => Ok(SsbActionType::TemplatePromoted),
+        "template_candidate_rejected"    => Ok(SsbActionType::TemplateCandidateRejected),
+        // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+        "memory_fact_extracted"          => Ok(SsbActionType::MemoryFactExtracted),
+        "memory_fact_superseded"         => Ok(SsbActionType::MemoryFactSuperseded),
+        // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+        "ppm_scored"                     => Ok(SsbActionType::PpmScored),
+        "ppm_gating_failed"              => Ok(SsbActionType::PpmGatingFailed),
+        // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+        "chat_reflection_completed"      => Ok(SsbActionType::ChatReflectionCompleted),
+        "memory_evolution_run"           => Ok(SsbActionType::MemoryEvolutionRun),
+        // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+        // producer + conflict beacons.
+        "memory_note_inserted"           => Ok(SsbActionType::MemoryNoteInserted),
+        "memory_note_evolved"            => Ok(SsbActionType::MemoryNoteEvolved),
+        "memory_conflict_detected"       => Ok(SsbActionType::MemoryConflictDetected),
+        "core_block_replaced"            => Ok(SsbActionType::CoreBlockReplaced),
+        // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+        "verifier_consensus_pass"        => Ok(SsbActionType::VerifierConsensusPass),
+        "verifier_consensus_fail"        => Ok(SsbActionType::VerifierConsensusFail),
+        // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+        "tripwire_fired"                 => Ok(SsbActionType::TripwireFired),
+        "template_auto_reverted"         => Ok(SsbActionType::TemplateAutoReverted),
+        // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark beacon.
+        "prmbench_run_completed"         => Ok(SsbActionType::PrmBenchRunCompleted),
+        // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+        "bai_arm_updated"                => Ok(SsbActionType::BaiArmUpdated),
+        // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+        "held_out_task_added"            => Ok(SsbActionType::HeldOutTaskAdded),
+        "held_out_task_used"             => Ok(SsbActionType::HeldOutTaskUsed),
+        // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+        "canary_run_completed"           => Ok(SsbActionType::CanaryRunCompleted),
+        "canary_family_evaluated"        => Ok(SsbActionType::CanaryFamilyEvaluated),
+        "locked_keys_audit_run"          => Ok(SsbActionType::LockedKeysAuditRun),
+        "locked_keys_violation_detected" => Ok(SsbActionType::LockedKeysViolationDetected),
+        // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+        "task_advanced"                  => Ok(SsbActionType::TaskAdvanced),
+        "agentless_shortcut_taken"       => Ok(SsbActionType::AgentlessShortcutTaken),
+        "goal_drift_fired"               => Ok(SsbActionType::GoalDriftFired),
+        // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+        "claim_routed"                   => Ok(SsbActionType::ClaimRouted),
+        // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+        "mode_routing_bench_run_completed" => Ok(SsbActionType::ModeRoutingBenchRunCompleted),
+        // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+        "checker_result_emitted"         => Ok(SsbActionType::CheckerResultEmitted),
+        // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+        "adversary_generated"            => Ok(SsbActionType::AdversaryGenerated),
+        "consensus_reevaluated_with_counter" => {
+            Ok(SsbActionType::ConsensusReevaluatedWithCounter)
+        }
+        // D-12 (SCHEMA_VERSION 81): OperationalizationCheck beacon.
+        "baby_step_dispatched" => Ok(SsbActionType::BabyStepDispatched),
+        // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal beacons.
+        "conformal_tau_computed" => Ok(SsbActionType::ConformalTauComputed),
+        "conformal_refusal_decided" => Ok(SsbActionType::ConformalRefusalDecided),
+        // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+        "novelty_classified" => Ok(SsbActionType::NoveltyClassified),
+        // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+        "observable_effect_verified" => Ok(SsbActionType::ObservableEffectVerified),
+        // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+        "refusal_rate_snapshot" => Ok(SsbActionType::RefusalRateSnapshot),
+        "refusal_sla_breach" => Ok(SsbActionType::RefusalSlaBreach),
+        // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+        "conformal_validation_completed" => Ok(SsbActionType::ConformalValidationCompleted),
+        // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+        "arc_benchmark_completed" => Ok(SsbActionType::ArcBenchmarkCompleted),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -4695,6 +5718,74 @@ pub enum SsbPayload {
     MiniCriticVerdict(MiniCriticVerdictPayload),
     StructuralRetryStageAttempt(StructuralRetryStageAttemptPayload),
     BridgeFileGenerated(BridgeFileGeneratedPayload),
+    // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+    ArchiveEntryAdded(ArchiveEntryAddedPayload),
+    ArchiveEntryRetired(ArchiveEntryRetiredPayload),
+    TemplatePromoted(TemplatePromotedPayload),
+    TemplateCandidateRejected(TemplateCandidateRejectedPayload),
+    // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+    MemoryFactExtracted(MemoryFactExtractedPayload),
+    MemoryFactSuperseded(MemoryFactSupersededPayload),
+    // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+    PpmScored(PpmScoredPayload),
+    PpmGatingFailed(PpmGatingFailedPayload),
+    // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+    ChatReflectionCompleted(ChatReflectionCompletedPayload),
+    MemoryEvolutionRun(MemoryEvolutionRunPayload),
+    // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+    // producer + conflict beacons.
+    MemoryNoteInserted(MemoryNoteInsertedPayload),
+    MemoryNoteEvolved(MemoryNoteEvolvedPayload),
+    MemoryConflictDetected(MemoryConflictDetectedPayload),
+    CoreBlockReplaced(CoreBlockReplacedPayload),
+    // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+    VerifierConsensusPass(VerifierConsensusPassPayload),
+    VerifierConsensusFail(VerifierConsensusFailPayload),
+    // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+    TripwireFired(TripwireFiredPayload),
+    TemplateAutoReverted(TemplateAutoRevertedPayload),
+    // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark runner.
+    PrmBenchRunCompleted(PrmBenchRunCompletedPayload),
+    // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+    BaiArmUpdated(BaiArmUpdatedPayload),
+    // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+    HeldOutTaskAdded(HeldOutTaskAddedPayload),
+    HeldOutTaskUsed(HeldOutTaskUsedPayload),
+    // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+    CanaryRunCompleted(CanaryRunCompletedPayload),
+    CanaryFamilyEvaluated(CanaryFamilyEvaluatedPayload),
+    LockedKeysAuditRun(LockedKeysAuditRunPayload),
+    LockedKeysViolationDetected(LockedKeysViolationDetectedPayload),
+    // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+    TaskAdvanced(TaskAdvancedPayload),
+    AgentlessShortcutTaken(AgentlessShortcutTakenPayload),
+    GoalDriftFired(GoalDriftFiredPayload),
+    // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+    ClaimRouted(ClaimRoutedPayload),
+    // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+    ModeRoutingBenchRunCompleted(ModeRoutingBenchRunCompletedPayload),
+    // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+    CheckerResultEmitted(CheckerResultEmittedPayload),
+    // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+    AdversaryGenerated(AdversaryGeneratedPayload),
+    ConsensusReevaluatedWithCounter(ConsensusReevaluatedWithCounterPayload),
+    // D-12 (SCHEMA_VERSION 81): OperationalizationCheck baby-step
+    // predicate dispatch beacon.
+    BabyStepDispatched(BabyStepDispatchedPayload),
+    // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal calibration beacons.
+    ConformalTauComputed(ConformalTauComputedPayload),
+    ConformalRefusalDecided(ConformalRefusalDecidedPayload),
+    // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+    NoveltyClassified(NoveltyClassifiedPayload),
+    // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+    ObservableEffectVerified(ObservableEffectVerifiedPayload),
+    // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+    RefusalRateSnapshot(RefusalRateSnapshotPayload),
+    RefusalSlaBreach(RefusalSlaBreachPayload),
+    // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+    ConformalValidationCompleted(ConformalValidationCompletedPayload),
+    // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+    ArcBenchmarkCompleted(ARCBenchmarkCompletedPayload),
 }
 
 impl SsbPayload {
@@ -4934,6 +6025,81 @@ impl SsbPayload {
             Self::MiniCriticVerdict(_) => SsbActionType::MiniCriticVerdict,
             Self::StructuralRetryStageAttempt(_) => SsbActionType::StructuralRetryStageAttempt,
             Self::BridgeFileGenerated(_) => SsbActionType::BridgeFileGenerated,
+            // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+            Self::ArchiveEntryAdded(_) => SsbActionType::ArchiveEntryAdded,
+            Self::ArchiveEntryRetired(_) => SsbActionType::ArchiveEntryRetired,
+            Self::TemplatePromoted(_) => SsbActionType::TemplatePromoted,
+            Self::TemplateCandidateRejected(_) => SsbActionType::TemplateCandidateRejected,
+            // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+            Self::MemoryFactExtracted(_) => SsbActionType::MemoryFactExtracted,
+            Self::MemoryFactSuperseded(_) => SsbActionType::MemoryFactSuperseded,
+            // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+            Self::PpmScored(_) => SsbActionType::PpmScored,
+            Self::PpmGatingFailed(_) => SsbActionType::PpmGatingFailed,
+            // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+            Self::ChatReflectionCompleted(_) => SsbActionType::ChatReflectionCompleted,
+            Self::MemoryEvolutionRun(_) => SsbActionType::MemoryEvolutionRun,
+            // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+            // producer + conflict beacons.
+            Self::MemoryNoteInserted(_) => SsbActionType::MemoryNoteInserted,
+            Self::MemoryNoteEvolved(_) => SsbActionType::MemoryNoteEvolved,
+            Self::MemoryConflictDetected(_) => SsbActionType::MemoryConflictDetected,
+            Self::CoreBlockReplaced(_) => SsbActionType::CoreBlockReplaced,
+            // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+            Self::VerifierConsensusPass(_) => SsbActionType::VerifierConsensusPass,
+            Self::VerifierConsensusFail(_) => SsbActionType::VerifierConsensusFail,
+            // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+            Self::TripwireFired(_) => SsbActionType::TripwireFired,
+            Self::TemplateAutoReverted(_) => SsbActionType::TemplateAutoReverted,
+            // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark beacon.
+            Self::PrmBenchRunCompleted(_) => SsbActionType::PrmBenchRunCompleted,
+            // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+            Self::BaiArmUpdated(_) => SsbActionType::BaiArmUpdated,
+            // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+            Self::HeldOutTaskAdded(_) => SsbActionType::HeldOutTaskAdded,
+            Self::HeldOutTaskUsed(_) => SsbActionType::HeldOutTaskUsed,
+            // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+            Self::CanaryRunCompleted(_) => SsbActionType::CanaryRunCompleted,
+            Self::CanaryFamilyEvaluated(_) => SsbActionType::CanaryFamilyEvaluated,
+            Self::LockedKeysAuditRun(_) => SsbActionType::LockedKeysAuditRun,
+            Self::LockedKeysViolationDetected(_) => {
+                SsbActionType::LockedKeysViolationDetected
+            }
+            // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+            Self::TaskAdvanced(_) => SsbActionType::TaskAdvanced,
+            Self::AgentlessShortcutTaken(_) => SsbActionType::AgentlessShortcutTaken,
+            Self::GoalDriftFired(_) => SsbActionType::GoalDriftFired,
+            // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+            Self::ClaimRouted(_) => SsbActionType::ClaimRouted,
+            // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+            Self::ModeRoutingBenchRunCompleted(_) => {
+                SsbActionType::ModeRoutingBenchRunCompleted
+            }
+            // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+            Self::CheckerResultEmitted(_) => SsbActionType::CheckerResultEmitted,
+            // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+            Self::AdversaryGenerated(_) => SsbActionType::AdversaryGenerated,
+            Self::ConsensusReevaluatedWithCounter(_) => {
+                SsbActionType::ConsensusReevaluatedWithCounter
+            }
+            // D-12 (SCHEMA_VERSION 81): OperationalizationCheck beacon.
+            Self::BabyStepDispatched(_) => SsbActionType::BabyStepDispatched,
+            // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal beacons.
+            Self::ConformalTauComputed(_) => SsbActionType::ConformalTauComputed,
+            Self::ConformalRefusalDecided(_) => SsbActionType::ConformalRefusalDecided,
+            // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            Self::NoveltyClassified(_) => SsbActionType::NoveltyClassified,
+            // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+            Self::ObservableEffectVerified(_) => SsbActionType::ObservableEffectVerified,
+            // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+            Self::RefusalRateSnapshot(_) => SsbActionType::RefusalRateSnapshot,
+            Self::RefusalSlaBreach(_) => SsbActionType::RefusalSlaBreach,
+            // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+            Self::ConformalValidationCompleted(_) => {
+                SsbActionType::ConformalValidationCompleted
+            }
+            // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+            Self::ArcBenchmarkCompleted(_) => SsbActionType::ArcBenchmarkCompleted,
         }
     }
 }
@@ -7180,6 +8346,1117 @@ pub struct BridgeFileGeneratedPayload {
 }
 
 // ---------------------------------------------------------------------------
+// D-1 (SCHEMA_VERSION 64) — ReasoningTemplate ArchiveChain lifecycle payloads.
+// ---------------------------------------------------------------------------
+
+/// D-1 — payload for [`SsbActionType::ArchiveEntryAdded`].
+///
+/// Emitted once per [`crate::archive_chain::ArchiveChain::append`] success.
+/// All hash strings are 64-char lowercase hex (Blake3); enum strings are
+/// snake_case matching the wire labels defined on
+/// `reasoning_template::{Domain,PatternKind,ArchiveStatus}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveEntryAddedPayload {
+    pub template_id: String,
+    pub content_hash: String,
+    pub parent_hash: Option<String>,
+    pub domain: String,
+    pub pattern_kind: String,
+    pub archive_status: String,
+}
+
+/// D-1 — payload for [`SsbActionType::ArchiveEntryRetired`].
+///
+/// Emitted once when a template transitions to `Retired`. `retired_at_ms` is
+/// unix-millis from the injected [`elai_core::clock::ClockProvider`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveEntryRetiredPayload {
+    pub template_id: String,
+    pub retired_at_ms: i64,
+    pub retirement_reason: String,
+}
+
+/// D-1 — payload for [`SsbActionType::TemplatePromoted`].
+///
+/// D-5 BAI Thompson promotion is the producer (lands in a later session);
+/// the wire surface is added now so the schema bump is atomic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplatePromotedPayload {
+    pub template_id: String,
+    pub stage: String,
+    pub pass_rate: f64,
+}
+
+/// D-1 — payload for [`SsbActionType::TemplateCandidateRejected`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateCandidateRejectedPayload {
+    pub template_id: String,
+    pub rejection_reason: String,
+}
+
+/// E-5 — payload for [`SsbActionType::MemoryFactExtracted`].
+///
+/// Emitted by the orchestrator's per-turn extraction hook right after
+/// [`elai_memory::FactStore::insert`] returns Ok. Carries the row's
+/// stable `fact_id` plus the indexed columns the dashboard MemoryDrawer
+/// renders without re-querying the on-disk store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryFactExtractedPayload {
+    /// UUIDv4 hex of the new row.
+    pub fact_id: String,
+    /// Snake-case [`elai_memory::FactType`] tag.
+    pub fact_type: String,
+    /// Snake-case [`elai_memory::Scope`] tag (`project` | `global`).
+    pub scope: String,
+    /// Optional project id (None for `scope=global`).
+    pub project_id: Option<String>,
+    /// User id (`"default"` on single-user installs).
+    pub user_id: String,
+    /// Stable key used for duplicate detection / UPDATE dispatch.
+    pub key: String,
+    /// Persisted trust score at row creation.
+    pub trust_score: f32,
+}
+
+/// E-5 — payload for [`SsbActionType::MemoryFactSuperseded`].
+///
+/// Emitted by the orchestrator's update dispatcher right after
+/// [`elai_memory::FactStore::supersede`] returns Ok. Both `fact_id`s are
+/// surfaced so the dashboard MemoryDrawer can draw the supersession edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryFactSupersededPayload {
+    /// `fact_id` of the row that has just been closed (`valid_to_ms != null`).
+    pub old_fact_id: String,
+    /// `fact_id` of the new currently-valid row.
+    pub new_fact_id: String,
+    /// `valid_to_ms` written on the old row.
+    pub valid_to_ms: u64,
+}
+
+/// D-2 — payload for [`SsbActionType::PpmScored`].
+///
+/// Emitted by `crate::ppm_client::emit_ppm_score` after every successful
+/// PPM scoring call that clears the configured threshold. `mode` is the
+/// snake_case form of [`crate::sidecar_ppm_hook::PpmMode`]
+/// (`"math"` / `"code"`). `score_mean` / `score_var` are widened to f64
+/// for the SSB wire format (intrinsic values originate as f32 from the
+/// sidecar; widening is lossless).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PpmScoredPayload {
+    pub candidate_id: String,
+    pub verifier_id: String,
+    pub mode: String,
+    pub score_mean: f64,
+    pub score_var: f64,
+    pub num_steps: u32,
+    pub latency_ms: u64,
+    pub cache_hit: bool,
+}
+
+/// D-2 — payload for [`SsbActionType::PpmGatingFailed`].
+///
+/// Emitted by `crate::ppm_client::emit_ppm_score` when the PPM `score_mean`
+/// is below the configured `threshold`. Carries both numbers so dashboards
+/// can render the gap without re-loading the threshold config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PpmGatingFailedPayload {
+    pub candidate_id: String,
+    pub verifier_id: String,
+    pub mode: String,
+    pub score_mean: f64,
+    pub threshold: f64,
+    pub num_steps: u32,
+}
+
+/// E-1 — payload for [`SsbActionType::ChatReflectionCompleted`].
+///
+/// Emitted by the orchestrator's chat-turn-committed hook right after
+/// `elai_reasoning::chat_memory_reflect::reflect` returns Ok. Carries
+/// the counts the dashboard ChatMemoryDrawer renders without
+/// re-querying the underlying stores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatReflectionCompletedPayload {
+    /// UUIDv4 hex of the new `memory_notes` row.
+    pub note_id: String,
+    /// First ~80 chars of the note body (for the SSB log view).
+    pub note_preview: String,
+    /// Number of [`elai_memory::ExtractedFact`] candidates the heuristic
+    /// emitted in the same reflection pass.
+    pub facts_extracted: u32,
+    /// `decay_tick` rows examined.
+    pub decay_rows_examined: u32,
+    /// `decay_tick` rows whose persisted trust score actually moved.
+    pub decay_rows_updated: u32,
+    /// Byte-size of the CoreBlock body after the post-reflection
+    /// append (head-truncated to [`elai_memory::CORE_BLOCK_MAX_BYTES`]).
+    pub core_block_bytes: u32,
+}
+
+/// E-1 — payload for [`SsbActionType::MemoryEvolutionRun`].
+///
+/// Emitted on every IDLE -> SLEEP_COMPUTE substate entry AND the
+/// matching SLEEP_COMPUTE -> IDLE exit. `phase` is `"start"` or
+/// `"end"`; `duration_ms` is `0` on `"start"` and the elapsed time
+/// from start to end on `"end"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryEvolutionRunPayload {
+    /// `"start"` | `"end"`.
+    pub phase: String,
+    /// Elapsed ms from the matching `"start"` row (0 on `"start"`).
+    pub duration_ms: u64,
+    /// Number of `memory_notes` rows whose `last_accessed_ms` the
+    /// PPR walker bumped during this evolution pass.
+    pub notes_touched: u32,
+}
+
+/// E-1 dashboard slice — payload for [`SsbActionType::MemoryNoteInserted`].
+///
+/// Emitted by the orchestrator chat-turn-committed hook right after
+/// `elai_memory::NoteStore::insert` returns Ok. The producer wiring
+/// itself lives in `orchestrator/src/task_runner.rs` and is owned by
+/// another orchestration session; this payload is shipped now so the
+/// dashboard surface can subscribe without further schema churn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryNoteInsertedPayload {
+    /// UUIDv4 hex of the inserted `memory_notes` row.
+    pub note_id: String,
+    /// `"session"` | `"project"` | `"global"`.
+    pub scope: String,
+    /// BLAKE3 hex of the note body (so the dashboard can dedupe across
+    /// reflection passes without re-fetching the row).
+    pub content_blake3: String,
+    /// Number of Zettelkasten links the note carries at insert time
+    /// (PPR walker adjacency seed count).
+    pub link_count: u32,
+}
+
+/// E-1 dashboard slice — payload for [`SsbActionType::MemoryNoteEvolved`].
+///
+/// Emitted by the A-MEM note evolution rewrite pass — the PPR-walker
+/// attached link/edit step described in arXiv:2502.12110 §3.3.
+/// Producer wiring is in the same task_runner.rs hook as the insert
+/// path; carries both old and new content hashes so the dashboard can
+/// render a diff-friendly evolution history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryNoteEvolvedPayload {
+    /// UUIDv4 hex of the evolved `memory_notes` row.
+    pub note_id: String,
+    /// BLAKE3 hex of the previous body (pre-evolution).
+    pub old_content_blake3: String,
+    /// BLAKE3 hex of the new body (post-evolution).
+    pub new_content_blake3: String,
+    /// New `note_id` references added to the row's `links` array.
+    pub links_added: u32,
+    /// `note_id` references removed from the row's `links` array.
+    pub links_removed: u32,
+}
+
+/// E-1 dashboard slice — payload for [`SsbActionType::MemoryConflictDetected`].
+///
+/// Emitted by the conflict adjudicator when two `memory_facts` /
+/// `memory_notes` rows describe overlapping or contradictory state.
+/// `conflict_kind` is the snake_case discriminator — current vocabulary
+/// is `"duplicate"` | `"contradiction"`; future kinds (e.g.
+/// `"version_drift"`) can land without a schema bump because the field
+/// is a free-form string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryConflictDetectedPayload {
+    /// `fact_id` (or `note_id`) of the older row.
+    pub fact_id_a: String,
+    /// `fact_id` (or `note_id`) of the newer row.
+    pub fact_id_b: String,
+    /// `"duplicate"` | `"contradiction"` (snake_case discriminator).
+    pub conflict_kind: String,
+}
+
+/// E-1 dashboard slice — payload for [`SsbActionType::CoreBlockReplaced`].
+///
+/// Emitted on every `CoreBlockStore::upsert` that REPLACES an existing
+/// row (the first-insert path emits a separate beacon family — this
+/// variant strictly records edits to an already-pinned core block, so
+/// the dashboard's drift / edit-count indicator stays accurate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreBlockReplacedPayload {
+    /// Owner of the core block (single-user installs use `"default"`).
+    pub user_id: String,
+    /// BLAKE3 hex of the previous body.
+    pub old_blake3: String,
+    /// BLAKE3 hex of the new body.
+    pub new_blake3: String,
+    /// Byte size of the new body (always <= CORE_BLOCK_MAX_BYTES).
+    pub bytes: u32,
+}
+
+/// D-3 — payload for [`SsbActionType::VerifierConsensusPass`].
+///
+/// Emitted by `crate::agent_pool::run_consensus_pass` after the aggregator
+/// returns `AggregateVerdict::Pass`. `verdict` is the snake-case verdict
+/// label (always `"pass"` here; carried as a String so dashboard rendering
+/// is uniform with the failure-row schema). `rule_id` is the stable
+/// snake_case `ConsensusRule::rule_id()` label so downstream consumers
+/// don't need to re-decode the rule body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierConsensusPassPayload {
+    pub candidate_id: String,
+    pub template_id: String,
+    pub verdict: String,
+    pub verifier_count: u32,
+    pub pass_count: u32,
+    pub rule_id: String,
+}
+
+/// D-3 — payload for [`SsbActionType::VerifierConsensusFail`].
+///
+/// Emitted by `crate::agent_pool::run_consensus_pass` when the aggregator
+/// returns `AggregateVerdict::Fail` or `Inconclusive`. `failing_verifier_ids`
+/// is non-empty for `Fail`; for `Inconclusive` it is empty and `reason`
+/// carries the inconclusive-detail string (e.g. `"missing_kinds=ppm"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierConsensusFailPayload {
+    pub candidate_id: String,
+    pub template_id: String,
+    pub failing_verifier_ids: Vec<String>,
+    pub reason: String,
+}
+
+/// D-4 — payload for [`SsbActionType::TripwireFired`].
+///
+/// Emitted by `crate::tripwire::TripwireMonitor::observe` when one of the
+/// five detectors (KL / Δρ / IQR / perplexity / DDM) crosses its threshold.
+/// `event_id` is a blake3-derived 32-hex stable id so dashboard consumers
+/// can dedupe by id rather than seq.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TripwireFiredPayload {
+    pub event_id: String,
+    pub tripwire_kind: String,
+    pub candidate_id: String,
+    pub observed_value: f64,
+    pub threshold: f64,
+    pub fired_at_ms: i64,
+}
+
+/// D-4 — payload for [`SsbActionType::TemplateAutoReverted`].
+///
+/// Emitted by `crate::tripwire::auto_revert` after a tripwire firing flips
+/// the matching `ArchiveEntry.status` to `Retired` with
+/// `RetirementReason::Degradation`. `parent_template_id` is the lineage
+/// target the orchestrator switches to (None when the retired template was
+/// a root).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateAutoRevertedPayload {
+    pub template_id: String,
+    pub parent_template_id: Option<String>,
+    pub retirement_reason: String,
+    pub fired_tripwire_id: String,
+}
+
+/// D-19 — payload for [`SsbActionType::PrmBenchRunCompleted`].
+///
+/// Emitted by
+/// [`crate::benchmarks::prmbench_runner::PRMBenchRunner::run_all`] (and
+/// [`crate::benchmarks::prmbench_runner::PRMBenchRunner::run_category`])
+/// after a PRMBench fixture has been scored end-to-end. `gating_verdict`
+/// is the snake_case form of
+/// [`crate::benchmarks::prmbench_runner::GatingVerdict`]
+/// (`"pass"` / `"fail"`). `fixture_blake3` is the 64-hex content hash of
+/// the JSONL fixture the run was computed against (anti-stale: pins
+/// dashboard rows to a specific dataset revision).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrmBenchRunCompletedPayload {
+    /// Total fixture rows the runner consumed (includes `insufficient`
+    /// rows where the PPM hook returned an error).
+    pub total: u32,
+    /// `(tp + tn) / scored` aggregate accuracy.
+    pub accuracy: f64,
+    /// `tp / (tp + fp)` aggregate precision.
+    pub precision: f64,
+    /// `tp / (tp + fn)` aggregate recall.
+    pub recall: f64,
+    /// Aggregate verdict — `"pass"` iff every per-category verdict
+    /// passed AND at least one row was scored.
+    pub gating_verdict: String,
+    /// 64-hex blake3 of the fixture file contents.
+    pub fixture_blake3: String,
+    /// Number of distinct categories surfaced in the per-category
+    /// breakdown (matches `report.per_category.len()`).
+    pub category_count: u32,
+}
+
+/// D-5 — payload for [`SsbActionType::BaiArmUpdated`].
+///
+/// Emitted once per `bai::emit_bai_round` posterior update. Carries the BAI
+/// arm state after the Beta(alpha, beta) update + the `was_promoted` flag
+/// mirroring whether the Thompson sample fired the promotion rule on this
+/// round (so dashboard consumers can render the running mean + last-action
+/// without a second lookup). `template_id` is 32-char simple-hex
+/// (uuid::Uuid::simple). Promote/reject decisions emit a follow-up
+/// `template_promoted` / `template_candidate_rejected` SSB row from the same
+/// producer.
+///
+/// Fields ordered alpha-first/beta-second to match the conjugate Beta
+/// notation in arXiv:2104.05593 §2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BaiArmUpdatedPayload {
+    /// Hex (32-char simple) of the candidate template id.
+    pub template_id: String,
+    /// Beta-distribution alpha (= pass_count + 1 with the Beta(1, 1) prior).
+    pub alpha: f64,
+    /// Beta-distribution beta (= fail_count + 1 with the Beta(1, 1) prior).
+    pub beta: f64,
+    /// Cumulative pulls observed on this arm (== alpha + beta - 2).
+    pub n_pulls: u32,
+    /// Posterior mean = alpha / (alpha + beta).
+    pub mean_estimate: f64,
+    /// Whether the Thompson sample picked this arm AND the posterior cleared
+    /// the promotion threshold on this round.
+    pub was_promoted: bool,
+}
+
+/// D-6 — payload for [`SsbActionType::HeldOutTaskAdded`].
+///
+/// Emitted once per `held_out::insert_and_emit` Ok return — a fresh
+/// held-out task that passed the LiveCodeBench-style 9-gram contamination
+/// filter and was inserted into the rusqlite-backed store. The dashboard
+/// `HeldOutPanel` reads these rows to render the "recently ingested"
+/// timeline + per-source counters. The `source` label is the snake-case
+/// string from [`crate::held_out::TaskSource::label`] so the dashboard
+/// can group without re-deserializing the full enum.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeldOutTaskAddedPayload {
+    /// Simple-hex uuid of the held-out task (32 chars).
+    pub task_id: String,
+    /// Snake-case source label (`github_issue` / `benchmark_fixture` /
+    /// `synthetic`).
+    pub source: String,
+    /// Blake3 (64-char hex) of the normalized task body.
+    pub content_blake3: String,
+    /// Number of 9-gram entries in the task's signature. Used by the
+    /// dashboard to flag tasks below the n-gram threshold (too short to
+    /// participate in the contamination filter).
+    pub ngram_count: u32,
+    /// Wall-clock UNIX ms when the task was ingested.
+    pub ingested_ts_ms: i64,
+    /// Time-window (ms) before the task becomes eligible for BAI eval
+    /// consumption.
+    pub eligibility_window_ms: i64,
+}
+
+/// D-6 — payload for [`SsbActionType::HeldOutTaskUsed`].
+///
+/// Emitted once per `held_out::mark_used_and_emit` Ok return — a held-out
+/// task consumed by a BAI eval round. Carries the consumer template id so
+/// the dashboard can link held-out usage to the BAI arm that consumed it
+/// (cross-referenced with the `bai_arm_updated` row from the same round).
+/// `consumer_template_id` is the empty string when the consumer is the
+/// pre-promotion scaffold (no template yet).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeldOutTaskUsedPayload {
+    /// Simple-hex uuid of the held-out task that was consumed.
+    pub task_id: String,
+    /// Simple-hex uuid of the consumer template (or empty string for the
+    /// pre-promotion scaffold).
+    pub consumer_template_id: String,
+    /// Wall-clock UNIX ms when the task was consumed.
+    pub used_ts_ms: i64,
+}
+
+/// D-7 — payload for [`SsbActionType::CanaryRunCompleted`].
+///
+/// Emitted once per `canary::emit_canary_run` Ok return — a completed
+/// cross-domain transfer canary report. The dashboard `CanaryPanel`
+/// joins these rows to the per-family
+/// [`CanaryFamilyEvaluatedPayload`] rows (matched on `report_id`) to
+/// render the per-family deltas + overall transfer score timeline.
+/// NanoFlux-style (arxiv:2509.23252, T1) defense: target-family wins
+/// must not silently regress adjacent families.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanaryRunCompletedPayload {
+    /// Blake3 (64-char hex) of the serialized report body. Deterministic
+    /// identifier the per-family rows reference via `report_id` so the
+    /// dashboard can join without scanning the SSB tail twice.
+    pub report_id: String,
+    /// Wall-clock UNIX ms when the run completed.
+    pub ts_ms: i64,
+    /// Mean transfer score across all evaluated families on this run.
+    /// Range nominally `[-1.0, +1.0]` — positive means the candidate
+    /// outperformed the baseline on average, negative the opposite.
+    pub overall_transfer_score: f64,
+    /// Snake-case decision kind: `pass` / `fail` / `marginal_pass`.
+    pub decision_kind: String,
+    /// Empty string when the decision is not `fail`. When `fail`, this
+    /// carries the snake-case family label that drove the failure (the
+    /// single dominant regressor — the largest negative `delta` family).
+    pub dominant_fail_family: String,
+}
+
+/// D-9 — payload for [`SsbActionType::LockedKeysAuditRun`].
+///
+/// Emitted once per `LockedKeysAuditor::audit_diff_ranged` invocation
+/// (success or violation; the audit ran, the row is the durable
+/// signal). `registry_blake3` is the blake3 hex of the registry's
+/// canonical content so dashboard consumers can detect drift between
+/// runs without re-reading the TOML.
+///
+/// Grounding: arxiv:1908.04734 (Everitt current-RF principle); see
+/// docs/thefinalglance/D-plan/D-9_l3_frozen_surfaces.md.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LockedKeysAuditRunPayload {
+    /// Per-audit-run correlator. The matching
+    /// [`LockedKeysViolationDetectedPayload`] rows carry the same id
+    /// so the dashboard joins on it.
+    pub audit_id: uuid::Uuid,
+    /// Wall-clock UNIX ms when the audit ran.
+    pub ts_ms: i64,
+    /// Number of staged file/range pairs the auditor inspected.
+    pub n_audited: u32,
+    /// Number of violations emitted for this run (0 on a clean audit).
+    pub n_violations: u32,
+    /// 64-char lowercase hex blake3 of the registry's canonical
+    /// content. Stable across formatter-only changes that don't alter
+    /// path / line_range / reason.
+    pub registry_blake3: String,
+    /// Path to the registry file the auditor loaded (string for
+    /// portability across the IPC boundary).
+    pub registry_path: String,
+}
+
+/// D-9 — payload for [`SsbActionType::LockedKeysViolationDetected`].
+///
+/// Emitted once per overlap between a staged edit and a registry
+/// entry. `audit_id` matches the parent [`LockedKeysAuditRunPayload`]
+/// row so the dashboard renders the full audit context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LockedKeysViolationDetectedPayload {
+    /// Matches the parent [`LockedKeysAuditRunPayload::audit_id`].
+    pub audit_id: uuid::Uuid,
+    /// Wall-clock UNIX ms when the violation was raised.
+    pub ts_ms: i64,
+    /// Workspace-relative path of the staged edit that touched a
+    /// locked surface (forward-slash normalised).
+    pub attempted_edit: String,
+    /// Inclusive line range of the staged edit as `[start, end]`.
+    /// Length always 2. Vec form keeps the IPC schema simple.
+    pub attempted_lines: Vec<u32>,
+    /// Forward-slash normalised path of the registry entry that
+    /// matched.
+    pub locked_key_path: String,
+    /// 64-char lowercase hex blake3 of the registry entry's canonical
+    /// content. Allows the dashboard to detect that a violation was
+    /// raised against a since-modified registry row.
+    pub locked_key_signature_blake3: String,
+    /// Human-readable reason copied from the matched registry entry.
+    pub reason: String,
+}
+
+/// D-7 — payload for [`SsbActionType::CanaryFamilyEvaluated`].
+///
+/// Emitted once per family inside a single canary run (so a 5-family
+/// canary emits 5 of these rows plus 1
+/// [`CanaryRunCompletedPayload`]). Matched to the parent run via
+/// `report_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanaryFamilyEvaluatedPayload {
+    /// Matches the parent [`CanaryRunCompletedPayload::report_id`].
+    pub report_id: String,
+    /// Snake-case family label (`code_fix` / `math_proof` /
+    /// `prose_reason` / `planning_decomposition` / `tool_use`).
+    pub family: String,
+    /// How many held-out tasks were drawn from this family on this run.
+    pub n_evaluated: u32,
+    /// Candidate pass count.
+    pub pass_count: u32,
+    /// Candidate fail count.
+    pub fail_count: u32,
+    /// Candidate pass-rate minus baseline pass-rate. Positive means the
+    /// candidate beat the baseline; negative is regression. Bounded by
+    /// `[-1.0, +1.0]`.
+    pub transfer_score: f64,
+    /// Baseline pass-rate (the reference template's pass-rate on the
+    /// same held-out subset). Provided alongside the delta so the
+    /// dashboard can render both bars without recomputing.
+    pub baseline_score: f64,
+}
+
+/// E-46 — payload for [`SsbActionType::TaskAdvanced`].
+///
+/// One row per `DualLedger::advance_task` call. TaskLedger.status and
+/// ProgressLedger.completion_pct + blockers are updated atomically and
+/// the row carries the post-update view so dashboard consumers can
+/// render the dual-ledger state without re-reading the ledger.
+///
+/// Grounding: arxiv:2412.21154 (Devin task-ledger pattern; SWE-bench
+/// 13.86% solve rate driven by explicit task-state tracking).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskAdvancedPayload {
+    /// Task id (string for IPC portability — the orchestrator uses a
+    /// `TaskId` newtype internally).
+    pub task_id: String,
+    /// Optional parent task id; empty string when the task is a root.
+    pub parent_id: String,
+    /// Post-update completion percent in `[0.0, 100.0]`.
+    pub completion_pct: f64,
+    /// Snake-case status label: `pending` / `in_progress` / `complete`
+    /// / `blocked`.
+    pub status: String,
+    /// Newly-added blocker on this advance (empty when none).
+    pub blocker: String,
+    /// Wall-clock UNIX ms when the advance was recorded.
+    pub ts_ms: i64,
+}
+
+/// E-46 — payload for [`SsbActionType::AgentlessShortcutTaken`].
+///
+/// Emitted when `agentless_shortcut::shortcut_eligible` returns
+/// `Eligibility::Yes` for a task AND the orchestrator elects to take
+/// the shortcut (i.e. skip spawning a sub-agent). The `reason` carries
+/// the canonical eligibility justification (single-file / loc / no
+/// cross-crate / no async net) so the dashboard can render the
+/// shortcut taxonomy.
+///
+/// Grounding: arxiv:2407.01489 (AGENTLESS, 32.00% SWE-bench Lite at
+/// $0.70/issue — non-agentic 3-phase localize/repair/validate beats
+/// every open-source agentic system at that time).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentlessShortcutTakenPayload {
+    /// Task id that elected the shortcut.
+    pub task_id: String,
+    /// Snake-case reason label: `single_file_small` / `single_file` /
+    /// `no_cross_crate` etc. Used by the dashboard to render shortcut
+    /// taxonomy histograms.
+    pub reason: String,
+    /// Wall-clock UNIX ms when the shortcut was taken.
+    pub ts_ms: i64,
+}
+
+/// E-46 — payload for [`SsbActionType::GoalDriftFired`].
+///
+/// Emitted when `GoalDriftCanary::fired()` evaluates true: drift
+/// between the initial-goal token-set and the current summary
+/// token-set exceeded the configured threshold. The
+/// `initial_goal_blake3` lets dashboard consumers join consecutive
+/// firings to a single canary instance.
+///
+/// Grounding: arxiv:2505.02709 (goal-drift PRM supervision); see also
+/// D-7 [`CanaryFamily::PlanningDecomposition`] for the orthogonal
+/// canary surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalDriftFiredPayload {
+    /// 64-char lowercase hex blake3 of the canonical initial goal
+    /// string. Stable across firings so the dashboard joins them.
+    pub initial_goal_blake3: String,
+    /// Measured drift in `[0.0, 1.0]` — `1.0` means orthogonal token
+    /// sets, `0.0` means identical (Jaccard-distance variant used by
+    /// `measure_drift`).
+    pub drift: f64,
+    /// Configured drift threshold the canary was checked against.
+    pub threshold: f64,
+    /// Step index at which the firing was observed (0-indexed within
+    /// the parent decomposition walk).
+    pub step: u32,
+    /// Wall-clock UNIX ms when the firing was recorded.
+    pub ts_ms: i64,
+}
+
+/// D-10 — payload for [`SsbActionType::ClaimRouted`].
+///
+/// One row per `agent_pool::route_claim` call. The orchestrator (not
+/// the policy model) decides the [`crate::grounding_mode::GroundingMode`]
+/// via the pure predicate
+/// [`crate::grounding_mode::select_grounding_mode`]; this row is the
+/// durable audit signal that the predicate ran and what it produced.
+///
+/// `ctx_summary_blake3` is the lowercase 64-char hex blake3 of the
+/// canonical wire-form of the `OrchContext` snapshot the router saw
+/// — so the dashboard can detect post-hoc context drift between
+/// routing and dispatch.
+///
+/// Grounding:
+///   * docs/specs/guide/real-problem-solving-grounded-2026-05-19.md
+///     §1 (5-mode taxonomy) + §3.2 (routing predicate).
+///   * arxiv:1908.04734 (Everitt current-RF principle, T1).
+///   * arxiv:1906.01820 (Hubinger mesa-optimization, T1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimRoutedPayload {
+    /// Stable per-claim identifier (uuid string in production; any
+    /// non-empty stable string in tests).
+    pub claim_id: String,
+    /// Snake-case [`crate::claim::ClaimType`] label — matches the
+    /// type's serde tag so the dashboard can deserialize without a
+    /// separate mapping.
+    pub claim_type: String,
+    /// Snake-case [`crate::grounding_mode::GroundingMode`] label.
+    pub mode: String,
+    /// Wall-clock UNIX ms when routing completed.
+    pub ts_ms: i64,
+    /// 64-char lowercase hex blake3 of the canonical wire-form of
+    /// the `OrchContext` snapshot used at routing time. Empty string
+    /// is permitted but indicates a hashing failure on the producer
+    /// side (logged via `tracing::warn`).
+    pub ctx_summary_blake3: String,
+}
+
+/// D-21 — payload for [`SsbActionType::ModeRoutingBenchRunCompleted`].
+///
+/// Emitted by
+/// [`crate::benchmarks::mode_routing_runner::ModeRoutingBenchmark::run_all`]
+/// after a mode-routing fixture has been scored end-to-end. The runner
+/// replays a hand-labeled JSONL fixture through D-10's pure predicate
+/// [`crate::grounding_mode::select_grounding_mode`] and reports macro F1
+/// + per-mode F1 + a 5x5 confusion matrix. `gating_verdict` is the
+/// snake-case form of
+/// [`crate::benchmarks::prmbench_runner::GatingVerdict`] (`"pass"` iff
+/// macro F1 >= 0.85 AND every per-mode F1 >= 0.70). `fixture_blake3`
+/// pins the dashboard row to a dataset revision.
+///
+/// Grounding:
+///   * docs/specs/guide/real-problem-solving-grounded-2026-05-19.md §3.2
+///     (routing predicate baseline).
+///   * D-21 plan ACCEPTANCE: macro F1 >= 0.85 + per-mode F1 >= 0.70.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModeRoutingBenchRunCompletedPayload {
+    /// Total fixture rows the runner consumed.
+    pub total: u32,
+    /// `(sum_per_mode_TP) / total_predictions` aggregate accuracy.
+    pub accuracy: f64,
+    /// Macro-averaged F1 across the 5 [`crate::grounding_mode::GroundingMode`]
+    /// variants. Modes with zero ground-truth AND zero predictions
+    /// contribute `0.0` (defined behaviour — keeps macro F1
+    /// monotonically degraded by missing-class coverage).
+    pub f1_macro: f64,
+    /// Aggregate verdict — `"pass"` iff `f1_macro >= 0.85` AND every
+    /// per-mode F1 is `>= 0.70`. `"fail"` otherwise.
+    pub gating_verdict: String,
+    /// 64-hex blake3 of the fixture file contents.
+    pub fixture_blake3: String,
+    /// Number of distinct rows actually scored (== `total` minus any
+    /// invalid-label rows that were rejected at load time).
+    pub fixture_row_count: u32,
+}
+
+/// D-11 — payload for [`SsbActionType::CheckerResultEmitted`].
+///
+/// Emitted once per `(checker_id, kind, result)` triple returned by
+/// [`crate::checker_registry::CheckerRegistry::run_all_applicable`].
+/// The orchestrator (NOT the policy model) is the sole producer; the
+/// dispatch path is `crate::agent_pool::dispatch_constructive_checkers`,
+/// which is invoked when the D-10 router selects
+/// [`crate::grounding_mode::GroundingMode::Constructive`].
+///
+/// Field semantics:
+///   * `checker_id` — stable id the orchestrator assigned at register
+///     time (`"regex-foo"`, `"sympy-default"`, etc).
+///   * `checker_kind` — snake-case [`crate::checker_registry::CheckerKind`]
+///     label (one of: `sympy`, `z3`, `compile_rust`, `regex_match`,
+///     `json_schema_validate`, `numeric_range`).
+///   * `result_kind` — `pass | fail | inapplicable | error`.
+///   * `claim_id` — stable per-claim identifier.
+///   * `ts_ms` — wall-clock UNIX ms at result-emit time.
+///   * `reason` — bounded human-readable text for `fail`,
+///     `inapplicable`, or `error`; empty string for `pass`.
+///
+/// Grounding:
+///   * docs/specs/guide/real-problem-solving-grounded-2026-05-19.md §4.2
+///     (checker layout) + §1 (Mode A constructive grading).
+///   * arxiv:2310.04406 (constructive proof checking).
+///   * arxiv:2211.12588 (Program-of-Thought, T1, TMLR 2023).
+///   * arxiv:2402.01030 (CodeAct, T1, ICML 2024).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckerResultEmittedPayload {
+    /// Stable id assigned at register time.
+    pub checker_id: String,
+    /// Snake-case [`crate::checker_registry::CheckerKind`] label.
+    pub checker_kind: String,
+    /// `pass | fail | inapplicable | error`.
+    pub result_kind: String,
+    /// Stable per-claim identifier the registry dispatched against.
+    pub claim_id: String,
+    /// Wall-clock UNIX ms at result-emit time.
+    pub ts_ms: i64,
+    /// Bounded human-readable explanation (truncated to 2048 chars by
+    /// the producer). Empty string for `pass`.
+    pub reason: String,
+}
+
+/// D-13 — payload for [`SsbActionType::AdversaryGenerated`].
+///
+/// Emitted by
+/// [`crate::agent_pool::run_adversarial_pass`] after an
+/// [`crate::adversary::Adversary::generate_counter`] call returns Ok.
+/// `severity` is the structured counter's invalidation strength on
+/// `[0.0, 1.0]`; `model_family` is the snake-case
+/// [`crate::adversary::ModelFamily`] label the adversary emitted from
+/// (cross-family check enforced at the consensus call-site, not on
+/// this row).
+///
+/// Grounding:
+///   * arxiv:2403.07974 (T1) adversarial verification.
+///   * arxiv:2504.16760 (T1) lightweight latent verifiers
+///     (heterogeneous-family verification).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdversaryGeneratedPayload {
+    /// Stable per-counter id (typically blake3-derived).
+    pub counter_id: String,
+    /// `claim_id` of the original [`crate::claim::Claim`] this counter
+    /// was generated against.
+    pub claim_id: String,
+    /// `[0.0, 1.0]` invalidation severity. `0.0` = "claim robust"
+    /// path; `>= severity_threshold` = caller treats the original
+    /// claim as invalidated.
+    pub severity: f64,
+    /// Snake-case [`crate::adversary::ModelFamily`] label.
+    pub model_family: String,
+}
+
+/// D-13 — payload for [`SsbActionType::ConsensusReevaluatedWithCounter`].
+///
+/// Emitted by
+/// [`crate::agent_pool::run_adversarial_pass`] after the verifier
+/// consensus has been re-run on `(claim, counter_evidence)`. Both
+/// verdict fields carry the snake-case
+/// [`crate::verification_result::AggregateVerdict::as_str`] label so
+/// dashboards can render the verdict transition without re-decoding
+/// the rule body. `claim_id` is the original claim, NOT the counter
+/// (the consensus is being re-evaluated AGAINST the original claim in
+/// the presence of new counter-evidence).
+///
+/// Grounding:
+///   * arxiv:2403.07974 (T1) adversarial verification.
+///   * arxiv:2504.16760 (T1) heterogeneous-family verifier transfer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsensusReevaluatedWithCounterPayload {
+    /// Stable claim id the verdict was re-computed against.
+    pub claim_id: String,
+    /// Verdict of the FIRST consensus pass (pre-adversary). One of
+    /// `"pass" | "fail" | "inconclusive"`.
+    pub original_verdict: String,
+    /// Verdict of the consensus pass that consumed the adversary
+    /// counter-evidence. Same label-space as `original_verdict`.
+    pub post_counter_verdict: String,
+}
+
+/// D-12 — payload for [`SsbActionType::BabyStepDispatched`].
+///
+/// Emitted once per [`crate::baby_step::dispatch_check_for_baby_step`]
+/// outcome by [`crate::agent_pool::run_operational_check`]. The row is
+/// the durable audit signal the dashboard's `BabyStepPanel` renders;
+/// the auditor consumes the `outcome` field to decide whether to allow
+/// the MEMORIZING transition.
+///
+/// Field semantics:
+///   * `step_id` — stable per-baby-step identifier.
+///   * `parent_task_id` — parent task / phase id the baby step belongs
+///     to (so the panel can group dispatches per parent).
+///   * `checker_kinds_used` — snake_case
+///     [`crate::checker_registry::CheckerKind`] labels for every
+///     checker the dispatch fired. Empty when no checker ran (the
+///     dispatch returned `NotOperationalized` or `Inapplicable`).
+///   * `outcome` — one of `pass | fail | inapplicable`.
+///   * `ts_ms` — wall-clock UNIX ms at dispatch-emit time.
+///
+/// Grounding:
+///   * arxiv:2305.16291 Voyager (T1) — skill-with-measurable-effect.
+///   * arxiv:2407.01489 AGENTLESS (T1) — single-step verification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BabyStepDispatchedPayload {
+    pub step_id: String,
+    pub parent_task_id: String,
+    pub checker_kinds_used: Vec<String>,
+    /// `pass | fail | inapplicable`.
+    pub outcome: String,
+    pub ts_ms: i64,
+}
+
+/// D-16 — payload for [`SsbActionType::ConformalTauComputed`].
+///
+/// Emitted once per
+/// [`crate::conformal_calibration::compute_tau_and_emit`] Ok return.
+/// The row is the durable audit trail the dashboard
+/// `ConformalCalibrationPanel` joins against the per-claim
+/// [`ConformalRefusalDecidedPayload`] rows.
+///
+/// Grounding:
+///   * arXiv:2503.01345 — UniCR (Unified Conformal Refusal).
+///   * Vovk et al. *Algorithmic Learning in a Random World* (2005)
+///     §2.2 — quantile-based conformal predictor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformalTauComputedPayload {
+    /// The threshold `tau` returned by
+    /// [`crate::conformal_calibration::compute_tau`]; non-conformity
+    /// scores above `tau` map to `RefusalDecision::Abstain`.
+    pub tau: f64,
+    /// UniCR operating point — default `0.1` per arXiv:2503.01345 §6.
+    pub epsilon: f64,
+    /// Number of tuples in the corpus used to compute `tau`.
+    pub corpus_size: u32,
+    /// Snake-case [`crate::conformal_calibration::CorpusSource`] label.
+    pub source: String,
+    /// Wall-clock UNIX ms at compute-emit time.
+    pub ts_ms: i64,
+}
+
+/// D-16 — payload for [`SsbActionType::ConformalRefusalDecided`].
+///
+/// Emitted once per
+/// [`crate::conformal_calibration::decide_and_emit`] call (and by
+/// extension every [`crate::agent_pool::dispatch_conformal_refusal`]
+/// invocation). Carries enough state for the dashboard to render the
+/// per-claim abstain/answer histogram without re-decoding the tau row.
+///
+/// Field semantics:
+///   * `claim_id` — the originating Claim id (joins against the D-10
+///     `claim_routed` rows).
+///   * `claim_score` — the composite confidence the orchestrator
+///     supplied; in `[0.0, 1.0]`.
+///   * `tau` — the calibration threshold the decision was taken
+///     against.
+///   * `decision` — one of `abstain | answer`.
+///   * `confidence` — `claim_score` if `decision == "answer"`, else
+///     `0.0` (Abstain carries no confidence by construction).
+///   * `ts_ms` — wall-clock UNIX ms at decide-emit time.
+///
+/// Grounding: arXiv:2503.01345 (UniCR) — formal Mode E refusal rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformalRefusalDecidedPayload {
+    pub claim_id: String,
+    pub claim_score: f64,
+    pub tau: f64,
+    pub decision: String,
+    pub confidence: f64,
+    pub ts_ms: i64,
+}
+
+/// D-17 — payload for [`SsbActionType::RefusalRateSnapshot`].
+///
+/// Emitted once per
+/// [`crate::refusal_sla::RefusalRateMonitor::emit_snapshot`] call (and by
+/// extension every [`crate::agent_pool::dispatch_refusal_sla_check`]
+/// invocation). The row carries the per-window aggregate the dashboard
+/// `RefusalRateGauge` renders.
+///
+/// Field semantics:
+///   * `refusal_rate` — `abstain_count / window_total` clamped to
+///     `[0.0, 1.0]`. `0.0` when `window_total == 0` (the no-data /
+///     fail-safe band).
+///   * `window_total` — number of [`crate::conformal_calibration::RefusalDecision`]
+///     observations currently inside the sliding window.
+///   * `abstain_count` — number of `Abstain` decisions inside the window.
+///   * `health_band` — snake-case [`crate::refusal_sla::HealthBand`]
+///     discriminant: `below` | `healthy` | `above`.
+///   * `ts_ms` — wall-clock UNIX ms at snapshot-emit time.
+///
+/// Grounding: arXiv:2503.01345 (UniCR honest refusal); docs/specs/guide/
+/// real-problem-solving-grounded-2026-05-19.md §4.6 (refusal rate as a
+/// first-class quality metric).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefusalRateSnapshotPayload {
+    pub refusal_rate: f64,
+    pub window_total: u32,
+    pub abstain_count: u32,
+    pub health_band: String,
+    pub ts_ms: i64,
+}
+
+/// D-17 — payload for [`SsbActionType::RefusalSlaBreach`].
+///
+/// Emitted by [`crate::refusal_sla::RefusalRateMonitor::emit_snapshot`]
+/// whenever the computed snapshot's `health_band` is `Below` or
+/// `Above`. Carries the offending rate + the closest healthy-band
+/// boundary the rate crossed + the snake-case breach kind. The
+/// dashboard surfaces this beacon as the last-breach chip on the
+/// `RefusalRateGauge`.
+///
+/// Field semantics:
+///   * `rate` — the offending refusal rate `[0.0, 1.0]`.
+///   * `threshold` — the boundary the rate crossed (`healthy_band_lo`
+///     for `Below`, `healthy_band_hi` for `Above`).
+///   * `breach_kind` — `above` | `below` (snake-case).
+///   * `ts_ms` — wall-clock UNIX ms at breach-emit time.
+///
+/// Grounding: arXiv:2503.01345 (UniCR honest refusal — formal Mode E
+/// surface the SLA monitors).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefusalSlaBreachPayload {
+    pub rate: f64,
+    pub threshold: f64,
+    pub breach_kind: String,
+    pub ts_ms: i64,
+}
+
+/// D-22 — payload for
+/// [`SsbActionType::ConformalValidationCompleted`].
+///
+/// Emitted once per
+/// [`crate::benchmarks::conformal_validation_runner::ConformalValidationRunner::run_all`]
+/// Ok return. The row is the durable audit trail the dashboard
+/// `ConformalValidationPanel` renders to surface whether the UniCR
+/// formal distribution-free guarantee (arXiv:2503.01345, T1) still
+/// holds against the held-out fixture's in_domain / near_ood / far_ood
+/// buckets.
+///
+/// Field semantics:
+///   * `tau` — threshold computed from the calibration corpus at this
+///     run's operating point.
+///   * `epsilon` — the operating point the calibration corpus was tau'd
+///     against; defaults to
+///     [`crate::conformal_calibration::DEFAULT_EPSILON`].
+///   * `empirical_refusal_rate` — `total_refused / total` measured on the
+///     validation fixture.
+///   * `gating_verdict` — snake-case [`crate::benchmarks::prmbench_runner::GatingVerdict`]
+///     label (`"pass"` iff every bucket landed in-band AND every bucket
+///     had `>= min_rows_per_bucket` rows; `"fail"` otherwise).
+///   * `fixture_blake3` — 64-hex blake3 of the validation fixture file
+///     contents, so dashboards can detect stale runs against a moved
+///     fixture.
+///   * `total` — number of validation rows the runner consumed.
+///   * `ts_ms` — wall-clock UNIX ms at run completion.
+///
+/// Grounding: arXiv:2503.01345 (UniCR formal guarantee) + Vovk et al.
+/// 2005 §2.2 (quantile-based conformal predictor); D-22 plan
+/// `docs/thefinalglance/D-plan/D-22_conformal_calibration_validation.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformalValidationCompletedPayload {
+    pub tau: f64,
+    pub epsilon: f64,
+    pub empirical_refusal_rate: f64,
+    pub gating_verdict: String,
+    pub fixture_blake3: String,
+    pub total: u32,
+    pub ts_ms: i64,
+}
+
+/// D-20 — payload for [`SsbActionType::ArcBenchmarkCompleted`].
+///
+/// Emitted once per
+/// [`crate::benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`] Ok
+/// return. The row is the durable audit trail the dashboard
+/// `ARCBenchPanel` renders to surface whether ELAI's mode-routing +
+/// novelty-classifier honesty stack behaves honestly under ARC-AGI-2
+/// out-of-distribution claims.
+///
+/// Field semantics:
+///   * `total` — number of fixture rows the runner consumed.
+///   * `honestly_evaluated_count` — rows that landed on the
+///     `(DiscoveryCandidate class, non-Constructive mode)` pair (the
+///     "honest evaluation" predicate).
+///   * `gating_verdict` — snake-case
+///     [`crate::benchmarks::arc_agi2_runner::ARCVerdict`] label
+///     (`honestly_evaluated` | `game_with_memorization` | `refused`).
+///   * `fixture_blake3` — 64-hex blake3 of the fixture file bytes
+///     (anti-stale audit trail).
+///   * `dominant_mode` — snake-case
+///     [`crate::grounding_mode::GroundingMode`] wire label for the
+///     modal mode in the per-run distribution.
+///   * `dominant_novelty_class` — snake-case
+///     [`crate::novelty::NoveltyClass`] wire label for the modal
+///     novelty class in the per-run distribution.
+///   * `ts_ms` — wall-clock UNIX ms at run completion.
+///
+/// Grounding: TODO_DOC[D-20] — paper-ingestor follow-up to anchor
+/// against ARC-AGI-2 dataset description (arXiv:2412.04261, candidate)
+/// + ARC Prize 2025 Technical Report (arXiv:2601.10904, candidate).
+/// Citations dropped per anti-citation-rot rule until paper-ingestor
+/// lands the workflow/papers/ interface map. Plan:
+/// `docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md`.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ARCBenchmarkCompletedPayload {
+    pub total: u32,
+    pub honestly_evaluated_count: u32,
+    pub gating_verdict: String,
+    pub fixture_blake3: String,
+    pub dominant_mode: String,
+    pub dominant_novelty_class: String,
+    pub ts_ms: i64,
+}
+
+/// D-15 — payload for [`SsbActionType::NoveltyClassified`].
+///
+/// Emitted once per [`crate::novelty::emit_novelty_classified`] call
+/// (and by extension every [`crate::agent_pool::dispatch_novelty`]
+/// invocation). The row is the durable audit trail the dashboard
+/// `NoveltyPanel` reads to render the per-template class label, the
+/// recent-classifications list, and the per-class distribution chart.
+///
+/// Field semantics:
+///   * `template_id` — hex `TemplateId` of the classified
+///     `ReasoningTemplate` (joins against D-1 ArchiveChain rows).
+///   * `class` — one of `search | distant_search | discovery_candidate`
+///     (snake-case [`crate::novelty::NoveltyClass`] label).
+///   * `dkg_match_count` — number of DKG primitives the template body
+///     references that exist in the active symbol graph.
+///   * `near_duplicate_threshold` — cosine similarity in `[0.0, 1.0]`
+///     against the closest archived template body.
+///   * `ts_ms` — wall-clock UNIX ms at classify-emit time.
+///
+/// Grounding:
+///   * arXiv:2406.05761 — *LLM Novelty Detection*: three-bucket
+///     classification (familiar / recombination / out-of-distribution).
+///   * docs/specs/guide/real-problem-solving-grounded-2026-05-19.md
+///     §1 Mode C (lines 68-89) + §4.8 (lines 310-328).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoveltyClassifiedPayload {
+    pub template_id: String,
+    pub class: String,
+    pub dkg_match_count: u32,
+    pub near_duplicate_threshold: f64,
+    pub ts_ms: i64,
+}
+
+/// D-18 — payload for [`SsbActionType::ObservableEffectVerified`].
+///
+/// Emitted once per
+/// [`crate::observable_effect::verify_observable_effect`] call. The row
+/// is the durable audit trail the dashboard
+/// `ObservableEffectPanel.svelte` renders.
+///
+/// Field semantics:
+///   * `effect_id` — stable per-effect identifier (snake-case ASCII).
+///     Used to join successive runs of the same effect against each
+///     other for time-dependent confound flagging.
+///   * `trigger_kind` — snake-case
+///     [`crate::observable_effect::TriggerSpec`] kind label
+///     (`test_command | file_presence | http_endpoint_get |
+///     file_contents | stdout_contains`).
+///   * `observation_kind` — snake-case
+///     [`crate::observable_effect::TypedObservation`] kind label
+///     (`string_match | file_content | json_shape | http_status |
+///     exit_code`).
+///   * `sandbox_tier` — snake-case
+///     [`crate::observable_effect::SandboxTier`] label
+///     (`no_sandbox | process_isolated | container_isolated |
+///     network_blocked`).
+///   * `outcome` — `pass | fail | skipped`. `Skipped` covers executor
+///     errors + mis-authored trigger/observation pairings; it is NOT a
+///     product failure.
+///   * `confound_flags` — comma-separated list of set
+///     [`crate::observable_effect::ConfoundFlags`] labels
+///     (`environment_dependent`, `time_dependent`, `order_dependent`,
+///     `nondeterministic`). Empty string when no flag is set.
+///   * `elapsed_us` — verifier wall-clock microseconds from start to
+///     SSB-emit.
+///   * `ts_ms` — wall-clock UNIX ms at verify-emit time.
+///
+/// Grounding: TODO_DOC[D-18]: paper-ingestor follow-up to anchor the
+/// typed-effect / sandbox-observation discipline (candidate anchors:
+/// Voyager arxiv:2305.16291 §3 skill-with-measurable-effect;
+/// Coscientist arxiv:2304.05332 §4 sandbox vs production observation).
+/// The orchestrator brief's arXiv:2412.16367 citation was rejected
+/// (WebSearch confirmed it is "A Layered Swarm Optimization Method
+/// for Fitting Battery Thermal Runaway Models" — unrelated to typed
+/// test predicates).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObservableEffectVerifiedPayload {
+    pub effect_id: String,
+    pub trigger_kind: String,
+    pub observation_kind: String,
+    pub sandbox_tier: String,
+    pub outcome: String,
+    pub confound_flags: String,
+    pub elapsed_us: u64,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -8605,6 +10882,419 @@ mod tests {
                     kind: "mod_rs_aggregator".into(),
                     path: "src/mod.rs".into(),
                     module_count: 3,
+                },
+            ),
+            // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+            SsbActionType::ArchiveEntryAdded => SsbPayload::ArchiveEntryAdded(
+                ArchiveEntryAddedPayload {
+                    template_id: "00000000000000000000000000000001".into(),
+                    content_hash: "ff".repeat(32),
+                    parent_hash: None,
+                    domain: "code".into(),
+                    pattern_kind: "decomposition".into(),
+                    archive_status: "frozen".into(),
+                },
+            ),
+            SsbActionType::ArchiveEntryRetired => SsbPayload::ArchiveEntryRetired(
+                ArchiveEntryRetiredPayload {
+                    template_id: "00000000000000000000000000000001".into(),
+                    retired_at_ms: 1_700_000_000_000,
+                    retirement_reason: "degradation".into(),
+                },
+            ),
+            SsbActionType::TemplatePromoted => SsbPayload::TemplatePromoted(
+                TemplatePromotedPayload {
+                    template_id: "00000000000000000000000000000001".into(),
+                    stage: "stage_50".into(),
+                    pass_rate: 0.94,
+                },
+            ),
+            SsbActionType::TemplateCandidateRejected => SsbPayload::TemplateCandidateRejected(
+                TemplateCandidateRejectedPayload {
+                    template_id: "00000000000000000000000000000001".into(),
+                    rejection_reason: "below_floor".into(),
+                },
+            ),
+            // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+            SsbActionType::MemoryFactExtracted => SsbPayload::MemoryFactExtracted(
+                MemoryFactExtractedPayload {
+                    fact_id: "fact-test-extract".into(),
+                    fact_type: "preference".into(),
+                    scope: "project".into(),
+                    project_id: Some("proj-test".into()),
+                    user_id: "default".into(),
+                    key: "prefers_tracing_over_log".into(),
+                    trust_score: 0.9,
+                },
+            ),
+            SsbActionType::MemoryFactSuperseded => SsbPayload::MemoryFactSuperseded(
+                MemoryFactSupersededPayload {
+                    old_fact_id: "fact-test-old".into(),
+                    new_fact_id: "fact-test-new".into(),
+                    valid_to_ms: 1_700_000_000_000,
+                },
+            ),
+            // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+            SsbActionType::PpmScored => SsbPayload::PpmScored(PpmScoredPayload {
+                candidate_id: "cand-test-1".into(),
+                verifier_id: "ppm-test".into(),
+                mode: "math".into(),
+                score_mean: 0.91,
+                score_var: 0.0004,
+                num_steps: 3,
+                latency_ms: 412,
+                cache_hit: false,
+            }),
+            SsbActionType::PpmGatingFailed => SsbPayload::PpmGatingFailed(
+                PpmGatingFailedPayload {
+                    candidate_id: "cand-test-2".into(),
+                    verifier_id: "ppm-test".into(),
+                    mode: "math".into(),
+                    score_mean: 0.42,
+                    threshold: 0.7,
+                    num_steps: 2,
+                },
+            ),
+            // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+            SsbActionType::ChatReflectionCompleted => SsbPayload::ChatReflectionCompleted(
+                ChatReflectionCompletedPayload {
+                    note_id: "note-test-reflect".into(),
+                    note_preview: "U: i prefer blake3...".into(),
+                    facts_extracted: 1,
+                    decay_rows_examined: 4,
+                    decay_rows_updated: 1,
+                    core_block_bytes: 256,
+                },
+            ),
+            SsbActionType::MemoryEvolutionRun => SsbPayload::MemoryEvolutionRun(
+                MemoryEvolutionRunPayload {
+                    phase: "end".into(),
+                    duration_ms: 1_240,
+                    notes_touched: 8,
+                },
+            ),
+            // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+            // producer + conflict beacons.
+            SsbActionType::MemoryNoteInserted => SsbPayload::MemoryNoteInserted(
+                MemoryNoteInsertedPayload {
+                    note_id: "note-test-insert".into(),
+                    scope: "session".into(),
+                    content_blake3: "0".repeat(64),
+                    link_count: 2,
+                },
+            ),
+            SsbActionType::MemoryNoteEvolved => SsbPayload::MemoryNoteEvolved(
+                MemoryNoteEvolvedPayload {
+                    note_id: "note-test-evolve".into(),
+                    old_content_blake3: "1".repeat(64),
+                    new_content_blake3: "2".repeat(64),
+                    links_added: 1,
+                    links_removed: 0,
+                },
+            ),
+            SsbActionType::MemoryConflictDetected => SsbPayload::MemoryConflictDetected(
+                MemoryConflictDetectedPayload {
+                    fact_id_a: "fact-test-a".into(),
+                    fact_id_b: "fact-test-b".into(),
+                    conflict_kind: "duplicate".into(),
+                },
+            ),
+            SsbActionType::CoreBlockReplaced => SsbPayload::CoreBlockReplaced(
+                CoreBlockReplacedPayload {
+                    user_id: "default".into(),
+                    old_blake3: "3".repeat(64),
+                    new_blake3: "4".repeat(64),
+                    bytes: 512,
+                },
+            ),
+            // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+            SsbActionType::VerifierConsensusPass => SsbPayload::VerifierConsensusPass(
+                VerifierConsensusPassPayload {
+                    candidate_id: "cand-test-pass".into(),
+                    template_id: "tpl-test-1".into(),
+                    verdict: "pass".into(),
+                    verifier_count: 3,
+                    pass_count: 2,
+                    rule_id: "k_of_n".into(),
+                },
+            ),
+            SsbActionType::VerifierConsensusFail => SsbPayload::VerifierConsensusFail(
+                VerifierConsensusFailPayload {
+                    candidate_id: "cand-test-fail".into(),
+                    template_id: "tpl-test-1".into(),
+                    failing_verifier_ids: vec!["v-intrinsic-1".into(), "v-det-1".into()],
+                    reason: "fail".into(),
+                },
+            ),
+            // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+            SsbActionType::TripwireFired => SsbPayload::TripwireFired(TripwireFiredPayload {
+                event_id: "00112233445566778899aabbccddeeff".into(),
+                tripwire_kind: "iqr_outlier".into(),
+                candidate_id: "cand-test-trip".into(),
+                observed_value: 42.0,
+                threshold: 3.0,
+                fired_at_ms: 1_700_000_000_000,
+            }),
+            SsbActionType::TemplateAutoReverted => {
+                SsbPayload::TemplateAutoReverted(TemplateAutoRevertedPayload {
+                    template_id: "tpl-test-auto-1".into(),
+                    parent_template_id: Some("tpl-test-parent".into()),
+                    retirement_reason: "degradation".into(),
+                    fired_tripwire_id: "00112233445566778899aabbccddeeff".into(),
+                })
+            }
+            // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark beacon.
+            SsbActionType::PrmBenchRunCompleted => {
+                SsbPayload::PrmBenchRunCompleted(PrmBenchRunCompletedPayload {
+                    total: 20,
+                    accuracy: 0.75,
+                    precision: 0.80,
+                    recall: 0.70,
+                    gating_verdict: "pass".into(),
+                    fixture_blake3: "a".repeat(64),
+                    category_count: 2,
+                })
+            }
+            // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+            SsbActionType::BaiArmUpdated => SsbPayload::BaiArmUpdated(BaiArmUpdatedPayload {
+                template_id: "11112222333344445555666677778888".into(),
+                alpha: 9.0,
+                beta: 2.0,
+                n_pulls: 9,
+                mean_estimate: 0.818,
+                was_promoted: true,
+            }),
+            // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+            SsbActionType::HeldOutTaskAdded => {
+                SsbPayload::HeldOutTaskAdded(HeldOutTaskAddedPayload {
+                    task_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    source: "synthetic".into(),
+                    content_blake3: "b".repeat(64),
+                    ngram_count: 12,
+                    ingested_ts_ms: 1_700_000_000_000,
+                    eligibility_window_ms: 0,
+                })
+            }
+            SsbActionType::HeldOutTaskUsed => SsbPayload::HeldOutTaskUsed(HeldOutTaskUsedPayload {
+                task_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                consumer_template_id: "11112222333344445555666677778888".into(),
+                used_ts_ms: 1_700_000_005_000,
+            }),
+            // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+            SsbActionType::CanaryRunCompleted => {
+                SsbPayload::CanaryRunCompleted(CanaryRunCompletedPayload {
+                    report_id: "c".repeat(64),
+                    ts_ms: 1_700_000_010_000,
+                    overall_transfer_score: 0.04,
+                    decision_kind: "pass".into(),
+                    dominant_fail_family: String::new(),
+                })
+            }
+            SsbActionType::CanaryFamilyEvaluated => {
+                SsbPayload::CanaryFamilyEvaluated(CanaryFamilyEvaluatedPayload {
+                    report_id: "c".repeat(64),
+                    family: "code_fix".into(),
+                    n_evaluated: 5,
+                    pass_count: 4,
+                    fail_count: 1,
+                    transfer_score: 0.10,
+                    baseline_score: 0.70,
+                })
+            }
+            // D-9 (SCHEMA_VERSION 75): L3 frozen-surface auditor beacons.
+            SsbActionType::LockedKeysAuditRun => {
+                SsbPayload::LockedKeysAuditRun(LockedKeysAuditRunPayload {
+                    audit_id: uuid::Uuid::nil(),
+                    ts_ms: 1_700_000_020_000,
+                    n_audited: 2,
+                    n_violations: 1,
+                    registry_blake3: "0".repeat(64),
+                    registry_path: "scripts/locked_keys_registry.toml".into(),
+                })
+            }
+            SsbActionType::LockedKeysViolationDetected => {
+                SsbPayload::LockedKeysViolationDetected(
+                    LockedKeysViolationDetectedPayload {
+                        audit_id: uuid::Uuid::nil(),
+                        ts_ms: 1_700_000_020_001,
+                        attempted_edit:
+                            "crates/orchestrator/src/tripwire.rs".into(),
+                        attempted_lines: vec![0, u32::MAX],
+                        locked_key_path:
+                            "crates/orchestrator/src/tripwire.rs".into(),
+                        locked_key_signature_blake3: "0".repeat(64),
+                        reason: "tripwire detection per arxiv:1908.04734".into(),
+                    },
+                )
+            }
+            // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+            SsbActionType::TaskAdvanced => SsbPayload::TaskAdvanced(TaskAdvancedPayload {
+                task_id: "task-1".into(),
+                parent_id: String::new(),
+                completion_pct: 50.0,
+                status: "in_progress".into(),
+                blocker: String::new(),
+                ts_ms: 1_700_000_030_000,
+            }),
+            SsbActionType::AgentlessShortcutTaken => {
+                SsbPayload::AgentlessShortcutTaken(AgentlessShortcutTakenPayload {
+                    task_id: "task-1".into(),
+                    reason: "single_file_small".into(),
+                    ts_ms: 1_700_000_030_001,
+                })
+            }
+            SsbActionType::GoalDriftFired => SsbPayload::GoalDriftFired(GoalDriftFiredPayload {
+                initial_goal_blake3: "d".repeat(64),
+                drift: 0.42,
+                threshold: 0.3,
+                step: 3,
+                ts_ms: 1_700_000_030_002,
+            }),
+            // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+            SsbActionType::ClaimRouted => SsbPayload::ClaimRouted(ClaimRoutedPayload {
+                claim_id: "claim-d10-test".into(),
+                claim_type: "factual".into(),
+                mode: "constructive".into(),
+                ts_ms: 1_700_000_040_000,
+                ctx_summary_blake3: "e".repeat(64),
+            }),
+            // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+            SsbActionType::ModeRoutingBenchRunCompleted => {
+                SsbPayload::ModeRoutingBenchRunCompleted(
+                    ModeRoutingBenchRunCompletedPayload {
+                        total: 25,
+                        accuracy: 0.92,
+                        f1_macro: 0.88,
+                        gating_verdict: "pass".into(),
+                        fixture_blake3: "f".repeat(64),
+                        fixture_row_count: 25,
+                    },
+                )
+            }
+            // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+            SsbActionType::CheckerResultEmitted => SsbPayload::CheckerResultEmitted(
+                CheckerResultEmittedPayload {
+                    checker_id: "regex-default".into(),
+                    checker_kind: "regex_match".into(),
+                    result_kind: "pass".into(),
+                    claim_id: "claim-d11-test".into(),
+                    ts_ms: 1_700_000_050_000,
+                    reason: String::new(),
+                },
+            ),
+            // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+            SsbActionType::AdversaryGenerated => SsbPayload::AdversaryGenerated(
+                AdversaryGeneratedPayload {
+                    counter_id: "ctr-d13-test".into(),
+                    claim_id: "claim-d13-test".into(),
+                    severity: 0.75,
+                    model_family: "anthropic".into(),
+                },
+            ),
+            SsbActionType::ConsensusReevaluatedWithCounter => {
+                SsbPayload::ConsensusReevaluatedWithCounter(
+                    ConsensusReevaluatedWithCounterPayload {
+                        claim_id: "claim-d13-test".into(),
+                        original_verdict: "pass".into(),
+                        post_counter_verdict: "fail".into(),
+                    },
+                )
+            }
+            // D-12 (SCHEMA_VERSION 81): OperationalizationCheck beacon.
+            SsbActionType::BabyStepDispatched => SsbPayload::BabyStepDispatched(
+                BabyStepDispatchedPayload {
+                    step_id: "bs-d12-test".into(),
+                    parent_task_id: "task-d12-test".into(),
+                    checker_kinds_used: vec!["numeric_range".into()],
+                    outcome: "pass".into(),
+                    ts_ms: 1_700_000_060_000,
+                },
+            ),
+            // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal beacons.
+            SsbActionType::ConformalTauComputed => SsbPayload::ConformalTauComputed(
+                ConformalTauComputedPayload {
+                    tau: 0.8,
+                    epsilon: 0.1,
+                    corpus_size: 40,
+                    source: "held_out".into(),
+                    ts_ms: 1_700_000_070_000,
+                },
+            ),
+            SsbActionType::ConformalRefusalDecided => SsbPayload::ConformalRefusalDecided(
+                ConformalRefusalDecidedPayload {
+                    claim_id: "claim-d16-test".into(),
+                    claim_score: 0.05,
+                    tau: 0.8,
+                    decision: "abstain".into(),
+                    confidence: 0.0,
+                    ts_ms: 1_700_000_071_000,
+                },
+            ),
+            // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            SsbActionType::NoveltyClassified => SsbPayload::NoveltyClassified(
+                NoveltyClassifiedPayload {
+                    template_id: "tpl-d15-test".into(),
+                    class: "discovery_candidate".into(),
+                    dkg_match_count: 0,
+                    near_duplicate_threshold: 0.05,
+                    ts_ms: 1_700_000_080_000,
+                },
+            ),
+            // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+            SsbActionType::ObservableEffectVerified => SsbPayload::ObservableEffectVerified(
+                ObservableEffectVerifiedPayload {
+                    effect_id: "eff-d18-test".into(),
+                    trigger_kind: "test_command".into(),
+                    observation_kind: "string_match".into(),
+                    sandbox_tier: "no_sandbox".into(),
+                    outcome: "pass".into(),
+                    confound_flags: String::new(),
+                    elapsed_us: 1234,
+                    ts_ms: 1_700_000_090_000,
+                },
+            ),
+            // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+            SsbActionType::RefusalRateSnapshot => SsbPayload::RefusalRateSnapshot(
+                RefusalRateSnapshotPayload {
+                    refusal_rate: 0.5,
+                    window_total: 100,
+                    abstain_count: 50,
+                    health_band: "above".into(),
+                    ts_ms: 1_700_000_100_000,
+                },
+            ),
+            SsbActionType::RefusalSlaBreach => SsbPayload::RefusalSlaBreach(
+                RefusalSlaBreachPayload {
+                    rate: 0.5,
+                    threshold: 0.2,
+                    breach_kind: "above".into(),
+                    ts_ms: 1_700_000_101_000,
+                },
+            ),
+            // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+            SsbActionType::ConformalValidationCompleted => {
+                SsbPayload::ConformalValidationCompleted(
+                    ConformalValidationCompletedPayload {
+                        tau: 0.4,
+                        epsilon: 0.1,
+                        empirical_refusal_rate: 0.08,
+                        gating_verdict: "pass".into(),
+                        fixture_blake3: "f".repeat(64),
+                        total: 36,
+                        ts_ms: 1_700_000_110_000,
+                    },
+                )
+            }
+            // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+            SsbActionType::ArcBenchmarkCompleted => SsbPayload::ArcBenchmarkCompleted(
+                ARCBenchmarkCompletedPayload {
+                    total: 24,
+                    honestly_evaluated_count: 11,
+                    gating_verdict: "honestly_evaluated".into(),
+                    fixture_blake3: "a".repeat(64),
+                    dominant_mode: "operational_deferred".into(),
+                    dominant_novelty_class: "discovery_candidate".into(),
+                    ts_ms: 1_700_000_120_000,
                 },
             ),
         };
@@ -10281,6 +12971,339 @@ mod tests {
                 path: "src/mod.rs".into(),
                 module_count: 3,
             }),
+            // D-1 (SCHEMA_VERSION 64): ReasoningTemplate ArchiveChain lifecycle.
+            SsbPayload::ArchiveEntryAdded(ArchiveEntryAddedPayload {
+                template_id: "00000000000000000000000000000001".into(),
+                content_hash: "ff".repeat(32),
+                parent_hash: None,
+                domain: "code".into(),
+                pattern_kind: "decomposition".into(),
+                archive_status: "frozen".into(),
+            }),
+            SsbPayload::ArchiveEntryRetired(ArchiveEntryRetiredPayload {
+                template_id: "00000000000000000000000000000001".into(),
+                retired_at_ms: 1_700_000_000_000,
+                retirement_reason: "degradation".into(),
+            }),
+            SsbPayload::TemplatePromoted(TemplatePromotedPayload {
+                template_id: "00000000000000000000000000000001".into(),
+                stage: "stage_50".into(),
+                pass_rate: 0.94,
+            }),
+            SsbPayload::TemplateCandidateRejected(TemplateCandidateRejectedPayload {
+                template_id: "00000000000000000000000000000001".into(),
+                rejection_reason: "below_floor".into(),
+            }),
+            // E-5 (SCHEMA_VERSION 65): memory_facts bi-temporal lifecycle beacons.
+            SsbPayload::MemoryFactExtracted(MemoryFactExtractedPayload {
+                fact_id: "fact-test-extract".into(),
+                fact_type: "preference".into(),
+                scope: "project".into(),
+                project_id: Some("proj-test".into()),
+                user_id: "default".into(),
+                key: "prefers_tracing_over_log".into(),
+                trust_score: 0.9,
+            }),
+            SsbPayload::MemoryFactSuperseded(MemoryFactSupersededPayload {
+                old_fact_id: "fact-test-old".into(),
+                new_fact_id: "fact-test-new".into(),
+                valid_to_ms: 1_700_000_000_000,
+            }),
+            // D-2 (SCHEMA_VERSION 66): PPM verifier beacons.
+            SsbPayload::PpmScored(PpmScoredPayload {
+                candidate_id: "cand-test-1".into(),
+                verifier_id: "ppm-test".into(),
+                mode: "math".into(),
+                score_mean: 0.91,
+                score_var: 0.0004,
+                num_steps: 3,
+                latency_ms: 412,
+                cache_hit: false,
+            }),
+            SsbPayload::PpmGatingFailed(PpmGatingFailedPayload {
+                candidate_id: "cand-test-2".into(),
+                verifier_id: "ppm-test".into(),
+                mode: "math".into(),
+                score_mean: 0.42,
+                threshold: 0.7,
+                num_steps: 2,
+            }),
+            // E-1 (SCHEMA_VERSION 67): infinite-context chat illusion beacons.
+            SsbPayload::ChatReflectionCompleted(ChatReflectionCompletedPayload {
+                note_id: "note-test-reflect".into(),
+                note_preview: "U: i prefer blake3...".into(),
+                facts_extracted: 1,
+                decay_rows_examined: 4,
+                decay_rows_updated: 1,
+                core_block_bytes: 256,
+            }),
+            SsbPayload::MemoryEvolutionRun(MemoryEvolutionRunPayload {
+                phase: "end".into(),
+                duration_ms: 1_240,
+                notes_touched: 8,
+            }),
+            // E-1 dashboard slice (SCHEMA_VERSION 68): MemoryNotes / CoreBlock
+            // producer + conflict beacons.
+            SsbPayload::MemoryNoteInserted(MemoryNoteInsertedPayload {
+                note_id: "note-test-insert".into(),
+                scope: "session".into(),
+                content_blake3: "0".repeat(64),
+                link_count: 2,
+            }),
+            SsbPayload::MemoryNoteEvolved(MemoryNoteEvolvedPayload {
+                note_id: "note-test-evolve".into(),
+                old_content_blake3: "1".repeat(64),
+                new_content_blake3: "2".repeat(64),
+                links_added: 1,
+                links_removed: 0,
+            }),
+            SsbPayload::MemoryConflictDetected(MemoryConflictDetectedPayload {
+                fact_id_a: "fact-test-a".into(),
+                fact_id_b: "fact-test-b".into(),
+                conflict_kind: "duplicate".into(),
+            }),
+            SsbPayload::CoreBlockReplaced(CoreBlockReplacedPayload {
+                user_id: "default".into(),
+                old_blake3: "3".repeat(64),
+                new_blake3: "4".repeat(64),
+                bytes: 512,
+            }),
+            // D-3 (SCHEMA_VERSION 69): multi-verifier consensus aggregator.
+            SsbPayload::VerifierConsensusPass(VerifierConsensusPassPayload {
+                candidate_id: "cand-test-pass".into(),
+                template_id: "tpl-test-1".into(),
+                verdict: "pass".into(),
+                verifier_count: 3,
+                pass_count: 2,
+                rule_id: "k_of_n".into(),
+            }),
+            SsbPayload::VerifierConsensusFail(VerifierConsensusFailPayload {
+                candidate_id: "cand-test-fail".into(),
+                template_id: "tpl-test-1".into(),
+                failing_verifier_ids: vec!["v-intrinsic-1".into(), "v-det-1".into()],
+                reason: "fail".into(),
+            }),
+            // D-4 (SCHEMA_VERSION 70): tripwire stack beacons.
+            SsbPayload::TripwireFired(TripwireFiredPayload {
+                event_id: "00112233445566778899aabbccddeeff".into(),
+                tripwire_kind: "iqr_outlier".into(),
+                candidate_id: "cand-test-trip".into(),
+                observed_value: 42.0,
+                threshold: 3.0,
+                fired_at_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::TemplateAutoReverted(TemplateAutoRevertedPayload {
+                template_id: "tpl-test-auto-1".into(),
+                parent_template_id: Some("tpl-test-parent".into()),
+                retirement_reason: "degradation".into(),
+                fired_tripwire_id: "00112233445566778899aabbccddeeff".into(),
+            }),
+            // D-19 (SCHEMA_VERSION 71): PRMBench adversarial-gaming benchmark beacon.
+            SsbPayload::PrmBenchRunCompleted(PrmBenchRunCompletedPayload {
+                total: 20,
+                accuracy: 0.75,
+                precision: 0.80,
+                recall: 0.70,
+                gating_verdict: "pass".into(),
+                fixture_blake3: "a".repeat(64),
+                category_count: 2,
+            }),
+            // D-5 (SCHEMA_VERSION 72): BAI Thompson sampling promotion round.
+            SsbPayload::BaiArmUpdated(BaiArmUpdatedPayload {
+                template_id: "11112222333344445555666677778888".into(),
+                alpha: 9.0,
+                beta: 2.0,
+                n_pulls: 9,
+                mean_estimate: 0.818,
+                was_promoted: true,
+            }),
+            // D-6 (SCHEMA_VERSION 73): held-out task store lifecycle.
+            SsbPayload::HeldOutTaskAdded(HeldOutTaskAddedPayload {
+                task_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                source: "synthetic".into(),
+                content_blake3: "b".repeat(64),
+                ngram_count: 12,
+                ingested_ts_ms: 1_700_000_000_000,
+                eligibility_window_ms: 0,
+            }),
+            SsbPayload::HeldOutTaskUsed(HeldOutTaskUsedPayload {
+                task_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                consumer_template_id: "11112222333344445555666677778888".into(),
+                used_ts_ms: 1_700_000_005_000,
+            }),
+            // D-7 (SCHEMA_VERSION 74): cross-domain transfer canary beacons.
+            SsbPayload::CanaryRunCompleted(CanaryRunCompletedPayload {
+                report_id: "c".repeat(64),
+                ts_ms: 1_700_000_010_000,
+                overall_transfer_score: 0.04,
+                decision_kind: "pass".into(),
+                dominant_fail_family: String::new(),
+            }),
+            SsbPayload::CanaryFamilyEvaluated(CanaryFamilyEvaluatedPayload {
+                report_id: "c".repeat(64),
+                family: "code_fix".into(),
+                n_evaluated: 5,
+                pass_count: 4,
+                fail_count: 1,
+                transfer_score: 0.10,
+                baseline_score: 0.70,
+            }),
+            // D-9 (SCHEMA_VERSION 75): L3 frozen-surface auditor beacons.
+            SsbPayload::LockedKeysAuditRun(LockedKeysAuditRunPayload {
+                audit_id: uuid::Uuid::nil(),
+                ts_ms: 1_700_000_020_000,
+                n_audited: 2,
+                n_violations: 1,
+                registry_blake3: "0".repeat(64),
+                registry_path: "scripts/locked_keys_registry.toml".into(),
+            }),
+            SsbPayload::LockedKeysViolationDetected(LockedKeysViolationDetectedPayload {
+                audit_id: uuid::Uuid::nil(),
+                ts_ms: 1_700_000_020_001,
+                attempted_edit: "crates/orchestrator/src/tripwire.rs".into(),
+                attempted_lines: vec![0, u32::MAX],
+                locked_key_path: "crates/orchestrator/src/tripwire.rs".into(),
+                locked_key_signature_blake3: "0".repeat(64),
+                reason: "tripwire detection per arxiv:1908.04734".into(),
+            }),
+            // E-46 (SCHEMA_VERSION 76): hierarchical decomposition tuning beacons.
+            SsbPayload::TaskAdvanced(TaskAdvancedPayload {
+                task_id: "task-1".into(),
+                parent_id: String::new(),
+                completion_pct: 50.0,
+                status: "in_progress".into(),
+                blocker: String::new(),
+                ts_ms: 1_700_000_030_000,
+            }),
+            SsbPayload::AgentlessShortcutTaken(AgentlessShortcutTakenPayload {
+                task_id: "task-1".into(),
+                reason: "single_file_small".into(),
+                ts_ms: 1_700_000_030_001,
+            }),
+            SsbPayload::GoalDriftFired(GoalDriftFiredPayload {
+                initial_goal_blake3: "d".repeat(64),
+                drift: 0.42,
+                threshold: 0.3,
+                step: 3,
+                ts_ms: 1_700_000_030_002,
+            }),
+            // D-10 (SCHEMA_VERSION 77): mode-routing predicate beacon.
+            SsbPayload::ClaimRouted(ClaimRoutedPayload {
+                claim_id: "claim-d10-test".into(),
+                claim_type: "factual".into(),
+                mode: "constructive".into(),
+                ts_ms: 1_700_000_040_000,
+                ctx_summary_blake3: "e".repeat(64),
+            }),
+            // D-21 (SCHEMA_VERSION 78): mode-routing coverage benchmark beacon.
+            SsbPayload::ModeRoutingBenchRunCompleted(ModeRoutingBenchRunCompletedPayload {
+                total: 25,
+                accuracy: 0.92,
+                f1_macro: 0.88,
+                gating_verdict: "pass".into(),
+                fixture_blake3: "f".repeat(64),
+                fixture_row_count: 25,
+            }),
+            // D-11 (SCHEMA_VERSION 79): constructive-checker registry beacon.
+            SsbPayload::CheckerResultEmitted(CheckerResultEmittedPayload {
+                checker_id: "regex-default".into(),
+                checker_kind: "regex_match".into(),
+                result_kind: "pass".into(),
+                claim_id: "claim-d11-test".into(),
+                ts_ms: 1_700_000_050_000,
+                reason: String::new(),
+            }),
+            // D-13 (SCHEMA_VERSION 80): adversarial-verification beacons.
+            SsbPayload::AdversaryGenerated(AdversaryGeneratedPayload {
+                counter_id: "ctr-d13-test".into(),
+                claim_id: "claim-d13-test".into(),
+                severity: 0.75,
+                model_family: "anthropic".into(),
+            }),
+            SsbPayload::ConsensusReevaluatedWithCounter(
+                ConsensusReevaluatedWithCounterPayload {
+                    claim_id: "claim-d13-test".into(),
+                    original_verdict: "pass".into(),
+                    post_counter_verdict: "fail".into(),
+                },
+            ),
+            // D-12 (SCHEMA_VERSION 81): OperationalizationCheck beacon.
+            SsbPayload::BabyStepDispatched(BabyStepDispatchedPayload {
+                step_id: "bs-d12-test".into(),
+                parent_task_id: "task-d12-test".into(),
+                checker_kinds_used: vec!["numeric_range".into()],
+                outcome: "pass".into(),
+                ts_ms: 1_700_000_060_000,
+            }),
+            // D-16 (SCHEMA_VERSION 82): UniCR conformal-refusal beacons.
+            SsbPayload::ConformalTauComputed(ConformalTauComputedPayload {
+                tau: 0.8,
+                epsilon: 0.1,
+                corpus_size: 40,
+                source: "held_out".into(),
+                ts_ms: 1_700_000_070_000,
+            }),
+            SsbPayload::ConformalRefusalDecided(ConformalRefusalDecidedPayload {
+                claim_id: "claim-d16-test".into(),
+                claim_score: 0.05,
+                tau: 0.8,
+                decision: "abstain".into(),
+                confidence: 0.0,
+                ts_ms: 1_700_000_071_000,
+            }),
+            // D-15 (SCHEMA_VERSION 83): discovery-vs-search NoveltyClass beacon.
+            SsbPayload::NoveltyClassified(NoveltyClassifiedPayload {
+                template_id: "tpl-d15-test".into(),
+                class: "discovery_candidate".into(),
+                dkg_match_count: 0,
+                near_duplicate_threshold: 0.05,
+                ts_ms: 1_700_000_080_000,
+            }),
+            // D-18 (SCHEMA_VERSION 84): typed-ObservableEffect predicate beacon.
+            SsbPayload::ObservableEffectVerified(ObservableEffectVerifiedPayload {
+                effect_id: "eff-d18-test".into(),
+                trigger_kind: "test_command".into(),
+                observation_kind: "string_match".into(),
+                sandbox_tier: "no_sandbox".into(),
+                outcome: "pass".into(),
+                confound_flags: String::new(),
+                elapsed_us: 1234,
+                ts_ms: 1_700_000_090_000,
+            }),
+            // D-17 (SCHEMA_VERSION 85): honest-refusal SLA monitoring beacons.
+            SsbPayload::RefusalRateSnapshot(RefusalRateSnapshotPayload {
+                refusal_rate: 0.5,
+                window_total: 100,
+                abstain_count: 50,
+                health_band: "above".into(),
+                ts_ms: 1_700_000_100_000,
+            }),
+            SsbPayload::RefusalSlaBreach(RefusalSlaBreachPayload {
+                rate: 0.5,
+                threshold: 0.2,
+                breach_kind: "above".into(),
+                ts_ms: 1_700_000_101_000,
+            }),
+            // D-22 (SCHEMA_VERSION 86): conformal-calibration validation beacon.
+            SsbPayload::ConformalValidationCompleted(ConformalValidationCompletedPayload {
+                tau: 0.4,
+                epsilon: 0.1,
+                empirical_refusal_rate: 0.08,
+                gating_verdict: "pass".into(),
+                fixture_blake3: "f".repeat(64),
+                total: 36,
+                ts_ms: 1_700_000_110_000,
+            }),
+            // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
+            SsbPayload::ArcBenchmarkCompleted(ARCBenchmarkCompletedPayload {
+                total: 24,
+                honestly_evaluated_count: 11,
+                gating_verdict: "honestly_evaluated".into(),
+                fixture_blake3: "a".repeat(64),
+                dominant_mode: "operational_deferred".into(),
+                dominant_novelty_class: "discovery_candidate".into(),
+                ts_ms: 1_700_000_120_000,
+            }),
         ]
     }
 
@@ -10292,8 +13315,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            136,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 (ContextBudgetComputed + SsbFilteredByOverlap) + 4 B-39 (ReflectTriaged/Candidate/AuditVerdict/Refined) + 6 B-24 4I.C1 (media validator beacons) + 1 B-28 E-3 (GenerationModeSelected) + 1 B-28 E-4 (StreamingEarlyTerminated) + 3 B-28 WIRING-1 (PipelinePreAssembled / DependencyResolved / MicroStepCreated) + 1 B-30 (LanguageGrammarStatus) + 1 B-29 Phase 5 (SymbolQuery) + 5 B-31.5 (IndexCheckpoint/IndexResume/IndexCancel/LockAcquired/LockContested) + 1 B-33-followup (SymbolGraphUpdated) + 5 B-40 (IdeaFramingStarted/ProjectClassClassified/CriticRoundComplete/IdeaFramed/TradeoffCardEmitted) + 4 B-34 (EntryPointsDetected/ArtifactsIndexed/ArtifactSearched/ArtifactStale) + 3 B-38 (AmbiguityScored/AmbiguityFloorFailed/AmbiguityStreakAdvanced) + 4 B-42 (CosmosRefreshStarted/CosmosArtifactUpdated/CosmosArtifactDecayed/CosmosGroundingUsed) + 3 B-41 (PerLevelAuditStarted/PerLevelAuditVerdict/PerLevelAuditCascade) + 4 B-37C (RuntimeFallback/RuntimeHealthChanged/CliSubprocessSpawned/CliSubprocessKilled) + 7 C-1 (GrcStepEmitted/GroundingSweepResult/CsqEvaluated/AuditorRubberStampRejected/HydeQuery/VectorCacheHitRate/QueryTrace) + 10 C-2 (PhaseNodeReady/StepNodeReady/BabyStepReady/DagRepairEscalated/AgentStatusChanged/StagnationSpinningDetected/StagnationOscillationDetected/LateralThinkingActivated/GoalDriftWarning/WatchdogTimeout) + 1 C-7 (ChangeDecision) + 1 C-8 (SearchModeChanged) + 1 C-5 (RedactionApplied) + 3 C-10 (LateralThinkingSucceeded/LateralThinkingExhausted/GoalDriftBlock) + 1 C-13 (WipSquashComplete) + 2 C-22 (AlternativeExplored/FeasibilityEscalated) + 3 C-23 (BranchForked/BranchMerged/BranchClosed) + 5 C-25 (PlanSkeleton/CompiledPipelineFired/TemplateCrystallized/BackgroundTaskStarted/BackgroundTaskComplete) + 1 C-25-audit (DecompileTriggered) + 2 C-26 (FutilityDetected/FutilityOutputStagnation) + 3 C-27 (WiringEvidence/WiringViolation/DeterminismDrift) + 1 C-28 (MutationSurvived) + 2 C-29 (IntentConfirmed/MrViolated) + 5 C-30 (SurgicalPlanCreated/SurgicalLocWarning/OracleCacheHit/OracleCacheMiss/ProjectDetectionSignal) + 5 C-32 (SkeletonGenerated/SkeletonFlushed/MiniCriticVerdict/StructuralRetryStageAttempt/BridgeFileGenerated)",
+            179,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

@@ -16,6 +16,7 @@ members = [
     "crates/web_search",
     "crates/scaffold",
     "crates/web_validator",
+    "crates/memory",
     # "crates/dashboard",  # disabled: directory missing (moved to crates/.bkp_old/dashboard); see workspace-manifest-fix in s-1430428
     "crates/dashboard-v2/src-tauri",
 ]

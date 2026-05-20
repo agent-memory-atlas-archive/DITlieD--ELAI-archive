@@ -148,7 +148,78 @@ export type DrawerKey =
   // B-42 — Cosmos artifact tier drawer.
   | 'cosmos'
   // C-23 — Sessions drawer (BranchTree + per-branch SessionDag actions).
-  | 'sessions';
+  | 'sessions'
+  // D-1 — Reasoning template archive (MutationArchivePanel).
+  | 'mutation-archive'
+  // D-2 — PPM (Process Preference Model) verifier scores.
+  | 'ppm-scores'
+  // D-3 — multi-verifier consensus aggregator rows.
+  | 'verification-consensus'
+  // D-4 — tripwire stack (KL / Δρ / IQR / perplexity / DDM auto-revert).
+  | 'tripwires'
+  // D-19 — PRMBench adversarial-gaming benchmark runner.
+  | 'prmbench'
+  // D-5 — BAI (Best-Arm Identification) Thompson-sampling promotion arms.
+  | 'bai-arms'
+  // D-6 — Held-out task store + 9-gram contamination filter.
+  | 'held-out'
+  // D-7 — Cross-domain transfer canary (5 orthogonal task families).
+  | 'canary'
+  // D-9 — L3 frozen-surface registry + audit-run timeline.
+  | 'locked-keys'
+  // D-10 — mode-routing predicate distribution + recent rows.
+  | 'mode-routing'
+  // D-21 — mode-routing coverage benchmark (macro F1 + per-mode F1 + 5x5 confusion).
+  | 'mode-routing-bench'
+  // D-11 — constructive-checker registry + recent results.
+  | 'checker-registry'
+  // D-13 — Adversary (cross-family) panel: structured counter-evidence +
+  // consensus verdict transitions emitted by run_adversarial_pass.
+  | 'adversary'
+  // D-12 — OperationalizationCheck baby-step predicate panel: recent
+  // baby_step_dispatched SSB rows grouped by parent_task_id + pass
+  // rate + per-checker-kind histogram.
+  | 'baby-step'
+  // D-16 — Conformal calibration (UniCR) panel: tau + corpus + per-claim
+  // abstain/answer histogram emitted by conformal_calibration producers.
+  | 'conformal-calibration'
+  // D-22 — Conformal calibration validation panel: per-bucket refusal
+  // rate + UniCR distribution-shift band gate emitted by
+  // `ConformalValidationRunner::run_all`.
+  | 'conformal-validation'
+  // D-15 — Discovery-vs-search NoveltyClass panel: recent
+  // novelty_classified SSB rows + per-class distribution +
+  // discovery-candidate flagging.
+  | 'novelty'
+  // D-18 — typed-ObservableEffect predicate panel: recent
+  // observable_effect_verified SSB rows + per-sandbox-tier usage +
+  // per-outcome histogram + confound-flag chips.
+  | 'observable-effect'
+  // D-17 — Honest-refusal SLA gauge: current rate + healthy-band +
+  // last breach + sparkline of recent rates.
+  | 'refusal-sla'
+  // D-20 — ARC-AGI-2 OOD probe: recent arc_benchmark_completed runs +
+  // verdict banner + per-run dominant mode/novelty class.
+  | 'arc-bench'
+  // E-46 — Hierarchical decomposition tuning (dual ledger + AGENTLESS
+  // shortcut taxonomy + goal-drift canary gauge).
+  | 'planning-ledger'
+  // E-5 — User modeling + long-term memory drawer.
+  | 'memory-facts'
+  // E-1 dashboard slice — chat-memory (MemoryNotes + CoreBlock).
+  | 'chat-memory'
+  // E-35 — XGrammar grammar-cache visibility.
+  | 'grammar-compile'
+  // D-26 — Full-page archive explorer (search + lineage graph + summary).
+  | 'archive-explorer'
+  // D-27 — Discovery queue drawer (pending DiscoveryCandidate templates
+  // awaiting adversarial verification).
+  | 'discovery-queue'
+  // D-27 — Full-page mode-routing + refusal-SLA dashboard view
+  // (composes ModeRouting + Novelty + ConformalCalibration +
+  // RefusalRateGauge panels via the get_mode_routing_refusal_combined
+  // composite read).
+  | 'mode-routing-dashboard';
 
 // ------------------------------------------------------------------
 // Agent roles

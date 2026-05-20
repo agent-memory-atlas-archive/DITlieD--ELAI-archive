@@ -1264,6 +1264,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
@@ -1295,6 +1296,7 @@ dependencies = [
  "elai-core",
  "elai-ipc-types",
  "elai-knowledge",
+ "elai-memory",
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
@@ -1376,6 +1378,23 @@ dependencies = [
  "tree-sitter-swift",
  "tree-sitter-typescript",
  "usearch",
+ "uuid",
+]
+
+[[package]]
+name = "elai-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "elai-core",
+ "rusqlite",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 
@@ -1465,7 +1484,9 @@ dependencies = [
 name = "elai-providers"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "elai-core",
+ "elai-ipc-types",
  "futures-util",
  "getrandom 0.3.4",
  "nvml-wrapper",
@@ -1485,6 +1506,7 @@ name = "elai-reasoning"
 version = "0.1.0"
 dependencies = [
  "elai-core",
+ "elai-memory",
  "elai-providers",
  "regex",
  "rustc-hash",

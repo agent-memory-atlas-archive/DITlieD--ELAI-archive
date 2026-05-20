@@ -37,6 +37,26 @@ mod runtime_builder;
 mod wip_squash_subcommand;
 // C-27: T(-1)+T-0 wiring contract audit dispatcher.
 mod wiring_audit;
+mod archive_verify;
+// D-9: `elai audit-locked-keys ...` — LockedKeysAuditor CLI driver.
+mod audit_locked_keys;
+// D-19: `elai bench prmbench` — PRMBench adversarial-gaming benchmark
+// driver. Owns its own tokio runtime (sync entry pattern).
+mod bench_prmbench;
+// D-21: `elai bench mode-routing` — mode-routing coverage benchmark
+// driver. Replays a hand-labeled fixture through D-10's
+// `select_grounding_mode` predicate and gates pass on macro F1 + per-mode
+// F1. Sibling of bench_prmbench (sync entry pattern).
+mod bench_mode_routing;
+// D-22: `elai bench conformal` — conformal calibration validation runner.
+// Replays a held-out fixture through D-16's `decide` predicate and gates
+// pass iff every distribution bucket's empirical refusal rate is inside
+// the UniCR (arXiv:2503.01345) band. Sibling of bench_mode_routing.
+mod bench_conformal;
+// D-20: `elai bench arc` — ARC-AGI-2 OOD probe harness. Gates ELAI's
+// mode-routing + novelty-classifier honesty stack against ARC-style
+// out-of-distribution claims. Sibling of bench_mode_routing.
+mod bench_arc;
 mod runtime_client;
 mod runtime_cmd;
 mod tool_executor;
@@ -328,6 +348,78 @@ fn run() -> Result<(), anyhow::Error> {
             output_format,
         } => {
             wiring_audit::run(scope, config_path, contracts_dir, output_format)?;
+        }
+        // D-8: `elai archive verify [--path PATH] [--json] [--fail-fast]`
+        // Walks the JSONL ArchiveChain via D-1's verify primitives and
+        // exits 1 on any tamper / broken-parent / IO / malformed-JSON.
+        CliAction::ArchiveVerify {
+            path,
+            json,
+            fail_fast,
+        } => {
+            archive_verify::run(path, json, fail_fast)?;
+        }
+        // D-9: `elai audit-locked-keys [--registry PATH] [--staged | --files A,B]
+        // [--json] [--fail-fast]` — LockedKeysAuditor driver. Exits 1 on
+        // any registry overlap; 0 on clean / empty registry.
+        CliAction::AuditLockedKeys {
+            registry_path,
+            files,
+            use_staged,
+            json,
+            fail_fast,
+        } => {
+            audit_locked_keys::run(registry_path, files, use_staged, json, fail_fast)?;
+        }
+        // D-19: `elai bench prmbench [--dataset PATH] [--hook mock] ...`
+        // PRMBench adversarial-gaming benchmark runner. Exits 0 on Pass,
+        // 1 on Fail; emits one SsbActionType::PrmBenchRunCompleted row.
+        CliAction::BenchPrmbench {
+            dataset,
+            hook,
+            output,
+            gating_threshold,
+            category,
+        } => {
+            bench_prmbench::run(dataset, hook, output, gating_threshold, category)?;
+        }
+        // D-21: `elai bench mode-routing [--dataset PATH] [--output PATH]
+        // [--macro-floor 0.85] [--per-mode-floor 0.70]`. Replays the
+        // hand-labeled fixture through D-10's mode-routing predicate.
+        // Exits 0 on Pass, 1 on Fail; emits one
+        // SsbActionType::ModeRoutingBenchRunCompleted row.
+        CliAction::BenchModeRouting {
+            dataset,
+            output,
+            macro_floor,
+            per_mode_floor,
+        } => {
+            bench_mode_routing::run(dataset, output, macro_floor, per_mode_floor)?;
+        }
+        // D-22: `elai bench conformal [--dataset PATH] [--corpus PATH]
+        // [--output PATH] [--epsilon 0.1]`. Replays the validation
+        // fixture through D-16's `decide` predicate per distribution
+        // bucket. Exits 0 on Pass, 1 on Fail; emits one
+        // SsbActionType::ConformalValidationCompleted row.
+        CliAction::BenchConformal {
+            dataset,
+            corpus,
+            output,
+            epsilon,
+        } => {
+            bench_conformal::run(dataset, corpus, output, epsilon)?;
+        }
+        // D-20: `elai bench arc [--dataset PATH] [--output PATH]
+        // [--novelty-config PATH]`. Replays an ARC-AGI-2 fixture through
+        // D-10's `select_grounding_mode` predicate and D-15's
+        // `classify`. Exits 0 iff verdict is HonestlyEvaluated; emits
+        // one SsbActionType::ArcBenchmarkCompleted row.
+        CliAction::BenchArc {
+            dataset,
+            output,
+            novelty_config,
+        } => {
+            bench_arc::run(dataset, output, novelty_config)?;
         }
     }
     Ok(())

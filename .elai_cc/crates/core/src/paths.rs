@@ -72,6 +72,29 @@ pub const ARTIFACTS_DIR_NAME: &str = "artifacts";
 /// `.yaml`.
 pub const ARTIFACT_MANIFEST_EXT: &str = "json";
 
+/// E-5 — user-modeling memory store. Subdirectory under
+/// `ELAI_DATA_DIR_NAME` that holds the per-project `memory_facts` sqlite
+/// database (bi-temporal episodic store; see
+/// `crates/memory/src/store.rs`). Layout: `<root>/.elai_cc/memory/memory_facts.sqlite`.
+pub const MEMORY_DIR_NAME: &str = "memory";
+
+/// Filename of the per-project `memory_facts` sqlite database.
+pub const MEMORY_FACTS_DB_FILENAME: &str = "memory_facts.sqlite";
+
+/// D-6 — held-out task store. Subdirectory under `ELAI_DATA_DIR_NAME` that
+/// holds date-anchored JSONL fixture directories + the rusqlite-backed
+/// index. Layout: `<root>/.elai_cc/held-out/{YYYY-MM}/*.jsonl` for raw
+/// task fixtures and `<root>/.elai_cc/held-out/held_out.sqlite` for the
+/// indexed task store (mirrors the memory crate's per-project sqlite
+/// pattern; see `MEMORY_FACTS_DB_FILENAME`). LiveCodeBench
+/// (arxiv:2403.07974, T1) is the load-bearing time-windowed-split +
+/// 9-gram contamination-filter pattern this directory backs.
+pub const HELD_OUT_DIR_NAME: &str = "held-out";
+
+/// Filename of the per-project `held_out_tasks` sqlite index. Sibling of
+/// the JSONL fixture directories under `HELD_OUT_DIR_NAME`.
+pub const HELD_OUT_DB_FILENAME: &str = "held_out.sqlite";
+
 // ---------------------------------------------------------------------------
 // Path helpers — pure functions of `project_root`.
 // ---------------------------------------------------------------------------
@@ -205,6 +228,56 @@ pub fn artifact_path(
         .join(task_id)
         .join(step_id)
         .join(format!("{artifact_id}.{ext}"))
+}
+
+/// `<project_root>/.elai_cc/memory`
+///
+/// Parent directory for the E-5 per-project memory store. Currently
+/// holds a single sqlite file ([`memory_facts_db_path`]); reserved for
+/// future per-user / per-tier extensions.
+#[inline]
+pub fn memory_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(MEMORY_DIR_NAME)
+}
+
+/// `<project_root>/.elai_cc/memory/memory_facts.sqlite`
+///
+/// Canonical location for the E-5 `memory_facts` bi-temporal episodic
+/// store. Per-project scope (matches the rest of `.elai_cc/`). The
+/// per-user global tier (`%USERPROFILE%\.elai_user\profile.sqlite`) is
+/// reserved for a follow-up vertical slice and is NOT computed by this
+/// helper.
+#[inline]
+pub fn memory_facts_db_path(project_root: &Path) -> PathBuf {
+    memory_dir_path(project_root).join(MEMORY_FACTS_DB_FILENAME)
+}
+
+/// `<project_root>/.elai_cc/held-out`
+///
+/// Parent directory for the D-6 held-out task store. Date-anchored
+/// subdirectories (`{YYYY-MM}/`) hold the raw JSONL fixture files; the
+/// `held_out.sqlite` index lives at the same level as the date dirs.
+/// Time-windowed eligibility (LiveCodeBench-style) is enforced in
+/// `crate::held_out::HeldOutStore`; this helper is pure path-math.
+#[inline]
+pub fn held_out_dir_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(ELAI_DATA_DIR_NAME)
+        .join(HELD_OUT_DIR_NAME)
+}
+
+/// `<project_root>/.elai_cc/held-out/held_out.sqlite`
+///
+/// Canonical location for the rusqlite-backed held-out task index. The
+/// schema (table `held_out_tasks`) is created lazily by
+/// `crate::held_out::HeldOutStore::open` on first use. The JSONL fixture
+/// directories under the same parent are NOT indexed by this file — they
+/// are the seed input that `HeldOutStore::ingest_fixture_dir` consumes.
+#[inline]
+pub fn held_out_db_path(project_root: &Path) -> PathBuf {
+    held_out_dir_path(project_root).join(HELD_OUT_DB_FILENAME)
 }
 
 /// Sibling JSON manifest for the artifact returned by `artifact_path`.

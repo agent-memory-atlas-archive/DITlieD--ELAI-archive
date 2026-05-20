@@ -7,6 +7,11 @@ publish.workspace = true
 
 [dependencies]
 elai-core = { path = "../core" }
+elai-ipc-types.workspace = true
+# E-35: blake3 schema-hash key for the XGrammar grammar cache
+# (CLAUDE.md anti-stale: blake3, NEVER blake2/sha2). Already workspace-pinned
+# at 1.8 — no new external crate.
+blake3.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rustc-hash.workspace = true
 tracing = { workspace = true }
