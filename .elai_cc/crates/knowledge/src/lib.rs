@@ -28,6 +28,12 @@ pub mod dkg_adapter;
 pub mod error;
 pub mod fix_templates;
 pub mod freshness;
+// E-42 Tier-A: tree-sitter grammar tier metadata (parallel to LanguageRegistry).
+// Pin invariants (kotlin-ng / svelte-ng / no language-pack / runtime 0.26)
+// locked by crates/contracts/tests/grammar_tier_contract.rs. Tier-B refactors
+// dkg/mod.rs registration into per-tier helpers; see
+// workflow/reasoning/E-42-decisions.md.
+pub mod grammar_tier;
 pub mod hyde;
 pub mod knowledge_ssb_sink;
 pub mod incremental_profile;
