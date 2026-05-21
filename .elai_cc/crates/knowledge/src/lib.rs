@@ -19,6 +19,10 @@ pub mod conventions;
 // E-17 SP2 task 4: DEEP candidate pool cap + RRF quality gate.
 pub mod deep;
 pub mod degradation;
+// E-52 Tier-A: diagnostic envelope types for LSP-as-verifier surface.
+// Types-only foundation; producer + SSB wiring deferred to E-52.B per
+// workflow/reasoning/E-52-decisions.md.
+pub mod diagnostic;
 pub mod dkg;
 pub mod dkg_adapter;
 pub mod error;
