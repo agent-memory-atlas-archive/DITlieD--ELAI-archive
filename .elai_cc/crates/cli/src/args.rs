@@ -142,6 +142,17 @@ pub(crate) enum CliAction {
     Doctor {
         output_format: CliOutputFormat,
     },
+    /// E-17 SP1 task 1 — `elai doctor knowledge-models [--project-root PATH]
+    /// [--output-format text|json|toml]`. Probes ONNX staging under
+    /// `core::paths::models_dir_path(project_root)` and reports per-file
+    /// existence, size, and blake3 hash. Nested as a sibling of
+    /// `CliAction::Doctor` (not inside it) because the rest of the CLI
+    /// dispatcher matches flat enum variants — mirrors `SymbolGraphBuild`
+    /// vs `SymbolGraphStats` (args.rs:917-918).
+    DoctorKnowledgeModels {
+        project_root: PathBuf,
+        output_format: CliOutputFormat,
+    },
     Init {
         output_format: CliOutputFormat,
     },
@@ -325,6 +336,22 @@ pub(crate) enum CliAction {
         dataset: Option<String>,
         output: Option<String>,
         novelty_config: Option<String>,
+    },
+    /// E-17 SP6: `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
+    /// [--project-root PATH] [--json] -- <QUERY...>`. Runs the local
+    /// knowledge pipeline at the requested tier and emits the final-stage
+    /// retrieval results as JSON (or a human-readable table). Used by
+    /// `.elai_cc/eval/rag/run.py` as its observable interface; without
+    /// this subcommand the eval harness has no clean way to drive the
+    /// pipeline (the augment_with_knowledge code path is wrapped in
+    /// full prompt-turn machinery and emits a chat response, not
+    /// parseable retrieval JSON). Mirrors `bench_arc` sync entry pattern.
+    BenchRag {
+        tier: String,
+        top_k: u32,
+        query: String,
+        json: bool,
+        project_root: PathBuf,
     },
     // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
     //        [--id <ID>]` — store an incident postmortem entry in the SSB
@@ -673,6 +700,15 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 output_format,
             })
         }
+        // E-17 SP1 task 1 — `elai doctor [knowledge-models ...]`.
+        // `elai doctor` (bare) is also reachable via the single-word
+        // command alias at line 1438, but the parse_args dispatch table
+        // is the only path that sees sub-arguments (e.g. `doctor
+        // knowledge-models --project-root PATH`), so route the
+        // sub-subcommand here. Bare `doctor` falls through to the
+        // existing CliAction::Doctor variant for byte-for-byte
+        // backwards compatibility with the bare-slash entry point.
+        "doctor" => parse_doctor_subcommand_args(&rest[1..], output_format),
         "login" => Ok(CliAction::Login { output_format }),
         "logout" => Ok(CliAction::Logout { output_format }),
         "init" => Ok(CliAction::Init { output_format }),
@@ -922,6 +958,100 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
     }
 }
 
+/// E-17 SP1 task 1 — parse `elai doctor [knowledge-models ...]`.
+///
+/// `elai doctor` (no sub-subcommand) returns `CliAction::Doctor` —
+/// byte-for-byte identical to the bare-slash entry at args.rs:1438.
+///
+/// `elai doctor knowledge-models [--project-root PATH]
+/// [--output-format text|json|toml]` returns
+/// `CliAction::DoctorKnowledgeModels`. `--output-format` here is
+/// consumed by the top-level flag parser (already parsed into
+/// `output_format` by the caller); a `--output-format` flag mixed in
+/// after `knowledge-models` is *also* honored so the subcommand
+/// surface matches `bench prmbench`, which accepts both placements.
+pub(crate) fn parse_doctor_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub.is_empty() {
+        // `elai doctor` with no further arg — same as bare slash.
+        return Ok(CliAction::Doctor { output_format });
+    }
+    if sub != "knowledge-models" {
+        return Err(format!(
+            "unknown `doctor` sub-command: '{sub}' (expected 'knowledge-models')"
+        ));
+    }
+
+    let flag_rest = &rest[1..];
+    let mut project_root: Option<PathBuf> = None;
+    let mut output_format_override: Option<CliOutputFormat> = None;
+    let mut i = 0;
+    while i < flag_rest.len() {
+        match flag_rest[i].as_str() {
+            "--project-root" => {
+                let value = flag_rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            "--output-format" => {
+                let value = flag_rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output-format".to_string())?;
+                output_format_override = Some(parse_output_format_value(value)?);
+                i += 2;
+            }
+            flag if flag.starts_with("--output-format=") => {
+                output_format_override = Some(parse_output_format_value(&flag[16..])?);
+                i += 1;
+            }
+            "--json" => {
+                // Convenience alias matching the `archive verify --json`
+                // shape — same as `--output-format json`.
+                output_format_override = Some(CliOutputFormat::Json);
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "unknown `doctor knowledge-models` argument: {other}"
+                ));
+            }
+        }
+    }
+
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| {
+            format!(
+                "`doctor knowledge-models` cannot determine cwd for --project-root default: {e}"
+            )
+        })?,
+    };
+    Ok(CliAction::DoctorKnowledgeModels {
+        project_root,
+        output_format: output_format_override.unwrap_or(output_format),
+    })
+}
+
+fn parse_output_format_value(value: &str) -> Result<CliOutputFormat, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "text" => Ok(CliOutputFormat::Text),
+        "json" => Ok(CliOutputFormat::Json),
+        "toml" => Ok(CliOutputFormat::Toml),
+        other => Err(format!(
+            "unsupported value for --output-format: {other} (expected text, json, or toml)"
+        )),
+    }
+}
+
 /// D-8 — parse `elai archive verify [--path PATH] [--json] [--fail-fast]`.
 ///
 /// Only one sub-verb is currently supported (`verify`). Other archive
@@ -1061,9 +1191,12 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "arc" {
         return parse_bench_arc_args(&rest[1..]);
     }
+    if sub == "rag" {
+        return parse_bench_rag_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -1363,6 +1496,116 @@ pub(crate) fn parse_bench_arc_args(rest: &[String]) -> Result<CliAction, String>
         dataset,
         output,
         novelty_config,
+    })
+}
+
+/// E-17 SP6 — parse `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
+/// [--project-root PATH] [--json] -- <QUERY...>`. Hand-rolled per the
+/// CLAUDE.md "no new clap dep" rule. The query is taken from positional
+/// arguments after the `--` sentinel (joined with spaces); flags before
+/// `--` are parsed as named options. `--tier` is required; everything
+/// else has a default (top-k=10, json=false, project-root=cwd).
+pub(crate) fn parse_bench_rag_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut tier: Option<String> = None;
+    let mut top_k: u32 = 10;
+    let mut project_root: Option<PathBuf> = None;
+    let mut json: bool = false;
+    let mut query_parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    let mut saw_sentinel = false;
+    while i < rest.len() {
+        let arg = rest[i].as_str();
+        if saw_sentinel {
+            query_parts.push(rest[i].clone());
+            i += 1;
+            continue;
+        }
+        match arg {
+            "--" => {
+                saw_sentinel = true;
+                i += 1;
+            }
+            "--tier" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --tier".to_string())?;
+                tier = Some(value.to_uppercase());
+                i += 2;
+            }
+            flag if flag.starts_with("--tier=") => {
+                tier = Some(flag["--tier=".len()..].to_uppercase());
+                i += 1;
+            }
+            "--top-k" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --top-k".to_string())?;
+                top_k = value
+                    .parse()
+                    .map_err(|e| format!("invalid --top-k {value:?}: {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--top-k=") => {
+                let value = &flag["--top-k=".len()..];
+                top_k = value
+                    .parse()
+                    .map_err(|e| format!("invalid --top-k {value:?}: {e}"))?;
+                i += 1;
+            }
+            "--project-root" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag["--project-root=".len()..]));
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                // Pre-sentinel positional: treat as the start of an
+                // unsentineled query. Permissive grammar: `elai bench rag
+                // --tier STANDARD --top-k 5 my query here` is equivalent
+                // to `... -- my query here` once we hit a non-flag arg.
+                if other.starts_with("--") {
+                    return Err(format!("unknown `bench rag` argument: {other}"));
+                }
+                saw_sentinel = true;
+                query_parts.push(rest[i].clone());
+                i += 1;
+            }
+        }
+    }
+    let tier_value = tier
+        .ok_or_else(|| "missing required --tier (STANDARD or DEEP)".to_string())?;
+    if tier_value != "STANDARD" && tier_value != "DEEP" && tier_value != "FAST" {
+        return Err(format!(
+            "invalid --tier {tier_value:?} (expected STANDARD | DEEP | FAST)"
+        ));
+    }
+    let query = query_parts.join(" ").trim().to_string();
+    if query.is_empty() {
+        return Err("missing query (pass after `--` or as trailing positional args)".to_string());
+    }
+    if top_k == 0 {
+        return Err("--top-k must be >= 1".to_string());
+    }
+    let resolved_project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir()
+            .map_err(|e| format!("cannot determine cwd for --project-root: {e}"))?,
+    };
+    Ok(CliAction::BenchRag {
+        tier: tier_value,
+        top_k,
+        query,
+        json,
+        project_root: resolved_project_root,
     })
 }
 

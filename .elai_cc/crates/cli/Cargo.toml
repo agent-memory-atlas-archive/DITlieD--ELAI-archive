@@ -11,6 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# E-17 SP1: `elai doctor knowledge-models` hashes tokenizer.json bytes and
+# the first 256 bytes of each ONNX model. Workspace pin keeps cli, core,
+# and knowledge on the same blake3 version (CLAUDE.md anti-stale: never
+# blake2/sha2 for non-RFC uses).
+blake3 = "1.8"
 crossterm = "0.28"
 elai-core = { path = "../core" }
 elai-knowledge = { path = "../knowledge", features = ["splade"] }

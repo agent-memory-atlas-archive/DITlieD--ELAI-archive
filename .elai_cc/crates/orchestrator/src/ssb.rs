@@ -952,7 +952,23 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 //   - llamacpp_ep_detected        -- emitted once per session on EP detection.
 //   - runtime_chain_built         -- emitted by CLI bootstrap on every chain construction.
 // all_test_payloads().len() goes 216 -> 223.
-const SCHEMA_VERSION: i64 = 96;
+//
+// E-17 SP2 (SCHEMA_VERSION 97): atomic bump for 4 new RAG-retrieval-quality
+// beacons emitted by the knowledge crate (knowledge::pipeline::rrf_rerank
+// + knowledge::hyde::should_use_hyde gate).
+//   - deep_pool_capped         -- emitted once per DEEP-tier query when the
+//                                 deep candidate pool cap drops one or more
+//                                 input candidates (default cap = 100, see
+//                                 knowledge::deep::DEEP_CAP_DEFAULT).
+//   - rrf_quality_gate_fired   -- emitted once per DEEP-tier query when the
+//                                 RRF quality gate drops candidates below
+//                                 knowledge::deep::RRF_FLOOR_DEFAULT (0.005).
+//   - hyde_skipped_code_query  -- emitted when knowledge::hyde::should_use_hyde
+//                                 returns false on a CodeSymbol / Mixed query.
+//   - rrf_component_weights    -- emitted once per query with the bm25 /
+//                                 code_vec / text_vec RRF weights active.
+// all_test_payloads().len() goes 223 -> 227.
+const SCHEMA_VERSION: i64 = 97;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -1587,7 +1603,10 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- deep_mode_escalation_chosen -- SessionDag handoff chose local deep mode over cloud
         -- yarn_refused               -- ELAI_USE_YARN=1 refused at boot (quality regression)
         'fitm_calibration_applied', 'deep_mode_activated',
-        'deep_mode_escalation_chosen', 'yarn_refused'
+        'deep_mode_escalation_chosen', 'yarn_refused',
+        -- E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+        'deep_pool_capped', 'rrf_quality_gate_fired',
+        'hyde_skipped_code_query', 'rrf_component_weights'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -2166,6 +2185,22 @@ pub enum SsbActionType {
     /// Emitted by resolve_runtime_backend_from_env() on every CLI start.
     /// Carries a [`RuntimeChainBuiltPayload`].
     RuntimeChainBuilt,
+    /// E-17 SP2 (SCHEMA_VERSION 97): emitted once per DEEP-tier query when
+    /// the deep candidate pool cap dropped one or more input candidates.
+    /// Carries a [`DeepPoolCappedPayload`].
+    DeepPoolCapped,
+    /// E-17 SP2 (SCHEMA_VERSION 97): emitted once per DEEP-tier query when
+    /// the RRF quality gate dropped one or more candidates below the floor.
+    /// Carries an [`RrfQualityGateFiredPayload`].
+    RrfQualityGateFired,
+    /// E-17 SP2 (SCHEMA_VERSION 97): emitted when `should_use_hyde` returns
+    /// false on a CodeSymbol or Mixed query that would otherwise have
+    /// triggered HyDE. Carries a [`HydeSkippedCodeQueryPayload`].
+    HydeSkippedCodeQuery,
+    /// E-17 SP2 (SCHEMA_VERSION 97): emitted once per query with the
+    /// per-ranker RRF weights active for that fusion run. Carries an
+    /// [`RrfComponentWeightsPayload`].
+    RrfComponentWeights,
     /// C-1 (SCHEMA_VERSION 47): one row per `emit_reasoning` call when a
     /// `PipelineGrc` handle was plumbed through `ResolvedConfig`. Replaces
     /// the synthetic-constant `ReasoningTrace` row with real
@@ -2988,6 +3023,11 @@ impl SsbActionType {
             Self::MlxApplePlatformDetected => "mlx_apple_platform_detected",
             Self::LlamaCppEpDetected => "llamacpp_ep_detected",
             Self::RuntimeChainBuilt => "runtime_chain_built",
+            // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+            Self::DeepPoolCapped => "deep_pool_capped",
+            Self::RrfQualityGateFired => "rrf_quality_gate_fired",
+            Self::HydeSkippedCodeQuery => "hyde_skipped_code_query",
+            Self::RrfComponentWeights => "rrf_component_weights",
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             Self::GrcStepEmitted => "grc_step_emitted",
             Self::GroundingSweepResult => "grounding_sweep_result",
@@ -3350,6 +3390,11 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "mlx_apple_platform_detected" => Ok(SsbActionType::MlxApplePlatformDetected),
         "llamacpp_ep_detected"        => Ok(SsbActionType::LlamaCppEpDetected),
         "runtime_chain_built"         => Ok(SsbActionType::RuntimeChainBuilt),
+        // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+        "deep_pool_capped"            => Ok(SsbActionType::DeepPoolCapped),
+        "rrf_quality_gate_fired"      => Ok(SsbActionType::RrfQualityGateFired),
+        "hyde_skipped_code_query"     => Ok(SsbActionType::HydeSkippedCodeQuery),
+        "rrf_component_weights"       => Ok(SsbActionType::RrfComponentWeights),
         // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
         "grc_step_emitted"              => Ok(SsbActionType::GrcStepEmitted),
         "grounding_sweep_result"        => Ok(SsbActionType::GroundingSweepResult),
@@ -3951,7 +3996,9 @@ pub struct GroundingCacheEventPayload {
 /// Dashboard get_embedding_breakers queries latest row per `model`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CircuitBreakerStateChangePayload {
-    /// Model identifier: "graphcodebert" | "granite-embed" | "ms-marco-l12" | "ms-marco-l6" | "splade-v3"
+    /// Model identifier: "graphcodebert" | "granite-embed" | "ms-marco-l12" | "cross-encoder-l6" | "splade-v3"
+    /// (E-17 SP2: corrected "ms-marco-l6" -> "cross-encoder-l6"; the on-disk
+    /// file is `models/onnx/cross-encoder-l6.onnx`.)
     pub model: String,
     /// New state: "CLOSED" | "OPEN" | "HALF_OPEN"
     pub state: String,
@@ -5938,6 +5985,11 @@ pub enum SsbPayload {
     MlxApplePlatformDetected(MlxApplePlatformDetectedPayload),
     LlamaCppEpDetected(LlamaCppEpDetectedPayload),
     RuntimeChainBuilt(RuntimeChainBuiltPayload),
+    // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+    DeepPoolCapped(DeepPoolCappedPayload),
+    RrfQualityGateFired(RrfQualityGateFiredPayload),
+    HydeSkippedCodeQuery(HydeSkippedCodeQueryPayload),
+    RrfComponentWeights(RrfComponentWeightsPayload),
     // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
     GrcStepEmitted(GrcStepEmittedPayload),
     GroundingSweepResult(GroundingSweepResultPayload),
@@ -6298,6 +6350,11 @@ impl SsbPayload {
             Self::MlxApplePlatformDetected(_) => SsbActionType::MlxApplePlatformDetected,
             Self::LlamaCppEpDetected(_) => SsbActionType::LlamaCppEpDetected,
             Self::RuntimeChainBuilt(_) => SsbActionType::RuntimeChainBuilt,
+            // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+            Self::DeepPoolCapped(_) => SsbActionType::DeepPoolCapped,
+            Self::RrfQualityGateFired(_) => SsbActionType::RrfQualityGateFired,
+            Self::HydeSkippedCodeQuery(_) => SsbActionType::HydeSkippedCodeQuery,
+            Self::RrfComponentWeights(_) => SsbActionType::RrfComponentWeights,
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             Self::GrcStepEmitted(_) => SsbActionType::GrcStepEmitted,
             Self::GroundingSweepResult(_) => SsbActionType::GroundingSweepResult,
@@ -7760,6 +7817,59 @@ pub struct LlamaCppEpDetectedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeChainBuiltPayload {
     pub chain: Vec<elai_providers::runtime::RuntimeBackend>,
+}
+
+// ---------------------------------------------------------------------------
+// E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality payload structs
+// ---------------------------------------------------------------------------
+
+/// E-17 SP2 — payload for [`SsbActionType::DeepPoolCapped`].
+///
+/// `capped_count` is the total number of candidates dropped across all
+/// input stages by `knowledge::deep::deep_pool_cap`. `max_allowed` is the
+/// per-stage cap that fired (typically `DEEP_CAP_DEFAULT = 100`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeepPoolCappedPayload {
+    pub capped_count: u32,
+    pub max_allowed: u32,
+    pub stage_count: u32,
+}
+
+/// E-17 SP2 — payload for [`SsbActionType::RrfQualityGateFired`].
+///
+/// `dropped_count` is the number of fused candidates dropped below the
+/// floor by `knowledge::deep::rrf_quality_gate`; `total_before` is the
+/// candidate pool size before the gate ran (post-RRF-accumulator).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RrfQualityGateFiredPayload {
+    pub dropped_count: u32,
+    pub floor: f64,
+    pub total_before: u32,
+}
+
+/// E-17 SP2 — payload for [`SsbActionType::HydeSkippedCodeQuery`].
+///
+/// Emitted when `knowledge::hyde::should_use_hyde` returns false on a
+/// CodeSymbol / Mixed query that would otherwise have invoked HyDE
+/// (DEEP tier + >= MIN_WORDS_FOR_HYDE).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HydeSkippedCodeQueryPayload {
+    pub query_class: String,
+    pub word_count: u32,
+    pub code_signal_present: bool,
+}
+
+/// E-17 SP2 — payload for [`SsbActionType::RrfComponentWeights`].
+///
+/// One row per query carrying the per-ranker RRF weights active for that
+/// fusion run. `None` indicates the ranker did not contribute (e.g.
+/// `code_vec_weight` is None when ELAI_CODE_VEC is disabled or no code
+/// index is loaded).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RrfComponentWeightsPayload {
+    pub bm25_weight: Option<f64>,
+    pub code_vec_weight: Option<f64>,
+    pub text_vec_weight: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -11238,6 +11348,27 @@ mod tests {
             SsbActionType::RuntimeChainBuilt => SsbPayload::RuntimeChainBuilt(
                 RuntimeChainBuiltPayload { chain: vec![elai_providers::runtime::RuntimeBackend::Sidecar] }
             ),
+            // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+            SsbActionType::DeepPoolCapped => SsbPayload::DeepPoolCapped(
+                DeepPoolCappedPayload { capped_count: 150, max_allowed: 100, stage_count: 5 }
+            ),
+            SsbActionType::RrfQualityGateFired => SsbPayload::RrfQualityGateFired(
+                RrfQualityGateFiredPayload { dropped_count: 12, floor: 0.005, total_before: 80 }
+            ),
+            SsbActionType::HydeSkippedCodeQuery => SsbPayload::HydeSkippedCodeQuery(
+                HydeSkippedCodeQueryPayload {
+                    query_class: "code_symbol".into(),
+                    word_count: 3,
+                    code_signal_present: true,
+                }
+            ),
+            SsbActionType::RrfComponentWeights => SsbPayload::RrfComponentWeights(
+                RrfComponentWeightsPayload {
+                    bm25_weight: Some(1.0),
+                    code_vec_weight: Some(1.0),
+                    text_vec_weight: Some(0.8),
+                }
+            ),
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             SsbActionType::GrcStepEmitted => SsbPayload::GrcStepEmitted(GrcStepEmittedPayload {
                 agent_id: "executor".into(),
@@ -14339,6 +14470,27 @@ mod tests {
             SsbPayload::RuntimeChainBuilt(RuntimeChainBuiltPayload {
                 chain: vec![elai_providers::runtime::RuntimeBackend::Sidecar],
             }),
+            // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+            SsbPayload::DeepPoolCapped(DeepPoolCappedPayload {
+                capped_count: 150,
+                max_allowed: 100,
+                stage_count: 5,
+            }),
+            SsbPayload::RrfQualityGateFired(RrfQualityGateFiredPayload {
+                dropped_count: 12,
+                floor: 0.005,
+                total_before: 80,
+            }),
+            SsbPayload::HydeSkippedCodeQuery(HydeSkippedCodeQueryPayload {
+                query_class: "code_symbol".into(),
+                word_count: 3,
+                code_signal_present: true,
+            }),
+            SsbPayload::RrfComponentWeights(RrfComponentWeightsPayload {
+                bm25_weight: Some(1.0),
+                code_vec_weight: Some(1.0),
+                text_vec_weight: Some(0.8),
+            }),
         ]
     }
 
@@ -14350,8 +14502,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            223,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt)",
+            227,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

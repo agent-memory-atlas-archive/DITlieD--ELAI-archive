@@ -17,6 +17,7 @@ use elai_core::{ClockProvider, LogicalInstant};
 use crate::knowledge_ssb_sink::{
     noop_sink, HydeQueryEvent, KnowledgeSsbSink,
 };
+use crate::query_class::{classify, QueryClass};
 use crate::vector::circuit_breaker::{
     BreakerState, EmbeddingCircuitBreaker, FailureKind,
 };
@@ -42,6 +43,52 @@ pub const HYDE_TEMPERATURE: f32 = 0.7;
 
 /// Prompt template for hypothesis generation.
 pub const HYDE_PROMPT_PREFIX: &str = "Write a short technical paragraph answering: ";
+
+/// E-17 SP2 task 5: env-var name controlling whether HyDE runs for
+/// non-NaturalLanguage queries. Default = "1" (true) — when set the
+/// `should_use_hyde` gate returns false for CodeSymbol / Mixed queries
+/// even if the tier dispatch already enabled HyDE.
+///
+/// Honest framing: this is an extrapolation from arxiv:2212.10496 NL-focus
+/// design intent. Not externally validated for code queries; SP6 measures
+/// recall@5 with/without the gate.
+pub const ELAI_HYDE_NL_ONLY_ENV: &str = "ELAI_HYDE_NL_ONLY";
+
+/// E-17 SP2 task 5: NL-only gate for HyDE.
+///
+/// Returns `true` ONLY when:
+///   1. Query has >= [`MIN_WORDS_FOR_HYDE`] words, AND
+///   2. The NL-only gate is disabled (`ELAI_HYDE_NL_ONLY=0`), OR the
+///      heuristic classifier ([`crate::query_class::classify`]) returns
+///      [`QueryClass::NaturalLanguage`].
+///
+/// CodeSymbol queries and Mixed queries (when the gate is on, default)
+/// return `false` — the pipeline skips HyDE and emits a
+/// `hyde_skipped_code_query` SSB row. The original query still flows
+/// through BM25 + vector search; only the LLM-roundtrip is skipped.
+pub fn should_use_hyde(query: &str) -> bool {
+    let word_count = query.split_whitespace().count();
+    if word_count < MIN_WORDS_FOR_HYDE {
+        return false;
+    }
+    if !nl_only_gate_enabled() {
+        // Gate disabled -> respect tier-only routing (existing behaviour).
+        return true;
+    }
+    matches!(classify(query), QueryClass::NaturalLanguage)
+}
+
+/// Read [`ELAI_HYDE_NL_ONLY_ENV`] and return `true` when the gate is on.
+/// Default (unset / invalid) = `true` (NL-only by default per E-17 task 5).
+fn nl_only_gate_enabled() -> bool {
+    match std::env::var(ELAI_HYDE_NL_ONLY_ENV) {
+        Ok(v) => {
+            let t = v.trim();
+            !(t == "0" || t.eq_ignore_ascii_case("false") || t.eq_ignore_ascii_case("off"))
+        }
+        Err(_) => true,
+    }
+}
 
 // C-1: convert `Duration` to milliseconds clamped to `u64::MAX`. Used
 // for HyDE latency payloads. Module-private to keep the helper close to

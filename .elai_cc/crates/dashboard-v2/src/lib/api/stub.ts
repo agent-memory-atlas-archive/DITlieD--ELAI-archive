@@ -111,6 +111,11 @@ import type {
   ListProjectsResponse,
   ProjectEntry,
   ResearchNodeHistoryRow,
+  // E-17 SP4 — RAG retrieval-quality beacon row types.
+  DeepPoolCappedRow,
+  RrfQualityGateRow,
+  HydeSkippedCodeQueryRow,
+  RrfComponentWeightsRow,
 } from './types';
 
 import {
@@ -502,6 +507,59 @@ export async function get_query_trace_recent(n: number): Promise<QueryTrace[]> {
   if (live) return live;
   await delay();
   return QUERY_TRACES.slice(0, n);
+}
+
+// ------------------------------------------------------------------
+// E-17 SP4: RAG retrieval-quality beacon row wrappers.
+//
+// Each wrapper mirrors the Tauri command name 1:1 and falls back to an
+// empty array when outside the Tauri runtime (browser-only `pnpm dev`).
+// No mock fixtures — the four feeds are steady-state empty for most
+// sessions (only DEEP-tier queries that trip the cap / floor / HyDE-skip
+// produce rows), so the drawer's empty state is the correct browser
+// rendering path.
+// ------------------------------------------------------------------
+
+export async function get_deep_pool_capped_recent(n: number): Promise<DeepPoolCappedRow[]> {
+  logStub('get_deep_pool_capped_recent', { n });
+  const live = await tryInvoke<DeepPoolCappedRow[]>('get_deep_pool_capped_recent', { n });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_rrf_quality_gate_recent(n: number): Promise<RrfQualityGateRow[]> {
+  logStub('get_rrf_quality_gate_recent', { n });
+  const live = await tryInvoke<RrfQualityGateRow[]>('get_rrf_quality_gate_recent', { n });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_hyde_skipped_code_query_recent(
+  n: number,
+): Promise<HydeSkippedCodeQueryRow[]> {
+  logStub('get_hyde_skipped_code_query_recent', { n });
+  const live = await tryInvoke<HydeSkippedCodeQueryRow[]>(
+    'get_hyde_skipped_code_query_recent',
+    { n },
+  );
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function get_rrf_component_weights_recent(
+  n: number,
+): Promise<RrfComponentWeightsRow[]> {
+  logStub('get_rrf_component_weights_recent', { n });
+  const live = await tryInvoke<RrfComponentWeightsRow[]>(
+    'get_rrf_component_weights_recent',
+    { n },
+  );
+  if (live) return live;
+  await delay();
+  return [];
 }
 
 export async function get_search_mode(): Promise<{

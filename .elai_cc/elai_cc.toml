@@ -792,3 +792,52 @@ low_il_descriptor = true
 allowed_hosts = ["arxiv.org", "huggingface.co"]
 trusted_resolvers = ["1.1.1.1", "8.8.8.8"]
 reject_not_drop = true
+
+# ============================================================================
+# E-17 SP2 — knowledge / RAG retrieval-quality config keys.
+# ============================================================================
+# All keys below are commented schema documentation; the knowledge crate
+# currently hardcodes the defaults (see crates/knowledge/src/deep.rs,
+# pipeline.rs, hyde.rs). Real TOML loading lands in E-17 ops follow-up.
+
+[knowledge.reranker]
+# Cross-encoder reranker model selector.
+# Valid values:
+#   "ms-marco-minilm-l12"  (default — staged at models/onnx/cross-encoder-l12.onnx)
+#   "jina-rerank-v3"        (jinaai/jina-reranker-v3; model file NOT staged yet)
+#   "bge-reranker-v2-m3"    (BAAI/bge-reranker-v2-m3; model file NOT staged yet)
+# Selecting an unstaged variant triggers a tracing::warn and the pipeline
+# degrades to unranked (no panic).
+# model = "ms-marco-minilm-l12"
+
+[knowledge.deep]
+# DEEP-tier candidate pool cap applied BEFORE the RRF accumulator.
+# Prior-work-typical heuristic per arxiv:2411.11767 S4 fn1 (paper does NOT
+# mandate this specific value; avoids phantom-hit zone observed at K=5000).
+# max_candidates = 100
+#
+# RRF quality gate floor applied AFTER the freshness multiplier.
+# ELAI design choice (back-derived from k=60 arithmetic: a single ranker at
+# rank 140 produces score 1/(60+140)=0.005). Validated by SP6 eval harness.
+# rrf_floor = 0.005
+
+[knowledge.rrf]
+# Per-ranker RRF fusion weights. Defaults match the spec values
+# `{bm25 = 1.0, code_vec = 1.0, text_vec = 0.8}`. Emitted on the
+# `rrf_component_weights` SSB beacon per query.
+# weights = {bm25 = 1.0, code_vec = 1.0, text_vec = 0.8}
+
+[knowledge.hyde]
+# NL-only HyDE gate (E-17 SP2 task 5). When true, HyDE only fires on
+# queries classified as NaturalLanguage by knowledge::query_class::classify.
+# CodeSymbol / Mixed queries skip HyDE and emit a `hyde_skipped_code_query`
+# SSB beacon. Override at runtime via ELAI_HYDE_NL_ONLY=0.
+# Honest framing: extrapolation from arxiv:2212.10496 NL-focus design intent;
+# NOT externally validated for code queries (SP6 measures recall@5).
+# nl_only = true
+
+[knowledge.code_vec]
+# Secondary code-space vector index gate. When true the GraphCodeBERT
+# code index is loaded at startup and contributes to RRF fusion alongside
+# BM25 + text_vector. Equivalent to setting ELAI_CODE_VEC=1.
+# enabled = false

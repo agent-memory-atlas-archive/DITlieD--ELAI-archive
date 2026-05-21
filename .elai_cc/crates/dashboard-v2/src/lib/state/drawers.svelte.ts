@@ -60,6 +60,11 @@ import type {
   BaselineResults,
   LintFinding,
   LighthouseReport,
+  // E-17 SP4 — RAG retrieval-quality beacon row types.
+  DeepPoolCappedRow,
+  RrfQualityGateRow,
+  HydeSkippedCodeQueryRow,
+  RrfComponentWeightsRow,
 } from '../api/types';
 
 const POLL_INTERVAL_MS = 10_000;
@@ -101,6 +106,17 @@ interface LanguageStatus {
   failed: [string, string][];
 }
 
+// E-17 SP4: default beacon history window. The four feeds are narrow
+// per-event SSB rows; 10 is enough for a sparkline + last-event summary
+// without putting pressure on the IPC boundary at 10s cadence.
+const RAG_QUALITY_BEACON_LIMIT = 10;
+
+// E-17 SP4: shared loading / error state used by the four RAG retrieval-
+// quality cards. A single error flag keeps the surface simple — the
+// underlying invokes share an IPC channel, so they fail together when
+// the Tauri runtime is unreachable.
+type RagQualityLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
 function createKnowledge() {
   let dkgStats = $state<DkgStats>({ nodes: 0, edges: 0, bm25_chunks: 0, vector_status: 'BUILDING', freshness_decay_pct: 0 });
   let recentTraces = $state<QueryTrace[]>([]);
@@ -109,21 +125,59 @@ function createKnowledge() {
   let searchMode = $state<SearchMode>('HYBRID');
   // B-30: language grammar registry status (undefined until Tauri command is wired).
   let languageStatus = $state<LanguageStatus | undefined>(undefined);
+  // E-17 SP4: RAG retrieval-quality beacons. Each array holds the most
+  // recent N events newest-first (mirrors SsbViewer::recent_rows_of_type).
+  let deepPoolCapped = $state<DeepPoolCappedRow[]>([]);
+  let rrfQualityGate = $state<RrfQualityGateRow[]>([]);
+  let hydeSkippedCodeQuery = $state<HydeSkippedCodeQueryRow[]>([]);
+  let rrfComponentWeights = $state<RrfComponentWeightsRow[]>([]);
+  let ragQualityLoadState = $state<RagQualityLoadState>('idle');
+  let ragQualityLastError = $state<string | null>(null);
 
   async function refresh() {
     try {
-      const [stats, traces, brk, recall, sm] = await Promise.all([
+      // E-17 SP4: mark loading on the first cycle so the cards render a
+      // skeleton instead of an empty state. Subsequent cycles keep
+      // showing the last data while a new one loads in the background.
+      if (ragQualityLoadState === 'idle') {
+        ragQualityLoadState = 'loading';
+      }
+      const [
+        stats,
+        traces,
+        brk,
+        recall,
+        sm,
+        deepCapped,
+        rrfGate,
+        hydeSkipped,
+        rrfWeights,
+      ] = await Promise.all([
         stub.get_dkg_stats(),
         stub.get_query_trace_recent(5),
         stub.get_embedding_breakers(),
         stub.get_recall_metrics(),
         stub.get_search_mode(),
+        // E-17 SP4: the 4 RAG retrieval-quality beacons share the
+        // 10s knowledgeData cadence; each is a thin SsbViewer read with
+        // a dashboard-side hard cap of 200 rows. Steady-state empty for
+        // most sessions (rows arrive only when DEEP queries trip caps).
+        stub.get_deep_pool_capped_recent(RAG_QUALITY_BEACON_LIMIT),
+        stub.get_rrf_quality_gate_recent(RAG_QUALITY_BEACON_LIMIT),
+        stub.get_hyde_skipped_code_query_recent(RAG_QUALITY_BEACON_LIMIT),
+        stub.get_rrf_component_weights_recent(RAG_QUALITY_BEACON_LIMIT),
       ]);
       dkgStats = stats;
       recentTraces = traces;
       breakers = brk;
       recallMetrics = recall;
       searchMode = sm.mode;
+      deepPoolCapped = deepCapped;
+      rrfQualityGate = rrfGate;
+      hydeSkippedCodeQuery = hydeSkipped;
+      rrfComponentWeights = rrfWeights;
+      ragQualityLoadState = 'ready';
+      ragQualityLastError = null;
       // Pass D: get_language_grammar_status wired — reads most recent SSB
       // language_grammar_status row via SsbViewer::latest_action_of_type.
       await stub.get_language_grammar_status()
@@ -131,6 +185,10 @@ function createKnowledge() {
         .catch(() => { languageStatus = { loaded: [], failed: [] }; });
     } catch (err) {
       console.debug('[knowledgeData] refresh failed', err);
+      // E-17 SP4: surface the error so the cards can render a retry
+      // banner instead of a stale "no events yet" empty state.
+      ragQualityLoadState = 'error';
+      ragQualityLastError = err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -144,15 +202,32 @@ function createKnowledge() {
     get searchMode() { return searchMode; },
     /** B-30 Pass D: language grammar registry status. Wired in Pass D. */
     get languageStatus() { return languageStatus; },
+    // E-17 SP4: RAG retrieval-quality beacons (read-only).
+    get deepPoolCapped() { return deepPoolCapped; },
+    get rrfQualityGate() { return rrfQualityGate; },
+    get hydeSkippedCodeQuery() { return hydeSkippedCodeQuery; },
+    get rrfComponentWeights() { return rrfComponentWeights; },
+    get ragQualityLoadState() { return ragQualityLoadState; },
+    get ragQualityLastError() { return ragQualityLastError; },
     /** Bucket-B sections — backend producer not yet wired. */
     unwired: {
       recentTraces: false,   // C-1: get_query_trace_recent reads SSB query_trace rows
       searchMode: false,     // C-8: get_search_mode reads SSB search_mode_changed rows
       recallMetrics: false,  // wired in PART11; commands.rs:614 returns measured constants from baseline toml
       languageStatus: false, // wired in Pass D; SsbViewer::latest_action_of_type reads SSB
+      // E-17 SP4: producers shipped in E-17 SP2 (knowledge::pipeline /
+      // deep / hyde) — surface is fully wired. Empty arrays mean
+      // "steady state, no events" not "unwired".
+      deepPoolCapped: false,
+      rrfQualityGate: false,
+      hydeSkippedCodeQuery: false,
+      rrfComponentWeights: false,
     },
     bootstrap: rc.bootstrap,
     teardown: rc.teardown,
+    /** E-17 SP4: explicit refresh trigger for the retry button on the
+     *  RAG quality cards. Does NOT touch the refcount or polling timer. */
+    refresh,
   };
 }
 export const knowledgeData = createKnowledge();

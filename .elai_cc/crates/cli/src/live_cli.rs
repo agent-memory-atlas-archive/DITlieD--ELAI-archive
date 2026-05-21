@@ -1327,14 +1327,15 @@ impl LiveCli {
                 let ce_model_path = models_dir.join("onnx").join("cross-encoder-l12.onnx");
                 let ce_tok_path = models_dir.join("onnx").join("tokenizer.json");
                 if ce_model_path.exists() && ce_tok_path.exists() {
-                    // B-4: wire fallback ms-marco-l6 path so intermediate degradation tier
-                    // is available if primary L-12 ONNX session fails at runtime.
-                    let ce_config = RerankerConfig {
-                        model_path: ce_model_path,
-                        tokenizer_path: ce_tok_path,
-                        fallback_model_path: Some(models_dir.join("onnx").join("ms-marco-l6.onnx")),
-                        ..RerankerConfig::default()
-                    };
+                    // E-17 SP2 (SP1 carryover): switched from
+                    // `..RerankerConfig::default()` (relative PathBufs) to
+                    // `RerankerConfig::with_project_root` so all model paths
+                    // resolve absolute regardless of CWD. Fallback filename
+                    // corrected from "ms-marco-l6.onnx" (never existed on
+                    // disk) to "cross-encoder-l6.onnx".
+                    let mut ce_config = RerankerConfig::with_project_root(&project_root);
+                    ce_config.model_path = ce_model_path;
+                    ce_config.tokenizer_path = ce_tok_path;
                     // C-1: switched from `::new` (defaults to a noop SSB
                     // notifier, blocked by stub_ban) to `::with_ssb`. When
                     // an Ssb writer is available we install an
@@ -1371,11 +1372,13 @@ impl LiveCli {
                 let splade_model_path = models_dir.join("splade").join("model.onnx");
                 let splade_tok_path = models_dir.join("splade").join("tokenizer.json");
                 if splade_model_path.exists() && splade_tok_path.exists() {
-                    let splade_config = SpladeConfig {
-                        model_path: splade_model_path,
-                        tokenizer_path: splade_tok_path,
-                        ..SpladeConfig::default()
-                    };
+                    // E-17 SP2 (SP1 carryover): switched from
+                    // `..SpladeConfig::default()` (relative PathBufs) to
+                    // `SpladeConfig::with_project_root` so all model paths
+                    // resolve absolute regardless of CWD.
+                    let mut splade_config = SpladeConfig::with_project_root(&project_root);
+                    splade_config.model_path = splade_model_path;
+                    splade_config.tokenizer_path = splade_tok_path;
                     match SpladeExpander::new(splade_config, clock.clone()) {
                         Ok(expander) => {
                             pipeline = pipeline.with_splade(expander);

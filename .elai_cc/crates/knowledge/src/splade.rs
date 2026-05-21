@@ -101,6 +101,26 @@ impl Default for SpladeConfig {
     }
 }
 
+impl SpladeConfig {
+    /// E-17 SP2 (SP1 carryover): construct a SpladeConfig with absolute
+    /// paths derived from `<project_root>/.elai_cc/models/splade/...`.
+    ///
+    /// Production sites (live_cli) MUST use this constructor instead of
+    /// `Default::default()` so model paths resolve correctly regardless of
+    /// CWD. The legacy `Default` impl is preserved for test fixtures that
+    /// rely on relative paths.
+    pub fn with_project_root(project_root: &Path) -> Self {
+        let splade_dir = elai_core::paths::models_dir_path(project_root).join("splade");
+        Self {
+            model_path: splade_dir.join("model.onnx"),
+            tokenizer_path: splade_dir.join("tokenizer.json"),
+            variant: ModelVariant::PrePooled,
+            top_k: DEFAULT_TOP_K,
+            intra_op_threads: 1,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SpladeExpander
 // ---------------------------------------------------------------------------

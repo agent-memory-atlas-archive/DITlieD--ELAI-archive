@@ -1,0 +1,179 @@
+# E-17 SP6 — RAG eval goldset (pragmatic 15-query seed)
+#
+# Each query is rendered against the ELAI repo at <project_root>/.elai_cc/.
+# `expected_paths` are substring matches against either result.chunk_id or
+# result.file_path. ANY of the listed substrings counts as a hit (OR-match).
+# Tier is "both" (run on STANDARD and DEEP and compare) unless a specific
+# tier is wanted.
+#
+# Class split (load-bearing for HyDE NL-only gate observation):
+#   8 code/PL queries (exercise should_use_hyde -> false, emits
+#                     hyde_skipped_code_query SSB row at DEEP tier)
+#   7 nl queries     (HyDE attaches; DEEP query expansion fires too)
+#
+# Full 50-query goldset is deferred to ops follow-up. See README.md.
+
+[meta]
+corpus = "elai_cc-self"
+goldset_version = "0.1.0"
+created_ts = "2026-05-21"
+total_queries = 15
+class_balance = "8 code / 7 nl"
+notes = "pragmatic 14-q seed from context-package + 1 added; full 50-q deferred to ops follow-up"
+
+[[query]]
+id = "code-01-runtime-adapter-stream-step"
+text = "RuntimeAdapter::stream_step"
+class = "code"
+tier = "both"
+enforced = true
+# WARN-A fix (E-17 SP6 s-26556): RuntimeAdapter trait lives at
+# providers/src/runtime/types.rs; stream_step is defined on ollama.rs +
+# vllm.rs. There is NO crates/orchestrator/src/runtime_adapter.rs.
+expected_paths = [
+    "crates/providers/src/runtime/types.rs",
+    "crates/providers/src/runtime/ollama.rs",
+    "crates/providers/src/runtime/vllm.rs",
+]
+
+[[query]]
+id = "code-02-schema-version-constant"
+text = "SCHEMA_VERSION constant"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/orchestrator/src/ssb.rs",
+]
+
+[[query]]
+id = "code-03-rrf-rerank-fn"
+text = "fn rrf_rerank"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/pipeline.rs",
+]
+
+[[query]]
+id = "code-04-query-tier-enum"
+text = "QueryTier enum variants"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/lib.rs",
+]
+
+[[query]]
+id = "code-05-ssb-db-path-canonical-layout"
+text = "ssb_db_path canonical layout"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/dashboard-v2/src-tauri/src/state.rs",
+    "crates/core/src/paths.rs",
+]
+
+[[query]]
+id = "code-06-cross-encoder-with-ssb"
+text = "CrossEncoderReranker with_ssb"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/reranker.rs",
+]
+
+[[query]]
+id = "code-07-deep-pool-cap-fn"
+text = "fn deep_pool_cap"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/deep.rs",
+    "crates/knowledge/src/pipeline.rs",
+]
+
+[[query]]
+id = "code-08-ssb-action-deep-pool-capped"
+text = "SsbActionType::DeepPoolCapped"
+class = "code"
+tier = "both"
+expected_paths = [
+    "crates/orchestrator/src/ssb.rs",
+]
+
+[[query]]
+id = "nl-09-knowledge-pipeline-rerank-after-rrf"
+text = "how does the knowledge pipeline rerank candidates after RRF fusion"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/pipeline.rs",
+    "crates/knowledge/src/reranker.rs",
+]
+
+[[query]]
+id = "nl-10-where-is-ssb-sqlite-stored"
+text = "where is the SQLite database for SSB events stored on disk"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/core/src/paths.rs",
+    "crates/dashboard-v2/src-tauri/src/state.rs",
+    "crates/orchestrator/src/ssb.rs",
+]
+
+[[query]]
+id = "nl-11-fast-standard-deep-tier-difference"
+text = "explain the difference between FAST STANDARD and DEEP query tiers"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/lib.rs",
+    "crates/knowledge/src/pipeline.rs",
+]
+
+[[query]]
+id = "nl-12-reranker-saturation-too-many-candidates"
+text = "how does ELAI prevent the reranker from saturating on too many candidates"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/deep.rs",
+    "crates/knowledge/src/pipeline.rs",
+    "crates/knowledge/src/reranker.rs",
+]
+
+[[query]]
+id = "nl-13-catrag-context-prefix"
+text = "how does the catrag stage attach contextual prefix metadata to chunks before reranking"
+class = "nl"
+tier = "both"
+enforced = true
+# WARN-A fix (E-17 SP6 s-26556): original target
+# crates/knowledge/src/contextual_retrieval.rs does NOT exist (SP3 was
+# skipped). Contextual Retrieval landed earlier in catrag.rs (the
+# Context-Aware RAG stage); re-target the query at the existing module.
+expected_paths = [
+    "crates/knowledge/src/catrag.rs",
+]
+
+[[query]]
+id = "nl-14-ssb-row-types-knowledge-pipeline"
+text = "describe the SSB row types emitted by the knowledge pipeline"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/orchestrator/src/ssb.rs",
+    "crates/knowledge/src/knowledge_ssb_sink.rs",
+]
+
+[[query]]
+id = "nl-15-why-hyde-disabled-for-code-queries"
+text = "why does HyDE get disabled for code-symbol queries"
+class = "nl"
+tier = "both"
+expected_paths = [
+    "crates/knowledge/src/hyde.rs",
+    "crates/knowledge/src/query_class.rs",
+    "crates/knowledge/src/pipeline.rs",
+]

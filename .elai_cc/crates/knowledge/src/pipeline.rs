@@ -3,10 +3,15 @@ use std::sync::Arc;
 
 use elai_core::{ClockProvider, OsClock};
 
+use crate::deep::{deep_pool_cap, rrf_quality_gate, DEEP_CAP_DEFAULT, RRF_FLOOR_DEFAULT, RRF_K_CONSTANT};
 use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
-use crate::hyde::HydeStage;
-use crate::knowledge_ssb_sink::{noop_sink, KnowledgeSsbSink, QueryTraceEvent};
+use crate::hyde::{should_use_hyde, HydeStage};
+use crate::knowledge_ssb_sink::{
+    noop_sink, DeepPoolCappedEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink, QueryTraceEvent,
+    RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
+};
+use crate::query_class::{classify, has_code_symbol_signal};
 use crate::query_expansion::{self, ExpansionStrategy};
 use crate::QueryTier;
 
@@ -33,6 +38,15 @@ use crate::splade::SpladeExpander;
 /// when the orchestrator did not call [`QueryPipeline::with_session_id`].
 /// Named constant per codeRules baseline (no magic strings in code).
 const DEFAULT_SESSION_ID: &str = "unknown";
+
+/// E-17 SP2 task 7: per-ranker RRF weights surfaced on the
+/// `rrf_component_weights` SSB beacon. Named constants per codeRules
+/// baseline (no magic numbers). The defaults follow the plan spec
+/// (`[knowledge.rrf] weights = {bm25 = 1.0, code_vec = 1.0, text_vec = 0.8}`)
+/// and are not yet config-loaded (planned for E-17 ops follow-up).
+const RRF_BM25_WEIGHT: f64 = 1.0;
+const RRF_CODE_VEC_WEIGHT: f64 = 1.0;
+const RRF_TEXT_VEC_WEIGHT: f64 = 0.8;
 
 // ---------------------------------------------------------------------------
 // PipelineStage
@@ -265,7 +279,24 @@ impl QueryPipeline {
         );
 
         let use_expansion = resolved_tier == QueryTier::Deep;
-        let use_hyde = resolved_tier == QueryTier::Deep;
+        // E-17 SP2 task 5: HyDE is gated by tier AND the NL-only classifier
+        // (configurable via ELAI_HYDE_NL_ONLY env var; default true). When
+        // tier=Deep but the query classifies as CodeSymbol / Mixed, HyDE is
+        // skipped and a `hyde_skipped_code_query` SSB row is emitted below.
+        let tier_wants_hyde = resolved_tier == QueryTier::Deep;
+        let nl_gate_passes = should_use_hyde(query);
+        let use_hyde = tier_wants_hyde && nl_gate_passes;
+        if tier_wants_hyde && !nl_gate_passes {
+            let qc = classify(query);
+            let code_signal = has_code_symbol_signal(query);
+            let word_count = query.split_whitespace().count();
+            self.ssb_sink
+                .emit_hyde_skipped_code_query(HydeSkippedCodeQueryEvent {
+                    query_class: qc.as_str().to_string(),
+                    word_count: u32::try_from(word_count).unwrap_or(u32::MAX),
+                    code_signal_present: code_signal,
+                });
+        }
         let use_vector = matches!(resolved_tier, QueryTier::Standard | QueryTier::Deep);
         let use_reranker = matches!(resolved_tier, QueryTier::Standard | QueryTier::Deep);
 
@@ -697,9 +728,71 @@ impl QueryPipeline {
             error: None,
         });
 
-        // Stage 5: rerank (RRF fusion — all tiers, but FAST has only BM25 input)
+        // Stage 5: rerank (RRF fusion — all tiers, but FAST has only BM25 input).
+        //
+        // E-17 SP2 task 4: on DEEP tier, cap each stage's pool to
+        // DEEP_CAP_DEFAULT BEFORE the RRF accumulator runs, then apply the
+        // RRF quality floor AFTER the freshness multiplier. The cap and
+        // floor emits land via the typed knowledge ssb sink (4 new SSB
+        // action types declared in orchestrator::ssb under SCHEMA_VERSION 97).
         let rerank_start = self.clock.now();
-        let reranked = self.rrf_rerank(&stages);
+        let (reranked, deep_cap_dropped, rrf_floor_dropped, rrf_pre_floor_count) =
+            self.rrf_rerank_with_tier(&mut stages, resolved_tier);
+
+        // E-17 SP2: emit deep_cap stage trace row when the gate fired.
+        if deep_cap_dropped > 0 {
+            stages.push(PipelineStage {
+                stage: "deep_cap".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+            self.ssb_sink.emit_deep_pool_capped(DeepPoolCappedEvent {
+                capped_count: u32::try_from(deep_cap_dropped).unwrap_or(u32::MAX),
+                max_allowed: u32::try_from(DEEP_CAP_DEFAULT).unwrap_or(u32::MAX),
+                stage_count: u32::try_from(stages.len()).unwrap_or(u32::MAX),
+            });
+        }
+
+        // E-17 SP2: emit rrf_gate stage trace + SSB row when the floor fired.
+        if rrf_floor_dropped > 0 {
+            stages.push(PipelineStage {
+                stage: "rrf_gate".to_string(),
+                results: Vec::new(),
+                latency_ms: 0,
+                circuit_breaker_state: None,
+                error: None,
+            });
+            self.ssb_sink.emit_rrf_quality_gate_fired(RrfQualityGateFiredEvent {
+                dropped_count: u32::try_from(rrf_floor_dropped).unwrap_or(u32::MAX),
+                floor: RRF_FLOOR_DEFAULT,
+                total_before: u32::try_from(rrf_pre_floor_count).unwrap_or(u32::MAX),
+            });
+        }
+
+        // E-17 SP2 task 7: per-query rrf_component_weights beacon.
+        // Components are emitted as Some(...) when their stage exists in
+        // the stages slice (bm25 always; code_vector + text_vector when
+        // their indices are loaded). text_vec_weight reflects the
+        // text-vector stage label "vector" in the current pipeline.
+        let mut bm25_weight: Option<f64> = None;
+        let mut code_vec_weight: Option<f64> = None;
+        let mut text_vec_weight: Option<f64> = None;
+        for stage in &stages {
+            match stage.stage.as_str() {
+                "bm25" => bm25_weight = Some(RRF_BM25_WEIGHT),
+                "code_vector" => code_vec_weight = Some(RRF_CODE_VEC_WEIGHT),
+                "vector" => text_vec_weight = Some(RRF_TEXT_VEC_WEIGHT),
+                _ => {}
+            }
+        }
+        self.ssb_sink.emit_rrf_component_weights(RrfComponentWeightsEvent {
+            bm25_weight,
+            code_vec_weight,
+            text_vec_weight,
+        });
+
         stages.push(PipelineStage {
             stage: "rerank".to_string(),
             results: reranked,
@@ -809,11 +902,56 @@ impl QueryPipeline {
     /// When a `freshness_db` is attached, each chunk's RRF score is multiplied
     /// by its freshness factor (recency_decay * access_boost). Missing entries
     /// default to 1.0 (no penalty). See anti-staleness-enforcement.txt §1.1.
+    ///
+    /// Retained as a thin wrapper around [`Self::rrf_rerank_with_tier`] for
+    /// the test fixtures in `#[cfg(test)]` modules that call `rrf_rerank`
+    /// directly; production now goes through the tier-aware variant.
+    #[allow(dead_code)]
     fn rrf_rerank(&self, stages: &[PipelineStage]) -> Vec<RetrievalResult> {
+        // Production callers use rrf_rerank_with_tier; this clone-and-discard
+        // path is test-only and intentionally bypasses the DEEP cap.
+        let mut stages_owned: Vec<PipelineStage> = stages.to_vec();
+        let (results, _cap, _floor, _pre) =
+            self.rrf_rerank_with_tier(&mut stages_owned, QueryTier::Standard);
+        results
+    }
+
+    /// E-17 SP2 task 4: tier-aware RRF fusion with optional DEEP cap and
+    /// RRF quality gate.
+    ///
+    /// Ordering (HARD):
+    ///   1. On DEEP tier: truncate each stage's results to
+    ///      [`DEEP_CAP_DEFAULT`] BEFORE the accumulator.
+    ///   2. Run RRF accumulator with k = [`RRF_K_CONSTANT`] (=60).
+    ///   3. Apply freshness multiplier (post-accumulator).
+    ///   4. On DEEP tier: drop candidates whose score is below
+    ///      [`RRF_FLOOR_DEFAULT`] AFTER the multiplier.
+    ///   5. Sort by score desc (tie-break: chunk_id asc for determinism).
+    ///
+    /// Returns `(reranked, deep_cap_dropped, rrf_floor_dropped, pre_floor_count)`
+    /// so the caller can emit `deep_pool_capped` + `rrf_quality_gate_fired`
+    /// SSB beacons exactly once per query.
+    fn rrf_rerank_with_tier(
+        &self,
+        stages: &mut Vec<PipelineStage>,
+        tier: QueryTier,
+    ) -> (Vec<RetrievalResult>, usize, usize, usize) {
+        // Step 1: DEEP cap BEFORE the RRF accumulator (E-17 SP2 task 4).
+        let deep_cap_dropped: usize = if tier == QueryTier::Deep {
+            deep_pool_cap(stages, DEEP_CAP_DEFAULT)
+        } else {
+            0
+        };
+
+        // Step 2: RRF accumulator (k=60 per Cormack SIGIR 2009).
         let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
-        for stage in stages {
+        for stage in stages.iter() {
             for (rank_idx, result) in stage.results.iter().enumerate() {
-                let rrf_score = 1.0 / (60.0 + (rank_idx + 1) as f64);
+                // NARROWING-OK: rank_idx + 1 fits in f64 (rank_idx is bounded
+                // by DEEP_CAP_DEFAULT = 100 on DEEP, by per-stage retrieval
+                // limit otherwise).
+                let rank_f = (rank_idx + 1) as f64;
+                let rrf_score = 1.0 / (RRF_K_CONSTANT + rank_f);
                 let entry = scores
                     .entry(result.chunk_id.clone())
                     .or_insert_with(|| (0.0, result.clone()));
@@ -821,7 +959,7 @@ impl QueryPipeline {
             }
         }
 
-        // Apply freshness multiplier (A-13: sidecar JOIN).
+        // Step 3: freshness multiplier (post-accumulator).
         if let Some(ref fdb) = self.freshness_db {
             let now = fdb.effective_now();
             for (score, result) in scores.values_mut() {
@@ -833,16 +971,34 @@ impl QueryPipeline {
             }
         }
 
+        // Step 4: RRF quality gate AFTER the freshness multiplier
+        // (E-17 SP2 task 4). DEEP tier only.
+        let pre_floor_count = scores.len();
+        let rrf_floor_dropped: usize = if tier == QueryTier::Deep {
+            rrf_quality_gate(&mut scores, RRF_FLOOR_DEFAULT)
+        } else {
+            0
+        };
+
+        // Step 5: sort desc by score; tie-break by chunk_id asc for
+        // deterministic output across HashMap iteration orders.
         let mut ranked: Vec<(f64, RetrievalResult)> = scores.into_values().collect();
-        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        ranked
+        ranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.chunk_id.cmp(&b.1.chunk_id))
+        });
+
+        let results: Vec<RetrievalResult> = ranked
             .into_iter()
             .map(|(score, mut r)| {
                 r.score = score;
                 r.tool_used = "rerank".to_string();
                 r
             })
-            .collect()
+            .collect();
+
+        (results, deep_cap_dropped, rrf_floor_dropped, pre_floor_count)
     }
 
     /// Startup canary: embed + BM25 + rerank. All must return non-error within 5s.

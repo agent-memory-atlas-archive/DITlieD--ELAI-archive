@@ -12,6 +12,13 @@ use elai_core::{EntropySource, OsEntropy};
 ///
 /// Stages: "bm25", "splade", "code_vector", "text_vector", "pagerank",
 /// "catrag", "arag", "rerank", "token_fit".
+///
+/// E-17 SP2 additions:
+/// - "deep_cap"  — emitted when the DEEP candidate pool was trimmed by
+///                  [`crate::deep::deep_pool_cap`] before RRF.
+/// - "rrf_gate"  — emitted when the RRF quality gate
+///                  ([`crate::deep::rrf_quality_gate`]) dropped one or
+///                  more fused candidates below the configured floor.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StageTrace {
     pub stage: String,

@@ -1,7 +1,8 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use elai_core::paths::models_dir_path as core_models_dir_path;
 use elai_orchestrator::{
     ConfigLoader, ProjectContext, load_oauth_credentials, resolve_sandbox_status, RuntimeConfig,
 };
@@ -529,6 +530,307 @@ pub(crate) fn check_system_health(cwd: &Path, config: Option<&RuntimeConfig>) ->
         "captured local runtime metadata",
     )
     .with_details(details)
+}
+
+// ---------------------------------------------------------------------------
+// E-17 SP1 task 1 — `elai doctor knowledge-models` probe.
+//
+// Reports on-disk staging of the ONNX models + tokenizers wired by
+// live_cli.rs (cross-encoder primary/fallback + tokenizer, GraphCodeBERT
+// + tokenizer, Granite + tokenizer, SPLADE + tokenizer). Composes paths
+// via `core::paths::models_dir_path(project_root)` so the probe never
+// silently checks the wrong directory.
+//
+// HASHING POLICY (CLAUDE.md anti-stale rule — blake3 only):
+//   - tokenizer.json files: hash full content (small, <4 MB each).
+//   - ONNX model files: hash first 256 bytes only (a cheap integrity
+//     marker; full-file hash would force the doctor to chew 1 GB+ of
+//     disk on every invocation).
+// ---------------------------------------------------------------------------
+
+/// Single row in the knowledge-models report.
+#[derive(Debug, Clone)]
+struct KnowledgeModelEntry {
+    label: &'static str,
+    relative_path: &'static str,
+    role: &'static str,
+    /// Absolute path resolved via `models_dir_path(project_root)`.
+    absolute_path: PathBuf,
+    present: bool,
+    size_bytes: u64,
+    /// blake3 hex digest. `None` when the file is missing or could not be read.
+    blake3_hex: Option<String>,
+    /// Captured error string (when present, sets `level=Fail`).
+    error: Option<String>,
+}
+
+const KNOWLEDGE_MODEL_MANIFEST: &[(&str, &str, &str)] = &[
+    (
+        "cross-encoder-l12",
+        "onnx/cross-encoder-l12.onnx",
+        "primary reranker",
+    ),
+    (
+        "cross-encoder-l6",
+        "onnx/cross-encoder-l6.onnx",
+        "fallback reranker",
+    ),
+    ("graphcodebert", "onnx/graphcodebert.onnx", "code embedder"),
+    (
+        "graphcodebert-tok",
+        "onnx/graphcodebert-tokenizer.json",
+        "code tokenizer",
+    ),
+    ("granite-embed", "onnx/granite-embed.onnx", "text embedder"),
+    (
+        "granite-embed-tok",
+        "onnx/granite-embed-tokenizer.json",
+        "text tokenizer",
+    ),
+    (
+        "cross-encoder-tok",
+        "onnx/tokenizer.json",
+        "shared cross-encoder tokenizer",
+    ),
+    ("splade-model", "splade/model.onnx", "splade sparse encoder"),
+    ("splade-tok", "splade/tokenizer.json", "splade tokenizer"),
+];
+
+/// Probe a single manifest row. Never panics; errors land in
+/// `entry.error` so the caller can render Fail-level diagnostics.
+fn probe_knowledge_entry(
+    label: &'static str,
+    relative_path: &'static str,
+    role: &'static str,
+    onnx_dir_models: &Path,
+) -> KnowledgeModelEntry {
+    let absolute_path = onnx_dir_models.join(relative_path);
+    let metadata = std::fs::metadata(&absolute_path);
+
+    match metadata {
+        Ok(meta) if meta.is_file() => {
+            let size_bytes = meta.len();
+            if size_bytes == 0 {
+                tracing::warn!(label, path = %absolute_path.display(), "knowledge model is zero-byte");
+                return KnowledgeModelEntry {
+                    label,
+                    relative_path,
+                    role,
+                    absolute_path,
+                    present: true,
+                    size_bytes: 0,
+                    blake3_hex: None,
+                    error: Some("file is zero-byte".to_string()),
+                };
+            }
+            // Tokenizer files (~ MB): hash full content.
+            // ONNX models (~ hundreds of MB): hash first 256 bytes only.
+            let is_tokenizer = relative_path.ends_with(".json");
+            let blake3_hex = if is_tokenizer {
+                match std::fs::read(&absolute_path) {
+                    Ok(bytes) => Some(blake3::hash(&bytes).to_hex().to_string()),
+                    Err(err) => {
+                        tracing::error!(label, error = %err, "failed to read tokenizer");
+                        return KnowledgeModelEntry {
+                            label,
+                            relative_path,
+                            role,
+                            absolute_path,
+                            present: true,
+                            size_bytes,
+                            blake3_hex: None,
+                            error: Some(format!("failed to read tokenizer: {err}")),
+                        };
+                    }
+                }
+            } else {
+                // Cheap integrity marker — read up to 256 bytes from the
+                // model file head. Anything that fails here propagates
+                // as a Fail-level diagnostic rather than panicking.
+                match read_head_bytes(&absolute_path, 256) {
+                    Ok(head) => Some(blake3::hash(&head).to_hex().to_string()),
+                    Err(err) => {
+                        tracing::error!(label, error = %err, "failed to read model head");
+                        return KnowledgeModelEntry {
+                            label,
+                            relative_path,
+                            role,
+                            absolute_path,
+                            present: true,
+                            size_bytes,
+                            blake3_hex: None,
+                            error: Some(format!("failed to read model head: {err}")),
+                        };
+                    }
+                }
+            };
+            tracing::info!(
+                label,
+                size = size_bytes,
+                path = %absolute_path.display(),
+                "knowledge model probe ok"
+            );
+            KnowledgeModelEntry {
+                label,
+                relative_path,
+                role,
+                absolute_path,
+                present: true,
+                size_bytes,
+                blake3_hex,
+                error: None,
+            }
+        }
+        Ok(_) => {
+            tracing::warn!(label, path = %absolute_path.display(), "path exists but is not a file");
+            KnowledgeModelEntry {
+                label,
+                relative_path,
+                role,
+                absolute_path,
+                present: false,
+                size_bytes: 0,
+                blake3_hex: None,
+                error: Some("path exists but is not a file".to_string()),
+            }
+        }
+        Err(err) => {
+            tracing::warn!(label, error = %err, path = %absolute_path.display(), "knowledge model missing");
+            KnowledgeModelEntry {
+                label,
+                relative_path,
+                role,
+                absolute_path,
+                present: false,
+                size_bytes: 0,
+                blake3_hex: None,
+                error: Some(format!("missing or unreadable: {err}")),
+            }
+        }
+    }
+}
+
+/// Read up to `max` bytes from the start of `path`. Returns `Err` if the
+/// file cannot be opened. Truncated reads (file shorter than `max`)
+/// succeed and return whatever bytes were available.
+fn read_head_bytes(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; max];
+    let n = file.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// E-17 SP1 task 1 — `elai doctor knowledge-models [--project-root PATH]
+/// [--output-format text|json|toml]` entry point.
+pub(crate) fn run_knowledge_models_probe(
+    project_root: &Path,
+    output_format: CliOutputFormat,
+) -> Result<(), anyhow::Error> {
+    let models_dir = core_models_dir_path(project_root);
+    tracing::info!(
+        project_root = %project_root.display(),
+        models_dir = %models_dir.display(),
+        "probing knowledge models"
+    );
+
+    let entries: Vec<KnowledgeModelEntry> = KNOWLEDGE_MODEL_MANIFEST
+        .iter()
+        .map(|(label, relative_path, role)| {
+            probe_knowledge_entry(label, relative_path, role, &models_dir)
+        })
+        .collect();
+
+    let has_failures = entries.iter().any(|entry| !entry.present || entry.error.is_some());
+
+    match output_format {
+        CliOutputFormat::Text | CliOutputFormat::Toml => {
+            println!("{}", render_knowledge_models_text(&models_dir, &entries));
+        }
+        CliOutputFormat::Json => {
+            let payload = json!({
+                "kind": "doctor-knowledge-models",
+                "project_root": project_root.display().to_string(),
+                "models_dir": models_dir.display().to_string(),
+                "has_failures": has_failures,
+                "entries": entries
+                    .iter()
+                    .map(|entry| json!({
+                        "label": entry.label,
+                        "role": entry.role,
+                        "relative_path": entry.relative_path,
+                        "path": entry.absolute_path.display().to_string(),
+                        "present": entry.present,
+                        "size_bytes": entry.size_bytes,
+                        "blake3": entry.blake3_hex,
+                        "error": entry.error,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+    }
+
+    if has_failures {
+        let missing: Vec<String> = entries
+            .iter()
+            .filter(|entry| !entry.present || entry.error.is_some())
+            .map(|entry| format!("{} ({})", entry.label, entry.relative_path))
+            .collect();
+        return Err(anyhow::anyhow!(
+            "doctor knowledge-models found failing entries: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn render_knowledge_models_text(models_dir: &Path, entries: &[KnowledgeModelEntry]) -> String {
+    let mut lines = vec![
+        "Doctor / KnowledgeModels".to_string(),
+        format!("  models_dir       {}", models_dir.display()),
+    ];
+    let ok_count = entries
+        .iter()
+        .filter(|entry| entry.present && entry.error.is_none())
+        .count();
+    let fail_count = entries.len() - ok_count;
+    lines.push(format!(
+        "  Summary          ok={ok_count} fail={fail_count} total={}",
+        entries.len()
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "  {:<20} {:<10} {:>12}  {:<16}  {}",
+        "label", "status", "size_bytes", "blake3", "path"
+    ));
+    for entry in entries {
+        let status = if entry.error.is_some() {
+            "fail"
+        } else if entry.present {
+            "ok"
+        } else {
+            "missing"
+        };
+        let hash_prefix = entry
+            .blake3_hex
+            .as_deref()
+            .map(|h| h.chars().take(16).collect::<String>())
+            .unwrap_or_else(|| "<none>".to_string());
+        lines.push(format!(
+            "  {:<20} {:<10} {:>12}  {:<16}  {}",
+            entry.label,
+            status,
+            entry.size_bytes,
+            hash_prefix,
+            entry.absolute_path.display()
+        ));
+        if let Some(err) = &entry.error {
+            lines.push(format!("      ! {err}"));
+        }
+    }
+    lines.join("\n")
 }
 
 // A5.2: obscura binary health check — only compiled when cfg(feature = "obscura").

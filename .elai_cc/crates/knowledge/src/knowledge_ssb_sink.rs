@@ -64,6 +64,47 @@ pub struct QueryTraceEvent {
     pub total_latency_ms: u64,
 }
 
+/// E-17 SP2 task 4: emitted once per DEEP-tier query when the
+/// [`crate::deep::deep_pool_cap`] gate trims one or more input stages.
+/// `capped_count` is the total number of candidates dropped across all
+/// stages; `max_allowed` is the per-stage cap that fired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepPoolCappedEvent {
+    pub capped_count: u32,
+    pub max_allowed: u32,
+    pub stage_count: u32,
+}
+
+/// E-17 SP2 task 4: emitted once per DEEP-tier query when the
+/// [`crate::deep::rrf_quality_gate`] drops one or more fused candidates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RrfQualityGateFiredEvent {
+    pub dropped_count: u32,
+    pub floor: f64,
+    pub total_before: u32,
+}
+
+/// E-17 SP2 task 5: emitted when [`crate::hyde::should_use_hyde`] returns
+/// false on a CodeSymbol or Mixed query that would otherwise have
+/// triggered HyDE (DEEP tier + >= MIN_WORDS_FOR_HYDE).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HydeSkippedCodeQueryEvent {
+    pub query_class: String,
+    pub word_count: u32,
+    pub code_signal_present: bool,
+}
+
+/// E-17 SP2 task 7: emitted once per query (when the RRF stage runs)
+/// carrying the per-ranker RRF weights that were active. Fields are
+/// `None` when the corresponding ranker did not contribute (e.g.
+/// `code_vec_weight` is None when `ELAI_CODE_VEC` is disabled).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RrfComponentWeightsEvent {
+    pub bm25_weight: Option<f64>,
+    pub code_vec_weight: Option<f64>,
+    pub text_vec_weight: Option<f64>,
+}
+
 /// C-1 knowledge-side SSB sink.
 ///
 /// Implementations forward typed events to the orchestrator's
@@ -79,16 +120,31 @@ pub trait KnowledgeSsbSink: Send + Sync {
     fn emit_hyde_query(&self, event: HydeQueryEvent);
     fn emit_vector_cache_hit_rate(&self, event: VectorCacheHitRateEvent);
     fn emit_query_trace(&self, event: QueryTraceEvent);
+    /// E-17 SP2 task 4: emitted once per DEEP-tier query when the deep
+    /// cap drops one or more input candidates.
+    fn emit_deep_pool_capped(&self, event: DeepPoolCappedEvent);
+    /// E-17 SP2 task 4: emitted once per DEEP-tier query when the RRF
+    /// quality gate drops one or more fused candidates.
+    fn emit_rrf_quality_gate_fired(&self, event: RrfQualityGateFiredEvent);
+    /// E-17 SP2 task 5: emitted when HyDE is skipped because the query
+    /// classified as CodeSymbol or Mixed.
+    fn emit_hyde_skipped_code_query(&self, event: HydeSkippedCodeQueryEvent);
+    /// E-17 SP2 task 7: per-query RRF component weights.
+    fn emit_rrf_component_weights(&self, event: RrfComponentWeightsEvent);
 }
 
 /// Default no-op sink used in tests and when SSB is not configured.
-/// All three methods drop their event silently.
+/// All methods drop their event silently.
 pub struct NoopKnowledgeSsbSink;
 
 impl KnowledgeSsbSink for NoopKnowledgeSsbSink {
     fn emit_hyde_query(&self, _event: HydeQueryEvent) {}
     fn emit_vector_cache_hit_rate(&self, _event: VectorCacheHitRateEvent) {}
     fn emit_query_trace(&self, _event: QueryTraceEvent) {}
+    fn emit_deep_pool_capped(&self, _event: DeepPoolCappedEvent) {}
+    fn emit_rrf_quality_gate_fired(&self, _event: RrfQualityGateFiredEvent) {}
+    fn emit_hyde_skipped_code_query(&self, _event: HydeSkippedCodeQueryEvent) {}
+    fn emit_rrf_component_weights(&self, _event: RrfComponentWeightsEvent) {}
 }
 
 /// Convenience constructor for the default no-op sink.
@@ -133,6 +189,10 @@ mod tests {
         fn emit_query_trace(&self, event: QueryTraceEvent) {
             self.trace.lock().expect("trace lock").push(event);
         }
+        fn emit_deep_pool_capped(&self, _event: DeepPoolCappedEvent) {}
+        fn emit_rrf_quality_gate_fired(&self, _event: RrfQualityGateFiredEvent) {}
+        fn emit_hyde_skipped_code_query(&self, _event: HydeSkippedCodeQueryEvent) {}
+        fn emit_rrf_component_weights(&self, _event: RrfComponentWeightsEvent) {}
     }
 
     #[test]

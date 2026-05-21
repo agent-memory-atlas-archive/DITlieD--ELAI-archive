@@ -16,6 +16,8 @@ pub mod catrag;
 pub mod chunk_strategy;
 pub mod chunking;
 pub mod conventions;
+// E-17 SP2 task 4: DEEP candidate pool cap + RRF quality gate.
+pub mod deep;
 pub mod degradation;
 pub mod dkg;
 pub mod dkg_adapter;
@@ -31,6 +33,8 @@ pub mod metadata;
 pub mod pagerank;
 pub mod pipeline;
 pub mod project_profile;
+// E-17 SP2 task 5: heuristic query-class classifier (Layer A).
+pub mod query_class;
 pub mod query_expansion;
 pub mod query_trace;
 pub mod query_validator;

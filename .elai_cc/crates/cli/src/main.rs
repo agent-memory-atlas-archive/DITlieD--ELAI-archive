@@ -57,6 +57,12 @@ mod bench_conformal;
 // mode-routing + novelty-classifier honesty stack against ARC-style
 // out-of-distribution claims. Sibling of bench_mode_routing.
 mod bench_arc;
+// E-17 SP6: `elai bench rag` — retrieval-quality benchmark driver.
+// Drives the local QueryPipeline at an explicit QueryTier and emits the
+// final-stage retrieval results as JSON. Used by .elai_cc/eval/rag/run.py
+// as its observable interface (no clean knowledge-query subcommand
+// existed before SP6; /research is web research, not retrieval).
+mod bench_rag;
 mod runtime_client;
 mod runtime_cmd;
 mod mcp_client;
@@ -332,6 +338,11 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Login { output_format } => run_login(output_format)?,
         CliAction::Logout { output_format } => run_logout(output_format)?,
         CliAction::Doctor { output_format } => doctor::run_doctor(output_format)?,
+        // E-17 SP1 task 1 — `elai doctor knowledge-models [...]`.
+        CliAction::DoctorKnowledgeModels {
+            project_root,
+            output_format,
+        } => doctor::run_knowledge_models_probe(&project_root, output_format)?,
         CliAction::Init { output_format } => live_cli::run_init(output_format)?,
         CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } => {
             // C-17 (DRIFT-D/E): auto-resume + signal observer for the
@@ -473,6 +484,19 @@ fn run() -> Result<(), anyhow::Error> {
             novelty_config,
         } => {
             bench_arc::run(dataset, output, novelty_config)?;
+        }
+        // E-17 SP6: `elai bench rag --tier ... --top-k ... [--json] -- <Q>`.
+        // Builds the local knowledge pipeline via LiveCli::build_local_knowledge_stack
+        // (same constructor production uses), runs query_with_tier at the
+        // explicit tier, prints final-stage results. Exits 0 on success.
+        CliAction::BenchRag {
+            tier,
+            top_k,
+            query,
+            json,
+            project_root,
+        } => {
+            bench_rag::run(tier, top_k, query, json, project_root)?;
         }
         // E-30: `elai incident record ...` — store an incident postmortem entry.
         CliAction::IncidentRecord {

@@ -114,6 +114,82 @@
   const recall = $derived(d.recallMetrics);
   const deepMrr = $derived(recall.find(r => r.tier === 'DEEP')?.mrr ?? 0);
   const stdMrr = $derived(recall.find(r => r.tier === 'STANDARD')?.mrr ?? 0);
+
+  // ----------------------------------------------------------------
+  // E-17 SP4: RAG retrieval-quality beacons
+  //
+  // Each card consumes a feed off knowledgeData (10s polling) and
+  // renders four explicit branches in this priority order:
+  //   1. error  — show retry banner (red), keeps last-known data visible
+  //   2. loading on first cycle — skeleton placeholder
+  //   3. has rows — populated card
+  //   4. empty — informative ghost-text per producer
+  // ----------------------------------------------------------------
+
+  // Format an SSB epoch-ms ts to HH:MM:SS for the chip strip.
+  function fmtTsShort(ts: number): string {
+    if (!ts) return '--:--:--';
+    return new Date(ts).toISOString().slice(11, 19);
+  }
+
+  // Format an Option<f64> RRF weight: null -> "off", number -> 3-decimal.
+  function fmtWeight(w: number | null | undefined): string {
+    if (w === null || w === undefined) return 'off';
+    return w.toFixed(3);
+  }
+
+  // DEEP pool capped derivations.
+  const deepPoolCapped = $derived(d.deepPoolCapped);
+  const deepPoolLatest = $derived(deepPoolCapped[0]);
+  const deepPoolMeanCapped = $derived(
+    deepPoolCapped.length === 0
+      ? 0
+      : Math.round(
+          deepPoolCapped.reduce((s, r) => s + r.capped_count, 0) / deepPoolCapped.length,
+        ),
+  );
+  const deepPoolMaxCapped = $derived(
+    deepPoolCapped.reduce((m, r) => Math.max(m, r.capped_count), 0),
+  );
+
+  // RRF quality gate derivations.
+  const rrfGate = $derived(d.rrfQualityGate);
+  const rrfGateLatest = $derived(rrfGate[0]);
+  const rrfGateMeanDropped = $derived(
+    rrfGate.length === 0
+      ? 0
+      : Math.round(rrfGate.reduce((s, r) => s + r.dropped_count, 0) / rrfGate.length),
+  );
+
+  // HyDE skipped derivations.
+  const hydeSkipped = $derived(d.hydeSkippedCodeQuery);
+  const hydeClassCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const row of hydeSkipped) {
+      const key = row.query_class ?? '(unknown)';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  });
+
+  // RRF component weights — last 10 rows. The producer can emit f64::NaN
+  // -> JSON null path is handled by fmtWeight().
+  const rrfWeights = $derived(d.rrfComponentWeights);
+  const rrfWeightsLatest = $derived(rrfWeights[0]);
+
+  // Shared loading / error flags so each card branches consistently.
+  const ragLoadState = $derived(d.ragQualityLoadState);
+  const ragLastError = $derived(d.ragQualityLastError);
+  const ragShowSkeleton = $derived(ragLoadState === 'loading');
+  const ragShowError = $derived(ragLoadState === 'error');
+
+  async function retryRagQuality() {
+    try {
+      await d.refresh();
+    } catch (e) {
+      console.warn('[KnowledgeDrawer] manual retry failed', e);
+    }
+  }
 </script>
 
 <div class="knowledge-drawer">
@@ -221,6 +297,153 @@
       </div>
     {:else}
       <span class="ghost-text">no recent traces</span>
+    {/if}
+  </Card>
+
+  <!-- E-17 SP4 — RAG retrieval-quality beacons (4 cards).
+       Each card surfaces one of the SP2 producer-side events; rows are
+       SSB-backed via SsbViewer::recent_rows_of_type and polled on the
+       knowledgeData 10s cadence. Empty arrays are steady state for most
+       sessions (not "unwired"); error state renders a retry button. -->
+
+  <!-- DEEP POOL CAPPED -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">DEEP POOL CAPPED</div>
+    {#if ragShowError}
+      <div class="rag-error-banner">
+        <span class="rag-error-text">refresh failed{ragLastError ? `: ${ragLastError}` : ''}</span>
+        <button class="rag-retry-btn" type="button" onclick={() => void retryRagQuality()}>Retry</button>
+      </div>
+    {:else if ragShowSkeleton}
+      <div class="rag-skeleton">loading...</div>
+    {:else if deepPoolCapped.length > 0}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">latest</span>
+        <span class="rag-stat-value">
+          capped {deepPoolLatest?.capped_count ?? 0}/{deepPoolLatest?.max_allowed ?? 0}
+          across {deepPoolLatest?.stage_count ?? 0} stage{(deepPoolLatest?.stage_count ?? 0) === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">mean / max (last {deepPoolCapped.length})</span>
+        <span class="rag-stat-value">{deepPoolMeanCapped} / {deepPoolMaxCapped}</span>
+      </div>
+      <div class="rag-chip-strip">
+        {#each deepPoolCapped as r}
+          <span class="rag-chip" title="seq {r.seq} @ {fmtTsShort(r.ts)} — capped {r.capped_count}/{r.max_allowed} across {r.stage_count} stages">
+            {fmtTsShort(r.ts)} <span class="rag-chip-meta">{r.capped_count}</span>
+          </span>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">No DEEP queries capped yet (pool &lt; max_allowed). Threshold is configurable via [knowledge.deep] max_candidates.</span>
+    {/if}
+  </Card>
+
+  <!-- RRF QUALITY GATE -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">RRF QUALITY GATE</div>
+    {#if ragShowError}
+      <div class="rag-error-banner">
+        <span class="rag-error-text">refresh failed{ragLastError ? `: ${ragLastError}` : ''}</span>
+        <button class="rag-retry-btn" type="button" onclick={() => void retryRagQuality()}>Retry</button>
+      </div>
+    {:else if ragShowSkeleton}
+      <div class="rag-skeleton">loading...</div>
+    {:else if rrfGate.length > 0}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">latest</span>
+        <span class="rag-stat-value">
+          dropped {rrfGateLatest?.dropped_count ?? 0}/{rrfGateLatest?.total_before ?? 0}
+          below floor {(rrfGateLatest?.floor ?? 0).toFixed(4)}
+        </span>
+      </div>
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">mean dropped (last {rrfGate.length})</span>
+        <span class="rag-stat-value">{rrfGateMeanDropped}</span>
+      </div>
+      <div class="rag-chip-strip">
+        {#each rrfGate as r}
+          <span class="rag-chip" title="seq {r.seq} @ {fmtTsShort(r.ts)} — dropped {r.dropped_count}/{r.total_before} below {r.floor.toFixed(4)}">
+            {fmtTsShort(r.ts)} <span class="rag-chip-meta">{r.dropped_count}</span>
+          </span>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">No RRF candidates dropped (all above floor).</span>
+    {/if}
+  </Card>
+
+  <!-- HYDE SKIPPED (CODE QUERY) -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">HYDE SKIPPED (CODE QUERY)</div>
+    {#if ragShowError}
+      <div class="rag-error-banner">
+        <span class="rag-error-text">refresh failed{ragLastError ? `: ${ragLastError}` : ''}</span>
+        <button class="rag-retry-btn" type="button" onclick={() => void retryRagQuality()}>Retry</button>
+      </div>
+    {:else if ragShowSkeleton}
+      <div class="rag-skeleton">loading...</div>
+    {:else if hydeSkipped.length > 0}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">class distribution (last {hydeSkipped.length})</span>
+        <span class="rag-stat-value">
+          {#each hydeClassCounts as [cls, n], i}
+            {cls}: {n}{i < hydeClassCounts.length - 1 ? ', ' : ''}
+          {/each}
+        </span>
+      </div>
+      <div class="rag-event-list">
+        {#each hydeSkipped.slice(0, 5) as r}
+          <div class="rag-event-row">
+            <span class="rag-event-ts">{fmtTsShort(r.ts)}</span>
+            <Badge tone={r.code_signal_present ? 'warn' : 'ghost'} size="xs">{r.query_class ?? 'unknown'}</Badge>
+            <span class="rag-event-meta">{r.word_count}w</span>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">HyDE was applied to every recent query (none classified as code-symbol).</span>
+    {/if}
+  </Card>
+
+  <!-- RRF COMPONENT WEIGHTS -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">RRF COMPONENT WEIGHTS</div>
+    {#if ragShowError}
+      <div class="rag-error-banner">
+        <span class="rag-error-text">refresh failed{ragLastError ? `: ${ragLastError}` : ''}</span>
+        <button class="rag-retry-btn" type="button" onclick={() => void retryRagQuality()}>Retry</button>
+      </div>
+    {:else if ragShowSkeleton}
+      <div class="rag-skeleton">loading...</div>
+    {:else if rrfWeights.length > 0}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">latest</span>
+        <span class="rag-stat-value">
+          bm25={fmtWeight(rrfWeightsLatest?.bm25_weight)} /
+          code={fmtWeight(rrfWeightsLatest?.code_vec_weight)} /
+          text={fmtWeight(rrfWeightsLatest?.text_vec_weight)}
+        </span>
+      </div>
+      <div class="rag-weight-table">
+        <div class="rag-weight-header">
+          <span>ts</span>
+          <span>bm25</span>
+          <span>code</span>
+          <span>text</span>
+        </div>
+        {#each rrfWeights as r}
+          <div class="rag-weight-row">
+            <span class="rag-weight-ts">{fmtTsShort(r.ts)}</span>
+            <span class="rag-weight-cell">{fmtWeight(r.bm25_weight)}</span>
+            <span class="rag-weight-cell">{fmtWeight(r.code_vec_weight)}</span>
+            <span class="rag-weight-cell">{fmtWeight(r.text_vec_weight)}</span>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="ghost-text">No recent queries -- run a query to populate.</span>
     {/if}
   </Card>
 
@@ -767,5 +990,137 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
+  }
+
+  /* E-17 SP4: RAG retrieval-quality cards. */
+  .rag-stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+  .rag-stat-label {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .rag-stat-value {
+    color: var(--text-primary);
+    text-align: right;
+  }
+  .rag-chip-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .rag-chip {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border-radius: var(--r-xs);
+    padding: 1px 5px;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .rag-chip-meta {
+    color: var(--text-primary);
+  }
+  .rag-event-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 6px;
+  }
+  .rag-event-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .rag-event-ts {
+    color: var(--text-ghost);
+    width: 64px;
+    flex-shrink: 0;
+  }
+  .rag-event-meta {
+    color: var(--text-secondary);
+    margin-left: auto;
+  }
+  .rag-weight-table {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-top: 1px solid var(--surface-divider);
+    padding-top: 6px;
+  }
+  .rag-weight-header,
+  .rag-weight-row {
+    display: grid;
+    grid-template-columns: 72px 1fr 1fr 1fr;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    gap: 6px;
+  }
+  .rag-weight-header {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .rag-weight-ts {
+    color: var(--text-ghost);
+  }
+  .rag-weight-cell {
+    color: var(--text-primary);
+  }
+  .rag-skeleton {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    font-style: italic;
+    padding: 4px 0;
+  }
+  .rag-error-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    background: color-mix(in srgb, var(--fail) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--fail) 30%, transparent);
+    border-radius: var(--r-xs);
+  }
+  .rag-error-text {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fail);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rag-retry-btn {
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--teal-line);
+    color: var(--teal);
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .rag-retry-btn:hover {
+    background: var(--teal-ghost);
+    color: var(--teal-bright);
   }
 </style>

@@ -580,6 +580,63 @@ export interface FreshnessStatus {
 }
 
 // ------------------------------------------------------------------
+// E-17 SP4: RAG retrieval-quality beacon rows.
+//
+// Hand-typed mirrors of the four `get_*_recent` Tauri commands in
+// dashboard-v2/src-tauri/src/commands.rs. The producer (E-17 SP2)
+// emits the underlying SsbPayload variants (DeepPoolCappedPayload,
+// RrfQualityGateFiredPayload, HydeSkippedCodeQueryPayload,
+// RrfComponentWeightsPayload) — see orchestrator/src/ssb.rs:7832-7873.
+// The Tauri command reshapes each row's payload_json into the flat
+// shapes below for KnowledgeDrawer consumption.
+// ------------------------------------------------------------------
+
+/** Mirror of the `get_deep_pool_capped_recent` per-row shape.
+ *  Emitted once per DEEP-tier query when `knowledge::deep::deep_pool_cap`
+ *  drops candidates above the per-stage cap. */
+export interface DeepPoolCappedRow {
+  seq: number;
+  ts: number;
+  capped_count: number;
+  max_allowed: number;
+  stage_count: number;
+}
+
+/** Mirror of the `get_rrf_quality_gate_recent` per-row shape.
+ *  Emitted once per DEEP-tier query when `knowledge::deep::rrf_quality_gate`
+ *  drops fused candidates below the RRF floor. */
+export interface RrfQualityGateRow {
+  seq: number;
+  ts: number;
+  dropped_count: number;
+  floor: number;
+  total_before: number;
+}
+
+/** Mirror of the `get_hyde_skipped_code_query_recent` per-row shape.
+ *  Emitted when `knowledge::hyde::should_use_hyde` returns false on a
+ *  CodeSymbol / Mixed query that would otherwise have invoked HyDE. */
+export interface HydeSkippedCodeQueryRow {
+  seq: number;
+  ts: number;
+  query_class: string | null;
+  word_count: number;
+  code_signal_present: boolean;
+}
+
+/** Mirror of the `get_rrf_component_weights_recent` per-row shape.
+ *  Each weight is `Option<f64>` on the Rust side — `null` here means
+ *  the ranker did not contribute to that fusion run (e.g. code_vec is
+ *  null when ELAI_CODE_VEC is disabled or no code index is loaded). */
+export interface RrfComponentWeightsRow {
+  seq: number;
+  ts: number;
+  bm25_weight: number | null;
+  code_vec_weight: number | null;
+  text_vec_weight: number | null;
+}
+
+// ------------------------------------------------------------------
 // Rules
 // ------------------------------------------------------------------
 export type RuleLifecycle = 'PROPOSED' | 'CANDIDATE' | 'SHADOW' | 'ACTIVE' | 'RETIRED';

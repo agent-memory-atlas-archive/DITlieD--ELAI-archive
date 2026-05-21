@@ -963,6 +963,203 @@ pub fn get_query_trace_recent(state: State<'_, AppState>, n: u32) -> CmdResult<V
 /// caller passes `n=0`. Named constant per codeRules baseline.
 const QUERY_TRACE_DEFAULT_LIMIT: usize = 20;
 
+// ---------------------------------------------------------------------------
+// E-17 SP4: RAG retrieval-quality SSB row surface
+//
+// Four read-only commands that mirror `get_query_trace_recent` (above) for the
+// SCHEMA_VERSION 97 SP2 payload variants. Each follows the same template:
+//   1. `let Some(viewer) = state.viewer.as_ref() else { return Ok(json!([])); };`
+//   2. `viewer.recent_rows_of_type(SsbActionType::<X>.as_sql_str(), limit)
+//          .unwrap_or_default();`
+//   3. Reshape each `SsbActionDetail`'s `payload_json` using the externally
+//      tagged enum envelope (`inner = payload_json.get("<Variant>")`).
+//   4. ORDER BY seq DESC LIMIT n is applied inside `recent_rows_of_type`
+//      (DRAWER_QUERY_HARD_CAP = 500 ceiling at the viewer layer).
+//
+// The producers (knowledge::pipeline / knowledge::deep / knowledge::hyde)
+// were shipped in E-17 SP2; rows arrive in SSB without any further wiring.
+// ---------------------------------------------------------------------------
+
+/// E-17 SP4: default row count returned by the four RAG retrieval-quality
+/// commands below when the caller passes `n=0`. Tuned to 20 to match
+/// `QUERY_TRACE_DEFAULT_LIMIT` — the cards render the latest event plus a
+/// small history strip.
+const RAG_QUALITY_DEFAULT_LIMIT: usize = 20;
+
+/// E-17 SP4: dashboard-side hard cap on the four RAG retrieval-quality
+/// commands. The viewer's own `DRAWER_QUERY_HARD_CAP` (500) is the absolute
+/// ceiling; we keep a tighter cap here so a frontend bug cannot pull
+/// hundreds of rows over IPC for these narrow per-event feeds.
+const RAG_QUALITY_HARD_CAP: usize = 200;
+
+/// E-17 SP4: clamp `n` (the user-supplied limit) into
+/// `[default, RAG_QUALITY_HARD_CAP]`. `n = 0` falls through to the default.
+fn rag_quality_limit(n: u32) -> usize {
+    match n as usize {
+        0 => RAG_QUALITY_DEFAULT_LIMIT,
+        v => v.min(RAG_QUALITY_HARD_CAP),
+    }
+}
+
+/// E-17 SP4 — read recent `deep_pool_capped` SSB rows. Emitted once per
+/// DEEP-tier query when `knowledge::deep::deep_pool_cap` drops candidates
+/// above the per-stage cap. Empty array when the viewer is absent or no
+/// row has been written yet — DEEP queries that stay below the cap do
+/// not emit a row, so empty is the steady-state for many sessions.
+///
+/// Per-row shape: `{ seq, ts, capped_count, max_allowed, stage_count }`.
+#[tauri::command]
+pub fn get_deep_pool_capped_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = rag_quality_limit(n);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::DeepPoolCapped.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("DeepPoolCapped")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "capped_count": inner.get("capped_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "max_allowed": inner.get("max_allowed").and_then(|v| v.as_u64()).unwrap_or(0),
+            "stage_count": inner.get("stage_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// E-17 SP4 — read recent `rrf_quality_gate_fired` SSB rows. Emitted once
+/// per DEEP-tier query when `knowledge::deep::rrf_quality_gate` drops
+/// fused candidates below the RRF floor. Empty array is steady-state for
+/// many sessions; presence indicates the gate is doing work.
+///
+/// Per-row shape: `{ seq, ts, dropped_count, floor, total_before }`.
+#[tauri::command]
+pub fn get_rrf_quality_gate_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = rag_quality_limit(n);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::RrfQualityGateFired.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("RrfQualityGateFired")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "dropped_count": inner.get("dropped_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "floor": inner.get("floor").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            "total_before": inner.get("total_before").and_then(|v| v.as_u64()).unwrap_or(0),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// E-17 SP4 — read recent `hyde_skipped_code_query` SSB rows. Emitted
+/// when `knowledge::hyde::should_use_hyde` returns false on a
+/// CodeSymbol / Mixed query that would otherwise have invoked HyDE
+/// (DEEP tier + >= MIN_WORDS_FOR_HYDE). Empty is steady-state for sessions
+/// dominated by natural-language queries.
+///
+/// Per-row shape: `{ seq, ts, query_class, word_count, code_signal_present }`.
+#[tauri::command]
+pub fn get_hyde_skipped_code_query_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = rag_quality_limit(n);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::HydeSkippedCodeQuery.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("HydeSkippedCodeQuery")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "query_class": inner.get("query_class").cloned().unwrap_or(Value::Null),
+            "word_count": inner.get("word_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "code_signal_present": inner
+                .get("code_signal_present")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// E-17 SP4 — read recent `rrf_component_weights` SSB rows. Emitted once
+/// per query with the per-ranker RRF weights active for that fusion run.
+/// `bm25_weight` / `code_vec_weight` / `text_vec_weight` are `Option<f64>`;
+/// `None` indicates the ranker did not contribute (e.g. `code_vec_weight`
+/// is None when ELAI_CODE_VEC is disabled or no code index is loaded).
+/// Serialised as JSON null when absent.
+///
+/// Per-row shape: `{ seq, ts, bm25_weight, code_vec_weight, text_vec_weight }`.
+#[tauri::command]
+pub fn get_rrf_component_weights_recent(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!([]));
+    };
+    let limit = rag_quality_limit(n);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::RrfComponentWeights.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("RrfComponentWeights")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        // Each weight is Option<f64> on the Rust side. `.as_f64()` collapses
+        // both None (Value::Null) and absent keys to None, which we then
+        // re-serialise as Value::Null so the TS shape stays
+        // `number | null`. `.unwrap_or(Value::Null)` preserves null through
+        // the wire boundary.
+        let bm25 = inner
+            .get("bm25_weight")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() })
+            .map(Value::from)
+            .unwrap_or(Value::Null);
+        let code_vec = inner
+            .get("code_vec_weight")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() })
+            .map(Value::from)
+            .unwrap_or(Value::Null);
+        let text_vec = inner
+            .get("text_vec_weight")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() })
+            .map(Value::from)
+            .unwrap_or(Value::Null);
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "bm25_weight": bm25,
+            "code_vec_weight": code_vec,
+            "text_vec_weight": text_vec,
+        }));
+    }
+    Ok(json!(out))
+}
+
 /// C-3: default top-N count for `get_pagerank_top` when `n=0`.
 const PAGERANK_DEFAULT_LIMIT: usize = 20;
 
@@ -1238,7 +1435,7 @@ pub fn get_embedding_breakers(state: State<'_, AppState>) -> CmdResult<Value> {
             {"model": "graphcodebert", "state": "CLOSED",  "failures": 0, "success_rate": 1.0, "last_failure_ts": null},
             {"model": "granite-embed",  "state": "CLOSED",  "failures": 0, "success_rate": 1.0, "last_failure_ts": null},
             {"model": "ms-marco-l12",   "state": "CLOSED",  "failures": 0, "success_rate": 1.0, "last_failure_ts": null},
-            {"model": "ms-marco-l6",    "state": "CLOSED",  "failures": 0, "success_rate": 1.0, "last_failure_ts": null},
+            {"model": "cross-encoder-l6", "state": "CLOSED",  "failures": 0, "success_rate": 1.0, "last_failure_ts": null},
             {"model": "splade-v3",      "state": "OPEN",    "failures": 0, "success_rate": 0.0, "last_failure_ts": null},
         ])
     } else {
@@ -5595,7 +5792,7 @@ fn d4_resolve_obscura_binary() -> Result<std::path::PathBuf, String> {
         if rel.exists() {
             return Ok(rel);
         }
-        let abs = PathBuf::from(r"D:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe");
+        let abs = PathBuf::from(r"F:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe");
         if abs.exists() {
             return Ok(abs);
         }

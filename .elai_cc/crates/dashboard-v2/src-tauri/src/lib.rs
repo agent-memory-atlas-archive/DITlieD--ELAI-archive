@@ -258,6 +258,17 @@ pub fn run() {
             commands::get_canary_drift,
             commands::get_research_budget,
             commands::get_source_tier_distribution,
+            // E-17 SP4: RAG retrieval-quality SSB row surface. Four
+            // read-only commands over the SCHEMA_VERSION 97 SP2 payload
+            // variants (DeepPoolCapped / RrfQualityGateFired /
+            // HydeSkippedCodeQuery / RrfComponentWeights). Producers ship
+            // in E-17 SP2 (knowledge::pipeline / deep / hyde); this
+            // surface only reads via SsbViewer::recent_rows_of_type.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::get_deep_pool_capped_recent,
+            commands::get_rrf_quality_gate_recent,
+            commands::get_hyde_skipped_code_query_recent,
+            commands::get_rrf_component_weights_recent,
             // REASONING / GRC
             commands::get_grc_budgets,
             commands::get_grounding_sweep,

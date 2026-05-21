@@ -15,12 +15,15 @@
 use std::sync::Arc;
 
 use elai_knowledge::knowledge_ssb_sink::{
-    HydeQueryEvent, KnowledgeSsbSink, QueryTraceEvent, VectorCacheHitRateEvent,
+    DeepPoolCappedEvent, HydeQueryEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink,
+    QueryTraceEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent, VectorCacheHitRateEvent,
 };
 use tracing::warn;
 
 use crate::ssb::{
-    HydeQueryPayload, QueryTracePayload, Ssb, SsbPayload, VectorCacheHitRatePayload,
+    DeepPoolCappedPayload, HydeQueryPayload, HydeSkippedCodeQueryPayload, QueryTracePayload,
+    RrfComponentWeightsPayload, RrfQualityGateFiredPayload, Ssb, SsbPayload,
+    VectorCacheHitRatePayload,
 };
 use crate::task_runner::{RUNNER_AGENT_ID, RUNNER_SUPERSTEP};
 
@@ -97,6 +100,42 @@ impl KnowledgeSsbSink for OrchestratorKnowledgeSsbSink {
             stage_count: event.stage_count,
             result_count: event.result_count,
             total_latency_ms: event.total_latency_ms,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_deep_pool_capped(&self, event: DeepPoolCappedEvent) {
+        let payload = SsbPayload::DeepPoolCapped(DeepPoolCappedPayload {
+            capped_count: event.capped_count,
+            max_allowed: event.max_allowed,
+            stage_count: event.stage_count,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_rrf_quality_gate_fired(&self, event: RrfQualityGateFiredEvent) {
+        let payload = SsbPayload::RrfQualityGateFired(RrfQualityGateFiredPayload {
+            dropped_count: event.dropped_count,
+            floor: event.floor,
+            total_before: event.total_before,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_hyde_skipped_code_query(&self, event: HydeSkippedCodeQueryEvent) {
+        let payload = SsbPayload::HydeSkippedCodeQuery(HydeSkippedCodeQueryPayload {
+            query_class: event.query_class,
+            word_count: event.word_count,
+            code_signal_present: event.code_signal_present,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_rrf_component_weights(&self, event: RrfComponentWeightsEvent) {
+        let payload = SsbPayload::RrfComponentWeights(RrfComponentWeightsPayload {
+            bm25_weight: event.bm25_weight,
+            code_vec_weight: event.code_vec_weight,
+            text_vec_weight: event.text_vec_weight,
         });
         self.dispatch_payload(payload);
     }

@@ -11,6 +11,64 @@ use crate::vector::circuit_breaker::{BreakerState, EmbeddingCircuitBreaker, Fail
 use elai_core::ClockProvider;
 
 // ---------------------------------------------------------------------------
+// ReRankerModel (E-17 SP2 task 3)
+// ---------------------------------------------------------------------------
+
+/// Cross-encoder reranker model selector (config-driven dispatch).
+///
+/// Default is `MsMarcoMiniLmL12` — the cross-encoder/ms-marco-MiniLM-L-12-v2
+/// model that ships in the project under `models/onnx/cross-encoder-l12.onnx`.
+///
+/// `JinaV3` (jinaai/jina-reranker-v3) and `BgeV2M3` (BAAI/bge-reranker-v2-m3)
+/// are config-selectable but the ONNX files are NOT staged on disk yet —
+/// selecting them triggers a `tracing::warn` and falls back to the
+/// MsMarcoMiniLmL12 path. Model staging is deferred to an E-17 ops follow-up.
+///
+/// Grounding (honest framing): the swap motivation is plan-author design
+/// choice + jina.ai marketing numbers. arxiv:2411.11767 ("Drowning in
+/// Documents", S4 fn1 + S4.SS2.p2) does NOT test ms-marco-MiniLM-L12 or
+/// prescribe any specific cross-encoder; SP6 measures actual recall@5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReRankerModel {
+    /// jinaai/jina-reranker-v3 — config-selectable, model file NOT staged.
+    /// Filename when staged: `models/onnx/jina-rerank-v3.onnx`.
+    JinaV3,
+    /// BAAI/bge-reranker-v2-m3 — config-selectable, model file NOT staged.
+    /// Filename when staged: `models/onnx/bge-reranker-v2-m3.onnx`.
+    BgeV2M3,
+    /// cross-encoder/ms-marco-MiniLM-L-12-v2 — legacy default, model staged.
+    /// Filename: `models/onnx/cross-encoder-l12.onnx`.
+    MsMarcoMiniLmL12,
+}
+
+impl Default for ReRankerModel {
+    fn default() -> Self {
+        Self::MsMarcoMiniLmL12
+    }
+}
+
+impl ReRankerModel {
+    /// Stable string identifier used in config files + SSB payloads.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JinaV3 => "jina-rerank-v3",
+            Self::BgeV2M3 => "bge-reranker-v2-m3",
+            Self::MsMarcoMiniLmL12 => "ms-marco-minilm-l12",
+        }
+    }
+
+    /// On-disk ONNX filename (joined under `<project_root>/.elai_cc/models/onnx/`).
+    pub fn onnx_filename(self) -> &'static str {
+        match self {
+            Self::JinaV3 => "jina-rerank-v3.onnx",
+            Self::BgeV2M3 => "bge-reranker-v2-m3.onnx",
+            Self::MsMarcoMiniLmL12 => "cross-encoder-l12.onnx",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 
@@ -73,6 +131,12 @@ pub struct RerankerConfig {
     pub graph_optimization_level: GraphOptimizationLevel,
     /// Required for multi-thread score reproducibility (default true).
     pub enable_deterministic_compute: bool,
+    /// E-17 SP2: cross-encoder model selector. Defaults to `MsMarcoMiniLmL12`
+    /// (the L-12 model staged on disk). `JinaV3` / `BgeV2M3` are
+    /// config-selectable but require ops follow-up to stage the ONNX file —
+    /// selecting them today emits a `tracing::warn` at load time and the
+    /// pipeline falls back to the L-12 path.
+    pub model_variant: ReRankerModel,
 }
 
 impl Default for RerankerConfig {
@@ -88,7 +152,58 @@ impl Default for RerankerConfig {
             intra_op_threads: 1,
             graph_optimization_level: GraphOptimizationLevel::All,
             enable_deterministic_compute: true,
+            model_variant: ReRankerModel::MsMarcoMiniLmL12,
         }
+    }
+}
+
+impl RerankerConfig {
+    /// E-17 SP2 (SP1 carryover): construct a RerankerConfig with absolute
+    /// paths derived from `<project_root>/.elai_cc/models/onnx/...`.
+    ///
+    /// Production sites (live_cli) MUST use this constructor instead of
+    /// `Default::default()` so model paths resolve correctly regardless of
+    /// CWD. The legacy `Default` impl is preserved for test fixtures that
+    /// rely on relative paths (see crates/knowledge/tests/reranker_sweep.rs).
+    ///
+    /// Default selector is `ReRankerModel::MsMarcoMiniLmL12`; the on-disk
+    /// fallback path resolves to `cross-encoder-l6.onnx` (SP1-carryover
+    /// rename — the previous "ms-marco-l6.onnx" filename never existed on
+    /// disk and silently broke L-6 graceful degradation).
+    pub fn with_project_root(project_root: &Path) -> Self {
+        let models_dir = elai_core::paths::models_dir_path(project_root);
+        let onnx_dir = models_dir.join("onnx");
+        let variant = ReRankerModel::default();
+        Self {
+            model_path: onnx_dir.join(variant.onnx_filename()),
+            tokenizer_path: onnx_dir.join("tokenizer.json"),
+            fallback_model_path: Some(onnx_dir.join("cross-encoder-l6.onnx")),
+            quantized_model_path: None,
+            skip_threshold: 10,
+            max_sequence_length: 512,
+            max_queue_depth: 4,
+            intra_op_threads: 1,
+            graph_optimization_level: GraphOptimizationLevel::All,
+            enable_deterministic_compute: true,
+            model_variant: variant,
+        }
+    }
+
+    /// Same as [`Self::with_project_root`] but with an explicit
+    /// `ReRankerModel`. When the selected variant points to an ONNX file
+    /// that does not exist on disk, a `tracing::warn` is emitted at load
+    /// time (in [`CrossEncoderReranker::load`]) and the pipeline degrades
+    /// to the unranked path — no panic, no `.unwrap()`.
+    pub fn with_project_root_and_variant(
+        project_root: &Path,
+        variant: ReRankerModel,
+    ) -> Self {
+        let mut cfg = Self::with_project_root(project_root);
+        let models_dir = elai_core::paths::models_dir_path(project_root);
+        let onnx_dir = models_dir.join("onnx");
+        cfg.model_path = onnx_dir.join(variant.onnx_filename());
+        cfg.model_variant = variant;
+        cfg
     }
 }
 
@@ -158,7 +273,26 @@ impl CrossEncoderReranker {
     /// Model path resolution: quantized_model_path (if Some) -> model_path.
     /// Tokenizer loaded from tokenizer_path with truncation set to max_sequence_length.
     /// Fallback L-6 model is NOT loaded here — lazy-loaded on L-12 circuit breaker open (1G.4).
+    ///
+    /// E-17 SP2: when `config.model_variant` is `JinaV3` or `BgeV2M3` and the
+    /// configured `model_path` does not exist on disk, a `tracing::warn` is
+    /// emitted (no panic). The caller (`CrossEncoderReranker::load`) returns
+    /// an `Err(ModelLoad)` that the live_cli wiring catches and treats as
+    /// graceful degradation — exactly the same surface as a missing L-12.
     pub fn load(&mut self) -> Result<(), RerankerError> {
+        // E-17 SP2: surface the variant + on-disk availability so ops can
+        // see when JinaV3 / BgeV2M3 are config-selected but not staged.
+        if !matches!(self.config.model_variant, ReRankerModel::MsMarcoMiniLmL12)
+            && !self.config.model_path.exists()
+        {
+            tracing::warn!(
+                model_variant = %self.config.model_variant.as_str(),
+                model_path = %self.config.model_path.display(),
+                "reranker model file not staged on disk; degrading to unranked. \
+                 Stage the ONNX file or select model_variant=ms-marco-minilm-l12."
+            );
+        }
+
         let model_path = self
             .config
             .quantized_model_path

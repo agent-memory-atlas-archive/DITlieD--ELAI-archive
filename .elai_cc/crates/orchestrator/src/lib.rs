@@ -867,6 +867,11 @@ pub use ssb::{
     // payloads without reaching into `orchestrator::ssb::*` directly.
     FitmCalibrationAppliedPayload, DeepModeActivatedPayload,
     DeepModeEscalationChosenPayload, YarnRefusedPayload,
+    // E-17 SP2 (SCHEMA_VERSION 97): RAG retrieval-quality beacons.
+    // Re-exported so the contract crate + dashboard KnowledgeDrawer
+    // commands can construct payloads without `::ssb::*` paths.
+    DeepPoolCappedPayload, RrfQualityGateFiredPayload,
+    HydeSkippedCodeQueryPayload, RrfComponentWeightsPayload,
 };
 // D-2: PPM client + sidecar hook public surface.
 pub use ppm_client::{
