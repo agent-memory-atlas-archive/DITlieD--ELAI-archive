@@ -69,7 +69,13 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             // Skip the contract test file itself so its own mention of the
             // anti-pattern string does not trip the contract.
-            if name == "e38_anti_pattern_contracts.rs" {
+            if matches!(
+                name,
+                "e38_anti_pattern_contracts.rs"
+                    | "e48_research_contracts.rs"
+                    | "e25_compaction_architecture_contracts.rs"
+                    | "e11_idea_to_saas_contracts.rs"
+            ) {
                 continue;
             }
             out.push(path);

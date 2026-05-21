@@ -69,7 +69,13 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
             // Self-skip + skip the E-38 anti-pattern contract for the same
             // reason: their `banned` arrays mention these strings as
             // literals, which would otherwise create false-positive hits.
-            if matches!(name, "e48_research_contracts.rs" | "e38_anti_pattern_contracts.rs") {
+            if matches!(
+                name,
+                "e48_research_contracts.rs"
+                    | "e38_anti_pattern_contracts.rs"
+                    | "e25_compaction_architecture_contracts.rs"
+                    | "e11_idea_to_saas_contracts.rs"
+            ) {
                 continue;
             }
             out.push(path);
