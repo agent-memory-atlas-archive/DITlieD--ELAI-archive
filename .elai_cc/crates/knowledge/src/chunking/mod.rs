@@ -15,3 +15,7 @@ pub mod constants;
 pub mod detect;
 pub mod cap;
 pub mod character;
+// E-36 Tier-A: vision artifact types (foundation for 9th VerificationMethod).
+// Types-only foundation; producer wiring deferred to E-36.B per
+// workflow/reasoning/E-36-decisions.md.
+pub mod image_artifact;
