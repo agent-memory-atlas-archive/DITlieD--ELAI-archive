@@ -19,6 +19,10 @@ use elai_knowledge::{
     },
 };
 use elai_core::paths::dkg_db_path as core_dkg_db_path;
+// E-21 Tier-A: PageRank top-N readback via the existing SsbViewer surface
+// (C-3 ship at ssb_viewer.rs:2897). pagerank_top reads from the
+// dkg_nodes_pagerank table when present, returns Vec::new() when absent.
+use elai_orchestrator::{default_ssb_path_for_base, SsbViewer};
 
 /// Run `elai symbol_graph build` for `project_root`.
 ///
@@ -100,6 +104,69 @@ pub(crate) fn run_symbol_graph_stats(project_root: PathBuf) -> Result<(), anyhow
     println!("  schema_version : {}", meta.schema_version);
 
     Ok(())
+}
+
+/// E-21 Tier-A — `elai symbol_graph rank --top N [--project-root <path>]`.
+///
+/// Reads the existing dkg_nodes_pagerank table (populated by
+/// `knowledge::pipeline::compute_repo_map` / `knowledge::pagerank`) via
+/// `SsbViewer::pagerank_top` and prints the top-N symbols by score.
+///
+/// Returns gracefully (exit 0 with a hint message) when the table is absent —
+/// the same shape the dashboard's get_pagerank_top Tauri command uses for
+/// "no data yet". This matches the spec: a fresh project that hasn't run
+/// `knowledge::pipeline::compute_repo_map` yet should not error.
+pub(crate) fn run_symbol_graph_rank(
+    project_root: PathBuf,
+    top: u32,
+) -> Result<(), anyhow::Error> {
+    let ssb_path = default_ssb_path_for_base(&project_root);
+    if !ssb_path.exists() {
+        // No SSB DB yet — emit a hint, exit 0. Matches dashboard graceful-empty.
+        println!(
+            "[symbol_graph rank] no SSB DB at {} — run a build/index first",
+            ssb_path.display()
+        );
+        return Ok(());
+    }
+    let viewer = SsbViewer::open(&ssb_path)
+        .map_err(|e| anyhow::anyhow!("SsbViewer::open({}) failed: {e}", ssb_path.display()))?;
+    let limit = if top == 0 { 20_usize } else { top as usize };
+    let entries = viewer
+        .pagerank_top(limit)
+        .map_err(|e| anyhow::anyhow!("pagerank_top({limit}) failed: {e}"))?;
+    if entries.is_empty() {
+        println!(
+            "[symbol_graph rank] dkg_nodes_pagerank table empty or absent — \
+             trigger knowledge::pipeline::compute_repo_map to populate"
+        );
+        return Ok(());
+    }
+    println!("PageRank top {} symbols:", entries.len());
+    for (idx, e) in entries.iter().enumerate() {
+        println!(
+            "  {:>3}. {:<60} {:>9.5}  ({})",
+            idx + 1,
+            truncate_symbol(&e.symbol, 60),
+            e.score,
+            e.path,
+        );
+    }
+    Ok(())
+}
+
+fn truncate_symbol(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    // Walk back to the last char boundary at-or-before `max` so non-ASCII
+    // symbols (UTF-8 multibyte) never panic. `is_char_boundary(0)` is always
+    // true so the loop terminates.
+    let mut idx = max;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
 }
 
 // ---------------------------------------------------------------------------

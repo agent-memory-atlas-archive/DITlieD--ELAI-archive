@@ -381,6 +381,11 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::SymbolGraphStats { project_root } => {
             symbol_graph::run_symbol_graph_stats(project_root)?
         }
+        // E-21 Tier-A: `elai symbol_graph rank --top N` — top-N pagerank
+        // symbols from the existing dkg_nodes_pagerank table (C-3 ship).
+        CliAction::SymbolGraphRank { project_root, top } => {
+            symbol_graph::run_symbol_graph_rank(project_root, top)?
+        }
         // C-13: `elai wip-squash [--project-root <path>]` — squashes leading
         // WIP commits when count > 5. Invoked by the Python FSM hook chain
         // at AUDITING -> MEMORIZING transitions.

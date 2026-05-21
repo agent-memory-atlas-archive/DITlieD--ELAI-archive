@@ -219,6 +219,15 @@ pub(crate) enum CliAction {
     SymbolGraphStats {
         project_root: PathBuf,
     },
+    /// E-21 Tier-A: `elai symbol_graph rank --top N [--project-root <path>]`
+    /// Prints top-N PageRank symbols from the existing dkg_nodes_pagerank
+    /// table (populated by knowledge::pipeline::compute_repo_map / C-3 ship).
+    /// Graceful-empty when table is absent — same shape as the dashboard's
+    /// get_pagerank_top Tauri command.
+    SymbolGraphRank {
+        project_root: PathBuf,
+        top: u32,
+    },
     /// C-13: `elai wip-squash [--project-root <path>]` — invoked by the
     /// Python FSM hook chain at AUDITING -> MEMORIZING transitions when
     /// the Rust task_runner is not in scope (the hook layer fires the
@@ -922,6 +931,8 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
     let flag_rest = if rest.is_empty() { &rest[..] } else { &rest[1..] };
 
     let mut project_root: Option<PathBuf> = None;
+    // E-21 Tier-A: `rank --top N` accepts an additional --top flag (default 20).
+    let mut top: u32 = 0;
     let mut i = 0;
     while i < flag_rest.len() {
         match flag_rest[i].as_str() {
@@ -934,6 +945,21 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
             }
             flag if flag.starts_with("--project-root=") => {
                 project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            "--top" => {
+                let value = flag_rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --top".to_string())?;
+                top = value
+                    .parse::<u32>()
+                    .map_err(|e| format!("--top must be a non-negative integer: {e}"))?;
+                i += 2;
+            }
+            flag if flag.starts_with("--top=") => {
+                top = flag[6..]
+                    .parse::<u32>()
+                    .map_err(|e| format!("--top must be a non-negative integer: {e}"))?;
                 i += 1;
             }
             other => {
@@ -952,8 +978,9 @@ pub(crate) fn parse_symbol_graph_args(rest: &[String]) -> Result<CliAction, Stri
     match sub {
         "build" => Ok(CliAction::SymbolGraphBuild { project_root }),
         "stats" => Ok(CliAction::SymbolGraphStats { project_root }),
+        "rank" => Ok(CliAction::SymbolGraphRank { project_root, top }),
         other => Err(format!(
-            "unknown `symbol_graph` sub-command: '{other}' (expected 'build' or 'stats')"
+            "unknown `symbol_graph` sub-command: '{other}' (expected 'build', 'stats', or 'rank')"
         )),
     }
 }
