@@ -14,6 +14,7 @@
 
   import { Button, Empty, Scrollbar } from '$lib/ui';
   import * as stub from '$lib/api/stub';
+  import SkeletonList from '$lib/components/SkeletonList.svelte';
 
   interface OracleRow {
     id: string;
@@ -24,6 +25,11 @@
 
   let inputValue = $state<string>('');
   let rows = $state<OracleRow[]>([]);
+  // E-33: transient loading flag covers the synthesizing window between
+  // submit() append and the next paint. Visible as a one-frame SkeletonList
+  // shimmer; once the C-3+ get_codebase_search backend lands, this flag
+  // will gate on the real async fetch instead of a queueMicrotask.
+  let loading = $state<boolean>(false);
 
   function nextId(): string {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -42,15 +48,22 @@
     // call so the harness logStub stream still shows the user intent,
     // and render an explicit placeholder so the threading is observable.
     stub.logStub('explore.query', { query: trimmed });
-    const placeholder: OracleRow = {
-      id: nextId(),
-      kind: 'response',
-      text:
-        'Codebase oracle is offline. The live search backend lands in a follow-up patch (get_codebase_search Tauri command). Your query has been logged.',
-      ts: ts + 1,
-    };
-    rows = [...rows, queryRow, placeholder];
+    // E-33: flip loading=true for one microtask so SkeletonList renders
+    // a single shimmer frame between query append and placeholder reply.
+    rows = [...rows, queryRow];
     inputValue = '';
+    loading = true;
+    queueMicrotask(() => {
+      const placeholder: OracleRow = {
+        id: nextId(),
+        kind: 'response',
+        text:
+          'Codebase oracle is offline. The live search backend lands in a follow-up patch (get_codebase_search Tauri command). Your query has been logged.',
+        ts: ts + 1,
+      };
+      rows = [...rows, placeholder];
+      loading = false;
+    });
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -78,7 +91,7 @@
   </div>
 
   <div class="explore__body">
-    {#if rows.length === 0}
+    {#if rows.length === 0 && !loading}
       <div class="explore__empty">
         <Empty
           title="no queries yet"
@@ -86,6 +99,7 @@
         />
       </div>
     {:else}
+      <SkeletonList rows={2} loading={loading} label="oracle thinking" />
       <Scrollbar>
         <div class="explore__rows">
           {#each rows as row (row.id)}

@@ -4,6 +4,12 @@
   // total_tokens and fill proportional to used_tokens.
 
   import type { ContextBudgetSlot } from '../api/types';
+  // E-33: motion guard is a no-op here today — OrbitBudgetRing has only
+  // static SVG arcs, no <animate>/<animateTransform> elements. The motion
+  // store import is intentionally omitted to keep the file lean; if a
+  // future E-N adds arc-fill transitions, mirror the OrbitGrcDots pattern
+  // (lines 13/41/52-55): import { motion } + let allowMotion = $derived(motion.allow)
+  // + {#if allowMotion}...{/if}.
 
   interface Props {
     cx: number;

@@ -8,6 +8,7 @@
   import { graph } from '$lib/state/graph.svelte';
   import { get_bubble_up_events } from '$lib/api/stub';
   import { Tree, Badge, Button, Empty, Card, Scrollbar } from '$lib/ui';
+  import SkeletonList from '$lib/components/SkeletonList.svelte';
   import type { TreeNode } from '$lib/ui';
   import type {
     DecompNode,
@@ -451,6 +452,7 @@
     <!-- Tree column -->
     <div class="tree-col">
       {#if !plan.tree || !plan.tree.children}
+        <SkeletonList rows={4} loading={true} label="loading plan rows" />
         <Empty title="no plan loaded" subtitle="submit a task to generate a decomposition tree" />
       {:else}
         <div class="tree-scroll">

@@ -1,13 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Tree, Badge, Scrollbar, UnwiredNote } from '$lib/ui';
+  import SkeletonList from '$lib/components/SkeletonList.svelte';
   import { researchData } from '$lib/state/drawers.svelte';
   import { plan } from '$lib/state/plan.svelte';
   import type { TreeNode } from '$lib/ui/tree-types';
   import type { DecompNode, ResearchTreeNode, ResearchNodeStage, SourceTierDistribution } from '$lib/api/types';
 
+  // E-33: cold-start loading flag — true on first mount until either
+  // researchData populates a node or the polled fetch returns at least
+  // once. SkeletonList renders during this window; switches to the
+  // "No research nodes" empty-note after the first resolve when the
+  // session truly has zero rows.
+  let loading = $state<boolean>(true);
+
   onMount(() => {
     researchData.bootstrap();
+    // Flip loading false on next paint — researchData.bootstrap() schedules
+    // its own polling; we just need to clear the cold-start shimmer once
+    // the store has had a chance to publish whatever it has.
+    queueMicrotask(() => { loading = false; });
     return researchData.teardown;
   });
 
@@ -117,7 +129,9 @@
       <!-- ── RESEARCH TREE ──────────────────────────────────── -->
       <section class="section">
         <div class="section-heading">RESEARCH TREE</div>
-        {#if researchNodes.length === 0}
+        {#if researchNodes.length === 0 && loading}
+          <SkeletonList rows={5} loading={loading} label="loading research stages" />
+        {:else if researchNodes.length === 0}
           <div class="empty-note">No research nodes for this session.</div>
         {:else}
           <div class="research-nodes">

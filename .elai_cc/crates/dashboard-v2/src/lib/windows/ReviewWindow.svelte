@@ -20,6 +20,7 @@
 
   import { onMount } from 'svelte';
   import { Button, Empty, Scrollbar } from '$lib/ui';
+  import SkeletonList from '$lib/components/SkeletonList.svelte';
   import * as stub from '$lib/api/stub';
   import type { FileChangeRow } from '$lib/api/types';
   import { session } from '../state/session.svelte';
@@ -197,9 +198,7 @@
 
 <div class="review" data-testid="review-window">
   {#if loading}
-    <div class="review__loading">
-      <span class="review__loading-text">loading file changes…</span>
-    </div>
+    <SkeletonList rows={5} loading={loading} label="loading file changes" />
   {:else if files.length === 0}
     <div class="review__empty">
       <Empty

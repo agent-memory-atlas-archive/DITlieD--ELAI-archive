@@ -12,6 +12,7 @@
   import { lcg, hashId, combineSeeds } from './lcg';
   import OrbitGrcDots from './OrbitGrcDots.svelte';
   import OrbitBudgetRing from './OrbitBudgetRing.svelte';
+  import { motion } from '../state/motion.svelte';
 
   interface Props {
     concept: ConceptStub;
@@ -24,6 +25,12 @@
     onSelectConcept: (conceptId: string) => void;
   }
   let { concept, cx, cy, isActive, fixture, zoomState, zoomToLevel, onSelectConcept }: Props = $props();
+
+  // E-33: reduced-motion guard for SVG <animate> elements. CSS @media
+  // (prefers-reduced-motion) at the bottom of this file already kills
+  // CSS-class animations; the JS guard here covers <animate> declarative
+  // SVG animation elements which the CSS media query does not reach.
+  let allowMotion = $derived(motion.allow);
 
   // ring radii (slightly tighter than the trial when multi-concept,
   // unchanged for single-concept layouts)
@@ -275,14 +282,14 @@
          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clickPhase(p, xy.x, xy.y); }}
          onmouseenter={() => { hovered = p.id; }} onmouseleave={() => { hovered = null; }}
          aria-label="phase: {p.label}">
-        {#if isPhaseActive}
+        {#if isPhaseActive && allowMotion}
           <circle cx={xy.x} cy={xy.y} r={r + 6} fill="none" stroke="var(--teal-bright)" stroke-width="1" opacity="0.35">
             <animate attributeName="r" values="{r + 4};{r + 13};{r + 4}" dur="3s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0.35;0;0.35" dur="3s" repeatCount="indefinite" />
           </circle>
         {/if}
         <circle cx={xy.x} cy={xy.y} r={r} fill={colorFor(status)} filter={isPhaseActive ? 'url(#bloom-soft)' : undefined}>
-          {#if isPhaseActive}
+          {#if isPhaseActive && allowMotion}
             <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" repeatCount="indefinite" />
           {/if}
         </circle>
@@ -308,14 +315,14 @@
          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clickStep(s, xy.x, xy.y); }}
          onmouseenter={() => { hovered = s.id; }} onmouseleave={() => { hovered = null; }}
          aria-label="step: {s.label}">
-        {#if isStepActive}
+        {#if isStepActive && allowMotion}
           <circle cx={xy.x} cy={xy.y} r={r + 5} fill="none" stroke="var(--teal-bright)" stroke-width="1" opacity="0.3">
             <animate attributeName="r" values="{r + 3};{r + 10};{r + 3}" dur="2.8s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0.3;0;0.3" dur="2.8s" repeatCount="indefinite" />
           </circle>
         {/if}
         <circle cx={xy.x} cy={xy.y} r={r} fill={colorFor(status)} filter={isStepActive ? 'url(#bloom-soft)' : undefined}>
-          {#if isStepActive}
+          {#if isStepActive && allowMotion}
             <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" repeatCount="indefinite" />
           {/if}
         </circle>
@@ -341,14 +348,14 @@
          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') clickBaby(b, xy.x, xy.y); }}
          onmouseenter={() => { hovered = b.id; }} onmouseleave={() => { hovered = null; }}
          aria-label="baby step: {b.label}">
-        {#if isBabyActive}
+        {#if isBabyActive && allowMotion}
           <circle cx={xy.x} cy={xy.y} r={11} fill="none" stroke="var(--teal-bright)" stroke-width="1.5" opacity="0.65">
             <animate attributeName="r" values="9;18;9" dur="2.2s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0.7;0;0.7" dur="2.2s" repeatCount="indefinite" />
           </circle>
         {/if}
         <circle cx={xy.x} cy={xy.y} r={r} fill={colorFor(status)} filter={isBabyActive ? 'url(#bloom-strong)' : undefined}>
-          {#if isBabyActive}
+          {#if isBabyActive && allowMotion}
             <animate attributeName="opacity" values="0.55;1;0.55" dur="2.2s" repeatCount="indefinite" />
           {/if}
         </circle>

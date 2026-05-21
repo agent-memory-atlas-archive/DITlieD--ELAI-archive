@@ -256,6 +256,73 @@
      the deep-space feel. Stars and nebulas are the ONLY light
      sources on the dome. */
   --nebula-deep:   rgb(0, 0, 0);
+
+  /* ----------------------------------------------------------
+     E-33 — Wong-derived 5-tone palette for SIGNAL layers only.
+     Brand teal + brand purple remain for window chrome / dividers.
+     Wong tones are used in ConfidenceTag, OrbitEvidenceGates verdict
+     center fills, OrbitGrcDots step rings. Color-blind-safe per
+     Wong 2011 + Datawrapper/Datylon recs + WCAG 2.2.
+  ---------------------------------------------------------- */
+  --signal-blue:      #0072B2;
+  --signal-orange:    #E69F00;
+  --signal-vermilion: #D55E00;
+  --signal-rose:      #CC79A7;
+  --signal-green:     #009E73;
+
+  /* Binary-confidence semantic mapping per Fuselab 2026 (4 states).
+     Glyph + text on top of color = redundant signal (WCAG 2.2 1.4.1). */
+  --confidence-needs-evidence: var(--signal-vermilion);
+  --confidence-low:            var(--signal-orange);
+  --confidence-ok:             var(--signal-blue);
+  --confidence-verified:       var(--signal-green);
+
+  /* Motion duration default — overridden under prefers-reduced-motion. */
+  --motion-scale: 1;
+}
+
+/* ----------------------------------------------------------
+   E-33 — Reduced-motion override (Pope.tech 2025 two-strategy:
+   disable decorative animation, retain semantic info via static
+   equivalents). Activated by OS-level prefers-reduced-motion: reduce
+   OR by user override Settings.accessibility.motion=reduced.
+---------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-scale: 0;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+  /* Halt all CSS animations + transitions. SVG animateTransform
+     elements are halted via `[data-motion-halt]` attribute set at
+     runtime by OrbitConcept / OrbitBudgetRing / OrbitGrcDots. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* User-override: when SettingsWindow toggle sets [data-motion="reduced"]
+   on documentElement, apply the same overrides even if the OS-level
+   media query did not match. Inverse: [data-motion="full"] forces motion
+   on even if OS prefers reduced. */
+:root[data-motion="reduced"] {
+  --motion-scale: 0;
+  --dur-fast: 0ms;
+  --dur-base: 0ms;
+  --dur-slow: 0ms;
+}
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
 }
 
 /* ----------------------------------------------------------
