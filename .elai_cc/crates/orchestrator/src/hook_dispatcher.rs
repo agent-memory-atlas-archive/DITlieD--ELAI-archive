@@ -20,6 +20,7 @@
 //!   by other dashboard-side toggles (see `dashboard/src/lib.rs` setup).
 
 use rustc_hash::FxHashMap;
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -48,6 +49,11 @@ use crate::ssb::{
 /// on every [`HookEventPayload`] so downstream filters and logs have a
 /// stable tag regardless of any future renames.
 pub const HOOK_EVENT_CATEGORY: &str = "hook_event";
+
+/// E-30: action_type value used when the caller is dispatching a Bash/shell
+/// tool invocation. `dispatch_pre_tool_use` runs `check_argv()` when this
+/// action_type is seen and `source` contains the command string.
+pub const BASH_TOOL_USE_ACTION: &str = "bash_tool_use";
 
 /// Env var that globally disables hook dispatch. Set to `1` / `true` / `on`
 /// to route every `dispatch_*` call to an empty-findings no-op.
@@ -773,7 +779,69 @@ impl HookDispatcher for InProcessHookDispatcher {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
     > {
-        Box::pin(async move { self.analyze(&invocation) })
+        Box::pin(async move {
+            // E-30: Non-LLM argv allowlist check (T1, <1ms).
+            // Runs BEFORE the tiered analysis pass so it cannot be bypassed
+            // by an LLM jailbreak of the prompt-level refusal.
+            // Fires only when the caller signals a shell tool invocation via
+            // the canonical action_type "bash_tool_use".
+            if invocation.action_type == BASH_TOOL_USE_ACTION {
+                if let Some(source) = invocation.source {
+                    let argv: Vec<OsString> = source
+                        .split_whitespace()
+                        .map(OsString::from)
+                        .collect();
+                    if !argv.is_empty() {
+                        use elai_safety::{check_argv, AllowlistVerdict};
+                        match check_argv(&argv) {
+                            AllowlistVerdict::Deny { reason, citation } => {
+                                let argv_hash = elai_safety::argv_blake3(&argv);
+                                trace!(
+                                    argv_hash = %argv_hash,
+                                    reason = %reason,
+                                    citation = %citation,
+                                    "E-30: argv_destructive_denied"
+                                );
+                                return Ok(vec![HookFinding {
+                                    tier: HookTier::T1,
+                                    verdict: HookVerdictKind::Block,
+                                    rule_id: Some("e30-argv-deny".into()),
+                                    category: HOOK_EVENT_CATEGORY.into(),
+                                    message: format!(
+                                        "{SANITIZED_BLOCK_MESSAGE}: {reason}"
+                                    ),
+                                    fix_template: Some(citation.to_owned()),
+                                }]);
+                            }
+                            AllowlistVerdict::RequireHumanApproval { reason, citation } => {
+                                let argv_hash = elai_safety::argv_blake3(&argv);
+                                trace!(
+                                    argv_hash = %argv_hash,
+                                    reason = %reason,
+                                    citation = %citation,
+                                    "E-30: argv_approval_required"
+                                );
+                                // Approval-required: emit WARN finding (block = caller decision).
+                                let mut findings = self.analyze(&invocation)?;
+                                findings.push(HookFinding {
+                                    tier: HookTier::T1,
+                                    verdict: HookVerdictKind::Warn,
+                                    rule_id: Some("e30-argv-approval".into()),
+                                    category: HOOK_EVENT_CATEGORY.into(),
+                                    message: format!(
+                                        "human approval required: {reason}"
+                                    ),
+                                    fix_template: Some(citation.to_owned()),
+                                });
+                                return Ok(findings);
+                            }
+                            AllowlistVerdict::Allow => {}
+                        }
+                    }
+                }
+            }
+            self.analyze(&invocation)
+        })
     }
 
     fn dispatch_post_tool_use<'a>(

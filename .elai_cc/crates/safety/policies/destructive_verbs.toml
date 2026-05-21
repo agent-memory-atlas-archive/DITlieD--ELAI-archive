@@ -1,0 +1,30 @@
+# E-30: destructive verb policy extensions (loaded at runtime by check_argv).
+# Format: [[patterns]]
+# Each entry: pattern (regex), verdict ("deny" or "require_human_approval"), reason, citation
+#
+# These extend the compiled-in patterns in destructive_verb_allowlist.rs.
+# File is optional — missing file is non-fatal; compiled-in patterns always apply.
+
+[[patterns]]
+pattern = "psql\\s+.*\\s+-c\\s+.*DROP"
+verdict = "deny"
+reason = "SQL DROP via psql CLI"
+citation = "Replit SaaStr 2025-07: DROP TABLE dropped production database (incidentdatabase.ai/cite/1152)"
+
+[[patterns]]
+pattern = "mysqldump\\s+.*--add-drop-table"
+verdict = "require_human_approval"
+reason = "mysqldump with drop-table flag drops tables on import"
+citation = "Production database safety (general best practice)"
+
+[[patterns]]
+pattern = "heroku\\s+.*\\s+destroy"
+verdict = "require_human_approval"
+reason = "Heroku app destroy is irreversible"
+citation = "Heroku production safety (general best practice)"
+
+[[patterns]]
+pattern = "npx\\s+.*\\s+--reset|yarn\\s+.*\\s+--reset"
+verdict = "require_human_approval"
+reason = "Package manager reset can delete node_modules and lock files"
+citation = "General node tooling safety"

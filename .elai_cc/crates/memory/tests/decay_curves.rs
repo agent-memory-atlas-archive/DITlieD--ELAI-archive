@@ -1,7 +1,7 @@
 //! Decay curve sanity. Verifies the pure math + the batch helper against
 //! known half-lives.
 
-use elai_memory::{decay_tick, decayed_trust, FactStore, FactType, MemoryFact, Scope};
+use elai_memory::{decay_tick, decayed_trust, FactStore, FactType, MemoryFact, Provenance, Scope, TrustTier};
 
 #[test]
 fn pure_math_monotone_and_bounded() {
@@ -47,6 +47,8 @@ fn decay_tick_updates_and_emits_stats() {
         last_observed_at_ms: t0,
         evidence_pointers: vec!["sess-1".into(), "msg-1".into()],
         superseded_by: None,
+        trust_tier: TrustTier::T1CodebaseDerived,
+        provenance: Provenance::codebase_derived("test"),
     };
     store.insert(&f).expect("insert");
 

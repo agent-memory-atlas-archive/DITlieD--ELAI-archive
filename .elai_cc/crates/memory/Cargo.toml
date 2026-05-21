@@ -23,5 +23,9 @@ rustc-hash = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 
+[[test]]
+name = "memory_trust_contract"
+path = "tests/contracts/memory_trust_contract.rs"
+
 [lints.clippy]
 all = { level = "warn", priority = -1 }

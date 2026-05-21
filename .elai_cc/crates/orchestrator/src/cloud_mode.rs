@@ -75,8 +75,8 @@ pub const CLAUDE_SONNET_4_6_CACHE_WRITE_PRICE_PER_TOKEN: f64 = 3.75e-6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecMode {
     /// Force the local sidecar path — cheap, private, capped at the
-    /// sidecar's measured ceiling (~25K tokens for Qwen2.5-Coder 3B
-    /// NF4 on 12GB).
+    /// sidecar's effective ceiling (32K for Qwen2.5-Coder-7B NF4 per E-32;
+    /// RuntimeCapabilities::max_context is the authoritative value).
     Local,
     /// Force the cloud path — uses the configured provider and the
     /// cloud_200k context profile. Requires OAuth credentials.

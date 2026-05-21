@@ -857,6 +857,7 @@ mod tests {
             served_model_names: vec!["gemma4".to_string()],
             temperature: 0.5,
             max_tokens: 1024,
+            steering: crate::layer_config::steering::SteeringConfig::default(),
         };
 
         let json = serde_json::to_string(&config).expect("serialize");

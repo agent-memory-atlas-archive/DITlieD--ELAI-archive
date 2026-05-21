@@ -11,7 +11,6 @@
 use crate::error::MemoryError;
 use crate::fact::{FactType, MemoryFact, Scope};
 use crate::store::FactStore;
-
 /// Predicate bundle for [`get_relevant_facts`]. All fields are optional —
 /// `None` means "no filter applied at that axis".
 #[derive(Debug, Clone, Default)]
@@ -26,6 +25,10 @@ pub struct RetrievalFilter {
     /// [`FactType::retrieval_threshold`]. Useful for high-stakes-action
     /// gates (commit / force-push / delete).
     pub trust_override: Option<f32>,
+    /// C-48 SafeHarbor: when true, only T0+T1 rows are returned. Mandatory
+    /// for safety-critical query types (destructive_command_intent,
+    /// merge_decision, auth_decision, credential_fetch).
+    pub safety_critical: bool,
 }
 
 /// Trust-and-provenance-filtered top-K retrieval. Returns up to `k`
@@ -52,7 +55,29 @@ pub fn get_relevant_facts(
     let candidate_limit = k.saturating_mul(4).max(64);
     let candidates = store.list_current(user_id, None, filter.fact_type, candidate_limit)?;
 
-    let mut filtered: Vec<MemoryFact> = candidates
+    // C-48 SafeHarbor: when safety_critical=true, track excluded T2/T3 rows
+    // and emit a tracing event per exclusion so callers with access to the SSB
+    // bus can produce `safety_critical_blocked` rows. Silent exclusion is banned
+    // per WIRING_CONTRACT stub_ban.
+    let (candidates_allowed, safety_blocked): (Vec<_>, Vec<_>) = if filter.safety_critical {
+        candidates
+            .into_iter()
+            .partition(|f| f.trust_tier.is_safety_critical_allowed())
+    } else {
+        (candidates, vec![])
+    };
+
+    for blocked in &safety_blocked {
+        tracing::info!(
+            target = "memory.safety_critical_blocked",
+            fact_id = %blocked.fact_id,
+            trust_tier = %blocked.trust_tier.as_str(),
+            user_id = %user_id,
+            "C-48: T2/T3 fact excluded from safety-critical query (safety_critical_blocked)"
+        );
+    }
+
+    let mut filtered: Vec<MemoryFact> = candidates_allowed
         .into_iter()
         .filter(|f| match (f.scope, &filter.project_id) {
             // Globals always pass the scope filter.

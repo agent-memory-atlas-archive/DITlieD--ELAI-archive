@@ -1903,7 +1903,9 @@ export type RuntimeBackendId =
   | 'kiro_cli'
   | 'copilot_cli'
   | 'ollama'
-  | 'vllm';
+  | 'vllm'
+  | 'mlx'
+  | 'llama_cpp';
 
 /** Stable iteration order matching `RuntimeBackend::all()`. */
 export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
@@ -1918,6 +1920,8 @@ export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
   'copilot_cli',
   'ollama',
   'vllm',
+  'mlx',
+  'llama_cpp',
 ] as const;
 
 /** Discriminator for the `RuntimeHealth` serde tag. */

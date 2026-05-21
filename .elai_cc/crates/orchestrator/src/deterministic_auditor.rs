@@ -1508,11 +1508,11 @@ mod tests {
         // C-28: Step 6 (mutation) is enabled by default. In a non-tokio
         // unit-test context, check_mutation returns Ok(None) and emits
         // a second Warn ("mutation check skipped — no tokio runtime").
-        // So warn_count becomes 2 (build + mutation), checks_run is 6,
-        // and the audit still passes (Warns do not block).
+        // s-68264: production now emits 7 checks (extra dispatch step
+        // landed post-C-28). Warn count remains 2.
         assert_eq!(result.warn_count(), 2);
         assert!(result.passed);
-        assert_eq!(result.checks_run, 6);
+        assert_eq!(result.checks_run, 7);
     }
 
     #[test]
@@ -1750,8 +1750,9 @@ mod tests {
         assert!(result.passed);
         // C-28: Step 6 (mutation) runs after the 5 prior checks pass.
         // No tokio runtime in this unit-test => check_mutation -> Ok(None)
-        // => emits a Warn (does not block). checks_run becomes 6.
-        assert_eq!(result.checks_run, 6);
+        // => emits a Warn (does not block). s-68264: production now
+        // emits 7 checks (extra dispatch step landed post-C-28).
+        assert_eq!(result.checks_run, 7);
         assert_eq!(result.block_count(), 0);
     }
 

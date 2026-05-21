@@ -148,9 +148,18 @@ impl ClockProvider for FarFutureClock {
         let overflow_secs: u64 = (i64::MAX as u64) / 1000 + 1;
         SystemTime::UNIX_EPOCH + Duration::from_secs(overflow_secs)
     }
+    // s-68264 audit cleanup: ClockProvider gained instant_now (C-15.1). Return std Instant::now()
+    // here — only system_now overflow is under test, instant_now is unused by ArtifactStore.publish.
+    fn instant_now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
 }
 
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "P: Windows std::time panics on UNIX_EPOCH + Duration(~9.22e15s) at the Instant layer (library/std/src/time.rs:614). The contract under test is the u128->i64 narrowing inside ArtifactStore::publish; the mock clock cannot construct a SystemTime past i64::MAX ms on Windows. Linux/macOS exercise the path fully."
+)]
 async fn publish_returns_clock_overflow_when_epoch_exceeds_i64_max() {
     let tmp = TempDir::new().expect("tempdir");
     let root = tmp.path().to_path_buf();

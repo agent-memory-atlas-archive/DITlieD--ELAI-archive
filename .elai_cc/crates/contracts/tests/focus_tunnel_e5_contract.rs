@@ -430,12 +430,13 @@ fn pre_assembled_context_carries_step_metadata() {
 // B-28 WIRING-1 — PipelinePreAssembled SSB round-trip + aggregator wired
 // ---------------------------------------------------------------------------
 
-/// SCHEMA_VERSION bumped to 35 atomically with 3 new variants.
+/// SCHEMA_VERSION bumped to 35 (WIRING-1 baseline floor; live floor moves forward).
 #[test]
 fn ssb_schema_version_is_35_after_wiring1() {
-    assert_eq!(
-        SCHEMA_VERSION_PUBLIC, 35,
-        "WIRING-1 must bump SSB schema 32 -> 35 atomically (PipelinePreAssembled / DependencyResolved / MicroStepCreated)",
+    assert!(
+        SCHEMA_VERSION_PUBLIC >= 35,
+        "WIRING-1 must bump SSB schema to >=35 atomically (PipelinePreAssembled / DependencyResolved / MicroStepCreated); got {}",
+        SCHEMA_VERSION_PUBLIC
     );
 }
 

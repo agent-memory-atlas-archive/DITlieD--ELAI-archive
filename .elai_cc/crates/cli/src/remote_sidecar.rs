@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use elai_core::clock::{ClockProvider, OsClock};
+use elai_providers::runtime::{detect_mlx_capable, MlxCapability, RuntimeBackend};
 
 // SSH connection details (from CLAUDE.md "Remote sidecar (canonical)").
 const SSH_HOST: &str = "192.0.2.10";
@@ -274,6 +275,32 @@ fn poll_until_healthy(client: &reqwest::blocking::Client) -> Result<(), anyhow::
         thread::sleep(Duration::from_millis(wait_ms));
         // Exponential backoff capped at 8 s.
         wait_ms = (wait_ms * 3 / 2).min(8_000);
+    }
+}
+
+/// Resolve the runtime backend from the `ELAI_RUNTIME_BACKEND` env var,
+/// falling back to `Sidecar` for the remote-sidecar boot path.
+pub(crate) fn resolve_runtime_backend_from_env() -> RuntimeBackend {
+    match std::env::var("ELAI_RUNTIME_BACKEND")
+        .as_deref()
+        .unwrap_or("")
+    {
+        "mlx" => {
+            let cap = detect_mlx_capable();
+            match cap {
+                MlxCapability::AppleSilicon { .. } => RuntimeBackend::Mlx,
+                _ => {
+                    tracing::warn!(
+                        "ELAI_RUNTIME_BACKEND=mlx requested but platform is {:?}; \
+                         falling back to Sidecar",
+                        cap
+                    );
+                    RuntimeBackend::Sidecar
+                }
+            }
+        }
+        "llama_cpp" | "llamacpp" => RuntimeBackend::LlamaCpp,
+        _ => RuntimeBackend::Sidecar,
     }
 }
 

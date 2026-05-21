@@ -1414,6 +1414,7 @@ dependencies = [
  "elai-providers",
  "elai-reasoning",
  "elai-rules",
+ "elai-safety",
  "elai-tools",
  "elai-web-search",
  "elai-web-validator",
@@ -1465,8 +1466,10 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tree-sitter",
  "tree-sitter-c-sharp",
@@ -1532,6 +1535,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "elai-safety"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "once_cell",
+ "regex",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -1617,6 +1632,7 @@ dependencies = [
  "elai-providers",
  "elai-reasoning",
  "elai-rules",
+ "elai-safety",
  "elai-tools",
  "elai-web-search",
  "elai-web-validator",
@@ -1626,6 +1642,7 @@ dependencies = [
  "rusqlite",
  "rustc-hash",
  "scaffold",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

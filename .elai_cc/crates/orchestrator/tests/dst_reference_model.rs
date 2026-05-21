@@ -109,13 +109,15 @@ fn synthetic_regression_invariant_violation() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: All 9 FsmState variants covered in valid_targets
+// Test 3: All FsmState variants covered in valid_targets
+// Originally 9 states; D-plan added RESEARCHING (Oracle Mode) -> 10 states.
+// Source: orchestrator/src/fsm.rs L26-40 (FsmState enum) + L44-55 (ALL).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn all_nine_fsm_states_have_transitions() {
     let all_states = FsmState::ALL;
-    assert_eq!(all_states.len(), 9, "Expected 9 FSM states");
+    assert_eq!(all_states.len(), 10, "Expected 10 FSM states (9 original + RESEARCHING)");
 
     for state in &all_states {
         let targets = state.valid_targets();

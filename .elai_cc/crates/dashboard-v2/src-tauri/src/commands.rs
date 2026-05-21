@@ -83,6 +83,69 @@ pub fn greet(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// E-51: Runtime capability probe
+// ---------------------------------------------------------------------------
+
+/// E-51: Probe the current platform's capability for a given backend.
+/// Returns a JSON object with platform-specific availability information.
+#[tauri::command]
+pub fn runtime_capability_probe(backend: &str) -> serde_json::Value {
+    use elai_providers::runtime::{detect_llamacpp_ep, detect_mlx_capable, MlxCapability};
+    match backend {
+        "mlx" => {
+            let cap = detect_mlx_capable();
+            match &cap {
+                MlxCapability::NotApple => json!({
+                    "backend": "mlx",
+                    "available": false,
+                    "reason": "Not a Darwin platform (MLX requires macOS arm64)",
+                    "platform_badge": "not-apple"
+                }),
+                MlxCapability::AppleIntel => json!({
+                    "backend": "mlx",
+                    "available": false,
+                    "reason": "Intel Mac detected (MLX requires Apple Silicon M-series)",
+                    "platform_badge": "apple-intel"
+                }),
+                MlxCapability::AppleSilicon { chip_family, gpu_cores } => json!({
+                    "backend": "mlx",
+                    "available": true,
+                    "reason": format!("{:?} with {} GPU cores detected", chip_family, gpu_cores),
+                    "platform_badge": "apple-silicon"
+                }),
+            }
+        }
+        "llama_cpp" => {
+            let ep = detect_llamacpp_ep();
+            json!({
+                "backend": "llama_cpp",
+                "available": true,
+                "ep": format!("{:?}", ep),
+                "reason": format!("LlamaCpp available with {:?} execution provider", ep),
+                "platform_badge": format!("ep-{:?}", ep).to_lowercase()
+            })
+        }
+        _ => json!({
+            "backend": backend,
+            "available": false,
+            "reason": "Unknown backend for capability probe"
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-24: MCP security status
+// ---------------------------------------------------------------------------
+
+/// E-24: Returns MCP security status for all connected servers.
+/// In MVP, returns an empty list (no connected servers on startup).
+/// The dashboard polls this to render McpStatusPanel.
+#[tauri::command]
+pub fn get_mcp_security_status() -> Vec<serde_json::Value> {
+    vec![]
+}
+
+// ---------------------------------------------------------------------------
 // FSM / SYSTEM STATUS
 // ---------------------------------------------------------------------------
 

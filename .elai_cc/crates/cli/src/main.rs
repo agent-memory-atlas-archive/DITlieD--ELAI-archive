@@ -59,6 +59,7 @@ mod bench_conformal;
 mod bench_arc;
 mod runtime_client;
 mod runtime_cmd;
+mod mcp_client;
 mod tool_executor;
 mod tool_formatting;
 
@@ -248,8 +249,59 @@ fn main() {
     }
 }
 
+/// Gateway-rejection guard per E-24 Task 6.
+/// Warns if ANTHROPIC_BASE_URL is set to a known LLM gateway URL.
+/// Returns the gateway name if detected, None for safe or unknown URLs.
+/// Hard-block requires --strict-no-gateway flag (not yet wired; warn only for now).
+pub(crate) fn check_anthropic_gateway(base_url: &str) -> Option<String> {
+    let known_gateways = [
+        ("openrouter.ai", "openrouter"),
+        ("litellm", "litellm"),
+        ("portkey.ai", "portkey"),
+        ("openai.azure.com", "azure-openai"),
+    ];
+
+    let url_lower = base_url.to_lowercase();
+    for (pattern, name) in &known_gateways {
+        if url_lower.contains(pattern) {
+            return Some((*name).to_string());
+        }
+    }
+
+    // Known-safe URLs: localhost, loopback, or official Anthropic API.
+    if url_lower.starts_with("http://localhost:")
+        || url_lower.starts_with("http://127.0.0.1:")
+        || url_lower.starts_with("https://api.anthropic.com")
+    {
+        return None;
+    }
+
+    // Unknown URL -- warn but do not block (no --strict-no-gateway in args yet).
+    None
+}
+
 fn run() -> Result<(), anyhow::Error> {
     let args: Vec<String> = env::args().skip(1).collect();
+    // C-35: emit startup warning when --tool-gate-off is active.
+    // The flag is recognized in parse_args (args.rs) and stored as ELAI_TOOL_GATE_OFF=1.
+    // Check before parse_args so the warning fires even if the action itself changes.
+    if args.iter().any(|a| a == "--tool-gate-off") {
+        eprintln!("[WARN] tool gating disabled; prompt costs will be 5-10x higher");
+    }
+    // E-24: gateway-rejection guard. Warn if ANTHROPIC_BASE_URL points at a
+    // known LLM gateway (openrouter, litellm, portkey). Prompt cache breaks
+    // through these gateways and latency overhead can be 50ms+.
+    if let Ok(base_url) = env::var("ANTHROPIC_BASE_URL") {
+        if let Some(gateway) = check_anthropic_gateway(&base_url) {
+            tracing::warn!(
+                gateway = %gateway,
+                base_url = %base_url,
+                "anthropic_gateway_detected: ANTHROPIC_BASE_URL points at a known gateway; \
+                 prompt cache is broken through gateways and latency overhead applies. \
+                 Use api.anthropic.com directly or localhost sidecar."
+            );
+        }
+    }
     match parse_args(&args).map_err(|e| anyhow::anyhow!(e))? {
         CliAction::DumpManifests { output_format } => auth::dump_manifests(output_format)?,
         CliAction::BootstrapPlan { output_format } => auth::print_bootstrap_plan(output_format)?,
@@ -295,7 +347,7 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
         // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-        CliAction::Run { project_root, mode, provider } => {
+        CliAction::Run { project_root, mode, provider, via_mcp } => {
             // C-17 (DRIFT-D/E): auto-resume + process-wide signal observer
             // for the long-lived `elai run` task_runner scope. Runs BEFORE
             // run_subcommand builds its own tokio runtime so the resume
@@ -305,6 +357,7 @@ fn run() -> Result<(), anyhow::Error> {
                 project_root,
                 mode,
                 provider,
+                via_mcp,
             })?
         }
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
@@ -421,6 +474,53 @@ fn run() -> Result<(), anyhow::Error> {
         } => {
             bench_arc::run(dataset, output, novelty_config)?;
         }
+        // E-30: `elai incident record ...` — store an incident postmortem entry.
+        CliAction::IncidentRecord {
+            title,
+            incident_date,
+            source_url,
+            incident_id,
+        } => {
+            cmd_incident_record(title, incident_date, source_url, incident_id)?;
+        }
     }
+    Ok(())
+}
+
+/// E-30: Store an incident postmortem entry in the SSB.
+///
+/// Emits `SsbActionType::IncidentRecordCreated` so the dashboard can surface
+/// the entry in its activity feed. The incident_id defaults to a slug derived
+/// from the title if not provided.
+fn cmd_incident_record(
+    title: String,
+    incident_date: String,
+    source_url: String,
+    incident_id: Option<String>,
+) -> anyhow::Result<()> {
+    // Derive an ID from the title if none was provided.
+    let id = incident_id.unwrap_or_else(|| {
+        let slug: String = title
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        format!("inc-{slug}")
+    });
+    // Print the record to stdout in a machine-readable format.
+    // The SSB write path requires a running runtime; for now we emit a
+    // JSON record to stdout so CI scripts can ingest it. The full SSB
+    // write path is wired in the run_subcommand integration layer (E-30 Task 9).
+    let record = serde_json::json!({
+        "action_type": "incident_record_created",
+        "incident_id": id,
+        "title": title,
+        "incident_date": incident_date,
+        "source_url": source_url,
+    });
+    println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())
 }

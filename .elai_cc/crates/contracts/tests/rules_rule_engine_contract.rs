@@ -388,7 +388,9 @@ fn contract_fsm_phase_bit_mask_values() {
 
 #[test]
 fn contract_fsm_phase_bit_from_raw_rejects_invalid() {
-    assert!(FsmPhaseBit::from_raw(7).is_none());
+    // D-plan added RESEARCHING (bit 7); valid range is now 0..=7.
+    // Source: crates/rules/src/rule_engine.rs L26-42 (MAX_BIT = 7).
+    assert!(FsmPhaseBit::from_raw(8).is_none());
     assert!(FsmPhaseBit::from_raw(255).is_none());
 }
 

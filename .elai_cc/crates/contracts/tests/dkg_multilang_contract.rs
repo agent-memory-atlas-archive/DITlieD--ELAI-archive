@@ -195,7 +195,11 @@ fn contract_ext_to_lang_id_maps_all_extensions() {
 
 #[test]
 fn contract_ext_to_lang_id_unknown_returns_none() {
-    let unknown_exts = &["cpp", "h", "zig", "swift", "kt", ""];
+    // C-50 + Pass D expanded the supported list: cpp/cc/cxx,
+    // swift, kt/kts, scala, php, svelte, vue, sh, etc. Pick
+    // extensions that genuinely have no grammar wired in
+    // ext_to_lang_id (knowledge/src/dkg/mod.rs L3396-3424).
+    let unknown_exts = &["h", "hpp", "hxx", "zig", "dart", "lua", "m", "mm", ""];
     for ext in unknown_exts {
         assert_eq!(
             ext_to_lang_id(ext),

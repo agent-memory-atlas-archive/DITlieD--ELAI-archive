@@ -633,6 +633,10 @@ pub fn run() {
             // (D-15) so ModeRoutingDashboardView refreshes in one
             // round-trip. No producer.
             commands_d27::get_mode_routing_refusal_combined,
+            // E-24 -- MCP bridge hardening status surface.
+            commands::get_mcp_security_status,
+            // E-51 -- Runtime capability probe (MLX / LlamaCpp platform detect).
+            commands::runtime_capability_probe,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

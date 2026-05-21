@@ -230,6 +230,15 @@ fn create_runtime_returns_box_dyn_for_every_backend() {
                 // Auth/HTTP failure during construction is acceptable
                 // for cloud-shaped backends without credentials.
             }
+            Err(RuntimeAdapterError::Other(msg)) => {
+                // Platform-restricted backends (e.g. Mlx requires
+                // Darwin+arm64) and CLI-launch backends may surface a
+                // setup-time Other error on unsupported hosts. Accept
+                // that as a non-panic outcome; the contract is just
+                // "never panic on a known variant".
+                // E-51 + C-44 added Mlx/LlamaCpp. C-25 added more cloud.
+                let _ = msg;
+            }
             Err(other) => panic!(
                 "create_runtime({backend:?}) returned unexpected error: {other:?}"
             ),

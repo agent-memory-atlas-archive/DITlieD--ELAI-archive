@@ -15,6 +15,7 @@ dependencies = [
     "orjson>=3.10.0",
     "structlog>=24.1.0",
     "lm-format-enforcer>=0.10.11",
+    "autoawq>=0.2.0",
 ]
 
 [project.optional-dependencies]

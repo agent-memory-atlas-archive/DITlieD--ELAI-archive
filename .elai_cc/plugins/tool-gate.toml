@@ -1,0 +1,55 @@
+# C-35: Tool Gate Manifest
+# Per-FSM-state tool gating configuration. Covers all 10 FsmState variants.
+# eager: full schema in every prompt for this state (capped at max_eager_schemas).
+# gated: name + 1-line summary only (lazy schema on first tool-call reference).
+# denied: omitted entirely; call attempt returns structured error (tool_denied SSB row).
+
+[gate.idle]
+eager = []
+gated = ["knowledge.search", "knowledge.symbol_impact"]
+denied = ["fs.write", "fs.edit", "git.commit", "runtime.invoke"]
+
+[gate.planning]
+eager = ["knowledge.search", "knowledge.symbol_impact"]
+gated = ["fs.read", "fs.grep", "git.diff", "runtime.health"]
+denied = ["git.commit", "runtime.invoke"]
+
+[gate.feasibility_probe]
+eager = ["knowledge.search", "fs.read"]
+gated = ["knowledge.symbol_impact", "fs.grep", "git.diff"]
+denied = ["git.commit", "fs.write", "runtime.invoke"]
+
+[gate.testing_first]
+eager = ["fs.read", "fs.write"]
+gated = ["knowledge.search", "fs.grep", "git.diff"]
+denied = ["git.commit", "runtime.invoke"]
+
+[gate.executing]
+eager = ["fs.read", "fs.edit", "fs.write"]
+gated = ["knowledge.search", "git.diff", "runtime.invoke", "runtime.health"]
+denied = []
+
+[gate.auditing]
+eager = ["knowledge.search", "fs.read"]
+gated = ["fs.grep", "git.diff", "runtime.health"]
+denied = ["fs.write", "fs.edit", "git.commit", "runtime.invoke"]
+
+[gate.memorizing]
+eager = ["knowledge.search"]
+gated = ["fs.read", "fs.grep"]
+denied = ["fs.write", "fs.edit", "git.commit", "runtime.invoke"]
+
+[gate.complete]
+eager = []
+gated = ["knowledge.search"]
+denied = ["fs.write", "fs.edit", "git.commit", "runtime.invoke"]
+
+[gate.configuring]
+eager = ["fs.read"]
+gated = ["knowledge.search", "fs.grep"]
+denied = ["git.commit", "runtime.invoke"]
+
+[gate.researching]
+eager = ["knowledge.search", "knowledge.symbol_impact"]
+gated = ["fs.read", "fs.grep"]
+denied = ["fs.write", "fs.edit", "git.commit", "runtime.invoke"]

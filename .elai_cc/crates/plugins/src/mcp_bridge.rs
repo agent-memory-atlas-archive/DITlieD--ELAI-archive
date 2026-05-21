@@ -16,6 +16,7 @@
 // stdio transport remains unimplemented — dashboard wiring targets the HTTP
 // variant (typical for local MCP servers on `http://localhost:8200`).
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -65,6 +66,26 @@ pub enum McpTransport {
     Sse,
     /// Streamable HTTP
     Http,
+}
+
+/// Transport mode selection for MCP connections.
+///
+/// E-24: Streamable HTTP is the MCP spec 2025-11-25 default.
+/// SSE legacy kept for backward compatibility; emits startup warning SSB row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransportMode {
+    /// MCP spec 2025-11-25 Streamable HTTP (default).
+    StreamableHttp,
+    /// Legacy SSE transport -- kept for backward compatibility, emits startup
+    /// warning `mcp_legacy_sse_transport` SSB row.
+    SseLegacy,
+}
+
+impl Default for McpTransportMode {
+    fn default() -> Self {
+        Self::StreamableHttp
+    }
 }
 
 /// MCP connection handle
@@ -493,7 +514,7 @@ mod tests {
     #[test]
     fn test_clean_result_variations() {
         let bridge = DefaultMcpBridge::default();
-        
+
         let clean_results = vec![
             serde_json::json!({"output": "This is a normal response"}),
             serde_json::json!({"data": "Some data", "count": 42}),
@@ -503,5 +524,141 @@ mod tests {
         for result in clean_results {
             assert!(bridge.sanitize_result(&result).is_ok());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-24: Trail-of-Bits line-jumping sanitization (OWASP MCP07:2025)
+// ---------------------------------------------------------------------------
+
+/// Rule IDs for Trail-of-Bits line-jumping sanitization patterns.
+///
+/// Reference: blog.trailofbits.com/2025/04/21/jumping-the-line-how-mcp-servers-can-attack-you-before-you-ever-use-them/
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SanitizeRuleId {
+    /// Markdown code-fenced commands inside descriptions.
+    MarkdownCodeFencedCommand,
+    /// `<system>`, `<assistant>`, `<user>` role tags.
+    RoleTag,
+    /// "ignore previous instructions" and similar prompt-leak strings.
+    PromptLeakString,
+    /// Shell command prefixes: chmod, rm, curl, wget, eval, bash -c.
+    ShellPrefix,
+    /// URL exfil patterns: `?data=` query params on external domains.
+    UrlExfil,
+}
+
+impl SanitizeRuleId {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::MarkdownCodeFencedCommand => "markdown_code_fenced_command",
+            Self::RoleTag => "role_tag",
+            Self::PromptLeakString => "prompt_leak_string",
+            Self::ShellPrefix => "shell_prefix",
+            Self::UrlExfil => "url_exfil",
+        }
+    }
+}
+
+/// Result of description sanitization.
+#[derive(Debug, Clone)]
+pub struct SanitizeResult {
+    pub sanitized: String,
+    pub rules_applied: Vec<SanitizeRuleId>,
+    pub replacement_count: usize,
+}
+
+/// Sanitize an MCP tool description against Trail-of-Bits line-jumping
+/// patterns. Each matched pattern is replaced with `[REDACTED]` and recorded
+/// in the returned `rules_applied` list.
+pub fn sanitize_description(desc: &str) -> SanitizeResult {
+    let mut result = desc.to_owned();
+    let mut rules_applied = Vec::new();
+    let mut replacement_count = 0usize;
+
+    // Rule 1: Markdown code-fenced commands (```...``` blocks).
+    {
+        let re = Regex::new(r"```[^`]*```").expect("valid regex");
+        let count = re.find_iter(&result.clone()).count();
+        if count > 0 {
+            result = re.replace_all(&result, "[REDACTED]").into_owned();
+            rules_applied.push(SanitizeRuleId::MarkdownCodeFencedCommand);
+            replacement_count += count;
+        }
+    }
+
+    // Rule 2: Role tags <system>, <assistant>, <user> (and closing variants).
+    {
+        let re = Regex::new(r"(?i)</?(?:system|assistant|user)>").expect("valid regex");
+        let count = re.find_iter(&result.clone()).count();
+        if count > 0 {
+            result = re.replace_all(&result, "[REDACTED]").into_owned();
+            rules_applied.push(SanitizeRuleId::RoleTag);
+            replacement_count += count;
+        }
+    }
+
+    // Rule 3: Prompt-leak strings.
+    let prompt_leak_patterns = [
+        "ignore previous instructions",
+        "ignore all instructions",
+        "disregard above",
+        "forget everything",
+        "new instructions:",
+        "you are now",
+        "override:",
+    ];
+    {
+        let lower = result.to_lowercase();
+        let mut any_matched = false;
+        for pattern in &prompt_leak_patterns {
+            let count = lower.matches(pattern).count();
+            if count > 0 {
+                let re = Regex::new(&regex::escape(pattern)).expect("valid regex");
+                result = re.replace_all(&result, "[REDACTED]").into_owned();
+                replacement_count += count;
+                any_matched = true;
+            }
+        }
+        if any_matched {
+            rules_applied.push(SanitizeRuleId::PromptLeakString);
+        }
+    }
+
+    // Rule 4: Shell command prefixes.
+    let shell_prefixes = ["chmod", "rm ", "curl ", "wget ", "eval ", "bash -c"];
+    {
+        let lower = result.to_lowercase();
+        let mut any_matched = false;
+        for prefix in &shell_prefixes {
+            if lower.contains(prefix) {
+                let re = Regex::new(&format!("(?i){}", regex::escape(prefix)))
+                    .expect("valid regex");
+                let count = re.find_iter(&result.clone()).count();
+                result = re.replace_all(&result, "[REDACTED]").into_owned();
+                replacement_count += count;
+                any_matched = true;
+            }
+        }
+        if any_matched {
+            rules_applied.push(SanitizeRuleId::ShellPrefix);
+        }
+    }
+
+    // Rule 5: URL exfil patterns (?data= query params on external domains).
+    {
+        let re = Regex::new(r"https?://[^\s]*\?[^\s]*data=[^\s]*").expect("valid regex");
+        let count = re.find_iter(&result.clone()).count();
+        if count > 0 {
+            result = re.replace_all(&result, "[REDACTED]").into_owned();
+            rules_applied.push(SanitizeRuleId::UrlExfil);
+            replacement_count += count;
+        }
+    }
+
+    SanitizeResult {
+        sanitized: result,
+        rules_applied,
+        replacement_count,
     }
 }

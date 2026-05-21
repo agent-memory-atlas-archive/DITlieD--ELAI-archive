@@ -162,7 +162,7 @@ impl RuntimeAdapter for SidecarRuntime {
             supports_tools: false,
             supports_streaming: false,
             supports_vision: false,
-            max_context: 25_000,
+            max_context: 32_000, // E-32: raised from 25K to 32K (native Qwen2.5-Coder-7B window)
             max_output: self.max_tokens,
             json_schema_mode: false,
             supports_prefill: false,

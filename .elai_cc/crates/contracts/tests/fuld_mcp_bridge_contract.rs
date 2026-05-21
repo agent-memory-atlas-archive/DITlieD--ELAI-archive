@@ -301,7 +301,7 @@ mod gated {
         assert!(result.is_err(), "unreachable server should Err");
     }
 
-    /// Contract 11: runtime flag parsing — `ELAI_ENABLE_MCP=1` -> true,
+    /// Contract 11: runtime flag parsing -- `ELAI_ENABLE_MCP=1` -> true,
     /// unset -> false. We exercise the parse rule indirectly since
     /// touching process-wide env in unit tests would race other tests;
     /// we instead assert the constant's name + shape.
@@ -312,4 +312,44 @@ mod gated {
         // can set it without quoting.
         assert!(ELAI_ENABLE_MCP_ENV.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()));
     }
+}
+
+// ---------------------------------------------------------------------------
+// E-24: Hardening regression contracts (non-gated).
+// ---------------------------------------------------------------------------
+
+/// E-24 Contract: sanitize_description returns clean result for benign input.
+#[test]
+fn contract_e24_sanitize_benign_passthrough() {
+    use elai_plugins::mcp_bridge::sanitize_description;
+    let clean = "Returns search results for the given query.";
+    let result = sanitize_description(clean);
+    assert_eq!(result.sanitized, clean);
+    assert!(result.rules_applied.is_empty());
+}
+
+/// E-24 Contract: McpSchemaPinViolation SSB type roundtrips.
+#[test]
+fn contract_e24_schema_pin_violation_ssb_roundtrip() {
+    use elai_orchestrator::ssb::{McpSchemaPinViolationPayload, SsbPayload};
+    let payload = SsbPayload::McpSchemaPinViolation(McpSchemaPinViolationPayload {
+        server_url: "http://test.example".to_string(),
+        pinned_hash: "aaa".to_string(),
+        observed_hash: "bbb".to_string(),
+        pinned_at_ms: 0,
+    });
+    assert_eq!(
+        payload.action_type(),
+        elai_orchestrator::ssb::SsbActionType::McpSchemaPinViolation
+    );
+}
+
+/// E-24 Contract: AnthropicGatewayDetected SSB type has stable SQL string.
+#[test]
+fn contract_e24_gateway_detected_sql_string_stable() {
+    use elai_orchestrator::ssb::SsbActionType;
+    assert_eq!(
+        SsbActionType::AnthropicGatewayDetected.as_sql_str(),
+        "anthropic_gateway_detected"
+    );
 }

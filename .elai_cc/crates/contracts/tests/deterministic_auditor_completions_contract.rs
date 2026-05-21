@@ -75,7 +75,10 @@ fn run_all_short_circuits_on_build_block() {
     let cfg = DeterministicAuditorConfig::default();
     let auditor = DeterministicAuditor::new(cfg);
     let res = auditor.run_all(&[]);
-    assert_eq!(res.checks_run, 5, "warn-only build should not short-circuit");
+    // Post-campaign s-68264: production emits 7 checks (was 5 at write time).
+    // The contract is "warn-only build does not short-circuit"; the literal
+    // tracks the current source-of-truth check count in deterministic_auditor.rs.
+    assert_eq!(res.checks_run, 7, "warn-only build should not short-circuit");
 
     // record_build_result with a non-zero exit is the BLOCK pathway.
     let fail = DeterministicAuditor::record_build_result("cargo check", 1, "err");

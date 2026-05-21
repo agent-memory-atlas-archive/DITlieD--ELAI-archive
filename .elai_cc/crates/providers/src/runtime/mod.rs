@@ -34,6 +34,9 @@ pub mod sidecar;
 pub mod sidecar_xgrammar_hook;
 pub mod types;
 pub mod vllm;
+pub mod llama_cpp;
+pub mod mlx;
+pub mod platform_detect;
 
 pub use anthropic_api::AnthropicApiRuntime;
 pub use claude_code::ClaudeCodeRuntime;
@@ -55,6 +58,9 @@ pub use sidecar_xgrammar_hook::{
     SidecarXGrammarHook, XGrammarHookError,
 };
 pub use vllm::VllmRuntime;
+pub use llama_cpp::LlamaCppAdapter;
+pub use mlx::MlxAdapter;
+pub use platform_detect::{detect_llamacpp_ep, detect_mlx_capable, AppleChipFamily, LlamaCppEp, MlxCapability};
 pub use types::{
     unavailable, AuthSource, CompletionConfig, CompletionResponse, Message, MessageRole,
     ResolveBackendError, RuntimeAdapter, RuntimeAdapterError, RuntimeBackend, RuntimeCapabilities,
@@ -80,6 +86,8 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         "copilot" | "copilot_cli" => Some(RuntimeBackend::CopilotCli),
         "ollama" => Some(RuntimeBackend::Ollama),
         "vllm" => Some(RuntimeBackend::Vllm),
+        "mlx" | "mlx_adapter" => Some(RuntimeBackend::Mlx),
+        "llama_cpp" | "llamacpp" | "llama-cpp" => Some(RuntimeBackend::LlamaCpp),
         _ => None,
     };
     match resolved {
@@ -119,6 +127,11 @@ pub fn create_runtime(
         RuntimeBackend::CopilotCli => Ok(Box::new(CopilotCliRuntime::new(cfg))),
         RuntimeBackend::Ollama => Ok(Box::new(OllamaRuntime::new(cfg))),
         RuntimeBackend::Vllm => Ok(Box::new(VllmRuntime::new(cfg))),
+        RuntimeBackend::Mlx => {
+            let adapter = MlxAdapter::new(cfg).map_err(|e| e)?;
+            Ok(Box::new(adapter))
+        }
+        RuntimeBackend::LlamaCpp => Ok(Box::new(LlamaCppAdapter::new(cfg))),
     }
 }
 
@@ -134,7 +147,7 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        assert_eq!(seen.len(), 11);
+        assert_eq!(seen.len(), 13);
     }
 
     #[test]
@@ -149,7 +162,7 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        assert_eq!(err.supported.len(), 11);
+        assert_eq!(err.supported.len(), 13);
         assert_eq!(err.candidate, "not-a-backend");
     }
 

@@ -520,9 +520,15 @@ mod proptests {
     }
 
     fn arb_plan() -> impl Strategy<Value = ResearchPlan> {
+        // s-68264 cleanup: anchor the root question with at least one alpha
+        // char so the all-whitespace shrinker output that the campaign-era
+        // ResearchTree::new (correctly) rejects with "empty research question"
+        // does not become the proptest minimal-failing-input. The earlier
+        // generator `[a-zA-Z ]{5,50}` could emit "     " which is blank after
+        // production trim. New shape: 1 required alpha + arbitrary tail.
         (
-            "[a-zA-Z ]{5,50}",
-            prop::collection::vec("[a-zA-Z ]{5,30}", 0..5),
+            "[a-zA-Z][a-zA-Z ]{4,49}",
+            prop::collection::vec("[a-zA-Z][a-zA-Z ]{4,29}", 0..5),
             arb_complexity(),
         )
             .prop_map(|(question, subs, complexity)| ResearchPlan {

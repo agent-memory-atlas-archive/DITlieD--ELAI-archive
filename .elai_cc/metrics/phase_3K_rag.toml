@@ -4,17 +4,17 @@
 
 [overall]
 query_count = 30
-recall_at_5 = 0.6667
+recall_at_5 = 0.7000
 recall_at_10 = 0.7667
-mrr = 0.4586
+mrr = 0.5006
 
 [tier.fast]
 query_count = 10
-recall_at_5 = 0.5000
+recall_at_5 = 0.6000
 recall_at_10 = 0.7000
-mrr = 0.3875
-latency_p50_ms = 0
-latency_p95_ms = 1
+mrr = 0.4075
+latency_p50_ms = 1
+latency_p95_ms = 11
 latency_within_budget = true
 
 [tier.standard]
@@ -23,23 +23,23 @@ recall_at_5 = 0.8000
 recall_at_10 = 0.8000
 mrr = 0.6500
 latency_p50_ms = 1
-latency_p95_ms = 1
+latency_p95_ms = 4
 latency_within_budget = true
 
 [tier.deep]
 query_count = 10
 recall_at_5 = 0.7000
 recall_at_10 = 0.8000
-mrr = 0.3384
-latency_p50_ms = 5
-latency_p95_ms = 8
+mrr = 0.4442
+latency_p50_ms = 7
+latency_p95_ms = 12
 latency_within_budget = true
 
 [category.simple]
 query_count = 10
-recall_at_5 = 0.5000
+recall_at_5 = 0.6000
 recall_at_10 = 0.7000
-mrr = 0.3875
+mrr = 0.4075
 
 [category.code_specific]
 query_count = 10
@@ -51,39 +51,39 @@ mrr = 0.6500
 query_count = 10
 recall_at_5 = 0.7000
 recall_at_10 = 0.8000
-mrr = 0.3384
+mrr = 0.4442
 
 [queries]
-q01 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2500, latency_ms = 1, hits = 9 }
+q01 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2500, latency_ms = 11, hits = 9 }
 q02 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 1, hits = 9 }
 q03 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 10 }
-q04 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 0, hits = 10 }
-q05 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.3333, latency_ms = 0, hits = 10 }
-q06 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 1.0, mrr = 0.1250, latency_ms = 0, hits = 9 }
-q07 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 1.0, mrr = 0.1667, latency_ms = 0, hits = 8 }
-q08 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 0, hits = 10 }
+q04 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 10 }
+q05 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 1, hits = 10 }
+q06 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2000, latency_ms = 0, hits = 9 }
+q07 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 1.0, mrr = 0.1250, latency_ms = 0, hits = 8 }
+q08 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 1, hits = 10 }
 q09 = { category = "simple", tier = "FAST", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 0, hits = 10 }
 q10 = { category = "simple", tier = "FAST", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 1, hits = 10 }
-q11 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 0, hits = 10 }
-q12 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 0, hits = 9 }
+q11 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 4, hits = 10 }
+q12 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 10 }
 q13 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 9 }
 q14 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 10 }
 q15 = { category = "code_specific", tier = "STANDARD", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 1, hits = 10 }
 q16 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 1, hits = 10 }
-q17 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 0, hits = 10 }
+q17 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 1, hits = 10 }
 q18 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 1, hits = 10 }
 q19 = { category = "code_specific", tier = "STANDARD", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 1, hits = 10 }
-q20 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 1, hits = 10 }
-q21 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 6, hits = 14 }
-q22 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 4, hits = 13 }
-q23 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 5, hits = 15 }
-q24 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 8, hits = 14 }
-q25 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 4, hits = 16 }
-q26 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2000, latency_ms = 3, hits = 15 }
-q27 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 1.0, mrr = 0.1429, latency_ms = 3, hits = 14 }
-q28 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2000, latency_ms = 6, hits = 15 }
-q29 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2500, latency_ms = 5, hits = 15 }
-q30 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0909, latency_ms = 5, hits = 13 }
+q20 = { category = "code_specific", tier = "STANDARD", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 2, hits = 10 }
+q21 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 12, hits = 15 }
+q22 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 7, hits = 14 }
+q23 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.5000, latency_ms = 9, hits = 15 }
+q24 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 1.0000, latency_ms = 8, hits = 15 }
+q25 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0000, latency_ms = 5, hits = 17 }
+q26 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2000, latency_ms = 5, hits = 15 }
+q27 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 1.0, mrr = 0.1250, latency_ms = 6, hits = 14 }
+q28 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.2000, latency_ms = 7, hits = 14 }
+q29 = { category = "complex", tier = "DEEP", recall_5 = 1.0, recall_10 = 1.0, mrr = 0.3333, latency_ms = 5, hits = 16 }
+q30 = { category = "complex", tier = "DEEP", recall_5 = 0.0, recall_10 = 0.0, mrr = 0.0833, latency_ms = 7, hits = 13 }
 
 [regression_gate]
 threshold_pct = 5.0

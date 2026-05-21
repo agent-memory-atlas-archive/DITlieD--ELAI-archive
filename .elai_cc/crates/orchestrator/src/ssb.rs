@@ -873,7 +873,86 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // Tech Report); citations dropped from module doc per the anti-
 // citation-rot rule until paper-ingestor lands a workflow/papers/
 // entry. all_test_payloads().len() goes 178 -> 179.
-const SCHEMA_VERSION: i64 = 87;
+// C-35 (SCHEMA_VERSION 88): bumped 87 -> 88 for 4 new SsbActionType variants
+// covering the tool-attention dynamic gating layer (C-35 plan).
+// tool_gated, tool_eager, tool_lazy_resolved, tool_denied -- emitted by
+// plugins::mcp::gate::filter_for_state and ::lazy::LazySchemaCache on every
+// prompt assembly and lazy schema resolution. Each row carries tool_name,
+// fsm_state, prompt_tokens_saved. Producer: plugins/src/mcp/gate.rs + lazy.rs.
+// all_test_payloads().len() goes 179 -> 183.
+// E-27 (SCHEMA_VERSION 89): atomic bump for 3 new quantization-backend beacons.
+//   - quant_backend_selected      -- emitted by sidecar InferenceEngine.__init__ on
+//                                    every model load; carries backend, kv_dtype,
+//                                    compute_capability, marlin_enabled.
+//   - kv_cache_dtype_software_sim -- emitted when FP8 KV runs in software-sim on
+//                                    Ampere; carries throughput_cost_pct (~5%).
+//   - awq_checkpoint_built        -- emitted by scripts/build_awq.py on success.
+// Producers: python/elai_inference/server.py + scripts/build_awq.py.
+// Additive only -- no existing variants renumbered.
+// C-39 (SCHEMA_VERSION 90): atomic bump for 3 new CLI-via-MCP dispatch beacons.
+//   - cli_mcp_dispatch       -- emitted per tool call via --via-mcp. Carries tool_name, port.
+//   - cli_mcp_server_started -- emitted on CLI co-process auto-launch. Carries port.
+//   - cli_mcp_server_stopped -- emitted on CLI co-process exit. Carries port.
+// Producer: crates/cli/src/run_subcommand.rs (McpClientDispatch).
+// all_test_payloads().len() goes 186 -> 189.
+// E-15 (SCHEMA_VERSION 91): atomic bump for 6 new sandbox hardening beacons.
+// all_test_payloads().len() goes 189 -> 195.
+// E-24 (SCHEMA_VERSION 92): atomic bump for 6 new MCP hardening beacons.
+//   - mcp_schema_pin_violation    -- emitted when blake3 hash of tools/list mismatches pinned hash.
+//   - mcp_sanitization_rule_applied -- emitted per Trail-of-Bits line-jumping rule match.
+//   - mcp_budget_enforced         -- emitted when tools dropped to fit token budget.
+//   - mcp_legacy_sse_transport    -- startup warning when SSE-only transport used.
+//   - mcp_llm_guard_blocked       -- emitted when LLM-guard denies an MCP tool call.
+//   - anthropic_gateway_detected  -- startup warning when ANTHROPIC_BASE_URL is a gateway URL.
+// all_test_payloads().len() goes 195 -> 201.
+//
+// C-48 (SCHEMA_VERSION 93): atomic bump for 3 new SafeHarbor memory-trust beacons.
+//   - memory_tier_assigned    -- emitted when a MemoryFact is stored with its TrustTier.
+//   - memory_query_filtered   -- emitted when a retrieval query excludes rows by TierCeiling.
+//   - safety_critical_blocked -- emitted when a T2/T3 row is blocked from a safety-critical context.
+// all_test_payloads().len() goes 201 -> 204.
+//
+// E-30 (SCHEMA_VERSION 94): atomic bump for 8 new public-incident hardening beacons.
+//   - argv_destructive_denied         -- emitted when check_argv() returns Deny.
+//   - argv_approval_required          -- emitted when check_argv() returns RequireHumanApproval.
+//   - trust_dialog_hook_deferred      -- emitted when ensure_session_trust() defers hook load (CVE-2025-59536).
+//   - trust_dialog_env_deferred       -- emitted when ensure_session_trust() blocks env-redirect (CVE-2026-21852).
+//   - mcp_pin_version_refused         -- emitted when an MCP server version is refused (exact-pin policy).
+//   - auditor_lineage_collision        -- emitted when auditor/executor share the same lineage group.
+//   - untrusted_memory_write_blocked  -- emitted when an untrusted TextSource attempts a memory write.
+//   - incident_record_created         -- emitted when an incident postmortem entry is stored.
+// all_test_payloads().len() goes 204 -> 212.
+//
+// E-32 (SCHEMA_VERSION 95): atomic bump for 4 new context-window extension beacons.
+//   - fitm_calibration_applied    -- emitted by FoundInTheMiddleCalibrator on each long-context
+//                                    request (prompt_len > 8K) when ELAI_FITM_ENABLED=1.
+//                                    Carries prompt_len, dummy_len, applied_ms.
+//                                    Producer: python/elai_inference/server.py::FoundInTheMiddleCalibrator.
+//   - deep_mode_activated         -- emitted at sidecar boot when ELAI_DEEP_MODE=1 activates
+//                                    Qwen2.5-7B-Instruct-1M at 64K cap.
+//                                    Carries model_id, ctx_cap, vram_gb.
+//                                    Producer: python/elai_inference/server.py::activate_deep_mode.
+//   - deep_mode_escalation_chosen -- emitted by deep_mode_escalation_hook when SessionDag handoff
+//                                    prefers local deep mode over cloud escalation.
+//                                    Carries reason, files_referenced.
+//                                    Producer: crates/providers/src/runtime/escalation_policy.rs.
+//   - yarn_refused                -- emitted at sidecar boot when ELAI_USE_YARN=1 is refused
+//                                    for Qwen2.5-Coder models (15-20% short-prompt quality drop
+//                                    per vllm issue 18728; arxiv:2601.15300).
+//                                    Producer: python/elai_inference/server.py::refuse_yarn_at_boot.
+// all_test_payloads().len() goes 212 -> 216.
+// Producers: python/elai_inference/server.py + escalation_policy.rs.
+//
+// E-51 (SCHEMA_VERSION 96): atomic bump for 7 new edge-inference beacons.
+//   - mlx_subprocess_spawned      -- emitted by MlxAdapter on vllm-mlx process spawn.
+//   - mlx_subprocess_killed       -- emitted by MlxAdapter on vllm-mlx process kill.
+//   - llamacpp_subprocess_spawned -- emitted by LlamaCppAdapter on llama-server spawn.
+//   - llamacpp_subprocess_killed  -- emitted by LlamaCppAdapter on llama-server kill.
+//   - mlx_apple_platform_detected -- emitted once per session on Apple Silicon detection.
+//   - llamacpp_ep_detected        -- emitted once per session on EP detection.
+//   - runtime_chain_built         -- emitted by CLI bootstrap on every chain construction.
+// all_test_payloads().len() goes 216 -> 223.
+const SCHEMA_VERSION: i64 = 96;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -1096,6 +1175,11 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- cli_subprocess_killed    -- one row per CLI adapter subprocess kill / exit
         'runtime_fallback', 'runtime_health_changed',
         'cli_subprocess_spawned', 'cli_subprocess_killed',
+        -- E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+        'mlx_subprocess_spawned', 'mlx_subprocess_killed',
+        'llamacpp_subprocess_spawned', 'llamacpp_subprocess_killed',
+        'mlx_apple_platform_detected', 'llamacpp_ep_detected',
+        'runtime_chain_built',
         -- C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
         -- grc_step_emitted              -- per emit_reasoning call (real PipelineGrc budget)
         -- grounding_sweep_result        -- one row per ground_plan() call (task_runner)
@@ -1474,7 +1558,36 @@ CREATE TABLE IF NOT EXISTS ssb (
         --                            after a successful run against an
         --                            ARC-AGI-2 fixture (mini bundled or
         --                            full 50-task subset).
-        'arc_benchmark_completed'
+        'arc_benchmark_completed',
+        -- C-35 (SCHEMA_VERSION 88): tool-attention dynamic gating beacons.
+        -- tool_gated           -- emitted per prompt assembly when gate is active.
+        -- tool_eager           -- emitted when a tool schema is included eagerly.
+        -- tool_lazy_resolved   -- emitted on lazy schema fetch (first reference).
+        -- tool_denied          -- emitted on denied tool-call attempt.
+        -- All carry: tool_name, fsm_state, prompt_tokens_saved.
+        'tool_gated', 'tool_eager', 'tool_lazy_resolved', 'tool_denied',
+        'quant_backend_selected', 'kv_cache_dtype_software_sim', 'awq_checkpoint_built',
+        -- C-39 (SCHEMA_VERSION 90): CLI-via-MCP dispatch beacons.
+        'cli_mcp_dispatch', 'cli_mcp_server_started', 'cli_mcp_server_stopped',
+        -- E-15 (SCHEMA_VERSION 91): sandbox hardening beacons.
+        'firecracker_restore_slow', 'snapshot_uniqueness_regenerated', 'snapshot_evicted',
+        'sandbox_backend_selected', 'agent_forked_from_snapshot', 'researcher_net_egress_blocked',
+        -- E-24 (SCHEMA_VERSION 92): MCP hardening beacons.
+        'mcp_schema_pin_violation', 'mcp_sanitization_rule_applied', 'mcp_budget_enforced',
+        'mcp_legacy_sse_transport', 'mcp_llm_guard_blocked', 'anthropic_gateway_detected',
+        -- C-48 (SCHEMA_VERSION 93): SafeHarbor memory-trust beacons.
+        'memory_tier_assigned', 'memory_query_filtered', 'safety_critical_blocked',
+        -- E-30 (SCHEMA_VERSION 94): public-incident hardening beacons.
+        'argv_destructive_denied', 'argv_approval_required', 'trust_dialog_hook_deferred',
+        'trust_dialog_env_deferred', 'mcp_pin_version_refused', 'auditor_lineage_collision',
+        'untrusted_memory_write_blocked', 'incident_record_created',
+        -- E-32 (SCHEMA_VERSION 95): context-window extension beacons.
+        -- fitm_calibration_applied   -- FITM positional-prior subtraction applied (prompt > 8K)
+        -- deep_mode_activated        -- sidecar booted with Qwen2.5-7B-Instruct-1M at 64K
+        -- deep_mode_escalation_chosen -- SessionDag handoff chose local deep mode over cloud
+        -- yarn_refused               -- ELAI_USE_YARN=1 refused at boot (quality regression)
+        'fitm_calibration_applied', 'deep_mode_activated',
+        'deep_mode_escalation_chosen', 'yarn_refused'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -2029,6 +2142,30 @@ pub enum SsbActionType {
     /// (B-37B cli_common::kill_and_wait, idle timeout, or natural exit).
     /// Carries a [`CliSubprocessKilledPayload`] with exit code + reason.
     CliSubprocessKilled,
+    /// E-51 (SCHEMA_VERSION 96): vllm-mlx subprocess spawned by MlxAdapter.
+    /// Carries an [`MlxSubprocessSpawnedPayload`].
+    MlxSubprocessSpawned,
+    /// E-51 (SCHEMA_VERSION 96): vllm-mlx subprocess killed by MlxAdapter.
+    /// Carries an [`MlxSubprocessKilledPayload`].
+    MlxSubprocessKilled,
+    /// E-51 (SCHEMA_VERSION 96): llama-server subprocess spawned by LlamaCppAdapter.
+    /// Carries a [`LlamaCppSubprocessSpawnedPayload`].
+    LlamaCppSubprocessSpawned,
+    /// E-51 (SCHEMA_VERSION 96): llama-server subprocess killed by LlamaCppAdapter.
+    /// Carries a [`LlamaCppSubprocessKilledPayload`].
+    LlamaCppSubprocessKilled,
+    /// E-51 (SCHEMA_VERSION 96): Apple Silicon platform detected by MlxAdapter.
+    /// Emitted once per session on first detect_mlx_capable() call returning AppleSilicon.
+    /// Carries an [`MlxApplePlatformDetectedPayload`].
+    MlxApplePlatformDetected,
+    /// E-51 (SCHEMA_VERSION 96): llama.cpp execution provider detected.
+    /// Emitted once per session on detect_llamacpp_ep() call.
+    /// Carries a [`LlamaCppEpDetectedPayload`].
+    LlamaCppEpDetected,
+    /// E-51 (SCHEMA_VERSION 96): runtime chain built at CLI bootstrap.
+    /// Emitted by resolve_runtime_backend_from_env() on every CLI start.
+    /// Carries a [`RuntimeChainBuiltPayload`].
+    RuntimeChainBuilt,
     /// C-1 (SCHEMA_VERSION 47): one row per `emit_reasoning` call when a
     /// `PipelineGrc` handle was plumbed through `ResolvedConfig`. Replaces
     /// the synthetic-constant `ReasoningTrace` row with real
@@ -2617,6 +2754,62 @@ pub enum SsbActionType {
     /// `crates/orchestrator/src/benchmarks/arc_agi2_runner.rs`. Plan:
     /// docs/thefinalglance/D-plan/D-20_arc_agi2_ood_probe.md.
     ArcBenchmarkCompleted,
+    ToolGated,
+    ToolEager,
+    ToolLazyResolved,
+    ToolDenied,
+    // E-27 (SCHEMA_VERSION 89): quantization-backend beacons.
+    QuantBackendSelected,
+    KvCacheDtypeSoftwareSim,
+    AwqCheckpointBuilt,
+    CliMcpDispatch,
+    CliMcpServerStarted,
+    CliMcpServerStopped,
+    // E-15: sandbox hardening beacons
+    FirecrackerRestoreSlow,
+    SnapshotUniquenessRegenerated,
+    SnapshotEvicted,
+    SandboxBackendSelected,
+    AgentForkedFromSnapshot,
+    ResearcherNetEgressBlocked,
+    // E-24: MCP hardening beacons
+    McpSchemaPinViolation,
+    McpSanitizationRuleApplied,
+    McpBudgetEnforced,
+    McpLegacySseTransport,
+    McpLlmGuardBlocked,
+    AnthropicGatewayDetected,
+    // C-48: SafeHarbor memory-trust beacons
+    MemoryTierAssigned,
+    MemoryQueryFiltered,
+    SafetyCriticalBlocked,
+    // E-30: public-incident hardening beacons
+    ArgvDestructiveDenied,
+    ArgvApprovalRequired,
+    TrustDialogHookDeferred,
+    TrustDialogEnvDeferred,
+    McpPinVersionRefused,
+    AuditorLineageCollision,
+    UntrustedMemoryWriteBlocked,
+    IncidentRecordCreated,
+    // E-32: context-window extension beacons
+    /// FITM positional-prior subtraction applied on a long-context request
+    /// (prompt_len > 8K, ELAI_FITM_ENABLED=1). Carries prompt_len, dummy_len,
+    /// applied_ms. Producer: python/elai_inference/server.py::FoundInTheMiddleCalibrator.
+    FitmCalibrationApplied,
+    /// Sidecar booted with Qwen2.5-7B-Instruct-1M at 64K context cap
+    /// (ELAI_DEEP_MODE=1, VRAM >= 24 GB). Carries model_id, ctx_cap, vram_gb.
+    /// Producer: python/elai_inference/server.py::activate_deep_mode.
+    DeepModeActivated,
+    /// SessionDag handoff at 85% of effective_max_context chose local deep mode
+    /// over cloud escalation for cross-file synthesis task.
+    /// Carries reason, files_referenced.
+    /// Producer: crates/providers/src/runtime/escalation_policy.rs::deep_mode_escalation_hook.
+    DeepModeEscalationChosen,
+    /// ELAI_USE_YARN=1 refused at sidecar boot for Qwen2.5-Coder model.
+    /// Loud refusal per E-32 (15-20% quality drop on short prompts per vllm issue 18728).
+    /// Producer: python/elai_inference/server.py::refuse_yarn_at_boot.
+    YarnRefused,
 }
 
 impl SsbActionType {
@@ -2787,6 +2980,14 @@ impl SsbActionType {
             Self::RuntimeHealthChanged => "runtime_health_changed",
             Self::CliSubprocessSpawned => "cli_subprocess_spawned",
             Self::CliSubprocessKilled => "cli_subprocess_killed",
+            // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+            Self::MlxSubprocessSpawned => "mlx_subprocess_spawned",
+            Self::MlxSubprocessKilled => "mlx_subprocess_killed",
+            Self::LlamaCppSubprocessSpawned => "llamacpp_subprocess_spawned",
+            Self::LlamaCppSubprocessKilled => "llamacpp_subprocess_killed",
+            Self::MlxApplePlatformDetected => "mlx_apple_platform_detected",
+            Self::LlamaCppEpDetected => "llamacpp_ep_detected",
+            Self::RuntimeChainBuilt => "runtime_chain_built",
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             Self::GrcStepEmitted => "grc_step_emitted",
             Self::GroundingSweepResult => "grounding_sweep_result",
@@ -2926,6 +3127,44 @@ impl SsbActionType {
             Self::ConformalValidationCompleted => "conformal_validation_completed",
             // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
             Self::ArcBenchmarkCompleted => "arc_benchmark_completed",
+            Self::ToolGated => "tool_gated",
+            Self::ToolEager => "tool_eager",
+            Self::ToolLazyResolved => "tool_lazy_resolved",
+            Self::ToolDenied => "tool_denied",
+            Self::QuantBackendSelected => "quant_backend_selected",
+            Self::KvCacheDtypeSoftwareSim => "kv_cache_dtype_software_sim",
+            Self::AwqCheckpointBuilt => "awq_checkpoint_built",
+            Self::CliMcpDispatch => "cli_mcp_dispatch",
+            Self::CliMcpServerStarted => "cli_mcp_server_started",
+            Self::CliMcpServerStopped => "cli_mcp_server_stopped",
+            Self::FirecrackerRestoreSlow => "firecracker_restore_slow",
+            Self::SnapshotUniquenessRegenerated => "snapshot_uniqueness_regenerated",
+            Self::SnapshotEvicted => "snapshot_evicted",
+            Self::SandboxBackendSelected => "sandbox_backend_selected",
+            Self::AgentForkedFromSnapshot => "agent_forked_from_snapshot",
+            Self::ResearcherNetEgressBlocked => "researcher_net_egress_blocked",
+            Self::McpSchemaPinViolation => "mcp_schema_pin_violation",
+            Self::McpSanitizationRuleApplied => "mcp_sanitization_rule_applied",
+            Self::McpBudgetEnforced => "mcp_budget_enforced",
+            Self::McpLegacySseTransport => "mcp_legacy_sse_transport",
+            Self::McpLlmGuardBlocked => "mcp_llm_guard_blocked",
+            Self::AnthropicGatewayDetected => "anthropic_gateway_detected",
+            Self::MemoryTierAssigned => "memory_tier_assigned",
+            Self::MemoryQueryFiltered => "memory_query_filtered",
+            Self::SafetyCriticalBlocked => "safety_critical_blocked",
+            Self::ArgvDestructiveDenied => "argv_destructive_denied",
+            Self::ArgvApprovalRequired => "argv_approval_required",
+            Self::TrustDialogHookDeferred => "trust_dialog_hook_deferred",
+            Self::TrustDialogEnvDeferred => "trust_dialog_env_deferred",
+            Self::McpPinVersionRefused => "mcp_pin_version_refused",
+            Self::AuditorLineageCollision => "auditor_lineage_collision",
+            Self::UntrustedMemoryWriteBlocked => "untrusted_memory_write_blocked",
+            Self::IncidentRecordCreated => "incident_record_created",
+            // E-32
+            Self::FitmCalibrationApplied => "fitm_calibration_applied",
+            Self::DeepModeActivated => "deep_mode_activated",
+            Self::DeepModeEscalationChosen => "deep_mode_escalation_chosen",
+            Self::YarnRefused => "yarn_refused",
         }
     }
 }
@@ -3103,6 +3342,14 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "runtime_health_changed"  => Ok(SsbActionType::RuntimeHealthChanged),
         "cli_subprocess_spawned"  => Ok(SsbActionType::CliSubprocessSpawned),
         "cli_subprocess_killed"   => Ok(SsbActionType::CliSubprocessKilled),
+        // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+        "mlx_subprocess_spawned"      => Ok(SsbActionType::MlxSubprocessSpawned),
+        "mlx_subprocess_killed"       => Ok(SsbActionType::MlxSubprocessKilled),
+        "llamacpp_subprocess_spawned" => Ok(SsbActionType::LlamaCppSubprocessSpawned),
+        "llamacpp_subprocess_killed"  => Ok(SsbActionType::LlamaCppSubprocessKilled),
+        "mlx_apple_platform_detected" => Ok(SsbActionType::MlxApplePlatformDetected),
+        "llamacpp_ep_detected"        => Ok(SsbActionType::LlamaCppEpDetected),
+        "runtime_chain_built"         => Ok(SsbActionType::RuntimeChainBuilt),
         // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
         "grc_step_emitted"              => Ok(SsbActionType::GrcStepEmitted),
         "grounding_sweep_result"        => Ok(SsbActionType::GroundingSweepResult),
@@ -3243,6 +3490,44 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "conformal_validation_completed" => Ok(SsbActionType::ConformalValidationCompleted),
         // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
         "arc_benchmark_completed" => Ok(SsbActionType::ArcBenchmarkCompleted),
+        "tool_gated" => Ok(SsbActionType::ToolGated),
+        "tool_eager" => Ok(SsbActionType::ToolEager),
+        "tool_lazy_resolved" => Ok(SsbActionType::ToolLazyResolved),
+        "tool_denied" => Ok(SsbActionType::ToolDenied),
+        "quant_backend_selected" => Ok(SsbActionType::QuantBackendSelected),
+        "kv_cache_dtype_software_sim" => Ok(SsbActionType::KvCacheDtypeSoftwareSim),
+        "awq_checkpoint_built" => Ok(SsbActionType::AwqCheckpointBuilt),
+        "cli_mcp_dispatch" => Ok(SsbActionType::CliMcpDispatch),
+        "cli_mcp_server_started" => Ok(SsbActionType::CliMcpServerStarted),
+        "cli_mcp_server_stopped" => Ok(SsbActionType::CliMcpServerStopped),
+        "firecracker_restore_slow" => Ok(SsbActionType::FirecrackerRestoreSlow),
+        "snapshot_uniqueness_regenerated" => Ok(SsbActionType::SnapshotUniquenessRegenerated),
+        "snapshot_evicted" => Ok(SsbActionType::SnapshotEvicted),
+        "sandbox_backend_selected" => Ok(SsbActionType::SandboxBackendSelected),
+        "agent_forked_from_snapshot" => Ok(SsbActionType::AgentForkedFromSnapshot),
+        "researcher_net_egress_blocked" => Ok(SsbActionType::ResearcherNetEgressBlocked),
+        "mcp_schema_pin_violation" => Ok(SsbActionType::McpSchemaPinViolation),
+        "mcp_sanitization_rule_applied" => Ok(SsbActionType::McpSanitizationRuleApplied),
+        "mcp_budget_enforced" => Ok(SsbActionType::McpBudgetEnforced),
+        "mcp_legacy_sse_transport" => Ok(SsbActionType::McpLegacySseTransport),
+        "mcp_llm_guard_blocked" => Ok(SsbActionType::McpLlmGuardBlocked),
+        "anthropic_gateway_detected" => Ok(SsbActionType::AnthropicGatewayDetected),
+        "memory_tier_assigned" => Ok(SsbActionType::MemoryTierAssigned),
+        "memory_query_filtered" => Ok(SsbActionType::MemoryQueryFiltered),
+        "safety_critical_blocked" => Ok(SsbActionType::SafetyCriticalBlocked),
+        "argv_destructive_denied" => Ok(SsbActionType::ArgvDestructiveDenied),
+        "argv_approval_required" => Ok(SsbActionType::ArgvApprovalRequired),
+        "trust_dialog_hook_deferred" => Ok(SsbActionType::TrustDialogHookDeferred),
+        "trust_dialog_env_deferred" => Ok(SsbActionType::TrustDialogEnvDeferred),
+        "mcp_pin_version_refused" => Ok(SsbActionType::McpPinVersionRefused),
+        "auditor_lineage_collision" => Ok(SsbActionType::AuditorLineageCollision),
+        "untrusted_memory_write_blocked" => Ok(SsbActionType::UntrustedMemoryWriteBlocked),
+        "incident_record_created" => Ok(SsbActionType::IncidentRecordCreated),
+        // E-32: context-window extension beacons
+        "fitm_calibration_applied"    => Ok(SsbActionType::FitmCalibrationApplied),
+        "deep_mode_activated"         => Ok(SsbActionType::DeepModeActivated),
+        "deep_mode_escalation_chosen" => Ok(SsbActionType::DeepModeEscalationChosen),
+        "yarn_refused"                => Ok(SsbActionType::YarnRefused),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -5645,6 +5930,14 @@ pub enum SsbPayload {
     RuntimeHealthChanged(RuntimeHealthChangedPayload),
     CliSubprocessSpawned(CliSubprocessSpawnedPayload),
     CliSubprocessKilled(CliSubprocessKilledPayload),
+    // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+    MlxSubprocessSpawned(MlxSubprocessSpawnedPayload),
+    MlxSubprocessKilled(MlxSubprocessKilledPayload),
+    LlamaCppSubprocessSpawned(LlamaCppSubprocessSpawnedPayload),
+    LlamaCppSubprocessKilled(LlamaCppSubprocessKilledPayload),
+    MlxApplePlatformDetected(MlxApplePlatformDetectedPayload),
+    LlamaCppEpDetected(LlamaCppEpDetectedPayload),
+    RuntimeChainBuilt(RuntimeChainBuiltPayload),
     // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
     GrcStepEmitted(GrcStepEmittedPayload),
     GroundingSweepResult(GroundingSweepResultPayload),
@@ -5786,6 +6079,48 @@ pub enum SsbPayload {
     ConformalValidationCompleted(ConformalValidationCompletedPayload),
     // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
     ArcBenchmarkCompleted(ARCBenchmarkCompletedPayload),
+    ToolGated(ToolGateEventPayload),
+    ToolEager(ToolGateEventPayload),
+    ToolLazyResolved(ToolGateEventPayload),
+    ToolDenied(ToolGateEventPayload),
+    QuantBackendSelected(QuantBackendSelectedPayload),
+    KvCacheDtypeSoftwareSim(KvCacheDtypeSoftwareSimPayload),
+    AwqCheckpointBuilt(AwqCheckpointBuiltPayload),
+    CliMcpDispatch(CliMcpDispatchPayload),
+    CliMcpServerStarted(CliMcpServerStartedPayload),
+    CliMcpServerStopped(CliMcpServerStoppedPayload),
+    // E-15 sandbox beacons
+    FirecrackerRestoreSlow(FirecrackerRestoreSlowPayload),
+    SnapshotUniquenessRegenerated(SnapshotUniquenessRegeneratedPayload),
+    SnapshotEvicted(SnapshotEvictedPayload),
+    SandboxBackendSelected(SandboxBackendSelectedPayload),
+    AgentForkedFromSnapshot(AgentForkedFromSnapshotPayload),
+    ResearcherNetEgressBlocked(ResearcherNetEgressBlockedPayload),
+    // E-24: MCP hardening beacons
+    McpSchemaPinViolation(McpSchemaPinViolationPayload),
+    McpSanitizationRuleApplied(McpSanitizationRuleAppliedPayload),
+    McpBudgetEnforced(McpBudgetEnforcedPayload),
+    McpLegacySseTransport(McpLegacySseTransportPayload),
+    McpLlmGuardBlocked(McpLlmGuardBlockedPayload),
+    AnthropicGatewayDetected(AnthropicGatewayDetectedPayload),
+    // C-48: SafeHarbor memory-trust beacons
+    MemoryTierAssigned(MemoryTierAssignedPayload),
+    MemoryQueryFiltered(MemoryQueryFilteredPayload),
+    SafetyCriticalBlocked(SafetyCriticalBlockedPayload),
+    // E-30: public-incident hardening beacons
+    ArgvDestructiveDenied(ArgvDestructiveDeniedPayload),
+    ArgvApprovalRequired(ArgvApprovalRequiredPayload),
+    TrustDialogHookDeferred(TrustDialogHookDeferredPayload),
+    TrustDialogEnvDeferred(TrustDialogEnvDeferredPayload),
+    McpPinVersionRefused(McpPinVersionRefusedPayload),
+    AuditorLineageCollision(AuditorLineageCollisionPayload),
+    UntrustedMemoryWriteBlocked(UntrustedMemoryWriteBlockedPayload),
+    IncidentRecordCreated(IncidentRecordCreatedPayload),
+    // E-32: context-window extension beacons
+    FitmCalibrationApplied(FitmCalibrationAppliedPayload),
+    DeepModeActivated(DeepModeActivatedPayload),
+    DeepModeEscalationChosen(DeepModeEscalationChosenPayload),
+    YarnRefused(YarnRefusedPayload),
 }
 
 impl SsbPayload {
@@ -5955,6 +6290,14 @@ impl SsbPayload {
             Self::RuntimeHealthChanged(_) => SsbActionType::RuntimeHealthChanged,
             Self::CliSubprocessSpawned(_) => SsbActionType::CliSubprocessSpawned,
             Self::CliSubprocessKilled(_) => SsbActionType::CliSubprocessKilled,
+            // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+            Self::MlxSubprocessSpawned(_) => SsbActionType::MlxSubprocessSpawned,
+            Self::MlxSubprocessKilled(_) => SsbActionType::MlxSubprocessKilled,
+            Self::LlamaCppSubprocessSpawned(_) => SsbActionType::LlamaCppSubprocessSpawned,
+            Self::LlamaCppSubprocessKilled(_) => SsbActionType::LlamaCppSubprocessKilled,
+            Self::MlxApplePlatformDetected(_) => SsbActionType::MlxApplePlatformDetected,
+            Self::LlamaCppEpDetected(_) => SsbActionType::LlamaCppEpDetected,
+            Self::RuntimeChainBuilt(_) => SsbActionType::RuntimeChainBuilt,
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             Self::GrcStepEmitted(_) => SsbActionType::GrcStepEmitted,
             Self::GroundingSweepResult(_) => SsbActionType::GroundingSweepResult,
@@ -6100,6 +6443,45 @@ impl SsbPayload {
             }
             // D-20 (SCHEMA_VERSION 87): ARC-AGI-2 OOD probe gating beacon.
             Self::ArcBenchmarkCompleted(_) => SsbActionType::ArcBenchmarkCompleted,
+            Self::ToolGated(_) => SsbActionType::ToolGated,
+            Self::ToolEager(_) => SsbActionType::ToolEager,
+            Self::ToolLazyResolved(_) => SsbActionType::ToolLazyResolved,
+            Self::ToolDenied(_) => SsbActionType::ToolDenied,
+            Self::QuantBackendSelected(_) => SsbActionType::QuantBackendSelected,
+            Self::KvCacheDtypeSoftwareSim(_) => SsbActionType::KvCacheDtypeSoftwareSim,
+            Self::AwqCheckpointBuilt(_) => SsbActionType::AwqCheckpointBuilt,
+            Self::CliMcpDispatch(_) => SsbActionType::CliMcpDispatch,
+            Self::CliMcpServerStarted(_) => SsbActionType::CliMcpServerStarted,
+            Self::CliMcpServerStopped(_) => SsbActionType::CliMcpServerStopped,
+            Self::FirecrackerRestoreSlow(_) => SsbActionType::FirecrackerRestoreSlow,
+            Self::SnapshotUniquenessRegenerated(_) => SsbActionType::SnapshotUniquenessRegenerated,
+            Self::SnapshotEvicted(_) => SsbActionType::SnapshotEvicted,
+            Self::SandboxBackendSelected(_) => SsbActionType::SandboxBackendSelected,
+            Self::AgentForkedFromSnapshot(_) => SsbActionType::AgentForkedFromSnapshot,
+            Self::ResearcherNetEgressBlocked(_) => SsbActionType::ResearcherNetEgressBlocked,
+            Self::McpSchemaPinViolation(_) => SsbActionType::McpSchemaPinViolation,
+            Self::McpSanitizationRuleApplied(_) => SsbActionType::McpSanitizationRuleApplied,
+            Self::McpBudgetEnforced(_) => SsbActionType::McpBudgetEnforced,
+            Self::McpLegacySseTransport(_) => SsbActionType::McpLegacySseTransport,
+            Self::McpLlmGuardBlocked(_) => SsbActionType::McpLlmGuardBlocked,
+            Self::AnthropicGatewayDetected(_) => SsbActionType::AnthropicGatewayDetected,
+            Self::MemoryTierAssigned(_) => SsbActionType::MemoryTierAssigned,
+            Self::MemoryQueryFiltered(_) => SsbActionType::MemoryQueryFiltered,
+            Self::SafetyCriticalBlocked(_) => SsbActionType::SafetyCriticalBlocked,
+            // E-30: public-incident hardening beacons
+            Self::ArgvDestructiveDenied(_) => SsbActionType::ArgvDestructiveDenied,
+            Self::ArgvApprovalRequired(_) => SsbActionType::ArgvApprovalRequired,
+            Self::TrustDialogHookDeferred(_) => SsbActionType::TrustDialogHookDeferred,
+            Self::TrustDialogEnvDeferred(_) => SsbActionType::TrustDialogEnvDeferred,
+            Self::McpPinVersionRefused(_) => SsbActionType::McpPinVersionRefused,
+            Self::AuditorLineageCollision(_) => SsbActionType::AuditorLineageCollision,
+            Self::UntrustedMemoryWriteBlocked(_) => SsbActionType::UntrustedMemoryWriteBlocked,
+            Self::IncidentRecordCreated(_) => SsbActionType::IncidentRecordCreated,
+            // E-32: context-window extension beacons
+            Self::FitmCalibrationApplied(_) => SsbActionType::FitmCalibrationApplied,
+            Self::DeepModeActivated(_) => SsbActionType::DeepModeActivated,
+            Self::DeepModeEscalationChosen(_) => SsbActionType::DeepModeEscalationChosen,
+            Self::YarnRefused(_) => SsbActionType::YarnRefused,
         }
     }
 }
@@ -7324,6 +7706,60 @@ pub struct CliSubprocessKilledPayload {
     pub pid: u32,
     pub exit_code: Option<i32>,
     pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
+// E-51 (SCHEMA_VERSION 96): edge-inference payload structs
+// ---------------------------------------------------------------------------
+
+/// E-51 — payload for [`SsbActionType::MlxSubprocessSpawned`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MlxSubprocessSpawnedPayload {
+    pub pid: u32,
+    pub argv_redacted: Vec<String>,
+}
+
+/// E-51 — payload for [`SsbActionType::MlxSubprocessKilled`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MlxSubprocessKilledPayload {
+    pub pid: u32,
+    pub exit_code: Option<i32>,
+    pub reason: String,
+}
+
+/// E-51 — payload for [`SsbActionType::LlamaCppSubprocessSpawned`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlamaCppSubprocessSpawnedPayload {
+    pub pid: u32,
+    pub ep: String,
+    pub argv_redacted: Vec<String>,
+}
+
+/// E-51 — payload for [`SsbActionType::LlamaCppSubprocessKilled`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlamaCppSubprocessKilledPayload {
+    pub pid: u32,
+    pub exit_code: Option<i32>,
+    pub reason: String,
+}
+
+/// E-51 — payload for [`SsbActionType::MlxApplePlatformDetected`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MlxApplePlatformDetectedPayload {
+    pub chip_family: String,
+    pub gpu_cores: u8,
+}
+
+/// E-51 — payload for [`SsbActionType::LlamaCppEpDetected`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlamaCppEpDetectedPayload {
+    pub ep: String,
+}
+
+/// E-51 — payload for [`SsbActionType::RuntimeChainBuilt`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeChainBuiltPayload {
+    pub chain: Vec<elai_providers::runtime::RuntimeBackend>,
 }
 
 // ---------------------------------------------------------------------------
@@ -9369,6 +9805,314 @@ pub struct ARCBenchmarkCompletedPayload {
     pub ts_ms: i64,
 }
 
+/// C-35 (SCHEMA_VERSION 88) -- shared payload for all 4 tool-gate beacons.
+/// Emitted by plugins::mcp::gate (tool_gated, tool_eager, tool_denied) and
+/// plugins::mcp::lazy (tool_lazy_resolved). See C-35 plan.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolGateEventPayload {
+    pub tool_name: String,
+    pub fsm_state: String,
+    pub prompt_tokens_saved: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QuantBackendSelectedPayload {
+    pub backend: String,
+    pub kv_dtype: String,
+    pub compute_capability: i32,
+    pub marlin_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct KvCacheDtypeSoftwareSimPayload {
+    pub kv_dtype: String,
+    pub throughput_cost_pct: f32,
+    pub compute_capability: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AwqCheckpointBuiltPayload {
+    pub model_path: String,
+    pub calibration_size: usize,
+    pub duration_s: f64,
+    pub output_path: String,
+}
+
+/// C-39: Emitted per tool call routed via --via-mcp CLI flag.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CliMcpDispatchPayload {
+    pub tool_name: String,
+    pub port: u16,
+}
+
+/// C-39: Emitted when the CLI auto-launches an MCP co-process.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CliMcpServerStartedPayload {
+    pub port: u16,
+}
+
+/// C-39: Emitted when the CLI-launched MCP co-process exits.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CliMcpServerStoppedPayload {
+    pub port: u16,
+}
+
+/// E-15: Emitted when Firecracker snapshot-restore exceeds restore_budget_ms.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FirecrackerRestoreSlowPayload {
+    pub agent_id: String,
+    pub actual_ms: u64,
+    pub budget_ms: u64,
+}
+
+/// E-15: Emitted per restore when TCP ISN seed + entropy seeds refreshed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotUniquenessRegeneratedPayload {
+    pub agent_id: String,
+    pub restore_count: u64,
+}
+
+/// E-15: Emitted per LRU or age-based snapshot eviction.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotEvictedPayload {
+    pub agent_id: String,
+    pub reason: String,
+    pub snapshot_path: String,
+}
+
+/// E-15: Emitted once per agent spawn with the selected backend.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SandboxBackendSelectedPayload {
+    pub agent_id: String,
+    pub backend: String,
+}
+
+/// E-15: Emitted per baby-step fork-from-snapshot.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AgentForkedFromSnapshotPayload {
+    pub agent_id: String,
+    pub baby_step_id: u64,
+    pub snapshot_path: String,
+}
+
+/// E-15: Emitted when iptables REJECT fires for a non-allowlisted destination.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResearcherNetEgressBlockedPayload {
+    pub agent_id: String,
+    pub destination: String,
+    pub policy_action: String,
+}
+
+/// E-24: Emitted when blake3 hash of tools/list mismatches the pinned hash.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpSchemaPinViolationPayload {
+    pub server_url: String,
+    pub pinned_hash: String,
+    pub observed_hash: String,
+    pub pinned_at_ms: i64,
+}
+
+/// E-24: Emitted per Trail-of-Bits line-jumping rule match during sanitization.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpSanitizationRuleAppliedPayload {
+    pub server_url: String,
+    pub tool_name: String,
+    pub rule_id: String,
+    pub replacement_count: u32,
+}
+
+/// E-24: Emitted when tools are dropped from tools/list to fit token budget.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpBudgetEnforcedPayload {
+    pub server_url: String,
+    pub dropped_tools: Vec<String>,
+    pub kept_tokens: u32,
+    pub budget_tokens: u32,
+}
+
+/// E-24: Emitted at startup when SSE-only transport is used (deprecated).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpLegacySseTransportPayload {
+    pub server_url: String,
+    pub deprecation_notice: String,
+}
+
+/// E-24: Emitted when the LLM-guard hook denies an MCP tool call.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpLlmGuardBlockedPayload {
+    pub server_url: String,
+    pub tool_name: String,
+    pub reason: String,
+    pub guard_latency_ms: u32,
+}
+
+/// E-24: Emitted at startup when ANTHROPIC_BASE_URL is a known gateway URL.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnthropicGatewayDetectedPayload {
+    pub base_url: String,
+    pub detected_gateway: String,
+    pub latency_overhead_ms_estimate: u32,
+    pub prompt_cache_broken: bool,
+}
+
+/// C-48: Emitted when a MemoryFact is stored with its TrustTier label.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryTierAssignedPayload {
+    pub fact_id: String,
+    pub trust_tier: String,
+    pub provenance_source: String,
+}
+
+/// C-48: Emitted when a retrieval query excludes rows by TierCeiling.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryQueryFilteredPayload {
+    pub query_type: String,
+    pub excluded_count: u32,
+}
+
+/// C-48: Emitted when a T2/T3 row is blocked from a safety-critical decision context.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SafetyCriticalBlockedPayload {
+    pub fact_id: String,
+    pub trust_tier: String,
+    pub query_type: String,
+}
+
+/// E-30: Emitted when check_argv() returns AllowlistVerdict::Deny.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArgvDestructiveDeniedPayload {
+    /// Blake3 hex of the argv slice (privacy-safe — no literal args stored).
+    pub argv_hash: String,
+    /// Human-readable denial reason from the allowlist entry.
+    pub reason: String,
+    /// Incident citation that motivated this rule.
+    pub citation: String,
+}
+
+/// E-30: Emitted when check_argv() returns AllowlistVerdict::RequireHumanApproval.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArgvApprovalRequiredPayload {
+    pub argv_hash: String,
+    pub reason: String,
+    pub citation: String,
+}
+
+/// E-30: Emitted when ensure_session_trust() defers a hook load (CVE-2025-59536).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrustDialogHookDeferredPayload {
+    /// Path of the settings file whose hooks were blocked.
+    pub settings_path: String,
+    /// CVE identifier motivating this check.
+    pub cve: String,
+}
+
+/// E-30: Emitted when ensure_session_trust() blocks an env-redirect (CVE-2026-21852).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrustDialogEnvDeferredPayload {
+    /// Which env var triggered the block (ANTHROPIC_BASE_URL or OPENAI_BASE_URL).
+    pub env_var: String,
+    pub cve: String,
+}
+
+/// E-30: Emitted when an MCP server version is refused by the exact-pin policy.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpPinVersionRefusedPayload {
+    pub server_name: String,
+    /// The version string that was presented (and refused).
+    pub presented_version: String,
+    /// The pinned exact version required, if registered; empty if not in pin list.
+    pub pinned_version: String,
+    /// "version_float" | "not_in_pin_list" | "hash_mismatch"
+    pub refusal_reason: String,
+}
+
+/// E-30: Emitted when auditor and executor share the same lineage group.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AuditorLineageCollisionPayload {
+    pub auditor_agent_id: String,
+    pub executor_agent_id: String,
+    pub lineage_group: String,
+    /// "blocked" (autonomous) | "warned" (interactive)
+    pub action_taken: String,
+}
+
+/// E-30: Emitted when an untrusted TextSource attempts a memory write.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UntrustedMemoryWriteBlockedPayload {
+    /// TextSource trust label (e.g. "ExternalTool", "UserPrompt").
+    pub source_label: String,
+    /// Summary of what the write attempt contained (truncated, no PII).
+    pub write_summary: String,
+}
+
+/// E-30: Emitted when an incident postmortem entry is stored.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IncidentRecordCreatedPayload {
+    pub incident_id: String,
+    pub title: String,
+    /// ISO-8601 date of the original public incident.
+    pub incident_date: String,
+    pub source_url: String,
+}
+
+/// E-32 — payload for [`SsbActionType::FitmCalibrationApplied`].
+///
+/// Emitted by `FoundInTheMiddleCalibrator` in server.py on each long-context
+/// request (prompt_len > 8K) when `ELAI_FITM_ENABLED=1`.
+/// Grounding: arxiv:2406.16008 (Found-in-the-Middle, ACL 2024).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FitmCalibrationAppliedPayload {
+    /// Token count of the real prompt that triggered FITM.
+    pub prompt_len: u32,
+    /// Token count of the dummy doc used for positional-prior subtraction.
+    pub dummy_len: u32,
+    /// Wall-clock milliseconds spent on the extra forward pass + subtraction.
+    pub applied_ms: f64,
+}
+
+/// E-32 — payload for [`SsbActionType::DeepModeActivated`].
+///
+/// Emitted at sidecar boot when `ELAI_DEEP_MODE=1` and VRAM >= 24 GB;
+/// indicates the 1M-context variant is active.
+/// Grounding: arxiv:2501.15383 (Qwen2.5-1M DCA technical report).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeepModeActivatedPayload {
+    /// HF model ID loaded in deep mode (e.g. "Qwen/Qwen2.5-7B-Instruct-1M").
+    pub model_id: String,
+    /// Context cap in tokens (64000 on 24 GB box).
+    pub ctx_cap: u32,
+    /// Total VRAM in GB on the active CUDA device.
+    pub vram_gb: f32,
+}
+
+/// E-32 — payload for [`SsbActionType::DeepModeEscalationChosen`].
+///
+/// Emitted by `deep_mode_escalation_hook` in escalation_policy.rs when
+/// SessionDag handoff prefers local deep mode over cloud escalation for
+/// a cross-file synthesis task (>3 files, no clear retrieval answer).
+/// Grounding: arxiv:2407.16833 (Self-Route EMNLP 2024).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeepModeEscalationChosenPayload {
+    /// Human-readable reason for choosing deep mode over cloud.
+    pub reason: String,
+    /// Number of files referenced that triggered the cross-file synthesis heuristic.
+    pub files_referenced: u32,
+}
+
+/// E-32 — payload for [`SsbActionType::YarnRefused`].
+///
+/// Emitted at sidecar boot when `ELAI_USE_YARN=1` is set but refused for
+/// a Qwen2.5-Coder model (15-20% quality drop on short prompts).
+/// Grounding: vllm issue 18728; arxiv:2601.15300.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct YarnRefusedPayload {
+    /// The model name/path that triggered the refusal.
+    pub model_name: String,
+    /// The refusal reason (cites vllm issue + arxiv).
+    pub reason: String,
+}
+
 /// D-15 — payload for [`SsbActionType::NoveltyClassified`].
 ///
 /// Emitted once per [`crate::novelty::emit_novelty_classified`] call
@@ -10472,6 +11216,28 @@ mod tests {
                     reason: "normal exit".into(),
                 },
             ),
+            // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+            SsbActionType::MlxSubprocessSpawned => SsbPayload::MlxSubprocessSpawned(
+                MlxSubprocessSpawnedPayload { pid: 22222, argv_redacted: vec!["vllm-mlx".into()] }
+            ),
+            SsbActionType::MlxSubprocessKilled => SsbPayload::MlxSubprocessKilled(
+                MlxSubprocessKilledPayload { pid: 22222, exit_code: Some(0), reason: "normal exit".into() }
+            ),
+            SsbActionType::LlamaCppSubprocessSpawned => SsbPayload::LlamaCppSubprocessSpawned(
+                LlamaCppSubprocessSpawnedPayload { pid: 33333, ep: "cpu".into(), argv_redacted: vec!["llama-server".into()] }
+            ),
+            SsbActionType::LlamaCppSubprocessKilled => SsbPayload::LlamaCppSubprocessKilled(
+                LlamaCppSubprocessKilledPayload { pid: 33333, exit_code: Some(0), reason: "normal exit".into() }
+            ),
+            SsbActionType::MlxApplePlatformDetected => SsbPayload::MlxApplePlatformDetected(
+                MlxApplePlatformDetectedPayload { chip_family: "M5".into(), gpu_cores: 40 }
+            ),
+            SsbActionType::LlamaCppEpDetected => SsbPayload::LlamaCppEpDetected(
+                LlamaCppEpDetectedPayload { ep: "cpu".into() }
+            ),
+            SsbActionType::RuntimeChainBuilt => SsbPayload::RuntimeChainBuilt(
+                RuntimeChainBuiltPayload { chain: vec![elai_providers::runtime::RuntimeBackend::Sidecar] }
+            ),
             // C-1 (SCHEMA_VERSION 47): knowledge + reasoning producer beacons.
             SsbActionType::GrcStepEmitted => SsbPayload::GrcStepEmitted(GrcStepEmittedPayload {
                 agent_id: "executor".into(),
@@ -11297,6 +12063,68 @@ mod tests {
                     ts_ms: 1_700_000_120_000,
                 },
             ),
+            SsbActionType::ToolGated => SsbPayload::ToolGated(ToolGateEventPayload {
+                tool_name: "fs.read".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 42,
+            }),
+            SsbActionType::ToolEager => SsbPayload::ToolEager(ToolGateEventPayload {
+                tool_name: "knowledge.search".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 0,
+            }),
+            SsbActionType::ToolLazyResolved => SsbPayload::ToolLazyResolved(ToolGateEventPayload {
+                tool_name: "fs.edit".into(),
+                fsm_state: "executing".into(),
+                prompt_tokens_saved: 120,
+            }),
+            SsbActionType::ToolDenied => SsbPayload::ToolDenied(ToolGateEventPayload {
+                tool_name: "git.commit".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 0,
+            }),
+            SsbActionType::QuantBackendSelected => SsbPayload::QuantBackendSelected(QuantBackendSelectedPayload {
+                backend: "awq".into(),
+                kv_dtype: "fp8_e5m2".into(),
+                compute_capability: 86,
+                marlin_enabled: true,
+            }),
+            SsbActionType::KvCacheDtypeSoftwareSim => SsbPayload::KvCacheDtypeSoftwareSim(KvCacheDtypeSoftwareSimPayload {
+                kv_dtype: "fp8_e5m2".into(),
+                throughput_cost_pct: 5.0,
+                compute_capability: 86,
+            }),
+            SsbActionType::AwqCheckpointBuilt => SsbPayload::AwqCheckpointBuilt(AwqCheckpointBuiltPayload {
+                model_path: "/models/Qwen2.5-Coder-7B".into(),
+                calibration_size: 256,
+                duration_s: 7200.0,
+                output_path: "/models/Qwen2.5-Coder-7B-AWQ".into(),
+            }),
+            SsbActionType::CliMcpDispatch => SsbPayload::CliMcpDispatch(CliMcpDispatchPayload {
+                tool_name: "fs.read".into(),
+                port: 8200,
+            }),
+            SsbActionType::CliMcpServerStarted => SsbPayload::CliMcpServerStarted(CliMcpServerStartedPayload {
+                port: 8200,
+            }),
+            SsbActionType::CliMcpServerStopped => SsbPayload::CliMcpServerStopped(CliMcpServerStoppedPayload {
+                port: 8200,
+            }),
+            // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
+            // to cover the 27 new action types (E-15 sandbox hardening, E-24 MCP hardening,
+            // C-48 SafeHarbor, E-30 public incident, E-32 context window). The test_payload
+            // helper only needs a valid msgpack payload to pass write-time validation; the
+            // Finding shape is the smallest available with stable schema.
+            _ => SsbPayload::Finding(FindingPayload {
+                severity: "INFO".into(),
+                category: "test".into(),
+                message: "test_payload fallback".into(),
+                file_path: None,
+                line: None,
+                failure_category: None,
+                audit_step: None,
+                few_shot_examples: None,
+            }),
         };
         rmp_serde::to_vec_named(&payload).expect("test payload serialization")
     }
@@ -13304,6 +14132,213 @@ mod tests {
                 dominant_novelty_class: "discovery_candidate".into(),
                 ts_ms: 1_700_000_120_000,
             }),
+            SsbPayload::ToolGated(ToolGateEventPayload {
+                tool_name: "fs.read".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 42,
+            }),
+            SsbPayload::ToolEager(ToolGateEventPayload {
+                tool_name: "knowledge.search".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 0,
+            }),
+            SsbPayload::ToolLazyResolved(ToolGateEventPayload {
+                tool_name: "fs.edit".into(),
+                fsm_state: "executing".into(),
+                prompt_tokens_saved: 120,
+            }),
+            SsbPayload::ToolDenied(ToolGateEventPayload {
+                tool_name: "git.commit".into(),
+                fsm_state: "planning".into(),
+                prompt_tokens_saved: 0,
+            }),
+            SsbPayload::QuantBackendSelected(QuantBackendSelectedPayload {
+                backend: "awq".into(),
+                kv_dtype: "fp8_e5m2".into(),
+                compute_capability: 86,
+                marlin_enabled: true,
+            }),
+            SsbPayload::KvCacheDtypeSoftwareSim(KvCacheDtypeSoftwareSimPayload {
+                kv_dtype: "fp8_e5m2".into(),
+                throughput_cost_pct: 5.0,
+                compute_capability: 86,
+            }),
+            SsbPayload::AwqCheckpointBuilt(AwqCheckpointBuiltPayload {
+                model_path: "/models/Qwen2.5-Coder-7B".into(),
+                calibration_size: 256,
+                duration_s: 7200.0,
+                output_path: "/models/Qwen2.5-Coder-7B-AWQ".into(),
+            }),
+            SsbPayload::CliMcpDispatch(CliMcpDispatchPayload {
+                tool_name: "fs.read".into(),
+                port: 8200,
+            }),
+            SsbPayload::CliMcpServerStarted(CliMcpServerStartedPayload { port: 8200 }),
+            SsbPayload::CliMcpServerStopped(CliMcpServerStoppedPayload { port: 8200 }),
+            SsbPayload::FirecrackerRestoreSlow(FirecrackerRestoreSlowPayload {
+                agent_id: "test-agent".to_string(),
+                actual_ms: 350,
+                budget_ms: 200,
+            }),
+            SsbPayload::SnapshotUniquenessRegenerated(SnapshotUniquenessRegeneratedPayload {
+                agent_id: "test-agent".to_string(),
+                restore_count: 3,
+            }),
+            SsbPayload::SnapshotEvicted(SnapshotEvictedPayload {
+                agent_id: "test-agent".to_string(),
+                reason: "lru_count".to_string(),
+                snapshot_path: "/tmp/test.snap".to_string(),
+            }),
+            SsbPayload::SandboxBackendSelected(SandboxBackendSelectedPayload {
+                agent_id: "test-agent".to_string(),
+                backend: "Firecracker".to_string(),
+            }),
+            SsbPayload::AgentForkedFromSnapshot(AgentForkedFromSnapshotPayload {
+                agent_id: "test-agent".to_string(),
+                baby_step_id: 1,
+                snapshot_path: "/tmp/test.snap".to_string(),
+            }),
+            SsbPayload::ResearcherNetEgressBlocked(ResearcherNetEgressBlockedPayload {
+                agent_id: "test-agent".to_string(),
+                destination: "evil.example.com".to_string(),
+                policy_action: "REJECT".to_string(),
+            }),
+            SsbPayload::McpSchemaPinViolation(McpSchemaPinViolationPayload {
+                server_url: "http://localhost:8200".to_string(),
+                pinned_hash: "abc123def456".to_string(),
+                observed_hash: "def456abc123".to_string(),
+                pinned_at_ms: 1_700_000_000_000,
+            }),
+            SsbPayload::McpSanitizationRuleApplied(McpSanitizationRuleAppliedPayload {
+                server_url: "http://localhost:8200".to_string(),
+                tool_name: "search".to_string(),
+                rule_id: "shell_prefix".to_string(),
+                replacement_count: 1,
+            }),
+            SsbPayload::McpBudgetEnforced(McpBudgetEnforcedPayload {
+                server_url: "http://localhost:8200".to_string(),
+                dropped_tools: vec!["tool_a".to_string(), "tool_b".to_string()],
+                kept_tokens: 4800,
+                budget_tokens: 5000,
+            }),
+            SsbPayload::McpLegacySseTransport(McpLegacySseTransportPayload {
+                server_url: "http://localhost:8200".to_string(),
+                deprecation_notice: "SSE transport deprecated per MCP spec 2025-11-25".to_string(),
+            }),
+            SsbPayload::McpLlmGuardBlocked(McpLlmGuardBlockedPayload {
+                server_url: "http://localhost:8200".to_string(),
+                tool_name: "dangerous_tool".to_string(),
+                reason: "shell command detected in args".to_string(),
+                guard_latency_ms: 42,
+            }),
+            SsbPayload::AnthropicGatewayDetected(AnthropicGatewayDetectedPayload {
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                detected_gateway: "openrouter".to_string(),
+                latency_overhead_ms_estimate: 50,
+                prompt_cache_broken: true,
+            }),
+            SsbPayload::MemoryTierAssigned(MemoryTierAssignedPayload {
+                fact_id: "fact-test-001".to_string(),
+                trust_tier: "T1".to_string(),
+                provenance_source: "src/main.rs:42".to_string(),
+            }),
+            SsbPayload::MemoryQueryFiltered(MemoryQueryFilteredPayload {
+                query_type: "destructive_command_intent".to_string(),
+                excluded_count: 3,
+            }),
+            SsbPayload::SafetyCriticalBlocked(SafetyCriticalBlockedPayload {
+                fact_id: "inject-t2".to_string(),
+                trust_tier: "T2".to_string(),
+                query_type: "auth_decision".to_string(),
+            }),
+            // E-30: public-incident hardening beacons
+            SsbPayload::ArgvDestructiveDenied(ArgvDestructiveDeniedPayload {
+                argv_hash: "abc123".to_string(),
+                reason: "rm -rf with home-dir prefix".to_string(),
+                citation: "Claude Code rm -rf ~/ incident 2025-05".to_string(),
+            }),
+            SsbPayload::ArgvApprovalRequired(ArgvApprovalRequiredPayload {
+                argv_hash: "def456".to_string(),
+                reason: "terraform destroy requires human approval".to_string(),
+                citation: "DataTalks terraform destroy incident 2025-06".to_string(),
+            }),
+            SsbPayload::TrustDialogHookDeferred(TrustDialogHookDeferredPayload {
+                settings_path: "/project/.claude/settings.json".to_string(),
+                cve: "CVE-2025-59536".to_string(),
+            }),
+            SsbPayload::TrustDialogEnvDeferred(TrustDialogEnvDeferredPayload {
+                env_var: "ANTHROPIC_BASE_URL".to_string(),
+                cve: "CVE-2026-21852".to_string(),
+            }),
+            SsbPayload::McpPinVersionRefused(McpPinVersionRefusedPayload {
+                server_name: "postmark-mcp".to_string(),
+                presented_version: "1.0.17".to_string(),
+                pinned_version: "1.0.15".to_string(),
+                refusal_reason: "version_float".to_string(),
+            }),
+            SsbPayload::AuditorLineageCollision(AuditorLineageCollisionPayload {
+                auditor_agent_id: "agt-audit-01".to_string(),
+                executor_agent_id: "agt-exec-01".to_string(),
+                lineage_group: "session-xyz".to_string(),
+                action_taken: "blocked".to_string(),
+            }),
+            SsbPayload::UntrustedMemoryWriteBlocked(UntrustedMemoryWriteBlockedPayload {
+                source_label: "ExternalTool".to_string(),
+                write_summary: "attempted write of 512 bytes from external tool output".to_string(),
+            }),
+            SsbPayload::IncidentRecordCreated(IncidentRecordCreatedPayload {
+                incident_id: "inc-replit-2025-07".to_string(),
+                title: "Replit DROP TABLE dropped production database".to_string(),
+                incident_date: "2025-07-01".to_string(),
+                source_url: "incidentdatabase.ai/cite/1152".to_string(),
+            }),
+            // E-32: context-window extension beacons (212 -> 216)
+            SsbPayload::FitmCalibrationApplied(FitmCalibrationAppliedPayload {
+                prompt_len: 12_288,
+                dummy_len: 50,
+                applied_ms: 142.5,
+            }),
+            SsbPayload::DeepModeActivated(DeepModeActivatedPayload {
+                model_id: "Qwen/Qwen2.5-7B-Instruct-1M".to_string(),
+                ctx_cap: 64_000,
+                vram_gb: 24.0,
+            }),
+            SsbPayload::DeepModeEscalationChosen(DeepModeEscalationChosenPayload {
+                reason: "cross-file synthesis: 5 files, no retrieval-local answer".to_string(),
+                files_referenced: 5,
+            }),
+            SsbPayload::YarnRefused(YarnRefusedPayload {
+                model_name: "Qwen2.5-Coder-7B".to_string(),
+                reason: "YaRN rejected per E-32: 15-20% quality drop (vllm issue 18728)".to_string(),
+            }),
+            // E-51 (SCHEMA_VERSION 96): edge-inference beacons.
+            SsbPayload::MlxSubprocessSpawned(MlxSubprocessSpawnedPayload {
+                pid: 22222,
+                argv_redacted: vec!["vllm-mlx".into()],
+            }),
+            SsbPayload::MlxSubprocessKilled(MlxSubprocessKilledPayload {
+                pid: 22222,
+                exit_code: Some(0),
+                reason: "normal exit".into(),
+            }),
+            SsbPayload::LlamaCppSubprocessSpawned(LlamaCppSubprocessSpawnedPayload {
+                pid: 33333,
+                ep: "cpu".into(),
+                argv_redacted: vec!["llama-server".into()],
+            }),
+            SsbPayload::LlamaCppSubprocessKilled(LlamaCppSubprocessKilledPayload {
+                pid: 33333,
+                exit_code: Some(0),
+                reason: "normal exit".into(),
+            }),
+            SsbPayload::MlxApplePlatformDetected(MlxApplePlatformDetectedPayload {
+                chip_family: "M5".into(),
+                gpu_cores: 40,
+            }),
+            SsbPayload::LlamaCppEpDetected(LlamaCppEpDetectedPayload { ep: "cpu".into() }),
+            SsbPayload::RuntimeChainBuilt(RuntimeChainBuiltPayload {
+                chain: vec![elai_providers::runtime::RuntimeBackend::Sidecar],
+            }),
         ]
     }
 
@@ -13315,8 +14350,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            179,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted)",
+            223,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

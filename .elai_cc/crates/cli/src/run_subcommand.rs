@@ -20,7 +20,7 @@ use crate::runtime_builder::{apply_task_runner_wiring, build_task_runner_wiring}
 
 /// Parsed `elai run` arguments.
 #[derive(Debug, Clone)]
-pub(crate) struct RunArgs {
+pub struct RunArgs {
     /// Project root the runner should bind to. Defaults to the CWD when
     /// the user does not pass `--project-root`.
     pub project_root: PathBuf,
@@ -37,6 +37,8 @@ pub(crate) struct RunArgs {
     /// `None` => use the toml default from `[cloud].default_mode`.
     /// Unknown values are rejected at parse time.
     pub provider: Option<String>,
+    /// C-39 -- route tool calls through MCP bridge instead of in-process plugins.
+    pub via_mcp: bool,
 }
 
 /// Synchronous entry consumed by the `CliAction::Run` match arm. Owns its
@@ -101,6 +103,10 @@ async fn run_async(args: RunArgs) -> Result<(), anyhow::Error> {
     );
     wiring.cloud_config = Some(cloud_config);
     wiring.provider_override = args.provider.clone();
+    wiring.via_mcp = args.via_mcp;
+    if args.via_mcp {
+        tracing::info!(port = 8200, "C-39: --via-mcp active; tool calls will route through MCP bridge at port {}", 8200);
+    }
 
     // Cursor lives under <project_root>/.elai_cc/sessions/<sid>/cursor.json
     // so the runner can resume across CLI invocations from the same

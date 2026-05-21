@@ -2,7 +2,7 @@
 //! `valid_to_ms` is set + the new row's `superseded_by` points back to
 //! the old `fact_id`. Mirrors the Zep §2.2.3 invariant.
 
-use elai_memory::{FactStore, FactType, MemoryFact, Scope};
+use elai_memory::{FactStore, FactType, MemoryFact, Provenance, Scope, TrustTier};
 
 fn now_ms_base() -> u128 {
     1_700_000_000_000
@@ -32,6 +32,8 @@ fn make_fact(
         last_observed_at_ms: t,
         evidence_pointers: vec!["sess-1".into(), "msg-1".into()],
         superseded_by: None,
+        trust_tier: TrustTier::T1CodebaseDerived,
+        provenance: Provenance::codebase_derived("test"),
     }
 }
 

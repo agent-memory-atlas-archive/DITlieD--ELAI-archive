@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::MemoryError;
+use crate::trust::{Provenance, TrustTier};
 
 /// Discriminator for the kind of fact stored. Mirrors the canonical list
 /// from the E-5 report ("What to model about the user") plus `mistake`
@@ -176,6 +177,11 @@ pub struct MemoryFact {
     pub evidence_pointers: Vec<String>,
     /// Optional `fact_id` of the row that supersedes this one.
     pub superseded_by: Option<String>,
+    /// C-48 SafeHarbor trust tier. T3 = most pessimistic default (migration assigns T3
+    /// to all pre-C-48 rows). Safety-critical queries exclude T2/T3.
+    pub trust_tier: TrustTier,
+    /// C-48 SafeHarbor provenance. Non-optional post-migration.
+    pub provenance: Provenance,
 }
 
 impl MemoryFact {

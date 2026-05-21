@@ -185,7 +185,8 @@ async fn c9_contract_substitute_model_failed_when_chain_exhausted() {
 
 #[tokio::test]
 async fn c9_contract_substitute_model_failed_when_target_oversized() {
-    let mut sizes = std::collections::HashMap::new();
+    // s-68264 audit cleanup: AutonomousGateConfig.estimated_model_sizes is FxHashMap<String,u64>.
+    let mut sizes: rustc_hash::FxHashMap<String, u64> = rustc_hash::FxHashMap::default();
     sizes.insert("huge".to_owned(), 24 * 1024 * 1024 * 1024); // 24 GiB
     let gate = AutonomousGate::new(
         AutonomousGateConfig {
@@ -214,7 +215,8 @@ async fn c9_contract_substitute_model_failed_when_target_oversized() {
 
 #[tokio::test]
 async fn c9_contract_substitute_model_succeeds_when_target_fits() {
-    let mut sizes = std::collections::HashMap::new();
+    // s-68264 audit cleanup: AutonomousGateConfig.estimated_model_sizes is FxHashMap<String,u64>.
+    let mut sizes: rustc_hash::FxHashMap<String, u64> = rustc_hash::FxHashMap::default();
     sizes.insert("tiny".to_owned(), 256 * 1024 * 1024);
     sizes.insert("small".to_owned(), 1024 * 1024 * 1024);
     let gate = AutonomousGate::new(
@@ -428,6 +430,7 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        via_mcp: false,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -448,6 +451,7 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        via_mcp: false,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -469,6 +473,7 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        via_mcp: false,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

@@ -346,8 +346,17 @@ mod tests {
         // i64::MAX millis ~ 9.22e18 ms ~ 9.22e15 s. Add 1 second past that
         // to force the u128 -> i64 narrowing failure.
         let overflow_secs: u64 = (i64::MAX as u64) / 1000 + 1;
-        let when = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(overflow_secs);
+        // s-68264: Windows std::time panics on +9.22e15s SystemTime addition
+        // (overflow at the Instant layer). checked_add returns None there;
+        // skip narrowing-check on platforms that cannot represent the input.
+        let Some(when) = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(overflow_secs))
+        else {
+            eprintln!(
+                "epoch_ms_from_emits_clock_overflow: SystemTime cannot represent +{overflow_secs}s; skipping"
+            );
+            return;
+        };
         let err = epoch_ms_from(when).expect_err("must overflow");
         match err {
             ArtifactsError::ClockOverflow(ms) => {

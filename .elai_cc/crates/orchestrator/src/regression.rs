@@ -15,6 +15,14 @@
 //!       else record regression with consecutive_failures count.
 //!
 //! Per-mode: caller filters history by pipeline_mode before calling detect.
+//!
+//! E-30 failure taxonomy additions (5 new categories mirrored in
+//! .claude/tools/failure_taxonomy.py CATEGORY_PATTERNS):
+//!   "argv_denied"         -- check_argv() Deny hit; tool blocked pre-dispatch.
+//!   "trust_dialog_block"  -- ensure_session_trust() refused hook/env load.
+//!   "mcp_pin_refused"     -- MCP server version refused by exact-pin policy.
+//!   "lineage_collision"   -- auditor+executor share same lineage group (autonomous=BLOCK).
+//!   "untrusted_mem_write" -- TextSource::ExternalTool attempted a memory write.
 
 use crate::self_mod_types::{
     AcRegression, FullPipelineOutcome, PipelineId, RegressionReport, TestOutcomeReport,

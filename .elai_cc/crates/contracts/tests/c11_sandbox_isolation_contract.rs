@@ -33,7 +33,8 @@ use elai_orchestrator::sandbox::SelfModificationLocks;
 
 #[test]
 fn c11_contract_sandbox_clone_cb_has_expected_syscall_blocks() {
-    let sandbox_src = include_str!("../../orchestrator/src/sandbox.rs");
+    // s-68264 audit cleanup: sandbox.rs split into sandbox/ module dir (mod.rs holds clone_cb).
+    let sandbox_src = include_str!("../../orchestrator/src/sandbox/mod.rs");
 
     // The five required markers in clone_cb, listed in their HARD ordering.
     let markers = [
@@ -60,7 +61,8 @@ fn c11_contract_sandbox_clone_cb_has_expected_syscall_blocks() {
 
 #[test]
 fn c11_contract_sandbox_contains_rlimit_constants() {
-    let sandbox_src = include_str!("../../orchestrator/src/sandbox.rs");
+    // s-68264 audit cleanup: sandbox.rs split into sandbox/ module dir (mod.rs holds clone_cb).
+    let sandbox_src = include_str!("../../orchestrator/src/sandbox/mod.rs");
     for needle in [
         "RLIMIT_CPU",
         "RLIMIT_NOFILE",
@@ -77,7 +79,8 @@ fn c11_contract_sandbox_contains_rlimit_constants() {
 
 #[test]
 fn c11_contract_sandbox_contains_cap_last_cap_read() {
-    let sandbox_src = include_str!("../../orchestrator/src/sandbox.rs");
+    // s-68264 audit cleanup: sandbox.rs split into sandbox/ module dir (mod.rs holds clone_cb).
+    let sandbox_src = include_str!("../../orchestrator/src/sandbox/mod.rs");
     assert!(
         sandbox_src.contains("/proc/sys/kernel/cap_last_cap"),
         "sandbox.rs must read /proc/sys/kernel/cap_last_cap in the PARENT (C-11 D6)"

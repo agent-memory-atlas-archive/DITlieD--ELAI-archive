@@ -76,6 +76,12 @@ pub enum RuntimeBackend {
     Ollama,
     /// vLLM HTTP (`/v1/chat/completions` — stub in B-37A).
     Vllm,
+    /// Apple MLX fast-path via vllm-mlx subprocess on Darwin+arm64 (E-51).
+    /// Speaks Anthropic /v1/messages. Refused on non-Apple-Silicon platforms.
+    Mlx,
+    /// Universal GGUF fallback via llama-server subprocess (E-51).
+    /// Auto-detects best EP: Vulkan / CUDA / Metal / HIP / CPU.
+    LlamaCpp,
 }
 
 impl RuntimeBackend {
@@ -95,6 +101,8 @@ impl RuntimeBackend {
             Self::CopilotCli => "copilot_cli",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
+            Self::Mlx => "mlx",
+            Self::LlamaCpp => "llama_cpp",
         }
     }
 
@@ -114,6 +122,8 @@ impl RuntimeBackend {
             Self::CopilotCli,
             Self::Ollama,
             Self::Vllm,
+            Self::Mlx,
+            Self::LlamaCpp,
         ]
     }
 }

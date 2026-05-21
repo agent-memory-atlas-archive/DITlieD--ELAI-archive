@@ -1,0 +1,23 @@
+# E-30: MCP server version pins.
+# Policy: exact version only — no ^X.Y.Z or >=X.Y.Z semver floats.
+# Rationale: postmark-mcp v1.0.16 inserted one-line BCC backdoor after 15 clean versions.
+# Reference: thehackernews.com 2025-09-29, snyk.io postmark-mcp breakdown.
+#
+# Format: [[pins]]
+# Each entry: name, exact_version, expected_hash_blake3 (optional), auth_required
+
+# No MCP servers currently registered for ELAI production use.
+# Add entries here as MCP servers are adopted.
+
+# Example (commented out until a real server is registered):
+# [[pins]]
+# name = "example-mcp-server"
+# exact_version = "1.0.0"
+# expected_hash_blake3 = ""
+# auth_required = true
+
+# Refuse any server not in this list when enforce_pin_list = true.
+[policy]
+enforce_pin_list = false
+refuse_version_float = true
+refuse_unauthenticated = true

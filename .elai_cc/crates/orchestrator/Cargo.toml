@@ -21,6 +21,8 @@ elai-rules = { path = "../rules" }
 scaffold = { path = "../scaffold" }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
+# E-30: non-LLM argv allowlist + trust dialog ordering checks.
+elai-safety = { path = "../safety" }
 indexmap = { version = "2", features = ["serde"] }
 rustc-hash.workspace = true
 toml.workspace = true

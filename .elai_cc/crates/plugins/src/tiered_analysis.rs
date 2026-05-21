@@ -52,7 +52,7 @@ pub struct LanguageLimits {
 /// ```
 ///
 /// In the owning crate's config struct:
-/// ```rust
+/// ```rust,ignore
 /// #[serde(default)]
 /// pub file_discipline: elai_plugins::tiered_analysis::FileDisciplineConfig,
 /// ```

@@ -6,7 +6,7 @@
 
 use elai_memory::{
     decay_tick, extract_facts, get_relevant_facts, Conversation, FactStore, FactType, MemoryFact,
-    RetrievalFilter, Scope, Turn,
+    Provenance, RetrievalFilter, Scope, TrustTier, Turn,
 };
 
 #[test]
@@ -50,6 +50,8 @@ fn extract_then_persist_then_retrieve_with_decay() {
         last_observed_at_ms: t0,
         evidence_pointers: c.evidence.clone(),
         superseded_by: None,
+        trust_tier: TrustTier::T1CodebaseDerived,
+        provenance: Provenance::codebase_derived("test"),
     };
     store.insert(&fact).expect("insert");
 
@@ -65,6 +67,7 @@ fn extract_then_persist_then_retrieve_with_decay() {
         project_id: Some("proj-x".into()),
         fact_type: Some(FactType::Preference),
         trust_override: None,
+        safety_critical: false,
     };
     let hits = get_relevant_facts(&store, "default", &filter, 4, t_now + 1)
         .expect("retrieve");
@@ -101,6 +104,8 @@ fn empty_evidence_rejected_at_insert() {
         last_observed_at_ms: t0,
         evidence_pointers: vec![],
         superseded_by: None,
+        trust_tier: TrustTier::T1CodebaseDerived,
+        provenance: Provenance::codebase_derived("test"),
     };
     let res = store.insert(&bad);
     assert!(res.is_err(), "empty evidence_pointers must be rejected");
@@ -128,6 +133,8 @@ fn project_scope_filter_isolates_projects() {
             last_observed_at_ms: t0 + i as u128,
             evidence_pointers: vec!["sess".into(), "msg".into()],
             superseded_by: None,
+            trust_tier: TrustTier::T1CodebaseDerived,
+            provenance: Provenance::codebase_derived("test"),
         };
         store.insert(&f).expect("insert");
     }
@@ -136,6 +143,7 @@ fn project_scope_filter_isolates_projects() {
         project_id: Some("proj-a".into()),
         fact_type: None,
         trust_override: None,
+        safety_critical: false,
     };
     let hits = get_relevant_facts(&store, "default", &filter, 10, t0 + 100).expect("retrieve");
     assert_eq!(hits.len(), 1, "project filter must isolate proj-a row");

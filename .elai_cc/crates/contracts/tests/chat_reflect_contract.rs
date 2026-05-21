@@ -156,8 +156,10 @@ async fn test_schema_version_is_30() {
         .expect("user_version pragma");
     // B-24 Phase 4I Group C1 bumped 29 -> 30 atomically with the 6 new media-validator
     // SsbActionType variants. The B-39 baseline (v29) is preserved in this comment for
-    // archaeology but the live constant is the next floor.
-    assert_eq!(v, 30, "B-24 4I.C1 migration must bump schema to user_version=30");
+    // archaeology but the live constant is the next floor. Post-campaign s-68264 the
+    // floor is SCHEMA_VERSION 96 (see crates/orchestrator/src/ssb.rs:955); this test
+    // tracks the moving floor so the migration assertion is `>= 30` not exact.
+    assert!(v >= 30, "B-24 4I.C1 migration must bump schema to user_version>=30; got {}", v);
 }
 
 // ===========================================================================

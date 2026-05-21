@@ -755,3 +755,40 @@ mandatory = false
 # healthy_band_hi = 0.20
 # alarm_threshold_breaches = 3
 # verifier_id = "ppm_qwen25_math_prm_7b"
+
+[tool_gating]
+enabled = true
+gate_manifest_path = "plugins/tool-gate.toml"
+lazy_schema_default = true
+max_eager_schemas = 4
+
+# ============================================================================
+# E-15: Sandbox hardening -- Firecracker + gVisor + AppContainer + researcher net
+# ============================================================================
+
+[sandbox.firecracker]
+enabled = true
+snapshot_dir = ".elai_cc/sessions/{session_id}/snapshots"
+restore_budget_ms = 200
+max_snapshots = 64
+max_age_secs = 86400
+uniqueness_mitigation = true
+
+[sandbox.gvisor]
+# gVisor syscall overhead ~10-20% vs Firecracker 1-2% (gvisor.dev + HotCloud19).
+enabled_if_no_kvm = true
+platform = "systrap"
+
+[sandbox.appcontainer]
+# Windows AppContainer (Chromium-hardened, job object + restricted token).
+job_kill_on_close = true
+active_process_limit = 1
+low_il_descriptor = true
+
+[researcher.net]
+# Researcher-role network egress allowlist.
+# FQDNs resolved at spawn time; IPs pinned into iptables OUTPUT chain.
+# reject_not_drop: fast EHOSTUNREACH vs silent 30s timeout (shayon.dev 2026).
+allowed_hosts = ["arxiv.org", "huggingface.co"]
+trusted_resolvers = ["1.1.1.1", "8.8.8.8"]
+reject_not_drop = true

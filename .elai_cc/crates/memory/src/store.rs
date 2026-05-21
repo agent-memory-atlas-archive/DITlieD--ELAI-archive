@@ -12,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::MemoryError;
 use crate::fact::{FactType, MemoryFact, Scope};
+use crate::trust::{Provenance, TrustTier};
 
 /// Embedded `CREATE TABLE` statement. Idempotent (`IF NOT EXISTS`).
 /// Indexed for the two hot retrieval paths:
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     decay_rate_per_day REAL NOT NULL,
     last_observed_at_ms INTEGER NOT NULL,
     evidence_pointers TEXT NOT NULL,
-    superseded_by TEXT
+    superseded_by TEXT,
+    trust_tier TEXT NOT NULL DEFAULT 'T3',
+    provenance TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_memory_facts_user_scope
     ON memory_facts(user_id, scope, fact_type);
@@ -82,17 +85,20 @@ impl FactStore {
         fact.validate()?;
         let evidence_json = serde_json::to_string(&fact.evidence_pointers)?;
         let value_json = serde_json::to_string(&fact.value)?;
+        let provenance_json = serde_json::to_string(&fact.provenance)?;
         self.conn.execute(
             "INSERT INTO memory_facts (
                 fact_id, user_id, project_id, scope, fact_type, key, value,
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
-                evidence_pointers, superseded_by
+                evidence_pointers, superseded_by,
+                trust_tier, provenance
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
-                ?15, ?16
+                ?15, ?16,
+                ?17, ?18
             )",
             params![
                 fact.fact_id,
@@ -111,6 +117,8 @@ impl FactStore {
                 fact.last_observed_at_ms as i64,
                 evidence_json,
                 fact.superseded_by,
+                fact.trust_tier.as_str(),
+                provenance_json,
             ],
         )?;
         Ok(())
@@ -122,7 +130,8 @@ impl FactStore {
             "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
-                    evidence_pointers, superseded_by
+                    evidence_pointers, superseded_by,
+                    trust_tier, provenance
              FROM memory_facts
              WHERE fact_id = ?1",
         )?;
@@ -146,7 +155,8 @@ impl FactStore {
             "SELECT fact_id, user_id, project_id, scope, fact_type, key, value,
                     confidence, trust_score, ingested_at_ms, valid_from_ms,
                     valid_to_ms, decay_rate_per_day, last_observed_at_ms,
-                    evidence_pointers, superseded_by
+                    evidence_pointers, superseded_by,
+                    trust_tier, provenance
              FROM memory_facts
              WHERE user_id = ?1 AND valid_to_ms IS NULL",
         );
@@ -214,17 +224,20 @@ impl FactStore {
         }
         let evidence_json = serde_json::to_string(&new_fact.evidence_pointers)?;
         let value_json = serde_json::to_string(&new_fact.value)?;
+        let provenance_json = serde_json::to_string(&new_fact.provenance)?;
         tx.execute(
             "INSERT INTO memory_facts (
                 fact_id, user_id, project_id, scope, fact_type, key, value,
                 confidence, trust_score, ingested_at_ms, valid_from_ms,
                 valid_to_ms, decay_rate_per_day, last_observed_at_ms,
-                evidence_pointers, superseded_by
+                evidence_pointers, superseded_by,
+                trust_tier, provenance
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
-                ?15, ?16
+                ?15, ?16,
+                ?17, ?18
             )",
             params![
                 new_fact.fact_id,
@@ -243,6 +256,8 @@ impl FactStore {
                 new_fact.last_observed_at_ms as i64,
                 evidence_json,
                 new_fact.superseded_by,
+                new_fact.trust_tier.as_str(),
+                provenance_json,
             ],
         )?;
         tx.commit()?;
@@ -341,6 +356,8 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
     let last_observed: i64 = row.get(13)?;
     let evidence_text: String = row.get(14)?;
     let superseded_by: Option<String> = row.get(15)?;
+    let trust_tier_tag: String = row.get(16)?;
+    let provenance_text: String = row.get(17)?;
 
     let value: serde_json::Value = match serde_json::from_str(&value_text) {
         Ok(v) => v,
@@ -357,6 +374,15 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
     let fact_type = match FactType::from_str(&fact_type_tag) {
         Ok(v) => v,
         Err(e) => return Ok(Err(e)),
+    };
+
+    let trust_tier = match TrustTier::from_str(&trust_tier_tag) {
+        Ok(v) => v,
+        Err(e) => return Ok(Err(e)),
+    };
+    let provenance = match serde_json::from_str::<Provenance>(&provenance_text) {
+        Ok(v) => v,
+        Err(e) => return Ok(Err(MemoryError::from(e))),
     };
 
     Ok(Ok(MemoryFact {
@@ -376,5 +402,7 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<MemoryFact, M
         last_observed_at_ms: last_observed as u128,
         evidence_pointers,
         superseded_by,
+        trust_tier,
+        provenance,
     }))
 }

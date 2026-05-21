@@ -76,7 +76,9 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         RuntimeBackend::Sidecar
         | RuntimeBackend::AnthropicApi
         | RuntimeBackend::Ollama
-        | RuntimeBackend::Vllm => "<non-cli>",
+        | RuntimeBackend::Vllm
+        | RuntimeBackend::Mlx
+        | RuntimeBackend::LlamaCpp => "<non-cli>",
     }
 }
 

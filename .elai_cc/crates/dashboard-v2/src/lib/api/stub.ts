@@ -2564,6 +2564,15 @@ export async function setRoleRuntime(
 }
 
 // ------------------------------------------------------------------
+// E-51 — Runtime capability probe (MLX / LlamaCpp platform detect)
+// ------------------------------------------------------------------
+
+export async function runtimeCapabilityProbe(backend: string): Promise<Record<string, unknown>> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<Record<string, unknown>>('runtime_capability_probe', { backend });
+}
+
+// ------------------------------------------------------------------
 // C-4 — Tauri commands orchestration + cloud spend surface
 //
 // Thin invoke() wrappers for the 9 commands added by the C-4 executor

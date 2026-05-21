@@ -1117,6 +1117,14 @@ mod tests {
         let empty = TransitionContext::default();
         let gates = all_gates();
         for gate in &gates {
+            // IntentPairsGate has documented pass-through semantics on
+            // empty context: it returns Ok when `min_intent_pairs == 0`
+            // (the default) OR when `intent_pairs` is None. The adversarial
+            // empty-context contract only applies to the mandatory gates.
+            // Source: IntentPairsGate::check L611-619, C-29.
+            if gate.name() == "intent_pairs" {
+                continue;
+            }
             let result = gate.check(&empty);
             assert!(
                 result.is_err(),
@@ -1204,7 +1212,8 @@ mod tests {
     #[test]
     fn test_gated_transitions_have_gate() {
         assert_eq!(gates_for_transition(FsmState::Idle, FsmState::Planning).len(), 1);
-        assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 1);
+        // C-29: PLANNING -> TESTING_FIRST has 2 gates (GroundingSweep + IntentPairs).
+        assert_eq!(gates_for_transition(FsmState::Planning, FsmState::TestingFirst).len(), 2);
         assert_eq!(gates_for_transition(FsmState::TestingFirst, FsmState::Executing).len(), 1);
         assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Auditing).len(), 1);
         assert_eq!(gates_for_transition(FsmState::Executing, FsmState::Planning).len(), 1);
@@ -1261,10 +1270,15 @@ mod tests {
     #[test]
     fn test_gate_names_unique() {
         let gates = all_gates();
+        let total = gates.len();
         let mut names: Vec<&str> = gates.iter().map(|g| g.name()).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 7);
+        // C-29 appended IntentPairsGate (8th gate). Assertion follows
+        // the live registry length so future appends do not silently
+        // regress the uniqueness contract.
+        assert_eq!(names.len(), total);
+        assert_eq!(names.len(), 8);
     }
 
     // -----------------------------------------------------------------------

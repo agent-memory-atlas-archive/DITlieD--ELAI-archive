@@ -66,7 +66,7 @@ pub fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig {
         },
         VramTier::Vram12Gb => ResearchTierConfig {
             model: "Qwen2.5-Coder-3B".to_string(),
-            quant: "NF4+FA2".to_string(),
+            quant: "AWQ-Marlin+FA2+FP8KV".to_string(),
             context_ceiling: 40000,
             research_context_budget: 30000,
             chunk_size: 500,
@@ -81,7 +81,7 @@ pub fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig {
         },
         VramTier::Vram16Gb => ResearchTierConfig {
             model: "Qwen2.5-Coder-7B".to_string(),
-            quant: "NF4+FA2".to_string(),
+            quant: "AWQ-Marlin+FA2+FP8KV".to_string(),
             context_ceiling: 40000,
             research_context_budget: 30000,
             chunk_size: 500,
@@ -96,7 +96,7 @@ pub fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig {
         },
         VramTier::Vram24Gb => ResearchTierConfig {
             model: "Qwen2.5-Coder-14B".to_string(),
-            quant: "NF4+FA2".to_string(),
+            quant: "AWQ-Marlin+FA2+FP8KV".to_string(),
             context_ceiling: 25000,
             research_context_budget: 18000,
             chunk_size: 500,
@@ -111,7 +111,7 @@ pub fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig {
         },
         VramTier::Vram48Gb => ResearchTierConfig {
             model: "Qwen2.5-Coder-32B".to_string(),
-            quant: "NF4+FA2".to_string(),
+            quant: "AWQ-Marlin+FA2+FP8KV".to_string(),
             context_ceiling: 24000,
             research_context_budget: 18000,
             chunk_size: 600,
@@ -127,7 +127,7 @@ pub fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig {
         // Cloud tier: use same as 48GB (large model), no speculative.
         VramTier::Cloud => ResearchTierConfig {
             model: "Qwen2.5-Coder-32B".to_string(),
-            quant: "NF4+FA2".to_string(),
+            quant: "AWQ-Marlin+FA2+FP8KV".to_string(),
             context_ceiling: 24000,
             research_context_budget: 18000,
             chunk_size: 600,

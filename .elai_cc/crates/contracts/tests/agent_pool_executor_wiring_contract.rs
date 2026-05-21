@@ -250,5 +250,6 @@ fn build_minimal_wiring(root: &std::path::Path) -> RuntimeWiring {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+    via_mcp: false,
     }
 }

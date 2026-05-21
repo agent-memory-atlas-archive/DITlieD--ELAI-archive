@@ -38,6 +38,8 @@ pub mod hippo_rag;
 pub mod notes;
 pub mod retrieval;
 pub mod store;
+pub mod trust;
+pub mod view;
 
 pub use core_block::{CoreBlock, CoreBlockStore, CORE_BLOCK_MAX_BYTES};
 pub use decay::{decay_tick, decayed_trust, default_decay_rate, DecayTickStats};
@@ -50,3 +52,5 @@ pub use hippo_rag::{
 pub use notes::{MemoryNote, NoteStore};
 pub use retrieval::{get_relevant_facts, RetrievalFilter};
 pub use store::FactStore;
+pub use trust::{Provenance, TrustTier};
+pub use view::{SafetyCriticalQueryType, TierCeiling};

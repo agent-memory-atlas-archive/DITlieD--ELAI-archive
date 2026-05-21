@@ -212,6 +212,30 @@ const DEPRECATED_PATTERNS_SEED: &[(&str, &str, &str, &str, Option<&str>, &str, &
      None, "WARN", "webpack config complexity exceeds Vite for most greenfield projects; evaluate migration"),
     ("dp-npm-jquery", "npm", "jquery", "vanilla-dom",
      None, "WARN", "jQuery rarely needed in modern browsers; prefer vanilla DOM APIs"),
+    // E-27 (2026-05): AWQ+Marlin serving quantization rules
+    ("dp-awq-no-marlin", "pip", "AWQ without Marlin/Machete", "AWQ+Marlin (Ampere+) or AWQ+Machete (Hopper+)",
+     Some("2026-05"), "BLOCK", "AWQ without Marlin/Machete backend kernel leaves throughput at ~68 tok/s; enable Marlin (Ampere+) or Machete (Hopper+) per Jarvislabs 2026 benchmark"),
+    ("dp-nf4-longctx", "pip", "NF4 at >40K context", "FP8 KV cache",
+     Some("2026-05"), "WARN", "NF4 on Qwen2.5-Coder-7B at >40K context risks 59% long-context degradation per arXiv:2505.20276; switch to FP8 KV cache to unlock 50K+ on Ada+"),
+    ("dp-sub-w4a16", "pip", "W4A8 or sub-W4 weights", "W4A16 (AWQ)",
+     Some("2026-05"), "BLOCK", "W4A8 / sub-W4 weights cause reasoning cliff per arXiv:2504.04823 COLM 2025; ELAI minimum is W4A16"),
+    ("dp-gguf-q4km-code", "pip", "GGUF Q4_K_M for code", "GGUF Q5_K_M or Q6_K",
+     Some("2026-05"), "WARN", "GGUF Q4_K_M moderate quality loss on code workloads per willitrunai; use Q5_K_M / Q6_K for code tasks"),
+    ("dp-turboquant-kvcache", "pip", "TurboQuant <4-bit KV cache", "FP8 KV cache",
+     Some("2026-05"), "BLOCK", "TurboQuant variants <4-bit for KV cache underperform FP8 by 20-34% throughput AND drop ~20 reasoning points per vllm.ai/blog/turboquant; use FP8 KV instead"),
+    // E-30 (2026-05): public agent incident hardening rules
+    ("dp-prompt-not-safety-boundary", "general", "LLM prompt as safety boundary", "pre-tool argv allowlist (non-LLM)",
+     Some("2026-05"), "BLOCK", "LLM prompt refusal is not a reliable safety boundary; Replit/Cursor/Claude Code incidents show LLM can be jailbroken; use non-LLM argv allowlist (check_argv) at T1"),
+    ("dp-sandbox-no-argv-precheck", "general", "tool dispatch without argv precheck", "check_argv() before dispatch",
+     Some("2026-05"), "BLOCK", "dispatching shell tools without non-LLM argv regex precheck enabled the Claude Code rm -rf ~/ and Cursor git restore . incidents; check_argv must run before any Bash/shell tool"),
+    ("dp-mcp-version-float", "general", "MCP server semver range", "exact MCP server version pin",
+     Some("2026-05"), "BLOCK", "postmark-mcp v1.0.16 inserted one-line BCC backdoor after 15 clean versions; semver ranges allow silent backdoor upgrades; use exact version + blake3 hash"),
+    ("dp-auditor-same-lineage", "general", "auditor same lineage as executor", "auditor from different lineage group",
+     Some("2026-05"), "BLOCK", "same-lineage auditor has correlated biases; arXiv:2511.18397 shows 73% lineage-collision false-negative rate; auditor must come from different session/agent pool"),
+    ("dp-hooks-before-trust-dialog", "general", "hooks loaded before trust dialog", "ensure_session_trust() before hook load",
+     Some("2026-05"), "BLOCK", "CVE-2025-59536: hooks executed before trust dialog enabled RCE via .claude/settings.json; ensure_session_trust() must gate hook loading"),
+    ("dp-untrusted-memory-write", "general", "untrusted TextSource writing memory", "TextSource trust check before memory write",
+     Some("2026-05"), "BLOCK", "untrusted external tool output writing to memory enables indirect prompt injection memory poisoning; gate all writes on TextSource.is_trusted()"),
 ];
 
 /// Return BLOCK-severity entries from the static seed data.

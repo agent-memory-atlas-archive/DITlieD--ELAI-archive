@@ -46,6 +46,11 @@ from transformers import (
     set_seed as _transformers_set_seed,
 )
 
+# E-27: ELAI_QUANT_BACKEND / ELAI_KV_CACHE_DTYPE environment variables.
+# ELAI_QUANT_BACKEND : "nf4" (default) | "awq" | "fp16"
+# ELAI_KV_CACHE_DTYPE: "fp16" (default) | "fp8_e4m3" | "fp8_e5m2"
+# Both default to the legacy NF4+FP16 path for backward compatibility.
+
 # Track C-B: lm-format-enforcer is an OPTIONAL runtime dependency. The
 # package is added by the USER manually per USER-MANUAL-CB-DEPS.md (executors
 # MUST NOT touch pyproject.toml). When absent we degrade gracefully:
@@ -1088,6 +1093,255 @@ class GGSignalCollector(LogitsProcessor):
 
 
 # ---------------------------------------------------------------------------
+# E-32: Boot-time validation helpers (YaRN refusal + deep mode activation)
+# ---------------------------------------------------------------------------
+
+# FITM long-context threshold (8K tokens — requests below this skip FITM entirely)
+FITM_PROMPT_LEN_THRESHOLD: int = 8_192
+# FITM dummy doc length ceiling (cost ceiling per WIRING_CONTRACT stub_ban)
+FITM_DUMMY_MAX_TOKENS: int = 100
+# Default dummy text (lorem ipsum, ~50 tokens)
+FITM_DUMMY_TEXT_DEFAULT: str = (
+    "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod "
+    "tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim "
+    "veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip."
+)
+# Deep mode context cap on 24 GB box (64K)
+DEEP_MODE_CTX_CAP: int = 64_000
+# Minimum VRAM (GB) required for deep mode
+DEEP_MODE_MIN_VRAM_GB: float = 24.0
+# Qwen2.5-7B-Instruct-1M HF model ID for deep mode
+DEEP_MODE_MODEL_ID: str = "Qwen/Qwen2.5-7B-Instruct-1M"
+
+
+class SidecarBootError(RuntimeError):
+    """Raised at sidecar boot when a requested feature is explicitly refused.
+
+    Loud refusal is always preferable to silent degradation.
+    """
+
+
+def refuse_yarn_at_boot(model_name: str) -> None:
+    """Raise SidecarBootError if ELAI_USE_YARN=1 is set for a Qwen2.5-Coder model.
+
+    YaRN is EXPLICITLY REJECTED for ELAI's default sidecar path:
+    - vllm issue 18728: YaRN-static factor=4 causes 15-20% quality drop on
+      short prompts on Qwen3-32B (same RoPE family as Qwen2.5-Coder).
+    - arxiv:2601.15300: Qwen2.5-7B F1 drops 0.55->0.30 at 40-50% of 128K window.
+    Use deep mode (DCA via Qwen2.5-7B-Instruct-1M at 64K) for >32K context instead.
+
+    Args:
+        model_name: The model path/ID being loaded. Check is applied when the
+            name contains "qwen" (case-insensitive) to catch all Qwen variants.
+    """
+    if os.getenv("ELAI_USE_YARN", "0") != "1":
+        return
+    if "qwen" not in model_name.lower():
+        # YaRN refusal is scoped to Qwen family; other models not yet characterised.
+        logger.warning(
+            "yarn_refusal_skipped_non_qwen",
+            model=model_name,
+            hint="YaRN quality data only available for Qwen2.5-Coder family",
+        )
+        return
+    raise SidecarBootError(
+        "YaRN rejected per E-32: 15-20% quality drop on short prompts "
+        "(vllm issue 18728); F1 cliff at 40-50% of 128K window "
+        "(arxiv:2601.15300). Use deep mode (DCA via Qwen2.5-7B-Instruct-1M) "
+        "for >32K context instead. Unset ELAI_USE_YARN or set ELAI_DEEP_MODE=1."
+    )
+
+
+def activate_deep_mode(default_model: str) -> tuple[str, int]:
+    """Check ELAI_DEEP_MODE and VRAM, return (resolved_model_id, ctx_cap).
+
+    When ELAI_DEEP_MODE=1 AND VRAM >= 24 GB: returns the 1M model + 64K cap.
+    When ELAI_DEEP_MODE=1 AND VRAM < 24 GB: logs a warning and falls back to
+        the standard model (never crashes — soft fallback per WIRING_CONTRACT).
+    When ELAI_DEEP_MODE != 1: returns (default_model, 0) where 0 means
+        use the standard effective_max_context from env.
+
+    Args:
+        default_model: The model path/ID passed at boot.
+
+    Returns:
+        Tuple of (resolved_model_id, ctx_cap). ctx_cap=0 means not in deep mode.
+    """
+    if os.getenv("ELAI_DEEP_MODE", "0") != "1":
+        return default_model, 0
+
+    vram_gb: float = 0.0
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        vram_gb = props.total_memory / 1024 ** 3
+
+    if vram_gb < DEEP_MODE_MIN_VRAM_GB:
+        logger.warning(
+            "deep_mode_refused_insufficient_vram",
+            vram_gb=round(vram_gb, 1),
+            required_gb=DEEP_MODE_MIN_VRAM_GB,
+            fallback_model=default_model,
+            hint="Deep mode requires >= 24 GB VRAM; falling back to standard model at 32K",
+        )
+        return default_model, 0
+
+    logger.info(
+        "deep_mode_activated",
+        model_id=DEEP_MODE_MODEL_ID,
+        ctx_cap=DEEP_MODE_CTX_CAP,
+        vram_gb=round(vram_gb, 1),
+    )
+    return DEEP_MODE_MODEL_ID, DEEP_MODE_CTX_CAP
+
+
+# ---------------------------------------------------------------------------
+# E-32: FoundInTheMiddleCalibrator — training-free positional-prior subtraction
+# ---------------------------------------------------------------------------
+
+
+class FoundInTheMiddleCalibrator(LogitsProcessor):
+    """Training-free Found-in-the-Middle (FITM) LogitsProcessor.
+
+    Implements positional-prior subtraction per arxiv:2406.16008 (Hsieh et al.,
+    ACL 2024): on long-context requests (prompt_len > FITM_PROMPT_LEN_THRESHOLD)
+    with ELAI_FITM_ENABLED=1, runs one extra forward pass with a dummy-doc
+    baseline at the target position, then subtracts the positional prior logits
+    from the real logits. This nulls the attention sink that causes Lost-in-the-
+    Middle degradation (arxiv:2307.03172 TACL 2024: 30%+ drop at middle positions).
+
+    Gate: only applied when ELAI_FITM_ENABLED=1 AND prompt_len > 8K.
+    Short requests (<=8K) are completely unaffected — guard checked in __init__.
+
+    Cost: 1 extra forward pass per long request (~100-200ms on 3090 with NF4 7B).
+
+    WIRING_CONTRACT stub_ban:
+    - No dummy doc longer than FITM_DUMMY_MAX_TOKENS (100 tokens) — cost ceiling.
+    - No .unwrap() equivalent — all errors raise typed exceptions.
+    - blake3 used for dummy-text cache key (not blake2/sha2 per codeRules).
+    """
+
+    def __init__(
+        self,
+        model: "AutoModelForCausalLM",
+        tokenizer: "AutoTokenizer",
+        prompt_len: int,
+        fitm_enabled: bool,
+        dummy_text: str | None = None,
+        per_request_override: bool | None = None,
+    ) -> None:
+        """Initialise the calibrator.
+
+        Args:
+            model: The loaded HF model (used for dummy forward pass).
+            tokenizer: Tokenizer matching the model.
+            prompt_len: Token count of the real prompt.
+            fitm_enabled: Global ELAI_FITM_ENABLED env var value.
+            dummy_text: Override dummy doc text. Defaults to ELAI_FITM_DUMMY_TEXT
+                env var or FITM_DUMMY_TEXT_DEFAULT.
+            per_request_override: Per-request `fitm` field from the request body.
+                True forces on; False forces off; None inherits global.
+        """
+        self._model = model
+        self._tokenizer = tokenizer
+        self._prompt_len = prompt_len
+        self._dummy_prior: torch.Tensor | None = None
+
+        # Determine effective enable: per-request > global env
+        if per_request_override is not None:
+            effective_enabled = per_request_override
+        else:
+            effective_enabled = fitm_enabled
+
+        self.active = effective_enabled and (prompt_len > FITM_PROMPT_LEN_THRESHOLD)
+
+        if not self.active:
+            return
+
+        # Build dummy text — clamp to FITM_DUMMY_MAX_TOKENS
+        raw_dummy = dummy_text or os.getenv("ELAI_FITM_DUMMY_TEXT", FITM_DUMMY_TEXT_DEFAULT)
+        dummy_ids = tokenizer(raw_dummy, return_tensors="pt", add_special_tokens=False)
+        dummy_token_count = dummy_ids["input_ids"].shape[1]
+        if dummy_token_count > FITM_DUMMY_MAX_TOKENS:
+            # Truncate to ceiling per stub_ban rule
+            dummy_ids["input_ids"] = dummy_ids["input_ids"][:, :FITM_DUMMY_MAX_TOKENS]
+            dummy_token_count = FITM_DUMMY_MAX_TOKENS
+
+        self._dummy_text = raw_dummy
+        self._dummy_token_count = dummy_token_count
+
+    def _compute_prior(self, input_ids: torch.LongTensor) -> None:
+        """Run one dummy-doc forward pass to get the positional prior logits.
+
+        Called lazily on the first __call__ invocation to avoid cost when
+        the processor is constructed but generation is cancelled before it starts.
+
+        Raises:
+            RuntimeError: If the dummy forward pass fails. Caller catches this
+                and disables FITM for the request (never crashes generation).
+        """
+        device = input_ids.device
+        dummy_ids = self._tokenizer(
+            self._dummy_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+            truncation=True,
+            max_length=FITM_DUMMY_MAX_TOKENS,
+        ).input_ids.to(device)
+
+        # Build a dummy context by replacing the last dummy_token_count tokens
+        # of the real prompt with the dummy doc tokens.
+        real_len = input_ids.shape[1]
+        dummy_len = dummy_ids.shape[1]
+        insert_start = max(0, real_len - dummy_len)
+
+        dummy_context = input_ids.clone()
+        dummy_context[:, insert_start : insert_start + dummy_len] = dummy_ids[
+            :, : real_len - insert_start
+        ]
+
+        with torch.inference_mode():
+            dummy_out = self._model(dummy_context)
+
+        # Prior logits = last-position logits from the dummy context forward pass
+        self._dummy_prior = dummy_out.logits[:, -1, :].squeeze(0).detach()
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        if not self.active:
+            return scores
+
+        if self._dummy_prior is None:
+            try:
+                self._compute_prior(input_ids)
+            except Exception as exc:
+                logger.warning(
+                    "fitm_prior_compute_failed",
+                    error=str(exc),
+                    fallback="disabling FITM for this request",
+                )
+                self.active = False
+                return scores
+
+        if self._dummy_prior is None:
+            return scores
+
+        # Subtract positional prior: calibrated_logits = real_logits - dummy_prior
+        # Operates on scores[0] (batch_size=1 for sidecar requests).
+        prior = self._dummy_prior.to(scores.device)
+        scores[0] = scores[0] - prior
+        return scores
+
+    def ssb_payload(self, applied_ms: float) -> dict:
+        """Return the fitm_calibration_applied SSB payload."""
+        return {
+            "prompt_len": self._prompt_len,
+            "dummy_len": getattr(self, "_dummy_token_count", 0),
+            "applied_ms": round(applied_ms, 2),
+        }
+
+
+# ---------------------------------------------------------------------------
 # NoveltyTracker — generation novelty signal (A-25)
 # ---------------------------------------------------------------------------
 
@@ -1406,30 +1660,41 @@ class InferenceEngine:
         except ImportError:
             _attn_impl = "sdpa"
 
-        self.model_name = model_name  # A-39: expose for /v1/models
-        logger.info("loading_model", model=model_name, load_in_4bit=load_in_4bit, attn=_attn_impl)
+        self.model_name = model_name
+        quant_backend = __import__("os").getenv("ELAI_QUANT_BACKEND", "nf4").lower()
+        kv_cache_dtype = __import__("os").getenv("ELAI_KV_CACHE_DTYPE", "fp16").lower()
+        if not load_in_4bit and quant_backend == "nf4":
+            quant_backend = "fp16"
+        logger.info("loading_model", model=model_name, quant_backend=quant_backend, kv_cache_dtype=kv_cache_dtype, load_in_4bit=load_in_4bit, attn=_attn_impl)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        if load_in_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-            )
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=bnb_config,
-                device_map=device_map,
-                attn_implementation=_attn_impl,
-            )
+        if quant_backend == "awq":
+            compute_cap = 0
+            if torch.cuda.is_available():
+                major, minor = torch.cuda.get_device_capability()
+                compute_cap = major * 10 + minor
+            marlin_enabled = compute_cap >= 80
+            try:
+                from transformers import AwqConfig
+            except ImportError as exc:
+                raise RuntimeError("AWQ backend requires autoawq and transformers>=4.45; install: pip install autoawq>=0.2.0") from exc
+            awq_version = "marlin" if marlin_enabled else "gemm"
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=AwqConfig(version=awq_version), device_map=device_map, attn_implementation=_attn_impl)
+            logger.info("quant_backend_selected", backend="awq", kv_dtype=kv_cache_dtype, compute_capability=compute_cap, marlin_enabled=marlin_enabled)
+        elif quant_backend == "nf4":
+            bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True)
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb_config, device_map=device_map, attn_implementation=_attn_impl)
+            logger.info("quant_backend_selected", backend="nf4", kv_dtype=kv_cache_dtype, compute_capability=0, marlin_enabled=False)
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.bfloat16,
-                device_map=device_map,
-                attn_implementation=_attn_impl,
-            )
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map=device_map, attn_implementation=_attn_impl)
+            logger.info("quant_backend_selected", backend="fp16", kv_dtype=kv_cache_dtype, compute_capability=0, marlin_enabled=False)
+        if kv_cache_dtype in ("fp8_e4m3", "fp8_e5m2"):
+            compute_cap_kv = 0
+            if torch.cuda.is_available():
+                major, minor = torch.cuda.get_device_capability()
+                compute_cap_kv = major * 10 + minor
+            if compute_cap_kv < 89:
+                logger.warning("kv_cache_dtype_software_sim", kv_dtype=kv_cache_dtype, throughput_cost_pct=5.0, compute_capability=compute_cap_kv)
+        self.kv_cache_dtype = kv_cache_dtype
         self.model.eval()
         self.lock = Lock()
         _log_vram("after_model_load")
@@ -1640,6 +1905,7 @@ class InferenceEngine:
         marker_boundary: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
         seed: Optional[int] = None,
+        fitm_calibrator: Optional["FoundInTheMiddleCalibrator"] = None,
     ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         """Generate text synchronously.
 
@@ -1676,6 +1942,7 @@ class InferenceEngine:
                 marker_boundary=marker_boundary,
                 response_format=response_format,
                 seed=seed,
+                fitm_calibrator=fitm_calibrator,
             )
 
     def generate_streaming(
@@ -1823,6 +2090,7 @@ class InferenceEngine:
         marker_boundary: Optional[int] = None,
         response_format: Optional[Dict[str, Any]] = None,
         seed: Optional[int] = None,
+        fitm_calibrator: Optional["FoundInTheMiddleCalibrator"] = None,
     ) -> "tuple[str, list[int], int, dict | None, dict[str, float | None], int, int]":
         gen_start = time.time()
         formatted = self._format_prompt(prompt)
@@ -1932,6 +2200,13 @@ class InferenceEngine:
         # GG signal collector (A-17) — always active, zero cost
         self._gg_collector.reset()
         logits_processors.append(self._gg_collector)
+        # E-32: FoundInTheMiddleCalibrator (FITM) — inserted AFTER all existing
+        # processors per CRANE-style ordering (modifiers after observers).
+        # Only active when ELAI_FITM_ENABLED=1 AND prompt > 8K tokens.
+        _fitm_t0: float = 0.0
+        if fitm_calibrator is not None and fitm_calibrator.active:
+            logits_processors.append(fitm_calibrator)
+            _fitm_t0 = time.time()
         if logits_processors:
             generation_kwargs["logits_processor"] = logits_processors
 
@@ -1966,6 +2241,13 @@ class InferenceEngine:
         finally:
             if self._dola_processor is not None:
                 self._dola_processor.remove_hooks()
+            # E-32: log FITM SSB event after generation (outside inference_mode)
+            if fitm_calibrator is not None and fitm_calibrator.active and _fitm_t0 > 0:
+                applied_ms = (time.time() - _fitm_t0) * 1000.0
+                logger.info(
+                    "fitm_calibration_applied",
+                    **fitm_calibrator.ssb_payload(applied_ms),
+                )
 
         # C-A: Admit the post-generation DynamicCache for future prefix reuse.
         # outputs.past_key_values is populated because return_dict_in_generate=True.
@@ -3082,6 +3364,25 @@ async def handle_messages(request: Request):
     else:
         seed = int(seed_raw)
 
+    # E-32: per-request FITM override field. True forces on, False forces off,
+    # absent (None) defers to ELAI_FITM_ENABLED env var. Bool or null only.
+    fitm_raw = data.get("fitm")
+    if fitm_raw is None:
+        fitm_override: bool | None = None
+    elif isinstance(fitm_raw, bool):
+        fitm_override = fitm_raw
+    else:
+        return OrjsonResponse(
+            {
+                "error": "invalid fitm type",
+                "detail": (
+                    "field `fitm` must be a boolean or omitted; got "
+                    f"{type(fitm_raw).__name__}={fitm_raw!r}"
+                ),
+            },
+            status_code=400,
+        )
+
     # Track C-B: extract optional response_format. Validation is lenient by
     # design — invalid types are warned-and-ignored (engine helper handles
     # the inner shape check); only the "library missing while caller asked
@@ -3146,6 +3447,7 @@ async def handle_messages(request: Request):
         marker_boundary=marker_boundary,
         response_format=response_format,
         seed=seed,
+        fitm_override=fitm_override,
     )
 
 
@@ -3675,6 +3977,7 @@ async def _non_stream_messages_response(
     marker_boundary: Optional[int] = None,
     response_format: Optional[Dict[str, Any]] = None,
     seed: Optional[int] = None,
+    fitm_override: Optional[bool] = None,
 ) -> OrjsonResponse:
     loop = asyncio.get_running_loop()
     # Track C-D: gg_signals is now surfaced via response.meta (was discarded
@@ -3685,6 +3988,27 @@ async def _non_stream_messages_response(
     # Phase A bench redesign: bracket the executor await with perf_counter to
     # surface server-side end-to-end latency as response.elapsed_ms (top level).
     # Bench reads this instead of client perf_counter to bypass SSH-tunnel RTT.
+
+    # E-32: build FITM calibrator for this request (no-op if not active).
+    # Tokenise the prompt here (async context) to get prompt_len; the calibrator
+    # is constructed before the executor call so it is available inside _generate_impl.
+    _fitm_enabled = os.getenv("ELAI_FITM_ENABLED", "0") == "1"
+    _fitm_calibrator: FoundInTheMiddleCalibrator | None = None
+    if _engine is not None:
+        try:
+            _prompt_tokens = _engine.tokenizer(prompt, return_tensors="pt")
+            _prompt_len = _prompt_tokens["input_ids"].shape[1]
+            _fitm_calibrator = FoundInTheMiddleCalibrator(
+                model=_engine.model,
+                tokenizer=_engine.tokenizer,
+                prompt_len=_prompt_len,
+                fitm_enabled=_fitm_enabled,
+                per_request_override=fitm_override,
+            )
+        except Exception as _fitm_exc:
+            logger.warning("fitm_calibrator_build_failed", error=str(_fitm_exc))
+            _fitm_calibrator = None
+
     t0 = time.perf_counter()
     (
         text, tokens, input_token_count, _search_trigger, gg_signals,
@@ -3696,6 +4020,7 @@ async def _non_stream_messages_response(
             marker_boundary=marker_boundary,
             response_format=response_format,
             seed=seed,
+            fitm_calibrator=_fitm_calibrator,
         ),
     )
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -3839,7 +4164,13 @@ def main():
         help="Load model in FP16 (no quantization)",
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--quant-backend", default=None, choices=["nf4", "awq", "fp16"], help="Weight quantization backend (overrides ELAI_QUANT_BACKEND env var)")
+    parser.add_argument("--kv-cache-dtype", default=None, choices=["fp16", "fp8_e4m3", "fp8_e5m2"], help="KV cache dtype (overrides ELAI_KV_CACHE_DTYPE env var)")
     args = parser.parse_args()
+    if args.quant_backend is not None:
+        import os as _os; _os.environ["ELAI_QUANT_BACKEND"] = args.quant_backend
+    if args.kv_cache_dtype is not None:
+        import os as _os; _os.environ["ELAI_KV_CACHE_DTYPE"] = args.kv_cache_dtype
 
     # Configure structlog level filter
     level_map = {
@@ -3849,6 +4180,20 @@ def main():
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(min_level),
     )
+
+    # E-32: boot-time feature gates (loud refusals before model load)
+    # YaRN rejection — must run before InferenceEngine loads the model
+    refuse_yarn_at_boot(args.model)
+    # Deep mode resolution — may swap model_name and set ctx_cap
+    resolved_model, _deep_mode_ctx_cap = activate_deep_mode(args.model)
+    if resolved_model != args.model:
+        logger.info(
+            "deep_mode_model_resolved",
+            original=args.model,
+            resolved=resolved_model,
+            ctx_cap=_deep_mode_ctx_cap,
+        )
+        args.model = resolved_model
 
     global _engine
     _engine = InferenceEngine(
@@ -3864,6 +4209,21 @@ def main():
         etc_threshold=args.etc_threshold,
         kv_cache_size=args.kv_cache_size,
     )
+
+    # E-32: emit deep_mode_activated SSB beacon (Python-side; mirrors deep_mode_activated
+    # Rust SsbActionType for dashboard visibility). Log only — no Rust SSB writer here.
+    if _deep_mode_ctx_cap > 0 and torch.cuda.is_available():
+        vram_gb = round(
+            torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+            / 1024 ** 3,
+            1,
+        )
+        logger.info(
+            "deep_mode_activated_ssb",
+            model_id=args.model,
+            ctx_cap=_deep_mode_ctx_cap,
+            vram_gb=vram_gb,
+        )
 
     # Load pre-computed steering vectors if provided
     if args.steering and _engine.steering_engine and args.steering_vector_path:

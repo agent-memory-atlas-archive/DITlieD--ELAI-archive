@@ -186,6 +186,8 @@ pub(crate) enum CliAction {
         /// site: `local` -> `Local`, `cloud` -> `Api`, `hybrid` -> `Hybrid`.
         /// `None` => use the toml default from `[cloud].default_mode`.
         provider: Option<String>,
+        /// C-39 -- route tool calls through MCP bridge instead of in-process plugins.
+        via_mcp: bool,
     },
     /// --remote-sidecar: SSH-boot the GPU box sidecar, start the local tunnel,
     /// health-poll until ready, then launch the V2 dashboard with
@@ -324,6 +326,15 @@ pub(crate) enum CliAction {
         output: Option<String>,
         novelty_config: Option<String>,
     },
+    // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
+    //        [--id <ID>]` — store an incident postmortem entry in the SSB
+    //        and emit IncidentRecordCreated so the dashboard can surface it.
+    IncidentRecord {
+        title: String,
+        incident_date: String,
+        source_url: String,
+        incident_id: Option<String>,
+    },
 }
 
 /// 1.1 — Minimal PartialEq-capable carrier for a local-backend URL.
@@ -425,6 +436,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut export_jsonl = false;
     // 1.1: --backend=local[:PORT] flag; None = use API path (default)
     let mut backend_flag: Option<LocalBackendRef> = None;
+    // C-35: --tool-gate-off flag -- disables dynamic tool gating at runtime.
+    let mut tool_gate_off = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -472,6 +485,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
             }
             "--dangerously-skip-permissions" => {
                 permission_mode_override = Some(PermissionMode::DangerFullAccess);
+                index += 1;
+            }
+            "--tool-gate-off" => {
+                // C-35: escape hatch to disable dynamic tool gating at runtime.
+                // Used for debugging or when gating regresses task-solve rate.
+                tool_gate_off = true;
                 index += 1;
             }
             "--export-jsonl" => {
@@ -597,6 +616,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
     }
 
     let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
+
+    if tool_gate_off {
+        // C-35: propagate the disable-gate flag via env var so downstream
+        // config loaders (runtime_config.rs) can read it without a parse_args refactor.
+        std::env::set_var("ELAI_TOOL_GATE_OFF", "1");
+    }
 
     match rest[0].as_str() {
         "dump-manifests" => Ok(CliAction::DumpManifests { output_format }),
@@ -740,6 +765,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 backend: backend_config.clone(),
             })
         }
+        // E-30: `elai incident record --title <TITLE> --date <DATE> --url <URL>
+        // [--id <ID>]` — store an incident postmortem entry in the SSB.
+        "incident" => parse_incident_subcommand_args(&rest[1..]),
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest, output_format),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
@@ -763,10 +791,11 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
 /// Anything else is rejected with a typed error string so the top-level
 /// dispatcher can format it. Keeping the parser tight here protects the
 /// chokepoint contract test from drift introduced by a future flag.
-pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+pub fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
     let mut project_root: Option<PathBuf> = None;
     let mut mode: Option<String> = None;
     let mut provider: Option<String> = None;
+    let mut via_mcp: bool = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -830,6 +859,10 @@ pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, St
                 provider = Some(lower);
                 i += 1;
             }
+            "--via-mcp" => {
+                via_mcp = true;
+                i += 1;
+            }
             other => {
                 return Err(format!("unknown `run` argument: {other}"));
             }
@@ -840,7 +873,7 @@ pub(crate) fn parse_run_subcommand_args(rest: &[String]) -> Result<CliAction, St
         None => std::env::current_dir()
             .map_err(|e| format!("`run` cannot determine cwd for --project-root default: {e}"))?,
     };
-    Ok(CliAction::Run { project_root, mode, provider })
+    Ok(CliAction::Run { project_root, mode, provider, via_mcp })
 }
 
 /// B-29 Phase 4 — parse `symbol_graph` / `symbol-graph` subcommand args.
@@ -1855,4 +1888,86 @@ pub(crate) fn looks_like_slash_command_token(token: &str) -> bool {
     slash_command_specs()
         .iter()
         .any(|spec| spec.name == name || spec.aliases.contains(&name))
+}
+
+/// E-30 — parse `elai incident record [--title T] [--date D] [--url U] [--id I]`.
+///
+/// Stores an incident postmortem entry in the SSB and emits
+/// SsbActionType::IncidentRecordCreated. The `record` sub-verb is mandatory
+/// (leaves room for `list` / `search` in future E-plan phases).
+pub(crate) fn parse_incident_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let Some(sub) = rest.first().map(String::as_str) else {
+        return Err("incident: expected sub-command 'record'".to_string());
+    };
+    if sub != "record" {
+        return Err(format!(
+            "unknown `incident` sub-command: '{sub}' (expected 'record')"
+        ));
+    }
+    let rest = &rest[1..];
+    let mut title: Option<String> = None;
+    let mut incident_date: Option<String> = None;
+    let mut source_url: Option<String> = None;
+    let mut incident_id: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--title" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --title".to_string())?;
+                title = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--title=") => {
+                title = Some(flag["--title=".len()..].to_string());
+                i += 1;
+            }
+            "--date" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --date".to_string())?;
+                incident_date = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--date=") => {
+                incident_date = Some(flag["--date=".len()..].to_string());
+                i += 1;
+            }
+            "--url" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --url".to_string())?;
+                source_url = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--url=") => {
+                source_url = Some(flag["--url=".len()..].to_string());
+                i += 1;
+            }
+            "--id" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --id".to_string())?;
+                incident_id = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--id=") => {
+                incident_id = Some(flag["--id=".len()..].to_string());
+                i += 1;
+            }
+            other => return Err(format!("unknown `incident record` argument: {other}")),
+        }
+    }
+    let title = title.ok_or_else(|| "`incident record` requires --title".to_string())?;
+    let incident_date =
+        incident_date.ok_or_else(|| "`incident record` requires --date".to_string())?;
+    let source_url =
+        source_url.ok_or_else(|| "`incident record` requires --url".to_string())?;
+    Ok(CliAction::IncidentRecord {
+        title,
+        incident_date,
+        source_url,
+        incident_id,
+    })
 }

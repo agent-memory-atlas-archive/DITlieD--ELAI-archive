@@ -45,6 +45,7 @@ pub mod coherence_check;
 pub mod dst;
 pub mod cloud_mode;
 pub mod context_budget;
+pub mod dispatch;
 pub mod dispatcher;
 pub mod privacy_redactor;
 pub mod branch_lock;
@@ -352,6 +353,11 @@ pub mod per_role_runtime;
 pub mod runtime_config;
 pub mod runtime_event_sink_ssb;
 pub mod runtime_orchestrator;
+// E-32: deep-mode escalation hook for the SessionDag handoff threshold.
+// Decides between local deep mode (Qwen2.5-7B-Instruct-1M, DCA, 64K) and
+// cloud escalation when context budget approaches 85% of effective_max_context.
+// Source: E-32-decisions.md DECISION 3 + 4; arxiv:2407.16833 Self-Route.
+pub mod escalation_policy;
 // C-1: orchestrator-side adapter that bridges
 // `elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink` into
 // `Ssb::write_payload`. Lives here (not in `knowledge`) so the
@@ -532,8 +538,8 @@ pub use elai_core::config::{
 };
 pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
-    ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
-    ToolExecutor, TurnSummary,
+    ConversationRuntime, LabeledText, PromptCacheEvent, RuntimeError, StaticToolExecutor,
+    TextSource, ToolError, ToolExecutor, TurnSummary,
 };
 pub use hooks::{
     HookAbortSignal, HookEvent, HookProgressEvent, HookProgressReporter, HookRunResult, HookRunner,
@@ -856,6 +862,11 @@ pub use ssb::{
     // Re-exported so the agent_pool dispatch producer + dashboard-v2
     // CheckerRegistryPanel commands can construct the payload directly.
     CheckerResultEmittedPayload,
+    // E-32 (SCHEMA_VERSION 95): context-window extension beacons.
+    // Re-exported so the contract crate + sidecar wiring can construct
+    // payloads without reaching into `orchestrator::ssb::*` directly.
+    FitmCalibrationAppliedPayload, DeepModeActivatedPayload,
+    DeepModeEscalationChosenPayload, YarnRefusedPayload,
 };
 // D-2: PPM client + sidecar hook public surface.
 pub use ppm_client::{
@@ -925,7 +936,9 @@ pub use metamorphic_testing::{
     MetamorphicTestRunner, MrResult, RelationLibrary,
 };
 // B-37C — multi-runtime orchestration public surfaces.
-pub use per_role_runtime::PerRoleRuntime;
+pub use per_role_runtime::{
+    auditor_executor_lineage_collision, LineageGroup, PerRoleRuntime,
+};
 pub use runtime_config::{
     default_fallback_chain, RuntimeConfig as RuntimeBackendConfig, RuntimeConfigPolicyView,
 };

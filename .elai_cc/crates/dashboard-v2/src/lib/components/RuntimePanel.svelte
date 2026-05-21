@@ -23,6 +23,7 @@
     listRuntimes,
     testRuntime,
     setRoleRuntime,
+    runtimeCapabilityProbe,
   } from '$lib/api/stub';
   import {
     RUNTIME_BACKEND_IDS,
@@ -211,6 +212,22 @@
   function formatRoles(roles: RuntimeAgentRole[]): string {
     return roles.length === 0 ? '—' : roles.join(', ');
   }
+
+  // -----------------------------------------------------------------
+  // E-51: Per-backend capability probe results (populated on demand).
+  // -----------------------------------------------------------------
+  /** Per-backend capability probe results. Populated lazily on selection click. */
+  let capabilityProbes = $state<Record<string, { available: boolean; reason: string; platform_badge: string }>>({});
+
+  async function probeCapability(backend: string): Promise<void> {
+    try {
+      const result = await runtimeCapabilityProbe(backend);
+      capabilityProbes = { ...capabilityProbes, [backend]: result as { available: boolean; reason: string; platform_badge: string } };
+    } catch (err) {
+      // Non-fatal — capability probe is best-effort
+      capabilityProbes = { ...capabilityProbes, [backend]: { available: false, reason: String(err), platform_badge: 'error' } };
+    }
+  }
 </script>
 
 <section class="runtime-panel" aria-label="Runtime backends">
@@ -351,6 +368,37 @@
               </span>
             {/if}
           </label>
+        {/each}
+      </div>
+    </div>
+
+    <!-- E-51: Platform capability badges for Mlx + LlamaCpp -->
+    <div class="runtime-panel__capability-section">
+      <h4>Edge runtime availability</h4>
+      <div class="runtime-panel__capability-grid">
+        {#each ['mlx', 'llama_cpp'] as edgeBackend (edgeBackend)}
+          {@const probe = capabilityProbes[edgeBackend]}
+          <div class="runtime-panel__capability-row">
+            <span class="mono">{edgeBackend}</span>
+            {#if edgeBackend === 'mlx'}
+              <span class="runtime-panel__avail-badge runtime-panel__avail-badge--info">macOS arm64 only</span>
+            {:else}
+              <span class="runtime-panel__avail-badge runtime-panel__avail-badge--info">CPU / Vulkan / CUDA / Metal / HIP</span>
+            {/if}
+            <button
+              class="runtime-panel__test-btn"
+              type="button"
+              onclick={() => { void probeCapability(edgeBackend); }}
+            >probe</button>
+            {#if probe}
+              <span
+                class="runtime-panel__avail-badge"
+                class:runtime-panel__avail-badge--ok={probe.available}
+                class:runtime-panel__avail-badge--fail={!probe.available}
+                title={probe.reason}
+              >{probe.platform_badge}</span>
+            {/if}
+          </div>
         {/each}
       </div>
     </div>
@@ -561,6 +609,35 @@
     color: #f88;
     grid-column: 2 / -1;
   }
+  .runtime-panel__capability-section {
+    border-top: 1px solid #222;
+    padding-top: 0.6rem;
+    margin-top: 0.5rem;
+  }
+  .runtime-panel__capability-section h4 {
+    margin: 0 0 0.25rem;
+    font-size: 0.85rem;
+  }
+  .runtime-panel__capability-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .runtime-panel__capability-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+  }
+  .runtime-panel__avail-badge {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+  .runtime-panel__avail-badge--info { background: #1a2a3a; color: #8af; }
+  .runtime-panel__avail-badge--ok   { background: #134; color: #8df; }
+  .runtime-panel__avail-badge--fail { background: #411; color: #f88; }
   .mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }

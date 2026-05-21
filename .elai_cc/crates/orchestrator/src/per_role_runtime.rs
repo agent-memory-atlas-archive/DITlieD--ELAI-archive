@@ -125,6 +125,39 @@ impl PerRoleRuntime {
     }
 }
 
+// ---------------------------------------------------------------------------
+// E-30: Auditor-lineage collision detection (arXiv:2511.18397).
+// ---------------------------------------------------------------------------
+
+/// Lineage group for an agent identified by session + spawning origin.
+///
+/// Two agents share a lineage group when they derive from the same parent
+/// session or are spawned by the same orchestrator instance within a single
+/// FSM cycle. Using the same-lineage agent as both executor and auditor
+/// introduces correlated bias (73% false-negative rate; arXiv:2511.18397).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct LineageGroup(pub String);
+
+impl LineageGroup {
+    pub fn new(group: impl Into<String>) -> Self {
+        Self(group.into())
+    }
+}
+
+/// Returns `true` if the auditor and executor would share a lineage group.
+///
+/// # Autonomy policy (E-30)
+/// - In autonomous mode: collision is a BLOCK — caller must refuse dispatch.
+/// - In interactive mode: collision is a WARN — caller should surface to user.
+///
+/// The distinction is left to the caller; this fn is a pure predicate.
+pub fn auditor_executor_lineage_collision(
+    auditor_lineage: &LineageGroup,
+    executor_lineage: &LineageGroup,
+) -> bool {
+    auditor_lineage == executor_lineage
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +296,25 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: PerRoleRuntime = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, decoded);
+    }
+
+    // E-30: auditor-lineage collision tests
+    #[test]
+    fn same_lineage_group_is_collision() {
+        let g = LineageGroup::new("session-abc");
+        assert!(
+            auditor_executor_lineage_collision(&g, &g),
+            "same lineage group must be a collision"
+        );
+    }
+
+    #[test]
+    fn different_lineage_groups_no_collision() {
+        let auditor = LineageGroup::new("session-audit-pool");
+        let executor = LineageGroup::new("session-exec-pool");
+        assert!(
+            !auditor_executor_lineage_collision(&auditor, &executor),
+            "different lineage groups must not be a collision"
+        );
     }
 }

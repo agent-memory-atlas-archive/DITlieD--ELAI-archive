@@ -29,7 +29,11 @@ use tempfile::TempDir;
 // (ssb.rs DROPs and recreates the DB on schema mismatch). B-24 Phase 4I
 // Group C1 bumps to 30 atomically with the 6 new media-validator variants;
 // updating the constant here keeps drift from accumulating.
-const EXPECTED_SCHEMA: i64 = 30;
+//
+// s-68264 test-cleanup: bumped 30 -> 96 to reflect cumulative C-plan +
+// D-plan + E-plan schema bumps. Source of truth:
+// orchestrator/src/ssb.rs `const SCHEMA_VERSION: i64`.
+const EXPECTED_SCHEMA: i64 = 96;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -95,14 +99,20 @@ async fn contract_4k3_schema_v9_migration_idempotent() {
     let v: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, EXPECTED_SCHEMA, "schema version must be 25 after first init");
+    assert_eq!(
+        v, EXPECTED_SCHEMA,
+        "schema version must be EXPECTED_SCHEMA after first init"
+    );
 
     let writer2 = open_writer(&path, "p", "s").await;
     drop(writer2);
     let v2: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v2, EXPECTED_SCHEMA, "second open must remain at v25 (idempotent)");
+    assert_eq!(
+        v2, EXPECTED_SCHEMA,
+        "second open must remain at EXPECTED_SCHEMA (idempotent)"
+    );
 }
 
 #[tokio::test]

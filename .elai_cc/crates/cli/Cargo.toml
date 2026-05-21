@@ -15,7 +15,7 @@ crossterm = "0.28"
 elai-core = { path = "../core" }
 elai-knowledge = { path = "../knowledge", features = ["splade"] }
 elai-orchestrator = { path = "../orchestrator" }
-elai-plugins = { path = "../plugins" }
+elai-plugins = { path = "../plugins", features = ["mcp"] }
 elai-providers = { path = "../providers", features = ["sidecar"] }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }

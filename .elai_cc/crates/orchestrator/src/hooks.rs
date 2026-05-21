@@ -870,6 +870,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell test")]
     fn denies_exit_code_two() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("printf 'blocked by hook'; exit 2")],
@@ -884,6 +885,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell test")]
     fn propagates_other_non_zero_statuses_as_failures() {
         let runner = HookRunner::from_feature_config(&RuntimeFeatureConfig::default().with_hooks(
             RuntimeHookConfig::new(
@@ -906,6 +908,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf`; POSIX-shell test")]
     fn parses_pre_hook_permission_override_and_updated_input() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet(
@@ -945,6 +948,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell test")]
     fn stops_running_failure_hooks_after_failure() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
@@ -1034,6 +1038,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "P: Windows cmd.exe has no `printf` and uses `&` not `;`; POSIX-shell test")]
     fn stops_running_hooks_after_failure() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(

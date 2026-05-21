@@ -134,6 +134,7 @@ pub struct RuntimeWiring {
     /// rest of the runtime so all background spawns surface in the
     /// dashboard timeline. Closes audit WARN-4.
     pub background_task_manager: Option<Arc<BackgroundTaskManager>>,
+    pub via_mcp: bool,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -282,6 +283,7 @@ pub async fn build_task_runner_wiring(
         crystallizer: Some(crystallizer),
         compiled_pipeline_store: Some(compiled_pipeline_store),
         background_task_manager: Some(background_task_manager),
+        via_mcp: false,
     })
 }
 

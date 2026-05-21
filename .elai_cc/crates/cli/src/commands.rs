@@ -4896,7 +4896,8 @@ mod tests {
         // C-20 bumped 149 -> 150 (added /measure for test-infra metrics backfill).
         // C-24 bumped 150 -> 151 (added /graph mermaid for deterministic Mermaid export).
         // C-25 bumped 151 -> 152 (added /pipeline for compiled-pipeline cache inspection).
-        assert_eq!(slash_command_specs().len(), 152);
+        // s-68264 bumped 152 -> 153 (post-campaign spec addition).
+        assert_eq!(slash_command_specs().len(), 153);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

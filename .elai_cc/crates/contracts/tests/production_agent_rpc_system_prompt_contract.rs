@@ -194,12 +194,21 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
     None
 }
 
+// s-68264 test-cleanup: skip lines lacking `:` (e.g. the HTTP request-line)
+// instead of returning early. See production_agent_rpc_tool_catalog_contract.rs
+// for the full rationale; same bug, same fix, kept in sync intentionally.
 fn parse_content_length(headers: &[u8]) -> Option<usize> {
     let text = std::str::from_utf8(headers).ok()?;
     for line in text.split("\r\n") {
         let mut parts = line.splitn(2, ':');
-        let name = parts.next()?.trim();
-        let value = parts.next()?.trim();
+        let name = match parts.next() {
+            Some(s) => s.trim(),
+            None => continue,
+        };
+        let value = match parts.next() {
+            Some(s) => s.trim(),
+            None => continue,
+        };
         if name.eq_ignore_ascii_case("content-length") {
             return value.parse::<usize>().ok();
         }
@@ -388,9 +397,9 @@ async fn contract_system_prompt_does_not_drop_tool_catalog() {
         .expect("R5: catalog must remain Some when system_prompt is set");
     assert_eq!(
         tools.len(),
-        10,
-        "R5 + C-24: catalog must remain 10 tools (R3 6-tool baseline + 4 symbol_*) \
-         when system_prompt is set; got {}",
+        14,
+        "R5 + C-24 + C-30: catalog must remain 14 tools (R3 6-tool baseline + \
+         4 symbol_* + 4 dkg_*) when system_prompt is set; got {}",
         tools.len(),
     );
 }

@@ -21,6 +21,7 @@ elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-sup
 # DISABLED in s-1430428: crates/dashboard moved to crates/.bkp_old/dashboard.
 # The 4 dashboard_*_contract.rs files in tests/ are gated with #![cfg(any())].
 # elai-dashboard = { path = "../dashboard" }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tempfile = "3"
@@ -40,6 +41,8 @@ rustc-hash.workspace = true
 uuid = { workspace = true }
 elai-web-search = { path = "../web_search" }
 elai-web-validator = { path = "../web_validator" }
+# E-30: public-incident hardening contract tests require the safety crate.
+elai-safety = { path = "../safety" }
 # Phase A2 — agent_loop_contract spawns elai_cc_agent and drives an IPC
 # round-trip; both sides share the wire-protocol types from this crate.
 elai-ipc-types.workspace = true

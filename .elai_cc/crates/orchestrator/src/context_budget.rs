@@ -296,6 +296,7 @@ pub struct ModelCapabilityProfile {
     pub steering_viable: bool,
     /// false for PROJECTED rows — numbers are estimates, not measurements.
     pub measured: bool,
+    pub quant_format: String,
 }
 
 impl ModelCapabilityProfile {
@@ -340,6 +341,7 @@ impl ModelCapabilityProfile {
             dola_viable: false,
             steering_viable: false,
             measured: true,
+            quant_format: "NF4+FA2".to_string(),
         }
     }
 
@@ -383,6 +385,7 @@ impl ModelCapabilityProfile {
             dola_viable: false,
             steering_viable: false,
             measured: true,
+            quant_format: "NF4+FA2".to_string(),
         }
     }
 
@@ -433,6 +436,7 @@ impl ModelCapabilityProfile {
             dola_viable: false,
             steering_viable: false,
             measured: false,
+            quant_format: "FP16".to_string(),
         }
     }
 
@@ -480,6 +484,7 @@ impl ModelCapabilityProfile {
             dola_viable: true,
             steering_viable: false,
             measured: false,
+            quant_format: "NF4+FA2".to_string(),
         }
     }
 
@@ -523,6 +528,131 @@ impl ModelCapabilityProfile {
             dola_viable: false,
             steering_viable: false,
             measured: false,
+            quant_format: "NF4+FA2".to_string(),
+        }
+    }
+
+
+    /// E-27: AWQ-Marlin + FP8 KV profile for 7B on 12GB VRAM.
+    /// Projected: AWQ W4A16 reduces model VRAM to ~4200 MB (vs 5180 MB NF4),
+    /// enabling a larger in-VRAM context ceiling with FP8 KV software-sim.
+    /// Throughput uplift: ~3-4x over NF4 per Jarvislabs 2026 Qwen2.5-32B benchmark
+    /// extrapolated to 7B (Open Question 1 in E-27 plan; measured after rollout).
+    pub fn awq_7b_12gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram12Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-7B-Instruct".to_string(),
+            model_size_b: 7.61,
+            model_vram_mb: 4200,
+            kv_bytes_per_token: 28672,
+            in_vram_ceiling: 30000,
+            attention_ceiling: 30000,
+            effective_ceiling: 30000,
+            recommended_prompt_budget: 25000,
+            output_reserve: 512,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.125,
+                code_context: 0.667,
+                ssb_entries: 0.125,
+                grc_history: 0.083,
+            },
+            fixed_slot_targets: [330, 400, 800],
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
+            pass_at_1: 0.65,
+            optimal_retries: 3,
+            kv_quant_bits: 8,
+            requires_fa2: true,
+            dola_viable: false,
+            steering_viable: false,
+            measured: false,
+            quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
+        }
+    }
+
+    /// E-27: AWQ-Marlin + FP8 KV profile for 3B on 12GB VRAM.
+    /// Projected: AWQ 3B at ~1500 MB model VRAM; FP8 KV software-sim on Ampere.
+    pub fn awq_3b_12gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram12Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-3B-Instruct".to_string(),
+            model_size_b: 3.0,
+            model_vram_mb: 1500,
+            kv_bytes_per_token: 512,
+            in_vram_ceiling: 45000,
+            attention_ceiling: 45000,
+            effective_ceiling: 45000,
+            recommended_prompt_budget: 40000,
+            output_reserve: 512,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.136,
+                code_context: 0.637,
+                ssb_entries: 0.136,
+                grc_history: 0.091,
+            },
+            fixed_slot_targets: [330, 500, 1500],
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
+            pass_at_1: 0.72,
+            optimal_retries: 3,
+            kv_quant_bits: 8,
+            requires_fa2: true,
+            dola_viable: false,
+            steering_viable: false,
+            measured: false,
+            quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
+        }
+    }
+
+    /// E-27: AWQ-Marlin + FP8 KV profile for 3B on 8GB VRAM.
+    /// Projected: AWQ 3B at ~1500 MB model VRAM in a tighter VRAM budget.
+    pub fn awq_3b_8gb() -> Self {
+        Self {
+            vram_tier: VramTier::Vram8Gb,
+            model_tier: ModelTier::Micro,
+            model_name: "Qwen2.5-Coder-3B-Instruct".to_string(),
+            model_size_b: 3.0,
+            model_vram_mb: 1500,
+            kv_bytes_per_token: 512,
+            in_vram_ceiling: 28000,
+            attention_ceiling: 28000,
+            effective_ceiling: 28000,
+            recommended_prompt_budget: 22000,
+            output_reserve: 512,
+            slot_weights: SlotWeights {
+                system_prompt: 0.0,
+                rules: 0.0,
+                telescope: 0.0,
+                repo_map: 0.125,
+                code_context: 0.667,
+                ssb_entries: 0.125,
+                grc_history: 0.083,
+            },
+            fixed_slot_targets: [200, 300, 600],
+            features: ModelFeatures {
+                supports_fim: true,
+                ..ModelFeatures::none()
+            },
+            pass_at_1: 0.72,
+            optimal_retries: 3,
+            kv_quant_bits: 8,
+            requires_fa2: false,
+            dola_viable: false,
+            steering_viable: false,
+            measured: false,
+            quant_format: "AWQ-Marlin+FA2+FP8KV".to_string(),
         }
     }
 
@@ -2837,6 +2967,7 @@ mod tests {
             dola_viable: false,
             steering_viable: false,
             measured: false,
+            quant_format: "NF4+FA2".to_string(),
         };
         // With both ceilings=0 and default weights, should match compute() output.
         let b1 = ContextBudget::compute(8192, [100, 200, 300], 2000).unwrap();
