@@ -5,7 +5,7 @@
 # Usage: verify_stage_1A.sh <corpus_root>
 set -euo pipefail
 
-CORPUS_ROOT="${1:-D:/.ELAI_workflow/docs/.source/nextest-main}"
+CORPUS_ROOT="${1:-F:/.ELAI_workflow/docs/.source/nextest-main}"
 DKG="${CORPUS_ROOT}/.elai_cc/indexes/dkg.db"
 
 if [ ! -f "$DKG" ]; then

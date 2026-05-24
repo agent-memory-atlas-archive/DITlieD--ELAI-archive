@@ -1,7 +1,7 @@
 // C-11: Tier-C sandbox completeness contract test (B-18B deferred items).
 //
-// Plan: D:\.ELAI_workflow\docs\thefinalglance\C-plan\C-11_sandbox_completeness.md
-// Decisions: D:\.ELAI_workflow\workflow\reasoning\C-11-decisions.md
+// Plan: F:\.ELAI_workflow\docs\thefinalglance\C-plan\C-11_sandbox_completeness.md
+// Decisions: F:\.ELAI_workflow\workflow\reasoning\C-11-decisions.md
 //
 // This contract proves the wire-level surface of the C-11 deliverables:
 //   1. Insertion order of sandbox.rs clone_cb (Linux): PR_SET_NO_NEW_PRIVS ->

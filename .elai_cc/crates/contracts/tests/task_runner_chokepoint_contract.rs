@@ -136,6 +136,8 @@ async fn contract_task_submitted_drives_pipeline_with_full_wiring() {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // C-39: legacy contract fixture -- no Dispatch wired.
+            mcp_dispatch: None,
         },
     );
 

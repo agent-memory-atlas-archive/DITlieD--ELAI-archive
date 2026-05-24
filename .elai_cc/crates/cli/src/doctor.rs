@@ -596,6 +596,39 @@ const KNOWLEDGE_MODEL_MANIFEST: &[(&str, &str, &str)] = &[
     ("splade-tok", "splade/tokenizer.json", "splade tokenizer"),
 ];
 
+/// E-17 SP3 (JINA-MODEL-PENDING): optional reranker models referenced by
+/// `knowledge::reranker::ReRankerModel::{JinaV3, BgeV2M3}`. NOT included
+/// in `KNOWLEDGE_MODEL_MANIFEST` because:
+///   * missing entries here MUST NOT cause `elai doctor knowledge-models`
+///     to exit non-zero (a fresh install would always fail otherwise),
+///   * staging them is opt-in via
+///     `python scripts/stage_onnx_models.py --only bge-reranker-v2-m3`,
+///   * jina-rerank-v3 has NO official ONNX as of 2026-05-23 — verified via
+///     WebSearch (PyTorch / MLX / GGUF formats only). When/if jinaai
+///     publishes `jina-rerank-v3.onnx`, add a row here AND a recipe to
+///     `scripts/stage_onnx_models.py`.
+///
+/// The doctor probe surfaces these as an advisory footer ("Optional
+/// rerankers: [name] present|missing | size_bytes | path"), never as a
+/// hard failure.
+const OPTIONAL_RERANKER_MANIFEST: &[(&str, &str, &str)] = &[
+    (
+        "bge-reranker-v2-m3",
+        "onnx/bge-reranker-v2-m3.onnx",
+        "optional reranker (BGE v2 m3, multilingual, ONNX export by onnx-community)",
+    ),
+    (
+        "bge-reranker-v2-m3-tok",
+        "onnx/bge-reranker-v2-m3-tokenizer.json",
+        "optional reranker tokenizer (BGE v2 m3)",
+    ),
+    (
+        "jina-rerank-v3",
+        "onnx/jina-rerank-v3.onnx",
+        "optional reranker (Jina v3; JINA-MODEL-PENDING — no official ONNX as of 2026-05-23)",
+    ),
+];
+
 /// Probe a single manifest row. Never panics; errors land in
 /// `entry.error` so the caller can render Fail-level diagnostics.
 fn probe_knowledge_entry(
@@ -744,29 +777,55 @@ pub(crate) fn run_knowledge_models_probe(
 
     let has_failures = entries.iter().any(|entry| !entry.present || entry.error.is_some());
 
+    // E-17 SP3: probe optional rerankers — never affects exit code.
+    let optional_entries: Vec<KnowledgeModelEntry> = OPTIONAL_RERANKER_MANIFEST
+        .iter()
+        .map(|(label, relative_path, role)| {
+            probe_knowledge_entry(label, relative_path, role, &models_dir)
+        })
+        .collect();
+
     match output_format {
         CliOutputFormat::Text | CliOutputFormat::Toml => {
-            println!("{}", render_knowledge_models_text(&models_dir, &entries));
+            println!(
+                "{}",
+                render_knowledge_models_text(&models_dir, &entries, &optional_entries)
+            );
         }
         CliOutputFormat::Json => {
+            let mandatory = entries
+                .iter()
+                .map(|entry| json!({
+                    "label": entry.label,
+                    "role": entry.role,
+                    "relative_path": entry.relative_path,
+                    "path": entry.absolute_path.display().to_string(),
+                    "present": entry.present,
+                    "size_bytes": entry.size_bytes,
+                    "blake3": entry.blake3_hex,
+                    "error": entry.error,
+                }))
+                .collect::<Vec<_>>();
+            let optional = optional_entries
+                .iter()
+                .map(|entry| json!({
+                    "label": entry.label,
+                    "role": entry.role,
+                    "relative_path": entry.relative_path,
+                    "path": entry.absolute_path.display().to_string(),
+                    "present": entry.present,
+                    "size_bytes": entry.size_bytes,
+                    "blake3": entry.blake3_hex,
+                    "error": entry.error,
+                }))
+                .collect::<Vec<_>>();
             let payload = json!({
                 "kind": "doctor-knowledge-models",
                 "project_root": project_root.display().to_string(),
                 "models_dir": models_dir.display().to_string(),
                 "has_failures": has_failures,
-                "entries": entries
-                    .iter()
-                    .map(|entry| json!({
-                        "label": entry.label,
-                        "role": entry.role,
-                        "relative_path": entry.relative_path,
-                        "path": entry.absolute_path.display().to_string(),
-                        "present": entry.present,
-                        "size_bytes": entry.size_bytes,
-                        "blake3": entry.blake3_hex,
-                        "error": entry.error,
-                    }))
-                    .collect::<Vec<_>>(),
+                "entries": mandatory,
+                "optional_rerankers": optional,
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
@@ -786,7 +845,11 @@ pub(crate) fn run_knowledge_models_probe(
     Ok(())
 }
 
-fn render_knowledge_models_text(models_dir: &Path, entries: &[KnowledgeModelEntry]) -> String {
+fn render_knowledge_models_text(
+    models_dir: &Path,
+    entries: &[KnowledgeModelEntry],
+    optional_entries: &[KnowledgeModelEntry],
+) -> String {
     let mut lines = vec![
         "Doctor / KnowledgeModels".to_string(),
         format!("  models_dir       {}", models_dir.display()),
@@ -829,6 +892,35 @@ fn render_knowledge_models_text(models_dir: &Path, entries: &[KnowledgeModelEntr
         if let Some(err) = &entry.error {
             lines.push(format!("      ! {err}"));
         }
+    }
+    // E-17 SP3 — Optional rerankers (advisory only, never affects exit code).
+    if !optional_entries.is_empty() {
+        lines.push(String::new());
+        lines.push("  Optional rerankers (E-17 SP3)".to_string());
+        for entry in optional_entries {
+            let status = if entry.error.is_some() {
+                "fail"
+            } else if entry.present {
+                "present"
+            } else {
+                "missing"
+            };
+            lines.push(format!(
+                "    {:<24} {:<10} {:>12}  {}",
+                entry.label,
+                status,
+                entry.size_bytes,
+                entry.absolute_path.display()
+            ));
+            if !entry.present {
+                lines.push(format!(
+                    "      hint: python scripts/stage_onnx_models.py --only {}",
+                    entry.label.trim_end_matches("-tok")
+                ));
+            }
+        }
+        lines.push("    JINA-MODEL-PENDING: jina-rerank-v3 has NO official ONNX as of 2026-05-23.".to_string());
+        lines.push("    See workflow/reasoning/E-17-decisions.md for staging context.".to_string());
     }
     lines.join("\n")
 }

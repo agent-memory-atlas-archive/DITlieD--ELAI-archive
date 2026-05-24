@@ -290,6 +290,29 @@ impl FactStore {
         Ok(())
     }
 
+    /// Soft-close a currently-valid row by setting `valid_to_ms` to
+    /// `now_ms` without inserting a replacement. Used by the Mem0
+    /// dispatcher's DELETE path (explicit `{"tombstone": true}`
+    /// candidates) and by [`crate::contradiction`] supersession of
+    /// older conflicting rows.
+    ///
+    /// Returns `MemoryError::NotFound` if the row does not exist OR is
+    /// already closed (`valid_to_ms IS NOT NULL`). Idempotent semantics
+    /// must be implemented by the caller — a second soft_close on the
+    /// same id is a NotFound, not a success.
+    pub fn soft_close(&mut self, fact_id: &str, now_ms: u128) -> Result<(), MemoryError> {
+        let updated = self.conn.execute(
+            "UPDATE memory_facts
+             SET valid_to_ms = ?2
+             WHERE fact_id = ?1 AND valid_to_ms IS NULL",
+            params![fact_id, now_ms as i64],
+        )?;
+        if updated == 0 {
+            return Err(MemoryError::NotFound(fact_id.to_owned()));
+        }
+        Ok(())
+    }
+
     /// Mutable iteration helper for the decay scheduler — yields every
     /// currently-valid row's (`fact_id`, `fact_type`, `trust_score`,
     /// `decay_rate_per_day`, `last_observed_at_ms`).

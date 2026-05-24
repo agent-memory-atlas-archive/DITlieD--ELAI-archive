@@ -1,0 +1,84 @@
+# C-39 -- MCP bridge CLI surface parity check.
+#
+# Runs scripts/ci-mcp-parity.sh which exercises `elai run --export-ssb`
+# twice (in-process and --via-mcp), then diffs the SSB row sequences.
+# Per WIRING_CONTRACT.stub_ban, this job is BLOCKING (not informational).
+#
+# Matrix dimension: dispatch_mode is set per leg so the BLOCKING gate
+# fires symmetrically on either side of the dispatch surface.
+
+name: ci-mcp-parity
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci-mcp-parity:
+    name: C-39 mcp-bridge CLI parity
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .elai_cc/target/
+          key: ${{ runner.os }}-cargo-mcp-parity-${{ hashFiles('.elai_cc/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-mcp-parity-
+
+      # Compile the CLI binary the parity script will exercise. Scoped to
+      # elai-cli + its workspace deps; full workspace tests live in the
+      # dedicated workflow.
+      - name: Build elai CLI
+        working-directory: .elai_cc
+        run: cargo build -p elai-cli --locked
+
+      # Contract test for the Dispatch trait shape -- runs BEFORE the
+      # parity script so a compile-time contract violation surfaces with
+      # a clean test name (not "process killed during parity").
+      # NOTE: cli_mcp_contract is registered on elai-cli only (see
+      # crates/cli/tests/cli_mcp_contract.rs). The previously-present
+      # `cargo test -p elai-plugins --test cli_mcp_contract` step was
+      # removed because the target is not registered in plugins/Cargo.toml
+      # AND the orphan file at crates/plugins/tests/contracts/cli_mcp_contract.rs
+      # imports elai_orchestrator::* but plugins does not depend on the
+      # orchestrator (the dependency direction is reversed). The
+      # elai-cli leg above is the canonical contract.
+      - name: cli_mcp_contract tests
+        working-directory: .elai_cc
+        run: |
+          cargo test -p elai-cli --test cli_mcp_contract --locked
+          cargo test -p elai-cli --test mcp_dispatch --locked
+
+      # The parity sweep itself. BLOCKING per stub_ban -- a non-zero
+      # exit fails the workflow.
+      - name: Run mcp-bridge CLI parity script
+        working-directory: .elai_cc
+        env:
+          ELAI_BIN: ${{ github.workspace }}/.elai_cc/target/debug/elai
+        run: bash scripts/ci-mcp-parity.sh

@@ -3,7 +3,11 @@
 //! Uniqueness mitigation per arXiv:2102.12892.
 //! Snapshot GC: LRU eviction at max_snapshots=64 AND max_age=24h.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen for the snapshot pool. Eviction order
+// (LRU age-based + count-based) is observable in test fixtures; BTreeMap
+// keys give deterministic iter() ordering when timestamps tie. Uuid +
+// AgentRole both derive Ord, so SnapshotKey can derive Ord without surgery.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -12,7 +16,12 @@ use crate::agent_pool::AgentRole;
 use uuid::Uuid;
 
 /// Unique key for a per-(agent_id, role) snapshot slot.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `PartialOrd + Ord` are derived for B-15 HashMap ban migration to
+/// `BTreeMap`. Ordering uses Uuid-then-AgentRole; both component types
+/// derive Ord upstream (ipc-types AgentRole, uuid crate Uuid). Hash kept
+/// in case downstream FxHashMap is ever reintroduced for a hot-path test.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SnapshotKey {
     pub agent_id: Uuid,
     pub role: AgentRole,
@@ -30,7 +39,7 @@ pub struct SnapshotHandle {
 
 /// Firecracker hot snapshot-restore pool.
 pub struct FirecrackerHotPool {
-    snapshots: Mutex<HashMap<SnapshotKey, SnapshotHandle>>,
+    snapshots: Mutex<BTreeMap<SnapshotKey, SnapshotHandle>>,
     snapshot_dir: PathBuf,
     restore_budget_ms: u64,
     max_snapshots: usize,
@@ -69,7 +78,7 @@ pub struct SnapshotSpawnResult {
 
 impl FirecrackerHotPool {
     pub fn new(snapshot_dir: PathBuf, restore_budget_ms: u64, max_snapshots: usize, max_age_secs: u64, uniqueness_mitigation: bool) -> Self {
-        Self { snapshots: Mutex::new(HashMap::new()), snapshot_dir, restore_budget_ms, max_snapshots, max_age: Duration::from_secs(max_age_secs), uniqueness_mitigation }
+        Self { snapshots: Mutex::new(BTreeMap::new()), snapshot_dir, restore_budget_ms, max_snapshots, max_age: Duration::from_secs(max_age_secs), uniqueness_mitigation }
     }
 
     pub fn with_defaults(snapshot_dir: PathBuf) -> Self {
@@ -110,7 +119,7 @@ impl FirecrackerHotPool {
     }
 
     #[cfg(target_os = "linux")]
-    fn cold_boot_and_snapshot(&self, key: &SnapshotKey, command: &str, args: &[String], pool: &mut HashMap<SnapshotKey, SnapshotHandle>) -> Result<SnapshotSpawnResult, FirecrackerError> {
+    fn cold_boot_and_snapshot(&self, key: &SnapshotKey, command: &str, args: &[String], pool: &mut BTreeMap<SnapshotKey, SnapshotHandle>) -> Result<SnapshotSpawnResult, FirecrackerError> {
         let snapshot_path = self.snapshot_path_for(key);
         if let Some(parent) = snapshot_path.parent() { std::fs::create_dir_all(parent)?; }
         if self.firecracker_binary_available() {
@@ -167,7 +176,7 @@ impl FirecrackerHotPool {
 
     fn firecracker_binary_available(&self) -> bool { which_firecracker().is_some() }
 
-    fn evict_if_needed(&self, pool: &mut HashMap<SnapshotKey, SnapshotHandle>) -> Result<(), FirecrackerError> {
+    fn evict_if_needed(&self, pool: &mut BTreeMap<SnapshotKey, SnapshotHandle>) -> Result<(), FirecrackerError> {
         let now = SystemTime::now();
         let expired_keys: Vec<SnapshotKey> = pool.iter().filter(|(_, h)| now.duration_since(h.last_restored_at).map(|d| d > self.max_age).unwrap_or(false)).map(|(k, _)| k.clone()).collect();
         for key in &expired_keys {

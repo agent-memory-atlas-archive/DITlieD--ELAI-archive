@@ -65,6 +65,7 @@ fn test_data() -> AgentCheckpointData {
         tool_results: vec!["tool-result-1".into()],
         output_draft: "contract draft".into(),
         channel_references: vec![],
+        schema_version: elai_orchestrator::checkpoint::LEGACY_CHECKPOINT_SCHEMA_VERSION,
     }
 }
 

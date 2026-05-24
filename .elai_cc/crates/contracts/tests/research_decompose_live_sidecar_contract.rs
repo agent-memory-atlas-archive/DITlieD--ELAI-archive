@@ -15,7 +15,7 @@
 //!   When the sidecar (port 8100) is not reachable, the test will attempt
 //!   to start the SSH tunnel via:
 //!     powershell.exe -ExecutionPolicy Bypass -NonInteractive -File
-//!       D:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1
+//!       F:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1
 //!   The script is invoked with std::process::Command (no external crate
 //!   dependency). After spawning it polls port 8100 for up to 60 s.
 //!   If the port is still closed after 60 s the test returns the structured
@@ -111,7 +111,7 @@ async fn live_sidecar_research_decompose_what_is_rag() {
         if std::env::var("ELAI_LIVE_SIDECAR_AUTOSTART").as_deref() == Ok("1") {
             eprintln!("A6.3: port 8100 closed; attempting autostart via start-tunnel.ps1");
             let tunnel_script =
-                r"D:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1";
+                r"F:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1";
             let spawn_result = std::process::Command::new("powershell.exe")
                 .args([
                     "-ExecutionPolicy",

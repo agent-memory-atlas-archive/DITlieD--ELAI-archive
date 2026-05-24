@@ -21,29 +21,55 @@
 //! - [`retrieval`] — trust-and-provenance-filtered [`get_relevant_facts`]
 //! - [`decay`] — pure decay-curve math + [`decay_tick`] batch helper
 //!
-//! Reserved for follow-ups (intentionally deferred from this slice per the
-//! plan's PARTIAL / additive policy): full Mem0 ADD/UPDATE/DELETE/NOOP
-//! dispatcher, two-stage write gate, scoped CLI subcommand surface,
-//! contradiction adjudicator, MemoryDrawer rendering, decay scheduler task.
+//! E-5 session-2 additions (active scope per E-5-decisions.md): Mem0
+//! ADD/UPDATE/DELETE/NOOP dispatcher ([`mem0_dispatcher`]), Stage-1
+//! regex blocklist + sensitive-class skip-list ([`defense`]), heuristic
+//! contradiction adjudicator ([`contradiction`]), tokio decay
+//! scheduler ([`decay_scheduler`]).
+//!
+//! Deferred to E-5-followup (per E-5-decisions.md): LLM-backed
+//! extractor + Stage-2 classifier, MemoryDrawer adjudication UI,
+//! promotion gate (depends on Stage-2 classifier), per-user
+//! `%USERPROFILE%\.elai_user\` tier (paths helpers shipped, FactStore
+//! tiering deferred until per-user write paths exist).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod contradiction;
 pub mod core_block;
 pub mod decay;
+pub mod decay_scheduler;
+pub mod defense;
 pub mod error;
+pub mod evolution;
 pub mod extractor;
 pub mod fact;
 pub mod hippo_rag;
+pub mod mem0_dispatcher;
 pub mod notes;
 pub mod retrieval;
 pub mod store;
+pub mod tools;
 pub mod trust;
 pub mod view;
 
+pub use contradiction::{audit_conflicts, ConflictAction};
 pub use core_block::{CoreBlock, CoreBlockStore, CORE_BLOCK_MAX_BYTES};
 pub use decay::{decay_tick, decayed_trust, default_decay_rate, DecayTickStats};
+pub use decay_scheduler::{
+    spawn_decay_scheduler, DecayHandle, DecaySchedulerConfig, DecayTickObserver,
+    DEFAULT_DECAY_TICK_INTERVAL, MIN_DECAY_TICK_INTERVAL,
+};
+pub use defense::{classify, is_blocked_payload, is_sensitive_skip, DefenseVerdict};
 pub use error::MemoryError;
+pub use mem0_dispatcher::{
+    dispatch_batch, dispatch_one, DispatchContext, DispatchOp, TOMBSTONE_MARKER,
+};
+pub use evolution::{
+    apply_diff, evolve_on_insert, ppr_seeded_top_k, AttributeDiff, AttributeDiffKind,
+    MAX_NEIGHBOURS_PER_INSERT,
+};
 pub use extractor::{extract_facts, Conversation, ExtractedFact, Turn};
 pub use fact::{FactType, MemoryFact, Scope};
 pub use hippo_rag::{
@@ -52,5 +78,9 @@ pub use hippo_rag::{
 pub use notes::{MemoryNote, NoteStore};
 pub use retrieval::{get_relevant_facts, RetrievalFilter};
 pub use store::FactStore;
+pub use tools::{
+    archival_search_tool_def, core_memory_replace_tool_def, ChatMemoryToolDef,
+    ARCHIVAL_SEARCH_TOOL_NAME, CORE_MEMORY_REPLACE_TOOL_NAME,
+};
 pub use trust::{Provenance, TrustTier};
 pub use view::{SafetyCriticalQueryType, TierCeiling};

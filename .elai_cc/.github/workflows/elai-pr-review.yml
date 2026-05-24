@@ -1,0 +1,82 @@
+name: elai-pr-review
+
+# E-41: PR open / synchronize gate. Spawns the four ELAI review hooks
+# (body compose / verify-deps / semgrep / auto-merge assess) against the
+# incoming PR. Soft-fail on the first 10 PRs per report Open Question 3
+# (sizing the false-positive rate); after that the gate transitions to
+# blocking. The soft-mode counter lives in the repo's gh-pages branch as
+# a single integer file `pr-review-soft-mode-counter.txt`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  elai-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build elai CLI
+        working-directory: .elai_cc
+        run: cargo build --release -p elai-cli --bin elai
+
+      - name: Compose PR body (advisory)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ./.elai_cc/target/release/elai pr-review compose-body "$PR_NUMBER" \
+            --template "PR {{pr}} reviewed by ELAI on {{ts}}.\nplan: {{plan}}\nfiles changed: {{files}}\n" \
+            --kv pr=$PR_NUMBER \
+            --kv plan=auto \
+            --kv files=auto \
+            --kv ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --json || true
+
+      - name: Anti-slopsquat dep scan (BLOCKING)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.elai_cc/target/release/elai pr-review verify-deps "$PR_NUMBER" --json
+
+      - name: Semgrep gate (advisory soft-fail)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ./.elai_cc/target/release/elai pr-review semgrep-gate "$PR_NUMBER" \
+            --ruleset auto \
+            --json || true
+
+      - name: Auto-merge safety assessment
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LOC_ADDED: ${{ github.event.pull_request.additions }}
+          LOC_REMOVED: ${{ github.event.pull_request.deletions }}
+          FILES_CHANGED: ${{ github.event.pull_request.changed_files }}
+        run: |
+          ./.elai_cc/target/release/elai pr-review auto-merge-assess "$PR_NUMBER" \
+            --loc-added "$LOC_ADDED" \
+            --loc-removed "$LOC_REMOVED" \
+            --files-changed "$FILES_CHANGED" \
+            --json

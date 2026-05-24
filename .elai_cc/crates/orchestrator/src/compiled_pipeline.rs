@@ -24,7 +24,12 @@
 //
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen for observation_log, pipeline_cache,
+// and consecutive_failures. (String, u64) keys derive Ord natively, all
+// access patterns are entry/get/remove/len/read/write (no iteration order
+// dependency). BTreeMap also gives deterministic debug output via the
+// `Debug` impl which is the only consumer of `.len()` on these maps.
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -286,7 +291,7 @@ pub struct ExecutionOutcome {
 /// CompiledPipeline.
 pub struct TemplateCrystallizer {
     /// Per (concept_class, plan_skeleton_hash) bucket of historical outcomes.
-    observation_log: HashMap<(String, u64), Vec<ExecutionOutcome>>,
+    observation_log: BTreeMap<(String, u64), Vec<ExecutionOutcome>>,
     /// Consecutive-success threshold (default `CRYSTALLIZATION_THRESHOLD_N`).
     threshold: u32,
     /// Optional SSB writer for `template_crystallized` rows.
@@ -302,7 +307,7 @@ impl TemplateCrystallizer {
     #[must_use]
     pub fn with_threshold(ssb_tx: Option<Arc<Ssb>>, threshold: u32) -> Self {
         Self {
-            observation_log: HashMap::new(),
+            observation_log: BTreeMap::new(),
             threshold,
             ssb_tx,
         }
@@ -445,8 +450,8 @@ pub enum CompiledExecutorError {
 /// `AntiSpiralHit` payload OR by returning `Decompile` so the caller
 /// re-enters the LLM path).
 pub struct CompiledExecutor {
-    pub pipeline_cache: Arc<RwLock<HashMap<(String, u64), CompiledPipeline>>>,
-    consecutive_failures: HashMap<(String, u64), u8>,
+    pub pipeline_cache: Arc<RwLock<BTreeMap<(String, u64), CompiledPipeline>>>,
+    consecutive_failures: BTreeMap<(String, u64), u8>,
     confidence_threshold: f32,
     ssb_tx: Option<Arc<Ssb>>,
 }
@@ -455,8 +460,8 @@ impl CompiledExecutor {
     #[must_use]
     pub fn new(ssb_tx: Option<Arc<Ssb>>) -> Self {
         Self {
-            pipeline_cache: Arc::new(RwLock::new(HashMap::new())),
-            consecutive_failures: HashMap::new(),
+            pipeline_cache: Arc::new(RwLock::new(BTreeMap::new())),
+            consecutive_failures: BTreeMap::new(),
             confidence_threshold: COMPILED_EXECUTOR_CONFIDENCE_THRESHOLD,
             ssb_tx,
         }
@@ -465,11 +470,11 @@ impl CompiledExecutor {
     #[must_use]
     pub fn with_cache(
         ssb_tx: Option<Arc<Ssb>>,
-        pipeline_cache: Arc<RwLock<HashMap<(String, u64), CompiledPipeline>>>,
+        pipeline_cache: Arc<RwLock<BTreeMap<(String, u64), CompiledPipeline>>>,
     ) -> Self {
         Self {
             pipeline_cache,
-            consecutive_failures: HashMap::new(),
+            consecutive_failures: BTreeMap::new(),
             confidence_threshold: COMPILED_EXECUTOR_CONFIDENCE_THRESHOLD,
             ssb_tx,
         }
@@ -640,11 +645,16 @@ pub enum CompiledPipelineStoreError {
 ///
 /// TTL: entries unused for longer than `ttl_seconds` are evicted at
 /// every `upsert` call. The eviction sweep is O(N) over the in-memory
-/// HashMap; acceptable because N << 1000 in practice.
+/// BTreeMap; acceptable because N << 1000 in practice.
+///
+/// `entries` uses `BTreeMap` (not `HashMap`) per B-15 HashMap ban —
+/// msgpack on-disk byte order is then deterministic across runs and
+/// platforms, which is load-bearing for the cache hit ratio measured
+/// by C-25 task 6 contracts.
 #[derive(Debug)]
 pub struct CompiledPipelineStore {
     cache_path: PathBuf,
-    entries: HashMap<(String, u64), CompiledPipeline>,
+    entries: BTreeMap<(String, u64), CompiledPipeline>,
     ttl_seconds: u64,
 }
 
@@ -655,7 +665,7 @@ impl CompiledPipelineStore {
     pub fn new(cache_path: PathBuf) -> Self {
         Self {
             cache_path,
-            entries: HashMap::new(),
+            entries: BTreeMap::new(),
             ttl_seconds: COMPILED_PIPELINE_TTL_SECS,
         }
     }
@@ -665,7 +675,7 @@ impl CompiledPipelineStore {
     pub fn with_ttl(cache_path: PathBuf, ttl_seconds: u64) -> Self {
         Self {
             cache_path,
-            entries: HashMap::new(),
+            entries: BTreeMap::new(),
             ttl_seconds,
         }
     }
@@ -681,7 +691,7 @@ impl CompiledPipelineStore {
 
     /// Read-only accessor for tests / `/pipeline list`.
     #[must_use]
-    pub fn entries(&self) -> &HashMap<(String, u64), CompiledPipeline> {
+    pub fn entries(&self) -> &BTreeMap<(String, u64), CompiledPipeline> {
         &self.entries
     }
 
@@ -704,7 +714,7 @@ impl CompiledPipelineStore {
                 return;
             }
         };
-        let decoded: Result<HashMap<(String, u64), CompiledPipeline>, _> =
+        let decoded: Result<BTreeMap<(String, u64), CompiledPipeline>, _> =
             rmp_serde::from_slice(&bytes);
         match decoded {
             Ok(map) => {

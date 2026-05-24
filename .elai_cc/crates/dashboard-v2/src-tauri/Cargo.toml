@@ -52,7 +52,26 @@ scaffold = { path = "../../scaffold" }
 
 [features]
 default = []
-mcp = ["elai-plugins/mcp"]
+mcp = ["elai-plugins/mcp", "elai-orchestrator/mcp"]
+# Phase 4J / B-25 — Empire integration. Activates the orchestrator's empire
+# submodule so commands_empire's `#[cfg(feature = "empire")]` branch compiles
+# the live read seam (vs. the deterministic empty-shape fallback). Off by
+# default; non-empire dashboard builds render the "Empire bridge unavailable"
+# empty state.
+empire = ["elai-orchestrator/empire"]
+# B-3 #27: AutoAdvanceStats panel + auto-advance gate machinery. Future-phase
+# UI sneak-in from Phase 4G; flag gates the get_auto_advance_stats Tauri
+# command + frontend render until B-22 lands the real autonomous-mode
+# producer. Build w/ `--features autonomous-mode` to surface the panel; the
+# default build emits a `cfg(not(feature="autonomous-mode"))` stub returning
+# a zeroed shape so the frontend's runtime feature-flag query reads
+# `autonomous_mode_enabled=false` and the panel hides itself.
+autonomous-mode = []
+# B-3 #28: ProposalsPanel (Phase 4H proposal flow). Future-phase UI
+# sneak-in; flag gates the proposals data commands and the
+# ProposalsPanel mount until B-23 lands the real self-modification
+# producer. Same dual-cfg pattern as autonomous-mode above.
+self-modification = []
 
 [dev-dependencies]
 tempfile = "3"

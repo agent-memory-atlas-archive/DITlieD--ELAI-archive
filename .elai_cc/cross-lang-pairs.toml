@@ -1,0 +1,48 @@
+# E-45 — cross-language pair registry.
+#
+# Authoritative list of Rust <-> mirror pairs walked by
+# `elai_orchestrator::cross_lang_drift::DriftDetector`. The `name` field
+# maps 1:1 to `cross_lang_drift::types::PairKind` variants; adding a
+# row here requires adding a `PairKind` variant in the same commit.
+#
+# Per D-10 DECISION-8 the TS mirror is hand-authored (not ts-rs codegen);
+# this registry exists so the detector can lint the mirror by presence
+# + field-name shape rather than generate it.
+#
+# All paths are relative to the repo root (F:\.ELAI_workflow\).
+
+[[pairs]]
+name = "sidecar_orchestrator_schemas"
+rust_path = ".elai_cc/crates/orchestrator/src/ssb.rs"
+mirror_path = ".elai_cc/python/elai_inference/schemas/__init__.py"
+note = "core SSB types <-> sidecar Pydantic mirror"
+
+[[pairs]]
+name = "tauri_commands_ts_stub"
+rust_path = ".elai_cc/crates/dashboard-v2/src-tauri/src/commands.rs"
+mirror_path = ".elai_cc/crates/dashboard-v2/src/lib/api/stub.ts"
+note = "Tauri command handlers <-> Svelte TS stub"
+
+[[pairs]]
+name = "tauri_types_lib"
+rust_path = ".elai_cc/crates/dashboard-v2/src-tauri/src/lib.rs"
+mirror_path = ".elai_cc/crates/dashboard-v2/src/lib/api/types.ts"
+note = "Tauri lib <-> hand-authored TS types per D-10 DECISION-8"
+
+[[pairs]]
+name = "sidecar_anthropic_provider"
+rust_path = ".elai_cc/crates/providers/src/providers/anthropic.rs"
+mirror_path = ".elai_cc/python/elai_inference/server.py"
+note = "Anthropic protocol Rust types <-> sidecar /v1/messages handler"
+
+[[pairs]]
+name = "sidecar_runtime_client"
+rust_path = ".elai_cc/crates/cli/src/runtime_client.rs"
+mirror_path = ".elai_cc/python/elai_inference/server.py"
+note = "CLI runtime client <-> sidecar server"
+
+[[pairs]]
+name = "ipc_types_dashboard"
+rust_path = ".elai_cc/crates/ipc-types/src/lib.rs"
+mirror_path = ".elai_cc/crates/dashboard-v2/src/lib/api/types.ts"
+note = "Shared IPC types <-> dashboard hand-authored mirror"

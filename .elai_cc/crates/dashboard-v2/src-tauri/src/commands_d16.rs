@@ -137,11 +137,20 @@ pub async fn get_conformal_recent(
 }
 
 /// Snapshot of the active calibration corpus state.
+///
+/// D-16 closure: extended with `corpus_size`, `last_updated_ts`, and
+/// `current_tau` so the panel renders the durable nightly tau scalar
+/// without re-decoding SSB rows. These fields are read from the live
+/// `TauUpdater` over the configured corpus + tau paths
+/// (default `.elai_cc/calibration/seed/corpus.jsonl` +
+/// `.elai_cc/data/conformal_tau.txt`). When the tau file is missing,
+/// `current_tau` falls back to `TAU_DEFAULT_FALLBACK` (0.9) and
+/// `last_updated_ts` is `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationCorpusStateDto {
     /// Snake-case `CorpusSource` label.
     pub source: String,
-    /// Number of tuples in the corpus.
+    /// Number of tuples in the corpus (legacy field).
     pub size: u32,
     /// Whether the corpus is frozen (production seed corpora are frozen
     /// by construction).
@@ -150,24 +159,79 @@ pub struct CalibrationCorpusStateDto {
     /// default. Surfaced here so the panel renders the threshold without
     /// having to call a second endpoint.
     pub epsilon: f64,
+    /// D-16 closure: number of tuples in the live calibration corpus
+    /// as observed by the dashboard's `TauUpdater::read_corpus_size`.
+    /// Mirrors `size` semantically; kept as a separate field for
+    /// forward compatibility with the per-tier corpus split.
+    pub corpus_size: u32,
+    /// D-16 closure: durable tau scalar currently persisted on disk
+    /// (`TauUpdater::read_persisted_tau`). Reflects the most recent
+    /// `calibration_corpus_updated` SSB row's `new_tau`. Defaults to
+    /// `TAU_DEFAULT_FALLBACK` when the file does not exist.
+    pub current_tau: f64,
+    /// D-16 closure: UNIX-ms wall-clock of the tau file's last
+    /// modification. `None` when the file does not exist yet (e.g.
+    /// fresh boot before the first updater run).
+    pub last_updated_ts: Option<i64>,
 }
 
-/// Return a snapshot of the active calibration corpus. The MVP returns
-/// a synthetic snapshot describing the shipped seed corpus
-/// (`.elai_cc/calibration/seed/`). A follow-up patch will wire this to
-/// the orchestrator's live corpus state once the nightly grower is
-/// online.
+/// Default seed corpus path the dashboard reads when no override
+/// configuration is plumbed. Matches the CLI handler's default at
+/// crates/cli/src/conformal_calibration_cli.rs.
+const DASHBOARD_DEFAULT_CORPUS_PATH: &str = ".elai_cc/calibration/seed/corpus.jsonl";
+
+/// Return a snapshot of the active calibration corpus. Reads the live
+/// `TauUpdater` over the project-local corpus + tau paths so the panel
+/// renders the durable threshold + corpus size in real time.
+///
+/// Backward compatibility: legacy `size` / `epsilon` fields preserved;
+/// new `corpus_size` / `current_tau` / `last_updated_ts` fields surface
+/// the D-16 closure values per GAP-7.
 #[tauri::command]
 pub async fn get_calibration_corpus_state(
     _state: State<'_, AppState>,
 ) -> Result<CalibrationCorpusStateDto, String> {
-    Ok(CalibrationCorpusStateDto {
-        source: elai_orchestrator::conformal_calibration::CorpusSource::Synthetic
+    use std::path::PathBuf;
+    use std::time::UNIX_EPOCH;
+
+    let corpus_path = PathBuf::from(DASHBOARD_DEFAULT_CORPUS_PATH);
+    let tau_path = elai_orchestrator::conformal_calibration::tau_path_default();
+    let updater = elai_orchestrator::conformal_calibration::TauUpdater::new(
+        corpus_path,
+        tau_path.clone(),
+        elai_orchestrator::conformal_calibration::DEFAULT_EPSILON,
+    );
+    let corpus_size_usize = updater.read_corpus_size();
+    let corpus_size = u32::try_from(corpus_size_usize).unwrap_or(u32::MAX);
+    let current_tau = updater.read_persisted_tau();
+    let last_updated_ts = std::fs::metadata(&tau_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_millis()).ok());
+
+    // `source` reflects the corpus provenance the live updater is
+    // reading from. When the corpus file is empty / missing, fall back
+    // to the synthetic-seed label so the panel doesn't render a
+    // misleading "auto" for a yet-empty grower.
+    let source = if corpus_size_usize == 0 {
+        elai_orchestrator::conformal_calibration::CorpusSource::Synthetic
             .as_str()
-            .to_string(),
-        size: 20,
-        frozen: true,
+            .to_string()
+    } else {
+        elai_orchestrator::conformal_calibration::CorpusSource::Auto
+            .as_str()
+            .to_string()
+    };
+
+    Ok(CalibrationCorpusStateDto {
+        source,
+        size: corpus_size,
+        frozen: false,
         epsilon: elai_orchestrator::conformal_calibration::DEFAULT_EPSILON,
+        corpus_size,
+        current_tau,
+        last_updated_ts,
     })
 }
 
@@ -226,9 +290,20 @@ mod tests {
             size: 20,
             frozen: true,
             epsilon: 0.1,
+            corpus_size: 20,
+            current_tau: 0.9,
+            last_updated_ts: Some(1_700_000_000_000),
         };
         let s = serde_json::to_string(&dto).expect("serialize");
-        for key in ["\"source\"", "\"size\"", "\"frozen\"", "\"epsilon\""] {
+        for key in [
+            "\"source\"",
+            "\"size\"",
+            "\"frozen\"",
+            "\"epsilon\"",
+            "\"corpus_size\"",
+            "\"current_tau\"",
+            "\"last_updated_ts\"",
+        ] {
             assert!(s.contains(key), "missing key {key} in {s}");
         }
     }

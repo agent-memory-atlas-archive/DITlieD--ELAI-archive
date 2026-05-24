@@ -82,6 +82,40 @@ pub enum RuntimeBackend {
     /// Universal GGUF fallback via llama-server subprocess (E-51).
     /// Auto-detects best EP: Vulkan / CUDA / Metal / HIP / CPU.
     LlamaCpp,
+    /// D-2 — Process Preference Model sidecar (Qwen2.5-Math-PRM-7B on port
+    /// 8101). VERIFIER-ONLY backend: surfaces in `/runtime list` discovery
+    /// but PerRoleRuntime::default() does NOT map any AgentRole to it (the
+    /// PPM has no /v1/messages completion handler — score requests go
+    /// through `crate::http_sidecar_ppm_hook::HttpSidecarPpmHook` directly).
+    /// Per workflow/reasoning/D-2-decisions.md "PpmClient does NOT impl
+    /// RuntimeAdapter" deviation, `create_runtime` for `Ppm` returns
+    /// `NotImplemented` (intentional sentinel — guards against accidental
+    /// generation-path routing).
+    Ppm,
+    /// C-44 — Cursor Composer 2 cloud API (paid HTTP backend; Cursor
+    /// Research's coding-specialised model). Paper grounding
+    /// arXiv:2603.24477 covers ONLY the model's training methodology +
+    /// headline benchmarks; integration design is source-grounded via
+    /// @cursor/sdk + cursor.com/docs/api. See workflow/papers/composer2-
+    /// interface.md. OPT-IN per project via [runtime.composer2].enabled
+    /// = true; default routing does NOT include composer2 to keep
+    /// local-first sessions free of marginal cost.
+    Composer2,
+    /// E-40 — Language Server Protocol (LSP) subprocess oracle for
+    /// `Unresolved`-confidence symbol resolution. Spawns rust-analyzer
+    /// / pylsp / typescript-language-server / gopls on-demand and reads
+    /// the JSON-RPC response. NOT a completion-routing backend (no
+    /// `/v1/messages` surface) — `create_runtime` returns
+    /// `NotImplemented` like `Ppm`. The actual oracle dispatch lives in
+    /// `elai_orchestrator::symbol_graph::lsp_oracle::oracle_lookup`,
+    /// which uses tokio::process::Command directly rather than the
+    /// completion-shaped `RuntimeAdapter` trait. The slot exists here so
+    /// `/runtime list` surfaces "lsp" + the cost-model registry has a
+    /// stable id to attribute toolchain subprocess time against. Live
+    /// integration tests RUNPOD-PENDING — require an installed
+    /// toolchain (rust-analyzer / pylsp / etc.). See
+    /// workflow/reasoning/E-40-decisions.md.
+    Lsp,
 }
 
 impl RuntimeBackend {
@@ -103,6 +137,9 @@ impl RuntimeBackend {
             Self::Vllm => "vllm",
             Self::Mlx => "mlx",
             Self::LlamaCpp => "llama_cpp",
+            Self::Ppm => "ppm",
+            Self::Composer2 => "composer2",
+            Self::Lsp => "lsp",
         }
     }
 
@@ -124,6 +161,9 @@ impl RuntimeBackend {
             Self::Vllm,
             Self::Mlx,
             Self::LlamaCpp,
+            Self::Ppm,
+            Self::Composer2,
+            Self::Lsp,
         ]
     }
 }

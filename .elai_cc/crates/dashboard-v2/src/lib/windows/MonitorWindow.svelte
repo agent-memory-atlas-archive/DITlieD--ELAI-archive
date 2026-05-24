@@ -19,9 +19,18 @@
     CosmosArtifactStatus,
     // B-41: per-level audit verdicts mini-badges.
     LevelAuditVerdictJson,
+    // B-26 T4: real plan progression for the phase-dot row.
+    PlanProgress,
   } from '$lib/api/types';
   import { workspace } from '$lib/state/workspace.svelte';
   import { session } from '$lib/state/session.svelte';
+  // B-3 #27/#28 — feature-flag gates for future-phase UI sneak-ins.
+  // ProposalsPanel (Phase 4H) hides behind `self_modification`; the
+  // AutoAdvance gauge (Phase 4G) hides behind `autonomous_mode`. Both
+  // panels stay mounted today on builds that ship the corresponding
+  // cargo feature, and stay hidden otherwise — preventing a misleading
+  // "0/0 steps" or "no pending proposals" display on stock builds.
+  import { featureFlags } from '$lib/state/feature_flags.svelte';
   // B-23 Phase 4H Group F (4H.8) — self-mod surfaces wired into MonitorWindow.
   import ProposalsPanel from '$lib/components/ProposalsPanel.svelte';
   import MsiPanel from '$lib/components/MsiPanel.svelte';
@@ -80,6 +89,10 @@
   let cosmosArtifacts = $state<CosmosArtifactStatus[]>([]);
   // B-41: per-level audit verdict feed for the auditor mini-badges.
   let perLevelVerdicts = $state<LevelAuditVerdictJson[]>([]);
+  // B-26 T4: real plan-progression snapshot (replaces the static 5-phase
+  // stub block). Polled every 5s alongside get_fsm_state. When null, the
+  // derived PHASES block falls back to a pending-only render.
+  let planProgress = $state<PlanProgress | null>(null);
   let loadError = $state<string | null>(null);
 
   // Derived from live data, fallback to empty/defaults
@@ -109,37 +122,28 @@
     return `running for ${mins} min`;
   }
 
-  // Phase dots — stub 5-phase model (real phase data requires plan-level SSB query, deferred)
-  let PHASES: PhaseDot[] = $derived(
-    fsmSnap === null
-      ? [
-          { num: 1, label: 'Plan', steps: 0, status: 'pending' },
-          { num: 2, label: 'Feasibility', steps: 0, status: 'pending' },
-          { num: 3, label: 'Execute', steps: 0, status: 'pending' },
-          { num: 4, label: 'Audit', steps: 0, status: 'pending' },
-          { num: 5, label: 'Memorize', steps: 0, status: 'pending' },
-        ]
-      : (() => {
-          const s = fsmSnap.state;
-          const stateOrder = ['PLANNING', 'FEASIBILITY_PROBE', 'TESTING_FIRST', 'EXECUTING', 'AUDITING', 'MEMORIZING', 'COMPLETE'];
-          const currentIdx = stateOrder.indexOf(s);
-          const phases: PhaseDot[] = [
-            { num: 1, label: 'Plan', steps: 0, status: 'pending' },
-            { num: 2, label: 'Feasibility', steps: 0, status: 'pending' },
-            { num: 3, label: 'Execute', steps: 0, status: 'pending' },
-            { num: 4, label: 'Audit', steps: 0, status: 'pending' },
-            { num: 5, label: 'Memorize', steps: 0, status: 'pending' },
-          ];
-          const map: Record<string, number> = { PLANNING: 0, FEASIBILITY_PROBE: 1, TESTING_FIRST: 2, EXECUTING: 2, AUDITING: 3, MEMORIZING: 4, COMPLETE: 4 };
-          for (const [state, idx] of Object.entries(map)) {
-            const sIdx = stateOrder.indexOf(state);
-            if (sIdx < currentIdx) phases[idx].status = 'done';
-          }
-          const activeIdx = map[s];
-          if (activeIdx !== undefined) phases[activeIdx].status = 'active';
-          return phases;
-        })()
-  );
+  // B-26 T4: Phase dots — sourced from get_plan_progress (live SSB-backed
+  // phase progression). When planProgress is null/empty the row falls back
+  // to a pending-only 5-phase render so the dashboard never shows stale
+  // 'active' dots after sidecar disconnect.
+  let PHASES: PhaseDot[] = $derived.by(() => {
+    const live = planProgress?.phases ?? null;
+    if (live && live.length > 0) {
+      return live.map((p) => ({
+        num: p.num,
+        label: p.label,
+        steps: p.steps,
+        status: p.status as DotStatus,
+      }));
+    }
+    return [
+      { num: 1, label: 'Plan', steps: 0, status: 'pending' },
+      { num: 2, label: 'Feasibility', steps: 0, status: 'pending' },
+      { num: 3, label: 'Execute', steps: 0, status: 'pending' },
+      { num: 4, label: 'Audit', steps: 0, status: 'pending' },
+      { num: 5, label: 'Memorize', steps: 0, status: 'pending' },
+    ];
+  });
 
   // ------------------------------------------------------------------
   // Interventions — from SystemStatus pending_interventions or empty
@@ -291,7 +295,7 @@
 
     async function poll() {
       try {
-        const [fsm, sys, log, stats, spend, framing, mutation, completeness] = await Promise.all([
+        const [fsm, sys, log, stats, spend, framing, mutation, completeness, plan] = await Promise.all([
           stub.get_fsm_state(),
           stub.get_system_status(),
           stub.get_supervision_log(),
@@ -303,6 +307,8 @@
           stub.get_mutation_gauge(),
           // C-32: Code-Completeness Layer 2 completeness_ratio gauge.
           stub.get_completeness_ratio(),
+          // B-26 T4: real plan progression for the phase-dot row.
+          stub.get_plan_progress(),
         ]);
         if (!alive) return;
         fsmSnap = fsm;
@@ -313,12 +319,18 @@
         framingState = framing;
         mutationGauge = mutation;
         completenessRatio = completeness;
+        planProgress = plan;
         loadError = null;
       } catch (e) {
         if (!alive) return;
         loadError = String(e);
       }
     }
+
+    // B-3 #27/#28: hydrate compile-time feature flags once on mount.
+    // The values are static for the shell process lifetime so a single
+    // bootstrap suffices — featureFlags.bootstrap() is idempotent.
+    void featureFlags.bootstrap();
 
     poll();
     const interval = setInterval(poll, 5_000);
@@ -335,9 +347,16 @@
   <section class="monitor-section self-mod-msi" aria-label="MSI per pipeline mode">
     <MsiPanel />
   </section>
-  <section class="monitor-section self-mod-proposals" aria-label="Layer 1A proposals">
-    <ProposalsPanel />
-  </section>
+  <!-- B-3 #28 (CLASS C): ProposalsPanel feature-gate. Mount only when the
+       `self-modification` cargo feature is active (B-23 producer ready).
+       Default builds hide the panel entirely to avoid a misleading
+       "no pending proposals" empty state when the Layer 1A producer is
+       not even running. -->
+  {#if featureFlags.self_modification}
+    <section class="monitor-section self-mod-proposals" aria-label="Layer 1A proposals">
+      <ProposalsPanel />
+    </section>
+  {/if}
 
   <!-- B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
        Surfaces per-step Tier1 results, Tier2 advisory, render preview
@@ -380,28 +399,43 @@
         aria-label="Per-level audits: concepts {auditCounts.concepts}, phases {auditCounts.phases}, steps {auditCounts.steps}, babysteps {auditCounts.babysteps}, babystep_detail {auditCounts.babystep_detail}; status {auditCounts.status}"
       >audit {auditCounts.concepts}/{auditCounts.phases}/{auditCounts.steps}/{auditCounts.babysteps}/{auditCounts.babystep_detail}</span>
     </div>
-    <div class="auto-advance__row">
-      <span class="auto-advance__metric mono">
-        <span class="auto-advance__num">{autoStats?.auto_advanced ?? 0}</span>
-        <span class="auto-advance__sep">/</span>
-        <span class="auto-advance__num">{autoStats?.total_steps ?? 0}</span>
-        <span class="auto-advance__unit">steps</span>
-      </span>
-      <span class="auto-advance__metric mono" title="Auto-advance rate (overall)">
-        <span class="auto-advance__pct">{Math.round((autoStats?.auto_advance_rate ?? 0) * 100)}%</span>
-        <span class="auto-advance__unit">overall</span>
-      </span>
-      <span class="auto-advance__metric mono" title="Auto-advance rate over the trailing 24 hours">
-        <span class="auto-advance__pct">{Math.round((autoStats?.last_24h_rate ?? 0) * 100)}%</span>
-        <span class="auto-advance__unit">24h</span>
-      </span>
-      {#if (autoStats?.intervention_required ?? 0) > 0}
-        <span class="auto-advance__metric auto-advance__metric--warn mono" title="Pending interventions">
-          <span class="auto-advance__num">{autoStats?.intervention_required ?? 0}</span>
-          <span class="auto-advance__unit">human</span>
+    <!-- B-3 #27 (CLASS C): AutoAdvanceStats metric row feature-gate. The
+         row only renders when the `autonomous-mode` cargo feature is
+         active (B-22 producer ready). Default builds hide the metric
+         numbers but keep the header + gate-mode badge visible so the
+         gate-mode signal stays user-actionable even without the producer.
+         When hidden, a single deferral note replaces the metric row so
+         users see the panel is intentional, not broken. -->
+    {#if featureFlags.autonomous_mode}
+      <div class="auto-advance__row">
+        <span class="auto-advance__metric mono">
+          <span class="auto-advance__num">{autoStats?.auto_advanced ?? 0}</span>
+          <span class="auto-advance__sep">/</span>
+          <span class="auto-advance__num">{autoStats?.total_steps ?? 0}</span>
+          <span class="auto-advance__unit">steps</span>
         </span>
-      {/if}
-    </div>
+        <span class="auto-advance__metric mono" title="Auto-advance rate (overall)">
+          <span class="auto-advance__pct">{Math.round((autoStats?.auto_advance_rate ?? 0) * 100)}%</span>
+          <span class="auto-advance__unit">overall</span>
+        </span>
+        <span class="auto-advance__metric mono" title="Auto-advance rate over the trailing 24 hours">
+          <span class="auto-advance__pct">{Math.round((autoStats?.last_24h_rate ?? 0) * 100)}%</span>
+          <span class="auto-advance__unit">24h</span>
+        </span>
+        {#if (autoStats?.intervention_required ?? 0) > 0}
+          <span class="auto-advance__metric auto-advance__metric--warn mono" title="Pending interventions">
+            <span class="auto-advance__num">{autoStats?.intervention_required ?? 0}</span>
+            <span class="auto-advance__unit">human</span>
+          </span>
+        {/if}
+      </div>
+    {:else}
+      <div class="auto-advance__row auto-advance__row--deferred">
+        <span class="auto-advance__metric mono auto-advance__metric--deferred">
+          autonomous-mode disabled (awaiting B-22)
+        </span>
+      </div>
+    {/if}
   </section>
 
   <!-- B-27: cloud-mode spend gauge (spec D-4:307). Conditional on > 0;
@@ -1142,6 +1176,14 @@
   }
   .auto-advance__metric--warn .auto-advance__num {
     color: var(--warn);
+  }
+  /* B-3 #27: deferred-state row when autonomous-mode feature is off. */
+  .auto-advance__row--deferred {
+    opacity: 0.55;
+  }
+  .auto-advance__metric--deferred {
+    color: var(--text-ghost);
+    font-style: italic;
   }
 
   /* B-40: critic-rounds badge — surfaces during FRAMING substate. */

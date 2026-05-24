@@ -1,6 +1,6 @@
 # ELAI phase 1H SPLADE measurement metrics
 # Measured: 2026-04-28 | Session: s-27276 | Harness: crates/knowledge/tests/splade_measure_tests.rs
-# Command: SPLADE_MODEL_PATH=D:/.ELAI_workflow/.elai_cc/models/splade cargo test -p elai-knowledge --features splade --test splade_measure_tests -- --nocapture
+# Command: SPLADE_MODEL_PATH=F:/.ELAI_workflow/.elai_cc/models/splade cargo test -p elai-knowledge --features splade --test splade_measure_tests -- --nocapture
 # Model: prithivida/Splade_PP_en_v1 (models/splade/model.onnx 532MB, opset=14)
 
 vocab_coverage_code = 0.5795

@@ -18,7 +18,8 @@ use crate::research_tree::{
     IntegrationSpec, PhaseId, StepId, StepNode,
 };
 use crate::ssb::{
-    BubbleUpTypedPayload, IntegrationCheckpointSuccessPayload, Ssb, SsbPayload,
+    BubbleUpTypedPayload, FailureRecordedPayload, IntegrationCheckpointSuccessPayload, Ssb,
+    SsbPayload, TreePositionChangedPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,60 @@ pub struct IntegrationCheckpointEventPayload {
 /// and-forget). Checkpoint rows are advisory and must not block the navigator.
 pub trait IntegrationCheckpointEmitter: Send + Sync {
     fn emit(&self, event: IntegrationCheckpointEventPayload);
+}
+
+// ---------------------------------------------------------------------------
+// B-7 (SCHEMA_VERSION 100): FailureRecordedEmitter — injectable SSB callback
+// fired once per FailureRecord upsert inside `handle_failure`.
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every FailureRecordedEmitter call-site. Mirrors the
+/// in-memory [`FailureRecord`] struct shape so the dashboard PlanWindow can
+/// render per-baby-step retry history without shape negotiation.
+#[derive(Debug, Clone)]
+pub struct FailureRecordedEventPayload {
+    pub baby_step_id: u64,
+    pub step_id: u64,
+    pub phase_id: u64,
+    pub concept_id: u64,
+    pub reason: String,
+    pub attempts: u32,
+}
+
+/// Injectable per-failure emitter. Sync trait: the SSB-backed adapter fires
+/// a `tokio::spawn` internally (fire-and-forget). Failure rows are advisory
+/// and must not block the navigator.
+pub trait FailureRecordedEmitter: Send + Sync {
+    fn emit(&self, event: FailureRecordedEventPayload);
+}
+
+// ---------------------------------------------------------------------------
+// B-7 (SCHEMA_VERSION 100): TreePositionChangedEmitter — injectable SSB
+// callback fired on every cursor mutation inside `record_result` /
+// `handle_failure` (visited / blocked / skipped sets changing).
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every TreePositionChangedEmitter call-site. Snapshots
+/// the trailing navigator position so the dashboard can highlight the
+/// current node + drift trail.
+#[derive(Debug, Clone)]
+pub struct TreePositionChangedEventPayload {
+    /// Snake-case id of the next baby step to execute, or empty when
+    /// traversal is exhausted.
+    pub current_node: String,
+    /// BabyStepId.0 visited so far (completed set).
+    pub visited: Vec<u64>,
+    /// BabyStepId.0 currently blocked.
+    pub blocked: Vec<u64>,
+    /// BabyStepId.0 explicitly skipped by the navigator.
+    pub skipped: Vec<u64>,
+}
+
+/// Injectable per-position-change emitter. Sync trait: the SSB-backed
+/// adapter fires a `tokio::spawn` internally (fire-and-forget). Position
+/// rows are advisory and must not block the navigator.
+pub trait TreePositionChangedEmitter: Send + Sync {
+    fn emit(&self, event: TreePositionChangedEventPayload);
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +614,12 @@ pub struct DepthFirstNavigator {
     bubble_up_emitter: Option<Arc<dyn BubbleUpEventEmitter>>,
     /// B-7: emits `integration_checkpoint_success` SSB rows after each checkpoint.
     integration_emitter: Option<Arc<dyn IntegrationCheckpointEmitter>>,
+    /// B-7 (SCHEMA_VERSION 100): emits `failure_recorded` rows on each
+    /// FailureRecord upsert inside `handle_failure`.
+    failure_emitter: Option<Arc<dyn FailureRecordedEmitter>>,
+    /// B-7 (SCHEMA_VERSION 100): emits `tree_position_changed` rows on every
+    /// cursor mutation (record_result / handle_failure side effects).
+    tree_position_emitter: Option<Arc<dyn TreePositionChangedEmitter>>,
 }
 
 impl std::fmt::Debug for DepthFirstNavigator {
@@ -567,6 +628,8 @@ impl std::fmt::Debug for DepthFirstNavigator {
             .field("traversal_order", &self.traversal_order)
             .field("bubble_up_emitter", &self.bubble_up_emitter.is_some())
             .field("integration_emitter", &self.integration_emitter.is_some())
+            .field("failure_emitter", &self.failure_emitter.is_some())
+            .field("tree_position_emitter", &self.tree_position_emitter.is_some())
             .finish()
     }
 }
@@ -847,6 +910,8 @@ impl DepthFirstNavigator {
             traversal_order,
             bubble_up_emitter: None,
             integration_emitter: None,
+            failure_emitter: None,
+            tree_position_emitter: None,
         }
     }
 
@@ -869,6 +934,23 @@ impl DepthFirstNavigator {
         self
     }
 
+    /// B-7 (SCHEMA_VERSION 100): attach a FailureRecordedEmitter. Fired once
+    /// per FailureRecord upsert inside `handle_failure`.
+    pub fn with_failure_emitter(mut self, emitter: Arc<dyn FailureRecordedEmitter>) -> Self {
+        self.failure_emitter = Some(emitter);
+        self
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): attach a TreePositionChangedEmitter. Fired
+    /// after every cursor mutation in `record_result` / `handle_failure`.
+    pub fn with_tree_position_emitter(
+        mut self,
+        emitter: Arc<dyn TreePositionChangedEmitter>,
+    ) -> Self {
+        self.tree_position_emitter = Some(emitter);
+        self
+    }
+
     /// B-7: internal helper — emit a bubble-up event if an emitter is attached.
     fn notify_bubble_up(&self, payload: BubbleUpEventPayload) {
         if let Some(ref emitter) = self.bubble_up_emitter {
@@ -881,6 +963,36 @@ impl DepthFirstNavigator {
         if let Some(ref emitter) = self.integration_emitter {
             emitter.emit(payload);
         }
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): internal helper — emit a failure-recorded
+    /// event if an emitter is attached.
+    fn notify_failure_recorded(&self, payload: FailureRecordedEventPayload) {
+        if let Some(ref emitter) = self.failure_emitter {
+            emitter.emit(payload);
+        }
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): internal helper — emit a tree-position
+    /// change event if an emitter is attached. Snapshots the trailing
+    /// navigator position from `state`.
+    fn notify_tree_position(&self, state: &TreeNavigatorState) {
+        let Some(ref emitter) = self.tree_position_emitter else {
+            return;
+        };
+        let current_node = self
+            .next_baby_step(state)
+            .map(|id| format!("bs-{}", id.0))
+            .unwrap_or_default();
+        let visited: Vec<u64> = state.completed.iter().map(|id| id.0).collect();
+        let blocked: Vec<u64> = state.blocked.iter().map(|id| id.0).collect();
+        let skipped: Vec<u64> = state.skipped.iter().map(|id| id.0).collect();
+        emitter.emit(TreePositionChangedEventPayload {
+            current_node,
+            visited,
+            blocked,
+            skipped,
+        });
     }
 }
 
@@ -913,6 +1025,8 @@ impl TreeNavigator for DepthFirstNavigator {
                     state.completed.insert(bs_id);
                 }
                 state.execution_log.push(result);
+                // B-7 (SCHEMA_VERSION 100): cursor moved.
+                self.notify_tree_position(state);
                 return Some(BubbleUpAction::RedecomposeStep {
                     step_id: loc.step_id,
                 });
@@ -922,7 +1036,7 @@ impl TreeNavigator for DepthFirstNavigator {
         // Record to execution log.
         state.execution_log.push(result.clone());
 
-        match &result.outcome {
+        let action = match &result.outcome {
             BabyStepOutcome::Passed => {
                 state.completed.insert(bs_id);
                 None
@@ -938,7 +1052,12 @@ impl TreeNavigator for DepthFirstNavigator {
             BabyStepOutcome::Failed { reason } => {
                 self.handle_failure(bs_id, reason, state, tree)
             }
-        }
+        };
+        // B-7 (SCHEMA_VERSION 100): cursor moved at most once per
+        // record_result; emit AFTER `handle_failure` so the snapshot
+        // reflects the final state.failed / state.blocked mutations.
+        self.notify_tree_position(state);
+        action
     }
 
     fn is_complete(&self, state: &TreeNavigatorState, tree: &NavigatorTree) -> bool {
@@ -1023,7 +1142,22 @@ impl DepthFirstNavigator {
         record.attempts += 1;
         record.reason = reason.to_string();
 
+        // B-7 (SCHEMA_VERSION 100): snapshot the FailureRecord for the
+        // SSB emitter. Snapshot BEFORE releasing the `&mut` borrow so the
+        // shape matches exactly what the in-memory record now holds.
+        let failure_snapshot = FailureRecordedEventPayload {
+            baby_step_id: record.baby_step_id.0,
+            step_id: record.step_id.0,
+            phase_id: record.phase_id.0,
+            concept_id: record.concept_id.0,
+            reason: record.reason.clone(),
+            attempts: record.attempts,
+        };
         let attempts = record.attempts;
+        // NLL ends the `&mut record` borrow here (no further use). Safe
+        // to fire the SSB emitter — `notify_failure_recorded` only
+        // borrows `self`, not `state`.
+        self.notify_failure_recorded(failure_snapshot);
 
         // Check baby-step threshold.
         if attempts >= tree.policy.max_retries_baby_step {
@@ -1942,6 +2076,84 @@ impl IntegrationCheckpointEmitter for SsbIntegrationEmitter {
         tokio::spawn(async move {
             if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
                 warn!(error = %e, "B-7: SsbIntegrationEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+/// B-7 (SCHEMA_VERSION 100): SSB-backed FailureRecordedEmitter. Wraps
+/// Arc<Ssb> and emits `failure_recorded` rows via `tokio::spawn`
+/// (fire-and-forget, advisory). `handle_failure` is never blocked on SSB I/O.
+pub struct SsbFailureRecordedEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbFailureRecordedEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self {
+            ssb,
+            agent_id: agent_id.into(),
+            superstep,
+        }
+    }
+}
+
+impl FailureRecordedEmitter for SsbFailureRecordedEmitter {
+    fn emit(&self, event: FailureRecordedEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::FailureRecorded(FailureRecordedPayload {
+            baby_step_id: event.baby_step_id,
+            step_id: event.step_id,
+            phase_id: event.phase_id,
+            concept_id: event.concept_id,
+            reason: event.reason,
+            attempts: event.attempts,
+        });
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbFailureRecordedEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+/// B-7 (SCHEMA_VERSION 100): SSB-backed TreePositionChangedEmitter. Wraps
+/// Arc<Ssb> and emits `tree_position_changed` rows via `tokio::spawn`
+/// (fire-and-forget, advisory). `record_result` is never blocked on SSB I/O.
+pub struct SsbTreePositionChangedEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbTreePositionChangedEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self {
+            ssb,
+            agent_id: agent_id.into(),
+            superstep,
+        }
+    }
+}
+
+impl TreePositionChangedEmitter for SsbTreePositionChangedEmitter {
+    fn emit(&self, event: TreePositionChangedEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::TreePositionChanged(TreePositionChangedPayload {
+            current_node: event.current_node,
+            visited: event.visited,
+            blocked: event.blocked,
+            skipped: event.skipped,
+        });
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbTreePositionChangedEmitter write failed (advisory, continuing)");
             }
         });
     }

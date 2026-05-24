@@ -88,6 +88,27 @@ pub enum AgentRole {
     /// DecompositionLevel::BabyStepDetail in this slice — see
     /// B-41-decisions.md DECISION-CASCADE).
     AuditorBabyStepDetail,
+    /// E-12 (E-11 prereq fulfilled inside E-12): plan-scope auditor that
+    /// runs the 15-item production-grade checklist (gitleaks / trufflehog /
+    /// semgrep OWASP / RLS probe / dep audit / lighthouse / biome / ruff /
+    /// clippy / etc) against the emitted FilePlan + FrameworkProfile. GRC
+    /// budget 6/1000 (parity with Plan-mode auditor). The matching
+    /// `AuditorMode::ProductionGrade` variant is the dispatch entry; this
+    /// AgentRole is the spawned-agent label that the orchestrator hands to
+    /// `agent_pool::spawn` for the dedicated production-gate cycle.
+    AuditorProductionGrade,
+    /// E-37: off-model prompt-injection classifier (OWASP LLM01 mitigation).
+    /// PromptArmor-style separate-runtime classifier (paper:
+    /// arXiv:2507.15219) that inspects post-Spotlight envelope content
+    /// before the orchestrator forwards untrusted text to the main agent
+    /// loop. Verdicts (Clean / Suspect / Malicious) drive
+    /// SsbActionType::PromptArmorVerdict + InjectionAttemptBlocked /
+    /// InjectionAttemptDetected emissions. Default backend mapping:
+    /// local_qwen_3b primary + claude_haiku_4_5_cloud fallback. The
+    /// matching `elai_safety::InjectionClassifier` trait + `HeuristicClassifier`
+    /// pure-regex fallback live in the safety crate so wire-dark deployments
+    /// retain protection even when the sidecar is offline.
+    InjectionClassifier,
 }
 
 // ---------------------------------------------------------------------------

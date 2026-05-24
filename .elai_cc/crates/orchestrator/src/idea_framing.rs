@@ -656,6 +656,124 @@ pub fn classify_project_class(prompt: &str) -> ProjectClass {
 }
 
 // ===========================================================================
+// Divergent prompt augmentation — Open Collider mechanism, deterministic
+// ===========================================================================
+//
+// Opt-in cross-domain prompt wrapper. Mechanism inspired by Open Collider
+// (github.com/CL-ML/open-collider, MIT — Koestler bisociation, Lion 2026):
+// inject structurally-distant knowledge-domain anchors so the downstream
+// classifier + critic loop evaluate the prompt under several lenses, not
+// only the default-prompt convergent reading.
+//
+// Differences from upstream Open Collider:
+//   - Domain pool is fixed + deterministic (no LLM-sampled domains) so the
+//     augmentation is reproducible across runs and seedable for tests.
+//   - No mass-generation step (Open Collider produces ~240 ideas per
+//     strategy; ELAI's FRAMING flow only needs one well-anchored prompt).
+//   - No curation loop (Open Collider depends on human love/like/trash
+//     feedback; ELAI's critic loop already handles convergence checks).
+//
+// Not wired into [`frame_idea`] by default — call sites that want
+// divergent framing wrap the raw prompt with `augment_prompt_divergent`
+// BEFORE invoking `frame_idea`. Keeps the production happy-path identical
+// for callers that pass [`DivergentMode::Off`] (the default).
+
+/// Divergent-framing mode toggle. Off by default (production-safe). On
+/// enables cross-domain anchor injection at the prompt boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DivergentMode {
+    Off,
+    On,
+}
+
+impl Default for DivergentMode {
+    fn default() -> Self {
+        DivergentMode::Off
+    }
+}
+
+impl DivergentMode {
+    pub fn as_snake_case(self) -> &'static str {
+        match self {
+            DivergentMode::Off => "off",
+            DivergentMode::On => "on",
+        }
+    }
+}
+
+/// Default number of distant-domain anchors to inject when DivergentMode
+/// is On. Three anchors balances signal (one anchor barely shifts framing)
+/// against prompt-token cost (more than four crowds the actual task).
+pub const DIVERGENT_DEFAULT_ANCHOR_COUNT: usize = 3;
+
+/// Fixed pool of structurally-distant knowledge domains used by
+/// [`augment_prompt_divergent`]. Eight entries — small enough that
+/// 3-anchor sampling is cheap, varied enough that any two adjacent
+/// anchors are unlikely to share mechanisms. Order is stable across
+/// releases; appending new entries is fine but reordering breaks
+/// determinism of [`augment_prompt_divergent`] for existing prompts.
+pub const DIVERGENT_DOMAIN_POOL: &[&str] = &[
+    "biological evolution",
+    "thermodynamics",
+    "musical composition",
+    "urban planning",
+    "ant colony behavior",
+    "supply chain logistics",
+    "competitive sports strategy",
+    "geological erosion",
+];
+
+/// Wrap a raw user prompt with `anchor_count` distant-domain anchors.
+///
+/// Deterministic: the same `raw_prompt` + same `anchor_count` produces
+/// the same wrapped prompt across runs. No RNG dependency — anchor
+/// selection uses `raw_prompt.len() % DIVERGENT_DOMAIN_POOL.len()` as
+/// the starting offset and walks the pool in order, so different prompts
+/// rotate through different anchor sequences without needing a seed.
+///
+/// `anchor_count` is clamped to `[0, DIVERGENT_DOMAIN_POOL.len()]`. An
+/// `anchor_count` of 0 returns the raw prompt unchanged (acts as an
+/// inline no-op for [`DivergentMode::Off`]).
+///
+/// Output shape:
+/// ```text
+/// Consider mechanisms from {d1}, {d2}, {d3}.
+/// ---
+/// {raw_prompt}
+/// ```
+///
+/// Callers gated on [`DivergentMode::On`] invoke this before
+/// [`classify_project_class_with_pattern`] / [`frame_idea`]. The
+/// classifier + critic loop then operate on the wrapped prompt.
+pub fn augment_prompt_divergent(raw_prompt: &str, anchor_count: usize) -> String {
+    if anchor_count == 0 || DIVERGENT_DOMAIN_POOL.is_empty() {
+        return raw_prompt.to_owned();
+    }
+    let pool_len = DIVERGENT_DOMAIN_POOL.len();
+    let n = anchor_count.min(pool_len);
+    let offset = raw_prompt.len() % pool_len;
+    let anchors: Vec<&str> = (0..n)
+        .map(|i| DIVERGENT_DOMAIN_POOL[(offset + i) % pool_len])
+        .collect();
+    format!(
+        "Consider mechanisms from {}.\n---\n{}",
+        anchors.join(", "),
+        raw_prompt
+    )
+}
+
+/// Convenience wrapper: apply [`augment_prompt_divergent`] only when
+/// `mode` is [`DivergentMode::On`]. Returns the raw prompt unchanged
+/// when [`DivergentMode::Off`].
+pub fn apply_divergent_mode(raw_prompt: &str, mode: DivergentMode) -> String {
+    match mode {
+        DivergentMode::Off => raw_prompt.to_owned(),
+        DivergentMode::On => augment_prompt_divergent(raw_prompt, DIVERGENT_DEFAULT_ANCHOR_COUNT),
+    }
+}
+
+// ===========================================================================
 // Multi-root research dispatch
 // ===========================================================================
 
@@ -1354,5 +1472,86 @@ mod tests {
         for (_, count) in &cc {
             assert_eq!(*count, 0);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Divergent-mode tests (Open Collider mechanism)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn divergent_mode_off_is_default() {
+        assert_eq!(DivergentMode::default(), DivergentMode::Off);
+    }
+
+    #[test]
+    fn divergent_domain_pool_is_non_empty() {
+        assert!(!DIVERGENT_DOMAIN_POOL.is_empty());
+        assert_eq!(DIVERGENT_DOMAIN_POOL.len(), 8);
+    }
+
+    #[test]
+    fn augment_prompt_anchor_count_zero_returns_unchanged() {
+        let original = "build me a calculator";
+        assert_eq!(augment_prompt_divergent(original, 0), original);
+    }
+
+    #[test]
+    fn augment_prompt_deterministic_across_runs() {
+        let p1 = augment_prompt_divergent("build me a calculator", 3);
+        let p2 = augment_prompt_divergent("build me a calculator", 3);
+        assert_eq!(p1, p2);
+        assert!(p1.contains("Consider mechanisms from"));
+        assert!(p1.contains("---"));
+        assert!(p1.contains("build me a calculator"));
+    }
+
+    #[test]
+    fn augment_prompt_different_prompts_rotate_anchors() {
+        // Different prompt lengths -> different offsets -> different first
+        // anchor in the wrapped prompt.
+        let p1 = augment_prompt_divergent("aaaa", 1); // len 4 % 8 = offset 4
+        let p2 = augment_prompt_divergent("a", 1); // len 1 % 8 = offset 1
+        assert_ne!(p1, p2);
+        // The two prompts should reference different first anchors.
+        assert!(p1.contains(DIVERGENT_DOMAIN_POOL[4]));
+        assert!(p2.contains(DIVERGENT_DOMAIN_POOL[1]));
+    }
+
+    #[test]
+    fn augment_prompt_anchor_count_clamped_to_pool_size() {
+        let p = augment_prompt_divergent("test", 100);
+        // All pool entries should appear (anchor_count clamped to pool_len).
+        for anchor in DIVERGENT_DOMAIN_POOL {
+            assert!(
+                p.contains(anchor),
+                "expected anchor {} in wrapped prompt",
+                anchor
+            );
+        }
+    }
+
+    #[test]
+    fn apply_divergent_mode_off_is_identity() {
+        let original = "build me a calculator";
+        assert_eq!(apply_divergent_mode(original, DivergentMode::Off), original);
+    }
+
+    #[test]
+    fn apply_divergent_mode_on_wraps_with_default_anchor_count() {
+        let original = "build me a calculator";
+        let wrapped = apply_divergent_mode(original, DivergentMode::On);
+        assert_ne!(wrapped, original);
+        assert!(wrapped.contains(original));
+        // Default anchor count is 3 -> wrapped prompt cites exactly 3 anchors
+        // joined by ", " in the prefix line.
+        let prefix = wrapped.lines().next().unwrap();
+        let comma_count = prefix.matches(", ").count();
+        assert_eq!(comma_count, DIVERGENT_DEFAULT_ANCHOR_COUNT - 1);
+    }
+
+    #[test]
+    fn divergent_mode_snake_case_roundtrip() {
+        assert_eq!(DivergentMode::Off.as_snake_case(), "off");
+        assert_eq!(DivergentMode::On.as_snake_case(), "on");
     }
 }

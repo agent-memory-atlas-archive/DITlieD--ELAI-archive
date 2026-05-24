@@ -1,0 +1,40 @@
+# D-11 constructive-checker Python dependencies.
+#
+# Distinct pyproject from .elai_cc/python/elai_inference (the sidecar
+# server) -- checkers are runtime peers of the Rust orchestrator and
+# should not pull torch/transformers into a checker-only deployment.
+#
+# Each dep was registry-verified at session s-25120 (cluster slot 3/4)
+# via PyPI:
+#   sympy        -- standard symbolic math (pinned >=1.13 for the
+#                   convert_xor=True behaviour sympy.py relies on)
+#   z3-solver    -- 4.16.0.0 (released 2026-02-19, PyPI)
+#                   GROUNDING: AlphaProof Nature 2025 -- symbolic
+#                   kernel verdict IS correctness; neural confidence
+#                   has no vote.
+#   requests     -- 2.34.2 (released 2026-05-14, PyPI)
+#                   GROUNDING: CLAUDE.md anti-slopsquatting HARD
+#                   RULE -- registry_check.py queries pypi+npm for
+#                   package existence + recent-publish window.
+#
+# Anti-slopsquatting verification (per CLAUDE.md HARD RULE): each
+# package name confirmed via pypi /pypi/{pkg}/json + WebSearch
+# 2026-05-24. Versions floor at the most-recent stable tag; pyproject
+# allows minor-bumps so security fixes land without re-pinning.
+
+[project]
+name            = "elai-checkers"
+version         = "0.1.0"
+description     = "ELAI D-11 constructive checker registry helper scripts"
+requires-python = ">=3.10"
+
+dependencies = [
+    "sympy>=1.13",
+    "z3-solver>=4.16.0.0",
+    "requests>=2.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]

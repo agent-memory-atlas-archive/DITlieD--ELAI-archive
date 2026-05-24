@@ -35,6 +35,7 @@ use elai_ipc_types::{
     AgentDispatchConfig, AgentRole, IpcFrame, IpcMessageType, ProcessConfig, ResourceLimits,
     SeccompProfile, ToolFilter, ToolId, FRAME_HEADER_SIZE, IPC_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
+use crate::fsm::{Fsm, FsmState};
 use crate::research_tree::BabyStepSpec;
 use crate::system_probe::SystemProbeResult;
 
@@ -47,6 +48,14 @@ pub const STUB_TIMEOUT_GRACEFUL: Duration = Duration::from_secs(25);
 
 /// Hard-kill timeout. Matches phase-4F "30s hard kill".
 pub const STUB_TIMEOUT_HARD: Duration = Duration::from_secs(30);
+
+/// E-22 phase-4F P1: single-named-const dual-timeout convention so callers
+/// (BullMQ sandboxed-processors / E2B / Promptfoo equivalent — 30s outer
+/// hard cap for sandboxed stubs). Alias for [`STUB_TIMEOUT_HARD`] under
+/// the spec-named identifier so the constant is reachable as
+/// `FEASIBILITY_PROBE_TIMEOUT` for the spec-aligned cross-reference. No
+/// magic numbers — exactly one canonical source for the 30s budget.
+pub const FEASIBILITY_PROBE_TIMEOUT: Duration = STUB_TIMEOUT_HARD;
 
 /// Resource-margin threshold (percent). A margin below 20% triggers the
 /// `ResourceMarginBreached` escalation path per spec.
@@ -164,6 +173,48 @@ pub struct StubResult {
     /// the SystemProbeResult re-query failed; never fatal.
     #[serde(default)]
     pub resource_delta: Option<ResourceDelta>,
+}
+
+impl StubResult {
+    /// E-22 phase-4F P6: build a passing stub result whose `stdout_hash` is
+    /// the blake3 hex digest of `stdout`. Centralises the hash computation
+    /// so future call sites cannot silently default `stdout_hash` to `None`.
+    /// `stdout` is taken by reference so the original buffer stays available
+    /// for separate logging / preservation paths.
+    ///
+    /// Spec phase-4F.txt §4F.1 TYPES + invariant 12 (line 445): "Stdout hash
+    /// (blake3) is deterministic for identical stdout bytes."
+    pub fn passed_with_stdout(step_id: &str, elapsed_ms: u32, stdout: &str) -> Self {
+        let hash = blake3::hash(stdout.as_bytes()).to_hex().to_string();
+        Self {
+            step_id: step_id.to_owned(),
+            stub_passed: true,
+            elapsed_ms,
+            error: None,
+            alternative_index: 0,
+            stdout_hash: Some(hash),
+            stderr_summary: None,
+            resource_delta: None,
+        }
+    }
+
+    /// Same as [`Self::passed_with_stdout`] but for an explicit alternative
+    /// slot (1..=2). Used by the P6 alternative-loop in
+    /// [`DefaultFeasibilityProber::probe`] when retrying a failed stub on
+    /// a different alternative. Currently constructed manually inside the
+    /// loop (the loop owns the per-attempt mutation); kept on the impl
+    /// surface so future call sites have a single canonical entry point.
+    #[allow(dead_code)]
+    pub fn passed_with_stdout_at(
+        step_id: &str,
+        elapsed_ms: u32,
+        stdout: &str,
+        alternative_index: u8,
+    ) -> Self {
+        let mut sr = Self::passed_with_stdout(step_id, elapsed_ms, stdout);
+        sr.alternative_index = alternative_index;
+        sr
+    }
 }
 
 /// C-22: VRAM + RAM snapshot captured before and after a feasibility-probe
@@ -433,6 +484,17 @@ pub fn alternative_within_cap(attempts_so_far: usize) -> bool {
 /// Runtime interface for running feasibility probes. Dyn-safe via
 /// `Arc<dyn ...>`. Uses hand-rolled `Pin<Box<dyn Future>>` to avoid the
 /// `async-trait` crate (CLAUDE.md anti-stale-training hard rule).
+///
+/// E-22 phase-4F P3 (spec compliance — additive shims): the spec
+/// (phase-4F.txt §4F.1 L156-160) names 4 methods on this trait —
+/// `probe_system` / `check_constraints` / `run_stub` / `decide`. The
+/// shipped implementation kept the functional surface as a Prober +
+/// StubExecutor split with free helpers (`check_constraints` /
+/// `decide_with_mode` / `enforce_stub_line_limit`). We close the spec gap
+/// by adding the four methods as default-method shims on the trait —
+/// every shim takes `&self` so the trait object-safety contract at
+/// `feasibility_probe_contract.rs:125` (`Arc<dyn FeasibilityProber>`)
+/// stays intact.
 pub trait FeasibilityProber: Send + Sync {
     /// Probe a full pipeline. Called at task startup.
     fn probe<'a>(
@@ -448,6 +510,177 @@ pub trait FeasibilityProber: Send + Sync {
         baby_step: &'a BabyStepSpec,
         system: &'a SystemProbeResult,
     ) -> Pin<Box<dyn Future<Output = BabyStepFeasibilityReport> + Send + 'a>>;
+
+    /// E-22 phase-4F P3 SHIM: spec-named `probe_system` accessor. Default
+    /// implementation delegates to the in-process [`crate::system_probe::DefaultSystemProber`].
+    /// Implementors that hold a [`crate::system_probe::SystemProber`] should
+    /// override this to return the live probe instead.
+    fn probe_system<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = SystemProbeResult> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::system_probe::{DefaultSystemProber, SystemProber};
+            let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+            let transient = DefaultSystemProber::new(None, clock);
+            transient.probe().await
+        })
+    }
+
+    /// E-22 phase-4F P3 SHIM: spec-named `check_constraints` method. Pure;
+    /// delegates to the free fn [`check_constraints`]. Returns the spec's
+    /// boolean shape (all-passed) for compatibility with the spec trait
+    /// signature; the granular per-resource [`ConstraintResult`] vector is
+    /// available via the free fn for callers that need it.
+    fn check_constraints(
+        &self,
+        probe: &SystemProbeResult,
+        constraints: &SystemConstraintsRequired,
+    ) -> bool {
+        check_constraints(constraints, probe).iter().all(|c| c.passed)
+    }
+
+    /// E-22 phase-4F P3 SHIM: spec-named `run_stub` method. Default
+    /// implementation routes to the in-process synthetic stub so a probe
+    /// without an injected [`StubExecutor`] still produces a deterministic
+    /// [`StubResult`]. Implementors with an injected Tier-3 executor
+    /// override this to spawn the real agent.
+    fn run_stub<'a>(
+        &'a self,
+        step_id: &'a str,
+        alternative: u32,
+        _timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = StubResult> + Send + 'a>> {
+        Box::pin(async move {
+            let mut sr = run_synthetic_stub(step_id).await;
+            // Strict-narrowing cast: alternative is 0..=2 by contract
+            // (MAX_ALTERNATIVES_PER_STEP=3). Wider values get clamped so
+            // the u8 field never overflows.
+            sr.alternative_index = u8::try_from(alternative.min(255)).unwrap_or(0);
+            sr
+        })
+    }
+
+    /// E-22 phase-4F P3 SHIM: spec-named `decide` method. Pure; delegates
+    /// to the free fn [`decide_with_mode`].
+    fn decide(
+        &self,
+        report: &FeasibilityReport,
+        mode: FeasibilityExecutionMode,
+    ) -> FeasibilityDecision {
+        decide_with_mode(report, mode)
+    }
+
+    /// D-18 closure SIBLING method: typed-observation projection of
+    /// [`Self::probe`]. Default implementation calls [`Self::probe`] and
+    /// projects each [`StubResult`] into an
+    /// [`crate::observable_effect::ObservationResult`] tagged with
+    /// `ObservationContext::Sandbox(Tier)` and an `ObservationOutcome`
+    /// derived from the stub's `stub_passed` flag.
+    ///
+    /// PRESERVES the [`Self::probe`] signature for C-22 dyn-safety —
+    /// `Arc<dyn FeasibilityProber>` (the contract surface) stays object-
+    /// safe because this method is sync, takes `&self`, and returns a
+    /// non-generic [`Vec`].
+    ///
+    /// Sandbox tier defaults to `ContainerIsolated` here because the
+    /// in-process [`StubResult`] does not carry the tier label; live
+    /// dispatch paths (e.g. `dispatch_observable_effect_hook`) should
+    /// override the tier from the effect's [`crate::observable_effect::ObservableEffect.sandbox`]
+    /// field when calling [`crate::observable_effect::verify_observable_effect`]
+    /// directly.
+    ///
+    /// Paper grounding: Coscientist arxiv:2304.05332 §4
+    /// SandboxObservation taxonomy. See workflow/reasoning/D-18-
+    /// decisions.md DECISION-5 for the sibling-method rationale (the
+    /// alternative — modifying `probe()` to return `Vec<ObservationResult>`
+    /// — would break the C-22 dyn-safety contract pinned at
+    /// `crates/contracts/tests/c22_feasibility_completeness_contract.rs`).
+    fn probe_with_effects(
+        &self,
+        report: &FeasibilityReport,
+    ) -> Vec<crate::observable_effect::ObservationResult> {
+        use crate::observable_effect::{ObservationContext, ObservationOutcome, ObservationResult};
+        let mut out = Vec::with_capacity(report.stub_results.len());
+        for sr in &report.stub_results {
+            let outcome = if sr.stub_passed {
+                ObservationOutcome::Confirmed
+            } else {
+                ObservationOutcome::Refuted
+            };
+            out.push(ObservationResult {
+                effect_id: sr.step_id.clone(),
+                context: ObservationContext::Sandbox(
+                    crate::observable_effect::SandboxTier::ContainerIsolated,
+                ),
+                outcome,
+                instrument_file: None,
+            });
+        }
+        out
+    }
+}
+
+/// E-22 phase-4F P1: idempotent FSM transition wrapper.
+///
+/// Spec phase-4F.txt:139 + §4F.5 I6: the orchestrator transitions
+/// `PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST` (or `PLANNING ->
+/// TESTING_FIRST` directly on skip). Calling code may invoke this helper
+/// more than once (replay, resume after compaction). The helper is
+/// idempotent: if the FSM is already in `target` the call is a no-op
+/// (returns `Ok(false)`). Returns `Ok(true)` when a transition fired,
+/// `Ok(false)` when already-in-state.
+///
+/// `evidence` is forwarded to [`Fsm::transition`] when a transition fires;
+/// pass an empty vec when no artifact is being attached.
+pub async fn fsm_transition_idempotent(
+    fsm: &Fsm,
+    target: FsmState,
+    phase_label: &str,
+) -> Result<bool, crate::fsm::FsmError> {
+    let current = fsm.get_state().await;
+    if current == target {
+        tracing::debug!(
+            current = %current,
+            target = %target,
+            "fsm_transition_idempotent: already in target, no-op"
+        );
+        return Ok(false);
+    }
+    fsm.transition(target, phase_label, Vec::new())
+        .await
+        .map(|_record| true)
+}
+
+/// E-22 phase-4F P1: dyn-safe FSM transition adapter so callers that do
+/// not hold a concrete [`Fsm`] handle (e.g. the task_runner emit helpers
+/// today) can still register a transition. Production wire-up adopts this
+/// via a thin `Arc<dyn FeasibilityFsmBridge>` plumbed alongside the
+/// feasibility prober; tests can install a no-op or a recording adapter.
+/// Default impl on [`Fsm`] forwards to [`fsm_transition_idempotent`].
+pub trait FeasibilityFsmBridge: Send + Sync {
+    /// Transition the FSM toward `target` if not already there. Returns
+    /// `true` when a transition fired, `false` when already-in-state.
+    /// Errors are bubbled as `String` to keep the trait dyn-safe across
+    /// different FSM error encodings.
+    fn transition_to<'a>(
+        &'a self,
+        target: FsmState,
+        phase_label: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+}
+
+impl FeasibilityFsmBridge for Fsm {
+    fn transition_to<'a>(
+        &'a self,
+        target: FsmState,
+        phase_label: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>> {
+        Box::pin(async move {
+            fsm_transition_idempotent(self, target, phase_label)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -846,16 +1079,20 @@ impl StubExecutor for Tier3StubExecutor {
                         tracing::warn!(error = %e, step_id = %step_id, "child_wait_failed");
                     }
                     let passed = !content.trim().is_empty();
-                    StubResult {
-                        step_id: step_id.to_owned(),
-                        stub_passed: passed,
-                        elapsed_ms,
-                        error: if passed {
-                            None
-                        } else {
-                            Some("empty_agent_response".to_owned())
-                        },
-                        ..Default::default()
+                    if passed {
+                        // E-22 phase-4F P6: real stdout in hand — populate
+                        // blake3 digest via the centralised helper so the
+                        // deterministic-replay invariant (spec phase-4F.txt
+                        // invariant 12) holds for every real Tier-3 spawn.
+                        StubResult::passed_with_stdout(step_id, elapsed_ms, &content)
+                    } else {
+                        StubResult {
+                            step_id: step_id.to_owned(),
+                            stub_passed: false,
+                            elapsed_ms,
+                            error: Some("empty_agent_response".to_owned()),
+                            ..Default::default()
+                        }
                     }
                 }
                 Ok(Err(reason)) => {
@@ -999,6 +1236,42 @@ impl DefaultFeasibilityProber {
             }
         }
     }
+
+    /// E-22 phase-4F P5: full path on disk where stub_results.msgpack lives
+    /// for a given task. Exposed so downstream consumers (Tauri command +
+    /// CLI inspector) can locate the artifact deterministically.
+    pub fn stub_results_path(&self, task_id: &str) -> PathBuf {
+        self.feasibility_root.join(task_id).join("stub_results.msgpack")
+    }
+}
+
+/// E-22 phase-4F P5: read a previously-written `stub_results.msgpack`
+/// artifact back into a `Vec<StubResult>`. Closes the spec "GOAL: Output
+/// stub_results.msgpack" loop — the writer at
+/// [`DefaultFeasibilityProber::write_stub_results`] is now matched by a
+/// production reader that downstream consumers (dashboard Tauri command,
+/// CLI inspector, replay tooling) can call.
+///
+/// Errors map onto [`StubResultsReadError`] so callers see a typed reason
+/// (no `Box<dyn Error>`).
+#[derive(Debug, thiserror::Error)]
+pub enum StubResultsReadError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("msgpack decode: {0}")]
+    Decode(#[from] rmp_serde::decode::Error),
+}
+
+/// Read & deserialize the `stub_results.msgpack` artifact at `path`. Returns
+/// `Ok(Vec::new())` when the path is absent so callers can treat
+/// "no probe ran" as an empty result set rather than an error.
+pub fn read_stub_results(path: &Path) -> Result<Vec<StubResult>, StubResultsReadError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(path)?;
+    let results: Vec<StubResult> = rmp_serde::from_slice(&bytes)?;
+    Ok(results)
 }
 
 impl FeasibilityProber for DefaultFeasibilityProber {
@@ -1076,32 +1349,69 @@ impl FeasibilityProber for DefaultFeasibilityProber {
             let mut novel_steps: Vec<NovelStep> = Vec::new();
             let mut stub_results: Vec<StubResult> = Vec::new();
             for step_id in &novel_step_ids {
+                // E-22 phase-4F P6: alternative_index loop. Spec §4F.3 T8 +
+                // §4F.5 I5 + invariant 5: every novel step gets at most
+                // MAX_ALTERNATIVES_PER_STEP attempts; the first PASS short-
+                // circuits, all attempts FAIL escalates to
+                // NoFeasibleAlternative. The loop is bounded by
+                // alternative_within_cap so the 4th attempt is structurally
+                // unreachable (spec invariant 6).
+                let mut step_pass_seen = false;
+                let mut last_error: Option<String> = None;
+                for attempt in 0..MAX_ALTERNATIVES_PER_STEP {
+                    debug_assert!(alternative_within_cap(attempt));
+                    let alternative_index = u8::try_from(attempt).unwrap_or(u8::MAX);
+                    // BEFORE snapshot from the input system probe.
+                    let delta_before = system_to_resource_delta_before(system);
+                    let mut stub = match &self.stub_executor {
+                        Some(exec) => exec.run_stub(step_id, None).await,
+                        None => run_synthetic_stub(step_id).await,
+                    };
+                    stub.alternative_index = alternative_index;
+                    // AFTER snapshot: re-probe if a system_prober is wired.
+                    let delta = match &self.system_prober {
+                        Some(prober) => {
+                            let after = prober.probe().await;
+                            merge_resource_delta(delta_before, &after)
+                        }
+                        None => delta_before,
+                    };
+                    stub.resource_delta = Some(delta);
+                    let passed = stub.stub_passed;
+                    if !passed {
+                        last_error = stub.error.clone();
+                    }
+                    stub_results.push(stub);
+                    if passed {
+                        step_pass_seen = true;
+                        break;
+                    }
+                }
+                // Synthesize the NovelStep entry. `alternatives` carries the
+                // alternative ids tried after the original (slots 1..N when
+                // the first attempt failed). The first attempt is slot 0,
+                // implicit on the step_id.
+                let alternatives: Vec<String> = stub_results
+                    .iter()
+                    .filter(|s| s.step_id == *step_id && s.alternative_index > 0)
+                    .map(|s| format!("{}#alt{}", step_id, s.alternative_index))
+                    .collect();
                 novel_steps.push(NovelStep {
                     step_id: step_id.clone(),
-                    reason: "synthetic_probe_pending_agent_binary".to_owned(),
-                    alternatives: Vec::new(),
+                    reason: last_error.clone().unwrap_or_else(||
+                        if step_pass_seen {
+                            "novel_step_probed_ok".to_owned()
+                        } else {
+                            "novel_step_alternatives_exhausted".to_owned()
+                        }
+                    ),
+                    alternatives,
                 });
-                // BEFORE snapshot from the input system probe.
-                let delta_before = system_to_resource_delta_before(system);
-                let mut stub = match &self.stub_executor {
-                    Some(exec) => exec.run_stub(step_id, None).await,
-                    None => run_synthetic_stub(step_id).await,
-                };
-                // AFTER snapshot: re-probe if a system_prober is wired.
-                let delta = match &self.system_prober {
-                    Some(prober) => {
-                        let after = prober.probe().await;
-                        merge_resource_delta(delta_before, &after)
-                    }
-                    None => delta_before,
-                };
-                stub.resource_delta = Some(delta);
-                if !stub.stub_passed {
+                if !step_pass_seen {
                     escalations.push(FeasibilityEscalation::NoFeasibleAlternative {
                         step_id: step_id.clone(),
                     });
                 }
-                stub_results.push(stub);
             }
 
             // Derive task_feasibility from counts.

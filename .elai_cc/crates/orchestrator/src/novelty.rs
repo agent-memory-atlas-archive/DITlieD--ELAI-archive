@@ -181,6 +181,61 @@ fn clamp_unit(x: f64) -> f64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CheckerResult -> NoveltyEvidence projection
+// ---------------------------------------------------------------------------
+
+/// D-15 closure: deterministic projection from a D-11
+/// [`crate::checker_registry::CheckerResult`] into the shipped
+/// [`NoveltyEvidence`] shape. Closes the "missing projection caller"
+/// gap reported in
+/// `workflow/sessions/s-25120/cross-check-recheck/D-15_novelty_class_labeling-report.md`
+/// — the D-11 verifier substrate produces `CheckerResult`s; the D-15
+/// classifier consumes `NoveltyEvidence`. This function is the bridge.
+///
+/// The mapping is intentionally coarse: `CheckerResult` is a closed
+/// 4-variant enum with no numeric payload, so the projection emits a
+/// fixed scalar per variant that the predicate then routes through
+/// the standard 3-bucket logic.
+///
+///   * `Pass`          -> `(dkg_match_count = 8, near_duplicate = 0.9)`
+///                        — a passing checker is strong evidence the
+///                        template recapitulates known content, which
+///                        the predicate routes to `Search` under the
+///                        default `NoveltyConfig`.
+///   * `Fail`          -> `(dkg_match_count = 3, near_duplicate = 0.5)`
+///                        — a failing checker says the template
+///                        references something the checker knew but
+///                        the candidate got wrong, which the
+///                        predicate routes to `DistantSearch`.
+///   * `Inapplicable`  -> `(dkg_match_count = 0, near_duplicate = 0.1)`
+///                        — the checker did not know the references,
+///                        so the predicate routes to
+///                        `DiscoveryCandidate`.
+///   * `Error`         -> `(0, 0.0, 0.0, 0.0)` — infrastructure
+///                        failure; the predicate routes to
+///                        `DiscoveryCandidate` as the conservative
+///                        default (no evidence the result is known).
+///
+/// Pure function — no I/O, no clock, no allocation. The scalars are
+/// caller-tunable in a follow-up only by changing this function (the
+/// predicate is invariant). See workflow/reasoning/D-15-decisions.md
+/// DECISION-4 (signature preserved; projection added separately).
+#[must_use]
+pub fn novelty_evidence_from_checker_result(
+    result: &crate::checker_registry::CheckerResult,
+) -> NoveltyEvidence {
+    use crate::checker_registry::CheckerResult;
+    match result {
+        CheckerResult::Pass => NoveltyEvidence::new(8, 0.9, 0.0, 0.9),
+        CheckerResult::Fail { .. } => NoveltyEvidence::new(3, 0.5, 0.0, 0.5),
+        CheckerResult::Inapplicable { .. } => {
+            NoveltyEvidence::new(0, 0.1, 0.0, 0.1)
+        }
+        CheckerResult::Error { .. } => NoveltyEvidence::new(0, 0.0, 0.0, 0.0),
+    }
+}
+
 /// Caller-tunable thresholds for the [`classify`] predicate. Defaults
 /// follow the D-15 plan (§4.8 lines 310-328) — five DKG matches with a
 /// 0.8 near-duplicate score routes to [`NoveltyClass::Search`]; zero
@@ -631,6 +686,75 @@ mod tests {
             NoveltyClass::DiscoveryCandidate.as_str(),
             "discovery_candidate"
         );
+    }
+
+    #[test]
+    fn novelty_evidence_from_checker_result_routes_each_variant() {
+        use crate::checker_registry::CheckerResult;
+
+        let t = make_template("body-projection");
+        let a = empty_archive();
+        let cfg = NoveltyConfig::default();
+
+        // Pass -> Search
+        let e_pass =
+            novelty_evidence_from_checker_result(&CheckerResult::Pass);
+        assert_eq!(e_pass.dkg_match_count, 8);
+        assert!((e_pass.near_duplicate_threshold - 0.9).abs() < 1e-9);
+        assert_eq!(
+            classify(&t, &a, e_pass, cfg),
+            NoveltyClass::Search
+        );
+
+        // Fail -> DistantSearch
+        let e_fail = novelty_evidence_from_checker_result(&CheckerResult::Fail {
+            reason: "checker rejected".into(),
+        });
+        assert_eq!(e_fail.dkg_match_count, 3);
+        assert!((e_fail.near_duplicate_threshold - 0.5).abs() < 1e-9);
+        assert_eq!(
+            classify(&t, &a, e_fail, cfg),
+            NoveltyClass::DistantSearch
+        );
+
+        // Inapplicable -> DiscoveryCandidate (zero matches, sub-0.4
+        // duplicate).
+        let e_inappl = novelty_evidence_from_checker_result(
+            &CheckerResult::Inapplicable {
+                reason: "wrong claim type".into(),
+            },
+        );
+        assert_eq!(e_inappl.dkg_match_count, 0);
+        assert!((e_inappl.near_duplicate_threshold - 0.1).abs() < 1e-9);
+        assert_eq!(
+            classify(&t, &a, e_inappl, cfg),
+            NoveltyClass::DiscoveryCandidate
+        );
+
+        // Error -> DiscoveryCandidate (conservative — zero floor).
+        let e_err =
+            novelty_evidence_from_checker_result(&CheckerResult::Error {
+                source: "subprocess timed out".into(),
+            });
+        assert_eq!(e_err.dkg_match_count, 0);
+        assert!(e_err.near_duplicate_threshold.abs() < 1e-9);
+        assert_eq!(
+            classify(&t, &a, e_err, cfg),
+            NoveltyClass::DiscoveryCandidate
+        );
+    }
+
+    #[test]
+    fn novelty_evidence_from_checker_result_is_deterministic() {
+        use crate::checker_registry::CheckerResult;
+        // Pure function — same input must yield identical evidence on
+        // repeat calls (no clock, no PRNG, no I/O).
+        let r = CheckerResult::Fail {
+            reason: "x".into(),
+        };
+        let a = novelty_evidence_from_checker_result(&r);
+        let b = novelty_evidence_from_checker_result(&r);
+        assert_eq!(a, b);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

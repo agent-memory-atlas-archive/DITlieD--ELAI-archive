@@ -100,6 +100,8 @@ fn task_runner_config_accepts_indexing_service_arc() {
         crystallizer: None,
         compiled_pipeline_store: None,
         background_task_manager: None,
+        // C-39: legacy contract fixture -- no Dispatch wired.
+        mcp_dispatch: None,
     };
 
     assert!(

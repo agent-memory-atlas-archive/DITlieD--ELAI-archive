@@ -25,7 +25,7 @@
 
   let { panelId, tabs, activeTabId, onTabSelect, onTabClose, onNewTab }: Props = $props();
 
-  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore'];
+  const WINDOW_TYPES: WindowType[] = ['command', 'plan', 'activity', 'review', 'monitor', 'settings', 'graph', 'idea_framing', 'audit_timeline', 'explore', 'github', 'symbol_graph'];
   const WINDOW_LABELS: Record<WindowType, string> = {
     command:  'Command',
     plan:     'Plan',
@@ -40,6 +40,11 @@
     audit_timeline: 'Audit Timeline',
     // C-7: Q&A oracle / codebase-explorer surface.
     explore:  'Explore',
+    // C-40: GitHub PR adapter window.
+    github:   'GitHub PRs',
+    // E-40: orchestrator-rooted symbol-graph (defs / refs / pagerank /
+    // LSP-oracle stats).
+    symbol_graph: 'Symbol Graph',
   };
 
   let dragOverTabId = $state<string | null>(null);

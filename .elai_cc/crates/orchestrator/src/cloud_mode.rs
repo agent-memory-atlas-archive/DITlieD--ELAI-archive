@@ -67,6 +67,50 @@ pub const CLAUDE_SONNET_4_6_CACHE_READ_PRICE_PER_TOKEN: f64 = 3.0e-7;
 /// `cache_creation_input_tokens` from the response usage.
 pub const CLAUDE_SONNET_4_6_CACHE_WRITE_PRICE_PER_TOKEN: f64 = 3.75e-6;
 
+// ---------------------------------------------------------------------------
+// C-5: baby-step LOC sizing constants (spec docs/specs/guide/cloud-mode-design.txt:121-128).
+// Per spec line 121-128 the orchestrator partitions a task into baby steps
+// whose target LOC budget depends on the runtime model. Local 3B/7B are
+// kept small so they fit Qwen2.5-Coder context windows; cloud Sonnet/Opus
+// can carry much larger spans because the cloud context profile is
+// 200k tokens (cloud_200k profile, B-27). Spec value `local_32b_loc=100`
+// is intentionally omitted in C-5 scope (deferred to E-32 follow-up); the
+// helper `baby_step_loc_for_mode` falls back to the 7B value for any
+// `local` model id that does not match "3b".
+// ---------------------------------------------------------------------------
+
+/// Target baby-step LOC for the local 3B Qwen2.5-Coder model.
+pub const BABY_STEP_LOC_LOCAL_3B: u16 = 25;
+/// Target baby-step LOC for the local 7B Qwen2.5-Coder model.
+pub const BABY_STEP_LOC_LOCAL_7B: u16 = 40;
+/// Target baby-step LOC for cloud Sonnet 4.6 / 4.5 family models.
+pub const BABY_STEP_LOC_CLOUD_SONNET: u16 = 300;
+/// Target baby-step LOC for cloud Opus 4.x family models.
+pub const BABY_STEP_LOC_CLOUD_OPUS: u16 = 500;
+
+/// UNGROUNDED_HEURISTIC: average token-per-LOC ratio used by
+/// [`estimate_task_cost_usd`] to project a USD spread from a plan
+/// skeleton. The value 4.0 is a rough industry rule-of-thumb (one token
+/// ≈ 4 characters; one LOC ≈ 16 characters of code => ~4 tokens). It
+/// has NOT been measured against ELAI's own corpora. The grounding
+/// sweep flagged this as the single INGEST item for C-5; per CLAUDE.md
+/// stub-registry exemption the constant ships with this label and a
+/// TODO marker pointing at the future cost-measurement B-N. Do NOT
+/// silently change the value without re-running the cost-estimate
+/// contract; the dashboard COST_ESTIMATE display will drift.
+// TODO[ungrounded]: replace with measured token/LOC ratio per language
+//   once metrics/baseline_findings_and_actions.md captures real cloud
+//   call traces. Stub-registry entry: C-5 cost-estimate heuristic.
+pub const TOKENS_PER_LOC_UNGROUNDED_HEURISTIC: f64 = 4.0;
+
+/// Width of the (low, high) cost spread emitted by
+/// [`estimate_task_cost_usd`]. ±30% mirrors the spec's
+/// "$0.12-$0.35" example (cloud-mode-design.txt:84-93) where the upper
+/// bound is roughly 2.9× the lower bound — a single midpoint times
+/// (1±0.3) yields a 1.86× spread, low enough to communicate
+/// uncertainty without overstating it.
+pub const COST_ESTIMATE_SPREAD_RATIO: f64 = 0.30;
+
 /// Mode selector — distinct from
 /// [`crate::context_budget::ExecutionMode`] which categorises BUDGET
 /// failure routing (Interactive vs Autonomous). This enum categorises
@@ -114,6 +158,19 @@ pub struct CloudConfig {
     pub privacy_profile: RedactionProfile,
     pub spend_cap_daily_usd: Option<f64>,
     pub spend_cap_monthly_usd: Option<f64>,
+    /// C-5: warn-at percentage of the daily cap. When `Some(pct)` and
+    /// `spent_day_usd >= cap * pct / 100`, the runner emits a single
+    /// `WarnLimitReached` SSB row per UTC day before the hard cap fires.
+    /// `None` disables WARN emission. CloudConfig::default() seeds this
+    /// at `Some(80)` per spec docs/specs/guide/cloud-mode-design.txt:75.
+    pub warn_at_percent: Option<u8>,
+    /// C-5: BYOE override of the AnthropicClient base URL. When `Some`,
+    /// the client is constructed with `with_base_url(value)` instead of
+    /// the public api.anthropic.com endpoint. Forbidden when
+    /// `air_gapped=true` (route_cloud returns `CustomEndpointForbidden`).
+    /// Logged via `tracing::info!` on first use; never written to SSB
+    /// (the URL may be private infra and SSB rows are dashboard-visible).
+    pub custom_endpoint: Option<String>,
 }
 
 impl Default for CloudConfig {
@@ -126,6 +183,10 @@ impl Default for CloudConfig {
             privacy_profile: RedactionProfile::Standard,
             spend_cap_daily_usd: None,
             spend_cap_monthly_usd: None,
+            // C-5: 80% warn default per spec cloud-mode-design.txt:75.
+            warn_at_percent: Some(80),
+            // C-5: BYOE off by default — production endpoint via DEFAULT_BASE_URL.
+            custom_endpoint: None,
         }
     }
 }
@@ -176,15 +237,23 @@ pub enum CloudModeError {
     AirGappedConflict,
     #[error("unknown cloud provider: {0}")]
     UnknownProvider(String),
-    /// Reserved for B-27.5 follow-up that wires the daily ceiling enforcement
-    /// into `route_cloud`. Currently unused — ceilings are warning-only.
-    #[allow(dead_code)]
+    /// C-5: hard daily ceiling reached. Returned by [`CloudModeRouter::route_cloud`]
+    /// when the caller-supplied [`SpendSnapshotInput`] reports
+    /// `day_usd >= spend_cap_daily_usd`. Callers should surface the error
+    /// to the dashboard and stop scheduling new cloud calls until the
+    /// next UTC day rollover.
     #[error("daily spend cap reached: spent {spent_usd:.2} USD, cap {cap_usd:.2} USD")]
     DailySpendCapExceeded { spent_usd: f64, cap_usd: f64 },
-    /// Reserved for B-27.5 follow-up. See `DailySpendCapExceeded`.
-    #[allow(dead_code)]
+    /// C-5: hard monthly ceiling reached. Mirrors `DailySpendCapExceeded`
+    /// semantics on the monthly window.
     #[error("monthly spend cap reached: spent {spent_usd:.2} USD, cap {cap_usd:.2} USD")]
     MonthlySpendCapExceeded { spent_usd: f64, cap_usd: f64 },
+    /// C-5: BYOE `custom_endpoint` requested while the runtime config has
+    /// `air_gapped=true`. The two settings are mutually exclusive — an
+    /// air-gapped runner must never reach out to any cloud endpoint,
+    /// custom or otherwise.
+    #[error("custom_endpoint forbidden while air_gapped=true")]
+    CustomEndpointForbidden,
 }
 
 /// Stateless router. Construct once per task (cheap), call `route`
@@ -205,14 +274,33 @@ impl CloudModeRouter {
 
     /// Decide where to send. The 5-step routing per cloud-mode-design.txt:
     /// (1) air_gapped check, (2) credential check, (3) provider validation,
-    /// (4) spend-cap pre-flight (deferred — caps are warning-only here;
-    /// hard enforcement in a follow-up task), (5) return decision.
+    /// (4) custom_endpoint guard + spend-cap pre-flight, (5) return decision.
     ///
-    /// The function does NOT make any network call.
+    /// The function does NOT make any network call. Spend enforcement is
+    /// caller-driven: the runner reads the live SSB cloud-spend summary
+    /// once per baby step and passes it down via [`Self::route_with_spend`].
+    /// Plain [`Self::route`] keeps the legacy "no caps" semantics for
+    /// callers that do not have a live SSB viewer (unit tests).
     pub fn route(
         &self,
         mode: ExecMode,
         credentials: Option<CloudCredentials>,
+    ) -> Result<RoutedProvider, CloudModeError> {
+        self.route_with_spend(mode, credentials, None)
+    }
+
+    /// C-5: routing variant that ALSO enforces the daily / monthly
+    /// spend ceilings. Callers (task_runner) pass a
+    /// [`SpendSnapshotInput`] read from the live SSB aggregator; absent
+    /// (None), the caps are skipped and behaviour matches [`Self::route`].
+    /// Skipping is the documented stub_ban semantic ("if get_cloud_spend
+    /// returns error, log warning and SKIP the cap check rather than
+    /// blocking all cloud calls") — see plan WIRING_CONTRACT stub_ban.
+    pub fn route_with_spend(
+        &self,
+        mode: ExecMode,
+        credentials: Option<CloudCredentials>,
+        spend: Option<SpendSnapshotInput>,
     ) -> Result<RoutedProvider, CloudModeError> {
         match mode {
             ExecMode::Local => Ok(RoutedProvider::Local),
@@ -221,16 +309,25 @@ impl CloudModeRouter {
                 // Cloud after escalation.
                 Ok(RoutedProvider::Local)
             }
-            ExecMode::Cloud => self.route_cloud(credentials),
+            ExecMode::Cloud => self.route_cloud(credentials, spend),
         }
     }
 
     fn route_cloud(
         &self,
         credentials: Option<CloudCredentials>,
+        spend: Option<SpendSnapshotInput>,
     ) -> Result<RoutedProvider, CloudModeError> {
         // Step 1: air_gapped takes precedence over everything.
         if self.config.air_gapped {
+            // Tighter guard: a custom_endpoint configured under
+            // air_gapped=true is a misconfiguration that would otherwise
+            // be silently masked by the AirGappedConflict return — surface
+            // the dedicated error so the dashboard can show a clearer
+            // toml-fix hint.
+            if self.config.custom_endpoint.is_some() {
+                return Err(CloudModeError::CustomEndpointForbidden);
+            }
             return Err(CloudModeError::AirGappedConflict);
         }
         // Step 2: credentials must be loaded.
@@ -243,7 +340,28 @@ impl CloudModeRouter {
         if provider != DEFAULT_CLOUD_PROVIDER || creds.provider != DEFAULT_CLOUD_PROVIDER {
             return Err(CloudModeError::UnknownProvider(provider.to_string()));
         }
-        // Step 4: spend caps — currently warning-only, hard caps deferred.
+        // Step 4: spend-cap enforcement. Caller-supplied; None => skip
+        // (stub_ban semantics — never block all cloud calls on viewer error).
+        // Pre-cap WARN emission is the caller's responsibility (task_runner)
+        // because route_cloud is sync + pure and does not own the writer.
+        if let Some(snap) = spend.as_ref() {
+            if let Some(cap) = self.config.spend_cap_daily_usd {
+                if snap.day_usd >= cap {
+                    return Err(CloudModeError::DailySpendCapExceeded {
+                        spent_usd: snap.day_usd,
+                        cap_usd: cap,
+                    });
+                }
+            }
+            if let Some(cap) = self.config.spend_cap_monthly_usd {
+                if snap.month_usd >= cap {
+                    return Err(CloudModeError::MonthlySpendCapExceeded {
+                        spent_usd: snap.month_usd,
+                        cap_usd: cap,
+                    });
+                }
+            }
+        }
         // Step 5: return the decision.
         Ok(RoutedProvider::Cloud {
             provider: provider.to_string(),
@@ -297,6 +415,133 @@ pub fn resolve_exec_mode(backend: &crate::dispatcher::BackendConfig) -> ExecMode
         // loop in task_runner promotes on retry exhaustion + emits
         // EscalateToCloud.
         crate::dispatcher::BackendMode::Hybrid => ExecMode::Auto,
+    }
+}
+
+/// C-5: spend snapshot passed into [`CloudModeRouter::route_with_spend`]
+/// for caller-driven ceiling enforcement. Mirrors the relevant fields
+/// of [`crate::ssb_viewer::CloudSpendSummary`] without coupling the
+/// router to the viewer crate — keeps the router sync + testable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpendSnapshotInput {
+    /// Total USD spend across the current UTC day.
+    pub day_usd: f64,
+    /// Total USD spend across the current UTC calendar month.
+    pub month_usd: f64,
+}
+
+impl SpendSnapshotInput {
+    /// Convenience: build a snapshot with the same value for both windows
+    /// (useful when the monthly aggregator is absent — falls back to the
+    /// daily figure, which is conservative because monthly >= daily).
+    #[must_use]
+    pub fn from_day_usd(day_usd: f64) -> Self {
+        Self {
+            day_usd,
+            month_usd: day_usd,
+        }
+    }
+}
+
+/// C-5: classify a `(mode, model_id)` pair to its target baby-step LOC
+/// budget. Dispatch is substring-keyed on the model id so future model
+/// generations land on a sensible default without touching this site
+/// (e.g. `"claude-sonnet-4-7"` still maps to `BABY_STEP_LOC_CLOUD_SONNET`).
+/// Local mode falls back to the 7B value when no `"3b"` substring matches
+/// — Qwen2.5-Coder-7B is the canonical local model per `metrics/phase_3J_rag.toml`.
+#[must_use]
+pub fn baby_step_loc_for_mode(mode: ExecMode, model: &str) -> u16 {
+    let lower = model.to_ascii_lowercase();
+    match mode {
+        ExecMode::Local => {
+            if lower.contains("3b") {
+                BABY_STEP_LOC_LOCAL_3B
+            } else {
+                // 7B default for any non-3B local id (covers 7b, 14b, etc.
+                // until those tiers get explicit constants).
+                BABY_STEP_LOC_LOCAL_7B
+            }
+        }
+        ExecMode::Cloud | ExecMode::Auto => {
+            if lower.contains("opus") {
+                BABY_STEP_LOC_CLOUD_OPUS
+            } else {
+                // Sonnet is the cloud default (DEFAULT_CLOUD_MODEL_ID).
+                BABY_STEP_LOC_CLOUD_SONNET
+            }
+        }
+    }
+}
+
+/// C-5: project a (low, high) USD cost spread for `plan_skeleton` against
+/// `model`. Formula:
+///   `step_count × baby_step_loc × TOKENS_PER_LOC × price_per_token`
+/// where price_per_token is the dual-rate sum (input+output) per the
+/// SpendAccumulator pricing constants. The spread mirrors the spec's
+/// "$0.12-$0.35" presentation pattern (cloud-mode-design.txt:84-93)
+/// via the `COST_ESTIMATE_SPREAD_RATIO` (±30% around the midpoint).
+///
+/// The token/LOC ratio is the `TOKENS_PER_LOC_UNGROUNDED_HEURISTIC`
+/// constant — see its docstring for the grounding caveat. Local models
+/// return `(0.0, 0.0)` because the local sidecar has zero variable
+/// cost; the dashboard hides COST_ESTIMATE rows when both bounds are 0.
+#[must_use]
+pub fn estimate_task_cost_usd(
+    plan_skeleton: &crate::plan_skeleton::PlanSkeleton,
+    model: &str,
+) -> (f64, f64) {
+    let lower = model.to_ascii_lowercase();
+    let step_count = plan_skeleton.phases.len();
+    if step_count == 0 {
+        return (0.0, 0.0);
+    }
+    // Cloud-only cost projection. Local sidecar costs nothing variable.
+    let (input_price, output_price) = if lower.contains("opus") {
+        // Opus pricing (Anthropic public list, verified 2026-05-10):
+        // $15/M input, $75/M output. Encoded per-token in line with the
+        // SpendAccumulator convention.
+        (15.0e-6, 75.0e-6)
+    } else if lower.contains("sonnet") || lower.contains("claude") {
+        (
+            CLAUDE_SONNET_4_6_INPUT_PRICE_PER_TOKEN,
+            CLAUDE_SONNET_4_6_OUTPUT_PRICE_PER_TOKEN,
+        )
+    } else {
+        // Unknown / local model => no variable cost.
+        return (0.0, 0.0);
+    };
+
+    let loc_per_step = f64::from(baby_step_loc_for_mode(ExecMode::Cloud, model));
+    let avg_tokens_per_step = loc_per_step * TOKENS_PER_LOC_UNGROUNDED_HEURISTIC;
+    // 50/50 split between input + output as a coarse mid-point. Real
+    // ratios depend on prompt-cache and tool-use traffic; the spread
+    // below absorbs that uncertainty.
+    let mid_cost_per_step =
+        avg_tokens_per_step * 0.5 * input_price + avg_tokens_per_step * 0.5 * output_price;
+    // step_count is usize; widen via `as f64` only after bounds-checking
+    // the empty case above. Even at u32::MAX phases this stays inside
+    // f64's exact-integer range, so the cast is lossless for realistic
+    // plan sizes.
+    #[allow(clippy::cast_precision_loss)]
+    let total_mid_usd = mid_cost_per_step * step_count as f64;
+    let low = total_mid_usd * (1.0 - COST_ESTIMATE_SPREAD_RATIO);
+    let high = total_mid_usd * (1.0 + COST_ESTIMATE_SPREAD_RATIO);
+    (low.max(0.0), high.max(0.0))
+}
+
+/// C-5: caller-side helper that returns `true` iff `day_usd` has crossed
+/// `cap * warn_at_percent / 100.0` for the given config. The runner uses
+/// this BEFORE invoking the SSB writer so the WARN row only fires once
+/// per UTC day (caller-side dedup via a Mutex<bool>). Returns false when
+/// either `spend_cap_daily_usd` or `warn_at_percent` is None.
+#[must_use]
+pub fn warn_limit_reached(config: &CloudConfig, day_usd: f64) -> bool {
+    match (config.spend_cap_daily_usd, config.warn_at_percent) {
+        (Some(cap), Some(pct)) if cap > 0.0 => {
+            let threshold = cap * f64::from(pct) / 100.0;
+            day_usd >= threshold
+        }
+        _ => false,
     }
 }
 
@@ -654,5 +899,148 @@ mod tests {
         assert_eq!(ExecMode::from_config_str("yolo"), ExecMode::Auto);
         assert_eq!(ExecMode::from_config_str("LOCAL"), ExecMode::Local);
         assert_eq!(ExecMode::from_config_str("Cloud"), ExecMode::Cloud);
+    }
+
+    // ----- C-5 ceiling enforcement tests -----
+
+    #[test]
+    fn route_cloud_blocks_when_day_spend_meets_daily_cap() {
+        let mut cfg = CloudConfig::default();
+        cfg.spend_cap_daily_usd = Some(5.0);
+        let router = CloudModeRouter::new(cfg);
+        let outcome = router.route_with_spend(
+            ExecMode::Cloud,
+            Some(CloudCredentials::for_test_with_token("t")),
+            Some(SpendSnapshotInput { day_usd: 5.0, month_usd: 5.0 }),
+        );
+        assert!(matches!(
+            outcome,
+            Err(CloudModeError::DailySpendCapExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn route_cloud_blocks_when_month_spend_meets_monthly_cap() {
+        let mut cfg = CloudConfig::default();
+        cfg.spend_cap_monthly_usd = Some(50.0);
+        let router = CloudModeRouter::new(cfg);
+        let outcome = router.route_with_spend(
+            ExecMode::Cloud,
+            Some(CloudCredentials::for_test_with_token("t")),
+            Some(SpendSnapshotInput { day_usd: 1.0, month_usd: 60.0 }),
+        );
+        assert!(matches!(
+            outcome,
+            Err(CloudModeError::MonthlySpendCapExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn route_cloud_allows_when_no_spend_snapshot_supplied() {
+        // stub_ban semantics: viewer error => skip cap check, never block
+        // all cloud calls. Absent snapshot means caller could not read.
+        let mut cfg = CloudConfig::default();
+        cfg.spend_cap_daily_usd = Some(0.01);
+        let router = CloudModeRouter::new(cfg);
+        let outcome = router.route_with_spend(
+            ExecMode::Cloud,
+            Some(CloudCredentials::for_test_with_token("t")),
+            None,
+        );
+        assert!(matches!(outcome, Ok(RoutedProvider::Cloud { .. })));
+    }
+
+    #[test]
+    fn custom_endpoint_with_air_gapped_returns_forbidden() {
+        let mut cfg = CloudConfig::default();
+        cfg.air_gapped = true;
+        cfg.custom_endpoint = Some("https://example.test".to_string());
+        let router = CloudModeRouter::new(cfg);
+        let outcome = router.route(
+            ExecMode::Cloud,
+            Some(CloudCredentials::for_test_with_token("t")),
+        );
+        assert_eq!(outcome, Err(CloudModeError::CustomEndpointForbidden));
+    }
+
+    #[test]
+    fn warn_limit_reached_fires_at_eighty_percent() {
+        let mut cfg = CloudConfig::default();
+        cfg.spend_cap_daily_usd = Some(5.0);
+        cfg.warn_at_percent = Some(80);
+        assert!(!warn_limit_reached(&cfg, 3.99));
+        assert!(warn_limit_reached(&cfg, 4.0));
+        assert!(warn_limit_reached(&cfg, 4.5));
+    }
+
+    #[test]
+    fn warn_limit_reached_returns_false_when_disabled() {
+        let cfg = CloudConfig::default(); // cap=None disables
+        assert!(!warn_limit_reached(&cfg, 1_000.0));
+    }
+
+    #[test]
+    fn baby_step_loc_dispatch_covers_four_combos() {
+        assert_eq!(
+            baby_step_loc_for_mode(ExecMode::Local, "qwen2.5-coder-3b-instruct"),
+            BABY_STEP_LOC_LOCAL_3B
+        );
+        assert_eq!(
+            baby_step_loc_for_mode(ExecMode::Local, "qwen2.5-coder-7b-instruct"),
+            BABY_STEP_LOC_LOCAL_7B
+        );
+        assert_eq!(
+            baby_step_loc_for_mode(ExecMode::Cloud, "claude-sonnet-4-6"),
+            BABY_STEP_LOC_CLOUD_SONNET
+        );
+        assert_eq!(
+            baby_step_loc_for_mode(ExecMode::Cloud, "claude-opus-4-1"),
+            BABY_STEP_LOC_CLOUD_OPUS
+        );
+    }
+
+    #[test]
+    fn estimate_task_cost_usd_returns_zero_for_empty_skeleton() {
+        let skel =
+            crate::plan_skeleton::PlanSkeleton::new(crate::plan_skeleton::PipelineId::from(
+                "test-empty",
+            ));
+        let (low, high) = estimate_task_cost_usd(&skel, "claude-sonnet-4-6");
+        assert_eq!(low, 0.0);
+        assert_eq!(high, 0.0);
+    }
+
+    #[test]
+    fn estimate_task_cost_usd_local_model_returns_zero() {
+        let mut skel =
+            crate::plan_skeleton::PlanSkeleton::new(crate::plan_skeleton::PipelineId::from(
+                "test-local",
+            ));
+        let entry = crate::plan_skeleton::PhaseEntry::new("p1", "do a thing").unwrap();
+        skel.add_phase(entry).unwrap();
+        let (low, high) = estimate_task_cost_usd(&skel, "qwen2.5-coder-7b");
+        assert_eq!(low, 0.0);
+        assert_eq!(high, 0.0);
+    }
+
+    #[test]
+    fn estimate_task_cost_usd_sonnet_bounds_within_spread() {
+        let mut skel =
+            crate::plan_skeleton::PlanSkeleton::new(crate::plan_skeleton::PipelineId::from(
+                "test-sonnet",
+            ));
+        for i in 0..3 {
+            let entry =
+                crate::plan_skeleton::PhaseEntry::new(format!("p{i}"), "step").unwrap();
+            skel.add_phase(entry).unwrap();
+        }
+        let (low, high) = estimate_task_cost_usd(&skel, "claude-sonnet-4-6");
+        assert!(low > 0.0);
+        assert!(high > low);
+        // high/low == (1+spread)/(1-spread)
+        let expected_ratio = (1.0 + COST_ESTIMATE_SPREAD_RATIO)
+            / (1.0 - COST_ESTIMATE_SPREAD_RATIO);
+        let actual_ratio = high / low;
+        assert!((actual_ratio - expected_ratio).abs() < 1e-9);
     }
 }

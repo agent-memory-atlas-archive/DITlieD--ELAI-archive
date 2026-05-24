@@ -126,6 +126,26 @@
   const sourceTiers = $derived<SourceTierDistribution[]>(rulesData.sourceTiers);
   const tierTotal = $derived(sourceTiers.reduce((s, t) => s + t.count, 0) || 1);
 
+  // ------------------------------------------------------------------
+  // Section 7 — LAST 5 RULE TRANSITIONS (B-3 #11)
+  // ------------------------------------------------------------------
+  // Reads the rulesData.lastTransitions $state populated by the 10s
+  // poller via stub.get_rule_transitions(5) -> Tauri get_rule_transitions
+  // -> SsbViewer.recent_rows_of_type('rule_transition', 5). Empty array
+  // until the rules::lifecycle producer emits SsbActionType::RuleTransition
+  // rows alongside its existing rule_transitions table writes.
+  const lastTransitions = $derived(rulesData.lastTransitions);
+
+  function transitionTone(toStatus: string): string {
+    const s = toStatus.toUpperCase();
+    if (s === 'ACTIVE') return 'teal';
+    if (s === 'SHADOW') return 'warn';
+    if (s === 'CANDIDATE') return 'steel';
+    if (s === 'RETIRED') return 'ghost';
+    if (s === 'PROPOSED') return 'ghost';
+    return 'ghost';
+  }
+
   const TIER_COLORS: Record<string, string> = {
     T1: 'var(--teal)',
     T2: 'var(--steel)',
@@ -241,7 +261,7 @@
       </section>
 
       <!-- ── SOURCE TIER DISTRIBUTION ─────────────────────── -->
-      <section class="section section--last">
+      <section class="section">
         <div class="section-heading">SOURCE TIER DISTRIBUTION</div>
         {#if rulesData.unwired.sourceTiers}
           <UnwiredNote
@@ -265,6 +285,29 @@
               <span class="tier-count">{t.count}</span>
             </div>
           {/each}
+        {/if}
+      </section>
+
+      <!-- ── LAST 5 RULE TRANSITIONS (B-3 #11) ─────────────── -->
+      <section class="section section--last">
+        <div class="section-heading">LAST 5 RULE TRANSITIONS</div>
+        {#if lastTransitions.length === 0}
+          <div class="empty-note">No transitions emitted yet (awaiting rules::lifecycle SSB wire-up).</div>
+        {:else}
+          <div class="rules-list">
+            {#each lastTransitions as tr (tr.seq)}
+              <div class="rule-row" title={tr.reason}>
+                <span class="rule-name">{tr.rule_id}</span>
+                <span class="transition-arrow mono">
+                  {tr.from_status}&nbsp;&gt;&nbsp;
+                </span>
+                <Badge tone={transitionTone(tr.to_status)} size="xs">
+                  {tr.to_status}
+                </Badge>
+                <span class="rule-domain">{relTime(tr.timestamp_ms)}</span>
+              </div>
+            {/each}
+          </div>
         {/if}
       </section>
 
@@ -551,6 +594,17 @@
     font-size: 10px;
     color: var(--text-ghost);
     padding: var(--s-2) 0;
+  }
+
+  /* B-3 #11 — rule_transition row inline arrow. */
+  .transition-arrow {
+    font-size: 10px;
+    color: var(--text-ghost);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .mono {
+    font-family: var(--font-mono);
   }
 
   .section--last {

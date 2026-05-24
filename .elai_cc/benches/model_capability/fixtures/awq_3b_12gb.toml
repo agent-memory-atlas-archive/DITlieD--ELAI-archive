@@ -1,0 +1,72 @@
+# phase-3J-BASELINE fixture: awq_3b_12gb.
+# Mirrors ModelCapabilityProfile::awq_3b_12gb in
+# crates/orchestrator/src/context_budget.rs:581 (Qwen2.5-Coder-3B AWQ-Marlin+FP8KV,
+# prompt_tokens_target=40000, effective_ceiling=45000).
+
+[fixture]
+tier = "awq_3b_12gb"
+substrate = "benches/model_capability/fixtures/tasks.json"
+default_max_tokens = 256
+default_temperature = 0.0
+
+[[fixture.prompts]]
+id = "p01_reverse_rs"
+text = "Write a Rust function: fn reverse(s: &str) -> String. Output only the function."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p02_fibonacci_rs"
+text = "Write a Rust function: fn fibonacci(n: u32) -> u64 (0-indexed). Output only the function."
+expect_json = false
+max_tokens = 128
+
+[[fixture.prompts]]
+id = "p03_palindrome_rs"
+text = "Write a Rust function: fn is_palindrome(s: &str) -> bool. Output only the function."
+expect_json = false
+max_tokens = 128
+
+[[fixture.prompts]]
+id = "p04_max_element_rs"
+text = "Write a Rust function: fn max_element(v: &[i32]) -> Option<i32>. Output only the function."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p05_count_words_rs"
+text = "Write a Rust function: fn count_words(s: &str) -> usize. Output only the function."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p06_explain_awq_3b"
+text = "Explain in one sentence why AWQ-Marlin 3B fits in ~1500 MB model VRAM."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p07_json_schema_pair"
+text = "Return ONLY a JSON object with {key: string, value: integer}."
+expect_json = true
+max_tokens = 48
+schema = '''{"type":"object","properties":{"key":{"type":"string"},"value":{"type":"integer"}},"required":["key","value"]}'''
+
+[[fixture.prompts]]
+id = "p08_explain_45k"
+text = "Explain in one sentence why awq_3b_12gb can target 40K prompt tokens vs micro_3b_12gb's 35K."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p09_summarize_diff"
+text = "Summarize: '+ pub fn awq_3b_12gb() -> Self { ... }'. One sentence."
+expect_json = false
+max_tokens = 48
+
+[[fixture.prompts]]
+id = "p10_json_schema_status"
+text = "Return ONLY a JSON object with {status: 'ok'|'fail', code: integer}."
+expect_json = true
+max_tokens = 48
+schema = '''{"type":"object","properties":{"status":{"type":"string","enum":["ok","fail"]},"code":{"type":"integer"}},"required":["status","code"]}'''

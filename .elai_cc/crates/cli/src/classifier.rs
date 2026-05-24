@@ -91,12 +91,17 @@ pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand 
             description: Some(input.to_string()),
             surgical: false,
             new_project: false,
+            // C-39: classifier-driven routing defaults via_mcp to false.
+            // The flag is set explicitly by the user via /task --via-mcp;
+            // the classifier never opts in on the user's behalf.
+            via_mcp: false,
         };
     }
 
     if project_ref && question {
         return SlashCommand::Explore {
             target: Some(input.to_string()),
+            via_mcp: false,
         };
     }
 
@@ -111,6 +116,7 @@ pub fn classify_bare_message(input: &str, known_names: &[&str]) -> SlashCommand 
         description: Some(input.to_string()),
         surgical: false,
         new_project: false,
+        via_mcp: false,
     }
 }
 

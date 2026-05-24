@@ -270,6 +270,33 @@ impl SidecarProvider {
             .and_then(|g| g.clone())
     }
 
+    /// C-37 — install the per-role default decoding policy via the
+    /// [`crate::decoding::default_decoding_for`] policy table.
+    ///
+    /// Closes GAP-B (production callers for `default_decoding_for`): until
+    /// C-37 the policy table at `decoding.rs:241` had only the contract
+    /// test as a caller, so the per-role defaults shipped in C-26 had no
+    /// behavioural effect. This helper threads the role into the dispatch
+    /// path: the orchestrator's per-spawn site calls this before each
+    /// completion, and the policy is observed by `build_completion_body`
+    /// on the next request.
+    ///
+    /// A `tracing::info!` row is emitted on every call so the SSB
+    /// per-role-decoding-applied beacon can correlate with the wire-level
+    /// policy change.
+    pub fn apply_role_default_decoding(&self, role: crate::decoding::RoleDecoding) {
+        let cfg = crate::decoding::default_decoding_for(role);
+        tracing::info!(
+            target: "providers::sidecar",
+            role = role.as_str(),
+            mode = cfg.mode.discriminant(),
+            max_retries = cfg.max_retries_on_invalid,
+            strict = cfg.strict,
+            "C-37: applying per-role default decoding policy"
+        );
+        self.set_decoding_config(Some(cfg));
+    }
+
     /// Check sidecar health via GET /health.
     pub async fn health(&self) -> Result<bool, ApiError> {
         let url = format!("{}/health", self.config.server_url);

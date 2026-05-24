@@ -1,11 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { Tree, Badge, Scrollbar, UnwiredNote } from '$lib/ui';
   import SkeletonList from '$lib/components/SkeletonList.svelte';
   import { researchData } from '$lib/state/drawers.svelte';
   import { plan } from '$lib/state/plan.svelte';
+  import { get_research_node_history } from '$lib/api/stub';
   import type { TreeNode } from '$lib/ui/tree-types';
-  import type { DecompNode, ResearchTreeNode, ResearchNodeStage, SourceTierDistribution } from '$lib/api/types';
+  import type {
+    DecompNode,
+    ResearchTreeNode,
+    ResearchNodeStage,
+    SourceTierDistribution,
+    ResearchNodeHistoryRow,
+  } from '$lib/api/types';
 
   // E-33: cold-start loading flag — true on first mount until either
   // researchData populates a node or the polled fetch returns at least
@@ -86,6 +94,60 @@
     ...(researchRoot.children ?? []),
   ]);
 
+  // B-7 (SCHEMA_VERSION 100): per-node stage timeline. Rewires the previous
+  // C-4 DRIFT-6 deferral (commands.rs::get_research_node_history) so the
+  // ResearchTree drawer renders a per-stage history when the user expands
+  // a research node. The active session id is derived from the FSM /
+  // workspace store once available; for now we pass an empty string and
+  // let the backend scope to the active session db.
+  let stageHistory = $state<Record<string, ResearchNodeHistoryRow[]>>({});
+  let stageHistoryTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshStageHistoryForNode(nodeId: string): Promise<void> {
+    // The Tauri command parses `nodeId` as a u64. Non-numeric ids return
+    // an empty Vec (covered by the backend). For wire calls we use the
+    // stub wrapper which falls back to invoke() under the hood and also
+    // returns [] on failure, so this poller never throws past the Promise.
+    try {
+      const rows = await invoke<ResearchNodeHistoryRow[]>(
+        'get_research_node_history',
+        { sessionId: '', nodeId },
+      );
+      stageHistory = { ...stageHistory, [nodeId]: rows ?? [] };
+    } catch (_err) {
+      // Fall back to the stub wrapper which logs + returns [] on cold
+      // start so the drawer still renders.
+      const rows = await get_research_node_history('', nodeId);
+      stageHistory = { ...stageHistory, [nodeId]: rows };
+    }
+  }
+
+  $effect(() => {
+    if (stageHistoryTimer) {
+      clearInterval(stageHistoryTimer);
+      stageHistoryTimer = null;
+    }
+    const ids = researchNodes.map((n) => n.id).filter((id) => id.length > 0);
+    if (ids.length === 0) return;
+    async function refreshAll() {
+      for (const id of ids) {
+        await refreshStageHistoryForNode(id);
+      }
+    }
+    void refreshAll();
+    stageHistoryTimer = setInterval(() => void refreshAll(), 5_000);
+    return () => {
+      if (stageHistoryTimer) {
+        clearInterval(stageHistoryTimer);
+        stageHistoryTimer = null;
+      }
+    };
+  });
+
+  function stagesForNode(nodeId: string): ResearchNodeHistoryRow[] {
+    return stageHistory[nodeId] ?? [];
+  }
+
   // ------------------------------------------------------------------
   // Section 3 — SOURCE QUALITY (last research run)
   // ------------------------------------------------------------------
@@ -161,6 +223,25 @@
                     <Badge tone="teal" size="xs">converged</Badge>
                   {/if}
                 </div>
+                <!-- B-7 (SCHEMA_VERSION 100): per-stage timeline rows
+                     from rewired get_research_node_history. Renders only
+                     when at least one stage-populated row exists for this
+                     node so the card stays clean on cold start. -->
+                {#if stagesForNode(node.id).length > 0}
+                  <ul
+                    class="rn-stage-timeline"
+                    data-testid="research-stage-timeline"
+                  >
+                    {#each stagesForNode(node.id) as row, idx (idx)}
+                      <li class="rn-stage-row">
+                        <span class="rn-stage-row-stage">{row.stage ?? ''}</span>
+                        <span class="rn-stage-row-phase">{row.stage_phase ?? ''}</span>
+                        <span class="rn-stage-row-iter">iter {row.iteration}</span>
+                        <span class="rn-stage-row-sources">{row.sources_used}/{row.sources_fetched}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
               </div>
             {/each}
           </div>
@@ -363,6 +444,36 @@
     align-items: center;
     gap: var(--s-2);
     flex-wrap: wrap;
+  }
+
+  /* B-7 (SCHEMA_VERSION 100): per-stage timeline rows */
+  .rn-stage-timeline {
+    list-style: none;
+    padding: 0;
+    margin: var(--s-1) 0 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .rn-stage-row {
+    display: grid;
+    grid-template-columns: 1fr 0.8fr 0.6fr 0.6fr;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+
+  .rn-stage-row-stage {
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+  }
+
+  .rn-stage-row-phase,
+  .rn-stage-row-iter,
+  .rn-stage-row-sources {
+    text-align: right;
   }
 
   /* ── SOURCE QUALITY ─────────────────────────── */

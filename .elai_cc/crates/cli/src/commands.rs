@@ -136,6 +136,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "mucoco",
+        aliases: &[],
+        summary: "MuCoCo mutation operator catalog (C-36, arXiv:2604.19086)",
+        argument_hint: Some("[list|mutate <file> --operator <name> [--language python]]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "measure",
         aliases: &[],
         summary: "Run the test-infra measurement suite (C-20)",
@@ -1198,6 +1205,16 @@ pub enum SlashCommand {
         role: Option<String>,
         target: Option<String>,
     },
+    /// C-36 MuCoCo mutation operator catalog. `action` is "list" or "mutate".
+    /// For "mutate": `file` points to the source file to mutate, `operator`
+    /// names one of the 11 paper-grounded MuCoCo operators (e.g. "demorgan"),
+    /// and `language` defaults to "python" (paper is Python-only).
+    Mucoco {
+        action: Option<String>,
+        file: Option<String>,
+        operator: Option<String>,
+        language: Option<String>,
+    },
     Memory,
     Init,
     Diff,
@@ -1311,11 +1328,19 @@ pub enum SlashCommand {
     },
     Explore {
         target: Option<String>,
+        /// C-39 -- per-subcommand --via-mcp toggle. When true, tool calls
+        /// emitted by this Explore invocation route through the MCP bridge
+        /// instead of the in-process plugin registry.
+        via_mcp: bool,
     },
     Task {
         description: Option<String>,
         surgical: bool,
         new_project: bool,
+        /// C-39 -- per-subcommand --via-mcp toggle. Same semantics as
+        /// `Explore.via_mcp`; mirrors the global `elai run --via-mcp` flag
+        /// but scoped to a single slash invocation.
+        via_mcp: bool,
     },
     /// B-22 Phase 4G: switch the runtime gate mode between INTERACTIVE
     /// (every MEDIUM/HIGH transition prompts a human) and AUTONOMOUS
@@ -1490,6 +1515,7 @@ pub fn validate_slash_command_input(
         },
         "mcp" => parse_mcp_command(&args)?,
         "runtime" => parse_runtime_command(&args)?,
+        "mucoco" => parse_mucoco_command(&args)?,
         "measure" => parse_measure_command(&args)?,
         "pipeline" => parse_pipeline_command(&args)?,
         "memory" => {
@@ -1648,10 +1674,14 @@ pub fn validate_slash_command_input(
         "add-dir" => SlashCommand::AddDir { path: remainder },
         "research" => SlashCommand::Research { question: remainder },
         "ask" => SlashCommand::Ask { question: remainder },
-        "explore" => SlashCommand::Explore { target: remainder },
+        "explore" => {
+            let (target, via_mcp) = parse_explore_flags(remainder);
+            SlashCommand::Explore { target, via_mcp }
+        }
         "task" => {
-            let (description, surgical, new_project) = parse_task_flags(remainder.as_deref());
-            SlashCommand::Task { description, surgical, new_project }
+            let (description, surgical, new_project, via_mcp) =
+                parse_task_flags(remainder.as_deref());
+            SlashCommand::Task { description, surgical, new_project, via_mcp }
         }
         "mode" => SlashCommand::Mode {
             mode: remainder.unwrap_or_default(),
@@ -2154,6 +2184,128 @@ fn parse_runtime_set_flags(args: &[&str]) -> Result<SlashCommand, SlashCommandPa
     }
 }
 
+/// C-36: parse the `/mucoco` slash command. Two subcommands:
+///   - `/mucoco list`                                    -> enumerate the 11 operators
+///   - `/mucoco mutate <file> --operator <name>`         -> apply one operator
+///       optional `--language <python>` (default python)
+///
+/// Validation: file path is opaque to the parser; the runtime handler reads
+/// it via `std::fs::read_to_string`. Operator name validation lives in the
+/// dispatcher (`MucocoOperator::from_str`) so the parser stays string-typed
+/// and dep-light, mirroring the `/mcp` / `/runtime` shape.
+fn parse_mucoco_command(args: &[&str]) -> Result<SlashCommand, SlashCommandParseError> {
+    match args {
+        [] | ["help" | "-h" | "--help"] => Ok(SlashCommand::Mucoco {
+            action: Some("help".to_string()),
+            file: None,
+            operator: None,
+            language: None,
+        }),
+        ["list"] => Ok(SlashCommand::Mucoco {
+            action: Some("list".to_string()),
+            file: None,
+            operator: None,
+            language: None,
+        }),
+        ["list", ..] => Err(usage_error("mucoco list", "")),
+        ["mutate"] => Err(usage_error(
+            "mucoco mutate",
+            "<file> --operator <name> [--language python]",
+        )),
+        ["mutate", file, rest @ ..] => parse_mucoco_mutate_flags(file, rest),
+        [action, ..] => Err(command_error(
+            &format!(
+                "Unknown /mucoco action '{action}'. Use list, mutate <file> --operator <name>, or help."
+            ),
+            "mucoco",
+            "/mucoco [list|mutate <file> --operator <name> [--language python]|help]",
+        )),
+    }
+}
+
+/// Parse the flag tail for `/mucoco mutate <file> --operator <name>
+/// [--language python]`. Order-insensitive; `--operator` mandatory;
+/// `--language` defaults to "python" (paper is Python-only).
+fn parse_mucoco_mutate_flags(
+    file: &str,
+    args: &[&str],
+) -> Result<SlashCommand, SlashCommandParseError> {
+    let mut operator: Option<String> = None;
+    let mut language: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "--operator" => {
+                if operator.is_some() {
+                    return Err(command_error(
+                        "Duplicate --operator flag for /mucoco mutate.",
+                        "mucoco",
+                        "/mucoco mutate <file> --operator <name> [--language python]",
+                    ));
+                }
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error(
+                        "mucoco mutate",
+                        "<file> --operator <name> [--language python]",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(command_error(
+                        "Missing value for --operator.",
+                        "mucoco",
+                        "/mucoco mutate <file> --operator <name> [--language python]",
+                    ));
+                }
+                operator = Some((*value).to_string());
+                i += 2;
+            }
+            "--language" => {
+                if language.is_some() {
+                    return Err(command_error(
+                        "Duplicate --language flag for /mucoco mutate.",
+                        "mucoco",
+                        "/mucoco mutate <file> --operator <name> [--language python]",
+                    ));
+                }
+                let Some(value) = args.get(i + 1) else {
+                    return Err(usage_error(
+                        "mucoco mutate",
+                        "<file> --operator <name> [--language python]",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(command_error(
+                        "Missing value for --language.",
+                        "mucoco",
+                        "/mucoco mutate <file> --operator <name> [--language python]",
+                    ));
+                }
+                language = Some((*value).to_string());
+                i += 2;
+            }
+            other => {
+                return Err(command_error(
+                    &format!("Unknown argument '{other}' for /mucoco mutate."),
+                    "mucoco",
+                    "/mucoco mutate <file> --operator <name> [--language python]",
+                ));
+            }
+        }
+    }
+    let Some(op_name) = operator else {
+        return Err(usage_error(
+            "mucoco mutate",
+            "<file> --operator <name> [--language python]",
+        ));
+    };
+    Ok(SlashCommand::Mucoco {
+        action: Some("mutate".to_string()),
+        file: Some(file.to_string()),
+        operator: Some(op_name),
+        language: language.or_else(|| Some("python".to_string())),
+    })
+}
+
 /// C-20: parse the `/measure` slash command:
 /// - `/measure`                       -> scope=all, cloud=false
 /// - `/measure --scope <name>`        -> scope=<name>, cloud=false
@@ -2410,20 +2562,26 @@ fn command_error(message: &str, command: &str, usage: &str) -> SlashCommandParse
     SlashCommandParseError::new(format!("{message}\n  Usage            {usage}{detail}"))
 }
 
-/// Parse `/task` flags: `--surgical`, `--new`. Returns (description, surgical, new_project).
-fn parse_task_flags(input: Option<&str>) -> (Option<String>, bool, bool) {
+/// Parse `/task` flags: `--surgical`, `--new`, `--via-mcp`. Returns
+/// (description, surgical, new_project, via_mcp).
+fn parse_task_flags(input: Option<&str>) -> (Option<String>, bool, bool, bool) {
     let Some(raw) = input else {
-        return (None, false, false);
+        return (None, false, false, false);
     };
 
     let mut surgical = false;
     let mut new_project = false;
+    let mut via_mcp = false;
     let mut rest_parts: Vec<&str> = Vec::new();
 
     for token in raw.split_whitespace() {
         match token {
             "--surgical" => surgical = true,
             "--new" => new_project = true,
+            // C-39: --via-mcp toggles MCP-bridge dispatch for this /task
+            // invocation. Mirrors the global `elai run --via-mcp` flag at
+            // the slash-command surface.
+            "--via-mcp" => via_mcp = true,
             _ => rest_parts.push(token),
         }
     }
@@ -2433,7 +2591,31 @@ fn parse_task_flags(input: Option<&str>) -> (Option<String>, bool, bool) {
     } else {
         Some(rest_parts.join(" "))
     };
-    (desc, surgical, new_project)
+    (desc, surgical, new_project, via_mcp)
+}
+
+/// C-39: parse `/explore` remainder, stripping `--via-mcp` if present.
+/// Returns (target, via_mcp). The target string excludes the flag token so
+/// callers see only the user-supplied target text.
+fn parse_explore_flags(input: Option<String>) -> (Option<String>, bool) {
+    let Some(raw) = input else {
+        return (None, false);
+    };
+    let mut via_mcp = false;
+    let mut rest_parts: Vec<&str> = Vec::new();
+    for token in raw.split_whitespace() {
+        if token == "--via-mcp" {
+            via_mcp = true;
+        } else {
+            rest_parts.push(token);
+        }
+    }
+    let target = if rest_parts.is_empty() {
+        None
+    } else {
+        Some(rest_parts.join(" "))
+    };
+    (target, via_mcp)
 }
 
 fn remainder_after_command(input: &str, command: &str) -> Option<String> {
@@ -2526,7 +2708,7 @@ fn slash_command_category(name: &str) -> &'static str {
         "theme" | "vim" | "voice" | "color" | "effort" | "fast" | "brief" | "output-style"
         | "keybindings" | "stickers" => "Appearance & input",
         "research" | "ask" | "explore" | "task" | "mode" | "entry_points" | "runtime"
-        | "measure" | "pipeline" => "Routing & modes",
+        | "measure" | "pipeline" | "mucoco" => "Routing & modes",
         "copy" | "share" | "feedback" | "summary" | "tag" | "thinkback" | "plan" | "exit"
         | "upgrade" | "rewind" => "Communication & control",
         _ => "Other",
@@ -3032,6 +3214,13 @@ fn render_mcp_report_for(
                 runtime_config.mcp().get(server_name),
             ))
         }
+        // C-42 (session 2): authz subcommands. Reads
+        // `<cwd>/authz-policy.toml`; emits a stable text report.
+        Some("authz") => Ok(crate::mcp_authz_cmd::render_status_text(cwd)),
+        Some(args) if args.split_whitespace().next() == Some("authz") => {
+            let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
+            Ok(crate::mcp_authz_cmd::render_text(cwd, &rest))
+        }
         Some(args) => Ok(render_mcp_usage(Some(args))),
     }
 }
@@ -3076,6 +3265,12 @@ fn render_mcp_report_json_for(
                 server_name,
                 runtime_config.mcp().get(server_name),
             ))
+        }
+        // C-42 (session 2): authz subcommands JSON variant.
+        Some("authz") => Ok(crate::mcp_authz_cmd::render_status_json(cwd)),
+        Some(args) if args.split_whitespace().next() == Some("authz") => {
+            let rest: Vec<&str> = args.split_whitespace().skip(1).collect();
+            Ok(crate::mcp_authz_cmd::render_json(cwd, &rest))
         }
         Some(args) => Ok(render_mcp_usage_json(Some(args))),
     }
@@ -3679,34 +3874,111 @@ fn parse_toml_string(contents: &str, key: &str) -> Option<String> {
 }
 
 fn parse_skill_frontmatter(contents: &str) -> (Option<String>, Option<String>) {
+    let extended = parse_skill_frontmatter_extended(contents);
+    (extended.name, extended.description)
+}
+
+/// C-41 extended frontmatter view consumed by both the cli-side enumeration
+/// path and the orchestrator's [`elai_orchestrator::skill_registry`]. The
+/// extension keys (`triggers`, `version`, `inputs`, `outputs`, `scope`)
+/// default to None / empty Vec when absent so legacy SKILL.md files lacking
+/// the C-41 schema continue to parse — the existing
+/// [`parse_skill_frontmatter`] shim above preserves the original 2-arity
+/// signature for callers that only need (name, description).
+///
+/// Mirrors the schema in [`elai_orchestrator::skill_registry::FrontmatterFields`]
+/// so cli-side callers do not need to import the orchestrator crate just
+/// to enumerate richer metadata. The two parsers SHOULD stay in lockstep;
+/// the contract test in `crates/contracts/tests/c41_skills_driven_workflow_contract.rs`
+/// asserts a representative SKILL.md parses identically through both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtendedSkillFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub triggers: Vec<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub scope: Option<String>,
+}
+
+/// C-41: parse the YAML-style frontmatter recognising both the pre-C-41
+/// (`name`, `description`) keys AND the new (`triggers`, `version`,
+/// `inputs`, `outputs`, `scope`) optional keys. Unknown keys are silently
+/// ignored so this function is forward-compatible with future schema
+/// extensions.
+pub fn parse_skill_frontmatter_extended(contents: &str) -> ExtendedSkillFrontmatter {
     let mut lines = contents.lines();
     if lines.next().map(str::trim) != Some("---") {
-        return (None, None);
+        return ExtendedSkillFrontmatter::default();
     }
 
-    let mut name = None;
-    let mut description = None;
+    let mut fields = ExtendedSkillFrontmatter::default();
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {
             break;
         }
-        if let Some(value) = trimmed.strip_prefix("name:") {
-            let value = unquote_frontmatter_value(value.trim());
-            if !value.is_empty() {
-                name = Some(value);
-            }
+        let Some((raw_key, raw_value)) = trimmed.split_once(':') else {
             continue;
-        }
-        if let Some(value) = trimmed.strip_prefix("description:") {
-            let value = unquote_frontmatter_value(value.trim());
-            if !value.is_empty() {
-                description = Some(value);
+        };
+        let key = raw_key.trim();
+        let value = raw_value.trim();
+        let unquoted = unquote_frontmatter_value(value);
+        match key {
+            "name" => {
+                if !unquoted.is_empty() {
+                    fields.name = Some(unquoted);
+                }
             }
+            "description" => {
+                if !unquoted.is_empty() {
+                    fields.description = Some(unquoted);
+                }
+            }
+            "version" => {
+                if !unquoted.is_empty() {
+                    fields.version = Some(unquoted);
+                }
+            }
+            "scope" => {
+                if !unquoted.is_empty() {
+                    fields.scope = Some(unquoted);
+                }
+            }
+            "triggers" => {
+                fields.triggers = parse_skill_string_list(value);
+            }
+            "inputs" => {
+                fields.inputs = parse_skill_string_list(value);
+            }
+            "outputs" => {
+                fields.outputs = parse_skill_string_list(value);
+            }
+            _ => {}
         }
     }
+    fields
+}
 
-    (name, description)
+/// Parse a comma-or-bracket-separated string list field used by C-41
+/// frontmatter (`triggers`, `inputs`, `outputs`). Accepts two surface
+/// shapes: bare CSV (`a, b, c`) and YAML-flow array (`["a", "b", "c"]`).
+fn parse_skill_string_list(raw: &str) -> Vec<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let inner = if value.starts_with('[') && value.ends_with(']') {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+    inner
+        .split(',')
+        .map(|segment| unquote_frontmatter_value(segment.trim()))
+        .filter(|item| !item.is_empty())
+        .collect()
 }
 
 fn unquote_frontmatter_value(value: &str) -> String {
@@ -4358,6 +4630,7 @@ pub fn handle_slash_command(
         | SlashCommand::Config { .. }
         | SlashCommand::Mcp { .. }
         | SlashCommand::Runtime { .. }
+        | SlashCommand::Mucoco { .. }
         | SlashCommand::Memory
         | SlashCommand::Init
         | SlashCommand::Diff
@@ -5661,6 +5934,20 @@ mod tests {
             SlashCommand::parse("/explore the fsm module"),
             Ok(Some(SlashCommand::Explore {
                 target: Some("the fsm module".to_string()),
+                via_mcp: false,
+            }))
+        );
+    }
+
+    // C-39: --via-mcp on /explore routes tool calls through the MCP bridge
+    // for this invocation. The flag token is stripped from the target.
+    #[test]
+    fn parses_explore_with_via_mcp() {
+        assert_eq!(
+            SlashCommand::parse("/explore --via-mcp the fsm module"),
+            Ok(Some(SlashCommand::Explore {
+                target: Some("the fsm module".to_string()),
+                via_mcp: true,
             }))
         );
     }
@@ -5673,6 +5960,7 @@ mod tests {
                 description: Some("fix the parser".to_string()),
                 surgical: true,
                 new_project: false,
+                via_mcp: false,
             }))
         );
     }
@@ -5685,6 +5973,7 @@ mod tests {
                 description: Some("build a dashboard".to_string()),
                 surgical: false,
                 new_project: true,
+                via_mcp: false,
             }))
         );
     }
@@ -5697,6 +5986,7 @@ mod tests {
                 description: Some("do things".to_string()),
                 surgical: true,
                 new_project: true,
+                via_mcp: false,
             }))
         );
     }
@@ -5709,6 +5999,21 @@ mod tests {
                 description: Some("clean up the code".to_string()),
                 surgical: false,
                 new_project: false,
+                via_mcp: false,
+            }))
+        );
+    }
+
+    // C-39: --via-mcp on /task combines cleanly with --surgical / --new.
+    #[test]
+    fn parses_task_with_via_mcp_and_surgical() {
+        assert_eq!(
+            SlashCommand::parse("/task --via-mcp --surgical fix bug"),
+            Ok(Some(SlashCommand::Task {
+                description: Some("fix bug".to_string()),
+                surgical: true,
+                new_project: false,
+                via_mcp: true,
             }))
         );
     }

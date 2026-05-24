@@ -354,6 +354,13 @@ pub struct CloudSpendSummary {
     /// Sum of `cost_usd` across every CloudSpend row whose `created_at`
     /// falls inside the current local-day window.
     pub day_usd: f64,
+    /// C-5: sum of `cost_usd` across every CloudSpend row whose
+    /// `created_at` falls inside the current 30-day rolling window
+    /// (approximation of monthly spend; calendar-month boundaries cost
+    /// an extra SQL pass that buys little on the cap-enforcement path).
+    /// Used by [`crate::cloud_mode::CloudModeRouter::route_with_spend`]
+    /// to enforce `spend_cap_monthly_usd`.
+    pub month_usd: f64,
     /// Sum of `cache_creation_tokens` over today's rows.
     pub cache_creation_tokens: u64,
     /// Sum of `cache_read_tokens` over today's rows.
@@ -3609,6 +3616,176 @@ impl SsbViewer {
         Ok(out)
     }
 
+    // -----------------------------------------------------------------------
+    // B-7 (SCHEMA_VERSION 100): producer-wire viewer readers
+    // -----------------------------------------------------------------------
+
+    /// B-7 (SCHEMA_VERSION 100): returns up to `limit` recent
+    /// `failure_recorded` rows in descending seq order. Used by the dashboard
+    /// PlanWindow detail pane to render per-baby-step retry history.
+    pub fn recent_failure_records(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::FailureRecordedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::FailureRecorded.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::FailureRecorded(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): returns up to `limit` recent
+    /// `tree_position_changed` rows in descending seq order. Used by the
+    /// dashboard PlanWindow to highlight cursor drift.
+    pub fn recent_tree_positions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::TreePositionChangedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::TreePositionChanged.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::TreePositionChanged(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): returns up to `limit` recent
+    /// `package_ref_verified` rows in descending seq order. Used by the
+    /// dashboard PlanWindow + new `get_package_verifications` Tauri command.
+    pub fn recent_package_verifications(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::PackageRefVerifiedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::PackageRefVerified.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::PackageRefVerified(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): returns up to `limit` recent
+    /// `tech_stack_decided` rows in descending seq order. Used by the
+    /// dashboard PlanWindow tech-stack detail pane.
+    pub fn recent_tech_stack_decisions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::TechStackDecidedPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        let limit_i64 =
+            i64::try_from(capped).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::TechStackDecided.as_sql_str(), limit_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::TechStackDecided(p) = payload {
+                out.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// B-7 (SCHEMA_VERSION 100): returns up to `limit` recent
+    /// `web_research_step` rows for the given `node_id`, filtered to ONLY
+    /// stage-populated rows (fine-grained per-stage events; coarse rows with
+    /// `stage = ""` are dropped). Routed via the existing
+    /// `SsbActionType::WebResearchStep` channel — no new SsbActionType
+    /// variant is fabricated for per-stage history.
+    ///
+    /// Used by the dashboard ResearchDrawer stage timeline (rewires the
+    /// previous C-4 DRIFT-6 deferral that returned an empty Vec).
+    pub fn research_node_stages(
+        &self,
+        node_id: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::ssb::WebResearchStepPayload>, SsbViewerError> {
+        let capped = limit.min(DRAWER_QUERY_HARD_CAP);
+        // Over-fetch to compensate for the post-decode node_id + stage filter.
+        // Hard cap on the SQL side stays bounded by DRAWER_QUERY_HARD_CAP so
+        // a runaway request never reads the entire ssb table.
+        let scan_cap = capped.saturating_mul(4).min(DRAWER_QUERY_HARD_CAP);
+        let scan_i64 =
+            i64::try_from(scan_cap).map_err(|e| SsbViewerError::OutOfRange(e.to_string()))?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT payload FROM ssb \
+             WHERE action_type = ?1 ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![SsbActionType::WebResearchStep.as_sql_str(), scan_i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            if out.len() >= capped {
+                break;
+            }
+            let bytes = row?;
+            let payload: SsbPayload = rmp_serde::from_slice(&bytes)?;
+            if let SsbPayload::WebResearchStep(p) = payload {
+                if p.node_id == node_id && !p.stage.is_empty() {
+                    out.push(p);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// C-2: returns the latest [`crate::ssb::AgentStatusChangedPayload`] per
     /// `agent_id` in descending seq order. Used by the dashboard `get_agents`
     /// Tauri command to replace the hardcoded 8-role IDLE list. When the SSB
@@ -4212,8 +4389,13 @@ impl SsbViewer {
         // into a seconds-based day boundary so the inequality compares
         // like to like.
         const SECS_PER_DAY: i64 = 86_400;
+        // C-5: 30-day rolling window approximation of "monthly" — calendar-month
+        // boundaries cost an extra SQL pass and DST edge-cases for little
+        // gain at the cap-enforcement granularity (monthly_cap=50.0 typical).
+        const SECS_PER_MONTH_WINDOW: i64 = 30 * SECS_PER_DAY;
         let now_secs = if now_ms > 0 { now_ms / 1000 } else { 0 };
         let day_start_secs = (now_secs / SECS_PER_DAY) * SECS_PER_DAY;
+        let month_window_start_secs = now_secs.saturating_sub(SECS_PER_MONTH_WINDOW);
 
         let conn = self.lock()?;
         let mut stmt = conn.prepare(
@@ -4248,6 +4430,12 @@ impl SsbViewer {
                 summary.cache_read_tokens = summary
                     .cache_read_tokens
                     .saturating_add(u64::from(p.cache_read_tokens));
+            }
+            // C-5: monthly window is a superset of the daily window, so
+            // this branch always fires when the daily branch did. Cap
+            // enforcement for `spend_cap_monthly_usd` reads `month_usd`.
+            if created_at_secs >= month_window_start_secs {
+                summary.month_usd += p.cost_usd;
             }
             // redaction_count: no source field in CloudSpendPayload today;
             // wired in for a future `redaction_event` SSB row (see

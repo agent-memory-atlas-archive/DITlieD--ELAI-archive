@@ -18,8 +18,8 @@ use elai_core::clock::{ClockProvider, LogicalInstant, OsClock};
 
 use crate::grounding_client::{GroundingClient, GroundingError, ResearchLevel};
 use crate::ssb::{
-    ConceptDecompositionNodePayload, GroundingCacheEventPayload, Ssb, SsbPayload,
-    ResearchStepPayload, ResearchDecomposeLevelPayload,
+    ConceptDecompositionNodePayload, GroundingCacheEventPayload, PackageRefVerifiedPayload, Ssb,
+    SsbPayload, ResearchStepPayload, ResearchDecomposeLevelPayload, TechStackDecidedPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +67,65 @@ pub struct DecompositionNodePayload {
 /// and-forget). Decomposition rows are advisory and must not block the loop.
 pub trait DecompositionTreeEmitter: Send + Sync {
     fn emit(&self, event: DecompositionNodePayload);
+}
+
+// ---------------------------------------------------------------------------
+// B-7 (SCHEMA_VERSION 100): PackageRefVerifiedEmitter — injectable SSB
+// callback fired once per PackageRef outcome inside `verify_packages`.
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every PackageRefVerifiedEmitter call-site. Mirrors the
+/// in-memory [`PackageRef`] struct shape verbatim — no fabricated
+/// verification-method enum (FABRICATED-SYMBOL discipline).
+#[derive(Debug, Clone)]
+pub struct PackageRefVerifiedEventPayload {
+    pub name: String,
+    pub registry: String,
+    pub version: Option<String>,
+    pub verified: bool,
+}
+
+/// Injectable per-package emitter. Sync trait: the SSB-backed adapter fires
+/// a `tokio::spawn` internally (fire-and-forget). Package-verify rows are
+/// advisory and must not block the research loop.
+pub trait PackageRefVerifiedEmitter: Send + Sync {
+    fn emit(&self, event: PackageRefVerifiedEventPayload);
+}
+
+// ---------------------------------------------------------------------------
+// B-7 (SCHEMA_VERSION 100): TechStackDecidedEmitter — injectable SSB
+// callback fired once per [`TechStackDecision`] instantiation.
+// ---------------------------------------------------------------------------
+
+/// Payload carried to every TechStackDecidedEmitter call-site. Mirrors the
+/// [`TechStackDecision`] struct shape. `source` is the snake_case
+/// discriminant of [`DecisionSource`] ("research" | "constraint" | "default").
+#[derive(Debug, Clone)]
+pub struct TechStackDecidedEventPayload {
+    pub component: String,
+    pub chosen: String,
+    pub alternatives: Vec<String>,
+    pub source: String,
+}
+
+/// Injectable per-decision emitter. Sync trait: the SSB-backed adapter
+/// fires a `tokio::spawn` internally (fire-and-forget). Decision rows are
+/// advisory and must not block the research loop.
+pub trait TechStackDecidedEmitter: Send + Sync {
+    fn emit(&self, event: TechStackDecidedEventPayload);
+}
+
+impl DecisionSource {
+    /// B-7 (SCHEMA_VERSION 100): snake_case discriminant for SSB rows.
+    /// Only the 3 actual enum variants are emitted — no fabricated
+    /// USER_SPECIFIED / EXISTING_PROJECT / FALLBACK literals.
+    pub fn as_snake_str(&self) -> &'static str {
+        match self {
+            DecisionSource::Research => "research",
+            DecisionSource::Constraint => "constraint",
+            DecisionSource::Default => "default",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2406,17 +2465,67 @@ fn truncate_utf8_safe(s: &str, max_bytes: usize) -> String {
 pub fn verify_packages(
     packages: &[PackageRef],
 ) -> Result<Vec<PackageRef>, ResearchTreeError> {
+    verify_packages_with_emitter(packages, None)
+}
+
+/// B-7 (SCHEMA_VERSION 100): emitter-aware variant. Fires the
+/// PackageRefVerifiedEmitter once per package outcome (verified or not)
+/// before returning the verified Vec. Existing callers continue to use
+/// the no-emitter wrapper above; the task runner plugs in an
+/// `SsbPackageRefVerifiedEmitter` when wiring producer SSB rows.
+pub fn verify_packages_with_emitter(
+    packages: &[PackageRef],
+    emitter: Option<&dyn PackageRefVerifiedEmitter>,
+) -> Result<Vec<PackageRef>, ResearchTreeError> {
     let mut result = Vec::with_capacity(packages.len());
     for pkg in packages {
         let verified = is_plausible_package_name(&pkg.name);
-        result.push(PackageRef {
+        let verified_pkg = PackageRef {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
             registry: pkg.registry.clone(),
             verified,
-        });
+        };
+        if let Some(e) = emitter {
+            e.emit(PackageRefVerifiedEventPayload {
+                name: verified_pkg.name.clone(),
+                registry: verified_pkg.registry.clone(),
+                version: verified_pkg.version.clone(),
+                verified: verified_pkg.verified,
+            });
+        }
+        result.push(verified_pkg);
     }
     Ok(result)
+}
+
+/// B-7 (SCHEMA_VERSION 100): emitter-aware [`TechStackDecision`]
+/// constructor. Returns the constructed decision after firing the
+/// TechStackDecidedEmitter so callers do not have to duplicate
+/// emit-then-store boilerplate. When `emitter` is None, this is a pure
+/// struct-literal helper.
+pub fn new_tech_stack_decision(
+    component: impl Into<String>,
+    chosen: impl Into<String>,
+    alternatives: Vec<String>,
+    source: DecisionSource,
+    emitter: Option<&dyn TechStackDecidedEmitter>,
+) -> TechStackDecision {
+    let decision = TechStackDecision {
+        component: component.into(),
+        chosen: chosen.into(),
+        alternatives,
+        source,
+    };
+    if let Some(e) = emitter {
+        e.emit(TechStackDecidedEventPayload {
+            component: decision.component.clone(),
+            chosen: decision.chosen.clone(),
+            alternatives: decision.alternatives.clone(),
+            source: decision.source.as_snake_str().to_string(),
+        });
+    }
+    decision
 }
 
 fn is_plausible_package_name(name: &str) -> bool {
@@ -2467,6 +2576,84 @@ impl DecompositionTreeEmitter for SsbDecompositionEmitter {
         tokio::spawn(async move {
             if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
                 warn!(error = %e, "B-7: SsbDecompositionEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+/// B-7 (SCHEMA_VERSION 100): SSB-backed PackageRefVerifiedEmitter. Wraps
+/// Arc<Ssb> and emits `package_ref_verified` rows via `tokio::spawn`
+/// (fire-and-forget, advisory). `verify_packages_with_emitter` is never
+/// blocked on SSB I/O.
+pub struct SsbPackageRefVerifiedEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbPackageRefVerifiedEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self {
+            ssb,
+            agent_id: agent_id.into(),
+            superstep,
+        }
+    }
+}
+
+impl PackageRefVerifiedEmitter for SsbPackageRefVerifiedEmitter {
+    fn emit(&self, event: PackageRefVerifiedEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::PackageRefVerified(PackageRefVerifiedPayload {
+            name: event.name,
+            registry: event.registry,
+            version: event.version,
+            verified: event.verified,
+        });
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbPackageRefVerifiedEmitter write failed (advisory, continuing)");
+            }
+        });
+    }
+}
+
+/// B-7 (SCHEMA_VERSION 100): SSB-backed TechStackDecidedEmitter. Wraps
+/// Arc<Ssb> and emits `tech_stack_decided` rows via `tokio::spawn`
+/// (fire-and-forget, advisory). `new_tech_stack_decision` is never blocked
+/// on SSB I/O.
+pub struct SsbTechStackDecidedEmitter {
+    ssb: Arc<Ssb>,
+    agent_id: String,
+    superstep: i64,
+}
+
+impl SsbTechStackDecidedEmitter {
+    pub fn new(ssb: Arc<Ssb>, agent_id: impl Into<String>, superstep: i64) -> Self {
+        Self {
+            ssb,
+            agent_id: agent_id.into(),
+            superstep,
+        }
+    }
+}
+
+impl TechStackDecidedEmitter for SsbTechStackDecidedEmitter {
+    fn emit(&self, event: TechStackDecidedEventPayload) {
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id = self.agent_id.clone();
+        let superstep = self.superstep;
+        let payload = SsbPayload::TechStackDecided(TechStackDecidedPayload {
+            component: event.component,
+            chosen: event.chosen,
+            alternatives: event.alternatives,
+            source: event.source,
+        });
+        tokio::spawn(async move {
+            if let Err(e) = ssb.write_payload(&agent_id, superstep, payload, Vec::new()).await {
+                warn!(error = %e, "B-7: SsbTechStackDecidedEmitter write failed (advisory, continuing)");
             }
         });
     }

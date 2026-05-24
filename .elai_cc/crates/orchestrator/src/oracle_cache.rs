@@ -17,9 +17,19 @@
 //!
 //! Producer wiring lives in `crates/cli/src/live_cli.rs` `/research` arm.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: FxHashMap chosen over BTreeMap for the LRU cache map.
+// Access pattern is get/insert/remove/contains_key/len + iter for stale
+// sweep. Per-query cache lookup is on the hot research path (called once
+// per /research arm at live_cli.rs); non-cryptographic FxHasher saves
+// hashing cost on the 32-byte blake3 CacheKey vs the SipHash default.
+// Eviction-order non-determinism across runs is acceptable because LRU
+// is itself an O(N) sweep that drops everything stale; no test asserts
+// per-entry eviction order. rustc-hash already in workspace dependencies
+// (Cargo.toml:46) and orchestrator Cargo.toml:27.
 use std::path::Path;
 use std::sync::Mutex;
+
+use rustc_hash::FxHashMap;
 
 use blake3;
 use elai_core::research_types::{AnswerConfidence, ResearchAnswer};
@@ -170,7 +180,7 @@ struct CacheInner {
     /// re-order on every successful `get` so the most-recently-accessed entry
     /// migrates to the back (LRU).
     order: Vec<CacheKey>,
-    map: HashMap<CacheKey, CachedAnswer>,
+    map: FxHashMap<CacheKey, CachedAnswer>,
     max_entries: usize,
 }
 
@@ -180,7 +190,7 @@ impl OracleAnswerCache {
         Self {
             inner: Mutex::new(CacheInner {
                 order: Vec::with_capacity(max_entries),
-                map: HashMap::with_capacity(max_entries),
+                map: FxHashMap::with_capacity_and_hasher(max_entries, Default::default()),
                 max_entries: max_entries.max(1),
             }),
         }

@@ -40,7 +40,7 @@
 //! arxiv:2412.21154 (Devin task-ledger pattern, cross-step drift is a
 //! documented failure mode).
 //!
-//! See D:\.ELAI_workflow\docs\thefinalglance\E-plan\E-46_planning_decomposition.md.
+//! See F:\.ELAI_workflow\docs\thefinalglance\E-plan\E-46_planning_decomposition.md.
 
 use std::collections::HashSet;
 

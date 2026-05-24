@@ -4,7 +4,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 DEPS="${ELAI_ROOT}/target/debug/deps"
 
 find_bin() { find "$DEPS" -name "${1}-*.exe" -type f 2>/dev/null | sort | tail -1; }

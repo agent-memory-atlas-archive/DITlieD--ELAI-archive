@@ -359,6 +359,24 @@ pub enum VerificationMethod {
         query: String,
         claim_category: String,
     },
+    /// Verify a claim against the Empire event stream (B-25 Phase 4J).
+    ///
+    /// Empire events are real-time factory-brain bus messages (deploy,
+    /// neuron-registration, repair-proposal, etc.) the bridge persists to
+    /// SSB via the 5 `empire_*` action types. The verifier resolves a
+    /// claim like "Empire registered a CircularDep repair against bus.py"
+    /// by querying SSB rows of type `empire_event_received` /
+    /// `empire_repair_proposed` filtered by `source` + `event_type`.
+    ///
+    /// `source` is the originating bus (e.g. `"factory"` / `"engine"`);
+    /// `event_type` is the Empire-side event label. Both are matched
+    /// case-sensitively against the SSB payload columns. EMPIRE-PENDING:
+    /// the actual SSB query path activates when the bridge starts writing
+    /// rows (post-EMPIRE-PENDING flip).
+    EmpireEventCheck {
+        source: String,
+        event_type: String,
+    },
 }
 
 impl VerificationMethod {
@@ -390,6 +408,15 @@ impl VerificationMethod {
     /// Methods requiring access to the cosmos artifact store (B-42 Phase 2).
     pub fn requires_cosmos_store(&self) -> bool {
         matches!(self, VerificationMethod::CosmosCheck { .. })
+    }
+
+    /// Methods requiring access to the Empire event SSB rows (B-25 Phase 4J).
+    /// `EmpireEventCheck` resolves a claim by reading SSB rows of type
+    /// `empire_event_received` / `empire_repair_proposed` filtered by
+    /// `source` + `event_type`. EMPIRE-PENDING activation: the verifier
+    /// returns "no rows match" until the bridge starts writing them.
+    pub fn requires_empire_bridge(&self) -> bool {
+        matches!(self, VerificationMethod::EmpireEventCheck { .. })
     }
 }
 

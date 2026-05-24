@@ -17,7 +17,16 @@ pub mod anthropic_api;
 pub mod cli_common;
 pub mod claude_code;
 pub mod codex_cli;
+/// C-44 — Cursor Composer 2 cloud-API adapter. Paid HTTP backend
+/// gated behind `[runtime.composer2].enabled = true` in elai_cc.toml.
+/// See workflow/papers/composer2-interface.md for the source-grounding
+/// posture (paper arXiv:2603.24477 covers model identity only;
+/// integration design source-grounded against @cursor/sdk).
+pub mod composer2;
 pub mod copilot_cli;
+/// C-44 — per-backend cost tracking + hashing helpers. Used by the
+/// orchestrator's SSB writer to emit `BackendCostAccrued` rows.
+pub mod cost;
 pub mod event_sink;
 pub mod gemini_cli;
 pub mod hermes;
@@ -41,7 +50,11 @@ pub mod platform_detect;
 pub use anthropic_api::AnthropicApiRuntime;
 pub use claude_code::ClaudeCodeRuntime;
 pub use codex_cli::CodexCliRuntime;
+pub use composer2::{Composer2Error, Composer2RuntimeAdapter};
 pub use copilot_cli::CopilotCliRuntime;
+pub use cost::{
+    backend_name_hash, cost_model_for, role_name_hash, BackendCostModel, COMPOSER2_COST,
+};
 pub use event_sink::{
     install_runtime_event_sink, redact_argv, runtime_event_sink, NoopRuntimeEventSink,
     RuntimeEvent, RuntimeEventSink,
@@ -88,6 +101,19 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         "vllm" => Some(RuntimeBackend::Vllm),
         "mlx" | "mlx_adapter" => Some(RuntimeBackend::Mlx),
         "llama_cpp" | "llamacpp" | "llama-cpp" => Some(RuntimeBackend::LlamaCpp),
+        // D-2 — PPM is a discovery-only slot. resolve_backend yields the
+        // canonical variant; `create_runtime` returns NotImplemented (PPM
+        // has no completion surface; scoring is dispatched via
+        // `elai_orchestrator::http_sidecar_ppm_hook::HttpSidecarPpmHook`
+        // directly).
+        "ppm" | "ppm_sidecar" | "qwen_math_prm" => Some(RuntimeBackend::Ppm),
+        // C-44 — Cursor Composer 2 cloud API. Accepts the canonical
+        // snake_case id plus two common operator aliases.
+        "composer2" | "cursor" | "cursor_composer" => Some(RuntimeBackend::Composer2),
+        // E-40 — LSP subprocess oracle slot. `create_runtime` returns
+        // NotImplemented (no /v1/messages surface); orchestrator dispatches
+        // via symbol_graph::lsp_oracle::oracle_lookup directly.
+        "lsp" | "lsp_oracle" | "language_server" => Some(RuntimeBackend::Lsp),
         _ => None,
     };
     match resolved {
@@ -132,6 +158,32 @@ pub fn create_runtime(
             Ok(Box::new(adapter))
         }
         RuntimeBackend::LlamaCpp => Ok(Box::new(LlamaCppAdapter::new(cfg))),
+        // D-2 — verifier-only sidecar; no RuntimeAdapter completion path
+        // by design (PpmClient handles scoring directly). Surface
+        // NotImplemented so `/runtime list` shows the slot but accidental
+        // routing returns a typed sentinel rather than panicking. See
+        // workflow/reasoning/D-2-decisions.md.
+        RuntimeBackend::Ppm => Err(RuntimeAdapterError::NotImplemented {
+            backend: RuntimeBackend::Ppm,
+            hint: "PPM is verifier-only; route scoring via http_sidecar_ppm_hook",
+        }),
+        // C-44 — Composer 2 paid HTTP backend. `from_factory_config`
+        // surfaces `MissingField` if CURSOR_API_KEY is absent — never
+        // panics, never silently falls back (plan stub_ban).
+        RuntimeBackend::Composer2 => {
+            let adapter = Composer2RuntimeAdapter::from_factory_config(&cfg)?;
+            Ok(Box::new(adapter))
+        }
+        // E-40 — LSP subprocess oracle. No /v1/messages surface; the
+        // actual dispatch is in elai_orchestrator::symbol_graph::lsp_oracle
+        // and uses tokio::process::Command directly. Surface
+        // NotImplemented so `/runtime list` shows the slot and accidental
+        // generation-path routing returns a typed sentinel rather than
+        // panicking. See workflow/reasoning/E-40-decisions.md.
+        RuntimeBackend::Lsp => Err(RuntimeAdapterError::NotImplemented {
+            backend: RuntimeBackend::Lsp,
+            hint: "Lsp is on-demand oracle only; dispatch via elai_orchestrator::symbol_graph::lsp_oracle::oracle_lookup",
+        }),
     }
 }
 
@@ -147,7 +199,7 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        assert_eq!(seen.len(), 13);
+        assert_eq!(seen.len(), 16);
     }
 
     #[test]
@@ -162,8 +214,109 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        assert_eq!(err.supported.len(), 13);
+        assert_eq!(err.supported.len(), 16);
         assert_eq!(err.candidate, "not-a-backend");
+    }
+
+    /// C-44 — Composer 2 resolves via canonical id + two operator
+    /// aliases. `create_runtime` returns the live adapter when an
+    /// api_key is supplied through the factory.
+    #[test]
+    fn resolve_composer2_aliases_match_canonical() {
+        assert_eq!(
+            resolve_backend("composer2").expect("canonical"),
+            RuntimeBackend::Composer2
+        );
+        assert_eq!(
+            resolve_backend("cursor").expect("alias cursor"),
+            RuntimeBackend::Composer2
+        );
+        assert_eq!(
+            resolve_backend("cursor_composer").expect("alias cursor_composer"),
+            RuntimeBackend::Composer2
+        );
+    }
+
+    /// C-44 — `create_runtime(Composer2)` without api_key surfaces
+    /// `MissingField` rather than panicking. Mirrors the AnthropicApi
+    /// missing-key behaviour.
+    #[test]
+    fn create_runtime_composer2_without_api_key_returns_missing_field() {
+        let cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::Composer2);
+        match create_runtime(cfg) {
+            Err(RuntimeAdapterError::MissingField {
+                backend, field, ..
+            }) => {
+                assert_eq!(backend, RuntimeBackend::Composer2);
+                assert_eq!(field, "api_key");
+            }
+            Err(e) => panic!("expected MissingField for Composer2, got {e:?}"),
+            Ok(_) => panic!("expected Err(MissingField) for Composer2, got Ok(adapter)"),
+        }
+    }
+
+    /// D-2 — PPM resolves but `create_runtime` is NotImplemented by design.
+    #[test]
+    fn resolve_ppm_alias_returns_canonical_variant() {
+        assert_eq!(resolve_backend("ppm").expect("ppm"), RuntimeBackend::Ppm);
+        assert_eq!(resolve_backend("PPM").expect("upper"), RuntimeBackend::Ppm);
+        assert_eq!(
+            resolve_backend("ppm_sidecar").expect("alias"),
+            RuntimeBackend::Ppm
+        );
+        assert_eq!(
+            resolve_backend("qwen_math_prm").expect("alias"),
+            RuntimeBackend::Ppm
+        );
+    }
+
+    /// D-2 — `create_runtime(Ppm)` is a typed sentinel, not a panic.
+    #[test]
+    fn create_runtime_ppm_returns_not_implemented_sentinel() {
+        let cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::Ppm);
+        // `Result<Box<dyn RuntimeAdapter>, _>` does not impl Debug (the Ok arm
+        // holds a trait object). Match each arm explicitly so the test still
+        // panics with a useful message on regression but typechecks cleanly.
+        match create_runtime(cfg) {
+            Err(RuntimeAdapterError::NotImplemented { backend, .. }) => {
+                assert_eq!(backend, RuntimeBackend::Ppm);
+            }
+            Err(e) => panic!("expected NotImplemented for Ppm, got {e:?}"),
+            Ok(_) => panic!("expected Err(NotImplemented) for Ppm, got Ok(adapter)"),
+        }
+    }
+
+    /// E-40 — Lsp resolves via canonical id + two operator aliases.
+    /// `create_runtime` returns `NotImplemented` because there is no
+    /// `/v1/messages` surface; the orchestrator dispatches the oracle
+    /// via `symbol_graph::lsp_oracle::oracle_lookup` directly.
+    #[test]
+    fn resolve_lsp_aliases_match_canonical() {
+        assert_eq!(
+            resolve_backend("lsp").expect("canonical"),
+            RuntimeBackend::Lsp
+        );
+        assert_eq!(
+            resolve_backend("lsp_oracle").expect("alias lsp_oracle"),
+            RuntimeBackend::Lsp
+        );
+        assert_eq!(
+            resolve_backend("language_server").expect("alias language_server"),
+            RuntimeBackend::Lsp
+        );
+    }
+
+    /// E-40 — `create_runtime(Lsp)` is a typed sentinel, not a panic.
+    #[test]
+    fn create_runtime_lsp_returns_not_implemented_sentinel() {
+        let cfg = RuntimeFactoryConfig::for_backend(RuntimeBackend::Lsp);
+        match create_runtime(cfg) {
+            Err(RuntimeAdapterError::NotImplemented { backend, .. }) => {
+                assert_eq!(backend, RuntimeBackend::Lsp);
+            }
+            Err(e) => panic!("expected NotImplemented for Lsp, got {e:?}"),
+            Ok(_) => panic!("expected Err(NotImplemented) for Lsp, got Ok(adapter)"),
+        }
     }
 
     #[test]

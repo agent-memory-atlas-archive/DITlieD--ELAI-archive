@@ -18,10 +18,16 @@
 
   import { onMount, onDestroy } from 'svelte';
 
+  // D-3 closure: widened to accept the 3 new SSB variants (ppm_unavailable,
+  // verifier_disagreement, cross_context_dispatched). Existing 'pass' /
+  // 'fail' branches remain intact; the new kinds render via the same
+  // table with a per-kind reason summary. The Rust-side
+  // `commands_d3::VerificationConsensusRow` is the canonical schema;
+  // optional fields below are populated only for the relevant kinds.
   type VerificationConsensusRow = {
     seq: number;
     ts: number;
-    kind: 'pass' | 'fail';
+    kind: 'pass' | 'fail' | 'ppm_unavailable' | 'verifier_disagreement' | 'cross_context_dispatched';
     candidate_id: string;
     template_id: string;
     verdict: string;
@@ -140,6 +146,8 @@
                     [{row.failing_verifier_ids.map(shortId).join(', ')}]
                   </span>
                 {/if}
+              {:else if row.kind === 'ppm_unavailable' || row.kind === 'verifier_disagreement' || row.kind === 'cross_context_dispatched'}
+                <span class="reason">{row.reason ?? row.kind}</span>
               {:else}
                 —
               {/if}
@@ -231,6 +239,23 @@
   .badge-kind-fail {
     background: rgba(220, 80, 80, 0.15);
     border-color: rgba(220, 80, 80, 0.4);
+  }
+
+  /* D-3 closure: badge styles for the 3 new SSB variants surfaced by
+     commands_d3 once the Rust-side `consensus_detail_to_row` matches them. */
+  .badge-kind-ppm_unavailable {
+    background: rgba(255, 170, 60, 0.15);
+    border-color: rgba(255, 170, 60, 0.4);
+  }
+
+  .badge-kind-verifier_disagreement {
+    background: rgba(255, 200, 60, 0.15);
+    border-color: rgba(255, 200, 60, 0.4);
+  }
+
+  .badge-kind-cross_context_dispatched {
+    background: rgba(120, 140, 255, 0.15);
+    border-color: rgba(120, 140, 255, 0.4);
   }
 
   .badge-rule {

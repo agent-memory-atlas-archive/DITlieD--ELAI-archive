@@ -1741,7 +1741,7 @@ def main():
         time.sleep(5)
     else:
         print("ERROR: Sidecar not reachable. Start it first:")
-        print("  python -m elai_inference.server --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct --port 8100")
+        print("  python -m elai_inference.server --model F:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct --port 8100")
         sys.exit(1)
 
     measurements = config.get("measurements", {})

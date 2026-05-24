@@ -65,6 +65,8 @@ import type {
   RrfQualityGateRow,
   HydeSkippedCodeQueryRow,
   RrfComponentWeightsRow,
+  // B-3 #11 — RulesDrawer rule_transition feed.
+  RuleTransitionRow,
 } from '../api/types';
 
 const POLL_INTERVAL_MS = 10_000;
@@ -384,22 +386,29 @@ function createRules() {
   let activeRules = $state<Rule[]>([]);
   let deprecatedPatterns = $state<DeprecatedPattern[]>([]);
   let sourceTiers = $state<SourceTierDistribution[]>([]);
+  let lastTransitions = $state<RuleTransitionRow[]>([]);
   let currentFsmState = $state<FsmSnapshot['state']>('IDLE');
 
   async function refresh() {
     try {
       const fsm = await stub.get_fsm_state();
       currentFsmState = fsm.state;
-      const [lifecycle, rules, deps, tiers] = await Promise.all([
+      // B-3 #11: pull the last 5 rule_transition SSB rows alongside the
+      // existing 10s lifecycle refresh. Empty list when no producer has
+      // written rows yet — the RulesDrawer renders an explicit
+      // "no transitions yet" empty state in that case.
+      const [lifecycle, rules, deps, tiers, transitions] = await Promise.all([
         stub.get_rules_lifecycle(),
         stub.get_active_rules(fsm.state),
         stub.get_deprecated_patterns(),
         stub.get_source_quality_tiers(),
+        stub.get_rule_transitions(5),
       ]);
       lifecycleCounts = lifecycle;
       activeRules = rules;
       deprecatedPatterns = deps;
       sourceTiers = tiers;
+      lastTransitions = transitions;
     } catch (err) {
       console.debug('[rulesData] refresh failed', err);
     }
@@ -412,6 +421,7 @@ function createRules() {
     get activeRules() { return activeRules; },
     get deprecatedPatterns() { return deprecatedPatterns; },
     get sourceTiers() { return sourceTiers; },
+    get lastTransitions() { return lastTransitions; },
     get currentFsmState() { return currentFsmState; },
     unwired: {
       sourceTiers: true,  // get_source_quality_tiers returns zeros

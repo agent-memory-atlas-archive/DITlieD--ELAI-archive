@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+// B-15 HashMap ban cascade: BTreeMap for scores (paired with deep.rs:29
+// rrf_quality_gate signature). HashSet kept — used lookup-only for per-stage
+// chunk-id dedup (lines 401/437/510); HashSet ban is out-of-scope for B-15
+// (plan only enumerated HashMap; HashSet residual is a B-15-followup item).
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use elai_core::{ClockProvider, OsClock};
@@ -8,8 +12,8 @@ use crate::error::KnowledgeError;
 use crate::freshness::{self, FreshnessDb};
 use crate::hyde::{should_use_hyde, HydeStage};
 use crate::knowledge_ssb_sink::{
-    noop_sink, DeepPoolCappedEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink, QueryTraceEvent,
-    RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
+    noop_sink, DeepPoolCappedEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent,
+    QueryTraceEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent,
 };
 use crate::query_class::{classify, has_code_symbol_signal};
 use crate::query_expansion::{self, ExpansionStrategy};
@@ -38,6 +42,18 @@ use crate::splade::SpladeExpander;
 /// when the orchestrator did not call [`QueryPipeline::with_session_id`].
 /// Named constant per codeRules baseline (no magic strings in code).
 const DEFAULT_SESSION_ID: &str = "unknown";
+
+/// C-38: derive a stable 64-bit prefix of the blake3 hash of `bytes`.
+/// Used for `workspace_root_hash` and `top_node_hash` fields in the
+/// `pagerank_run` SSB row so the dashboard can group rows by workspace
+/// (or correlate top-ranked symbols) without leaking absolute paths or
+/// full symbol names. blake3 chosen per CLAUDE.md anti-stale rule
+/// (never blake2/sha2 for non-RFC uses).
+fn blake3_prefix_u64(bytes: &[u8]) -> u64 {
+    let hash = blake3::hash(bytes);
+    let h = hash.as_bytes();
+    u64::from_le_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]])
+}
 
 /// E-17 SP2 task 7: per-ranker RRF weights surfaced on the
 /// `rrf_component_weights` SSB beacon. Named constants per codeRules
@@ -598,12 +614,16 @@ impl QueryPipeline {
         // Stage 2: pagerank (STANDARD + DEEP)
         let pagerank_start = self.clock.now();
         let snapshot = if use_vector {
-            let (snap, pagerank_results, pagerank_error) = match self.dkg_engine {
+            let (snap, pagerank_results, pagerank_error, top_node_name) = match self.dkg_engine {
                 Some(ref engine) => match DkgSnapshot::from_engine(engine) {
                     Ok(snap) => {
                         let config = PageRankConfig::default();
                         let token_est: &dyn Fn(&str) -> usize = &|s: &str| s.len() / 4;
                         let repo_map = compute_repo_map(&snap, query, &[], &config, token_est);
+                        let top_name = repo_map
+                            .ranked_symbols
+                            .first()
+                            .map(|rs| rs.symbol_name.clone());
                         let results: Vec<RetrievalResult> = repo_map
                             .ranked_symbols
                             .iter()
@@ -614,23 +634,43 @@ impl QueryPipeline {
                                 tool_used: "pagerank".to_string(),
                             })
                             .collect();
-                        (snap, results, None)
+                        (snap, results, None, top_name)
                     }
                     Err(e) => {
                         tracing::debug!("DkgSnapshot::from_engine failed: {e}");
                         let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                        (empty, Vec::new(), Some(e.to_string()))
+                        (empty, Vec::new(), Some(e.to_string()), None)
                     }
                 },
                 None => {
                     let empty = DkgSnapshot { nodes: Vec::new(), edges: Vec::new() };
-                    (empty, Vec::new(), None)
+                    (empty, Vec::new(), None, None)
                 }
             };
+            let pagerank_latency_ms =
+                self.clock.elapsed_since(pagerank_start).as_millis() as u64;
+
+            // C-38: emit one `pagerank_run` SSB row per Stage 2 invocation
+            // (including the empty-graph / no-engine path so observability
+            // distinguishes "PageRank ran with empty graph" from "PageRank
+            // never ran at all").
+            let workspace_hash = blake3_prefix_u64(self.session_id.as_bytes());
+            let node_count_u32 = u32::try_from(snap.nodes.len()).unwrap_or(u32::MAX);
+            let top_node_hash = top_node_name
+                .as_deref()
+                .map(|n| blake3_prefix_u64(n.as_bytes()))
+                .unwrap_or(0);
+            self.ssb_sink.emit_pagerank_run(PagerankRunEvent {
+                workspace_root_hash: workspace_hash,
+                node_count: node_count_u32,
+                top_node_hash,
+                elapsed_ms: pagerank_latency_ms,
+            });
+
             stages.push(PipelineStage {
                 stage: "pagerank".to_string(),
                 results: pagerank_results,
-                latency_ms: self.clock.elapsed_since(pagerank_start).as_millis() as u64,
+                latency_ms: pagerank_latency_ms,
                 circuit_breaker_state: None,
                 error: pagerank_error,
             });
@@ -739,35 +779,44 @@ impl QueryPipeline {
         let (reranked, deep_cap_dropped, rrf_floor_dropped, rrf_pre_floor_count) =
             self.rrf_rerank_with_tier(&mut stages, resolved_tier);
 
-        // E-17 SP2: emit deep_cap stage trace row when the gate fired.
+        // B-4 task #16: measure emit-side latency for the deep_cap +
+        // rrf_gate post-hoc synthetic stages instead of hard-coding `0`.
+        // Both gates were already exercised inside `rrf_rerank_with_tier`
+        // above (so the heavy work shows up under the "rerank" row); the
+        // numbers below are the dashboard-observable cost of the
+        // gate-fire emit itself (sink dispatch + stage push), which is
+        // non-zero whenever the gate triggers. Preserves the entropy
+        // quarantine: only `self.clock` reads, no raw `Instant`.
         if deep_cap_dropped > 0 {
-            stages.push(PipelineStage {
-                stage: "deep_cap".to_string(),
-                results: Vec::new(),
-                latency_ms: 0,
-                circuit_breaker_state: None,
-                error: None,
-            });
+            let deep_cap_emit_start = self.clock.now();
             self.ssb_sink.emit_deep_pool_capped(DeepPoolCappedEvent {
                 capped_count: u32::try_from(deep_cap_dropped).unwrap_or(u32::MAX),
                 max_allowed: u32::try_from(DEEP_CAP_DEFAULT).unwrap_or(u32::MAX),
                 stage_count: u32::try_from(stages.len()).unwrap_or(u32::MAX),
             });
+            stages.push(PipelineStage {
+                stage: "deep_cap".to_string(),
+                results: Vec::new(),
+                latency_ms: self.clock.elapsed_since(deep_cap_emit_start).as_millis() as u64,
+                circuit_breaker_state: None,
+                error: None,
+            });
         }
 
         // E-17 SP2: emit rrf_gate stage trace + SSB row when the floor fired.
         if rrf_floor_dropped > 0 {
-            stages.push(PipelineStage {
-                stage: "rrf_gate".to_string(),
-                results: Vec::new(),
-                latency_ms: 0,
-                circuit_breaker_state: None,
-                error: None,
-            });
+            let rrf_gate_emit_start = self.clock.now();
             self.ssb_sink.emit_rrf_quality_gate_fired(RrfQualityGateFiredEvent {
                 dropped_count: u32::try_from(rrf_floor_dropped).unwrap_or(u32::MAX),
                 floor: RRF_FLOOR_DEFAULT,
                 total_before: u32::try_from(rrf_pre_floor_count).unwrap_or(u32::MAX),
+            });
+            stages.push(PipelineStage {
+                stage: "rrf_gate".to_string(),
+                results: Vec::new(),
+                latency_ms: self.clock.elapsed_since(rrf_gate_emit_start).as_millis() as u64,
+                circuit_breaker_state: None,
+                error: None,
             });
         }
 
@@ -856,7 +905,17 @@ impl QueryPipeline {
             circuit_breaker_state: s.circuit_breaker_state.clone(),
         }).collect();
         let result_count = stages.last().map(|s| s.results.len()).unwrap_or(0);
-        let trace = QueryTrace::new(stage_traces, 0, self.search_mode, result_count);
+
+        // B-4 task #16: compute total_latency_ms BEFORE constructing the
+        // QueryTrace so the trace struct carries the real sum. Pipelines
+        // do not measure wall time directly here (entropy quarantine),
+        // so the sum of per-stage latencies is the conservative upper
+        // bound the dashboard renders as "approximate total".
+        let total_latency_ms: u64 = stage_traces
+            .iter()
+            .fold(0u64, |acc, s| acc.saturating_add(s.latency_ms));
+
+        let trace = QueryTrace::new(stage_traces, total_latency_ms, self.search_mode, result_count);
         tracing::debug!(
             query_id = %trace.query_id,
             tier = %resolved_tier,
@@ -865,16 +924,10 @@ impl QueryPipeline {
             "query_trace"
         );
 
-        // C-1: emit one `query_trace` SSB row per call. Sum per-stage
-        // latencies into total_latency_ms because the trace struct
-        // already carries `total_latency_ms=0` (pipelines do not measure
-        // wall time directly here per the entropy-quarantine note above).
-        // The sum is a conservative upper bound that the dashboard
-        // surfaces as "approximate".
-        let total_latency_ms: u64 = trace
-            .stages
-            .iter()
-            .fold(0u64, |acc, s| acc.saturating_add(s.latency_ms));
+        // C-1: emit one `query_trace` SSB row per call. The trace already
+        // carries `total_latency_ms`; the SSB payload field name is the
+        // same so dashboards downstream see a non-zero total whenever any
+        // stage measured non-zero latency.
         let stage_count = u32::try_from(trace.stages.len()).unwrap_or(u32::MAX);
         let result_count_u32 = u32::try_from(trace.result_count).unwrap_or(u32::MAX);
         self.ssb_sink.emit_query_trace(QueryTraceEvent {
@@ -944,7 +997,7 @@ impl QueryPipeline {
         };
 
         // Step 2: RRF accumulator (k=60 per Cormack SIGIR 2009).
-        let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+        let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
         for stage in stages.iter() {
             for (rank_idx, result) in stage.results.iter().enumerate() {
                 // NARROWING-OK: rank_idx + 1 fits in f64 (rank_idx is bounded
@@ -981,7 +1034,9 @@ impl QueryPipeline {
         };
 
         // Step 5: sort desc by score; tie-break by chunk_id asc for
-        // deterministic output across HashMap iteration orders.
+        // deterministic output. BTreeMap (B-15) already iterates by chunk_id;
+        // the tie-break is kept defensively in case the upstream type ever
+        // shifts back.
         let mut ranked: Vec<(f64, RetrievalResult)> = scores.into_values().collect();
         ranked.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)

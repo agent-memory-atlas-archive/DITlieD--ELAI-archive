@@ -26,7 +26,13 @@
 //! - `RRF_FLOOR_DEFAULT = 0.005`: ELAI design choice; validated by the SP6
 //!   eval harness. k=60 is grounded in Cormack et al. SIGIR 2009.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen — `scores` is used by `retain` + `len`
+// + collected into Vec for downstream sort-by-score with chunk_id tie-break
+// (pipeline.rs:1000 comment "deterministic output across HashMap iteration
+// orders"). BTreeMap removes the iteration-order non-determinism upstream
+// of the sort, making the tie-break comment obsolete but harmless. Same
+// `retain`/`len`/`insert`/`into_values` API surface; no caller breakage.
+use std::collections::BTreeMap;
 
 use crate::arag::RetrievalResult;
 use crate::pipeline::PipelineStage;
@@ -85,7 +91,7 @@ pub fn deep_pool_cap(stages: &mut Vec<PipelineStage>, max: usize) -> usize {
 /// before the multiplier would prune candidates whose freshness boost
 /// would have rescued them above the floor.
 pub fn rrf_quality_gate(
-    scores: &mut HashMap<String, (f64, RetrievalResult)>,
+    scores: &mut BTreeMap<String, (f64, RetrievalResult)>,
     floor: f64,
 ) -> usize {
     if floor <= 0.0 {
@@ -154,7 +160,7 @@ mod tests {
 
     #[test]
     fn floor_drops_below_threshold() {
-        let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+        let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
         scores.insert("a".into(), (0.010, make_result("a", 0.010)));
         scores.insert("b".into(), (0.004, make_result("b", 0.004)));
         scores.insert("c".into(), (0.006, make_result("c", 0.006)));
@@ -169,7 +175,7 @@ mod tests {
 
     #[test]
     fn floor_zero_is_noop() {
-        let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+        let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
         scores.insert("a".into(), (0.001, make_result("a", 0.001)));
         let dropped = rrf_quality_gate(&mut scores, 0.0);
         assert_eq!(dropped, 0);
@@ -178,7 +184,7 @@ mod tests {
 
     #[test]
     fn floor_at_boundary_is_inclusive() {
-        let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+        let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
         scores.insert("exact".into(), (RRF_FLOOR_DEFAULT, make_result("exact", RRF_FLOOR_DEFAULT)));
         let dropped = rrf_quality_gate(&mut scores, RRF_FLOOR_DEFAULT);
         // Score equal to floor is retained (`>= floor`).

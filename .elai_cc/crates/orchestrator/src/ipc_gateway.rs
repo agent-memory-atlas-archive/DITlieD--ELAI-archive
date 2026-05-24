@@ -247,11 +247,16 @@ pub fn allowed_grounding_methods(role: &AgentRole) -> Vec<GroundingMethod> {
         | AgentRole::AuditorPhases
         | AgentRole::AuditorSteps
         | AgentRole::AuditorBabySteps
-        | AgentRole::AuditorBabyStepDetail => vec![
+        | AgentRole::AuditorBabyStepDetail
+        | AgentRole::AuditorProductionGrade => vec![
             GroundingMethod::FileCheck,
             GroundingMethod::WebCheck,
             GroundingMethod::SourceCheck,
         ],
+        // E-37: injection classifier is off-model PromptArmor-style runner;
+        // its grounding surface is the input text itself (FileCheck-equivalent
+        // on the SpotlightedSpan) — no web/source recursion needed.
+        AgentRole::InjectionClassifier => vec![GroundingMethod::FileCheck],
     }
 }
 

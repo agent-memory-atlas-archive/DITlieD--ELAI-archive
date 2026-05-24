@@ -1,0 +1,8 @@
+[package]
+name = "e12_sibling_predicate_check"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "e12_sibling_predicate_check"
+path = "src/main.rs"

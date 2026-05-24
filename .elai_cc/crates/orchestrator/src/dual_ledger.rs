@@ -36,7 +36,7 @@
 //! 13.86% solve rate driven by explicit task-state tracking);
 //! arxiv:2411.04468 (Magentic-One dual-ledger orchestrator).
 //!
-//! See D:\.ELAI_workflow\docs\thefinalglance\E-plan\E-46_planning_decomposition.md.
+//! See F:\.ELAI_workflow\docs\thefinalglance\E-plan\E-46_planning_decomposition.md.
 
 use std::collections::HashMap;
 

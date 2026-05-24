@@ -25,11 +25,13 @@
 //! method below.
 //!
 //! Wiring: this module is the algorithm core only. The SSB-emitting promotion
-//! round lives in [`crate::agent_pool::emit_promotion_round`] (D-5 wiring),
-//! which calls [`promote_candidate`] and forwards the decision into both the
+//! round is [`emit_bai_round`] below (D-5 wiring), which calls
+//! [`promote_candidate`] and forwards the decision into both the
 //! [`crate::archive_chain::ArchiveChain`] (status flip Candidate -> Promoted)
 //! AND the SSB store (one `bai_arm_updated` row per pull, one
 //! `template_promoted` / `template_candidate_rejected` row per decision).
+//! `task_runner::dispatch_verifiers` calls `emit_bai_round` once per
+//! consensus verdict when the BAI runtime config is enabled.
 
 use std::sync::Arc;
 
@@ -125,6 +127,39 @@ impl ArmPosterior {
     #[must_use]
     pub fn is_stopped(&self, max_pulls: u32) -> bool {
         self.n_pulls >= max_pulls
+    }
+
+    /// D-5 closure: plan-readability accessor for the integer-valued
+    /// "pass count" implied by the Beta posterior. Returns
+    /// `floor(alpha - 1.0)` clamped to 0 so callers can render
+    /// "passes / total" without knowing the prior.
+    ///
+    /// NOT a state field — the canonical storage is the f64 `alpha`
+    /// (per workflow/reasoning/D-5-decisions.md DECISION-3). The plan
+    /// file's `pass_count` u32 is drift; this accessor is the
+    /// compatibility shim.
+    #[must_use]
+    pub fn pass_count_estimate(&self) -> u32 {
+        let v = self.alpha - 1.0;
+        if v <= 0.0 {
+            0
+        } else {
+            // Saturating cast: f64 -> u32 with the floor() pre-applied.
+            v.floor().min(f64::from(u32::MAX)) as u32
+        }
+    }
+
+    /// D-5 closure: plan-readability accessor mirroring
+    /// [`Self::pass_count_estimate`] for the failure count
+    /// (`floor(beta - 1.0)`). Same drift-shim caveat applies.
+    #[must_use]
+    pub fn fail_count_estimate(&self) -> u32 {
+        let v = self.beta - 1.0;
+        if v <= 0.0 {
+            0
+        } else {
+            v.floor().min(f64::from(u32::MAX)) as u32
+        }
     }
 }
 
@@ -267,7 +302,7 @@ impl Default for PromotionConfig {
 }
 
 /// Outcome of one [`promote_candidate`] call. Carries enough state for
-/// `agent_pool::emit_promotion_round` to choose between TemplatePromoted /
+/// [`emit_bai_round`] to choose between TemplatePromoted /
 /// TemplateCandidateRejected SSB rows without re-inspecting the chain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromotionDecision {
@@ -413,8 +448,8 @@ pub fn should_stop(
 ///
 /// The mutation in step 5 happens via direct field write on the in-memory
 /// chain entry. Persisting that change to disk (re-appending a Promoted
-/// entry) is the caller's responsibility: `agent_pool::emit_promotion_round`
-/// follows the D-1 append-only invariant by calling
+/// entry) is the caller's responsibility: [`emit_bai_round`] follows the
+/// D-1 append-only invariant by calling
 /// [`crate::archive_chain::append_and_emit_ssb`] with a new entry whose
 /// status is Promoted, rather than mutating the existing on-disk row.
 pub fn promote_candidate(
@@ -575,7 +610,103 @@ pub async fn emit_bai_round(
     rng: &mut SeededRng,
     cfg: &PromotionConfig,
 ) -> Result<PromotionDecision, TemplateError> {
-    let decision = promote_candidate(chain, candidate_template_id, eval, arms, rng, cfg);
+    emit_bai_round_with_canary(
+        chain,
+        ssb,
+        agent_id,
+        superstep,
+        candidate_template_id,
+        eval,
+        arms,
+        rng,
+        cfg,
+        None,
+    )
+    .await
+}
+
+/// D-7 closure: variant of [`emit_bai_round`] that consults a recent
+/// [`crate::agent_pool::CanaryStatusSummary`] BEFORE flipping the candidate
+/// to Promoted. When the canary status' `blocks_promotion()` is true (i.e.
+/// the latest canary verdict was `Fail`), the promotion is refused: a
+/// `Rejected` decision is returned with `canary_gate_blocked` as the reason
+/// and the SSB row sequence becomes `BaiArmUpdated` + `TemplateCandidateRejected`
+/// instead of `BaiArmUpdated` + `TemplatePromoted`.
+///
+/// `canary_status` is the typed projection produced by
+/// [`crate::agent_pool::recent_canary_status`]. Callers without a fresh
+/// status (no canary run yet, or the BAI runtime is wire-dark) pass `None`
+/// and the gate degrades to the un-gated [`promote_candidate`] path.
+///
+/// ELAI design hypothesis — NanoFlux (arXiv:2509.23252) provides empirical
+/// motivation for the cross-domain canary pattern but does NOT define a
+/// canary mechanism. The gate semantics here are an ELAI policy choice.
+pub async fn emit_bai_round_with_canary(
+    chain: &mut ArchiveChain,
+    ssb: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    candidate_template_id: TemplateId,
+    eval: &StagedEvalResult,
+    arms: &mut Vec<ArmPosterior>,
+    rng: &mut SeededRng,
+    cfg: &PromotionConfig,
+    canary_status: Option<&crate::agent_pool::CanaryStatusSummary>,
+) -> Result<PromotionDecision, TemplateError> {
+    // D-7 closure GAP-1: canary gate. If the latest canary verdict blocks
+    // promotion, refuse to flip the chain status — return Rejected with the
+    // canary attribution so dashboards can render the block-cause. The
+    // posterior is still updated (the arm pull happens; the BAI signal stays
+    // honest) but the promotion side-effect is suppressed. ELAI design
+    // choice; NanoFlux (arXiv:2509.23252) provides empirical motivation
+    // only — no canary mechanism in the paper itself.
+    let canary_blocks = canary_status
+        .as_ref()
+        .is_some_and(|c| c.blocks_promotion());
+
+    let decision = if canary_blocks {
+        // Update the arm's posterior but DO NOT flip the chain status. This
+        // keeps the Beta(alpha, beta) honest while preventing promotion.
+        // Mirror `promote_candidate`'s arm-update path inline so the
+        // signature of the pure function stays unchanged.
+        let arm_idx = match arms.iter().position(|a| a.template_id == candidate_template_id) {
+            Some(i) => i,
+            None => {
+                arms.push(ArmPosterior::new(candidate_template_id));
+                arms.len() - 1
+            }
+        };
+        let stages: [(u32, u32); 3] = [
+            (eval.stage_10_pass, eval.stage_10_total),
+            (eval.stage_50_pass, eval.stage_50_total),
+            (eval.stage_200_pass, eval.stage_200_total),
+        ];
+        for (pass, total) in stages {
+            if total == 0 {
+                continue;
+            }
+            let pass_clamped = pass.min(total);
+            for _ in 0..pass_clamped {
+                arms[arm_idx].update(true);
+            }
+            for _ in 0..(total - pass_clamped) {
+                arms[arm_idx].update(false);
+            }
+        }
+        let post_mean = arms[arm_idx].mean();
+        let n_pulls = arms[arm_idx].n_pulls;
+        let dominant = canary_status
+            .map(|c| c.dominant_fail_family.as_str())
+            .unwrap_or("unknown");
+        PromotionDecision::Rejected {
+            template_id: candidate_template_id,
+            posterior_mean: post_mean,
+            n_pulls,
+            reason: format!("canary_gate_blocked_dominant_family_{dominant}"),
+        }
+    } else {
+        promote_candidate(chain, candidate_template_id, eval, arms, rng, cfg)
+    };
 
     // Locate the arm we just updated for the SSB row.
     let arm_idx = arms
@@ -652,6 +783,447 @@ fn stage_label(eval: &StagedEvalResult) -> &'static str {
     } else {
         "stage_0"
     }
+}
+
+// ---------------------------------------------------------------------------
+// D-5 closure (GAP-C): Successive Rejects + LUCB1 + credible interval
+// ---------------------------------------------------------------------------
+
+/// Audibert / Bubeck / Munos (COLT 2010) Successive Rejects log_bar(K).
+///
+/// `log_bar(K) = 1/2 + sum_{i=2..=K} 1/i`. NOT the natural logarithm —
+/// the paper Section 4 footnote defines this as a harmonic-number variant.
+/// The interface contract docs/workflow/papers/audibert-colt-2010-bai-interface.md
+/// flags this as IMPLEMENTATION PITFALL #6 (using `K.ln()` here breaks the
+/// budget-pull invariant).
+///
+/// Returns `0.5` for `K <= 1` (the SR algorithm requires `K >= 2`; callers
+/// upstream guard against the degenerate case).
+#[must_use]
+pub fn log_bar_k(k: usize) -> f64 {
+    if k < 2 {
+        return 0.5;
+    }
+    let mut acc = 0.5;
+    for i in 2..=k {
+        acc += 1.0 / (i as f64);
+    }
+    acc
+}
+
+/// Successive Rejects (Audibert et al., COLT 2010, Algorithm 2 / Figure 3).
+///
+/// Fixed-budget BAI: given a slice of arm ids, a total pull budget `budget`
+/// (denoted `n` in the paper), and the precomputed `log_bar_k` constant
+/// (passed in so callers can amortise it across calls), this function
+/// returns the LAST-surviving arm — the algorithm's recommendation
+/// `J_n`. Each phase `k` in `1..K-1` pulls every active arm
+/// `n_k - n_{k-1}` additional times and rejects the empirical-worst arm;
+/// when only one arm remains it is the recommendation.
+///
+/// **This is the pull-allocation step only.** The actual pull happens
+/// upstream: in the wired ELAI path, the per-task verifier verdict acts
+/// as the realised pull (`bai::emit_bai_round` folds the verdict into the
+/// arm's posterior). This function answers "given a fresh budget, how do
+/// the phase lengths and active sets look?" — it does NOT call
+/// `Thompson::sample` or mutate the chain. Callers that want the live
+/// recommendation under the BAI runtime should keep using
+/// [`Thompson::sample`]; SR is the fixed-budget alternative for offline
+/// analysis and the deterministic-replay harness in the D-5 contract test.
+///
+/// Returns the arm id of the unique survivor after `K-1` phases. Returns
+/// `None` if `arms.is_empty()` or `budget < arms.len()` (the paper
+/// requires `n >= K` for the phase-length floor to be non-negative).
+///
+/// Paper-formula floor: `n_k = floor((n-K) / (log_bar_k * (K + 1 - k)))`.
+/// We compute partial sums + the per-phase pull count and assert the
+/// "total pulls <= n" invariant in the SR contract test.
+///
+/// This implementation is deterministic given the input slice — when two
+/// arms tie at the empirical-worst step, the LOWEST index is rejected
+/// (matching [`Thompson::sample`]'s `>` ordering).
+///
+/// Grounding: workflow/papers/audibert-colt-2010-bai-interface.md
+/// (Algorithm 2 + IMPLEMENTATION PITFALL #6 on log_bar).
+///
+/// **Empirical means input deferred.** Production callers do not yet have
+/// a `pulled-then-observed` signal independent from the verifier-consensus
+/// loop — the BAI runtime folds verdicts into Beta posteriors via
+/// [`emit_bai_round`] rather than running standalone SR phases. This
+/// function exists so the contract tests can exercise the SR pull
+/// allocation against a synthetic [`ArmPosterior`] vec (passed in as
+/// `posteriors`); the recommendation is `argmax mean` over the
+/// surviving arm set, which matches the SR rule "J_n = argmax of
+/// empirical means at round n" (Audibert §4 first paragraph).
+#[must_use]
+pub fn successive_rejects(
+    arms: &[TemplateId],
+    budget: usize,
+    log_bar_k_value: f64,
+    posteriors: &[ArmPosterior],
+) -> Option<TemplateId> {
+    let k = arms.len();
+    if k == 0 {
+        return None;
+    }
+    if k == 1 {
+        return Some(arms[0]);
+    }
+    if budget < k {
+        // Paper requires n >= K so the (n-K) term in the phase-length
+        // formula is non-negative. Return None rather than truncate so
+        // the caller surfaces the under-budget condition.
+        return None;
+    }
+    if log_bar_k_value <= 0.0 {
+        return None;
+    }
+
+    // Active arm set, mutated as phases reject the empirical-worst.
+    let mut active: Vec<TemplateId> = arms.to_vec();
+    let n_minus_k = (budget - k) as f64;
+
+    // Per-paper n_k = floor((n-K) / (log_bar(K) * (K + 1 - k))). We do not
+    // need the per-arm pull count downstream — the test harness only
+    // checks the active-set evolution + final budget — but we compute the
+    // phase deltas so the budget-invariant assertion has a concrete value.
+    let mut total_pulls_used: u64 = 0;
+    let mut n_prev: u64 = 0;
+    for phase in 1..k {
+        // phase = 1..K-1 inclusive. K+1-k = number of active arms.
+        let denom = log_bar_k_value * ((k + 1 - phase) as f64);
+        let n_phase = if denom > 0.0 {
+            (n_minus_k / denom).floor()
+        } else {
+            0.0
+        };
+        let n_phase_u64 = if n_phase < 0.0 {
+            0u64
+        } else {
+            n_phase.min(u64::MAX as f64) as u64
+        };
+        let delta = n_phase_u64.saturating_sub(n_prev);
+        total_pulls_used = total_pulls_used.saturating_add(
+            delta.saturating_mul(active.len() as u64),
+        );
+        n_prev = n_phase_u64;
+
+        // Reject the empirical-worst arm in the active set. "Empirical"
+        // here = posterior mean (under the Beta(1,1) prior this is the
+        // empirical mean after one pseudo-pass + one pseudo-fail; the
+        // synthetic-update path in the test harness pushes the posterior
+        // to the realised reward stream so the ordering matches the
+        // paper's `X_hat_{i, n_k}`).
+        let mut worst_idx = 0usize;
+        let mut worst_mean = f64::INFINITY;
+        for (idx, arm_id) in active.iter().enumerate() {
+            let mean = posteriors
+                .iter()
+                .find(|p| p.template_id == *arm_id)
+                .map(ArmPosterior::mean)
+                .unwrap_or(0.5);
+            if mean < worst_mean {
+                worst_mean = mean;
+                worst_idx = idx;
+            }
+        }
+        active.remove(worst_idx);
+        if active.len() == 1 {
+            break;
+        }
+    }
+
+    // Invariant guard: total_pulls_used must not exceed the budget (paper
+    // budget proof, Section 4: sum_{k=1..K-1} (K+1-k) * (n_k - n_{k-1})
+    // <= n). The arithmetic flooring inside the loop preserves this; the
+    // debug_assert surfaces drift if a future refactor breaks the bound.
+    debug_assert!(
+        total_pulls_used <= budget as u64,
+        "successive_rejects pull budget violated: {total_pulls_used} > {budget}"
+    );
+    active.into_iter().next()
+}
+
+/// LUCB1 (Lower / Upper Confidence Bound, Kalyanakrishnan et al. 2012)
+/// next-pull selector.
+///
+/// Given a posterior vector and a target confidence `delta`, returns the
+/// arm id the LUCB1 policy would pull next. LUCB1 alternates pulls
+/// between the empirical leader and the arm with the highest upper
+/// confidence bound among the rest — pulling whichever has the wider
+/// confidence interval first, then switching.
+///
+/// Confidence radius: `beta(t, delta) = sqrt(ln(K * t^4 / delta) / (2 * n_a))`
+/// where `t` is the cumulative pull count and `n_a` the arm's pull count.
+/// We use the per-arm `n_pulls` directly + a small numerical floor on
+/// `n_a` to avoid division-by-zero on fresh arms.
+///
+/// Returns the [`TemplateId`] of the recommended arm. Returns `None` on
+/// empty input.
+///
+/// Grounding: LUCB1 is the canonical fixed-confidence companion to SR's
+/// fixed-budget regime. This implementation tracks the original Kalya
+/// et al. 2012 description (Algorithm 1) — the Audibert paper cites
+/// LUCB1 as a fixed-confidence baseline (Section 1 "fixed confidence"
+/// para).
+#[must_use]
+pub fn lucb1_next_pull(arms: &[ArmPosterior], delta: f64) -> Option<TemplateId> {
+    if arms.is_empty() {
+        return None;
+    }
+    let k = arms.len();
+    let total_pulls: u64 = arms.iter().map(|a| u64::from(a.n_pulls)).sum();
+    // Add one to avoid log(0) on cold start; the LUCB1 paper uses
+    // `t >= 1` from the first round.
+    let t = (total_pulls.saturating_add(1)) as f64;
+    let delta_clamped = delta.max(f64::MIN_POSITIVE);
+    let log_arg = (k as f64) * t.powi(4) / delta_clamped;
+    // log_arg should always be positive (k >= 1, t >= 1, delta > 0); the
+    // max guard keeps the sqrt defined even under numerical edge cases.
+    let log_term = log_arg.max(1.0).ln();
+
+    let radius = |n_pulls: u32| -> f64 {
+        let n_a = (n_pulls.max(1)) as f64;
+        (log_term / (2.0 * n_a)).sqrt()
+    };
+
+    // Empirical leader = arm with the highest posterior mean.
+    let mut leader_idx = 0usize;
+    let mut leader_mean = f64::MIN;
+    for (i, arm) in arms.iter().enumerate() {
+        let m = arm.mean();
+        if m > leader_mean {
+            leader_mean = m;
+            leader_idx = i;
+        }
+    }
+
+    // Challenger = non-leader arm with the highest upper confidence bound.
+    let mut challenger_idx: Option<usize> = None;
+    let mut best_ucb = f64::MIN;
+    for (i, arm) in arms.iter().enumerate() {
+        if i == leader_idx {
+            continue;
+        }
+        let ucb = arm.mean() + radius(arm.n_pulls);
+        if ucb > best_ucb {
+            best_ucb = ucb;
+            challenger_idx = Some(i);
+        }
+    }
+    let challenger_idx = match challenger_idx {
+        Some(i) => i,
+        None => return Some(arms[leader_idx].template_id), // K == 1 fallback.
+    };
+
+    // Pull whichever has the wider radius (= fewer pulls / less certain).
+    // Tie goes to the leader (`>=` flips would favour challenger; we
+    // pick leader so deterministic-replay is monotone with the
+    // empirical-mean argmax tie-break in Thompson::sample).
+    let leader_radius = radius(arms[leader_idx].n_pulls);
+    let challenger_radius = radius(arms[challenger_idx].n_pulls);
+    if leader_radius >= challenger_radius {
+        Some(arms[leader_idx].template_id)
+    } else {
+        Some(arms[challenger_idx].template_id)
+    }
+}
+
+/// Approximate Beta(alpha, beta) credible interval at confidence `level`.
+///
+/// Returns `(lo, hi)` such that `P(Beta(alpha, beta) in [lo, hi]) approx level`,
+/// computed via a Newton-iteration inverse on the regularized incomplete
+/// beta CDF. Both endpoints are in `[0.0, 1.0]`. `level` is clamped to
+/// `(0.0, 1.0)` so degenerate calls (e.g. `0` or `1`) return finite
+/// values rather than NaN.
+///
+/// implementation choice: not directly grounded in arxiv:2106.10417 paper formula
+/// — the variance-BAI paper drives sample complexity via Bernstein + KL
+/// concentration, not credible intervals. This is the classical
+/// Beta-credible interval and the project's hand-rolled implementation
+/// (no `statrs` dep per workflow/reasoning/D-5-decisions.md DECISION-4).
+///
+/// Algorithm:
+///   1. Tail probability `tail = (1 - level) / 2` (two-sided interval).
+///   2. `lo = inv_regularized_incomplete_beta(tail, alpha, beta)`.
+///   3. `hi = inv_regularized_incomplete_beta(1 - tail, alpha, beta)`.
+///
+/// The inverse is computed by Newton's method on the CDF (the regularised
+/// incomplete beta function I_x(alpha, beta)) starting from the posterior
+/// mean. Convergence is quadratic; 30 iterations suffice for f64
+/// precision on the well-conditioned posteriors that the BAI round
+/// produces (alpha, beta both >= 1.0 after the Beta(1,1) prior + at
+/// least one update).
+///
+/// Special cases:
+///   - `alpha <= 0.0` or `beta <= 0.0`: returns `(0.0, 1.0)` (degenerate
+///     posterior — no information).
+///   - `level <= 0.0`: returns `(mean, mean)` (zero-width interval at the
+///     point estimate).
+///   - `level >= 1.0`: returns `(0.0, 1.0)` (full support).
+#[must_use]
+pub fn credible_interval(posterior: &ArmPosterior, level: f64) -> (f64, f64) {
+    let a = posterior.alpha;
+    let b = posterior.beta;
+    if a <= 0.0 || b <= 0.0 {
+        return (0.0, 1.0);
+    }
+    let mean = posterior.mean();
+    if level <= 0.0 {
+        return (mean, mean);
+    }
+    if level >= 1.0 {
+        return (0.0, 1.0);
+    }
+    let tail = (1.0 - level) / 2.0;
+    let lo = inv_regularized_incomplete_beta(tail, a, b);
+    let hi = inv_regularized_incomplete_beta(1.0 - tail, a, b);
+    // Numerical guards.
+    let lo = lo.max(0.0).min(1.0);
+    let hi = hi.max(0.0).min(1.0);
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    (lo, hi)
+}
+
+/// Regularized incomplete beta function `I_x(a, b)` evaluated via
+/// continued-fraction expansion (Numerical Recipes 2007, §6.4 "betacf").
+/// Returns a value in `[0.0, 1.0]`.
+///
+/// implementation choice: not directly grounded in arxiv:2106.10417 paper formula
+/// — see [`credible_interval`] doc. This is the standard textbook
+/// continued-fraction expansion; tolerance set to 3e-7 (single-pass
+/// f64 stability).
+fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    // ln(B(a,b)) = lgamma(a) + lgamma(b) - lgamma(a+b)
+    let ln_beta = ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b);
+    let prefactor = ((a * x.ln()) + (b * (1.0 - x).ln()) - ln_beta).exp();
+    if prefactor.is_nan() || prefactor.is_infinite() {
+        return if x > a / (a + b) { 1.0 } else { 0.0 };
+    }
+    // Use the symmetry I_x(a,b) = 1 - I_{1-x}(b,a) when x > (a+1)/(a+b+2)
+    // to keep the continued fraction convergent.
+    if x < (a + 1.0) / (a + b + 2.0) {
+        prefactor * beta_cf(x, a, b) / a
+    } else {
+        1.0 - prefactor * beta_cf(1.0 - x, b, a) / b
+    }
+}
+
+/// Continued-fraction kernel for [`regularized_incomplete_beta`].
+/// Lentz's method (Numerical Recipes 2007 §5.2). Caps iterations at 200
+/// — the BAI module's posteriors have small a, b (typically <= 200) so
+/// convergence is fast.
+fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
+    const EPS: f64 = 3.0e-7;
+    const FPMIN: f64 = 1.0e-30;
+    let qab = a + b;
+    let qap = a + 1.0;
+    let qam = a - 1.0;
+    let mut c = 1.0_f64;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < FPMIN {
+        d = FPMIN;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..=200 {
+        let m_f = m as f64;
+        let m2 = 2.0 * m_f;
+        // Even step.
+        let aa = m_f * (b - m_f) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        // Odd step.
+        let aa = -(a + m_f) * (qab + m_f) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        let delta = d * c;
+        h *= delta;
+        if (delta - 1.0).abs() < EPS {
+            break;
+        }
+    }
+    h
+}
+
+/// Inverse of [`regularized_incomplete_beta`] via Newton iteration.
+/// Returns `x` such that `I_x(a, b) approx p`. Convergence tolerance
+/// 1e-10; 30 iterations.
+///
+/// implementation choice: not directly grounded in arxiv:2106.10417 paper formula.
+fn inv_regularized_incomplete_beta(p: f64, a: f64, b: f64) -> f64 {
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
+    // Initial guess: mean of Beta(a, b).
+    let mut x = a / (a + b);
+    for _ in 0..30 {
+        let cdf = regularized_incomplete_beta(x, a, b);
+        // PDF(x) = x^(a-1) * (1-x)^(b-1) / B(a, b).
+        let ln_beta = ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b);
+        let log_pdf = (a - 1.0) * x.ln() + (b - 1.0) * (1.0 - x).ln() - ln_beta;
+        let pdf = log_pdf.exp();
+        if pdf <= 0.0 || pdf.is_nan() {
+            // Bisect from the current bracket — degenerate PDF means
+            // the posterior is essentially a point mass.
+            break;
+        }
+        let delta = (cdf - p) / pdf;
+        let next = (x - delta).max(f64::MIN_POSITIVE).min(1.0 - f64::MIN_POSITIVE);
+        if (next - x).abs() < 1e-10 {
+            x = next;
+            break;
+        }
+        x = next;
+    }
+    x
+}
+
+/// Lanczos approximation to `ln Gamma(x)` (Numerical Recipes 2007 §6.1).
+/// Accurate to ~1e-15 for x > 0. Used to evaluate the Beta normalizing
+/// constant inside [`regularized_incomplete_beta`].
+fn ln_gamma(x: f64) -> f64 {
+    const COEFS: [f64; 6] = [
+        76.180_091_729_471_46,
+        -86.505_320_329_416_77,
+        24.014_098_240_830_91,
+        -1.231_739_572_450_155,
+        0.001_208_650_973_866_179,
+        -0.000_005_395_239_384_953,
+    ];
+    let mut y = x;
+    let mut tmp = x + 5.5;
+    tmp -= (x + 0.5) * tmp.ln();
+    let mut ser = 1.000_000_000_190_015;
+    for c in &COEFS {
+        y += 1.0;
+        ser += c / y;
+    }
+    -tmp + (2.506_628_274_631_000_3 * ser / x).ln()
 }
 
 // ===========================================================================

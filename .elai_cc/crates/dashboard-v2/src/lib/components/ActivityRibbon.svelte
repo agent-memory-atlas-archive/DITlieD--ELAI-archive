@@ -7,6 +7,7 @@
 
   import { fsm } from '$lib/state/fsm.svelte';
   import { session } from '$lib/state/session.svelte';
+  import { uxPrefs } from '$lib/state/ux_prefs.svelte';
 
   // Live FSM state — re-rendered on every fsm.svelte.ts poll (5s default).
   let fsmState = $derived(fsm.state);
@@ -15,6 +16,10 @@
   let stepId = $derived(fsm.currentStepId);
   let mode = $derived(session.mode);
   let model = $derived(session.model);
+  // E-33 task 1: SettingsWindow toggle ui.activity_ribbon.enabled. When
+  // disabled the visual chrome collapses to 0 height (mount stays so the
+  // a11y polite region still fires on first activity).
+  let userEnabled = $derived(uxPrefs.activityRibbonEnabled);
 
   // FSM-state color mirrors StatusBar mapping. Kept in sync with tokens.css
   // FSM STATE COLORS block; do not introduce hex literals here.
@@ -36,7 +41,9 @@
   // Visually hide the ribbon when the FSM is fully idle and there's nothing
   // to report — avoids permanent dead-pixel chrome. The mount stays so the
   // a11y region "polite" announcement still fires on first activity.
-  let visible = $derived(fsmState !== 'IDLE' || agentSubstate !== '' || progressPct > 0);
+  let visible = $derived(
+    userEnabled && (fsmState !== 'IDLE' || agentSubstate !== '' || progressPct > 0),
+  );
 </script>
 
 <aside

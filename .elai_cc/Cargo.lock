@@ -1249,11 +1249,13 @@ dependencies = [
  "crossterm",
  "elai-core",
  "elai-knowledge",
+ "elai-memory",
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
  "elai-reasoning",
  "elai-rules",
+ "elai-safety",
  "elai-tools",
  "elai-web-search",
  "pulldown-cmark",
@@ -1339,6 +1341,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "elai-core",
+ "elai-plugins",
  "elai-rules",
  "globset",
  "ignore",
@@ -1395,6 +1398,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -1410,6 +1414,7 @@ dependencies = [
  "elai-core",
  "elai-ipc-types",
  "elai-knowledge",
+ "elai-memory",
  "elai-orchestrator",
  "elai-plugins",
  "elai-providers",
@@ -1462,6 +1467,8 @@ dependencies = [
  "elai-core",
  "elai-rules",
  "lru 0.18.0",
+ "proptest",
+ "proptest-state-machine",
  "regex",
  "reqwest 0.12.28",
  "rustc-hash",
@@ -1545,10 +1552,15 @@ name = "elai-safety"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "elai-core",
  "once_cell",
  "regex",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
 ]
 

@@ -4,7 +4,7 @@ api_format = "openai"
 model_name = "Qwen2.5-Coder-7B-Instruct"
 model_size_b = 7.61
 quantization = "NF4 (bitsandbytes)"
-tokenizer = "D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct"
+tokenizer = "F:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-7B-Instruct"
 
 [hardware]
 gpu_name = "RTX 3060"

@@ -1047,6 +1047,12 @@ fn agent_role_str(role: AgentRole) -> String {
         AgentRole::AuditorSteps => "auditor_steps",
         AgentRole::AuditorBabySteps => "auditor_babysteps",
         AgentRole::AuditorBabyStepDetail => "auditor_babystep_detail",
+        // E-12: plan-scope production-grade auditor (15-item checklist +
+        // framework profile gates). Shares the auditor_ prefix so the
+        // FINDING gate at L300 fires for this variant too.
+        AgentRole::AuditorProductionGrade => "auditor_production_grade",
+        // E-37: prompt-injection classifier (off-model PromptArmor-style).
+        AgentRole::InjectionClassifier => "injection_classifier",
     }
     .to_owned()
 }

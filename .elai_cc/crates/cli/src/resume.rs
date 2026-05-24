@@ -769,7 +769,8 @@ pub(crate) fn run_resume_command(
         | SlashCommand::GraphMermaid { .. }
         | SlashCommand::Measure { .. }
         | SlashCommand::Pipeline { .. }
-        | SlashCommand::WiringAudit { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
+        | SlashCommand::WiringAudit { .. }
+        | SlashCommand::Mucoco { .. } => Err(anyhow::anyhow!("unsupported resumed slash command")),
     }
 }
 

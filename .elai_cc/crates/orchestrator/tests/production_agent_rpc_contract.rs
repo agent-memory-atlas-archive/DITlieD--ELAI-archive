@@ -531,3 +531,122 @@ async fn e_handle_tool_request_pops_stashed_args_and_dispatches_edit() {
         "stashed 'edit' entry must be popped to len=0 after dispatch"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test F — TOOL_INDEX_ARTIFACTS returns ToolOutcome::Result with a JSON
+// payload carrying `artifact_count` parseable as u32. Wiring witness for
+// C-8 Task #5 (production_agent_rpc.rs:1432 real implementation that
+// replaced the "deferred to Phase C" Err stub).
+//
+// We exercise the empty-manifest happy-path: the project_root has no
+// elai_cc.toml manifest, so ArtifactManifest::load returns an empty
+// manifest; the handler returns Ok with artifact_count=0. This pins the
+// contract that:
+//   (a) the dispatcher branch is reached (i.e. the Err stub is gone),
+//   (b) the JSON shape carries `artifact_count`,
+//   (c) `artifact_count` is parseable as u32.
+//
+// Source plan: docs/thefinalglance/C-plan/C-8_viewer_stub_eradication.md
+//   (plan EXTEND clause for production_agent_rpc_contract.rs).
+// Decisions:   workflow/reasoning/C-8-decisions.md (DRIFT-G/DRIFT-H).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn f_index_artifacts_returns_ok_with_artifact_count_field() {
+    // Construct a fake project_root layout matching the contract
+    // `<project_root>/.elai/indexes/context_*.db`. The handler walks up
+    // 3 levels (parent.parent.parent) per derive_project_root_from_db_path.
+    let tmp = tempfile::TempDir::new().expect("project tempdir");
+    let project_root = tmp.path().to_path_buf();
+    let elai_dir = project_root.join(".elai");
+    let indexes_dir = elai_dir.join("indexes");
+    std::fs::create_dir_all(&indexes_dir).expect("mkdir .elai/indexes");
+    let db_path = indexes_dir.join("context_test.db");
+    // The handler opens the store via ArtifactStore::open; the store
+    // creates the sqlite file on demand. We do NOT pre-create it here.
+
+    let client = AnthropicClient::new("test-key")
+        .with_base_url("http://127.0.0.1:1".to_string());
+    let dispatcher: Arc<dyn elai_core::tool_dispatcher::ToolDispatcher> =
+        Arc::new(NoOpDispatcher);
+    let server = ProductionAgentRpcServer::new(
+        client,
+        dispatcher,
+        "claude-test".into(),
+        100,
+    );
+
+    // Wire-format request: postcard-encoded IndexArtifactsRequest per
+    // production_agent_rpc.rs:1456. artifact_name names a spec that does
+    // NOT exist in the (empty) manifest, so the filter at L1510-1514
+    // produces an empty target_specs vec; the handler returns
+    // artifact_count = 0 + chunk_count = 0.
+    let wire_req = elai_ipc_types::IndexArtifactsRequest {
+        db_path: db_path.to_string_lossy().into_owned(),
+        artifact_name: "nonexistent_artifact".into(),
+    };
+    let args = postcard::to_allocvec(&wire_req).expect("postcard encode");
+
+    let outcome = server
+        .handle_tool_request(elai_ipc_types::TOOL_INDEX_ARTIFACTS.into(), args)
+        .await;
+
+    match outcome {
+        ToolOutcome::Result(bytes) => {
+            assert!(
+                !bytes.is_empty(),
+                "TOOL_INDEX_ARTIFACTS result bytes must not be empty",
+            );
+            let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+                .expect("TOOL_INDEX_ARTIFACTS result must be valid JSON");
+
+            // Pin the wire shape: artifact_count field present + u32.
+            let artifact_count_val = parsed
+                .get("artifact_count")
+                .expect("result JSON must carry artifact_count key");
+            let artifact_count_u64 = artifact_count_val
+                .as_u64()
+                .expect("artifact_count must be a numeric (u64-encodable) value");
+            assert!(
+                artifact_count_u64 <= u64::from(u32::MAX),
+                "artifact_count must fit in u32; got {artifact_count_u64}",
+            );
+            // Sanity: empty manifest -> 0.
+            assert_eq!(
+                artifact_count_u64, 0,
+                "empty manifest must yield artifact_count=0; got {artifact_count_u64}",
+            );
+
+            // Pin sibling fields documented in production_agent_rpc.rs:1576-1583.
+            assert!(
+                parsed.get("project_id").is_some(),
+                "result JSON must carry project_id; got: {parsed}",
+            );
+            assert!(
+                parsed.get("chunk_count").is_some(),
+                "result JSON must carry chunk_count; got: {parsed}",
+            );
+            assert!(
+                parsed.get("elapsed_ms").is_some(),
+                "result JSON must carry elapsed_ms; got: {parsed}",
+            );
+            assert!(
+                parsed.get("indexed").map(|v| v.is_array()).unwrap_or(false),
+                "result JSON must carry an `indexed` array; got: {parsed}",
+            );
+            assert!(
+                parsed
+                    .get("up_to_date")
+                    .map(|v| v.is_array())
+                    .unwrap_or(false),
+                "result JSON must carry an `up_to_date` array; got: {parsed}",
+            );
+        }
+        ToolOutcome::Failed(reason) => {
+            panic!(
+                "expected ToolOutcome::Result for TOOL_INDEX_ARTIFACTS (C-8 Task 5 replaces \
+                 the deferred Err stub); got Failed: {reason}",
+            );
+        }
+    }
+}

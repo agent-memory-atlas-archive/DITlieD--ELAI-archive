@@ -2,9 +2,53 @@
   import { onMount } from 'svelte';
   import { Select, SegmentedControl, Scrollbar, UnwiredNote } from '$lib/ui';
   import RuntimePanel from '$lib/components/RuntimePanel.svelte';
+  import EmpireBridgePanel from '$lib/components/EmpireBridgePanel.svelte';
+  // C-35: dynamic tool gating dashboard panel. Reads the live tool-gate
+  // snapshot + 60s histogram of prompt_tokens_saved across the 4 tool_*
+  // SSB action types. Backend at commands_c35.rs.
+  import ToolGateInspector from '$lib/components/ToolGateInspector.svelte';
+  // C-42 (session 2): Semantic Gateway L2 RBAC zero-trust panel. Mounts
+  // alongside ToolGateInspector. Backend at commands_c42.rs (3 read-only
+  // Tauri commands). Paper grounding: arXiv:2604.25555 (MEDIUM reliability).
+  import AuthzPanel from '$lib/components/AuthzPanel.svelte';
+  // C-47: Case-based calibration inspector. Mounts alongside
+  // ToolGateInspector + AuthzPanel inside SettingsWindow. Backend at
+  // commands_c47.rs (2 read-only Tauri commands: tool_calibration_status
+  // + list_tool_calibration_rows). Paper grounding: arXiv:2605.15041
+  // (CAST — Case-Based Calibration of Adaptive Reasoning and Execution
+  // for LLM Tool Use). See workflow/papers/case-based-calibration.md.
+  import CaseBaseInspector from '$lib/components/CaseBaseInspector.svelte';
+  // E-18: Tool-use reliability inspector. Mounts alongside
+  // ToolGateInspector + AuthzPanel + CaseBaseInspector. Backend at
+  // commands_e18.rs (2 read-only Tauri commands: tool_reliability_status
+  // + list_tool_reliability_rows). Composes ABOVE the C-47 case base
+  // (composition order: AuthzPolicy -> ToolGate -> Calibration consult
+  // -> Reliability gate -> dispatch). Reuse-heavy posture: builds on
+  // D-11 RegistryCheck + E-35 SearchReplaceMatcher / SidecarXGrammarHook
+  // + C-47 ToolCalibrationRegistry + C-42 AuthzPolicy + C-35 ToolGate
+  // rather than re-implementing those surfaces. See
+  // workflow/reasoning/E-18-decisions.md.
+  import ToolReliabilityInspector from '$lib/components/ToolReliabilityInspector.svelte';
+  // E-37: PromptArmor / prompt-injection defense panel (OWASP LLM Top 10
+  // LLM01). Mounts alongside ToolGateInspector + AuthzPanel +
+  // CaseBaseInspector + ToolReliabilityInspector as the 5th inspector.
+  // Backend at commands_e37.rs (2 read-only Tauri commands: safety_status
+  // + list_safety_rows). Layers additively atop the E-24 mcp_schema_pin
+  // + sanitize_result + llm_guard surface and the E-30 destructive_verb_
+  // allowlist surface. See workflow/reasoning/E-37-decisions.md.
+  import PromptArmorPanel from '$lib/components/PromptArmorPanel.svelte';
+  // C-43: Phase 4H scope-freeze status badge. Minimal widget — reads
+  // scope_freeze_status (commands_c43.rs) every 15s and renders a
+  // green/red badge plus last-ratified timestamp. ELAI design
+  // hypothesis; no paper grounding (see
+  // workflow/sessions/s-25120/mistakes.md for the bad-cite analysis
+  // of arXiv:2604.21725).
+  import FreezeStatusBar from '$lib/widgets/FreezeStatusBar.svelte';
   import CloudPanel from '$lib/screens/CloudPanel.svelte';
   import { session } from '$lib/state/session.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
+  // E-33: persistent UX prefs (activity-ribbon visibility + motion override).
+  import { uxPrefs, type MotionPref } from '$lib/state/ux_prefs.svelte';
   import * as stub from '$lib/api/stub';
   import type {
     AgentRole,
@@ -387,6 +431,60 @@
   }
 
   // ------------------------------------------------------------------
+  // B-26 T2 — Webhook URL persistence
+  // ------------------------------------------------------------------
+  // Bound to set_webhook_url / get_webhook_url Tauri commands. Persists
+  // on blur after http(s):// validation. Inline status text shows
+  // 'saved' on success or 'invalid' on validation failure; cleared on
+  // input. The Tauri side normalizes-trims and treats "" as a clear.
+  let webhookUrl = $state<string>('');
+  let webhookStatus = $state<'idle' | 'saved' | 'invalid'>('idle');
+  let _webhookSeeded = false;
+
+  onMount(() => {
+    stub
+      .get_webhook_url()
+      .then((res) => {
+        if (_webhookSeeded) return;
+        webhookUrl = res?.webhook_url ?? '';
+        _webhookSeeded = true;
+      })
+      .catch(() => {
+        // sidecar offline — leave empty, user can still type and save once live
+      });
+  });
+
+  function isValidWebhookUrl(s: string): boolean {
+    const trimmed = s.trim();
+    if (trimmed === '') return true; // "" = clear, valid
+    return /^https?:\/\//i.test(trimmed);
+  }
+
+  function onWebhookUrlInput() {
+    // Reset status as soon as the user types so stale 'saved'/'invalid'
+    // labels do not persist past the next edit.
+    webhookStatus = 'idle';
+  }
+
+  function onWebhookUrlBlur() {
+    const trimmed = webhookUrl.trim();
+    if (!isValidWebhookUrl(trimmed)) {
+      webhookStatus = 'invalid';
+      return;
+    }
+    stub
+      .set_webhook_url(trimmed)
+      .then((res) => {
+        webhookUrl = res?.webhook_url ?? trimmed;
+        webhookStatus = 'saved';
+      })
+      .catch((err) => {
+        console.warn('[settings] set_webhook_url failed', err);
+        webhookStatus = 'invalid';
+      });
+  }
+
+  // ------------------------------------------------------------------
   // Section 3: Project
   // ------------------------------------------------------------------
   let showOverrideEditor = $state(false);
@@ -428,6 +526,43 @@
 
   let fontScale = $state('M');
   let panelLayout = $state('activity-left');
+
+  // E-33 tasks 1 + 6: persistent UX preferences for ActivityRibbon
+  // visibility + accessibility motion override. Bound through uxPrefs so
+  // the change reflects across the dashboard immediately (motion store
+  // updates the documentElement [data-motion] attribute, ActivityRibbon
+  // collapses to zero height).
+  let activityRibbonEnabled = $state(uxPrefs.activityRibbonEnabled);
+  let accessibilityMotion = $state<MotionPref>(uxPrefs.motionPref);
+  const MOTION_OPTIONS = [
+    { value: 'auto', label: 'auto' },
+    { value: 'reduced', label: 'reduced' },
+    { value: 'full', label: 'full' },
+  ];
+
+  let _ribbonInit = true;
+  $effect(() => {
+    const v = activityRibbonEnabled;
+    if (_ribbonInit) {
+      _ribbonInit = false;
+      return;
+    }
+    uxPrefs.setActivityRibbonEnabled(v);
+  });
+
+  let _motionInit = true;
+  $effect(() => {
+    const v = accessibilityMotion;
+    if (_motionInit) {
+      _motionInit = false;
+      return;
+    }
+    uxPrefs.setMotionPref(v as MotionPref);
+  });
+
+  function toggleActivityRibbon() {
+    activityRibbonEnabled = !activityRibbonEnabled;
+  }
 
   // ------------------------------------------------------------------
   // Section 5: Inference
@@ -482,6 +617,48 @@
   }
   async function recomputeSteering() {
     await stub.recompute_steering_vector().catch(() => {});
+  }
+
+  // B-4 task #14: canary drift panel. Reads the latest CanaryDrift SSB
+  // row emitted by the periodic cascade evaluator in cli::live_cli so
+  // the operator can see real similarity-vs-reference numbers + a
+  // "Recompute" affordance when the cosine has drifted below threshold.
+  // Same poll cadence as the rest of this window (10s refresh loop).
+  let canaryDriftState = $state<stub.CanaryDriftSnapshot>({
+    known: false,
+    similarity: 0.0,
+    drift_threshold: 0.85,
+    passed: false,
+    reference_present: false,
+    ts: 0,
+  });
+  async function refreshCanaryDrift() {
+    try {
+      canaryDriftState = await stub.get_canary_drift();
+    } catch (e) {
+      // wrapper falls back to known:false; suppress console spam.
+    }
+  }
+  // Trigger one refresh on mount and re-poll alongside the main refresh.
+  onMount(() => {
+    let alive = true;
+    void refreshCanaryDrift();
+    const t = setInterval(() => { if (alive) void refreshCanaryDrift(); }, 10_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+  async function recomputeCanary() {
+    // Trigger a fresh canary readiness check by submitting a tiny task
+    // that runs `/symbol_impact target=__canary__`. The submit_task
+    // path bumps the indexing pipeline which re-emits the CanaryDrift
+    // row on the next cascade tick.
+    try {
+      await stub.submit_task('/symbol_impact target=__canary_recompute__');
+      await refreshCanaryDrift();
+    } catch (e) {
+      // Best-effort: surface failure in console; the next periodic
+      // poll will reflect any new state.
+      console.debug('[SettingsWindow] canary recompute failed', e);
+    }
   }
   async function toggleMcp() {
     // WARN1 (PART12): Svelte 5 async onclick handlers that throw produce
@@ -729,6 +906,112 @@
       <RuntimePanel />
     </section>
 
+    <!-- Section: EMPIRE BRIDGE (B-25 Phase 4J)
+         Polls get_empire_status + list_empire_factory_lines every 10s.
+         Renders the empty-state notice when the orchestrator is built
+         without the `empire` feature OR when the bridge is Disconnected
+         (the EMPIRE-PENDING activation state). When connected, shows the
+         factory-line table with brain_id + engine_tier + neuron_count +
+         last_heartbeat. cross-lang-pair: dashboard/tauri/api. -->
+    <section class="s-section">
+      <div class="s-header">empire bridge</div>
+      <EmpireBridgePanel />
+    </section>
+
+    <!-- Section: TOOL GATE INSPECTOR (C-35)
+         Polls get_tool_gate_snapshot + list_tool_gate_rows every 5s.
+         Renders the current FSM state's gate (eager / gated / denied
+         tool names) plus a rolling 60s histogram of prompt_tokens_saved
+         deltas across the 4 tool_* SSB action types. When the gate
+         manifest is absent OR the mcp feature is off, renders the
+         "Gate snapshot unavailable" empty state. cross-lang-pair:
+         dashboard/tauri/api -->
+    <section class="s-section">
+      <div class="s-header">tool gate (C-35)</div>
+      <ToolGateInspector />
+    </section>
+
+    <!-- Section: AUTHZ PANEL (C-42 session 2, semantic-gateway L2 RBAC)
+         Mounts alongside ToolGateInspector. Polls gateway_authz_status
+         + gateway_authz_recent_denies every 10s. The composed gate runs
+         AuthzPolicy BEFORE the C-35 ToolGate; AuthzPolicy denials short-
+         circuit (gate is never consulted). Reads authz-policy.toml at
+         the workspace root. Paper grounding: arXiv:2604.25555 (MEDIUM
+         reliability). L1 DeBERTa-v3 RUNPOD-PENDING; L3 Crypto-HITL
+         DEFERRED-TO-FOLLOWUP. cross-lang-pair: dashboard/tauri/api -->
+    <section class="s-section">
+      <div class="s-header">authz (C-42 zero-trust)</div>
+      <AuthzPanel />
+    </section>
+
+    <!-- Section: CASE BASE INSPECTOR (C-47 case-based calibration)
+         Mounts alongside ToolGateInspector + AuthzPanel. Polls
+         tool_calibration_status + list_tool_calibration_rows every 5s.
+         Per-tool aggregate signal pattern (CAST Section 3.2 — NOT
+         per-query nearest-neighbor retrieval). Renders shape_count,
+         total_calls, error_count, last_ts_ms per tool, plus a recent
+         SSB row tail showing tool_call_logged /
+         tool_calibration_hint_emitted / tool_calibration_drift_detected
+         events. Paper grounding: arXiv:2605.15041 (CAST). When the
+         orchestrator has not wired a live ToolCalibrationRegistry yet,
+         renders "Calibration registry unavailable" (CALIBRATION-
+         PENDING). cross-lang-pair: dashboard/tauri/api -->
+    <section class="s-section">
+      <div class="s-header">case base (C-47 calibration)</div>
+      <CaseBaseInspector />
+    </section>
+
+    <!-- Section: TOOL RELIABILITY INSPECTOR (E-18 tool-use reliability gate)
+         Mounts alongside ToolGateInspector + AuthzPanel +
+         CaseBaseInspector. Polls tool_reliability_status +
+         list_tool_reliability_rows every 5s. Surfaces the 4 SSB action
+         types (tool_reliability_gate_passed /
+         tool_reliability_gate_rejected / tool_call_spilled /
+         tool_call_retry_escalated) plus the configured inline cap
+         (8 KiB) + default retry cap (1) + spill dir
+         (.elai_cc/.elai_cc/spill). Reuse-heavy posture: composes on
+         D-11 + E-35 + C-47 + C-42 + C-35 rather than re-implementing.
+         When the orchestrator has not wired a live SSB emitter yet,
+         renders "Reliability gate snapshot unavailable" (RELIABILITY-
+         PENDING). cross-lang-pair: dashboard/tauri/api -->
+    <section class="s-section">
+      <div class="s-header">tool reliability (E-18)</div>
+      <ToolReliabilityInspector />
+    </section>
+
+    <!-- Section: PROMPT-INJECTION DEFENSE (E-37, OWASP LLM Top 10 LLM01)
+         5th inspector — mounts alongside ToolGateInspector + AuthzPanel
+         + CaseBaseInspector + ToolReliabilityInspector. Polls
+         safety_status + list_safety_rows (commands_e37.rs) every 5s.
+         Surfaces the 9 E-37 SSB action types and the per-tool blake3
+         description pin store. Layers additively atop the E-24
+         mcp_schema_pin + sanitize_result + llm_guard surface and the
+         E-30 destructive_verb_allowlist surface. Paper grounding:
+         arXiv:2403.14720 Spotlight + arXiv:2507.15219 PromptArmor +
+         arXiv:2503.18813 CaMeL + arXiv:2406.13352 AgentDojo +
+         arXiv:2502.06703 cheap monitors. RUNPOD-PENDING: live
+         adversarial fixture replay against deployed models (AgentDojo /
+         EchoLeak / CometJacking). When the orchestrator has not wired a
+         live SSB emitter yet, renders "no prompt-injection defense
+         events recorded yet" (SAFETY-PENDING). cross-lang-pair:
+         dashboard/tauri/api -->
+    <section class="s-section">
+      <div class="s-header">prompt-injection defense (E-37)</div>
+      <PromptArmorPanel />
+    </section>
+
+    <!-- Section: FREEZE STATUS (C-43, Phase 4H scope-freeze)
+         Minimal badge widget. Polls scope_freeze_status (commands_c43)
+         every 15s. Renders green when every frozen_items entry in
+         scope-freeze.toml has on-disk mtime <= ratification_ts_ms; red
+         otherwise. ELAI design hypothesis — no paper grounding (the
+         source plan's arXiv:2604.21725 cite was wrong, see
+         workflow/sessions/s-25120/mistakes.md). -->
+    <section class="s-section">
+      <div class="s-header">phase 4H freeze (C-43)</div>
+      <FreezeStatusBar />
+    </section>
+
     <!-- Section: CLOUD PANEL (C-5) — live provider routing + spend cap +
          redaction events. Replaces the B-27 read-only mirror with a
          CloudPanel component that polls get_cloud_spend / get_execution_mode
@@ -782,6 +1065,26 @@
           >{notificationsEnabled ? '[ ON ]' : '[ off ]'}</button>
         </div>
       </div>
+
+      <div class="s-row">
+        <span class="s-label">Webhook URL</span>
+        <div class="s-control s-control--wide">
+          <input
+            class="bare-input mono"
+            type="url"
+            placeholder="https://discord.com/api/webhooks/..."
+            bind:value={webhookUrl}
+            oninput={onWebhookUrlInput}
+            onblur={onWebhookUrlBlur}
+            aria-label="Notification webhook URL"
+          />
+          {#if webhookStatus === 'saved'}
+            <span class="s-readonly mono" aria-live="polite">saved</span>
+          {:else if webhookStatus === 'invalid'}
+            <span class="s-readonly s-readonly--accent mono" aria-live="polite">invalid</span>
+          {/if}
+        </div>
+      </div>
     </section>
 
     <!-- Section: PROJECT -->
@@ -794,7 +1097,7 @@
           <input
             class="bare-input mono bare-input--disabled"
             type="text"
-            value={session.currentProject?.path ?? 'D:\\.ELAI_workflow\\.elai_cc'}
+            value={session.currentProject?.path ?? 'F:\\.ELAI_workflow\\.elai_cc'}
             disabled
           />
         </div>
@@ -866,6 +1169,30 @@
           <SegmentedControl options={LAYOUT_OPTIONS} bind:value={panelLayout} />
         </div>
       </div>
+
+      <!-- E-33 task 1: ui.activity_ribbon.enabled. Persisted to localStorage
+           via uxPrefs.setActivityRibbonEnabled; ActivityRibbon collapses to
+           zero height when disabled (mount stays for the a11y polite region). -->
+      <div class="s-row">
+        <span class="s-label">Activity ribbon</span>
+        <div class="s-control">
+          <button
+            class="toggle-pill mono"
+            class:toggle-pill--on={activityRibbonEnabled}
+            onclick={toggleActivityRibbon}
+            aria-pressed={activityRibbonEnabled}
+          >{activityRibbonEnabled ? '[ ON ]' : '[ off ]'}</button>
+        </div>
+      </div>
+
+      <!-- E-33 task 6: accessibility.motion. auto -> follow OS prefers-reduced-motion;
+           reduced -> force reduced regardless of OS; full -> force motion on. -->
+      <div class="s-row">
+        <span class="s-label">Motion</span>
+        <div class="s-control">
+          <SegmentedControl options={MOTION_OPTIONS} bind:value={accessibilityMotion} />
+        </div>
+      </div>
     </section>
 
     <!-- Section: INFERENCE -->
@@ -898,6 +1225,24 @@
         <div class="s-control s-control--inline-gap">
           <button class="toggle-pill mono" class:toggle-pill--on={steeringEnabled} onclick={toggleSteering} aria-pressed={steeringEnabled}>{steeringEnabled ? '[ ON ]' : '[ off ]'}</button>
           <button class="link-btn" onclick={recomputeSteering}>recompute</button>
+        </div>
+      </div>
+
+      <!-- B-4 task #14: CANARY DRIFT (cosine vs persisted reference vec) -->
+      <div class="s-row">
+        <span class="s-label">Canary drift</span>
+        <div class="s-control s-control--inline-gap">
+          {#if canaryDriftState.known}
+            <span class="s-ping mono" class:s-error={!canaryDriftState.passed}>
+              cosine {canaryDriftState.similarity.toFixed(4)}
+              / thr {canaryDriftState.drift_threshold.toFixed(2)}
+              {canaryDriftState.passed ? '' : '!'}
+            </span>
+            <button class="link-btn" onclick={recomputeCanary}>recompute</button>
+          {:else}
+            <span class="s-ping mono">no snapshot yet</span>
+            <button class="link-btn" onclick={recomputeCanary}>recompute</button>
+          {/if}
         </div>
       </div>
 

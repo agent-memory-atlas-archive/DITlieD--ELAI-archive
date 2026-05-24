@@ -10,7 +10,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 ONNX_DIR="${ELAI_ROOT}/models/onnx"
 DEPS="${ELAI_ROOT}/target/debug/deps"
 

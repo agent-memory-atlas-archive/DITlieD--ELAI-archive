@@ -246,13 +246,67 @@ pub fn memory_dir_path(project_root: &Path) -> PathBuf {
 ///
 /// Canonical location for the E-5 `memory_facts` bi-temporal episodic
 /// store. Per-project scope (matches the rest of `.elai_cc/`). The
-/// per-user global tier (`%USERPROFILE%\.elai_user\profile.sqlite`) is
-/// reserved for a follow-up vertical slice and is NOT computed by this
-/// helper.
+/// per-user global tier lives at [`user_profile_db_path`] (see below);
+/// callers that need cross-project facts consult the per-user store
+/// AFTER the per-project store.
 #[inline]
 pub fn memory_facts_db_path(project_root: &Path) -> PathBuf {
     memory_dir_path(project_root).join(MEMORY_FACTS_DB_FILENAME)
 }
+
+/// E-5 session-2 — per-user global memory tier directory.
+///
+/// On Windows the resolver returns `%USERPROFILE%\.elai_user\`; on Unix
+/// it returns `$HOME/.elai_user/`. Returns `None` when neither
+/// environment variable is set (caller falls back to per-project tier
+/// only).
+///
+/// IMPORTANT: this is the FACT store (per-user `memory_facts.sqlite`
+/// + projects index), NOT a rule store. The CLAUDE.md "memory directory
+/// is read-only for rules/feedback" prohibition stands — that rule
+/// applies to `C:\Users\<u>\.claude\projects\...` user-rule memory, not
+/// to this E-5 fact tier.
+#[inline]
+pub fn user_profile_dir() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("USERPROFILE") {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v).join(USER_PROFILE_DIR_NAME));
+        }
+    }
+    if let Ok(v) = std::env::var("HOME") {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v).join(USER_PROFILE_DIR_NAME));
+        }
+    }
+    None
+}
+
+/// E-5 session-2 — per-user global memory store path.
+/// Returns `None` when [`user_profile_dir`] returns `None`.
+#[inline]
+pub fn user_profile_db_path() -> Option<PathBuf> {
+    user_profile_dir().map(|d| d.join(USER_PROFILE_DB_FILENAME))
+}
+
+/// E-5 session-2 — per-user projects index path.
+///
+/// JSON file listing every project the user has worked in. Used by the
+/// per-user store's promotion gate (N>=2 distinct projects requirement)
+/// to track which project_ids have contributed evidence for a candidate
+/// global fact. Returns `None` when [`user_profile_dir`] returns `None`.
+#[inline]
+pub fn user_projects_index_path() -> Option<PathBuf> {
+    user_profile_dir().map(|d| d.join(USER_PROJECTS_INDEX_FILENAME))
+}
+
+/// Per-user data directory name (under `%USERPROFILE%` / `$HOME`).
+pub const USER_PROFILE_DIR_NAME: &str = ".elai_user";
+
+/// Filename of the per-user global `memory_facts` sqlite database.
+pub const USER_PROFILE_DB_FILENAME: &str = "profile.sqlite";
+
+/// Filename of the per-user projects index (promotion-gate input).
+pub const USER_PROJECTS_INDEX_FILENAME: &str = "projects.json";
 
 /// `<project_root>/.elai_cc/held-out`
 ///

@@ -6,7 +6,9 @@
 //!   (c) Floor gate over a scored HashMap spanning [0.001, 0.05] -> assert
 //!       only scores >= RRF_FLOOR_DEFAULT survive.
 
-use std::collections::HashMap;
+// B-15 HashMap ban cascade: deep::rrf_quality_gate now takes
+// &mut BTreeMap<String, (f64, RetrievalResult)> (deep.rs:88).
+use std::collections::BTreeMap;
 
 use elai_knowledge::arag::RetrievalResult;
 use elai_knowledge::deep::{
@@ -62,7 +64,7 @@ fn cap_under_threshold_is_noop() {
 
 #[test]
 fn rrf_quality_gate_drops_below_floor() {
-    let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+    let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
     // span [0.001, 0.05] in increments — 50 entries, half below 0.005.
     for i in 1..=50 {
         let score = (i as f64) * 0.001;
@@ -84,7 +86,7 @@ fn rrf_quality_gate_drops_below_floor() {
 
 #[test]
 fn floor_zero_is_noop() {
-    let mut scores: HashMap<String, (f64, RetrievalResult)> = HashMap::new();
+    let mut scores: BTreeMap<String, (f64, RetrievalResult)> = BTreeMap::new();
     scores.insert("a".into(), (0.001, make_result("a")));
     scores.insert("b".into(), (0.002, make_result("b")));
     let dropped = rrf_quality_gate(&mut scores, 0.0);

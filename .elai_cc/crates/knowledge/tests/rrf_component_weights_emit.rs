@@ -66,6 +66,21 @@ impl KnowledgeSsbSink for RecordingSink {
     fn emit_rrf_component_weights(&self, event: RrfComponentWeightsEvent) {
         self.captured.lock().expect("lock").push(event);
     }
+    fn emit_pagerank_run(
+        &self,
+        _: elai_knowledge::knowledge_ssb_sink::PagerankRunEvent,
+    ) {
+    }
+    fn emit_dkg_rebuild_started(
+        &self,
+        _: elai_knowledge::knowledge_ssb_sink::DkgRebuildStartedEvent,
+    ) {
+    }
+    fn emit_dkg_rebuild_complete(
+        &self,
+        _: elai_knowledge::knowledge_ssb_sink::DkgRebuildCompleteEvent,
+    ) {
+    }
 }
 
 #[test]

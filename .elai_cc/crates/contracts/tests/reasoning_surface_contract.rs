@@ -240,6 +240,9 @@ fn test_get_agent_grc_config_returns_eight_or_more() {
         AgentRole::AuditorSteps,
         AgentRole::AuditorBabySteps,
         AgentRole::AuditorBabyStepDetail,
+        AgentRole::AuditorProductionGrade,
+        // E-37: off-model prompt-injection classifier.
+        AgentRole::InjectionClassifier,
     ];
     assert!(
         roles.len() >= 8,

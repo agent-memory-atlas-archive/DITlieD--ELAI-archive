@@ -185,6 +185,50 @@ impl NoteStore {
         }
     }
 
+    /// Overwrite a note's mutable attributes (tags, links, context,
+    /// last_accessed_ms, valid_to_ms, trust_score). Body is also
+    /// rewritten — the A-MEM evolution loop only edits non-body
+    /// attributes by convention, but the column is overwritten so the
+    /// caller can keep this surface single-purpose. Caller is
+    /// responsible for emitting `MemoryNoteEvolved` on SSB.
+    pub fn replace_attributes(&self, note: &MemoryNote) -> Result<(), MemoryError> {
+        note.validate()?;
+        let tags_json = serde_json::to_string(&note.tags)?;
+        let keywords_json = serde_json::to_string(&note.keywords)?;
+        let links_json = serde_json::to_string(&note.links)?;
+        let n = self.conn.execute(
+            "UPDATE memory_notes SET
+                scope = ?2,
+                tags = ?3,
+                keywords = ?4,
+                context = ?5,
+                body = ?6,
+                links = ?7,
+                fact_type = ?8,
+                last_accessed_ms = ?9,
+                valid_to_ms = ?10,
+                trust_score = ?11
+             WHERE note_id = ?1",
+            params![
+                note.note_id,
+                note.scope,
+                tags_json,
+                keywords_json,
+                note.context,
+                note.body,
+                links_json,
+                note.fact_type,
+                note.last_accessed_ms as i64,
+                note.valid_to_ms.map(|v| v as i64),
+                note.trust_score,
+            ],
+        )?;
+        if n == 0 {
+            return Err(MemoryError::NotFound(note.note_id.clone()));
+        }
+        Ok(())
+    }
+
     /// Bump `last_accessed_ms` for a single note — called by the PPR
     /// walker on every retrieved row to feed the decay curve.
     pub fn touch(&self, note_id: &str, now_ms: u128) -> Result<(), MemoryError> {

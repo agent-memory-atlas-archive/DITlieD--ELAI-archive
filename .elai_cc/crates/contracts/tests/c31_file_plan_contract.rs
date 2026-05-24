@@ -11,7 +11,7 @@
 //!
 //! All tests fully deterministic — no clocks, no I/O.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -35,7 +35,10 @@ use rustc_hash::FxHashMap;
 // ---------------------------------------------------------------------------
 
 fn rust_only_limits() -> LanguageLimitsMap {
-    let mut m = HashMap::new();
+    // B-15 HashMap ban cascade: LanguageLimitsMap is now BTreeMap<String, u16>
+    // (file_plan.rs:116). Constructor switched accordingly; downstream lookup
+    // semantics unchanged.
+    let mut m = BTreeMap::new();
     m.insert("rust".to_string(), 400u16);
     m.insert("python".to_string(), 480u16);
     m

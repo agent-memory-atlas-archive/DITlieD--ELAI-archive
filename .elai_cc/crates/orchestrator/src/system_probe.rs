@@ -1,22 +1,30 @@
 //! Batch 3A (Phase 4F) — SystemProbe surface.
 //!
-//! Detects GPU VRAM (NVIDIA via `nvidia-smi`), system RAM, and free disk for
-//! the project drive. Three detection modes:
-//!   * `ShellOut` — parse `nvidia-smi --query-gpu=...` + platform RAM/disk tool.
-//!   * `EnvFallback` — read `ELAI_VRAM_GB`, `ELAI_VRAM_FREE_GB`,
-//!     `ELAI_FREE_RAM_GB`, `ELAI_FREE_DISK_GB` when shell-out fails.
-//!   * `Unavailable` — neither shell nor env produced a signal. Tier is
-//!     hardcoded to `Vram12Gb` (the dashboard's prior hardcode per the MVP
-//!     audit 2026-04-18 dashboard/src/lib.rs:338).
+//! Detects GPU VRAM, system RAM, and free disk for the project drive.
 //!
-//! This module DOES NOT add new dependencies (`sysinfo` / `nvml-wrapper`).
-//! If Option A (shell-out) becomes untenable the user must explicitly
-//! approve new crates per CLAUDE.md hard rule. See the batch-3a prompt's
-//! "IF SHELL-OUT APPROACH FAILS" clause.
+//! GPU detection (3-tier fallback per E-22 phase-4F M1, 2026-05-22):
+//!   1. `nvml-wrapper` (`Nvml::init() -> device.memory_info()` +
+//!      `device.uuid()`) — canonical, mirrors the pattern at
+//!      `media_validator/types.rs:493-519`. Graceful fallback when
+//!      `Nvml::init()` returns `Err` (no NVIDIA driver / no GPU); spec
+//!      phase-4F.txt risk R-4F-1.
+//!   2. `nvidia-smi --query-gpu=...` shell-out — kept as fallback for
+//!      hosts where the NVML loader is present but blocked (CI sandboxes
+//!      that whitelist the binary but not the library).
+//!   3. `EnvFallback` — read `ELAI_VRAM_GB`, `ELAI_VRAM_FREE_GB`,
+//!      `ELAI_FREE_RAM_GB`, `ELAI_FREE_DISK_GB` when neither GPU path
+//!      produces a signal.
+//!   4. `Unavailable` — hardcoded to `Vram12Gb` (the dashboard's prior
+//!      hardcode per the MVP audit 2026-04-18 dashboard/src/lib.rs:338).
+//!
+//! RAM/disk paths continue to use `wmic`/`/proc/meminfo`/`df` shell-out;
+//! sysinfo remains rejected (CLAUDE.md no-new-deps rule, user has not
+//! re-approved).
 //!
 //! Cached for 60 seconds via a sync `Mutex` so dashboard polling does not
-//! thrash `nvidia-smi`. The cache uses `std::time::Instant` (monotonic);
-//! test code can force a fresh probe by constructing a new `DefaultSystemProber`.
+//! thrash the NVML loader / `nvidia-smi`. The cache uses
+//! `std::time::Instant` (monotonic); test code can force a fresh probe by
+//! constructing a new `DefaultSystemProber`.
 
 use std::env;
 use std::future::Future;
@@ -303,9 +311,59 @@ impl SystemProber for DefaultSystemProber {
 // Platform probe helpers — shell-out only, no new crates
 // ---------------------------------------------------------------------------
 
+/// E-22 phase-4F M1 (2026-05-22): primary GPU probe via nvml-wrapper.
+/// Mirrors the canonical pattern at
+/// `crates/orchestrator/src/media_validator/types.rs:493-519`. Returns
+/// `None` on any NVML failure so the caller falls through to the
+/// nvidia-smi shell-out path. Graceful by design — phase-4F.txt risk
+/// R-4F-1: "On systems without NVIDIA GPU, Nvml::init() returns Err.
+/// Must handle gracefully: gpu_count=0, gpu_info=vec![]." Equivalent here:
+/// returns `None` so the upper layer records EnvFallback / Unavailable.
+fn probe_gpu_nvml() -> Option<GpuInfo> {
+    use nvml_wrapper::Nvml;
+    // Nvml::init() loads libnvidia-ml.so / nvml.dll. Wrapped in a closure
+    // so we can propagate Option without unwrap.
+    let nvml = Nvml::init().ok()?;
+    let device_count = nvml.device_count().ok()?;
+    if device_count == 0 {
+        return None;
+    }
+    // First GPU only per batch-3a spec (single shell-out parity).
+    let device = nvml.device_by_index(0).ok()?;
+    let mem = device.memory_info().ok()?;
+    let name = device.name().ok()?;
+    // sys_driver_version returns the cluster-wide driver string (e.g.
+    // "552.22"); fall back to None on error rather than failing the whole
+    // probe (downstream consumers tolerate Option<String>).
+    let driver_version = nvml.sys_driver_version().ok();
+    let uuid = device.uuid().ok().and_then(|raw| parse_gpu_uuid(&raw));
+    // mem.{total,free} are in bytes; convert to MB (1024*1024) to match
+    // the existing GpuInfo schema. Saturating casts keep the u32 field
+    // safe on >4 PB GPUs (theoretical only; current max GPU is 192 GB).
+    let total_mb = u32::try_from(mem.total / (1024 * 1024)).unwrap_or(u32::MAX);
+    let free_mb = u32::try_from(mem.free / (1024 * 1024)).unwrap_or(u32::MAX);
+    let tier = classify_vram_tier(total_mb);
+    Some(GpuInfo {
+        name,
+        vram_total_mb: total_mb,
+        vram_free_mb: free_mb,
+        tier,
+        driver_version,
+        uuid,
+    })
+}
+
 async fn probe_gpu_shell_out() -> Option<GpuInfo> {
-    // First GPU only per batch-3a spec. `--format=csv,noheader,nounits`
-    // yields lines like "NVIDIA GeForce RTX 3060, 12288, 11392, 552.22, GPU-xxxx".
+    // E-22 phase-4F M1: try NVML first; fall through to nvidia-smi if
+    // the library isn't loadable or the device query fails. NVML is a
+    // single C-FFI call so this stays well under the 5s SHELL_OUT_TIMEOUT
+    // budget.
+    if let Some(gpu) = probe_gpu_nvml() {
+        return Some(gpu);
+    }
+    // Shell-out fallback. First GPU only per batch-3a spec.
+    // `--format=csv,noheader,nounits` yields lines like
+    // "NVIDIA GeForce RTX 3060, 12288, 11392, 552.22, GPU-xxxx".
     // C-22: uuid added as the 5th column (single shell-out per C-22 decision —
     // avoids the doubled p50 latency of a second `-q -d UUID` invocation).
     let fut = Command::new("nvidia-smi")

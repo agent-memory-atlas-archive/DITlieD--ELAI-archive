@@ -7,11 +7,11 @@
 //!
 //! ## Manual reproduction
 //!
-//! 1. `cd D:\.ELAI_workflow\.elai_cc`
+//! 1. `cd F:\.ELAI_workflow\.elai_cc`
 //! 2. Pre-build a DKG via:
 //!    `cargo run --bin elai -- index` (or any path that triggers
 //!    `IndexingService::run_full_index`), and confirm
-//!    `D:\.ELAI_workflow\.elai_cc\.elai_cc\indexes\dkg.db` exists with
+//!    `F:\.ELAI_workflow\.elai_cc\.elai_cc\indexes\dkg.db` exists with
 //!    a non-zero `SELECT COUNT(*) FROM dkg_nodes`.
 //! 3. `cargo run --bin elai -- repl "list rust files"` in the same
 //!    project root.

@@ -171,6 +171,202 @@ pub struct TestingConfig {
 }
 
 // ---------------------------------------------------------------------------
+// D-4 GAP-3: TripwireConfigToml — [tripwire] block in elai_cc.toml (L3-locked).
+// ---------------------------------------------------------------------------
+
+/// `[tripwire]` TOML section (D-4 GAP-3). Mirrors the tunable thresholds +
+/// window sizes of [`elai_orchestrator::tripwire::TripwireConfig`] so the
+/// L3 lock policy can enforce "values flow from this section into the
+/// monitor; agent edits to the in-code `defaults()` never override the
+/// configured values".
+///
+/// Field names mirror the TOML keys exactly (snake_case, no aliasing) so
+/// the lock list in `scripts/locked_keys_registry.toml` can target
+/// `[tripwire].<key>` literals without serde-rename indirection. All
+/// fields default to the same paper-cited values as
+/// `TripwireConfig::defaults()` so a missing section reproduces the
+/// in-code defaults bit-for-bit.
+///
+/// Paper grounding (see also workflow/reasoning/D-4-decisions.md):
+/// * `kl_spec_tau`, `iqr_multiplier`, `ppl_sigma_mult` — arxiv:2507.05619
+/// * `corr_window`, `ddm_warning_threshold`, `ddm_drift_threshold`,
+///   `ddm_min_instances` — Lu et al survey arxiv:2004.05785 §3.2 (Gama
+///   2004 derivation).
+/// * `delta_rho` — implementation choice not directly grounded in
+///   arxiv:2210.10760; ELAI baseline calibration (DECISION-4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TripwireConfigToml {
+    pub kl_spec_tau: f32,
+    pub delta_rho: f32,
+    pub corr_window: u32,
+    pub iqr_multiplier: f32,
+    pub ppl_sigma_mult: f32,
+    pub ddm_min_instances: u32,
+    pub ddm_warning_threshold: f32,
+    pub ddm_drift_threshold: f32,
+}
+
+impl Default for TripwireConfigToml {
+    fn default() -> Self {
+        Self {
+            kl_spec_tau: 0.3,
+            delta_rho: 0.5,
+            corr_window: 50,
+            iqr_multiplier: 3.0,
+            ppl_sigma_mult: 2.0,
+            ddm_min_instances: 30,
+            ddm_warning_threshold: 2.0,
+            ddm_drift_threshold: 3.0,
+        }
+    }
+}
+
+impl TripwireConfigToml {
+    /// Convert the TOML mirror into the orchestrator's runtime
+    /// [`elai_orchestrator::tripwire::TripwireConfig`]. Field mapping is
+    /// 1:1 except for naming-drift between the wire keys
+    /// (`delta_rho` / `iqr_multiplier` / `ppl_sigma_mult` /
+    /// `corr_window` / `ddm_min_instances`) and the in-code names
+    /// (`rho_delta_threshold` / `iqr_outlier_multiplier` /
+    /// `ppl_anomaly_sigma` / `window_size` / `min_sample_count`); the
+    /// in-code names predate the TOML keys and the rename is intentional
+    /// (the TOML keys are the user-facing surface).
+    #[must_use]
+    pub fn to_tripwire_config(&self) -> elai_orchestrator::tripwire::TripwireConfig {
+        elai_orchestrator::tripwire::TripwireConfig {
+            kl_spec_tau: self.kl_spec_tau,
+            rho_delta_threshold: self.delta_rho,
+            iqr_outlier_multiplier: self.iqr_multiplier,
+            ppl_anomaly_sigma: self.ppl_sigma_mult,
+            ddm_warning_threshold: self.ddm_warning_threshold,
+            ddm_drift_threshold: self.ddm_drift_threshold,
+            min_sample_count: self.ddm_min_instances,
+            window_size: self.corr_window,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-34: EmpireConfig — [empire] block in elai_cc.toml.
+// ---------------------------------------------------------------------------
+
+/// `[empire]` TOML section (C-34). Host-side config carrier for the
+/// Phase 4J Empire integration. All fields are optional; missing keys fall
+/// back to the defaults below. The block is parsed unconditionally (no
+/// `#[cfg(feature = "empire")]` on the field) so non-empire builds still
+/// read + ignore the section without a parse warning — when the user
+/// provides a section with the orchestrator NOT built with `--features
+/// empire`, `validate_empire_section_when_enabled` emits a tracing::warn
+/// once at startup and the bridge stays inert.
+///
+/// Phase 4J shipped the EmpireBridge state machine + the 5 SsbActionType
+/// empire arms but NOT the construction site that hands a real
+/// `Arc<EmpireBridge>` to AppState (the activation patch). This struct is
+/// the typed carrier the activation patch will consume.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmpireConfig {
+    /// Master enable switch. When `false` (default) the empire feature path
+    /// stays fully inert even when the `empire` cargo feature is compiled
+    /// in. When `true` + the cargo feature is OFF the loader emits a
+    /// `tracing::warn!` and continues (warn-not-panic).
+    pub enabled: bool,
+    /// Transport selector: `"unix"` (AF_UNIX, Linux/macOS) or `"tcp"`
+    /// (cross-platform fallback). Unknown values fall back to `"unix"` with
+    /// a tracing::warn.
+    pub transport: String,
+    /// AF_UNIX socket path. Default uses `$XDG_RUNTIME_DIR` when set,
+    /// otherwise `/tmp/elai-empire.sock`. Ignored when `transport = "tcp"`.
+    pub socket_path: String,
+    /// TCP host. Ignored when `transport = "unix"`.
+    pub tcp_host: String,
+    /// TCP port. Ignored when `transport = "unix"`. `7430` is an IANA
+    /// unassigned unprivileged port (default).
+    pub tcp_port: u16,
+    /// Default bridge state at construction. `"Disconnected"` is the only
+    /// value the host-side scaffold currently honours; other values fall
+    /// back to it with a tracing::warn.
+    pub bridge_state_default: String,
+}
+
+impl Default for EmpireConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            transport: String::from("unix"),
+            socket_path: String::from("$XDG_RUNTIME_DIR/elai-empire.sock"),
+            tcp_host: String::from("127.0.0.1"),
+            tcp_port: 7430,
+            bridge_state_default: String::from("Disconnected"),
+        }
+    }
+}
+
+/// Warn-not-panic validation for the `[empire]` block. Called once from
+/// `load_elai_config` after deserialization succeeds.
+///
+/// Behaviour:
+///   - When `enabled = false`: silent (no-op). Block presence is purely
+///     informational.
+///   - When `enabled = true` AND the `empire` cargo feature is OFF on the
+///     orchestrator crate (detected at runtime via a `cfg!` probe), emits
+///     a `tracing::warn!` describing the mismatch. No panic, no abort.
+///   - Validates `transport` is one of `{"unix", "tcp"}`; unknown values
+///     warn and the loader leaves the field as-is for the activation patch
+///     to fall back from.
+///   - Validates `bridge_state_default` is `"Disconnected"`; other values
+///     warn (reserved for future replay-from-snapshot wiring).
+///   - `tcp_port == 0` is allowed (sentinel) but warns when transport is
+///     tcp.
+///
+/// The runtime detection that the Empire codebase itself is reachable is
+/// performed by `EmpireBridge::connect()` returning `NotConnected`; this
+/// validator only catches static-config mismatches the user can fix in
+/// elai_cc.toml without restarting.
+pub fn validate_empire_section_when_enabled(cfg: &EmpireConfig) {
+    if !cfg.enabled {
+        return;
+    }
+    // Cargo feature probe — `elai-orchestrator` is the crate that defines
+    // the `empire` feature. Detect via a transitive cfg-check: when the
+    // orchestrator was built with `--features empire`, its `empire` module
+    // is exported and the dashboard's state.rs field is a real
+    // `Option<Arc<EmpireBridge>>`. We cannot reach into that crate from
+    // here without taking a hard dep, so we use a build-time conditional
+    // compile probe forwarded via the `elai-orchestrator/empire` feature
+    // edge in this crate's Cargo.toml. Until the loader is wired with that
+    // feature edge the probe defaults to "off" and the warn fires.
+    let feature_compiled_in = cfg!(feature = "empire");
+    if !feature_compiled_in {
+        tracing::warn!(
+            transport = %cfg.transport,
+            "elai_cc.toml [empire] enabled=true but the orchestrator was not built with --features empire; bridge stays inert"
+        );
+    }
+    match cfg.transport.as_str() {
+        "unix" | "tcp" => {}
+        other => {
+            tracing::warn!(
+                transport = other,
+                "elai_cc.toml [empire].transport is not one of {{unix,tcp}}; activation patch will fall back to default"
+            );
+        }
+    }
+    if cfg.bridge_state_default != "Disconnected" {
+        tracing::warn!(
+            bridge_state_default = %cfg.bridge_state_default,
+            "elai_cc.toml [empire].bridge_state_default is not 'Disconnected'; reserved values not honoured by current scaffold, falling back"
+        );
+    }
+    if cfg.transport == "tcp" && cfg.tcp_port == 0 {
+        tracing::warn!(
+            "elai_cc.toml [empire].tcp_port=0 with transport=tcp; activation patch will reject and fall back to Disconnected"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ElaiRuntimeConfig
 // ---------------------------------------------------------------------------
 
@@ -202,6 +398,13 @@ pub struct ElaiRuntimeConfig {
     /// `[testing]` section (C-28) — testing-trust tier configuration.
     /// Currently carries the T-1 mutation block under `testing.mutation`.
     pub testing: TestingConfig,
+    /// `[empire]` section (C-34) — host-side config carrier for the
+    /// Phase 4J Empire integration. See [`EmpireConfig`].
+    pub empire: EmpireConfig,
+    /// `[tripwire]` section (D-4 GAP-3) — L3-locked tripwire stack
+    /// thresholds + windows. See [`TripwireConfigToml`]. Consumed via
+    /// [`ElaiRuntimeConfig::tripwire_config`].
+    pub tripwire: TripwireConfigToml,
 }
 
 impl ElaiRuntimeConfig {
@@ -235,6 +438,24 @@ impl ElaiRuntimeConfig {
     pub fn metamorphic_config(&self) -> &MetamorphicConfig {
         &self.testing.metamorphic
     }
+
+    /// C-34: accessor for the `[empire]` block. The activation patch (the
+    /// one that constructs `Arc<EmpireBridge>` and chains it onto AppState
+    /// via `with_empire_bridge`) reads this through `&cfg.empire_config()`.
+    #[must_use]
+    pub fn empire_config(&self) -> &EmpireConfig {
+        &self.empire
+    }
+
+    /// D-4 GAP-3: accessor for the `[tripwire]` block. The wiring layer
+    /// that constructs a `TripwireMonitor` (currently invoked from
+    /// `agent_pool::observe_post_consensus_tripwires` test fixtures; the
+    /// production path will pull `cfg.tripwire_config().to_tripwire_config()`
+    /// once the monitor is hung off AppState) reads this here.
+    #[must_use]
+    pub fn tripwire_config(&self) -> &TripwireConfigToml {
+        &self.tripwire
+    }
 }
 
 /// `[cloud]` TOML section. Serializable mirror of
@@ -250,6 +471,11 @@ pub struct CloudConfigToml {
     pub air_gapped: bool,
     pub privacy: CloudPrivacyToml,
     pub spend: CloudSpendToml,
+    /// C-5: BYOE Anthropic base-URL override. Maps onto
+    /// [`elai_orchestrator::cloud_mode::CloudConfig::custom_endpoint`].
+    /// None / unset / empty => DEFAULT_BASE_URL.
+    #[serde(default)]
+    pub custom_endpoint: Option<String>,
 }
 
 impl Default for CloudConfigToml {
@@ -261,6 +487,7 @@ impl Default for CloudConfigToml {
             air_gapped: false,
             privacy: CloudPrivacyToml::default(),
             spend: CloudSpendToml::default(),
+            custom_endpoint: None,
         }
     }
 }
@@ -285,6 +512,10 @@ pub struct CloudSpendToml {
     pub warn_at_usd: Option<f64>,
     pub hard_cap_daily_usd: Option<f64>,
     pub hard_cap_monthly_usd: Option<f64>,
+    /// C-5: percent-of-cap WARN threshold. Defaults to `Some(80)` in
+    /// [`elai_orchestrator::cloud_mode::CloudConfig::default`] when this
+    /// field is unset in the toml.
+    pub warn_at_percent: Option<u8>,
 }
 
 impl CloudConfigToml {
@@ -296,6 +527,14 @@ impl CloudConfigToml {
     pub fn to_cloud_config(&self) -> elai_orchestrator::cloud_mode::CloudConfig {
         use elai_orchestrator::cloud_mode::{CloudConfig, ExecMode};
         use elai_orchestrator::privacy_redactor::RedactionProfile;
+        // Lift the WARN percent: explicit toml value wins, otherwise the
+        // CloudConfig::default() seed (Some(80) per spec
+        // cloud-mode-design.txt:75) — never None when the cap is set so
+        // existing deployments gain WARN rows without a toml edit.
+        let warn_at_percent = self
+            .spend
+            .warn_at_percent
+            .or(CloudConfig::default().warn_at_percent);
         CloudConfig {
             default_provider: self.default_provider.clone(),
             default_model: self.default_model.clone(),
@@ -304,6 +543,17 @@ impl CloudConfigToml {
             privacy_profile: RedactionProfile::from_config_str(&self.privacy.profile),
             spend_cap_daily_usd: self.spend.hard_cap_daily_usd,
             spend_cap_monthly_usd: self.spend.hard_cap_monthly_usd,
+            warn_at_percent,
+            custom_endpoint: self
+                .custom_endpoint
+                .as_ref()
+                .and_then(|s| {
+                    if s.trim().is_empty() {
+                        None
+                    } else {
+                        Some(s.clone())
+                    }
+                }),
         }
     }
 }
@@ -318,7 +568,7 @@ impl CloudConfigToml {
 /// unparseable (with a tracing warning on parse failure).
 pub fn load_elai_config(project_root: &Path) -> ElaiRuntimeConfig {
     let config_path = project_root.join("elai_cc.toml");
-    match std::fs::read_to_string(&config_path) {
+    let cfg = match std::fs::read_to_string(&config_path) {
         Ok(content) => toml::from_str::<ElaiRuntimeConfig>(&content).unwrap_or_else(|e| {
             tracing::warn!(
                 path = %config_path.display(),
@@ -334,7 +584,14 @@ pub fn load_elai_config(project_root: &Path) -> ElaiRuntimeConfig {
             );
             ElaiRuntimeConfig::default()
         }
-    }
+    };
+    // C-34: warn-not-panic validation for the [empire] block. The bridge
+    // construction site (activation patch) is the consumer; this validator
+    // surfaces obvious misconfigurations (enabled=true with empire feature
+    // OFF, unknown transport / state) so the user can correct them without
+    // restarting the orchestrator after the activation patch lands.
+    validate_empire_section_when_enabled(&cfg.empire);
+    cfg
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +696,74 @@ max_response_tokens = 512
             assert!(cfg.output.strip_emoji);
             assert_eq!(cfg.output.max_response_tokens, 0);
         });
+    }
+
+    // C-34: [empire] block parses with defaults when absent + validator is
+    // silent. The block IS present in repo-shipped elai_cc.toml but the
+    // loader must also work when the block is missing entirely.
+    #[test]
+    fn empire_section_defaults_when_absent() {
+        with_toml_file("[output]\nstrip_emoji = true\n", |root| {
+            let cfg = load_elai_config(root);
+            // EmpireConfig::default() values per spec.
+            assert!(!cfg.empire.enabled);
+            assert_eq!(cfg.empire.transport, "unix");
+            assert_eq!(cfg.empire.tcp_host, "127.0.0.1");
+            assert_eq!(cfg.empire.tcp_port, 7430);
+            assert_eq!(cfg.empire.bridge_state_default, "Disconnected");
+            assert_eq!(cfg.empire_config(), &cfg.empire);
+        });
+    }
+
+    #[test]
+    fn empire_section_parses_explicit_values() {
+        with_toml_file(
+            r#"
+[empire]
+enabled = false
+transport = "tcp"
+tcp_host = "10.0.0.5"
+tcp_port = 9100
+socket_path = "/tmp/elai-empire-test.sock"
+bridge_state_default = "Disconnected"
+"#,
+            |root| {
+                let cfg = load_elai_config(root);
+                assert!(!cfg.empire.enabled);
+                assert_eq!(cfg.empire.transport, "tcp");
+                assert_eq!(cfg.empire.tcp_host, "10.0.0.5");
+                assert_eq!(cfg.empire.tcp_port, 9100);
+                assert_eq!(cfg.empire.socket_path, "/tmp/elai-empire-test.sock");
+            },
+        );
+    }
+
+    #[test]
+    fn empire_validator_is_silent_when_disabled() {
+        // enabled=false MUST be a no-op (the validator early-returns before
+        // any tracing call). We assert by constructing the config directly
+        // and ensuring the call does not panic.
+        let cfg = EmpireConfig {
+            enabled: false,
+            transport: "totally-wrong-value".to_string(),
+            bridge_state_default: "Connected".to_string(),
+            ..Default::default()
+        };
+        // No assertion on stderr; the contract is "no panic + early-return"
+        // and the function returns ()..
+        validate_empire_section_when_enabled(&cfg);
+    }
+
+    #[test]
+    fn empire_validator_does_not_panic_on_unknown_transport() {
+        let cfg = EmpireConfig {
+            enabled: true,
+            transport: "rfc-9999".to_string(),
+            bridge_state_default: "Disconnected".to_string(),
+            ..Default::default()
+        };
+        // Validator should warn (not panic) on unknown transport.
+        validate_empire_section_when_enabled(&cfg);
     }
 
     #[test]

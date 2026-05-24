@@ -3311,6 +3311,20 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
+    // C-41: Project-local Rust-side skills tree. Walks the current working
+    // directory's ancestors so a skill dropped at `<workspace>/.elai_cc/skills/<name>/SKILL.md`
+    // is discoverable WITHOUT requiring ELAI_CONFIG_HOME / CODEX_HOME / HOME
+    // to be set (which is the typical case when running cargo test or the
+    // CLI from a project clone). The walker stops at the first hit; the
+    // env-rooted candidates below remain authoritative for system-wide
+    // skills, but the project-local tree wins when both contain the same
+    // skill name (matches the load_skills_from_roots precedence on the
+    // cli side, see crates/cli/src/commands.rs::discover_skill_roots).
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            candidates.push(ancestor.join(".elai_cc").join("skills"));
+        }
+    }
     if let Ok(elai_config_home) = std::env::var("ELAI_CONFIG_HOME") {
         candidates.push(std::path::PathBuf::from(elai_config_home).join("skills"));
     }

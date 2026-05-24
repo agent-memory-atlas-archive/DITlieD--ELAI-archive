@@ -78,6 +78,73 @@ impl TripwireKind {
             Self::Ddm => "ddm",
         }
     }
+
+    /// Which signal stream the detector consumes. Surfaced on the SSB
+    /// `TripwireFired` payload as `source` so downstream consumers (D-26
+    /// concurrent-fire diagnostics, dashboard breakdown) can group firings
+    /// by the underlying signal without re-deriving the mapping. Mapping
+    /// rationale:
+    /// * `KlDivergence` reads the action-distribution (entropy histogram)
+    ///   per arxiv:2210.10760 §4 — tagged `Action`.
+    /// * `CorrelationDrop` is the proxy/gold reward correlation degradation
+    ///   from arxiv:2210.10760 — tagged `Reward`.
+    /// * `IqrOutlier` runs on per-token `logprob_var`, an action-level
+    ///   variance signal — tagged `Action`.
+    /// * `Perplexity` is the textbook perplexity series — tagged
+    ///   `Perplexity`.
+    /// * `Ddm` consumes the pass/fail classifier stream (Gama 2004) —
+    ///   tagged `Classifier`.
+    #[must_use]
+    pub fn source(&self) -> SignalSource {
+        match self {
+            Self::KlDivergence => SignalSource::Action,
+            Self::CorrelationDrop => SignalSource::Reward,
+            Self::IqrOutlier => SignalSource::Action,
+            Self::Perplexity => SignalSource::Perplexity,
+            Self::Ddm => SignalSource::Classifier,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SignalSource: which signal stream a tripwire firing originated from
+// ---------------------------------------------------------------------------
+
+/// Per D-4 GAP-1 closure: tag every `TripwireFired` payload with the
+/// underlying signal stream the detector consumed, so concurrent-fire
+/// diagnostics (D-26's `TripwireFiredConcurrent` consumer) and the
+/// dashboard breakdown can group rows by source without re-deriving the
+/// `TripwireKind -> source` mapping from the wire label.
+///
+/// Closed enum — adding a new source family requires a coordinated SSB
+/// schema bump (the `source` field is part of the `TripwireFiredPayload`
+/// stable wire shape).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalSource {
+    /// Reward / verifier-score signal (proxy-vs-gold correlation; from
+    /// arxiv:2210.10760 RM over-optimisation framing).
+    Reward,
+    /// Action-distribution signal (entropy histogram or per-token
+    /// logprob_var); maps to policy-action drift in the same framing.
+    Action,
+    /// Perplexity series (exp(-logprob_mean)) anomaly detector input.
+    Perplexity,
+    /// Pass/fail classifier stream (DDM input, Gama 2004).
+    Classifier,
+}
+
+impl SignalSource {
+    /// Snake-case wire label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reward => "reward",
+            Self::Action => "action",
+            Self::Perplexity => "perplexity",
+            Self::Classifier => "classifier",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -793,12 +860,15 @@ pub fn auto_revert(
 // SSB payload builders (additive — payloads themselves live in ssb.rs)
 // ---------------------------------------------------------------------------
 
-/// Build the SSB payload for a single tripwire firing.
+/// Build the SSB payload for a single tripwire firing. The `source` field
+/// is derived from `fired.kind.source()` (closed mapping — see
+/// [`TripwireKind::source`]).
 #[must_use]
 pub fn build_tripwire_fired_payload(fired: &TripwireFired) -> SsbPayload {
     SsbPayload::TripwireFired(TripwireFiredPayload {
         event_id: fired.event_id.clone(),
         tripwire_kind: fired.kind.as_str().into(),
+        source: fired.kind.source().as_str().into(),
         candidate_id: fired.candidate_id.clone(),
         observed_value: fired.observed_value,
         threshold: fired.threshold,

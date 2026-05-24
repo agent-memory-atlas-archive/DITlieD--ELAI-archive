@@ -114,6 +114,7 @@ async fn contract_corrupt_checkpoint_is_fresh_start_not_error() {
         tool_results: vec![],
         output_draft: String::new(),
         channel_references: vec![],
+        schema_version: elai_orchestrator::checkpoint::LEGACY_CHECKPOINT_SCHEMA_VERSION,
     };
     ckpt_mgr
         .write(&handle, &data, 1, &ssb)

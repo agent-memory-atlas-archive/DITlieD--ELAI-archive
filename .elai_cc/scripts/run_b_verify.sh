@@ -8,8 +8,8 @@
 set -uo pipefail
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
-WORKFLOW_ROOT="D:/.ELAI_workflow"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
+WORKFLOW_ROOT="F:/.ELAI_workflow"
 SESSION_DIR="${WORKFLOW_ROOT}/workflow/sessions/s-27276"
 SCRIPTS_DIR="${ELAI_ROOT}/scripts"
 CORPUS="${WORKFLOW_ROOT}/docs/.source/nextest-main"

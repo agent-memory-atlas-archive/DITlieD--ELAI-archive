@@ -31,7 +31,7 @@
 //!
 //! Grounded: arXiv:2403.12958 "Dated Data" + arXiv:2511.14022 (cosmos
 //! provenance + per-tier-relevance design). Plan reference:
-//! D:/.ELAI_workflow/docs/thefinalglance/C-plan/C-8_viewer_stub_eradication.md
+//! F:/.ELAI_workflow/docs/thefinalglance/C-plan/C-8_viewer_stub_eradication.md
 //! task #10. Drift acknowledgement: C-8 plan claimed `cosmos_get(query_terms)`
 //! exists — actual signature `cosmos_get(name: &str)`. This module bridges
 //! the two by adding the name-router policy here.

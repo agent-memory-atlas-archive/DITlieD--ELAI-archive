@@ -79,9 +79,21 @@ scan 'use std::collections::HashMap' "$TMP_USE"
 # Pattern 2: qualified path constructor/turbofish (matches HashMap::new, HashMap::<K,V>)
 scan 'std::collections::HashMap::' "$TMP_QUAL"
 
-# Allowlist of file basenames whose HashMap usage is cfg(test)-scoped inside src/.
-# These are tracked as INFO, not violations. Update via B-15B-FX follow-up phase.
-ALLOWLIST_BASENAMES='import_extractor.rs telescope.rs tier3.rs checkpoint.rs recovery.rs session_dag.rs traversal.rs contract_tests.rs'
+# Allowlist of file basenames whose HashMap usage is cfg(test)-scoped inside
+# src/ OR intentionally retained for IPC / doc-link reasons. Tracked as INFO,
+# not violations. Per-file rationale lives in workflow/reasoning/B-15-decisions.md.
+#
+# cfg(test) inside src/ (B-15B-FX follow-up to move to tests/):
+#   import_extractor.rs telescope.rs tier3.rs checkpoint.rs recovery.rs
+#   session_dag.rs traversal.rs contract_tests.rs sidecar_xgrammar_hook.rs
+#
+# Intentional retention (do NOT migrate):
+#   dual_ledger.rs       -- IPC boundary; serde serializes through HashMap
+#                           (commented at line ~397-401, "FxHashMap not HashMap
+#                           because the IPC boundary serializes through serde").
+#   reasoning_template.rs -- explicit doc-link to historical std::HashMap rule
+#                           (commented at line ~681, FxHashMap is real storage).
+ALLOWLIST_BASENAMES='import_extractor.rs telescope.rs tier3.rs checkpoint.rs recovery.rs session_dag.rs traversal.rs contract_tests.rs sidecar_xgrammar_hook.rs dual_ledger.rs reasoning_template.rs'
 
 # Filter out lines that are string literals or comments
 # Heuristic: line contains a quote before the pattern OR line starts with whitespace+//

@@ -1,0 +1,66 @@
+# metrics/capability_profile.toml — canonical per-tier capability measurements
+# produced by benches/model_capability/baseline_harness.py (phase-3J-BASELINE).
+#
+# Template: this file is checked-in with the schema below. The harness
+# overwrites the [profiles.<tier>] tables on each run; the [schema] +
+# [methodology] tables persist across runs as documentation.
+#
+# Consumed by: crates/orchestrator/src/context_budget.rs::detect_model_capability_profile
+# (loads measured values to override the .measured=false PROJECTED rows of
+# the constructors at context_budget.rs:309-657).
+
+[schema]
+version = 1
+generator = "baseline_harness.py"
+columns = [
+  "tier",
+  "model",
+  "runtime",
+  "quant_format",
+  "samples",
+  "total_tokens_in",
+  "total_tokens_out",
+  "slot_utilization",
+  "compression_ratio_estimate",
+  "ttft_ms_median",
+  "p95_latency_ms",
+  "p99_latency_ms",
+  "cost_per_run_usd",
+  "json_invalid_count",
+  "repair_context_delta_pct",
+  "repair_context_regression",
+  "measured_at_utc",
+]
+
+[methodology]
+slot_utilization = "tokens_in / prompt_tokens_target from [model_capability.profiles.<tier>] in elai_cc.toml"
+compression_ratio_estimate = "tokens_out / tokens_in across fixture (measurement_method=output_token_ratio); NOT the runtime ShortCoder ratio in knowledge/src/shortcoder.rs:101"
+ttft_ms_median = "median of end-to-end /v1/messages POST latency across fixture (sidecar does not currently surface true time-to-first-token over the non-stream HTTP path)"
+p95_latency_ms = "p95 of end-to-end /v1/messages POST latency"
+p99_latency_ms = "p99 of end-to-end /v1/messages POST latency"
+cost_per_run_usd = "0.0 for runtime=sidecar; for runtime=cloud uses pricing table in baseline_harness.py CLOUD_PRICING (verify pricing source date in the harness comment block before relying on cloud rows)"
+json_invalid_count = "G4 constrained-decoding gate: count of fixture rows where expect_json=true and response body failed json.loads"
+repair_context_delta_pct = "G3 regression gate: (tokens_in_with_repair - tokens_in_baseline) / tokens_in_baseline * 100; >15.0 sets repair_context_regression=true"
+constrained_decoding_mode = "json_schema only — grammar/EBNF DEFERRED per spec (server.py:1865-1873 rejects non-json_schema response_format)"
+
+# Per-tier profile tables are populated by the harness on each run.
+# Example shape (commented so an empty checkout still parses cleanly):
+#
+# [profiles.micro_7b_12gb]
+# tier = "micro_7b_12gb"
+# model = "Qwen2.5-Coder-7B-Instruct"
+# runtime = "sidecar"
+# quant_format = "NF4+FA2"
+# samples = 10
+# total_tokens_in = 1850
+# total_tokens_out = 1240
+# slot_utilization = 0.84
+# compression_ratio_estimate = 0.67
+# ttft_ms_median = 120.5
+# p95_latency_ms = 890.0
+# p99_latency_ms = 950.0
+# cost_per_run_usd = 0.0
+# json_invalid_count = 0
+# repair_context_delta_pct = 8.2
+# repair_context_regression = false
+# measured_at_utc = "2026-05-22T00:00:00Z"

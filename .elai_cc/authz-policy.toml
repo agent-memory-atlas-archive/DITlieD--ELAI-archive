@@ -1,0 +1,84 @@
+# C-42 (session 2): Semantic Gateway L2 RBAC policy.
+#
+# Paper grounding: arXiv:2604.25555 "From CRUD to Autonomous Agents:
+# Formal Validation and Zero-Trust Security for Semantic Gateways in
+# AI-Native Enterprise Systems" (MEDIUM reliability — single-author
+# preprint). See workflow/papers/semantic-gateway-fuzzer.md for the full
+# 3-layer architecture; this file ships LAYER 2 ONLY.
+#
+# Layer 2 contribution (paper Section 5):
+#   - role-based access control + per-tool allowlists
+#   - BOLA defense (ownership comes from DB-of-record, agent claims ignored)
+#   - deny-all default ("default_policy_value = False" structural, not stylistic)
+#
+# Layer 1 (Semantic Firewall, DeBERTa-v3 classifier) is RUNPOD-PENDING —
+# the eval corpus + classifier inference require the remote GPU box.
+# Layer 3 (Crypto-HITL signature challenge) is DEFERRED-TO-FOLLOWUP (a
+# separate plan; out of session 2 scope).
+#
+# Composition with C-35 ToolGate: AuthzPolicy runs FIRST; the ToolGate
+# (per-FSM-state allowlist) runs SECOND. Both must allow. See
+# plugins/src/authz/compose.rs.
+
+# Paper-grounded recommendation (Section 4: "default allow = false").
+# Do NOT flip to "allow" without a documented decision in
+# workflow/reasoning/C-42-decisions.md.
+default = "deny"
+
+# ---------------------------------------------------------------------------
+# Planner role — read-only tools. No writes, no exec. Used by
+# scope-planner-elai + context-compiler subagents.
+# ---------------------------------------------------------------------------
+[roles.planner]
+tools = [
+    "knowledge.search",
+    "knowledge.symbol_impact",
+    "fs.read",
+    "fs.grep",
+    "git.diff",
+]
+# No ownership constraint — the planner reads any registered document.
+doc_owners = []
+
+# ---------------------------------------------------------------------------
+# Executor role — file mutations + shell. Restricted via "self" ownership
+# sentinel: writes are only permitted to documents the executor "owns"
+# (db_owner == "executor"). The agent_claimed_owner field is IGNORED here
+# per paper Section 5 (BOLA defense).
+# ---------------------------------------------------------------------------
+[roles.executor]
+tools = [
+    "knowledge.search",
+    "fs.read",
+    "fs.write",
+    "fs.edit",
+    "fs.grep",
+    "git.diff",
+    "cli.subprocess",
+]
+doc_owners = ["self"]
+
+# ---------------------------------------------------------------------------
+# Auditor role — read-only + test runner. The auditor is the sole owner
+# of cargo.test per CLAUDE.md ("the auditor is the sole test runner").
+# ---------------------------------------------------------------------------
+[roles.auditor]
+tools = [
+    "knowledge.search",
+    "knowledge.symbol_impact",
+    "fs.read",
+    "fs.grep",
+    "git.diff",
+    "cargo.test",
+    "cargo.check",
+]
+doc_owners = []
+
+# ---------------------------------------------------------------------------
+# Admin role — wildcard tool grant. Use sparingly; the existence of an
+# admin role with "*" defeats the per-tool policy. Reserved for operator-
+# initiated CLI commands invoked outside the agent loop.
+# ---------------------------------------------------------------------------
+[roles.admin]
+tools = ["*"]
+doc_owners = []

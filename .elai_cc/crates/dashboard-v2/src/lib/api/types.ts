@@ -34,6 +34,28 @@ export interface FsmSnapshot {
 }
 
 // ------------------------------------------------------------------
+// B-26 T4 — Plan progress (mirror of commands.rs::get_plan_progress).
+// Drives the MonitorWindow phase-dot row in place of the prior static
+// 5-phase hardcode. `phases === null` means no plan-source data is
+// available (e.g. sidecar offline); the frontend falls back to a
+// pending-only render in that case.
+// ------------------------------------------------------------------
+export type PlanPhaseStatus = 'done' | 'active' | 'pending';
+
+export interface PlanPhaseDot {
+  num: number;
+  label: string;
+  steps: number;
+  status: PlanPhaseStatus;
+}
+
+export interface PlanProgress {
+  phases: PlanPhaseDot[] | null;
+  current_phase: number | null;
+  total_pct: number; // 0-1
+}
+
+// ------------------------------------------------------------------
 // Execution / Gate modes
 // ------------------------------------------------------------------
 export type ExecutionMode = 'LOCAL' | 'CLOUD' | 'HYBRID';
@@ -55,7 +77,13 @@ export type WindowType =
   // B-41: per-level auditor timeline + cascade visualisation.
   | 'audit_timeline'
   // C-7: Q&A oracle / codebase-explorer surface.
-  | 'explore';
+  | 'explore'
+  // C-40: GitHub PR adapter window (open / list / status / close).
+  | 'github'
+  // E-40: orchestrator-rooted symbol-graph window (defs/refs/callers/
+  // callees + personalized PageRank + LSP-oracle stats). See
+  // workflow/reasoning/E-40-decisions.md.
+  | 'symbol_graph';
 
 // ------------------------------------------------------------------
 // B-33 — Graph viewer (mirror of Rust visualization::types)
@@ -157,6 +185,10 @@ export type DrawerKey =
   | 'verification-consensus'
   // D-4 — tripwire stack (KL / Δρ / IQR / perplexity / DDM auto-revert).
   | 'tripwires'
+  // E-30 — public-agent-incident drawer (argv-allowlist denies, trust
+  // dialog defers, MCP pin refusals, lineage collisions, untrusted memory
+  // writes, postmortems).
+  | 'incidents'
   // D-19 — PRMBench adversarial-gaming benchmark runner.
   | 'prmbench'
   // D-5 — BAI (Best-Arm Identification) Thompson-sampling promotion arms.
@@ -512,6 +544,29 @@ export interface DagRepairEvent {
   from_node_id: string;
   to_node_id?: string;
   t_dag_counter: number;
+}
+
+// B-7 (SCHEMA_VERSION 100): producer-wire surfaces. Hand-authored TS
+// mirrors of orchestrator/src/ssb.rs payload structs (not ts-rs — the
+// ssb.rs file is hand-curated). Snake-case field names match the rmp
+// serialization byte-for-byte; do NOT camelCase.
+export interface PackageRefVerified {
+  name: string;
+  registry: string;
+  version: string | null;
+  verified: boolean;
+}
+
+// B-7 (SCHEMA_VERSION 100): mirrors orchestrator FailureRecordedPayload
+// (which mirrors pipeline_tree_navigator::FailureRecord). Used by the
+// PlanWindow per-baby-step retry pane and any future failure timeline.
+export interface FailureRecord {
+  baby_step_id: number;
+  step_id: number;
+  phase_id: number;
+  concept_id: number;
+  reason: string;
+  attempts: number;
 }
 
 // ------------------------------------------------------------------
@@ -1590,6 +1645,40 @@ export interface CloudSpendInfo {
   redaction_count: number;
 }
 
+// C-5 follow-on (SCHEMA_VERSION 103): latest cloud routing status surfaced
+// to CloudPanel. Each field maps to the most-recent SSB row of its type
+// and is `null` when no such row has been written yet.
+// Wire shape matches the Rust `get_cloud_route_status` Tauri command.
+export interface RouteBlockedRow {
+  reason: string;
+  spent_usd: number;
+  cap_usd: number;
+  cap_period: string;
+  baby_step_id: number;
+  ts_ms: number;
+}
+export interface WarnLimitReachedRow {
+  spent_usd: number;
+  cap_usd: number;
+  warn_at_percent: number;
+  pct_of_cap: number;
+  baby_step_id: number;
+  ts_ms: number;
+}
+export interface CostEstimateRow {
+  low_usd: number;
+  high_usd: number;
+  model: string;
+  step_count: number;
+  heuristic_source: string;
+  ts_ms: number;
+}
+export interface CloudRouteStatus {
+  route_blocked: RouteBlockedRow | null;
+  warn_limit_reached: WarnLimitReachedRow | null;
+  cost_estimate: CostEstimateRow | null;
+}
+
 // C-28: T-1 mutation testing gauge surfaced in MonitorWindow.
 // Fields mirror the snake_case shape returned by the Rust
 // `get_mutation_gauge` Tauri command. MonitorWindow renders the section
@@ -1903,7 +1992,8 @@ export type AuditorMode =
   | 'steps'
   | 'babysteps'
   | 'babystep_detail'
-  | 'plan';
+  | 'plan'
+  | 'production_grade';
 
 export type AuditorTier = 'concept' | 'phase' | 'step' | 'baby_step';
 
@@ -1962,7 +2052,9 @@ export type RuntimeBackendId =
   | 'ollama'
   | 'vllm'
   | 'mlx'
-  | 'llama_cpp';
+  | 'llama_cpp'
+  | 'ppm'
+  | 'composer2';
 
 /** Stable iteration order matching `RuntimeBackend::all()`. */
 export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
@@ -1979,6 +2071,8 @@ export const RUNTIME_BACKEND_IDS: readonly RuntimeBackendId[] = [
   'vllm',
   'mlx',
   'llama_cpp',
+  'ppm',
+  'composer2',
 ] as const;
 
 /** Discriminator for the `RuntimeHealth` serde tag. */
@@ -2151,8 +2245,436 @@ export interface ListProjectsResponse {
   projects: ProjectEntry[];
 }
 
-/** Per-stage research history row. C-4 ships this as a stable empty
- *  Vec until the `research_node_stage` emitter lands (C-5 deferral —
- *  commands.rs:7860). Shape mirrors the future `ResearchStageEvent`
- *  but is opaque today, so callers must guard on row presence. */
-export type ResearchNodeHistoryRow = Record<string, unknown>;
+/** Per-stage research history row.
+ *
+ *  B-7 (SCHEMA_VERSION 100): rewired to the `web_research_step` SSB rows
+ *  filtered to stage-populated entries (no new SsbActionType is fabricated
+ *  for per-stage history). Mirrors `WebResearchStepPayload` in
+ *  orchestrator/src/ssb.rs verbatim (snake_case fields preserved). Optional
+ *  fields are emitted as `""` by the producer when not populated; callers
+ *  treat empty strings as "not yet reported". */
+export interface ResearchNodeHistoryRow {
+  agent_id: string;
+  node_id: number;
+  action: string;
+  phi: number;
+  psi: number;
+  iteration: number;
+  sources_fetched: number;
+  sources_used: number;
+  /** "reqwest" | "obscura" | "" (empty = pre-patch row). */
+  fetcher?: string;
+  /** "formulate" | "search" | "extract" | "reflect" | "converge".
+   *  Field is omitted (undefined) when the row is a coarse, non-stage
+   *  event — viewer filters those out, but the type stays defensive. */
+  stage?: string;
+  /** "started" | "completed". Omitted on coarse rows. */
+  stage_phase?: string;
+  /** Stage-specific structured data (query, n_results, etc.). */
+  stage_payload?: Record<string, unknown> | null;
+}
+
+// ------------------------------------------------------------------
+// B-3 — feature-flag + query-tier + rule-transition surfaces.
+//
+// Workspace policy (orchestrator/src/empire/types.rs:11) is hand-authored
+// TS mirrors, NOT ts-rs. These interfaces mirror the corresponding Rust
+// shapes verbatim (dashboard-v2/src-tauri/src/commands.rs:get_feature_flags
+// / get_query_tier_stats / get_rule_transitions and
+// orchestrator/src/ssb.rs::RuleTransitionPayload).
+// ------------------------------------------------------------------
+
+/** B-3 #27/#28 + V2 rebaseline. Returned by `get_feature_flags()` at
+ *  bootstrap. `autonomous_mode` gates AutoAdvanceStats (Phase 4G);
+ *  `self_modification` gates ProposalsPanel (Phase 4H); `dashboard_offline`
+ *  mirrors the `ELAI_DASHBOARD_OFFLINE` env var so stub.ts can short-circuit
+ *  Tauri invocation when set. */
+export interface FeatureFlags {
+  autonomous_mode: boolean;
+  self_modification: boolean;
+  dashboard_offline: boolean;
+}
+
+/** B-3 #3. Mirror of `orchestrator::ssb_viewer::QueryTierStats` so the
+ *  KnowledgeDrawer can render its per-tier histogram. `sample_size==0`
+ *  is the "no data yet" signal — until B-4 lands the producer, the
+ *  Tauri command returns this shape verbatim. */
+export interface QueryTierStats {
+  fast_pct: number;
+  standard_pct: number;
+  deep_pct: number;
+  avg_latency_ms_fast: number;
+  avg_latency_ms_standard: number;
+  avg_latency_ms_deep: number;
+  sample_size: number;
+}
+
+/** B-3 #11. Per-row shape returned by `get_rule_transitions(n)`. Mirrors
+ *  `orchestrator::ssb::RuleTransitionPayload` plus the `{seq, ts}` envelope
+ *  added by the Tauri command. Status strings are uppercase lifecycle
+ *  labels (PROPOSED | CANDIDATE | SHADOW | ACTIVE | RETIRED). */
+export interface RuleTransitionRow {
+  seq: number;
+  ts: number;
+  rule_id: string;
+  from_status: string;
+  to_status: string;
+  reason: string;
+  timestamp_ms: number;
+}
+
+/** B-3 #16 (revised — workspace policy is hand-authored TS, NOT ts-rs).
+ *  Mirror of the Rust `SessionHandoffEntry` shape returned by
+ *  `get_session_handoffs` so the SettingsWindow handoff list reads the
+ *  right keys. The legacy V1 fields `{id, branch, ts}` are replaced by
+ *  the canonical `{seq, ts_ms, winner, abandoned, trunk_snap_id,
+ *  from_snap_count}` shape. */
+export interface SessionHandoffEntry {
+  seq: number;
+  ts_ms: number;
+  winner: string;
+  abandoned: string[];
+  trunk_snap_id: string;
+  from_snap_count: number;
+}
+
+// ------------------------------------------------------------------
+// D-5 — BAI Thompson-promotion row union.
+//
+// Source of truth: crates/dashboard-v2/src-tauri/src/commands_d5.rs.
+// Hand-authored TS mirror (workspace policy — types.ts is the shared
+// surface, ts-rs is NOT used in this crate per CLAUDE.md "no new
+// dependencies without confirmation" + the explicit policy comment
+// above on line 2339).
+//
+// Two row variants share the BAI surface:
+//   * 'arm_updated'      — mirrors `bai_arm_updated` (SCHEMA 72). Carries
+//                          the Beta(alpha, beta) posterior after a pull +
+//                          the was_promoted flag.
+//   * 'thompson_sampled' — D-5 closure (SCHEMA 110). Carries the Beta
+//                          draw used to pick the next arm. Emitted
+//                          immediately BEFORE the matching arm_updated
+//                          row by `bai::emit_bai_round`.
+//
+// Joining the two: same `template_id` + adjacent SSB seq numbers.
+// Dashboard consumers can render the (sample, posterior, promote?)
+// triple in one row, or stream them as separate ticks.
+// ------------------------------------------------------------------
+
+/** D-5 (SCHEMA_VERSION 72): mirror of orchestrator BaiArmUpdatedPayload.
+ *  `mean_estimate` is `alpha / (alpha + beta)` — the Beta posterior
+ *  mean. Computed Tauri-side so the frontend doesn't have to repeat
+ *  the divide-by-zero guard (Beta(1, 1) prior makes the denominator
+ *  always positive in practice; the explicit guard keeps the contract
+ *  honest). */
+export interface BaiArmRow {
+  template_id: string;
+  alpha: number;
+  beta: number;
+  n_pulls: number;
+  was_promoted: boolean;
+  mean_estimate: number;
+}
+
+/** D-5 closure (SCHEMA_VERSION 110): mirror of orchestrator
+ *  ThompsonSampledPayload. Captures the Beta draw the Thompson policy
+ *  used to pick the next arm this round. `sampled_value` is always in
+ *  [0.0, 1.0]; `arm_id` is the 32-char simple-hex template id matching
+ *  the companion BaiArmRow on the same SSB seq. */
+export interface ThompsonSampledRow {
+  arm_id: string;
+  sampled_value: number;
+  alpha: number;
+  beta: number;
+}
+
+/** D-5 closure tagged-union row: either an arm-updated tick OR a
+ *  Thompson-sample tick. The dashboard BaiArmsPanel can branch on `kind`
+ *  to render the appropriate column set. */
+export type BaiUnionRow =
+  | ({ kind: 'arm_updated' } & BaiArmRow)
+  | ({ kind: 'thompson_sampled' } & ThompsonSampledRow);
+
+// ------------------------------------------------------------------
+// D-4 — tripwire stack row (mirror of Rust commands_d4::TripwireRow).
+//
+// Source of truth: crates/dashboard-v2/src-tauri/src/commands_d4.rs.
+// Hand-authored TS mirror (workspace policy — types.ts is the shared
+// surface, ts-rs is not used in this crate).
+//
+// kind union admits:
+//   * 'fired'           — single detector firing (TripwireFired row)
+//   * 'auto_reverted'   — auto-revert applied (TemplateAutoReverted)
+//   * 'fired_concurrent' — D-4 GAP-2: >=2 detectors fired in the same
+//                         observe() tick (TripwireFiredConcurrent —
+//                         SCHEMA_VERSION 108)
+//
+// source mirrors `crate::tripwire::SignalSource::as_str` (D-4 GAP-1):
+// 'reward' | 'action' | 'perplexity' | 'classifier' | '' (legacy rows
+// pre-GAP-1 that lacked the field).
+// ------------------------------------------------------------------
+export type TripwireKindLabel =
+  | 'kl_divergence'
+  | 'correlation_drop'
+  | 'iqr_outlier'
+  | 'perplexity'
+  | 'ddm';
+
+export type TripwireSignalSource =
+  | 'reward'
+  | 'action'
+  | 'perplexity'
+  | 'classifier'
+  | '';
+
+export type TripwireRowKind = 'fired' | 'auto_reverted' | 'fired_concurrent';
+
+export interface TripwireRow {
+  seq: number;
+  ts: number;
+  kind: TripwireRowKind;
+  event_id: string | null;
+  tripwire_kind: string | null;
+  /** D-4 GAP-1: signal-stream tag (snake_case SignalSource label).
+   *  Optional on legacy rows pre-GAP-1; the producer populates it
+   *  unconditionally on new rows. */
+  source?: TripwireSignalSource | null;
+  candidate_id: string | null;
+  observed_value: number | null;
+  threshold: number | null;
+  fired_at_ms: number | null;
+  template_id: string | null;
+  parent_template_id: string | null;
+  retirement_reason: string | null;
+  fired_tripwire_id: string | null;
+  /** D-4 GAP-2: second detector kind on concurrent-fire rows. Null on
+   *  'fired' / 'auto_reverted' rows. */
+  tripwire_a?: string | null;
+  tripwire_b?: string | null;
+  fired_within_ms?: number | null;
+}
+
+// ------------------------------------------------------------------
+// D-10 — mode-routing predicate (hand-authored TS mirror of the Rust
+// `GroundingMode` + `ClaimType` closed enums in
+// crates/orchestrator/src/grounding_mode.rs + crates/orchestrator/src/claim.rs).
+//
+// The Rust enums use #[serde(rename_all = "snake_case")] so the wire
+// labels are these snake_case strings; the panels render UPPERCASE
+// human labels separately.
+//
+// ts-rs is NOT used in this codebase (per D-5 DECISION-7 + D-6
+// DECISION-8); the mirror is hand-authored. If a future plan adopts
+// ts-rs, regenerate from the Rust source rather than editing here.
+//
+// Grounding: arxiv:1908.04734 (Everitt current-RF principle, T1) — the
+// orchestrator (NOT the policy model) picks the grounding mode for
+// every claim. These constants are read-only on the UI side.
+// ------------------------------------------------------------------
+
+export type GroundingMode =
+  | 'constructive'
+  | 'falsifiability_cross_family'
+  | 'conformal_refusal'
+  | 'operational_deferred'
+  | 'conservative_fallback';
+
+export const GROUNDING_MODES: ReadonlyArray<GroundingMode> = [
+  'constructive',
+  'falsifiability_cross_family',
+  'conformal_refusal',
+  'operational_deferred',
+  'conservative_fallback',
+];
+
+export const GROUNDING_MODE_LABELS: Readonly<Record<GroundingMode, string>> = {
+  constructive: 'CONSTRUCTIVE',
+  falsifiability_cross_family: 'FALSIFIABILITY (CROSS-FAMILY)',
+  conformal_refusal: 'CONFORMAL REFUSAL',
+  operational_deferred: 'OPERATIONAL DEFERRED',
+  conservative_fallback: 'CONSERVATIVE FALLBACK',
+};
+
+export type ClaimType =
+  | 'factual'
+  | 'procedural'
+  | 'normative'
+  | 'speculative'
+  | 'hypothetical'
+  | 'computational'
+  | 'meta_query';
+
+export const CLAIM_TYPES: ReadonlyArray<ClaimType> = [
+  'factual',
+  'procedural',
+  'normative',
+  'speculative',
+  'hypothetical',
+  'computational',
+  'meta_query',
+];
+
+// Shape of one `claim_routed` SSB row as returned by the Tauri
+// `get_recent_claim_routings` command (mirror of Rust
+// `agent_pool::ClaimRoutedRow`).
+export interface ClaimRoutedRow {
+  claim_id: string;
+  claim_type: string;
+  mode: string;
+  ts_ms: number;
+  ctx_summary_blake3: string;
+}
+
+// Shape of the histogram aggregation surface returned by the Tauri
+// `get_recent_claim_routings` command (mirror of Rust
+// `commands_d10::RecentClaimRoutings`).
+export interface RecentClaimRoutings {
+  rows: ClaimRoutedRow[];
+  counts_by_mode: Record<string, number>;
+  total: number;
+}
+
+// ------------------------------------------------------------------
+// D-15 — NoveltyClass mirror (shared with NoveltyPanel.svelte +
+// DiscoveryQueueDrawer.svelte).
+//
+// Hand-authored per the D-5/D-6/D-10/D-13 ts-rs-not-adopted
+// precedent — keeping the type co-located with the rest of the
+// dashboard wire surface so future drawers can `import { NoveltyClass,
+// NoveltyClassifiedRow } from '$lib/api/types'` without redefining the
+// shape. The Rust enum is `crate::novelty::NoveltyClass` with
+// `#[serde(rename_all = "snake_case")]`; the wire labels below match
+// the Rust as_str() output exactly.
+//
+// L3-LOCKED — 3-arm closed taxonomy per arXiv:2406.05761 (LLM Novelty
+// Detection) §4 + workflow/reasoning/D-15-decisions.md DECISION-3.
+// Adding a fourth bucket is a plan-level schema change.
+// ------------------------------------------------------------------
+export type NoveltyClass = 'search' | 'distant_search' | 'discovery_candidate';
+
+// Shape of one `novelty_classified` SSB row as returned by the Tauri
+// `get_novelty_recent` command (mirror of Rust
+// `crate::novelty::NoveltyClassifiedRow`).
+export interface NoveltyClassifiedRow {
+  template_id: string;
+  class: string;
+  dkg_match_count: number;
+  near_duplicate_threshold: number;
+  ts_ms: number;
+}
+
+// Per-class count snapshot for the dashboard distribution chart
+// (mirror of Rust `crate::novelty::NoveltyDistribution`).
+export interface NoveltyDistribution {
+  total: number;
+  search: number;
+  distant_search: number;
+  discovery_candidate: number;
+}
+
+// ------------------------------------------------------------------
+// D-18 closure — typed-ObservableEffect 4-variant pack.
+// Mirrors crates/orchestrator/src/observable_effect.rs +
+// crates/orchestrator/src/ssb.rs +
+// crates/dashboard-v2/src-tauri/src/commands_d18.rs.
+//
+// Paper anchors (DECISION-6 substituted citations):
+//   Voyager arxiv:2305.16291 §3 (skill-with-measurable-effect)
+//   Eureka arxiv:2310.12931 §3.3 (component-variation Goodhart guard)
+//   Coscientist arxiv:2304.05332 §4 (sandbox vs production observation)
+// ------------------------------------------------------------------
+
+/// Discriminated-union kind label for the 4 typed-ObservableEffect SSB
+/// variants. Matches the snake-case wire tag emitted by
+/// `SsbActionType::as_sql_str` on the Rust side.
+export type ObservableEffectKind =
+  | 'observable_effect_verified'
+  | 'observable_effect_dispatched'
+  | 'goodhart_risk_flag'
+  | 'sandbox_observation'
+  | 'production_observation_proposal';
+
+/// Closed snake-case set for `ObservableEffectRow.outcome` (the legacy
+/// `observable_effect_verified` outcome surface — DISTINCT from
+/// `ObservationOutcome` below).
+export type VerificationOutcomeLabel = 'pass' | 'fail' | 'skipped';
+
+/// Closed snake-case set for `SandboxObservation.outcome` and
+/// `ObservationContext.kind`-paired observations (Coscientist §4
+/// taxonomy). DISTINCT from `VerificationOutcomeLabel`.
+export type ObservationOutcomeLabel =
+  | 'confirmed'
+  | 'refuted'
+  | 'inconclusive';
+
+/// Closed snake-case set for `SandboxTier`.
+export type SandboxTierLabel =
+  | 'no_sandbox'
+  | 'process_isolated'
+  | 'container_isolated'
+  | 'network_blocked';
+
+/// Mirror of Rust `ObservableEffectRow` + `ObservableEffectRowDto`.
+export interface ObservableEffectRow {
+  effect_id: string;
+  trigger_kind: string;
+  observation_kind: string;
+  sandbox_tier: string;
+  outcome: string;
+  confound_flags: string;
+  elapsed_us: number;
+  ts_ms: number;
+}
+
+/// Mirror of Rust `ObservableEffectDispatchedPayload` +
+/// `ObservableEffectDispatchedDto`.
+export interface ObservableEffectDispatched {
+  effect_id: string;
+  trigger: string;
+  context_kind: string;
+  ts_ms: number;
+}
+
+/// Mirror of Rust `GoodhartRiskFlagPayload` + `GoodhartFlagDto`.
+/// Per Eureka §3.3 component-variation invariant.
+export interface GoodhartFlag {
+  effect_id: string;
+  risk_kind: string;
+  evidence: string;
+  ts_ms: number;
+}
+
+/// Mirror of Rust `SandboxObservationPayload` +
+/// `SandboxObservationDto`. Per Coscientist §4 sandbox taxonomy.
+export interface SandboxObservation {
+  effect_id: string;
+  tier: string;
+  outcome: string;
+  evidence_count: number;
+  ts_ms: number;
+}
+
+/// Mirror of Rust `ProductionObservationProposalPayload` +
+/// `ProductionObservationProposalDto`. Per Coscientist §4 invariant,
+/// `requires_human_review` is `true` whenever `instrument_file` is
+/// `null`/`undefined`.
+export interface ProductionObservationProposal {
+  effect_id: string;
+  instrument_file: string | null;
+  requires_human_review: boolean;
+  ts_ms: number;
+}
+
+/// Mirror of Rust `RecentObservableEffects`. Additive extension carries
+/// the 4 new typed-ObservableEffect families alongside the legacy
+/// `observable_effect_verified` rows.
+export interface RecentObservableEffects {
+  rows: ObservableEffectRow[];
+  counts_by_outcome: Record<string, number>;
+  counts_by_sandbox_tier: Record<string, number>;
+  total: number;
+  dispatched_rows: ObservableEffectDispatched[];
+  goodhart_flags: GoodhartFlag[];
+  sandbox_observations: SandboxObservation[];
+  production_proposals: ProductionObservationProposal[];
+}

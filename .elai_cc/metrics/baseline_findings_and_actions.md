@@ -379,10 +379,10 @@ VERDICT: 8-bit for 7B on 12GB. 4-bit for 32B on 48GB (test needed).
 FILE PATHS
 ========================================================================
 
-PROJECT ROOT: D:\.ELAI_workflow\.elai_cc\
+PROJECT ROOT: F:\.ELAI_workflow\.elai_cc\
 
 SIDECAR SERVER:
-  D:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
+  F:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
   Changes in this session:
     - FA2 auto-detection (import flash_attn -> "flash_attention_2" else "sdpa")
     - Qwen special token stripping (<|im_end|>, <|endoftext|>, <|im_start|>)
@@ -393,26 +393,26 @@ FA2 PYTHON ENV:
   flash-attn 2.7.4 prebuilt wheel for cu124+torch2.6+cp312+win_amd64
 
 MODELS:
-  D:\.ELAI_workflow\.elai_cc\models\Qwen2.5-Coder-3B-Instruct\ (downloaded, 1.92GB NF4)
-  D:\.ELAI_workflow\.elai_cc\models\Qwen2.5-Coder-7B-Instruct\ (downloaded, 5.18GB NF4)
-  D:\.ELAI_workflow\.elai_cc\models\gemma-4-E2B-it\ (rejected)
+  F:\.ELAI_workflow\.elai_cc\models\Qwen2.5-Coder-3B-Instruct\ (downloaded, 1.92GB NF4)
+  F:\.ELAI_workflow\.elai_cc\models\Qwen2.5-Coder-7B-Instruct\ (downloaded, 5.18GB NF4)
+  F:\.ELAI_workflow\.elai_cc\models\gemma-4-E2B-it\ (rejected)
 
 BENCHMARK:
-  D:\.ELAI_workflow\.elai_cc\benches\model_capability\run_benchmark.py
-  D:\.ELAI_workflow\.elai_cc\benches\model_capability\bench_config.toml
-  D:\.ELAI_workflow\.elai_cc\metrics\model_baseline.toml (Qwen 3B FA2 results)
-  D:\.ELAI_workflow\.elai_cc\metrics\baseline_raw_results.json
+  F:\.ELAI_workflow\.elai_cc\benches\model_capability\run_benchmark.py
+  F:\.ELAI_workflow\.elai_cc\benches\model_capability\bench_config.toml
+  F:\.ELAI_workflow\.elai_cc\metrics\model_baseline.toml (Qwen 3B FA2 results)
+  F:\.ELAI_workflow\.elai_cc\metrics\baseline_raw_results.json
 
 START COMMANDS:
   Sidecar (Qwen 3B NF4 + FA2):
-    cd D:\.ELAI_workflow\.elai_cc\python
+    cd F:\.ELAI_workflow\.elai_cc\python
     C:\maintainer\miniconda3\envs\elai-fa2\python.exe -m elai_inference.server \
-      --model D:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct \
+      --model F:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct \
       --port 8100 --no-dola --turboquant-bits 0 --no-steering \
       --max-tokens 512 --log-level INFO
 
   Benchmark:
-    cd D:\.ELAI_workflow\.elai_cc\benches\model_capability
+    cd F:\.ELAI_workflow\.elai_cc\benches\model_capability
     C:\maintainer\miniconda3\envs\elai-fa2\python.exe -u run_benchmark.py \
       --config bench_config.toml --endpoint http://127.0.0.1:8100
 

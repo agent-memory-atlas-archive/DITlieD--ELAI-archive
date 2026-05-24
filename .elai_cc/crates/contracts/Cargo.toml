@@ -12,7 +12,7 @@ elai-core = { path = "../core" }
 elai-rules = { path = "../rules" }
 elai-providers = { path = "../providers", features = ["sidecar"] }
 elai-tools = { path = "../tools" }
-elai-plugins = { path = "../plugins" }
+elai-plugins = { path = "../plugins", features = ["mcp"] }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
 elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-support"] }
@@ -66,3 +66,8 @@ mcp = ["elai-plugins/mcp"]
 # obscura branch of `fetcher_used_ssb_contract.rs` compiles when the
 # headless-browser fetch path is enabled.
 obscura = ["elai-orchestrator/obscura"]
+# C-34: forward the `empire` feature to elai-orchestrator so the C-34
+# contract test (c34_empire_integration_contract.rs) can import the
+# `orchestrator::empire::*` types. The test file is `#[cfg(feature = "empire")]`-
+# gated so a default `cargo test -p elai_cc_contracts` run is unaffected.
+empire = ["elai-orchestrator/empire"]

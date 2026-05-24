@@ -2,7 +2,7 @@
 # C-21 Task 3 — Install git pre-commit hook for LOCKED_KEYS guard.
 #
 # Installs a pre-commit hook at the workspace-root .git/hooks/pre-commit
-# (D:/.ELAI_workflow/.git/hooks/pre-commit). The hook blocks any commit
+# (F:/.ELAI_workflow/.git/hooks/pre-commit). The hook blocks any commit
 # that touches a file whose name matches one of the LOCKED_KEYS patterns
 # enumerated in self_mod_safety.rs:70 (spec phase-4H.txt:201-204).
 #

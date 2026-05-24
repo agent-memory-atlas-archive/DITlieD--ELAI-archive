@@ -1,0 +1,135 @@
+# phase-3J-BASELINE fixture: json_schema constrained-decoding gate.
+# Exactly 20 prompts, all flagged expect-json (see below). Targets the sidecar
+# response_format={"type":"json_schema","json_schema":{"schema": ...}}
+# path wired at server.py:1828-1898 (_build_constrained_prefix_fn — LMFE).
+# Acceptance gate G4: 0 invalid-JSON outputs required.
+#
+# DEFERRED: grammar/EBNF coverage. Sidecar handler rejects any
+# response_format.type other than "json_schema" (server.py:1865-1873) so the
+# baseline harness exercises JSON-schema mode only. Grammar mode is the
+# subject of a follow-on phase once the sidecar grows an EBNF branch.
+
+[fixture]
+tier = "json_schema"
+default_max_tokens = 96
+default_temperature = 0.0
+
+[[fixture.prompts]]
+id = "js01_name_age"
+text = "Return ONLY a JSON object: {name, age}. Pick any plausible values."
+expect_json = true
+schema = '''{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}'''
+
+[[fixture.prompts]]
+id = "js02_status_code"
+text = "Return ONLY a JSON object: {status: 'ok'|'fail', code: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"status":{"type":"string","enum":["ok","fail"]},"code":{"type":"integer"}},"required":["status","code"]}'''
+
+[[fixture.prompts]]
+id = "js03_user_email"
+text = "Return ONLY a JSON object: {user: string, email: string}."
+expect_json = true
+schema = '''{"type":"object","properties":{"user":{"type":"string"},"email":{"type":"string"}},"required":["user","email"]}'''
+
+[[fixture.prompts]]
+id = "js04_int_array_3"
+text = "Return ONLY a JSON object: {items: array of 3 integers}."
+expect_json = true
+schema = '''{"type":"object","properties":{"items":{"type":"array","items":{"type":"integer"},"minItems":3,"maxItems":3}},"required":["items"]}'''
+
+[[fixture.prompts]]
+id = "js05_str_array_2"
+text = "Return ONLY a JSON object: {tags: array of 2 strings}."
+expect_json = true
+schema = '''{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"required":["tags"]}'''
+
+[[fixture.prompts]]
+id = "js06_bool_pair"
+text = "Return ONLY a JSON object: {enabled: bool, verified: bool}."
+expect_json = true
+schema = '''{"type":"object","properties":{"enabled":{"type":"boolean"},"verified":{"type":"boolean"}},"required":["enabled","verified"]}'''
+
+[[fixture.prompts]]
+id = "js07_nested_object"
+text = "Return ONLY a JSON object: {meta: {version: integer}}."
+expect_json = true
+schema = '''{"type":"object","properties":{"meta":{"type":"object","properties":{"version":{"type":"integer"}},"required":["version"]}},"required":["meta"]}'''
+
+[[fixture.prompts]]
+id = "js08_enum_color"
+text = "Return ONLY a JSON object: {color: 'red'|'green'|'blue'}."
+expect_json = true
+schema = '''{"type":"object","properties":{"color":{"type":"string","enum":["red","green","blue"]}},"required":["color"]}'''
+
+[[fixture.prompts]]
+id = "js09_number_pair"
+text = "Return ONLY a JSON object: {x: number, y: number}."
+expect_json = true
+schema = '''{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}'''
+
+[[fixture.prompts]]
+id = "js10_label_count"
+text = "Return ONLY a JSON object: {label: string, count: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"label":{"type":"string"},"count":{"type":"integer"}},"required":["label","count"]}'''
+
+[[fixture.prompts]]
+id = "js11_id_active"
+text = "Return ONLY a JSON object: {id: integer, active: boolean}."
+expect_json = true
+schema = '''{"type":"object","properties":{"id":{"type":"integer"},"active":{"type":"boolean"}},"required":["id","active"]}'''
+
+[[fixture.prompts]]
+id = "js12_lang_level"
+text = "Return ONLY a JSON object: {language: string, level: 'beginner'|'intermediate'|'advanced'}."
+expect_json = true
+schema = '''{"type":"object","properties":{"language":{"type":"string"},"level":{"type":"string","enum":["beginner","intermediate","advanced"]}},"required":["language","level"]}'''
+
+[[fixture.prompts]]
+id = "js13_kv_pair"
+text = "Return ONLY a JSON object: {key: string, value: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"key":{"type":"string"},"value":{"type":"integer"}},"required":["key","value"]}'''
+
+[[fixture.prompts]]
+id = "js14_token_count"
+text = "Return ONLY a JSON object: {token: string, count: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"token":{"type":"string"},"count":{"type":"integer"}},"required":["token","count"]}'''
+
+[[fixture.prompts]]
+id = "js15_min_max"
+text = "Return ONLY a JSON object: {min: integer, max: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"min":{"type":"integer"},"max":{"type":"integer"}},"required":["min","max"]}'''
+
+[[fixture.prompts]]
+id = "js16_user_role"
+text = "Return ONLY a JSON object: {user: string, role: 'admin'|'editor'|'viewer'}."
+expect_json = true
+schema = '''{"type":"object","properties":{"user":{"type":"string"},"role":{"type":"string","enum":["admin","editor","viewer"]}},"required":["user","role"]}'''
+
+[[fixture.prompts]]
+id = "js17_endpoint_status"
+text = "Return ONLY a JSON object: {endpoint: string, status: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"endpoint":{"type":"string"},"status":{"type":"integer"}},"required":["endpoint","status"]}'''
+
+[[fixture.prompts]]
+id = "js18_lat_lng"
+text = "Return ONLY a JSON object: {lat: number, lng: number}."
+expect_json = true
+schema = '''{"type":"object","properties":{"lat":{"type":"number"},"lng":{"type":"number"}},"required":["lat","lng"]}'''
+
+[[fixture.prompts]]
+id = "js19_three_int_array"
+text = "Return ONLY a JSON object: {triple: array of 3 integers}."
+expect_json = true
+schema = '''{"type":"object","properties":{"triple":{"type":"array","items":{"type":"integer"},"minItems":3,"maxItems":3}},"required":["triple"]}'''
+
+[[fixture.prompts]]
+id = "js20_summary"
+text = "Return ONLY a JSON object: {summary: string, lines: integer}."
+expect_json = true
+schema = '''{"type":"object","properties":{"summary":{"type":"string"},"lines":{"type":"integer"}},"required":["summary","lines"]}'''

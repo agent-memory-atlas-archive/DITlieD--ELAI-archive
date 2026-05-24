@@ -19,6 +19,28 @@
 // - No `.unwrap()` / `.expect()` in this module's production paths
 //   (CLAUDE.md hard rule). Error propagation goes through `anyhow::Error`
 //   so the top-level dispatcher in `main.rs` can surface a single line.
+//
+// C-15 ENTROPY QUARANTINE EXEMPTION (BENCHMARK-INTRINSIC):
+// This module is the in-process performance/latency measurement harness for
+// the `elai measure` subcommand. Wall-clock `Instant::now()` / `SystemTime::now()`
+// calls below are NOT producer-wire leaks — they ARE the measurement being
+// reported back to the metrics TOML files. Replacing them with a `SeededClock`
+// would produce synthetic time and make the measurements useless.
+//
+// Treatment:
+//   1. Module-scope `#[allow(clippy::disallowed_methods)]` below silences
+//      clippy at the file level (Option A per C-15-decisions.md DECISION-MEASURE).
+//   2. `scripts/check_entropy_quarantine.sh` excludes `**/measure.rs` from
+//      its scan via the C-15-closure glob list.
+//   3. Per-site `// entropy-allow: benchmark-timing-intrinsic` annotations
+//      are intentionally NOT applied (anti-noise; module-scope is the
+//      documented convention for this single benchmark-intrinsic file).
+//
+// If future maintainers add NON-measurement clock reads to this file (e.g.
+// cache TTL, log timestamp on a producer path), those must use the injected
+// `OsClock` already imported at the top of this module instead.
+
+#![allow(clippy::disallowed_methods)]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

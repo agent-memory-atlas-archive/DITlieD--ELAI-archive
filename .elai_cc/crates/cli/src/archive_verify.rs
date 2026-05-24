@@ -3,15 +3,18 @@
 //! Surfaces D-1's [`elai_orchestrator::ArchiveChain::verify_chain`] as a
 //! user-facing subcommand + CI hook. Lobotomy-attack defence per
 //! arxiv:2507.05619 (T1) cryptographic-checksum recommendation + DGM §5
-//! archive practice (companion §3.8 lines 319-337).
+//! archive practice (companion §3.8 lines 319-337) — both are supporting
+//! documentation for the integrity-rationale; neither paper specifies the
+//! wire layout / mechanism (per workflow/reasoning/D-8-decisions.md
+//! DECISION-5 PLAN_PAPER_CONFLATION guard).
 //!
 //! Wiring discipline:
-//!   producer  : `elai_orchestrator::ArchiveChain::verify_chain` (D-1)
+//!   producer  : `elai_orchestrator::ArchiveChain::{load,load_lenient}` (D-1+D-8)
 //!   consumer  : this file — loads the JSONL archive and walks the chain.
-//!   ssb row   : `SsbActionType::ArchiveVerifyResult` (D-8 SSB variant).
-//!   ci hook   : skipped this session (no `.github/workflows/wiring-audit.yml`
-//!               at the project root yet; recorded as followup in the
-//!               return summary).
+//!   ssb row   : `SsbActionType::ArchiveVerifyResult` (D-8 SCHEMA_VERSION 115).
+//!   ci hook   : `.github/workflows/archive-verify.yml` at the workflow-tooling
+//!               root (NOT under `.elai_cc/.github/` — workflows live at the
+//!               repo root per F:\.ELAI_workflow\.github\ convention).
 //!
 //! Exit codes:
 //!   0 = chain verified (no errors)
@@ -27,193 +30,35 @@
 //!   --fail-fast    short-circuit on first error rather than collect-all
 //!
 //! No `.unwrap()` in non-test code. All I/O + chain errors flow through
-//! [`ArchiveVerifyError`] via `thiserror`.
+//! [`ArchiveVerifyError`] (re-exported from
+//! [`elai_orchestrator::archive_chain`]) via `thiserror`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use elai_orchestrator::{archive_chain::ArchiveChain, reasoning_template::TemplateError};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// Error type (thiserror per CLAUDE.md anti-stale rule).
-// ---------------------------------------------------------------------------
-
-/// Per-entry verify failure mode. Each variant carries the entry index so the
-/// dashboard / CI log can point at the broken row directly.
-#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ArchiveVerifyError {
-    /// Recomputed `self_hash` did not match the stored value.
-    #[error(
-        "hash_mismatch at entry {entry_index} (template_id={template_id}): expected={expected} computed={computed}"
-    )]
-    HashMismatch {
-        entry_index: u32,
-        expected: String,
-        computed: String,
-        template_id: String,
-    },
-    /// `parent_hash` references a hash not present earlier in the chain.
-    #[error(
-        "broken_parent at entry {entry_index} (template_id={template_id}): parent_hash={parent_hash} not seen earlier"
-    )]
-    BrokenParent {
-        entry_index: u32,
-        parent_hash: String,
-        template_id: String,
-    },
-    /// I/O failure loading the JSONL file (missing file becomes an empty
-    /// chain in D-1, so this is *only* "exists but can't read").
-    #[error("io error reading {path}: {source_msg}")]
-    Io { path: String, source_msg: String },
-    /// JSONL deserialise failure on at least one line.
-    #[error("malformed_json reading {path}: {source_msg}")]
-    MalformedJson { path: String, source_msg: String },
-}
+use elai_core::clock::OsClock;
+use elai_core::paths::sessions_dir_path;
+use elai_orchestrator::archive_chain::{
+    verify_archive as verify_archive_canonical, ArchiveVerifyError, ArchiveVerifyReport,
+};
+use elai_orchestrator::ssb::{ArchiveVerifyResultPayload, SsbPayload};
+use elai_orchestrator::{Ssb, SsbConfig};
 
 // ---------------------------------------------------------------------------
-// Report struct (JSON + text renderers).
+// Public verify entry — re-export of the orchestrator's canonical walker.
+//
+// Single source of truth lives in
+// `elai_orchestrator::archive_chain::verify_archive` so the CLI, contract
+// tests, and any future programmatic consumer share one canonical walker.
+// This wrapper exists purely to preserve the call shape callers in this
+// crate already use (`&PathBuf`, sync entry).
 // ---------------------------------------------------------------------------
 
-/// Outcome of one `elai archive verify` invocation. Serialised verbatim
-/// for `--json`; the text renderer formats a human-readable summary +
-/// per-error line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArchiveVerifyReport {
-    pub archive_path: String,
-    pub total_entries: u32,
-    pub verified: u32,
-    pub errors: Vec<ArchiveVerifyError>,
-    /// `true` if `errors.is_empty()`.
-    pub passed: bool,
-    /// `true` if `--fail-fast` was set on this run (so callers can tell
-    /// the difference between "really clean" and "stopped early").
-    pub fail_fast: bool,
-}
-
-impl ArchiveVerifyReport {
-    #[must_use]
-    pub fn is_clean(&self) -> bool {
-        self.errors.is_empty()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Public verify entry — usable from contract tests + Tauri commands.
-// ---------------------------------------------------------------------------
-
-/// Load the chain at `archive_path`, walk every entry, recompute `self_hash`
-/// per `(template_body, parent_hash)`, and check parent reachability.
-///
-/// Returns a populated [`ArchiveVerifyReport`] (errors collected when
-/// `fail_fast=false`, single-error short-circuit when `fail_fast=true`).
-///
-/// `Err` is reserved for *infrastructural* failures (missing-but-required
-/// path, IO error, malformed JSON). Tamper / mismatch findings are encoded
-/// inside `report.errors`, NOT as `Err`, so the CLI can render a structured
-/// report on exit-1 instead of dumping a backtrace.
 pub fn verify_archive(
     archive_path: &PathBuf,
     fail_fast: bool,
 ) -> Result<ArchiveVerifyReport, ArchiveVerifyError> {
-    let path_str = archive_path.to_string_lossy().into_owned();
-
-    // D-1's `ArchiveChain::load` returns Ok(empty) for a missing file. That's
-    // the desired semantics here: a fresh repo with no archive has nothing to
-    // tamper with -> verify passes vacuously.
-    let chain = ArchiveChain::load(archive_path.clone()).map_err(|e| match e {
-        TemplateError::Io(msg) => ArchiveVerifyError::Io {
-            path: path_str.clone(),
-            source_msg: msg,
-        },
-        TemplateError::Serde(msg) => ArchiveVerifyError::MalformedJson {
-            path: path_str.clone(),
-            source_msg: msg,
-        },
-        other => ArchiveVerifyError::Io {
-            path: path_str.clone(),
-            source_msg: format!("{other:?}"),
-        },
-    })?;
-
-    let total_entries = u32::try_from(chain.len()).unwrap_or(u32::MAX);
-
-    // Empty chain -> trivially clean.
-    if chain.is_empty() {
-        return Ok(ArchiveVerifyReport {
-            archive_path: path_str,
-            total_entries: 0,
-            verified: 0,
-            errors: Vec::new(),
-            passed: true,
-            fail_fast,
-        });
-    }
-
-    // Walk the chain ourselves (not via verify_chain) so we can report the
-    // exact entry index + expected/computed hash + collect-multiple. D-1's
-    // verify_chain returns on first error and does not surface the index.
-    let mut errors: Vec<ArchiveVerifyError> = Vec::new();
-    let mut verified: u32 = 0;
-    let mut seen_hashes: std::collections::HashSet<elai_orchestrator::reasoning_template::Blake3Hash> =
-        std::collections::HashSet::new();
-
-    for (idx, entry) in chain.entries().iter().enumerate() {
-        let entry_index = u32::try_from(idx).unwrap_or(u32::MAX);
-        let template_id = entry.template.id.as_hex();
-
-        // Parent reachability.
-        if let Some(parent_hash) = entry.parent_hash {
-            if !seen_hashes.contains(&parent_hash) {
-                errors.push(ArchiveVerifyError::BrokenParent {
-                    entry_index,
-                    parent_hash: parent_hash.as_hex(),
-                    template_id: template_id.clone(),
-                });
-                if fail_fast {
-                    break;
-                }
-                // Skip self-hash check for broken-parent rows: parent_hash is
-                // an input to the hash, so a fake parent guarantees the
-                // self-hash recompute also disagrees -- reporting both would
-                // be noise. Move on to next entry.
-                seen_hashes.insert(entry.self_hash);
-                continue;
-            }
-        }
-
-        // Self-hash recomputation.
-        let recomputed = elai_orchestrator::reasoning_template::compute_content_hash(
-            entry.template.template_body.as_str(),
-            entry.parent_hash.as_ref(),
-        );
-        if recomputed != entry.self_hash {
-            errors.push(ArchiveVerifyError::HashMismatch {
-                entry_index,
-                expected: entry.self_hash.as_hex(),
-                computed: recomputed.as_hex(),
-                template_id,
-            });
-            if fail_fast {
-                break;
-            }
-        } else {
-            verified = verified.saturating_add(1);
-        }
-
-        seen_hashes.insert(entry.self_hash);
-    }
-
-    let passed = errors.is_empty();
-    Ok(ArchiveVerifyReport {
-        archive_path: path_str,
-        total_entries,
-        verified,
-        errors,
-        passed,
-        fail_fast,
-    })
+    verify_archive_canonical(archive_path.as_path(), fail_fast)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +73,8 @@ fn default_archive_path(project_root: &std::path::Path) -> PathBuf {
     project_root.join("archive").join("reasoning-templates.jsonl")
 }
 
-/// CLI entry — parses three flags, runs [`verify_archive`], renders + exits.
+/// CLI entry — parses three flags, runs [`verify_archive`], emits the
+/// [`SsbActionType::ArchiveVerifyResult`] row, renders + exits.
 ///
 /// Returns `Ok(())` on clean exit (rc=0); calls `std::process::exit(1)` on
 /// any verify error. Returning `Err(anyhow::Error)` is reserved for
@@ -244,11 +90,61 @@ pub(crate) fn run(
         .map(PathBuf::from)
         .unwrap_or_else(|| default_archive_path(&project_root));
 
-    let report = match verify_archive(&archive_path, fail_fast) {
-        Ok(r) => r,
+    // Build a current-thread tokio runtime — the SSB writer requires a
+    // runtime context for write_payload (Ssb::new spawns a single-writer
+    // task). Sync entry pattern matches github_pr_cmd / ppm_health.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("building tokio runtime for archive verify: {e}"))?;
+
+    let report_result = verify_archive(&archive_path, fail_fast);
+
+    // Emit the ArchiveVerifyResult SSB row regardless of pass / fail.
+    // Infrastructural error (Err) -> row carries error_count=1 with the
+    // synthesised Io / MalformedJson error in the typed list so dashboards
+    // do not silently lose the run. The CLI then exits 1 immediately
+    // after.
+    let (report_or_err_label, ssb_payload): (Result<&ArchiveVerifyReport, &ArchiveVerifyError>, ArchiveVerifyResultPayload) =
+        match &report_result {
+            Ok(report) => (
+                Ok(report),
+                ArchiveVerifyResultPayload {
+                    audit_id: report.archive_path.clone(),
+                    total_entries: report.total_entries,
+                    verified: report.passed,
+                    error_count: u32::try_from(report.errors.len()).unwrap_or(u32::MAX),
+                    errors: report.errors.clone(),
+                    ts_ms: current_ms(),
+                },
+            ),
+            Err(e) => (
+                Err(e),
+                ArchiveVerifyResultPayload {
+                    audit_id: archive_path.to_string_lossy().into_owned(),
+                    total_entries: 0,
+                    verified: false,
+                    error_count: 1,
+                    errors: vec![e.clone()],
+                    ts_ms: current_ms(),
+                },
+            ),
+        };
+
+    // SSB emission is best-effort — a writer construction failure must not
+    // mask the verify result. We log + continue.
+    let project_root_owned = project_root.clone();
+    let ssb_emit = rt.block_on(async move {
+        emit_archive_verify_ssb(&project_root_owned, ssb_payload).await
+    });
+    if let Err(e) = ssb_emit {
+        eprintln!("warning: failed to emit ArchiveVerifyResult SSB row: {e}");
+    }
+
+    let report = match report_or_err_label {
+        Ok(r) => r.clone(),
         Err(e) => {
             // Infrastructural failure -- emit a one-line error and exit 1.
-            // Mirrors wiring_audit's approach (printed by upstream printer).
             if json {
                 let body = serde_json::json!({
                     "archive_path": archive_path.to_string_lossy(),
@@ -268,6 +164,51 @@ pub(crate) fn run(
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Construct an SSB writer against the active project's session DB and
+/// emit one `ArchiveVerifyResult` row. Errors propagate to the caller for
+/// logging — the verify result has already been computed by this point,
+/// so SSB failure must not change the exit code.
+async fn emit_archive_verify_ssb(
+    project_root: &std::path::Path,
+    payload: ArchiveVerifyResultPayload,
+) -> anyhow::Result<()> {
+    let db_path = sessions_dir_path(project_root).join("ssb.db");
+    let parent = db_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("ssb.db has no parent dir; cannot prepare path"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| anyhow::anyhow!("creating ssb sessions dir: {e}"))?;
+    let cfg = SsbConfig {
+        db_path,
+        pool_size: None,
+        project_id: "default".to_string(),
+        session_id: "cli-archive-verify".to_string(),
+    };
+    let clock: Arc<dyn elai_core::clock::ClockProvider> = Arc::new(OsClock);
+    let ssb = Ssb::new(cfg, clock)
+        .map_err(|e| anyhow::anyhow!("opening SSB writer: {e}"))?;
+    ssb
+        .write_payload(
+            "cli:archive-verify",
+            0,
+            SsbPayload::ArchiveVerifyResult(payload),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("writing ArchiveVerifyResult row: {e}"))?;
+    Ok(())
+}
+
+fn current_ms() -> i64 {
+    // Saturation semantics matching ssb.rs `Ssb::now_ms` — durations before
+    // 1970-01-01 are clamped to 0 rather than panicking. UNIX epoch
+    // failure is not an error we model in the report.
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    }
 }
 
 fn render_report(json: bool, report: &ArchiveVerifyReport) -> anyhow::Result<()> {
@@ -432,5 +373,36 @@ mod tests {
         let fast = verify_archive(&path, true).expect("verify ok");
         assert_eq!(fast.errors.len(), 1, "fail-fast stops at first");
         assert!(fast.fail_fast);
+    }
+
+    /// D-8 GAP-2: lenient JSONL parsing surfaces MalformedJson without
+    /// short-circuiting the rest of the walk.
+    #[test]
+    fn verify_collects_malformed_json_via_lenient_load() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("archive.jsonl");
+
+        // Build a clean one-entry chain then append a corrupted line.
+        let mut chain = ArchiveChain::new(path.clone());
+        let r = ArchiveEntry::new_root(mk_template("root"));
+        chain.append(r).expect("append root");
+        // Manually append a malformed line.
+        let extra = "{this-is-not-valid-json}\n";
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open append");
+        std::io::Write::write_all(&mut f, extra.as_bytes()).expect("write extra");
+
+        let rep = verify_archive(&path, false).expect("verify ok");
+        assert!(!rep.passed);
+        // total_entries counts only well-formed parses (1), error list
+        // has the MalformedJson row.
+        assert_eq!(rep.total_entries, 1);
+        let has_malformed = rep
+            .errors
+            .iter()
+            .any(|e| matches!(e, ArchiveVerifyError::MalformedJson { .. }));
+        assert!(has_malformed, "expected MalformedJson row, got {rep:?}");
     }
 }

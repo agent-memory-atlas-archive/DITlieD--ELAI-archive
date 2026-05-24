@@ -72,6 +72,22 @@ pub enum AuditorMode {
     /// Plan-mode — single-cycle integration pass at end of plan. Back-compat
     /// route for pre-B-41 callers.
     Plan,
+    /// E-12 (E-11 prereq, fulfilled in E-12) — plan-scope production-grade
+    /// auditor that runs the 15-item production checklist (secrets scan,
+    /// OWASP semgrep, RLS probe, dep audit, OTel/Sentry presence,
+    /// lighthouse, biome/ruff/clippy-deny, etc.) against the emitted
+    /// FilePlan + selected FrameworkProfile. Dispatches the
+    /// [`AgentRole::AuditorProductionGrade`] spawn. See
+    /// `crate::production_checklist::*` + `crate::framework_profile`.
+    ///
+    /// Wire-dark posture: 15 runner modules ship the full surface
+    /// (real subprocess wires, real timeout, real ToolchainMissing
+    /// branch) but the 15 external CLIs are not installed by default on
+    /// the local dev host. The runner returns
+    /// `production_checklist::RunResult::ToolchainMissing` instead of a
+    /// stub or panic; live invocation is RUNPOD-PENDING per
+    /// `workflow/reasoning/E-12-tier-b-decisions.md`.
+    ProductionGrade,
     /// Reserved for B-43. Compiles only under `visual_audit`.
     #[cfg(feature = "visual_audit")]
     Visual,
@@ -89,6 +105,7 @@ impl AuditorMode {
             Self::BabySteps => AgentRole::AuditorBabySteps,
             Self::BabyStepDetail => AgentRole::AuditorBabyStepDetail,
             Self::Plan => AgentRole::Auditor,
+            Self::ProductionGrade => AgentRole::AuditorProductionGrade,
             #[cfg(feature = "visual_audit")]
             Self::Visual => AgentRole::Auditor, // B-43: replace with AgentRole::AuditorVisual when added.
         }
@@ -104,6 +121,7 @@ impl AuditorMode {
             Self::BabySteps => "babysteps",
             Self::BabyStepDetail => "babystep_detail",
             Self::Plan => "plan",
+            Self::ProductionGrade => "production_grade",
             #[cfg(feature = "visual_audit")]
             Self::Visual => "visual",
         }
@@ -410,6 +428,10 @@ mod tests {
                 AgentRole::AuditorBabyStepDetail,
             ),
             (AuditorMode::Plan, AgentRole::Auditor),
+            (
+                AuditorMode::ProductionGrade,
+                AgentRole::AuditorProductionGrade,
+            ),
         ];
         for (mode, expected) in pairs {
             assert_eq!(mode.map_to_agent_role(), expected, "mode={:?}", mode);
@@ -424,6 +446,7 @@ mod tests {
         assert_eq!(AuditorMode::BabySteps.as_str(), "babysteps");
         assert_eq!(AuditorMode::BabyStepDetail.as_str(), "babystep_detail");
         assert_eq!(AuditorMode::Plan.as_str(), "plan");
+        assert_eq!(AuditorMode::ProductionGrade.as_str(), "production_grade");
     }
 
     #[test]

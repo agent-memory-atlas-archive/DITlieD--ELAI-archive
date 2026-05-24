@@ -109,6 +109,44 @@ fn grounding_mode_serde_tag_matches_as_str() {
 }
 
 #[test]
+fn claim_type_is_closed_7_variant_enum_serde_round_trip() {
+    // D-10 closure GAP-5: exhaustive ClaimType serde round-trip. The
+    // shipped enum has 7 variants per workflow/reasoning/D-10-decisions.md
+    // DECISION-6 (PLAN-VOCAB-vs-SHIPPED-NAMING preservation):
+    // Factual | Procedural | Normative | Speculative | Hypothetical
+    //   | Computational | MetaQuery
+    //
+    // Wire labels MUST match `ClaimType::as_str()` since the SSB
+    // payload carries claim_type as a String snake_case tag.
+    let variants: [(ClaimType, &str); 7] = [
+        (ClaimType::Factual, "factual"),
+        (ClaimType::Procedural, "procedural"),
+        (ClaimType::Normative, "normative"),
+        (ClaimType::Speculative, "speculative"),
+        (ClaimType::Hypothetical, "hypothetical"),
+        (ClaimType::Computational, "computational"),
+        (ClaimType::MetaQuery, "meta_query"),
+    ];
+    for (ct, expected_tag) in variants {
+        // serde JSON round-trip.
+        let json = serde_json::to_string(&ct).expect("ct serialize");
+        let stripped = json.trim_matches('"');
+        assert_eq!(
+            stripped, expected_tag,
+            "ClaimType {ct:?} must serialize as {expected_tag}"
+        );
+        let back: ClaimType = serde_json::from_str(&json).expect("ct deserialize");
+        assert_eq!(back, ct, "ClaimType {ct:?} must round-trip");
+        // as_str() mirror.
+        assert_eq!(
+            ct.as_str(),
+            expected_tag,
+            "ClaimType {ct:?}::as_str must equal serde tag"
+        );
+    }
+}
+
+#[test]
 fn select_grounding_mode_is_deterministic_per_input() {
     // 5 canonical claims, one per expected mode. Mirrors the
     // observable_effect smoke and gives the dashboard a fixed table

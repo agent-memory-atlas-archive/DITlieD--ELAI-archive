@@ -688,7 +688,10 @@ impl CosmosWorker {
         // write path so the SSB CosmosArtifactUpdated row carries a real
         // `latency_ms` instead of zero. Use std::time::Instant (monotonic) —
         // CosmosClock is wall-clock seconds and unsuitable for latency.
-        let start = std::time::Instant::now();
+        // C-15 (s-25120): CosmosClock trait at line 305 only exposes now_secs();
+        // adding instant_now to it is a separate refactor scoped to a future
+        // cosmos-clock-extension plan. Annotated to keep entropy quarantine green.
+        let start = std::time::Instant::now(); // entropy-allow: cosmos-latency-cosmosclock-no-instant-now
         let (mut body, source_tier) = self
             .research
             .run(&spec.research_query, &spec.min_source_tier, spec.max_size_bytes)

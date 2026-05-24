@@ -13,6 +13,11 @@
   import OrbitGrcDots from './OrbitGrcDots.svelte';
   import OrbitBudgetRing from './OrbitBudgetRing.svelte';
   import { motion } from '../state/motion.svelte';
+  // E-33 task 4: GRC confidence wired into the OrbitGrcDots overlay so the
+  // ConfidenceTag binary surface reflects the most recent reasoning_trace
+  // payload from get_recent_actions. Store is polled at the WindowHost
+  // bootstrap path; here we just read the derived numeric.
+  import { grc } from '../state/grc.svelte';
 
   interface Props {
     concept: ConceptStub;
@@ -379,9 +384,16 @@
     {/if}
     <text x={cx} y={cy + 4} text-anchor="middle" class="centre-label">{concept.name.split(' ').map((w) => w[0]).join('').slice(0, 3).toLowerCase()}</text>
 
-    <!-- GRC dots orbit the active baby -->
+    <!-- GRC dots orbit the active baby. Confidence overlay (ConfidenceTag)
+         is wired via the grc store; falls back gracefully when no
+         reasoning_trace has landed yet (default 0.10 -> needs-evidence). -->
     {#if activeBabyPos && fixture.grc_step}
-      <OrbitGrcDots cx={activeBabyPos.x} cy={activeBabyPos.y} active_step={fixture.grc_step} />
+      <OrbitGrcDots
+        cx={activeBabyPos.x}
+        cy={activeBabyPos.y}
+        active_step={fixture.grc_step}
+        confidence={grc.confidence}
+      />
     {/if}
 
     <!-- Context-budget donut around centre, only at concept zoom -->

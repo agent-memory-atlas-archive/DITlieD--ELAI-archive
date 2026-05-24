@@ -1,0 +1,185 @@
+# E-17 SP6 RAG eval — generated report
+
+[meta]
+project_root = "F:\\.ELAI_workflow"
+queries_file = "F:\\.ELAI_workflow\\.elai_cc\\eval\\rag\\queries.toml"
+tier = "BOTH"
+top_k = 10
+runs_per_query = 1
+elapsed_sec = 0.75
+soft_failures = 0
+enforce_floor = false
+elai_bin = "F:\\.ELAI_workflow\\.elai_cc\\target\\debug\\elai.exe"
+timestamp = "2026-05-21T20:59:15+0900"
+
+[results.standard]
+mrr = 0.0
+r_at_5 = 0.0
+r_at_10 = 0.0
+hits = 0
+total = 15
+
+[results.deep]
+mrr = 0.0
+r_at_5 = 0.0
+r_at_10 = 0.0
+hits = 0
+total = 15
+
+[monotonicity]
+ok = true
+msg = "DEEP - STANDARD = +0.0000 -> OK"
+
+[ssb]
+available = false
+reason = "not found"
+
+[[per_query.standard]]
+id = "code-01-runtime-adapter-stream-step"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-02-schema-version-constant"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-03-rrf-rerank-fn"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-04-query-tier-enum"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-05-ssb-db-path-canonical-layout"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-06-cross-encoder-with-ssb"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-07-deep-pool-cap-fn"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "code-08-ssb-action-deep-pool-capped"
+class = "code"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-09-knowledge-pipeline-rerank-after-rrf"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-10-where-is-ssb-sqlite-stored"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-11-fast-standard-deep-tier-difference"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-12-reranker-saturation-too-many-candidates"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-13-contextual-retrieval-prefix"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-14-ssb-row-types-knowledge-pipeline"
+class = "nl"
+# median_rank = null
+
+[[per_query.standard]]
+id = "nl-15-why-hyde-disabled-for-code-queries"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-01-runtime-adapter-stream-step"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-02-schema-version-constant"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-03-rrf-rerank-fn"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-04-query-tier-enum"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-05-ssb-db-path-canonical-layout"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-06-cross-encoder-with-ssb"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-07-deep-pool-cap-fn"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "code-08-ssb-action-deep-pool-capped"
+class = "code"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-09-knowledge-pipeline-rerank-after-rrf"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-10-where-is-ssb-sqlite-stored"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-11-fast-standard-deep-tier-difference"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-12-reranker-saturation-too-many-candidates"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-13-contextual-retrieval-prefix"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-14-ssb-row-types-knowledge-pipeline"
+class = "nl"
+# median_rank = null
+
+[[per_query.deep]]
+id = "nl-15-why-hyde-disabled-for-code-queries"
+class = "nl"
+# median_rank = null

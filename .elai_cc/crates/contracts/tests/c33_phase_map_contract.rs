@@ -208,7 +208,7 @@ fn migration_manifest_has_at_least_eighty_command_entries() {
 // ---------------------------------------------------------------------------
 // 5/6/7. Plan-file reconciliation. The plan files live under
 //        docs/thefinalglance/B-plan/ which is two levels above the
-//        elai_cc/ workspace root (D:\.ELAI_workflow\docs vs D:\.ELAI_workflow\.elai_cc).
+//        elai_cc/ workspace root (F:\.ELAI_workflow\docs vs F:\.ELAI_workflow\.elai_cc).
 // ---------------------------------------------------------------------------
 
 fn docs_root() -> PathBuf {

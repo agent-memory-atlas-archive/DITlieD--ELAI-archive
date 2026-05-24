@@ -364,7 +364,7 @@ async fn e2e_real_sidecar_full_build() {
     //   - Remote sidecar booted per CLAUDE.md "Remote sidecar (canonical)"
     //     (workflow/remote-setup/REMOTE-SIDECAR.md, 3-step health check).
     //   - Local tunnel up:
-    //       D:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1
+    //       F:\.ELAI_workflow\workflow\remote-setup\start-tunnel.ps1
     //   - Environment:
     //       ANTHROPIC_BASE_URL=http://localhost:8100
     //       ANTHROPIC_API_KEY=local-dummy

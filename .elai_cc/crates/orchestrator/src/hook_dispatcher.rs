@@ -89,6 +89,14 @@ pub const HOOK_T2_BUDGET_MS: u64 = 10;
 /// pathological rule.
 pub const HOOK_T3_BUDGET_MS: u64 = 5;
 
+/// B-19: spec handoff threshold mirroring
+/// `crate::escalation_policy::HANDOFF_THRESHOLD_FRACTION` (0.85). Re-exposed
+/// here so `dispatch_pre_compact` can gate the SessionDag handoff trigger
+/// without taking a cross-module dep at the dispatcher hot path.
+/// Source: `docs/specs/guide/steps/phase-4C.txt:28-29` —
+/// "PreCompact fires when token_used/token_limit > 0.85".
+pub const PRE_COMPACT_HANDOFF_FRACTION: f64 = 0.85;
+
 /// Produce the agent-facing sanitized message for a BLOCK finding.
 ///
 /// Format: `"tool call rejected by policy (<category>)"`. The rule_id
@@ -280,6 +288,20 @@ pub struct HookInvocation<'a> {
     /// Empty string (default) skips the FSM check — backward-compatible for
     /// callers that have not yet plumbed FSM state into the invocation.
     pub fsm_state: String,
+    /// B-19: optional `(token_used, token_limit)` snapshot consumed by
+    /// `dispatch_pre_compact`. When `Some` AND
+    /// `token_used as f64 / token_limit as f64 <= 0.85` (the spec
+    /// `HANDOFF_THRESHOLD_FRACTION` from `escalation_policy.rs:34`), the
+    /// dispatcher short-circuits to `Ok(empty)` — no handoff snapshot is
+    /// taken and no SSB row is emitted. This honours
+    /// `docs/specs/guide/steps/phase-4C.txt:28-29` (`PreCompact fires when
+    /// token_used/token_limit > 0.85`) without the call-side having to
+    /// know the threshold constant.
+    /// `None` means "caller has no token budget data; do not apply the
+    /// gate" — the dispatcher runs PreCompact analyze() as before. This
+    /// preserves backward-compat for the per-task PreCompact firing site
+    /// in `task_runner.rs` which has no token telemetry.
+    pub pre_compact_token_state: Option<(u32, u32)>,
 }
 
 impl<'a> HookInvocation<'a> {
@@ -293,6 +315,7 @@ impl<'a> HookInvocation<'a> {
             metric_values: FxHashMap::default(),
             step_id: step_id.into(),
             fsm_state: String::new(),
+            pre_compact_token_state: None,
         }
     }
 
@@ -310,6 +333,7 @@ impl<'a> HookInvocation<'a> {
             metric_values: FxHashMap::default(),
             step_id: step_id.into(),
             fsm_state: String::new(),
+            pre_compact_token_state: None,
         }
     }
 
@@ -328,6 +352,7 @@ impl<'a> HookInvocation<'a> {
             metric_values: FxHashMap::default(),
             step_id: step_id.into(),
             fsm_state: String::new(),
+            pre_compact_token_state: None,
         }
     }
 
@@ -335,6 +360,18 @@ impl<'a> HookInvocation<'a> {
     #[must_use]
     pub fn with_fsm_state(mut self, state: impl Into<String>) -> Self {
         self.fsm_state = state.into();
+        self
+    }
+
+    /// B-19: set the `(token_used, token_limit)` snapshot consumed by
+    /// `dispatch_pre_compact`. Callers that know the live context budget
+    /// (e.g. the chat-session layer that owns the message history) chain
+    /// this after `for_task_level("pre_compact", ...)` so the spec-required
+    /// 0.85 gate (`HANDOFF_THRESHOLD_FRACTION`) is enforced at the
+    /// dispatcher boundary rather than at every callsite.
+    #[must_use]
+    pub fn with_pre_compact_token_state(mut self, used: u32, limit: u32) -> Self {
+        self.pre_compact_token_state = Some((used, limit));
         self
     }
 }
@@ -396,6 +433,32 @@ pub trait HookDispatcher: Send + Sync {
 // Default in-process implementation
 // ---------------------------------------------------------------------------
 
+/// B-19 — handoff-save callback. The PreCompact dispatch handler invokes
+/// this callback (when installed AND the token-budget gate passes) to
+/// trigger a `SessionDag::create_handoff` snapshot at the spec-required
+/// 0.85 threshold. The dispatcher itself does not own the SessionDag /
+/// message history — that data lives in the chat-session layer (e.g.
+/// `cli::live_cli`) — so we surface the responsibility via a trait the
+/// owning layer implements.
+///
+/// Implementations MUST be `Send + Sync` since the dispatcher is shared
+/// across the task_runner via `Arc<dyn HookDispatcher>`. Implementations
+/// are synchronous because `create_handoff` is sync (it uses rusqlite
+/// directly, not tokio-rusqlite); the dispatcher wraps the call in
+/// `tokio::task::spawn_blocking` so the async runtime stays unblocked.
+///
+/// Returning `Err` is treated as a soft-fail: the dispatcher logs the
+/// error via `tracing::warn` and returns `Ok(empty)` so a snapshot-save
+/// failure never aborts an in-flight task. Hard-failure semantics would
+/// regress prior B-19 W2 behaviour where PreCompact was strictly
+/// best-effort.
+pub trait PreCompactHandoffSaver: Send + Sync {
+    /// Trigger one handoff snapshot. `step_id` is forwarded from the
+    /// PreCompact `HookInvocation` so the saver can correlate the
+    /// snapshot back to the originating task.
+    fn save_handoff(&self, step_id: &str) -> Result<(), String>;
+}
+
 /// In-process hook dispatcher that drives `elai_plugins::TieredAnalysis`
 /// (T1 predicate rules, T2 deprecated-import / AST, T3 reasoning) for each
 /// hook point. Stop and PreCompact currently evaluate T1 only — T2/T3 are
@@ -421,6 +484,11 @@ pub struct InProcessHookDispatcher {
     /// previous direct `tokio::time::Instant::now()` calls so all timing
     /// flows through the entropy quarantine.
     clock: Arc<dyn ClockProvider>,
+    /// B-19: optional handoff-save callback fired from `dispatch_pre_compact`
+    /// when the token-budget gate passes (token_used / token_limit > 0.85).
+    /// `None` preserves the legacy MVP-no-op behaviour for callers (e.g.
+    /// the task_runner per-task firing site) that have no SessionDag handle.
+    handoff_saver: Option<Arc<dyn PreCompactHandoffSaver>>,
     disabled: bool,
 }
 
@@ -448,8 +516,26 @@ impl InProcessHookDispatcher {
             shortcoder: None,
             ruff: None,
             clock: Arc::new(OsClock),
+            handoff_saver: None,
             disabled,
         }
+    }
+
+    /// B-19: install a [`PreCompactHandoffSaver`] callback. Without this,
+    /// the PreCompact handler runs only T1 analysis (legacy MVP-no-op for
+    /// the handoff side). With it, the dispatcher fires
+    /// `saver.save_handoff(step_id)` whenever the token-budget gate
+    /// (`token_used / token_limit > 0.85`) is crossed.
+    #[must_use]
+    pub fn with_handoff_saver(mut self, saver: Arc<dyn PreCompactHandoffSaver>) -> Self {
+        self.handoff_saver = Some(saver);
+        self
+    }
+
+    /// Returns true when a handoff saver is installed.
+    #[must_use]
+    pub fn has_handoff_saver(&self) -> bool {
+        self.handoff_saver.is_some()
     }
 
     /// Batch 2A — construct with a ShortCoder PostToolUse hook installed.
@@ -925,7 +1011,78 @@ impl HookDispatcher for InProcessHookDispatcher {
             // gets compact_start / compact_end breadcrumbs without the dispatcher
             // needing a direct SSB handle. The T1 analysis pass still runs so
             // any predicate rules that gate on "pre_compact" fire correctly.
-            debug!(step = %invocation.step_id, "pre_compact invoked");
+            //
+            // B-19 token-budget gate per spec phase-4C.txt:28-29
+            // ("PreCompact fires when token_used/token_limit > 0.85"). If the
+            // caller supplied a `(used, limit)` snapshot via
+            // `HookInvocation::with_pre_compact_token_state`:
+            //   * limit == 0 or used / limit <= PRE_COMPACT_HANDOFF_FRACTION
+            //     -> NOOP (no analyze, no handoff). Prevents SSB churn from
+            //     per-task unconditional firing.
+            //   * used / limit > PRE_COMPACT_HANDOFF_FRACTION
+            //     -> run analyze() AND invoke the handoff saver (if installed).
+            // When the caller did NOT supply a snapshot (None), we preserve
+            // pre-B-19 behaviour (run analyze; no handoff trigger) so the
+            // task_runner per-task firing site keeps working without
+            // threading token telemetry it does not have.
+            if let Some((used, limit)) = invocation.pre_compact_token_state {
+                if limit == 0 {
+                    debug!(
+                        step = %invocation.step_id,
+                        used,
+                        "pre_compact gated: limit==0, no-op"
+                    );
+                    return Ok(Vec::new());
+                }
+                let fraction = f64::from(used) / f64::from(limit);
+                if fraction <= PRE_COMPACT_HANDOFF_FRACTION {
+                    debug!(
+                        step = %invocation.step_id,
+                        used,
+                        limit,
+                        fraction,
+                        "pre_compact gated: fraction <= 0.85, no-op"
+                    );
+                    return Ok(Vec::new());
+                }
+                // Above-threshold: invoke the handoff saver (if installed)
+                // BEFORE running analyze() so the snapshot reflects the
+                // pre-compact state. spawn_blocking because save_handoff
+                // touches rusqlite (sync) and we must not block the async
+                // runtime.
+                if let Some(saver) = self.handoff_saver.as_ref() {
+                    let saver_clone = Arc::clone(saver);
+                    let step_id_owned = invocation.step_id.clone();
+                    let join = tokio::task::spawn_blocking(move || {
+                        saver_clone.save_handoff(&step_id_owned)
+                    })
+                    .await;
+                    match join {
+                        Ok(Ok(())) => {
+                            debug!(
+                                step = %invocation.step_id,
+                                fraction,
+                                "pre_compact handoff saved"
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            warn!(
+                                step = %invocation.step_id,
+                                error = %e,
+                                "pre_compact handoff_saver returned error (non-blocking)"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                step = %invocation.step_id,
+                                error = %e,
+                                "pre_compact handoff_saver join failed (non-blocking)"
+                            );
+                        }
+                    }
+                }
+            }
+            debug!(step = %invocation.step_id, "pre_compact analyze pass");
             self.analyze(&invocation)
         })
     }
@@ -1149,6 +1306,269 @@ pub async fn report_hook_latency(
 }
 
 // ---------------------------------------------------------------------------
+// B-19 — MarkerReport aggregation emit helper
+// ---------------------------------------------------------------------------
+
+/// Write a single [`crate::ssb::SsbPayload::MarkerReport`] row aggregating
+/// the per-phase DAIRA marker counts for one agent-execution window.
+///
+/// `phase_counts` keys MUST come from
+/// [`crate::ssb::DAIRA_MARKERS`]. Unknown keys are logged via
+/// `tracing::warn` and silently dropped before write (release semantics);
+/// `debug_assert!` fires in debug builds so test runs surface the bug.
+///
+/// Caller responsibility: build the `BTreeMap<String, u32>` aggregating
+/// `DairaTracePayload::phase` field counts for the window; the dispatcher
+/// itself does not maintain per-step counters (those would force shared
+/// mutable state across async tasks and create a contention hot-spot on
+/// the baby-step loop).
+///
+/// Returns `true` on successful SSB write, `false` on any SSB / encoding
+/// failure (logged via `tracing::warn`).
+pub async fn emit_marker_report_to_ssb(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    step_id: &str,
+    phase_counts: std::collections::BTreeMap<String, u32>,
+    window_us: u64,
+) -> bool {
+    // Validate keys against DAIRA_MARKERS — strict in debug, lenient in release.
+    let mut validated: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    let mut total_events: u32 = 0;
+    for (phase, count) in phase_counts.into_iter() {
+        let known = crate::ssb::DAIRA_MARKERS.iter().any(|m| *m == phase.as_str());
+        debug_assert!(
+            known,
+            "emit_marker_report_to_ssb: unknown DAIRA phase '{}' \
+             (must be drawn from crate::ssb::DAIRA_MARKERS)",
+            phase
+        );
+        if !known {
+            warn!(
+                phase = %phase,
+                "emit_marker_report_to_ssb: dropping unknown DAIRA phase"
+            );
+            continue;
+        }
+        total_events = total_events.saturating_add(count);
+        validated.insert(phase, count);
+    }
+    let payload = crate::ssb::SsbPayload::MarkerReport(crate::ssb::MarkerReportPayload {
+        agent_id: agent_id.to_string(),
+        step_id: step_id.to_string(),
+        phase_counts: validated,
+        total_events,
+        window_us,
+    });
+    match writer
+        .write_payload(agent_id, superstep, payload, Vec::new())
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                error = %e,
+                step = step_id,
+                "hook_dispatcher: failed to emit MarkerReport row"
+            );
+            false
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-19 — async-bridge adapter from IpcHookTrait (sync) to HookDispatcher (async)
+// ---------------------------------------------------------------------------
+
+/// Async-bridge adapter wrapping a sync `IpcHookTrait` (from
+/// `elai_plugins::ipc_hooks`) and exposing it as the async
+/// `HookDispatcher` trait used by `task_runner`. Bridges the architectural
+/// surface gap recorded in `workflow/sessions/s-25120/completion-drive/
+/// exploration/B-19_hook_system_unification-exploration.md` GAP-1:
+/// `IpcHookTrait` is sync (CPU-bound tiered analysis), `HookDispatcher`
+/// is async (`Pin<Box<dyn Future>>`); a direct trait-for-trait impl is
+/// not possible without one side conceding its execution model. The
+/// adapter calls the sync methods via `tokio::task::spawn_blocking` so
+/// the async runtime stays unblocked while the CPU work runs.
+///
+/// Behaviour mapping (one-to-one with the four hook points):
+///   * `dispatch_pre_tool_use`  -> `IpcHookTrait::pre_tool_use`
+///   * `dispatch_post_tool_use` -> `IpcHookTrait::post_tool_use`
+///   * `dispatch_stop`          -> `IpcHookTrait::stop`
+///   * `dispatch_pre_compact`   -> `IpcHookTrait::pre_compact`
+///
+/// Return value mapping: `IpcHookTrait` returns a single `HookResult`
+/// with one verdict; `HookDispatcher` returns `Vec<HookFinding>`. The
+/// adapter maps `HookResult::verdict` to ZERO findings (Allow), ONE
+/// `Warn` finding (Warn), or ONE `Block` finding (Block) tagged with
+/// the `Composite` tier — matching the existing `InProcessHookDispatcher`
+/// convention of one finding per non-Allow verdict at the composite tier.
+///
+/// The dispatcher unification recorded in B-19 decisions lives at the
+/// DISPATCHER level (`Arc<dyn HookDispatcher>`), NOT the trait level —
+/// the two upstream traits serve different needs (IPC sync transport vs
+/// in-process async invocation) and are preserved for their respective
+/// callers. The adapter is the missing piece that lets either dispatcher
+/// be plugged into the `task_runner` callsite.
+pub struct IpcHookAsyncAdapter {
+    inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync + 'static>,
+}
+
+impl IpcHookAsyncAdapter {
+    /// Construct an adapter wrapping a sync `IpcHookTrait` implementation.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync + 'static>,
+    ) -> Self {
+        Self { inner }
+    }
+
+    /// Build a `HookContext` from a `HookInvocation`. The adapter intentionally
+    /// fills only the fields available on `HookInvocation`; `agent_id` /
+    /// `session_id` / `agent_role` default to empty strings because the
+    /// `task_runner` dispatch sites do not thread those through. The
+    /// downstream `IpcHookDispatcher` already tolerates empty values
+    /// (`ctx.tool_id.as_deref().unwrap_or("unknown")` at
+    /// `plugins/src/ipc_hooks.rs:304`).
+    fn build_context(invocation: &HookInvocation<'_>) -> elai_plugins::HookContext {
+        elai_plugins::HookContext {
+            agent_id: String::new(),
+            agent_role: String::new(),
+            session_id: String::new(),
+            fsm_state: invocation.fsm_state.clone(),
+            tool_id: Some(invocation.action_type.to_string()),
+            tool_arguments: None,
+            source_content: invocation.source.map(|s| s.to_string()),
+            file_path: invocation.file_path.map(|p| p.to_string()),
+            active_rules_count: 0,
+        }
+    }
+
+    /// Map an `IpcHookTrait` `HookResult` to the dispatcher's
+    /// `Vec<HookFinding>` shape. Mirrors the per-verdict mapping in
+    /// `InProcessHookDispatcher::push_finding`.
+    fn map_result(result: elai_plugins::HookResult) -> Vec<HookFinding> {
+        use elai_plugins::tiered_analysis::HookVerdict as PluginVerdict;
+        match result.verdict {
+            PluginVerdict::Allow => Vec::new(),
+            PluginVerdict::Warn { message, pattern_hash } => vec![HookFinding {
+                tier: HookTier::Composite,
+                verdict: HookVerdictKind::Warn,
+                rule_id: Some(pattern_hash),
+                category: HOOK_EVENT_CATEGORY.to_string(),
+                message,
+                fix_template: None,
+            }],
+            PluginVerdict::Block { message, pattern_hash } => vec![HookFinding {
+                tier: HookTier::Composite,
+                verdict: HookVerdictKind::Block,
+                rule_id: Some(pattern_hash),
+                category: HOOK_EVENT_CATEGORY.to_string(),
+                message,
+                fix_template: None,
+            }],
+        }
+    }
+}
+
+impl HookDispatcher for IpcHookAsyncAdapter {
+    fn dispatch_pre_tool_use<'a>(
+        &'a self,
+        invocation: HookInvocation<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
+    > {
+        let ctx = Self::build_context(&invocation);
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let join = tokio::task::spawn_blocking(move || inner.pre_tool_use(&ctx)).await;
+            match join {
+                Ok(Ok(r)) => Ok(Self::map_result(r)),
+                Ok(Err(e)) => Err(HookError::Tiered(format!("ipc_async_adapter: {e}"))),
+                Err(e) => Err(HookError::Tiered(format!("ipc_async_adapter join: {e}"))),
+            }
+        })
+    }
+
+    fn dispatch_post_tool_use<'a>(
+        &'a self,
+        invocation: HookInvocation<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
+    > {
+        let ctx = Self::build_context(&invocation);
+        let inner = Arc::clone(&self.inner);
+        // `IpcHookTrait::post_tool_use` expects `tool_output: &str`; the
+        // dispatcher passes `invocation.source` as the post-output payload
+        // (matching the in-process semantic where source IS the file
+        // contents written).
+        let tool_output = invocation.source.unwrap_or("").to_string();
+        Box::pin(async move {
+            let join = tokio::task::spawn_blocking(move || {
+                inner.post_tool_use(&ctx, &tool_output)
+            })
+            .await;
+            match join {
+                Ok(Ok(r)) => Ok(Self::map_result(r)),
+                Ok(Err(e)) => Err(HookError::Tiered(format!("ipc_async_adapter: {e}"))),
+                Err(e) => Err(HookError::Tiered(format!("ipc_async_adapter join: {e}"))),
+            }
+        })
+    }
+
+    fn dispatch_stop<'a>(
+        &'a self,
+        invocation: HookInvocation<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
+    > {
+        let ctx = Self::build_context(&invocation);
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let join = tokio::task::spawn_blocking(move || inner.stop(&ctx)).await;
+            match join {
+                Ok(Ok(r)) => Ok(Self::map_result(r)),
+                Ok(Err(e)) => Err(HookError::Tiered(format!("ipc_async_adapter: {e}"))),
+                Err(e) => Err(HookError::Tiered(format!("ipc_async_adapter join: {e}"))),
+            }
+        })
+    }
+
+    fn dispatch_pre_compact<'a>(
+        &'a self,
+        invocation: HookInvocation<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<HookFinding>, HookError>> + Send + 'a>,
+    > {
+        let ctx = Self::build_context(&invocation);
+        let inner = Arc::clone(&self.inner);
+        // B-19: honour the token-budget gate at the adapter boundary too,
+        // mirroring InProcessHookDispatcher::dispatch_pre_compact so a
+        // dispatcher swap is behaviour-preserving.
+        let gate = invocation.pre_compact_token_state;
+        Box::pin(async move {
+            if let Some((used, limit)) = gate {
+                if limit == 0 {
+                    return Ok(Vec::new());
+                }
+                let fraction = f64::from(used) / f64::from(limit);
+                if fraction <= PRE_COMPACT_HANDOFF_FRACTION {
+                    return Ok(Vec::new());
+                }
+            }
+            let join = tokio::task::spawn_blocking(move || inner.pre_compact(&ctx)).await;
+            match join {
+                Ok(Ok(r)) => Ok(Self::map_result(r)),
+                Ok(Err(e)) => Err(HookError::Tiered(format!("ipc_async_adapter: {e}"))),
+                Err(e) => Err(HookError::Tiered(format!("ipc_async_adapter join: {e}"))),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests (unit level — SSB-backed tests live in contracts/)
 // ---------------------------------------------------------------------------
 
@@ -1250,5 +1670,146 @@ mod tests {
             "expected no Block finding for IDLE fsm_state, got: {:?}",
             findings,
         );
+    }
+
+    /// B-19: PreCompact must NOOP when token_used / token_limit <= 0.85
+    /// (the spec HANDOFF_THRESHOLD_FRACTION). Prevents SSB churn from
+    /// per-task unconditional firing.
+    #[tokio::test]
+    async fn dispatch_pre_compact_noops_below_handoff_threshold() {
+        let d = InProcessHookDispatcher::new(None);
+        // 50% utilisation — well below 0.85.
+        let inv = HookInvocation::for_task_level("pre_compact", "step_1")
+            .with_pre_compact_token_state(5_000, 10_000);
+        let findings = d.dispatch_pre_compact(inv).await.expect("ok");
+        assert!(
+            findings.is_empty(),
+            "expected NOOP below threshold, got: {:?}",
+            findings,
+        );
+    }
+
+    /// B-19: PreCompact must run analyze() above the 0.85 threshold so the
+    /// downstream T1 rules fire AND (when wired) the handoff saver runs.
+    /// With no tiered backend installed, analyze() returns empty — the
+    /// assertion is on the absence of an error, not findings count.
+    #[tokio::test]
+    async fn dispatch_pre_compact_runs_above_handoff_threshold() {
+        let d = InProcessHookDispatcher::new(None);
+        // 90% utilisation — above 0.85.
+        let inv = HookInvocation::for_task_level("pre_compact", "step_1")
+            .with_pre_compact_token_state(9_000, 10_000);
+        let result = d.dispatch_pre_compact(inv).await;
+        assert!(result.is_ok(), "expected Ok above threshold, got: {result:?}");
+    }
+
+    /// B-19: PreCompact with no token state (None) preserves legacy
+    /// behaviour — analyze() runs, no gating happens. This is the
+    /// task_runner per-task firing path that has no token telemetry.
+    #[tokio::test]
+    async fn dispatch_pre_compact_runs_when_no_token_state() {
+        let d = InProcessHookDispatcher::new(None);
+        let inv = HookInvocation::for_task_level("pre_compact", "step_1");
+        assert_eq!(inv.pre_compact_token_state, None);
+        let result = d.dispatch_pre_compact(inv).await;
+        assert!(result.is_ok(), "expected Ok with no token state, got: {result:?}");
+    }
+
+    /// B-19: PRE_COMPACT_HANDOFF_FRACTION must match the spec value (0.85)
+    /// and the canonical `escalation_policy::HANDOFF_THRESHOLD_FRACTION`.
+    #[test]
+    fn pre_compact_handoff_fraction_matches_spec() {
+        assert!(
+            (PRE_COMPACT_HANDOFF_FRACTION - 0.85_f64).abs() < f64::EPSILON,
+            "PRE_COMPACT_HANDOFF_FRACTION must equal 0.85 per phase-4C.txt:28-29",
+        );
+    }
+
+    /// B-19: handoff saver test — verifies the callback fires above
+    /// threshold and does NOT fire below. Uses a simple atomic counter.
+    #[tokio::test]
+    async fn handoff_saver_fires_only_above_threshold() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct CountingSaver(Arc<AtomicU32>);
+        impl PreCompactHandoffSaver for CountingSaver {
+            fn save_handoff(&self, _step_id: &str) -> Result<(), String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let saver = Arc::new(CountingSaver(Arc::clone(&counter)));
+        let d = InProcessHookDispatcher::new(None).with_handoff_saver(saver);
+
+        // Below threshold: must NOT fire.
+        let inv_below = HookInvocation::for_task_level("pre_compact", "step_b")
+            .with_pre_compact_token_state(5_000, 10_000);
+        let _ = d.dispatch_pre_compact(inv_below).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "saver fired below threshold");
+
+        // Above threshold: must fire once.
+        let inv_above = HookInvocation::for_task_level("pre_compact", "step_a")
+            .with_pre_compact_token_state(9_000, 10_000);
+        let _ = d.dispatch_pre_compact(inv_above).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "saver did not fire above threshold");
+    }
+
+    /// B-19: IpcHookAsyncAdapter must produce a `dyn HookDispatcher` that
+    /// is `Send + Sync` so it can be stored in `Arc<dyn HookDispatcher>`.
+    #[test]
+    fn ipc_hook_async_adapter_is_dyn_safe() {
+        struct StubIpcHook;
+        impl elai_plugins::IpcHookTrait for StubIpcHook {
+            fn pre_tool_use(
+                &self,
+                _ctx: &elai_plugins::HookContext,
+            ) -> Result<elai_plugins::HookResult, elai_plugins::IpcHookError> {
+                Ok(elai_plugins::HookResult {
+                    verdict: elai_plugins::tiered_analysis::HookVerdict::Allow,
+                    event: elai_plugins::IpcHookEvent::PreToolUse,
+                    latency_us: 0,
+                    finding_written: false,
+                })
+            }
+            fn post_tool_use(
+                &self,
+                _ctx: &elai_plugins::HookContext,
+                _output: &str,
+            ) -> Result<elai_plugins::HookResult, elai_plugins::IpcHookError> {
+                Ok(elai_plugins::HookResult {
+                    verdict: elai_plugins::tiered_analysis::HookVerdict::Allow,
+                    event: elai_plugins::IpcHookEvent::PostToolUse,
+                    latency_us: 0,
+                    finding_written: false,
+                })
+            }
+            fn stop(
+                &self,
+                _ctx: &elai_plugins::HookContext,
+            ) -> Result<elai_plugins::HookResult, elai_plugins::IpcHookError> {
+                Ok(elai_plugins::HookResult {
+                    verdict: elai_plugins::tiered_analysis::HookVerdict::Allow,
+                    event: elai_plugins::IpcHookEvent::Stop,
+                    latency_us: 0,
+                    finding_written: false,
+                })
+            }
+            fn pre_compact(
+                &self,
+                _ctx: &elai_plugins::HookContext,
+            ) -> Result<elai_plugins::HookResult, elai_plugins::IpcHookError> {
+                Ok(elai_plugins::HookResult {
+                    verdict: elai_plugins::tiered_analysis::HookVerdict::Allow,
+                    event: elai_plugins::IpcHookEvent::PreCompact,
+                    latency_us: 0,
+                    finding_written: false,
+                })
+            }
+        }
+        let inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync> = Arc::new(StubIpcHook);
+        let adapter: Arc<dyn HookDispatcher> = Arc::new(IpcHookAsyncAdapter::new(inner));
+        assert!(Arc::strong_count(&adapter) >= 1);
     }
 }

@@ -125,9 +125,146 @@ pub async fn handle_runtime_slash_command(
             let backend_name = target.ok_or(RuntimeCmdError::MissingArg("--backend <name>"))?;
             handle_runtime_set(role_name, backend_name, project_root)
         }
+        // C-44 — Composer 2 paid HTTP backend subcommands.
+        // /runtime composer2 status — show adapter health + cost rollup hint.
+        // /runtime composer2 enable / disable — flip [runtime.composer2].enabled.
+        Some("composer2") => {
+            let sub = target.ok_or(RuntimeCmdError::MissingArg("composer2 <status|enable|disable>"))?;
+            handle_composer2_subcommand(sub, project_root)
+        }
         Some("help") => Ok(render_runtime_help()),
         Some(other) => Err(RuntimeCmdError::UnknownAction(other.to_string())),
     }
+}
+
+/// C-44 — `/runtime composer2 <status|enable|disable>` handler.
+///
+/// `status` reads `[runtime.composer2]` from elai_cc.toml and prints
+/// the operator-visible state. `enable` / `disable` mutate the toml
+/// (atomic write via the same helpers as `/runtime set`). Cost
+/// rollup is not surfaced through the CLI — that lives on the
+/// RuntimePanel dashboard. The CLI sticks to config + adapter
+/// presence so it can run headless.
+fn handle_composer2_subcommand(
+    sub: &str,
+    project_root: &Path,
+) -> Result<String, RuntimeCmdError> {
+    match sub {
+        "status" => render_composer2_status(project_root),
+        "enable" => set_composer2_enabled(true, project_root),
+        "disable" => set_composer2_enabled(false, project_root),
+        other => Err(RuntimeCmdError::UnknownAction(format!(
+            "composer2 {other} (expected status|enable|disable)"
+        ))),
+    }
+}
+
+fn render_composer2_status(project_root: &Path) -> Result<String, RuntimeCmdError> {
+    let config_path = project_root.join("elai_cc.toml");
+    let original = std::fs::read_to_string(&config_path)
+        .map_err(|e| RuntimeCmdError::ConfigRead(format!("{}: {e}", config_path.display())))?;
+    let doc: toml::Value = toml::from_str(&original)
+        .map_err(|e| RuntimeCmdError::ConfigParse(format!("{}: {e}", config_path.display())))?;
+    let stanza = doc
+        .get("runtime")
+        .and_then(|r| r.get("composer2"))
+        .cloned();
+    let cursor_key_set = std::env::var("CURSOR_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let enabled = stanza
+        .as_ref()
+        .and_then(|s| s.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let model = stanza
+        .as_ref()
+        .and_then(|s| s.get("model"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("composer-2")
+        .to_string();
+    let key_status = if cursor_key_set {
+        "set"
+    } else {
+        "MISSING (export CURSOR_API_KEY)"
+    };
+    let enabled_label = if enabled { "true" } else { "false" };
+    Ok(format!(
+        "composer2 status:\n  enabled         = {enabled_label}\n  model           = {model}\n  CURSOR_API_KEY  = {key_status}\n  toml stanza     = {}\n  cost rollup     = surfaced via dashboard RuntimePanel (CLI hides it)",
+        if stanza.is_some() {
+            "present"
+        } else {
+            "absent (defaults applied)"
+        }
+    ))
+}
+
+fn set_composer2_enabled(enabled: bool, project_root: &Path) -> Result<String, RuntimeCmdError> {
+    let config_path = project_root.join("elai_cc.toml");
+    let original = std::fs::read_to_string(&config_path)
+        .map_err(|e| RuntimeCmdError::ConfigRead(format!("{}: {e}", config_path.display())))?;
+    let mut doc: toml::Value = toml::from_str(&original)
+        .map_err(|e| RuntimeCmdError::ConfigParse(format!("{}: {e}", config_path.display())))?;
+    set_composer2_enabled_in_toml(&mut doc, enabled);
+    let rendered =
+        toml::to_string_pretty(&doc).map_err(|e| RuntimeCmdError::ConfigWrite(e.to_string()))?;
+    atomic_write(&config_path, rendered.as_bytes())?;
+    Ok(format!(
+        "[OK] [runtime.composer2].enabled = {enabled} (persisted to {})",
+        config_path.display()
+    ))
+}
+
+fn set_composer2_enabled_in_toml(doc: &mut toml::Value, enabled: bool) {
+    let root_table = match doc.as_table_mut() {
+        Some(t) => t,
+        // Defensive: toml::from_str on a valid file always yields a
+        // table. If we ever lose that invariant, bail by rewriting the
+        // root rather than panicking — the atomic write downstream
+        // catches a malformed file via the parser.
+        None => {
+            *doc = toml::Value::Table(toml::value::Table::new());
+            doc.as_table_mut().expect("just rewrote to table")
+        }
+    };
+    let runtime_entry = root_table
+        .entry("runtime".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let runtime_table = match runtime_entry {
+        toml::Value::Table(t) => t,
+        _ => {
+            *runtime_entry = toml::Value::Table(toml::value::Table::new());
+            match runtime_entry {
+                toml::Value::Table(t) => t,
+                _ => unreachable!("just rewrote to table"),
+            }
+        }
+    };
+    let composer2_entry = runtime_table
+        .entry("composer2".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let composer2_table = match composer2_entry {
+        toml::Value::Table(t) => t,
+        _ => {
+            *composer2_entry = toml::Value::Table(toml::value::Table::new());
+            match composer2_entry {
+                toml::Value::Table(t) => t,
+                _ => unreachable!("just rewrote to table"),
+            }
+        }
+    };
+    composer2_table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    // Seed defaults if absent so toggling enable on a fresh stanza
+    // produces a complete block without a follow-up edit.
+    composer2_table
+        .entry("api_key_env".to_string())
+        .or_insert_with(|| toml::Value::String("CURSOR_API_KEY".to_string()));
+    composer2_table
+        .entry("model".to_string())
+        .or_insert_with(|| toml::Value::String("composer-2".to_string()));
+    composer2_table
+        .entry("fallback_to".to_string())
+        .or_insert_with(|| toml::Value::String("sidecar".to_string()));
 }
 
 /// Render the `/runtime list` table. Uses
@@ -537,11 +674,14 @@ fn format_health(h: &RuntimeHealth) -> String {
 }
 
 fn render_runtime_help() -> String {
-    "Usage: /runtime [list|test <backend>|set --role <name> --backend <name>|help]\n\
+    "Usage: /runtime [list|test <backend>|set --role <name> --backend <name>|composer2 <sub>|help]\n\
      \n\
      list                                 List all runtime backends with role assignments and health.\n\
      test <backend>                       Probe a single backend's health_check (5s timeout).\n\
      set --role <name> --backend <name>   Persist a per-role runtime mapping to elai_cc.toml.\n\
+     composer2 status                     Show Composer 2 paid-backend toml stanza + CURSOR_API_KEY state.\n\
+     composer2 enable                     Flip [runtime.composer2].enabled = true (atomic toml write).\n\
+     composer2 disable                    Flip [runtime.composer2].enabled = false.\n\
      help                                 Show this message.\n"
         .to_string()
 }

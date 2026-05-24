@@ -7,6 +7,14 @@
 //! it should never grow beyond a builder + invoke_handler list + bootstrap.
 
 mod commands;
+// C-40: GitHub PR adapter Tauri command surface. Five commands wire the
+// orchestrator-side `github_pr::GhCliAdapter` to the Svelte
+// `GithubWindow.svelte` + `githubStore.ts`. Additive — does NOT touch
+// commands.rs. cross-lang-pair: dashboard/tauri/api.
+mod commands_c40;
+// E-41: PR review surface (read-only). Extends GithubWindow.svelte's
+// PR Review section. cross-lang-pair: dashboard/tauri/api.
+mod commands_e41;
 // D-1: ReasoningTemplate ArchiveChain Tauri command surface. Additive — does
 // not refactor `commands.rs`. See workflow/reasoning/D-1-decisions.md.
 mod commands_d1;
@@ -56,6 +64,14 @@ mod commands_d7;
 // (`LockedKeysAuditor::audit_diff_ranged`) is the sole writer of
 // `locked_keys_audit_run` / `locked_keys_violation_detected` rows.
 mod commands_d9;
+// C-43: Phase 4H scope-freeze read-only command surface. Sibling of
+// commands_d9 — single command (`scope_freeze_status`) feeds the
+// FreezeStatusBar widget. The orchestrator producer
+// (`elai_orchestrator::scope_freeze::verify_freeze`) is the sole
+// reader of `<workspace>/scope-freeze.toml`. ELAI design hypothesis —
+// no paper grounding; see workflow/sessions/s-25120/mistakes.md for
+// the bad-cite analysis of arXiv:2604.21725.
+mod commands_c43;
 // D-10: mode-routing predicate read-only command surface. Sibling of
 // commands_d9. The orchestrator producer (`agent_pool::route_claim`)
 // is the sole writer of `claim_routed` SSB rows; this module only reads.
@@ -83,6 +99,15 @@ mod commands_d12;
 // sole writers of `task_advanced` / `agentless_shortcut_taken` /
 // `goal_drift_fired` rows; this module only reads.
 mod commands_e46;
+// E-30: public-agent-incident SSB read surface for the IncidentsDrawer
+// panel. Reads across the 8 E-30 action types
+// (argv_destructive_denied / argv_approval_required /
+// trust_dialog_hook_deferred / trust_dialog_env_deferred /
+// mcp_pin_version_refused / auditor_lineage_collision /
+// untrusted_memory_write_blocked / incident_record_created) and flattens
+// each row into a typed DTO. No producer logic -- backend wiring lives in
+// crates/orchestrator/src/hook_dispatcher.rs + crates/safety + crates/plugins.
+mod commands_e30;
 // E-35: grammar-compilation visibility command. New module to keep the
 // boundary clean — `commands.rs` is owned by other orchestration sessions
 // in parallel and merging there would race.
@@ -147,6 +172,66 @@ mod commands_d22;
 // (`elai_orchestrator::benchmarks::arc_agi2_runner::ARCAGI2Runner::run_all`)
 // emits; this module only reads.
 mod commands_d20;
+// Phase 4J / B-25 — Empire bridge dashboard surface (host-side scaffolding).
+// Two read-only commands (get_empire_status / list_empire_factory_lines)
+// feed the Svelte EmpireBridgePanel. Compiles unconditionally; the empire
+// orchestrator submodule is only imported under #[cfg(feature = "empire")]
+// inside this module's seam. See workflow/reasoning/phase-4J-decisions.md.
+// cross-lang-pair: dashboard/tauri/api
+mod commands_empire;
+// C-35: Tool gate dashboard surface (read-only).
+// Two read-only commands (get_tool_gate_snapshot / list_tool_gate_rows) feed
+// the Svelte ToolGateInspector. Compiles unconditionally; the live gate read
+// path is gated under #[cfg(feature = "mcp")] inside the module seam.
+// cross-lang-pair: dashboard/tauri/api
+mod commands_c35;
+// C-42 (session 2): Semantic Gateway L2 RBAC dashboard surface.
+// Three read-only commands (gateway_authz_status / gateway_authz_recent_denies
+// / gateway_authz_run_fuzz) feed the Svelte AuthzPanel mounted inside
+// SettingsWindow. Reads authz-policy.toml + the gateway_policy_denied SSB
+// stream. Sibling of commands_c35. Paper grounding: arXiv:2604.25555 (MEDIUM
+// reliability). cross-lang-pair: dashboard/tauri/api
+mod commands_c42;
+// C-47: Case-based calibration of tool-use dashboard surface.
+// Two read-only commands (tool_calibration_status /
+// list_tool_calibration_rows) feed the Svelte CaseBaseInspector mounted
+// inside SettingsWindow. Reads the live ToolCalibrationRegistry (when
+// wired) + the tool_call_logged / tool_calibration_hint_emitted /
+// tool_calibration_drift_detected SSB stream. Paper grounding:
+// arXiv:2605.15041 (CAST). cross-lang-pair: dashboard/tauri/api
+mod commands_c47;
+// E-14: Browser-e2e dashboard surface. Single read-only command
+// (browser_e2e_status) aggregates the 4 browser_e2e_* SSB action types
+// into a typed summary for the MediaValidationPanel browser-e2e
+// section. cross-lang-pair: dashboard/tauri/api.
+mod commands_e14;
+// E-18: Tool-use reliability gate dashboard surface.
+// Two read-only commands (tool_reliability_status /
+// list_tool_reliability_rows) feed the Svelte ToolReliabilityInspector
+// mounted inside SettingsWindow. Reads the 4 tool_reliability_gate_passed
+// / tool_reliability_gate_rejected / tool_call_spilled /
+// tool_call_retry_escalated SSB streams. Reuse-heavy posture: composes
+// on D-11 RegistryCheck + E-35 SearchReplaceMatcher / SidecarXGrammarHook
+// + C-47 ToolCalibrationRegistry + C-42 AuthzPolicy + C-35 ToolGate
+// rather than re-implementing those surfaces. See
+// workflow/reasoning/E-18-decisions.md. cross-lang-pair: dashboard/tauri/api.
+mod commands_e18;
+// E-37: Prompt-injection defense dashboard surface (OWASP LLM Top 10 LLM01).
+// Two read-only commands (safety_status / list_safety_rows) feed the Svelte
+// PromptArmorPanel mounted as the 5th SettingsWindow inspector after
+// ToolReliabilityInspector. Reads the 9 E-37 SSB streams:
+// injection_attempt_detected / injection_attempt_blocked / spotlight_wrapped
+// / spotlight_breached / tool_description_pin_mismatch /
+// capability_gate_rejected / provenance_tagged / prompt_armor_verdict /
+// injection_fixture_replayed. Layers additively atop E-24 mcp_schema_pin +
+// sanitize_result + llm_guard and E-30 destructive_verb_allowlist. See
+// workflow/reasoning/E-37-decisions.md. cross-lang-pair: dashboard/tauri/api.
+mod commands_e37;
+// E-40: orchestrator-rooted symbol-graph dashboard surface (defs / refs /
+// pagerank / status). Three read-only Tauri commands feed the new
+// SymbolGraphWindow. Reads .claude/tools/elai_graph.json. See
+// workflow/reasoning/E-40-decisions.md. cross-lang-pair: dashboard/tauri/api.
+mod commands_e40;
 mod media_validation;
 mod reflect_bridge;
 mod remote_sidecar_helpers;
@@ -215,6 +300,8 @@ pub fn run() {
             commands::greet,
             // FSM / SYSTEM STATUS
             commands::get_fsm_state,
+            // B-26 T4 — real plan-progression for MonitorWindow phase dots.
+            commands::get_plan_progress,
             commands::get_system_status,
             // TASK / INTERVENTION
             commands::submit_task,
@@ -223,10 +310,18 @@ pub fn run() {
             commands::submit_credential_response,
             commands::open_project_from_folder,
             commands::get_feasibility_report,
+            // E-22 phase-4F P5: stub_results.msgpack reader. Surfaces the
+            // on-disk artifact the feasibility prober writes per task.
+            commands::get_stub_results_msgpack,
             // GATE
             commands::get_gate_status,
             commands::set_gate_mode,
             commands::get_auto_advance_stats,
+            // B-3 #27/#28 + V2 rebaseline: compile-time + runtime feature
+            // flag surface (autonomous-mode, self-modification,
+            // ELAI_DASHBOARD_OFFLINE). Frontend queries on bootstrap to
+            // decide whether to mount ProposalsPanel / AutoAdvanceStats.
+            commands::get_feature_flags,
             // MODEL ROUTING
             commands::set_model_routing,
             // PROPOSALS / MSI / STEERING / MCP
@@ -255,7 +350,17 @@ pub fn run() {
             // cross-lang-pair: dashboard/tauri/api
             commands::get_pagerank_top,
             commands::get_freshness_state,
+            // B-3 #3 + #11: KnowledgeDrawer query-tier histogram + RulesDrawer
+            // rule_transition feed. Backed by SsbViewer::query_tier_stats
+            // (orchestrator/src/ssb_viewer.rs:2952) and the SCHEMA_VERSION 98
+            // RuleTransition SSB rows respectively.
+            commands::get_query_tier_stats,
+            commands::get_rule_transitions,
             commands::get_canary_drift,
+            // B-4 task #12: VectorCache hit-rate gauge for KnowledgeDrawer.
+            // Reads `vector_cache_hit_rate` rows emitted by VectorCache::
+            // flush_hit_rate_ssb after every query_with_tier call.
+            commands::get_vector_cache_hit_rate,
             commands::get_research_budget,
             commands::get_source_tier_distribution,
             // E-17 SP4: RAG retrieval-quality SSB row surface. Four
@@ -302,6 +407,8 @@ pub fn run() {
             commands::get_bubble_up_events,
             commands::get_executable_pipeline,
             commands::get_dag_repair_log,
+            // B-7 (SCHEMA_VERSION 100): producer-wire dashboard surface.
+            commands::get_package_verifications,
             // RESEARCH
             commands::get_research_tree,
             commands::get_source_quality_tiers,
@@ -361,6 +468,8 @@ pub fn run() {
             commands::set_cloud_model,
             // CLOUD SPEND (B-27)
             commands::get_cloud_spend,
+            // CLOUD ROUTE STATUS (C-5 follow-on: route_blocked + warn_limit_reached + cost_estimate)
+            commands::get_cloud_route_status,
             // MUTATION GAUGE (C-28)
             commands::get_mutation_gauge,
             // COMPLETENESS RATIO (C-32) -- Code-Completeness Layer 2 gauge.
@@ -444,12 +553,29 @@ pub fn run() {
             media_validation::get_media_validation_by_step,
             media_validation::submit_media_validation_for_review,
             media_validation::subscribe_media_ssb_events,
+            // E-14: browser-e2e summary.
+            commands_e14::browser_e2e_status,
             // B-40 — IDEA FRAMING SURFACE
             commands::get_idea_framing_state,
             commands::submit_tradeoff_responses,
             // B-38 — AMBIGUITY GATE SURFACE (mock data; real producer in follow-up).
             // cross-lang-pair: dashboard/tauri/api
             commands::get_ambiguity_state,
+            // C-45 — CANTANTE CONTRASTIVE CREDIT ATTRIBUTION SURFACE.
+            // Paper-grounded against arXiv:2605.13295 (Zehle 2026, Section 3.2).
+            // Returns the most-recent per-role credit table for the
+            // OrchestrationDrawer; runpod_pending=true until the live pilot
+            // replaces the synthetic harness.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::credit_attribution_status,
+            // C-46 — UNO-ORCHESTRA PARSIMONIOUS ROUTING SURFACE.
+            // Paper-grounded against arXiv:2605.05007 (Cui et al 2026,
+            // Sections 5 + 6.1). Returns recent selective-delegation
+            // decisions + the resolved policy for the OrchestrationDrawer;
+            // runpod_pending=true until the live pilot replaces the
+            // synthetic harness.
+            // cross-lang-pair: dashboard/tauri/api
+            commands::routing_decisions_status,
             // B-42 — COSMOS ARTIFACT TIER (read-only status; refresh trigger
             // returns explicit NotImplemented Err pending dispatcher wiring —
             // see workflow/reasoning/B-42-decisions.md BLOCK-WIRING).
@@ -534,6 +660,14 @@ pub fn run() {
             // written by the orchestrator producer
             // (tripwire::TripwireMonitor + tripwire::auto_revert).
             commands_d4::get_recent_tripwires,
+            // E-30 — public-agent-incident SSB rows.
+            // Read-only surface for the Svelte IncidentsDrawer panel.
+            // Rows are written by orchestrator producers
+            // (hook_dispatcher argv allowlist / safety trust-dialog /
+            // plugins mcp pins / per_role_runtime lineage guard /
+            // conversation untrusted memory-write refusal / cli
+            // incident-record cmd). 8 action_types total.
+            commands_e30::get_recent_incidents,
             // D-19 — PRMBench adversarial-gaming benchmark rows.
             // Read-only surface for the Svelte PrmBenchPanel. Rows are
             // written by the orchestrator producer
@@ -562,6 +696,10 @@ pub fn run() {
             // only reads.
             commands_d9::get_locked_keys_status,
             commands_d9::get_locked_keys_recent_audits,
+            // C-43 — Phase 4H scope-freeze status. Drives the Svelte
+            // FreezeStatusBar widget. ELAI design hypothesis (no paper
+            // grounding; see workflow/sessions/s-25120/mistakes.md).
+            commands_c43::scope_freeze_status,
             // D-10 — mode-routing predicate read surface. Rows are
             // written by the orchestrator producer
             // (`elai_orchestrator::route_claim`); this surface only reads.
@@ -648,6 +786,96 @@ pub fn run() {
             commands::get_mcp_security_status,
             // E-51 -- Runtime capability probe (MLX / LlamaCpp platform detect).
             commands::runtime_capability_probe,
+            // C-44 -- Composer 2 paid HTTP backend status + cumulative cost rollup.
+            commands::runtime_composer2_status,
+            // Phase 4J / B-25 — Empire bridge surface. Two read-only
+            // commands surface bridge state + factory-line snapshot. The
+            // orchestrator-side EmpireBridge is host-side scaffolding;
+            // when the empire feature is off the panel renders the
+            // "Empire bridge unavailable" empty state.
+            // cross-lang-pair: dashboard/tauri/api
+            commands_empire::get_empire_status,
+            commands_empire::list_empire_factory_lines,
+            // C-35: Tool gate dashboard surface. Two read-only commands feed
+            // ToolGateInspector.svelte. Snapshot reads the gate manifest
+            // declared in elai_cc.toml [tool_gating]; row list reads SSB.
+            // cross-lang-pair: dashboard/tauri/api
+            commands_c35::get_tool_gate_snapshot,
+            commands_c35::list_tool_gate_rows,
+            // C-40: GitHub PR adapter surface (gh CLI shell-out). Five
+            // commands wire the orchestrator-side github_pr::GhCliAdapter
+            // to the Svelte GithubWindow. github_pr_status emits the
+            // `github_pr_status_fetched` SSB row; the mutation commands
+            // (open / close) emit github_pr_opened / github_pr_closed.
+            // get_active_url is read-only over the SSB row log.
+            // cross-lang-pair: dashboard/tauri/api
+            commands_c40::github_pr_open,
+            commands_c40::github_pr_list,
+            commands_c40::github_pr_status,
+            commands_c40::github_pr_close,
+            commands_c40::github_pr_get_active_url,
+            // E-41: PR review surface (read-only aggregator).
+            commands_e41::pr_review_status,
+            // C-42 (session 2): Semantic Gateway L2 RBAC. Three commands
+            // feed AuthzPanel.svelte mounted inside SettingsWindow.
+            // gateway_authz_status reads authz-policy.toml; recent_denies
+            // taps the gateway_policy_denied SSB stream; run_fuzz executes
+            // 4 bounded deterministic invariant checks. Composition with
+            // C-35: authz -> tool_gate (authz short-circuits on deny).
+            // Paper grounding: arXiv:2604.25555 (MEDIUM reliability,
+            // single-author preprint). cross-lang-pair: dashboard/tauri/api
+            commands_c42::gateway_authz_status,
+            commands_c42::gateway_authz_recent_denies,
+            commands_c42::gateway_authz_run_fuzz,
+            // C-47: Case-based calibration of tool-use telemetry. Two
+            // read-only commands feed CaseBaseInspector.svelte mounted
+            // inside SettingsWindow. tool_calibration_status returns the
+            // per-tool aggregate snapshot (shape_count / total_calls /
+            // error_count / last_ts_ms); list_tool_calibration_rows taps
+            // the three C-47 SSB streams. Paper grounding:
+            // arXiv:2605.15041 (CAST). cross-lang-pair: dashboard/tauri/api
+            commands_c47::tool_calibration_status,
+            commands_c47::list_tool_calibration_rows,
+            // E-18: Tool-use reliability gate. Two read-only commands feed
+            // ToolReliabilityInspector.svelte mounted inside SettingsWindow.
+            // tool_reliability_status returns the gate config (inline cap +
+            // retry cap + spill dir) plus aggregate counts across the 4
+            // SSB action types. list_tool_reliability_rows taps the 4 E-18
+            // SSB streams. Reuse-heavy posture: composes on D-11 + E-35 +
+            // C-47 + C-42 + C-35. cross-lang-pair: dashboard/tauri/api
+            commands_e18::tool_reliability_status,
+            commands_e18::list_tool_reliability_rows,
+            // E-37: prompt-injection defense surface (OWASP LLM Top 10
+            // LLM01). Two read-only commands feed the PromptArmorPanel
+            // mounted as the 5th SettingsWindow inspector. Surfaces the
+            // 9 E-37 SSB action types (injection_attempt_* / spotlight_*
+            // / tool_description_pin_mismatch / capability_gate_rejected
+            // / provenance_tagged / prompt_armor_verdict /
+            // injection_fixture_replayed). Layers additively atop E-24
+            // mcp_schema_pin + sanitize_result + llm_guard and E-30
+            // destructive_verb_allowlist. cross-lang-pair:
+            // dashboard/tauri/api.
+            commands_e37::safety_status,
+            commands_e37::list_safety_rows,
+            // E-40: orchestrator-rooted symbol-graph surface — three
+            // read-only commands (query / pagerank / status) feeding the
+            // SymbolGraphWindow. Reads .claude/tools/elai_graph.json.
+            // cross-lang-pair: dashboard/tauri/api.
+            commands_e40::symbol_graph_query,
+            commands_e40::symbol_graph_pagerank,
+            commands_e40::symbol_graph_status,
+            // E-12 Tier-B — production fullstack codegen surface for the
+            // IdeaFramerSecurityPanel. get_framework_profile resolves the
+            // current project's FrameworkProfile via
+            // PROJECT_CLASS_TO_FRAMEWORK (BTreeMap-less, declaration-order
+            // mapping; ProjectClass is non-Ord per B-40). Live 15-runner
+            // checklist invocation is RUNPOD-PENDING per
+            // workflow/reasoning/E-12-tier-b-decisions.md — the local dev
+            // host lacks the 15 external CLIs (gitleaks / trufflehog /
+            // semgrep / etc), so every runner returns ToolchainMissing on
+            // PATH miss. cross-lang-pair: dashboard/tauri/api
+            commands::get_framework_profile,
+            commands::run_production_checklist,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the
@@ -1267,6 +1495,9 @@ struct CloudSectionToml {
     privacy: Option<CloudPrivacyTomlSection>,
     #[serde(default)]
     spend: Option<CloudSpendTomlSection>,
+    /// C-5: BYOE Anthropic base-URL override. None => DEFAULT_BASE_URL.
+    #[serde(default)]
+    custom_endpoint: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1281,6 +1512,10 @@ struct CloudSpendTomlSection {
     hard_cap_daily_usd: Option<f64>,
     #[serde(default)]
     hard_cap_monthly_usd: Option<f64>,
+    /// C-5: percent-of-cap WARN threshold. None => fall back to
+    /// CloudConfig::default().warn_at_percent (Some(80)).
+    #[serde(default)]
+    warn_at_percent: Option<u8>,
 }
 
 /// Read `<project_root>/elai_cc.toml` and convert the `[cloud]` section
@@ -1346,5 +1581,14 @@ fn load_cloud_config_from_toml(
             .spend
             .as_ref()
             .and_then(|s| s.hard_cap_monthly_usd),
+        // C-5: warn_at_percent falls back to the CloudConfig default (80%)
+        // when the toml omits it, so existing deployments do not need a
+        // toml edit to gain the WARN row.
+        warn_at_percent: section
+            .spend
+            .as_ref()
+            .and_then(|s| s.warn_at_percent)
+            .or(default.warn_at_percent),
+        custom_endpoint: section.custom_endpoint,
     }
 }

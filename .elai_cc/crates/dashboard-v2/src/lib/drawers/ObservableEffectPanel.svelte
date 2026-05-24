@@ -20,23 +20,17 @@
 
   import { onMount, onDestroy } from 'svelte';
 
-  type ObservableEffectRow = {
-    effect_id: string;
-    trigger_kind: string;
-    observation_kind: string;
-    sandbox_tier: string;
-    outcome: string;
-    confound_flags: string;
-    elapsed_us: number;
-    ts_ms: number;
-  };
-
-  type RecentObservableEffects = {
-    rows: ObservableEffectRow[];
-    counts_by_outcome: Record<string, number>;
-    counts_by_sandbox_tier: Record<string, number>;
-    total: number;
-  };
+  // D-18 closure: import the canonical wire types from
+  // $lib/api/types so dashboard renderers stay in lockstep with the
+  // Tauri command DTO surface.
+  import type {
+    ObservableEffectRow,
+    RecentObservableEffects,
+    ObservableEffectDispatched,
+    GoodhartFlag,
+    SandboxObservation,
+    ProductionObservationProposal,
+  } from '$lib/api/types';
 
   const OUTCOMES: ReadonlyArray<string> = ['pass', 'fail', 'skipped'];
   const OUTCOME_LABELS: Record<string, string> = {
@@ -57,6 +51,10 @@
     counts_by_outcome: {},
     counts_by_sandbox_tier: {},
     total: 0,
+    dispatched_rows: [],
+    goodhart_flags: [],
+    sandbox_observations: [],
+    production_proposals: [],
   });
   let loaded = $state(false);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -256,6 +254,123 @@
                     {#each confoundFlagsList(row.confound_flags) as f}
                       <span class="confound-chip">{f}</span>
                     {/each}
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+
+    <section class="dispatched">
+      <header>
+        <strong>Dispatched effects</strong>
+        <span class="muted">{recent.dispatched_rows?.length ?? 0} rows</span>
+      </header>
+      {#if !recent.dispatched_rows || recent.dispatched_rows.length === 0}
+        <p class="muted">No observable_effect_dispatched rows yet.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr><th>When</th><th>Effect</th><th>Trigger</th><th>Context</th></tr>
+          </thead>
+          <tbody>
+            {#each recent.dispatched_rows as row}
+              <tr>
+                <td>{fmtTs(row.ts_ms)}</td>
+                <td><code>{row.effect_id}</code></td>
+                <td><code>{row.trigger}</code></td>
+                <td><code>{row.context_kind}</code></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+
+    <section class="goodhart">
+      <header>
+        <strong>Goodhart flags</strong>
+        <span class="muted">{recent.goodhart_flags?.length ?? 0} flags</span>
+      </header>
+      {#if !recent.goodhart_flags || recent.goodhart_flags.length === 0}
+        <p class="muted">No goodhart_risk_flag rows yet.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr><th>When</th><th>Effect</th><th>Risk kind</th><th>Evidence</th></tr>
+          </thead>
+          <tbody>
+            {#each recent.goodhart_flags as flag}
+              <tr>
+                <td>{fmtTs(flag.ts_ms)}</td>
+                <td><code>{flag.effect_id}</code></td>
+                <td><code>{flag.risk_kind}</code></td>
+                <td>{flag.evidence}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+
+    <section class="sandbox-obs">
+      <header>
+        <strong>Sandbox observations</strong>
+        <span class="muted">{recent.sandbox_observations?.length ?? 0} rows</span>
+      </header>
+      {#if !recent.sandbox_observations || recent.sandbox_observations.length === 0}
+        <p class="muted">No sandbox_observation rows yet.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr><th>When</th><th>Effect</th><th>Tier</th><th>Outcome</th><th>Evidence</th></tr>
+          </thead>
+          <tbody>
+            {#each recent.sandbox_observations as row}
+              <tr>
+                <td>{fmtTs(row.ts_ms)}</td>
+                <td><code>{row.effect_id}</code></td>
+                <td><code>{row.tier}</code></td>
+                <td><code>{row.outcome}</code></td>
+                <td>{row.evidence_count}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+
+    <section class="production-proposals">
+      <header>
+        <strong>Production observation proposals</strong>
+        <span class="muted">{recent.production_proposals?.length ?? 0} rows</span>
+      </header>
+      {#if !recent.production_proposals || recent.production_proposals.length === 0}
+        <p class="muted">No production_observation_proposal rows yet.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr><th>When</th><th>Effect</th><th>Instrument file</th><th>Requires review</th></tr>
+          </thead>
+          <tbody>
+            {#each recent.production_proposals as row}
+              <tr>
+                <td>{fmtTs(row.ts_ms)}</td>
+                <td><code>{row.effect_id}</code></td>
+                <td>
+                  {#if row.instrument_file}
+                    <code>{row.instrument_file}</code>
+                  {:else}
+                    <span class="muted">—</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if row.requires_human_review}
+                    <span class="result-fail">REVIEW</span>
+                  {:else}
+                    <span class="result-pass">OK</span>
                   {/if}
                 </td>
               </tr>

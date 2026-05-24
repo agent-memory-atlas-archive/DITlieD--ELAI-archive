@@ -9,7 +9,12 @@
 //!   - L796-863: FilePlan / FileSpec / FileModSpec / FunctionSpec types.
 //!   - L80-91:   Per-language hard-block tier-2 table.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen over FxHashMap because LanguageLimitsMap
+// is a pub type alias; BTreeMap preserves the std-only public surface and
+// gives deterministic iteration ordering if a future caller serializes it
+// (e.g. into a manifest TOML). Lookup-only paths (`.get`) pay an O(log n)
+// vs O(1) tax but n is bounded by the language table (~5 entries).
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -104,7 +109,11 @@ impl FilePlan {
 
 /// Per-language hard-block map keyed by lowercase language name
 /// (`"rust"`, `"python"`, ...). Looked up by FilePlan::validate.
-pub type LanguageLimitsMap = HashMap<String, u16>;
+///
+/// `BTreeMap` (not `HashMap`) per B-15 HashMap ban: deterministic key
+/// iteration order if downstream serializes the map; lookup cost is O(log n)
+/// against a ~5-entry language table which is negligible.
+pub type LanguageLimitsMap = BTreeMap<String, u16>;
 
 // ---------------------------------------------------------------------------
 // Errors — thiserror, no anyhow, no .unwrap().
@@ -200,7 +209,7 @@ mod tests {
     use super::*;
 
     fn rust_limits() -> LanguageLimitsMap {
-        let mut m = HashMap::new();
+        let mut m = BTreeMap::new();
         m.insert("rust".to_string(), 400);
         m.insert("python".to_string(), 480);
         m
@@ -249,7 +258,7 @@ mod tests {
             modified_files: vec![],
             version: FilePlan::CURRENT_VERSION,
         };
-        assert!(plan.validate(&HashMap::new()).is_err());
+        assert!(plan.validate(&BTreeMap::new()).is_err());
     }
 
     #[test]

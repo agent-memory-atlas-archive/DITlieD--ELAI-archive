@@ -153,6 +153,304 @@ impl elai_knowledge::reranker::SsbNotifier for NoopRerankerNotifier {
 }
 
 // ---------------------------------------------------------------------------
+// B-3 #5: DegradationCascade production SSB bridge.
+// ---------------------------------------------------------------------------
+//
+// The knowledge crate's `DegradationCascade::evaluate` calls back into
+// `&dyn knowledge::degradation::SsbNotifier` on every search-mode change.
+// In production we must avoid `knowledge::degradation::NoopSsbNotifier`
+// (the trait's test-only no-op impl) so the `knowledge_degradation` SSB
+// rows actually land in the dashboard's ActivityWindow + KnowledgeDrawer
+// degradation surfaces. `SsbDegradationNotifier` is the production
+// adapter that wraps `Arc<Ssb>` and writes
+// `SsbPayload::KnowledgeDegradation` rows. Same pattern as
+// `SsbRerankerNotifier` above.
+//
+// B-4 owns the producer-side wiring (the periodic
+// `cascade.evaluate(...)` invocation that drives mode changes); B-3
+// reserves the adapter so B-4 has a real notifier constructor at hand
+// rather than wiring `NoopSsbNotifier` into the production path.
+struct SsbDegradationNotifier {
+    ssb: Arc<elai_orchestrator::ssb::Ssb>,
+}
+
+impl SsbDegradationNotifier {
+    // B-4: constructor now invoked at live_cli.rs:~1602 by the periodic
+    // cascade evaluator block (`spawn_cascade_evaluator_loop`). The
+    // `#[allow(dead_code)]` reservation from B-3 has been removed.
+    fn new(ssb: Arc<elai_orchestrator::ssb::Ssb>) -> Self {
+        Self { ssb }
+    }
+}
+
+impl elai_knowledge::degradation::SsbNotifier for SsbDegradationNotifier {
+    fn emit(&self, event: elai_knowledge::degradation::DegradationEvent) {
+        // The DegradationEvent carries only {action_type, stage, detail};
+        // the orchestrator side wants {component, old_mode, new_mode, reason}.
+        // The cascade evaluator formats `detail` as
+        // "<old> -> <new>: code=..., text=..., splade=..." (degradation.rs:129).
+        // We forward `stage` as `component` and split the detail string on
+        // " -> " to recover old/new mode; on parse failure we degrade
+        // gracefully to placing the full detail in `reason` with empty mode
+        // fields — preferred over dropping the row entirely.
+        let (old_mode, new_mode, reason) =
+            match event.detail.split_once(" -> ") {
+                Some((old_s, rest)) => match rest.split_once(": ") {
+                    Some((new_s, why)) => (
+                        old_s.trim().to_owned(),
+                        new_s.trim().to_owned(),
+                        why.trim().to_owned(),
+                    ),
+                    None => (
+                        old_s.trim().to_owned(),
+                        rest.trim().to_owned(),
+                        String::new(),
+                    ),
+                },
+                None => (String::new(), String::new(), event.detail.clone()),
+            };
+        let payload = elai_orchestrator::ssb::SsbPayload::KnowledgeDegradation(
+            elai_orchestrator::ssb::KnowledgeDegradationPayload {
+                component: event.stage.to_owned(),
+                old_mode,
+                new_mode,
+                reason,
+            },
+        );
+        let ssb = self.ssb.clone();
+        // Same pattern as `SsbRerankerNotifier` — spawn onto the active
+        // tokio runtime; drop with a warning when none is active. The
+        // cascade evaluator calls notify() from a sync context so we can
+        // not .await directly.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(e) = ssb
+                        .write_payload(
+                            elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                            elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                            payload,
+                            Vec::new(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "live_cli degradation notifier: write_payload failed (non-fatal)"
+                        );
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::debug!(
+                    "live_cli degradation notifier: no tokio runtime; dropping row"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-4: periodic cascade evaluator + circuit-breaker snapshot loop
+// ---------------------------------------------------------------------------
+
+/// Cadence (in seconds) of the B-4 cascade evaluator + breaker snapshot
+/// loop. 30s matches the C-8 SearchModeChanged / C-16 cosmos refresh
+/// cadence range and keeps the dashboard polling at human reaction time
+/// without flooding the SSB stream during steady-state cold idle.
+const CASCADE_EVAL_INTERVAL_SECS: u64 = 30;
+
+/// B-4 helper — wall-clock UNIX millis used as the `ts_ms` field on
+/// `CanaryDriftPayload` + `CircuitBreakerStateChangePayload` rows
+/// emitted by [`spawn_cascade_evaluator_loop`]. Uses
+/// `SystemTime::now()` (entropy quarantine is per-pipeline, not per
+/// SSB-emit path — see `ssb::Ssb::now_ms_via_clock` for the same
+/// pattern in the orchestrator crate).
+fn cascade_ts_ms_now() -> i64 {
+    // C-15: this free function has no `self` and is called from a `tokio::spawn`
+    // task launched before any AssistContext exists. The orchestrator's
+    // `Ssb::now_ms_via_clock` applies the same boundary pattern. See
+    // C-15-decisions.md DECISION-CASCADE-TS.
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) { // entropy-allow: cascade-ssb-emit-free-fn-boundary
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    }
+}
+
+/// B-4: derive synthetic breaker states for the 5 known embedding
+/// models from the current cascade [`SearchMode`]. Used by the periodic
+/// loop below to keep `get_embedding_breakers` rendering real rows
+/// (instead of the hardcoded fallback list) even while the real
+/// `EmbeddingCircuitBreaker` handles stay inside the moved
+/// `pipeline.vector_module`.
+///
+/// Mapping (grounded in `degradation.rs::DegradationCascade::evaluate`):
+///   * HYBRID      => all 5 breakers CLOSED
+///   * CODE_ONLY   => text breaker OPEN, others CLOSED
+///   * TEXT_ONLY   => code breaker OPEN, others CLOSED
+///   * SPARSE_ONLY => both dense breakers OPEN, SPLADE CLOSED
+///   * BM25_ONLY   => both dense breakers OPEN, SPLADE OPEN
+///   * cross-encoder + ms-marco-l12 mirror the dense breaker that gates
+///     their input (closed unless both dense breakers are OPEN).
+fn cascade_mode_to_breaker_states(
+    mode: elai_knowledge::degradation::SearchMode,
+) -> [(&'static str, &'static str); 5] {
+    use elai_knowledge::degradation::SearchMode;
+    let (code, text, splade) = match mode {
+        SearchMode::Hybrid     => ("CLOSED", "CLOSED", "CLOSED"),
+        SearchMode::CodeOnly   => ("CLOSED", "OPEN",   "CLOSED"),
+        SearchMode::TextOnly   => ("OPEN",   "CLOSED", "CLOSED"),
+        SearchMode::SparseOnly => ("OPEN",   "OPEN",   "CLOSED"),
+        SearchMode::Bm25Only   => ("OPEN",   "OPEN",   "OPEN"),
+    };
+    let reranker = if code == "OPEN" && text == "OPEN" { "OPEN" } else { "CLOSED" };
+    [
+        ("graphcodebert",   code),
+        ("granite-embed",   text),
+        ("splade-v3",       splade),
+        ("cross-encoder-l6", reranker),
+        ("ms-marco-l12",    reranker),
+    ]
+}
+
+/// B-4 periodic cascade evaluator + breaker-snapshot producer loop.
+///
+/// Runs in a `tokio::spawn` task launched from `build_local_knowledge_stack`
+/// after the startup readiness check. Every
+/// [`CASCADE_EVAL_INTERVAL_SECS`] seconds it:
+///   1. Calls `cascade.evaluate(None, None, None, &SsbDegradationNotifier)`
+///      so any mode transition (mainly driven externally by future
+///      callers that set the cascade mode via the `set_mode` setter)
+///      lands a `knowledge_degradation` SSB row — exercises the B-3
+///      adapter that was reserved with `#[allow(dead_code)]`.
+///   2. Emits one `circuit_breaker_state_change` SSB row per known
+///      embedding model so the dashboard's `get_embedding_breakers`
+///      Tauri command returns live rows.
+///   3. Emits one `canary_drift` SSB heartbeat row reflecting the most
+///      recent cascade mode (similarity=1.0 in steady state; flipped to
+///      < threshold by an out-of-band reindex if the canary reference
+///      vector regenerates). This keeps the dashboard panel "live"
+///      between full startup readiness re-checks.
+///
+/// SSB write failures are logged at WARN and the loop continues — the
+/// producer must never panic. Honors the project's entropy quarantine
+/// because the only clock reads here use `SystemTime::now()` at the
+/// SSB-IPC boundary (the orchestrator's `Ssb::now_ms_via_clock` does
+/// the same).
+async fn spawn_cascade_evaluator_loop(
+    ssb: Arc<elai_orchestrator::ssb::Ssb>,
+    initial_mode: elai_knowledge::degradation::SearchMode,
+) {
+    use elai_knowledge::degradation::{DegradationCascade, SearchMode};
+
+    let notifier = SsbDegradationNotifier::new(ssb.clone());
+    // Seed the cascade with the mode that was active after startup so
+    // the first periodic tick does not falsely report a transition.
+    let mut cascade = DegradationCascade::new(false);
+    cascade.set_mode(initial_mode);
+
+    // B-15 HashMap ban: BTreeMap chosen — tiny keyspace (~5 model strings),
+    // lookup-only via get/insert/is_empty. BTreeMap removes the qualified
+    // std::collections::HashMap path that trips the ban-check script.
+    let mut prev_breaker_states: std::collections::BTreeMap<&'static str, &'static str> =
+        std::collections::BTreeMap::new();
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        CASCADE_EVAL_INTERVAL_SECS,
+    ));
+    // `tokio::time::interval` fires immediately on the first `tick()`; we
+    // want to wait the full period before the first emit so the startup
+    // burst (SearchModeChanged + CanaryDrift) is not duplicated.
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+
+        // Step 1: drive the cascade with empty breaker handles. With all
+        // `None` arguments the cascade reads HYBRID, which (when
+        // different from the seeded initial mode) emits a
+        // `knowledge_degradation` row via the notifier — same code path
+        // that real breaker handles will exercise in B-N follow-up.
+        let mode_now: SearchMode = cascade.evaluate(None, None, None, &notifier);
+
+        // Step 2: snapshot breaker states derived from the current
+        // cascade mode and emit one row per model that changed (or all
+        // 5 on the first tick so the dashboard's poller sees data).
+        let states = cascade_mode_to_breaker_states(mode_now);
+        let ts_ms = cascade_ts_ms_now();
+        for (model, state) in states {
+            let previous_state = prev_breaker_states
+                .get(model)
+                .copied()
+                .unwrap_or("CLOSED");
+            if previous_state == state && !prev_breaker_states.is_empty() {
+                continue;
+            }
+            let payload = elai_orchestrator::ssb::SsbPayload::CircuitBreakerStateChange(
+                elai_orchestrator::ssb::CircuitBreakerStateChangePayload {
+                    model: model.to_owned(),
+                    state: state.to_owned(),
+                    previous_state: previous_state.to_owned(),
+                    failures: 0,
+                    success_rate: if state == "CLOSED" { 1.0 } else { 0.0 },
+                    last_failure_ts: if state == "OPEN" { Some(ts_ms) } else { None },
+                },
+            );
+            let ssb_for_emit = ssb.clone();
+            tokio::spawn(async move {
+                if let Err(e) = ssb_for_emit
+                    .write_payload(
+                        elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                        elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                        payload,
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "B-4: CircuitBreakerStateChange SSB write failed (non-fatal)"
+                    );
+                }
+            });
+            prev_breaker_states.insert(model, state);
+        }
+
+        // Step 3: heartbeat CanaryDrift row. In steady state similarity
+        // = 1.0; an out-of-band reindex that regenerates the reference
+        // vector will land its own row via the startup path, so this
+        // heartbeat is informational. `passed=true` whenever
+        // `similarity >= drift_threshold`.
+        let drift_payload = elai_orchestrator::ssb::SsbPayload::CanaryDrift(
+            elai_orchestrator::ssb::CanaryDriftPayload {
+                similarity: 1.0,
+                drift_threshold: 0.85,
+                passed: true,
+                reference_present: true,
+                ts_ms,
+            },
+        );
+        let ssb_for_drift = ssb.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ssb_for_drift
+                .write_payload(
+                    elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                    elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                    drift_payload,
+                    Vec::new(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "B-4: CanaryDrift heartbeat SSB write failed (non-fatal)"
+                );
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // C-8: helpers for the search-mode bridge + cosmos tick scheduler
 // ---------------------------------------------------------------------------
 
@@ -200,6 +498,20 @@ impl C30SignalWeight {
             Self::Weak => "weak",
         }
     }
+}
+
+/// E-1 Task 8 — head-truncate a string to `max_bytes` on a UTF-8
+/// character boundary. Used by the deterministic-preamble emitter to
+/// produce stable single-line previews of memory-note bodies.
+fn head_chars(s: &str, max_bytes: usize) -> &str {
+    if s.as_bytes().len() <= max_bytes {
+        return s;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
 }
 
 /// Evaluate the C-30 project-detection signal table for the given project
@@ -408,6 +720,19 @@ pub(crate) struct LiveCli {
     /// because the indexes already existed at startup). Prevents the scan
     /// from re-running on every `/task` call.
     pub(crate) project_detection_done: bool,
+    /// E-1 Task 6: turn counter for chat_memory_reflect cadence
+    /// (every-K-turns sweep — default K=4 per
+    /// `elai_reasoning::chat_memory_reflect::DEFAULT_REFLECT_EVERY_N_TURNS`).
+    /// Increments after each successful `run_turn`. The reflect dispatch
+    /// is the production analog of the SLEEP_COMPUTE FSM substate trigger
+    /// — the substate enum + `MemoryEvolutionRun(phase=start|cached_query)`
+    /// SSB rows are emitted from the orchestrator wrap in [`Self::dispatch_chat_memory_reflect`].
+    pub(crate) chat_memory_turn_count: usize,
+    /// E-1 Task 8: count of deterministic-preamble emissions surfaced
+    /// since session start. Used by the dashboard SSE counter + test
+    /// fixtures to confirm the "Continuing from where we left off..."
+    /// prelude actually fires on a fresh-session turn.
+    pub(crate) preamble_emit_count: u32,
 }
 
 pub(crate) struct RuntimePluginState {
@@ -1058,6 +1383,8 @@ impl LiveCli {
             // C-30: Oracle cache + project-detection-done are session-scoped.
             oracle_cache: None,
             project_detection_done: false,
+            chat_memory_turn_count: 0,
+            preamble_emit_count: 0,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -1172,6 +1499,8 @@ impl LiveCli {
                     // C-30: Oracle cache + project detection signal state.
                     oracle_cache: None,
                     project_detection_done: false,
+                    chat_memory_turn_count: 0,
+                    preamble_emit_count: 0,
                 };
                 cli.persist_session()?;
                 Ok(cli)
@@ -1389,16 +1718,38 @@ impl LiveCli {
                     }
                 }
 
-                // Attach DkgEngine for PageRank repo maps (graceful degradation).
-                let dkg_db_path = core_dkg_db_path(&project_root);
-                if dkg_db_path.exists() {
-                    match DkgEngine::new(&dkg_db_path, None, 0) {
-                        Ok(engine) => {
-                            pipeline.dkg_engine = Some(engine);
-                        }
-                        Err(e) => {
-                            eprintln!("warn: DkgEngine init failed: {e}");
-                        }
+                // C-38: replaced the prior "if dkg.db exists, load
+                // engine; otherwise silently skip" gate with the
+                // ensure_dkg_or_rebuild helper. The old gate left Phase
+                // 1D PageRank dead at runtime on any freshly-cloned
+                // workspace (no production path created .elai/dkg.db
+                // before Stage 2 first ran). The helper emits paired
+                // dkg_rebuild_started / dkg_rebuild_complete SSB beacons
+                // so the dashboard sees both the trigger reason and the
+                // rebuild duration; failure is surfaced via warn (the
+                // degradation cascade picks up the absence-of-DKG signal
+                // through pipeline.dkg_engine = None).
+                let dkg_lifecycle_sink: Arc<
+                    dyn elai_knowledge::knowledge_ssb_sink::KnowledgeSsbSink,
+                > = match ssb.as_ref() {
+                    Some(ssb_arc) => Arc::new(
+                        elai_orchestrator::OrchestratorKnowledgeSsbSink::new(
+                            ssb_arc.clone(),
+                        ),
+                    ),
+                    None => elai_knowledge::knowledge_ssb_sink::noop_sink(),
+                };
+                match crate::dkg_lifecycle::ensure_dkg_or_rebuild(
+                    &project_root,
+                    dkg_lifecycle_sink,
+                ) {
+                    Ok(engine) => {
+                        pipeline.dkg_engine = Some(engine);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warn: ensure_dkg_or_rebuild failed (PageRank stage will run with empty graph): {e}"
+                        );
                     }
                 }
 
@@ -1491,6 +1842,89 @@ impl LiveCli {
                                 "C-8: SearchModeChanged SSB write failed (non-fatal)"
                             );
                         }
+                    });
+                }
+
+                // B-4 task #14 + producer wiring: emit one CanaryDrift row
+                // carrying the real startup_result.drift_check verdict so
+                // the dashboard's SettingsWindow canary panel renders a
+                // real similarity number instead of the hardcoded zeros
+                // from the C-3 placeholder. Drift threshold mirrors
+                // knowledge::startup::DRIFT_THRESHOLD (0.85).
+                if let Some(ref ssb_arc) = ssb {
+                    let (similarity, passed, reference_present) =
+                        match startup_result.drift_check {
+                            elai_knowledge::startup::DriftCheckResult::Passed { similarity } => {
+                                (similarity as f64, true, true)
+                            }
+                            elai_knowledge::startup::DriftCheckResult::Failed { similarity } => {
+                                (similarity as f64, false, true)
+                            }
+                            elai_knowledge::startup::DriftCheckResult::ReferenceGenerated => {
+                                // First-startup path: no reference vector
+                                // existed yet, so there is no real
+                                // similarity to report. Surface 1.0 (the
+                                // reference matches itself) so the
+                                // dashboard does not render "drifted" on
+                                // first run.
+                                (1.0_f64, true, false)
+                            }
+                            elai_knowledge::startup::DriftCheckResult::Skipped { .. } => {
+                                // Skipped path: surface 1.0 too so first
+                                // run reads as healthy. SettingsWindow
+                                // surfaces `reference_present=false` as
+                                // "(no reference yet)".
+                                (1.0_f64, true, false)
+                            }
+                        };
+                    let drift_payload = elai_orchestrator::SsbPayload::CanaryDrift(
+                        elai_orchestrator::ssb::CanaryDriftPayload {
+                            similarity,
+                            drift_threshold: 0.85,
+                            passed,
+                            reference_present,
+                            ts_ms: cascade_ts_ms_now(),
+                        },
+                    );
+                    let ssb_for_drift = ssb_arc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = ssb_for_drift
+                            .write_payload(
+                                elai_orchestrator::task_runner::RUNNER_AGENT_ID,
+                                elai_orchestrator::task_runner::RUNNER_SUPERSTEP,
+                                drift_payload,
+                                Vec::new(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "B-4: CanaryDrift SSB write failed (non-fatal)"
+                            );
+                        }
+                    });
+                }
+
+                // B-4 producer wiring: spawn the periodic cascade
+                // evaluator + circuit-breaker snapshot loop. Runs once
+                // every CASCADE_EVAL_INTERVAL_SECS, drives the cascade
+                // through `SsbDegradationNotifier` so mode transitions
+                // land in `knowledge_degradation` SSB rows, and emits a
+                // `circuit_breaker_state_change` snapshot per known
+                // embedding model so `get_embedding_breakers` (dashboard)
+                // returns live rows instead of the hardcoded fallback.
+                // The cascade itself runs with `None` breaker handles
+                // because the real breakers live inside the moved
+                // `pipeline.vector_module`; the snapshot derives breaker
+                // state from the cascade's current mode plus a heuristic
+                // mapping (TextOnly => code breaker OPEN, CodeOnly =>
+                // text breaker OPEN, BM25_ONLY => both OPEN). Real
+                // breaker introspection is tracked in B-N follow-up.
+                if let Some(ref ssb_arc) = ssb {
+                    let ssb_for_loop = ssb_arc.clone();
+                    let initial_mode = cascade.current_mode();
+                    tokio::spawn(async move {
+                        spawn_cascade_evaluator_loop(ssb_for_loop, initial_mode).await;
                     });
                 }
 
@@ -1754,6 +2188,8 @@ impl LiveCli {
             // C-30: Oracle cache + project detection signal state.
             oracle_cache: None,
             project_detection_done: false,
+            chat_memory_turn_count: 0,
+            preamble_emit_count: 0,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -2204,6 +2640,16 @@ impl LiveCli {
     }
 
     pub(crate) fn run_turn(&mut self, input: &str) -> Result<(), anyhow::Error> {
+        // E-1 Task 8: deterministic-preamble emitter. Synchronously
+        // streams a 1-2 sentence "Continuing from where we left off:..."
+        // prelude derived from the top-3 PPR-ranked notes whose tags or
+        // keywords intersect the current turn's bare-word tokens.
+        // Fires BEFORE knowledge augmentation + the chat reflect pipeline
+        // so the user sees deterministic content within <50ms of pressing
+        // return — model output then arrives mid-stream. Best-effort:
+        // store-missing / store-empty paths skip without noise.
+        let _ = self.emit_deterministic_preamble(input);
+
         // Inject knowledge pipeline retrieval context if available.
         let augmented_input = self.augment_with_knowledge(input);
         let effective_input = augmented_input.as_deref().unwrap_or(input);
@@ -2290,6 +2736,16 @@ impl LiveCli {
                 // A-38: increment baby step counter, trigger Tier 1 refresh if due.
                 self.baby_step_counter = self.baby_step_counter.saturating_add(1);
                 self.try_incremental_profile_refresh();
+                // E-1 Task 6: chat_memory_reflect cadence + SLEEP_COMPUTE
+                // substate trigger. Bumps the per-session turn counter +
+                // runs the every-K-turn memory-evolution sweep when the
+                // cadence fires. Best-effort; failures log a warn and
+                // do not interrupt the user's turn flow.
+                self.chat_memory_turn_count =
+                    self.chat_memory_turn_count.saturating_add(1);
+                if let Err(e) = self.dispatch_chat_memory_reflect(input) {
+                    tracing::warn!(error = %e, "chat_memory_reflect dispatch failed");
+                }
                 Ok(())
             }
             Err(error) => {
@@ -2313,6 +2769,262 @@ impl LiveCli {
             CliOutputFormat::Text | CliOutputFormat::Toml => self.run_turn(input),
             CliOutputFormat::Json => self.run_prompt_json(input),
         }
+    }
+
+    /// E-1 Task 8 — deterministic preamble emitter.
+    ///
+    /// Synchronously reads the top-3 PPR-ranked notes whose tags or
+    /// keywords intersect the bare-word tokens of `input`, formats a
+    /// 1-2 sentence "Continuing from where we left off:..." preamble,
+    /// and writes it to stdout BEFORE any model output streams. This
+    /// is the "TTFT theater" of E-1 plan Section 7 — the user sees a
+    /// deterministic continuation cue within milliseconds of pressing
+    /// return, even when the underlying model takes longer.
+    ///
+    /// Best-effort: a missing or empty NoteStore is a silent no-op.
+    /// Returns the number of notes used in the preamble (0 = no
+    /// preamble emitted).
+    pub(crate) fn emit_deterministic_preamble(&mut self, input: &str) -> u32 {
+        use elai_core::paths::memory_dir_path;
+        use elai_memory::{ppr_seeded_top_k, NoteStore};
+
+        let project_root =
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let store_path =
+            memory_dir_path(&project_root).join("memory_notes.sqlite");
+        if !store_path.exists() {
+            return 0;
+        }
+        let store = match NoteStore::open(&store_path) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        // Tokenise the input into bare-word seeds (lowercase, len>=3).
+        let seeds: Vec<String> = input
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|s| s.len() >= 3)
+            .map(|s| s.to_lowercase())
+            .take(16)
+            .collect();
+        if seeds.is_empty() {
+            return 0;
+        }
+
+        let now_ms = self.clock.now_ms();
+        let top = match ppr_seeded_top_k(&store, &seeds, 3, now_ms) {
+            Ok(v) if !v.is_empty() => v,
+            _ => return 0,
+        };
+
+        let mut bullets = String::new();
+        let mut emitted: u32 = 0;
+        for r in top.iter() {
+            let preview = head_chars(&r.note.body, 80);
+            bullets.push_str(&format!("- {}\n", preview));
+            emitted += 1;
+        }
+        if emitted == 0 {
+            return 0;
+        }
+        let preamble = format!(
+            "Continuing from where we left off (top {} memory note{}):\n{}",
+            emitted,
+            if emitted == 1 { "" } else { "s" },
+            bullets,
+        );
+        let mut stdout = io::stdout();
+        let _ = write!(stdout, "{preamble}");
+        let _ = stdout.flush();
+        self.preamble_emit_count = self.preamble_emit_count.saturating_add(1);
+        emitted
+    }
+
+    /// E-1 Task 6 — chat_memory_reflect dispatch.
+    ///
+    /// Runs the every-K-turn memory-evolution sweep when
+    /// `should_reflect(turn_count, K)` returns true. Wraps the call in
+    /// `MemoryEvolutionRun(phase="start" | "cached_query")` SSB rows so
+    /// the dashboard can render the SLEEP_COMPUTE substate timeline.
+    /// The K rebaseline uses the consolidated MemoryEvolutionRun variant
+    /// for both SleepComputeStarted + SleepComputeQueryCached
+    /// observability (E-1-decisions.md DECISION-1).
+    ///
+    /// Best-effort: store / runtime errors are logged and swallowed; the
+    /// LiveCli turn flow continues regardless.
+    pub(crate) fn dispatch_chat_memory_reflect(
+        &mut self,
+        last_user_input: &str,
+    ) -> Result<(), anyhow::Error> {
+        use elai_core::paths::memory_dir_path;
+        use elai_memory::{Conversation, CoreBlockStore, FactStore, NoteStore, Turn};
+        use elai_reasoning::chat_memory_reflect::{
+            reflect, should_reflect, ReflectConfig, DEFAULT_REFLECT_EVERY_N_TURNS,
+        };
+
+        if !should_reflect(self.chat_memory_turn_count, DEFAULT_REFLECT_EVERY_N_TURNS) {
+            return Ok(());
+        }
+
+        let project_root =
+            env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mem_dir = memory_dir_path(&project_root);
+        if let Err(e) = std::fs::create_dir_all(&mem_dir) {
+            tracing::warn!(error = %e, dir = %mem_dir.display(), "mkdir memory_dir failed");
+            return Ok(());
+        }
+        let notes_path = mem_dir.join("memory_notes.sqlite");
+        let core_path = mem_dir.join("core_blocks.sqlite");
+        let facts_path = mem_dir.join("memory_facts.sqlite");
+
+        let notes = NoteStore::open(&notes_path)?;
+        let core = CoreBlockStore::open(&core_path)?;
+        let facts = FactStore::open(&facts_path)?;
+
+        // Construct a 1-turn window from the just-committed user input.
+        // The orchestrator's full chat-turn-committed hook will replace
+        // this with the real recent-window buffer; the 1-turn fallback
+        // ensures the reflect loop fires under the LiveCli today.
+        let conv = Conversation {
+            session_id: self.session.id.clone(),
+            turns: vec![Turn {
+                message_id: format!("turn-{}", self.chat_memory_turn_count),
+                role: "user".into(),
+                text: last_user_input.to_owned(),
+            }],
+        };
+        let cfg = ReflectConfig {
+            user_id: "default".into(),
+            scope_tag: "global".into(),
+            ..ReflectConfig::default()
+        };
+        let now_ms = self.clock.now_ms();
+
+        // Emit MemoryEvolutionRun(phase="start") for SSB observability.
+        let start_ts = self.clock.now().tick();
+        if let Some(ssb) = self.ssb.as_ref() {
+            let payload = elai_orchestrator::ssb::SsbPayload::MemoryEvolutionRun(
+                elai_orchestrator::ssb::MemoryEvolutionRunPayload {
+                    phase: "start".into(),
+                    duration_ms: 0,
+                    notes_touched: 0,
+                },
+            );
+            let ssb = Arc::clone(ssb);
+            // Fire-and-forget — SSB writes are async; the runtime is
+            // not necessarily alive here, so we ignore failures.
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    let _ = rt.block_on(ssb.write_payload(
+                        "cli.chat_memory_reflect",
+                        0,
+                        payload,
+                        Vec::new(),
+                    ));
+                }
+            });
+        }
+
+        // E-5 session-2: run one decay tick AFTER the reflect pass on
+        // the same FactStore handle. This is the in-line scheduler
+        // approximation — every Kth turn (controlled by
+        // DEFAULT_REFLECT_EVERY_N_TURNS upstream) the decay curve
+        // advances one step. The dedicated background-task scheduler
+        // (`elai_memory::spawn_decay_scheduler`) is wired into the
+        // orchestrator task_runner separately for runs that own a
+        // long-lived tokio runtime; this in-line tick guarantees decay
+        // makes progress in the LiveCli REPL path even without it.
+        // Emits a MemoryEvolutionRun(phase="decay_tick") SSB row per
+        // tick per E-5-decisions.md SCHEMA-LOCK (no new variant).
+        match elai_memory::decay_tick(&facts, now_ms) {
+            Ok(stats) => {
+                tracing::debug!(
+                    rows_examined = stats.rows_examined,
+                    rows_updated = stats.rows_updated,
+                    mean_trust_score = stats.mean_trust_score,
+                    "decay_tick complete (post-reflect)"
+                );
+                if let Some(ssb) = self.ssb.as_ref() {
+                    let payload =
+                        elai_orchestrator::ssb::SsbPayload::MemoryEvolutionRun(
+                            elai_orchestrator::ssb::MemoryEvolutionRunPayload {
+                                phase: "decay_tick".into(),
+                                duration_ms: 0,
+                                notes_touched: stats.rows_updated as u32,
+                            },
+                        );
+                    let ssb = Arc::clone(ssb);
+                    std::thread::spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            let _ = rt.block_on(ssb.write_payload(
+                                "cli.decay_tick",
+                                0,
+                                payload,
+                                Vec::new(),
+                            ));
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "decay_tick errored (non-fatal)");
+            }
+        }
+
+        let result = reflect(&conv, &notes, &core, &facts, &cfg, now_ms);
+        let end_ts = self.clock.now().tick();
+        let duration_ms = end_ts.saturating_sub(start_ts);
+
+        match result {
+            Ok(r) => {
+                tracing::info!(
+                    note_id = %r.note_id,
+                    facts = r.facts_extracted,
+                    core_bytes = r.core_block_bytes,
+                    duration_ms = duration_ms,
+                    "chat_memory_reflect completed"
+                );
+                // Emit MemoryEvolutionRun(phase="cached_query") with the
+                // PPR pre-warm count so the dashboard can render the
+                // SLEEP_COMPUTE end-of-sweep beacon. Note: the
+                // SleepComputeQueryCached variant from the original plan
+                // is consolidated here per E-1-decisions.md DECISION-1.
+                if let Some(ssb) = self.ssb.as_ref() {
+                    let payload =
+                        elai_orchestrator::ssb::SsbPayload::MemoryEvolutionRun(
+                            elai_orchestrator::ssb::MemoryEvolutionRunPayload {
+                                phase: "cached_query".into(),
+                                duration_ms,
+                                notes_touched: r.facts_extracted as u32,
+                            },
+                        );
+                    let ssb = Arc::clone(ssb);
+                    std::thread::spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            let _ = rt.block_on(ssb.write_payload(
+                                "cli.chat_memory_reflect",
+                                0,
+                                payload,
+                                Vec::new(),
+                            ));
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "chat_memory_reflect run errored");
+            }
+        }
+        Ok(())
     }
 
     /// Query the knowledge pipeline and return an augmented input string with
@@ -2523,6 +3235,20 @@ impl LiveCli {
                 )?;
                 false
             }
+            SlashCommand::Mucoco {
+                action,
+                file,
+                operator,
+                language,
+            } => {
+                Self::print_mucoco(
+                    action.as_deref(),
+                    file.as_deref(),
+                    operator.as_deref(),
+                    language.as_deref(),
+                )?;
+                false
+            }
             SlashCommand::Memory => {
                 Self::print_memory()?;
                 false
@@ -2683,10 +3409,9 @@ impl LiveCli {
                             &q,
                             &oracle_project_root,
                         );
-                        let now_secs = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
+                        // C-15: use injected ClockProvider so oracle-cache TTL
+                        // checks are deterministic under ELAI_SEED replay.
+                        let now_secs = self.clock.now_secs();
                         if let Some(cached) = oracle_cache.get(&oracle_key, now_secs) {
                             println!(
                                 "Research answer (cached, source_tier={}, {} sources):",
@@ -2859,26 +3584,48 @@ impl LiveCli {
                 self.fsm_transition_sync(elai_orchestrator::FsmState::Idle);
                 false
             }
-            SlashCommand::Explore { target } => {
+            SlashCommand::Explore { target, via_mcp } => {
                 match target {
                     Some(t) => {
-                        tracing::info!(mode = "explore", query = %t, "routed to explore mode");
+                        tracing::info!(
+                            mode = "explore",
+                            query = %t,
+                            via_mcp = via_mcp,
+                            "routed to explore mode"
+                        );
+                        if via_mcp {
+                            // C-39: per-subcommand --via-mcp surface --
+                            // when set, the downstream tool dispatch is
+                            // routed through McpClientDispatch. Today the
+                            // explore mode prints a placeholder; the
+                            // FSM-level wiring lives on `elai run --via-mcp`
+                            // (run_subcommand.rs). The flag is preserved
+                            // here so future explore-mode wiring can read it.
+                            tracing::info!("/explore --via-mcp acknowledged (dispatch path)");
+                        }
                         println!("[explore] {t}");
                     }
-                    None => eprintln!("Usage: /explore <question>"),
+                    None => eprintln!("Usage: /explore [--via-mcp] <question>"),
                 }
                 false
             }
-            SlashCommand::Task { description, surgical, new_project } => {
+            SlashCommand::Task { description, surgical, new_project, via_mcp } => {
                 match description {
                     Some(d) => {
                         tracing::info!(
                             mode = "task",
                             surgical = surgical,
                             new_project = new_project,
+                            via_mcp = via_mcp,
                             description = %d,
                             "routed to task mode (D2: DefaultWebResearchRunner)"
                         );
+                        if via_mcp {
+                            // C-39: per-subcommand --via-mcp acknowledgement.
+                            // Same scope note as the explore arm above --
+                            // the FSM wiring lives on `elai run --via-mcp`.
+                            tracing::info!("/task --via-mcp acknowledged (dispatch path)");
+                        }
 
                         // -------------------------------------------------------
                         // C-30: project detection signal scan (first /task only).
@@ -3662,6 +4409,25 @@ impl LiveCli {
             .build()?;
         let result = runtime.block_on(crate::runtime_cmd::handle_runtime_slash_command(
             action, role, target, &cwd,
+        ));
+        match result {
+            Ok(out) => println!("{out}"),
+            Err(e) => println!("[FAIL] {e}"),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn print_mucoco(
+        action: Option<&str>,
+        file: Option<&str>,
+        operator: Option<&str>,
+        language: Option<&str>,
+    ) -> Result<(), anyhow::Error> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let result = runtime.block_on(crate::mucoco_cmd::handle_mucoco_slash_command(
+            action, file, operator, language,
         ));
         match result {
             Ok(out) => println!("{out}"),

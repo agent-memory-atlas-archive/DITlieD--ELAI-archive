@@ -1,7 +1,10 @@
 <!-- C-35 ToolGateInspector.svelte: Shows FSM gate config + 60s token savings histogram. -->
 <!-- Svelte 5 runes. Pairs with SSB tool_gated/tool_eager/tool_lazy_resolved/tool_denied. -->
+<!-- Backend: get_tool_gate_snapshot + list_tool_gate_rows Tauri commands -->
+<!-- (dashboard-v2/src-tauri/src/commands_c35.rs). -->
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
 
   interface ToolGateRow {
     tool_name: string;
@@ -16,6 +19,8 @@
     eager: string[];
     gated: string[];
     denied: string[];
+    feature_enabled: boolean;
+    note: string;
   }
 
   let snapshot = $state<GateSnapshot | null>(null);
@@ -30,23 +35,37 @@
 
   async function refresh(): Promise<void> {
     try {
-      const r = await fetch("/api/tool-gate/snapshot").catch(() => null);
-      if (r && r.ok) snapshot = await r.json() as GateSnapshot;
-      const r2 = await fetch("/api/ssb/tool-gate-rows?window_ms=60000").catch(() => null);
-      if (r2 && r2.ok) {
-        const rows = await r2.json() as ToolGateRow[];
-        recentRows = rows.slice(-200);
-        const now = Date.now();
-        const buckets = Array(BUCKET_COUNT).fill(0);
-        for (const row of rows) {
-          const bucket = Math.floor((now - row.ts_ms) / BUCKET_MS);
-          if (bucket >= 0 && bucket < BUCKET_COUNT) buckets[bucket] += row.prompt_tokens_saved;
-        }
-        histogram = buckets.reverse();
+      // C-35: Tauri invoke calls replace the legacy fetch() stubs. The
+      // backend modules are registered in dashboard-v2/src-tauri/src/lib.rs
+      // alongside commands_empire (Phase 4J / B-25 precedent).
+      const snap = await invoke<GateSnapshot>("get_tool_gate_snapshot", {
+        fsmState: null,
+      }).catch((err: unknown) => {
+        console.debug("[ToolGateInspector] get_tool_gate_snapshot failed", err);
+        return null;
+      });
+      if (snap) snapshot = snap;
+
+      const rows = await invoke<ToolGateRow[]>("list_tool_gate_rows", {
+        windowMs: 60_000,
+        limit: 200,
+      }).catch((err: unknown) => {
+        console.debug("[ToolGateInspector] list_tool_gate_rows failed", err);
+        return [] as ToolGateRow[];
+      });
+      recentRows = rows.slice(-200);
+      const now = Date.now();
+      const buckets = Array(BUCKET_COUNT).fill(0);
+      for (const row of rows) {
+        const bucket = Math.floor((now - row.ts_ms) / BUCKET_MS);
+        if (bucket >= 0 && bucket < BUCKET_COUNT) buckets[bucket] += row.prompt_tokens_saved;
       }
+      histogram = buckets.reverse();
       lastRefreshTs = Date.now();
       loadError = null;
-    } catch (e: unknown) { loadError = e instanceof Error ? e.message : String(e); }
+    } catch (e: unknown) {
+      loadError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   let totalTokensSaved = $derived(recentRows.reduce((sum, r) => sum + r.prompt_tokens_saved, 0));
@@ -66,6 +85,7 @@
   {#if snapshot}
     <section class="gate-state">
       <h3>Active Gate: <code>{snapshot.fsm_state}</code></h3>
+      {#if !snapshot.feature_enabled}<p class="muted">{snapshot.note}</p>{/if}
       <div class="buckets">
         <div class="bucket eager"><b>Eager ({snapshot.eager.length})</b>
           {#each snapshot.eager as n}<div>{n}</div>{/each}</div>

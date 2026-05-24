@@ -6,7 +6,7 @@
   import { activity } from '$lib/state/activity.svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import { graph } from '$lib/state/graph.svelte';
-  import { get_bubble_up_events } from '$lib/api/stub';
+  import { get_bubble_up_events, get_package_verifications } from '$lib/api/stub';
   import { Tree, Badge, Button, Empty, Card, Scrollbar } from '$lib/ui';
   import SkeletonList from '$lib/components/SkeletonList.svelte';
   import type { TreeNode } from '$lib/ui';
@@ -15,6 +15,7 @@
     BubbleUpEvent,
     BabyStepBlock,
     DecompLevel,
+    PackageRefVerified,
   } from '$lib/api/types';
 
   // ----------------------------------------------------------------
@@ -103,6 +104,34 @@
     void refresh();
     const t = setInterval(refresh, 5_000);
     return () => { alive = false; clearInterval(t); };
+  });
+
+  // B-7 (SCHEMA_VERSION 100): producer-wire — poll PackageRefVerified
+  // rows from the orchestrator SSB viewer. Rendered as a PACKAGES VERIFIED
+  // row in the concept / phase / step detail pane (skipped at baby-step
+  // level because the row applies to the parent decision-source context,
+  // not to an individual baby step).
+  let packageVerifications = $state<PackageRefVerified[]>([]);
+  onMount(() => {
+    let alive = true;
+    async function refresh() {
+      try {
+        const rows = await get_package_verifications();
+        if (alive) packageVerifications = rows;
+      } catch (err) {
+        console.debug('[PlanWindow] get_package_verifications failed', err);
+      }
+    }
+    void refresh();
+    const t = setInterval(refresh, 5_000);
+    return () => { alive = false; clearInterval(t); };
+  });
+
+  // Derived rollup: total verified + total checked, used by the
+  // detail-pane PACKAGES VERIFIED row.
+  const packageVerifyStats = $derived({
+    total: packageVerifications.length,
+    verified: packageVerifications.filter((p) => p.verified).length,
   });
 
   function handleCtrlSelectNode(id: string) {
@@ -513,6 +542,22 @@
                 <div class="meta-row">
                   <span class="meta-label">ELAPSED</span>
                   <span class="meta-value">{formatElapsed(selectedNode.elapsed_ms)}</span>
+                </div>
+              {/if}
+              <!-- B-7 (SCHEMA_VERSION 100): producer-wire row. Rendered
+                   only when the SSB has at least one PackageRefVerified
+                   row so the detail pane stays clean on cold start. -->
+              {#if packageVerifyStats.total > 0}
+                <div
+                  class="meta-row"
+                  data-testid="packages-verified-row"
+                  title="package_ref_verified rows from SSB (session-scoped)"
+                >
+                  <span class="meta-label">PACKAGES VERIFIED</span>
+                  <span
+                    class="meta-value"
+                    style="color:{packageVerifyStats.verified === packageVerifyStats.total ? 'var(--teal)' : 'var(--warn)'};"
+                  >{packageVerifyStats.verified}/{packageVerifyStats.total}</span>
                 </div>
               {/if}
             </div>

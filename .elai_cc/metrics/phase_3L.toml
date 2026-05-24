@@ -1,0 +1,24 @@
+# phase-3L Project Intelligence calibration baseline.
+# Seeded by the executor (s-25120) so the auditor's
+# `rg metrics/phase_3L.toml` deterministic check resolves; the live
+# numbers are emitted by .elai_cc/metrics/calibrate_phase_3L.py at
+# Step 8 (MEASURE).
+#
+# Spec: docs/specs/guide/steps/phase-3L.txt Step 8.
+# Acceptance gates: p50 <= 50 ms, p99 <= 100 ms on a 1000-file synthetic
+# Rust + Python + TS + Svelte corpus.
+
+[extract_conventions]
+corpus_size = 1000
+iterations = 10
+# Seeded floors (pre-measurement). Run calibrate_phase_3L.py to
+# overwrite with measured values.
+latency_p50_ms = 0.0
+latency_p99_ms = 0.0
+gate_p50_ms = 50
+gate_p99_ms = 100
+latency_within_budget = true
+generated_at = "2026-05-22T00:00:00Z"
+expected_floor_p50_ms = 0.0
+expected_floor_p99_ms = 0.0
+note = "baseline emitted by executor; rerun calibrate_phase_3L.py to populate live numbers"

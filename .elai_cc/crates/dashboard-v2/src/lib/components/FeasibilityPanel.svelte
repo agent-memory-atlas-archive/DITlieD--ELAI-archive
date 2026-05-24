@@ -23,12 +23,20 @@
 <script lang="ts">
   import { Badge } from '$lib/ui';
   import type { FeasibilityReport, FeasibilityOutcome } from '$lib/api/types';
+  // E-22 phase-4F P5: stub_results.msgpack reader binding. Invoked on
+  // demand via the "load artifact" button so the default render path stays
+  // SSB-only and does not pay disk I/O on every drawer open.
+  import { get_stub_results_msgpack, type StubResultsEnvelope } from '$lib/api/stub';
 
   interface Props {
     report: FeasibilityReport | null;
+    /// Default task id for the on-disk artifact lookup. Pipeline-1 is the
+    /// stable test fixture id; the dashboard overrides this once a live
+    /// pipeline is selected.
+    taskId?: string;
   }
 
-  let { report }: Props = $props();
+  let { report, taskId = 'pipeline-1' }: Props = $props();
 
   function toneFor(outcome: FeasibilityOutcome): string {
     if (outcome === 'PASS') return 'teal';
@@ -48,6 +56,24 @@
   const probeCount = $derived(report?.probe_count ?? 0);
   const alternativesExplored = $derived(report?.alternatives_explored ?? 0);
   const novelStepCount = $derived(report?.novel_step_count ?? 0);
+
+  // E-22 phase-4F P5: on-disk artifact state.
+  let artifactEnvelope = $state<StubResultsEnvelope | null>(null);
+  let artifactLoading = $state(false);
+  let artifactError = $state<string | null>(null);
+
+  async function loadArtifact(): Promise<void> {
+    artifactLoading = true;
+    artifactError = null;
+    try {
+      artifactEnvelope = await get_stub_results_msgpack(taskId);
+    } catch (e) {
+      artifactError = e instanceof Error ? e.message : String(e);
+      artifactEnvelope = null;
+    } finally {
+      artifactLoading = false;
+    }
+  }
 </script>
 
 <section class="feasibility-panel" aria-label="Feasibility probe">
@@ -102,6 +128,51 @@
         <span class="ghost-text">no feasibility checks recorded yet</span>
       </div>
     {/if}
+
+    <!--
+      E-22 phase-4F P5: on-disk stub_results.msgpack artifact viewer. The
+      live SSB rows above are the canonical feed; this block surfaces the
+      replay-verification artifact (stdout_hash, alternative_index,
+      resource_delta) per stub run.
+    -->
+    <div class="feasibility-artifact">
+      <button
+        type="button"
+        class="artifact-btn"
+        onclick={loadArtifact}
+        disabled={artifactLoading}
+      >
+        {artifactLoading ? 'loading…' : 'load on-disk artifact'}
+      </button>
+      {#if artifactError}
+        <span class="ghost-text artifact-error">{artifactError}</span>
+      {:else if artifactEnvelope}
+        <span class="ghost-text">
+          {artifactEnvelope.count} stub result{artifactEnvelope.count === 1 ? '' : 's'}
+          {#if artifactEnvelope.path}
+            @ <span class="artifact-path" title={artifactEnvelope.path}>
+              {artifactEnvelope.path.split(/[\\/]/).slice(-3).join('/')}
+            </span>
+          {/if}
+        </span>
+        {#if artifactEnvelope.count > 0}
+          <ul class="artifact-rows">
+            {#each artifactEnvelope.results as r (r.step_id + ':' + r.alternative_index)}
+              <li class="artifact-row">
+                <span class="feasibility-check">{r.step_id}#{r.alternative_index}</span>
+                <Badge tone={r.stub_passed ? 'teal' : 'fail'} size="xs">
+                  {r.stub_passed ? 'PASS' : 'FAIL'}
+                </Badge>
+                <span class="ghost-text" title={r.stdout_hash ?? 'no stdout hash'}>
+                  {r.stdout_hash ? r.stdout_hash.slice(0, 8) : '—'}
+                </span>
+                <span class="ghost-text">{r.elapsed_ms}ms</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </div>
   {/if}
 </section>
 
@@ -200,5 +271,56 @@
   .ghost-text {
     color: var(--text-muted, #888);
     font-size: 0.72rem;
+  }
+
+  /* E-22 phase-4F P5: artifact viewer */
+  .feasibility-artifact {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--text-muted, #444);
+  }
+
+  .artifact-btn {
+    align-self: flex-start;
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    background: transparent;
+    color: var(--text-default, #ddd);
+    border: 1px solid var(--text-muted, #555);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .artifact-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+
+  .artifact-error {
+    color: var(--color-fail, #d44);
+  }
+
+  .artifact-path {
+    font-family: var(--font-mono, monospace);
+  }
+
+  .artifact-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .artifact-row {
+    display: grid;
+    grid-template-columns: minmax(80px, max-content) max-content minmax(0, 1fr) max-content;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.76rem;
   }
 </style>

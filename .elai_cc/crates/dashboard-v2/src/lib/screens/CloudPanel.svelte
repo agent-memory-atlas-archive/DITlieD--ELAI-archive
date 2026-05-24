@@ -22,7 +22,7 @@
   // non-UTC timezones know when "today" resets.
   import { onMount, onDestroy } from 'svelte';
   import * as stub from '$lib/api/stub';
-  import type { CloudSpendInfo } from '$lib/api/types';
+  import type { CloudSpendInfo, CloudRouteStatus } from '$lib/api/types';
 
   // Props (Svelte 5 runes mode).
   type Props = {
@@ -51,19 +51,28 @@
     cache_read_tokens: 0,
     redaction_count: 0,
   });
+  // C-5 follow-on (SCHEMA_VERSION 103): latest routing status banners.
+  // Each sub-field is null until the runtime emits a row of that type.
+  let routeStatus = $state<CloudRouteStatus>({
+    route_blocked: null,
+    warn_limit_reached: null,
+    cost_estimate: null,
+  });
   let provider = $state<Provider>('LOCAL');
   let loading = $state(true);
   let timer: number | null = null;
 
   async function refresh(): Promise<void> {
     try {
-      const [s, m] = await Promise.all([
+      const [s, m, rs] = await Promise.all([
         stub.get_cloud_spend(),
         stub.get_execution_mode(),
+        stub.get_cloud_route_status(),
       ]);
       spend = s;
       const raw = (m?.mode ?? 'LOCAL').toUpperCase();
       provider = raw === 'CLOUD' || raw === 'HYBRID' || raw === 'LOCAL' ? raw : 'LOCAL';
+      routeStatus = rs;
     } catch {
       // best-effort polling: silent on transient failure, keep prior state
     } finally {
@@ -106,6 +115,55 @@
     <h3 class="cloud-panel__title mono">cloud mode</h3>
     <span class="cloud-panel__hint mono">UTC day · spend, redaction, provider</span>
   </header>
+
+  <!-- C-5 follow-on: route-blocked notice (SCHEMA_VERSION 103). Renders
+       only when CloudModeRouter rejected the most recent cloud probe with
+       a Daily/MonthlySpendCapExceeded error. -->
+  {#if routeStatus.route_blocked}
+    <div class="cloud-panel__notice is-blocked" role="alert">
+      <span class="cloud-panel__notice-tag mono">ROUTE BLOCKED</span>
+      <span class="cloud-panel__notice-body mono">
+        {routeStatus.route_blocked.cap_period} cap reached:
+        ${routeStatus.route_blocked.spent_usd.toFixed(4)} /
+        ${routeStatus.route_blocked.cap_usd.toFixed(2)}
+        ({routeStatus.route_blocked.reason})
+      </span>
+    </div>
+  {/if}
+
+  <!-- C-5 follow-on: warn-limit-reached banner (SCHEMA_VERSION 103).
+       Fires once per UTC day when day_usd crosses warn_at_percent of the
+       daily cap. Sits ABOVE the hard-block notice so operators can act
+       before the cap fires. -->
+  {#if routeStatus.warn_limit_reached && !routeStatus.route_blocked}
+    <div class="cloud-panel__notice is-warn" role="status">
+      <span class="cloud-panel__notice-tag mono">WARN LIMIT</span>
+      <span class="cloud-panel__notice-body mono">
+        cloud spend at {routeStatus.warn_limit_reached.pct_of_cap.toFixed(0)}% of daily cap
+        (${routeStatus.warn_limit_reached.spent_usd.toFixed(4)} /
+        ${routeStatus.warn_limit_reached.cap_usd.toFixed(2)},
+        threshold {routeStatus.warn_limit_reached.warn_at_percent}%)
+      </span>
+    </div>
+  {/if}
+
+  <!-- C-5 follow-on: cost estimate (SCHEMA_VERSION 103). Pre-task USD
+       projection from plan skeleton. Hides when both bounds are zero so
+       local-only tasks don't surface noise. heuristic_source carries the
+       UNGROUNDED_HEURISTIC disclaimer; display it inline so operators
+       know the bounds are coarse. -->
+  {#if routeStatus.cost_estimate && routeStatus.cost_estimate.high_usd > 0}
+    <div class="cloud-panel__notice is-info" role="status">
+      <span class="cloud-panel__notice-tag mono">COST ESTIMATE</span>
+      <span class="cloud-panel__notice-body mono">
+        ${routeStatus.cost_estimate.low_usd.toFixed(4)} -
+        ${routeStatus.cost_estimate.high_usd.toFixed(4)}
+        ({routeStatus.cost_estimate.model},
+        {routeStatus.cost_estimate.step_count} step{routeStatus.cost_estimate.step_count === 1 ? '' : 's'};
+        {routeStatus.cost_estimate.heuristic_source})
+      </span>
+    </div>
+  {/if}
 
   <!-- Spend gauge: day_usd / cap_usd -->
   <div class="cloud-panel__row">
@@ -319,6 +377,43 @@
     font-size: 11px;
     color: var(--text-dim, #6a6a6a);
     padding: 4px 0;
+  }
+  /* C-5 follow-on (SCHEMA_VERSION 103) — route-blocked / warn-limit /
+     cost-estimate notice banners. Block + warn share the gauge palette
+     so the operator's eye lands on the right severity at a glance. */
+  .cloud-panel__notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+  }
+  .cloud-panel__notice.is-blocked {
+    background: rgba(217, 76, 76, 0.12);
+    color: var(--err, #d94c4c);
+    border-color: var(--err, #d94c4c);
+  }
+  .cloud-panel__notice.is-warn {
+    background: rgba(217, 154, 60, 0.12);
+    color: var(--warn, #d99a3c);
+    border-color: var(--warn, #d99a3c);
+  }
+  .cloud-panel__notice.is-info {
+    background: rgba(136, 170, 204, 0.10);
+    color: var(--accent, #88aacc);
+    border-color: var(--accent, #88aacc);
+  }
+  .cloud-panel__notice-tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .cloud-panel__notice-body {
+    font-size: 11px;
   }
   .mono {
     font-family: inherit;

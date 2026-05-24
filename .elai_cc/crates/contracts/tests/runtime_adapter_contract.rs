@@ -239,6 +239,16 @@ fn create_runtime_returns_box_dyn_for_every_backend() {
                 // E-51 + C-44 added Mlx/LlamaCpp. C-25 added more cloud.
                 let _ = msg;
             }
+            Err(RuntimeAdapterError::NotImplemented { backend: b, .. }) => {
+                // D-2 — PPM is a verifier-only discovery slot. Its
+                // `create_runtime` arm intentionally returns NotImplemented
+                // as a typed sentinel against accidental generation-path
+                // routing. See workflow/reasoning/D-2-decisions.md.
+                assert_eq!(
+                    b, *backend,
+                    "NotImplemented sentinel must echo requested backend"
+                );
+            }
             Err(other) => panic!(
                 "create_runtime({backend:?}) returned unexpected error: {other:?}"
             ),

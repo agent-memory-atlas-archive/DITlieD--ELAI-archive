@@ -33,9 +33,14 @@
 //
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
+// B-15 HashMap ban: FxHashMap chosen for active_tasks. Access pattern is
+// lock-then-insert/remove/iter_mut for timeout enforcement; iteration is
+// internal-only (per-handle timeout independent of order). Lookup-only
+// hot path on every spawn call. rustc-hash already in workspace.
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use rustc_hash::FxHashMap;
 
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -122,13 +127,13 @@ impl BackgroundTaskHandle {
 // BackgroundTaskManager
 // ---------------------------------------------------------------------------
 
-/// C-25 Task 4 — the manager itself. Owns a HashMap of active handles
+/// C-25 Task 4 — the manager itself. Owns an FxHashMap of active handles
 /// keyed by `task_id`, an optional Ssb writer for spawn/complete rows,
 /// and an adaptive poll interval. `autonomous_mode` is captured at
 /// `gated_spawn` time so a single manager can be reused across
 /// interactive / autonomous boundaries (the per-spawn flag is the gate).
 pub struct BackgroundTaskManager {
-    active_tasks: Mutex<HashMap<String, BackgroundTaskHandle>>,
+    active_tasks: Mutex<FxHashMap<String, BackgroundTaskHandle>>,
     max_concurrent: u8,
     poll_interval_secs: Mutex<u32>,
     ssb_tx: Option<Arc<Ssb>>,
@@ -138,7 +143,7 @@ impl BackgroundTaskManager {
     #[must_use]
     pub fn new(ssb_tx: Option<Arc<Ssb>>) -> Self {
         Self {
-            active_tasks: Mutex::new(HashMap::new()),
+            active_tasks: Mutex::new(FxHashMap::default()),
             max_concurrent: BACKGROUND_TASK_MAX_CONCURRENT,
             poll_interval_secs: Mutex::new(BACKGROUND_TASK_POLL_MIN_SECS),
             ssb_tx,
@@ -148,7 +153,7 @@ impl BackgroundTaskManager {
     #[must_use]
     pub fn with_max_concurrent(ssb_tx: Option<Arc<Ssb>>, max_concurrent: u8) -> Self {
         Self {
-            active_tasks: Mutex::new(HashMap::new()),
+            active_tasks: Mutex::new(FxHashMap::default()),
             max_concurrent,
             poll_interval_secs: Mutex::new(BACKGROUND_TASK_POLL_MIN_SECS),
             ssb_tx,

@@ -127,7 +127,13 @@ pub enum IpcHookError {
 
 /// Trait for writing findings to SSB. The orchestrator implements this;
 /// the plugins crate defines it to avoid a circular dependency.
-pub trait SsbFindingWriter {
+///
+/// B-19: `Send + Sync` supertraits required so the wrapping
+/// `IpcHookDispatcher` can be hoisted into `Arc<dyn IpcHookTrait + Send + Sync>`
+/// for the cross-task `IpcHookAsyncAdapter` bridge. All real implementors
+/// (`NoopSsbWriter`, the orchestrator's `RuntimeSsbFindingWriter`) are
+/// already thread-safe; the supertrait makes the constraint explicit.
+pub trait SsbFindingWriter: Send + Sync {
     /// Write a finding entry to SSB.
     /// Implementors must inject `project_id` per [SSB_READER_PROJECT_ID_SCOPING].
     fn write_finding(
@@ -159,7 +165,10 @@ impl SsbFindingWriter for NoopSsbWriter {
 // ---------------------------------------------------------------------------
 
 /// Checks whether a file is locked by another session (multi-session protocol).
-pub trait CrossSessionLockChecker {
+///
+/// B-19: `Send + Sync` supertraits required so the wrapping
+/// `IpcHookDispatcher` can be hoisted into `Arc<dyn IpcHookTrait + Send + Sync>`.
+pub trait CrossSessionLockChecker: Send + Sync {
     /// Returns Some(session_id) if the file is locked by another session.
     fn is_locked_by_other(&self, file_path: &str, current_session: &str) -> Option<String>;
 }
@@ -179,7 +188,11 @@ impl CrossSessionLockChecker for NoopLockChecker {
 
 /// Hook trait for IPC tool interception. All methods are synchronous
 /// (tiered analysis is CPU-bound, not IO-bound).
-pub trait IpcHookTrait {
+///
+/// B-19: `Send + Sync` supertraits required so the orchestrator's
+/// `IpcHookAsyncAdapter` can wrap implementors in
+/// `Arc<dyn IpcHookTrait + Send + Sync>` for cross-task async dispatch.
+pub trait IpcHookTrait: Send + Sync {
     /// Fires BEFORE a ToolRequest/BashRequest is dispatched to the executor.
     /// Returns Block to reject, Warn to allow with advisory, Allow to pass.
     fn pre_tool_use(&self, ctx: &HookContext) -> Result<HookResult, IpcHookError>;

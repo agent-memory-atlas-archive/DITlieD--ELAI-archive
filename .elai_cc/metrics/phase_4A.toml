@@ -65,8 +65,8 @@ windows_isolation = "AppContainer + Job Object + RestrictedToken (documented-wea
 # ---------------------------------------------------------------------------
 # C-11 (2026-05-18): Tier-C sandbox completeness (B-18B deferred items closed).
 # ---------------------------------------------------------------------------
-# Source: D:\.ELAI_workflow\docs\thefinalglance\C-plan\C-11_sandbox_completeness.md
-# Decisions: D:\.ELAI_workflow\workflow\reasoning\C-11-decisions.md
+# Source: F:\.ELAI_workflow\docs\thefinalglance\C-plan\C-11_sandbox_completeness.md
+# Decisions: F:\.ELAI_workflow\workflow\reasoning\C-11-decisions.md
 # Runtime smoke (NSpid + RLIMIT_AS visible + cap drop) requires CAP_SYS_ADMIN
 # Linux host; the test battery skips cleanly on unprivileged CI. Live-host
 # measurements (marked measured-in:C-20) are scheduled with the cloud Sonnet

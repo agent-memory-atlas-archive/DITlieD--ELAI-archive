@@ -1,0 +1,74 @@
+# phase-3J-BASELINE fixture: micro_7b_12gb.
+# Mirrors ModelCapabilityProfile::micro_7b_12gb in
+# crates/orchestrator/src/context_budget.rs:309 (Qwen2.5-Coder-7B-Instruct NF4+FA2,
+# prompt_tokens_target=20000, effective_ceiling=25000).
+# Prompts cover code-generation, repair-context, code-context recall, and
+# JSON-schema-shaped output to exercise the 7B sidecar tier.
+
+[fixture]
+tier = "micro_7b_12gb"
+substrate = "benches/model_capability/fixtures/tasks.json"
+default_max_tokens = 256
+default_temperature = 0.0
+
+[[fixture.prompts]]
+id = "p01_reverse_rs"
+text = "Write a Rust function: fn reverse(s: &str) -> String. Output only the function body."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p02_fibonacci_rs"
+text = "Write a Rust function: fn fibonacci(n: u32) -> u64 that returns the nth Fibonacci number (0-indexed, fib(0)=0, fib(1)=1). Output only the function."
+expect_json = false
+max_tokens = 128
+
+[[fixture.prompts]]
+id = "p03_palindrome_rs"
+text = "Write a Rust function: fn is_palindrome(s: &str) -> bool (case-insensitive). Output only the function."
+expect_json = false
+max_tokens = 128
+
+[[fixture.prompts]]
+id = "p04_summarize_diff"
+text = "Summarize this hunk in one sentence: '+ const REPAIR_CONTEXT_TOTAL: usize = 1400;'"
+expect_json = false
+max_tokens = 64
+
+[[fixture.prompts]]
+id = "p05_explain_const"
+text = "Explain in two sentences what REPAIR_CONTEXT_TOTAL controls in a context-budget allocator."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p06_json_schema_simple"
+text = "Return ONLY a JSON object with keys {name: string, age: integer}. Pick any plausible values."
+expect_json = true
+max_tokens = 64
+schema = '''{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}'''
+
+[[fixture.prompts]]
+id = "p07_max_element_rs"
+text = "Write a Rust function: fn max_element(v: &[i32]) -> Option<i32>. Output only the function."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p08_count_words_rs"
+text = "Write a Rust function: fn count_words(s: &str) -> usize that counts whitespace-split words. Output only the function."
+expect_json = false
+max_tokens = 96
+
+[[fixture.prompts]]
+id = "p09_repair_demo"
+text = "Given the buggy line: `let x = vec![1,2,3]; x[5]` — explain the panic and the fix in one short paragraph."
+expect_json = false
+max_tokens = 128
+
+[[fixture.prompts]]
+id = "p10_json_schema_list"
+text = "Return ONLY a JSON object with key {items: array of integers, length 3}."
+expect_json = true
+max_tokens = 64
+schema = '''{"type":"object","properties":{"items":{"type":"array","items":{"type":"integer"},"minItems":3,"maxItems":3}},"required":["items"]}'''

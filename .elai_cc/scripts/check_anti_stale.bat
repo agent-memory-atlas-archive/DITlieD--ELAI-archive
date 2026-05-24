@@ -98,12 +98,18 @@ for /f %%A in ('type "%TMP_UNWRAP%" ^| find /c /v ""') do set "UNWRAP_COUNT=%%A"
 set /a CAST_COUNT=0
 for /f %%A in ('type "%TMP_CAST%" ^| find /c /v ""') do set "CAST_COUNT=%%A"
 
-echo check_anti_stale: anti-stale pattern audit (B-16A)
+echo check_anti_stale: anti-stale pattern audit (B-16A / B-16E categories)
 echo   STRICT  Box^<dyn .*Error : %BOX_COUNT%
 echo   STRICT  use log::       : %LOG_COUNT%
-echo   STRICT  ort = "...-rc...": %ORT_COUNT%  (waiver: workflow\reasoning\B-16A-decisions.md DECISION-A)
-echo   REPORT  .unwrap()       : %UNWRAP_COUNT% (B-16B will tighten)
-echo   REPORT  as i*/u*/f*     : %CAST_COUNT% (B-16D will tighten)
+echo   STRICT  ort = "...-rc...": %ORT_COUNT%  (waiver: workflow\reasoning\B-16A-decisions.md DECISION-A; ORT-PENDING: bump to 2.0.0 when crates.io ships stable)
+echo   REPORT  .unwrap()       : %UNWRAP_COUNT% (B-16B Chunks A+B+D shipped; Chunk C closed via LazyLock-static exemption per B-16B D5)
+echo   REPORT  as i*/u*/f*     : %CAST_COUNT% (B-16D/E categories tracked; see check_anti_stale.sh for split)
+echo   REPORT  magic-numbers   : enforced by T2 AST lint, NOT this grep script
+echo     surface: crates\plugins\src\tiered_analysis.rs:1458 check_magic_numbers_rust
+echo     surface: crates\plugins\src\tiered_analysis.rs:1506 check_magic_numbers_python
+echo     walker : tiered_analysis.rs:1471 walk_magic_numbers_rust / :1519 walk_magic_numbers_python
+echo     allow-list: 0 ^| 1 ^| 2 ^| -1 ^| 0.0 ^| 1.0 ; ctx-exempt: const/static decls + test files
+echo     rationale: tree-sitter AST exempts const/static blocks deterministically; bash grep cannot
 
 set "WAIVER=%SCRIPT_DIR%..\..\workflow\reasoning\B-16A-decisions.md"
 set "ORT_FAIL=0"

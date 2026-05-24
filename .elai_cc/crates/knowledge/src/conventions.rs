@@ -7,9 +7,9 @@
 
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
-use tracing::warn;
 
 use elai_core::project_profile::{
     Convention, ErrorHandlingProfile, ErrorPattern, ModuleOrganization, NamingConventions,
@@ -30,6 +30,19 @@ const MODERATE_THRESHOLD: f64 = 0.60;
 
 /// Minimum sample size to classify a convention. Below this, report Unknown.
 const MIN_SAMPLE_SIZE: usize = 5;
+
+/// Schema version for the convention metadata persisted by the Project
+/// Intelligence T2 hook (phase-3L). Bump only when persisted shape changes.
+/// VERSION_GATE predicate in `PiT2Hook::run` refuses to seed when the on-disk
+/// schema is older than this constant and instead queues a migration.
+pub const CONVENTIONS_SCHEMA_VERSION: u32 = 1;
+
+/// Maximum bytes scanned per source file in the regex-fallback path.
+/// Avoids worst-case quadratic regex scans on auto-generated files.
+const REGEX_MAX_FILE_BYTES: u64 = 512 * 1024;
+
+/// Maximum depth walked into the project tree during regex fallback.
+const REGEX_MAX_DEPTH: usize = 10;
 
 // ---------------------------------------------------------------------------
 // Naming case classification
@@ -306,14 +319,16 @@ pub fn extract_from_regex_fallback(
     let walker = ignore::WalkBuilder::new(project_root)
         .hidden(true)
         .git_ignore(true)
-        .max_depth(Some(10))
+        .max_depth(Some(REGEX_MAX_DEPTH))
         .build();
 
     let extensions = source_extensions_for_language(primary_language);
-    let mut source_paths: Vec<PathBuf> = Vec::new();
-    let mut test_in_src = 0usize;
-    let mut test_separate = 0usize;
 
+    // Determinism: collect all matching paths first, sort, THEN scan.
+    // `ignore::WalkBuilder` ordering is filesystem-dependent (varies between
+    // Linux/Windows/NTFS). Sorting absolute paths guarantees byte-identical
+    // ConventionStats on repeated runs over the same corpus.
+    let mut scan_paths: Vec<PathBuf> = Vec::new();
     for entry in walker.flatten() {
         let path = entry.path();
         if !path.is_file() {
@@ -323,32 +338,54 @@ pub fn extract_from_regex_fallback(
         if !extensions.contains(&ext) {
             continue;
         }
+        scan_paths.push(path.to_path_buf());
+    }
+    scan_paths.sort();
 
-        if let Some(rel) = path.strip_prefix(project_root).ok() {
+    let mut source_paths: Vec<PathBuf> = Vec::new();
+    let mut test_in_src = 0usize;
+    let mut test_separate = 0usize;
+
+    for path in &scan_paths {
+        if let Ok(rel) = path.strip_prefix(project_root) {
             source_paths.push(rel.to_path_buf());
         }
 
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        // Bound the read to REGEX_MAX_FILE_BYTES to avoid pathological
+        // auto-generated files dominating the histogram.
+        let content = match std::fs::metadata(path) {
+            Ok(md) if md.len() > REGEX_MAX_FILE_BYTES => {
+                tracing::trace!(
+                    path = ?path,
+                    bytes = md.len(),
+                    "skipping oversized file in convention scan"
+                );
+                continue;
+            }
+            _ => match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            },
         };
 
         // Extract names via regex and classify.
-        if let Some(ref re) = fn_regex {
+        if let Some(re) = fn_regex {
             for cap in re.captures_iter(&content) {
-                if let Some(name) = cap.get(1) {
+                // TS arrow-function form binds the identifier to capture
+                // group 2; everything else uses group 1.
+                if let Some(name) = cap.get(1).or_else(|| cap.get(2)) {
                     fn_hist.record(classify_name(name.as_str()));
                 }
             }
         }
-        if let Some(ref re) = type_regex {
+        if let Some(re) = type_regex {
             for cap in re.captures_iter(&content) {
                 if let Some(name) = cap.get(1) {
                     type_hist.record(classify_name(name.as_str()));
                 }
             }
         }
-        if let Some(ref re) = const_regex {
+        if let Some(re) = const_regex {
             for cap in re.captures_iter(&content) {
                 if let Some(name) = cap.get(1) {
                     const_hist.record(classify_name(name.as_str()));
@@ -356,8 +393,21 @@ pub fn extract_from_regex_fallback(
             }
         }
 
+        // Svelte: component PascalCase identity also lives in the file name
+        // itself (canonical convention per kit.svelte.dev). Capture the file
+        // stem as a TYPE-class signal so PascalCase shows up in the type
+        // histogram even when the script block is empty.
+        if primary_language == "svelte" {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let style = classify_name(stem);
+                if style == NamingStyle::PascalCase {
+                    type_hist.record(style);
+                }
+            }
+        }
+
         // Module name from directory structure.
-        if let Some(rel) = path.strip_prefix(project_root).ok() {
+        if let Ok(rel) = path.strip_prefix(project_root) {
             if let Some(parent) = rel.parent() {
                 if let Some(dir_name) = parent.file_name().and_then(|n| n.to_str()) {
                     if dir_name != "src" && !dir_name.is_empty() {
@@ -462,9 +512,12 @@ fn detect_error_handling_regex(
     let walker = ignore::WalkBuilder::new(project_root)
         .hidden(true)
         .git_ignore(true)
-        .max_depth(Some(10))
+        .max_depth(Some(REGEX_MAX_DEPTH))
         .build();
 
+    // Determinism: sort paths before scanning so the error_crate auto-detect
+    // (first-match-wins on `anyhow::` vs `thiserror::`) is stable across runs.
+    let mut paths: Vec<PathBuf> = Vec::new();
     for entry in walker.flatten() {
         let path = entry.path();
         if !path.is_file() {
@@ -474,9 +527,17 @@ fn detect_error_handling_regex(
         if !extensions.contains(&ext) {
             continue;
         }
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        paths.push(path.to_path_buf());
+    }
+    paths.sort();
+
+    for path in &paths {
+        let content = match std::fs::metadata(path) {
+            Ok(md) if md.len() > REGEX_MAX_FILE_BYTES => continue,
+            _ => match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            },
         };
 
         match language {
@@ -747,59 +808,117 @@ fn detect_test_location_dkg(nodes: &[DkgNodeInfo], project_root: &Path) -> TestL
 // ---------------------------------------------------------------------------
 // Helpers: language-specific regex patterns for fallback path
 // ---------------------------------------------------------------------------
+//
+// Regex compilation is HOT-PATH cost; per CLAUDE.md anti-stale-training rules
+// + spec Step 1 stub_ban, compile each pattern exactly once at module init
+// via std::sync::LazyLock. The .expect() calls are bound to crate-controlled
+// literal patterns and are therefore in the static-init carve-out documented
+// in CLAUDE.md (S1) — they cannot fail at runtime.
 
-fn function_regex_for_language(lang: &str) -> Option<Regex> {
-    let pattern = match lang {
-        "rust" => r"(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_]\w*)",
-        "python" => r"(?m)^\s*def\s+([a-zA-Z_]\w*)",
-        "typescript" | "javascript" => {
-            r"(?m)(?:function\s+([a-zA-Z_$]\w*)|(?:const|let|var)\s+([a-zA-Z_$]\w*)\s*=\s*(?:async\s*)?\()"
-        }
-        "go" => r"(?m)^func\s+(?:\([^)]+\)\s+)?([a-zA-Z_]\w*)",
-        _ => return None,
-    };
-    match Regex::new(pattern) {
-        Ok(re) => Some(re),
-        Err(e) => {
-            warn!(language = lang, error = %e, "failed to compile function regex");
-            None
-        }
+static RE_RUST_FN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_]\w*)")
+        .expect("RE_RUST_FN: literal pattern, must compile")
+});
+static RE_PYTHON_FN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*def\s+([a-zA-Z_]\w*)")
+        .expect("RE_PYTHON_FN: literal pattern, must compile")
+});
+static RE_TS_FN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:function\s+([a-zA-Z_$]\w*)|(?:const|let|var)\s+([a-zA-Z_$]\w*)\s*=\s*(?:async\s*)?\()")
+        .expect("RE_TS_FN: literal pattern, must compile")
+});
+static RE_GO_FN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^func\s+(?:\([^)]+\)\s+)?([a-zA-Z_]\w*)")
+        .expect("RE_GO_FN: literal pattern, must compile")
+});
+/// Svelte: regex extracts both `<script>` function declarations
+/// (`function`, `const = (...) =>`) and component identifiers — Svelte
+/// components are PascalCase exports that show up either as the file's
+/// own name (handled in caller) or as `<ComponentName .../>` references.
+static RE_SVELTE_FN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:function\s+([a-zA-Z_$]\w*)|(?:const|let)\s+([a-zA-Z_$]\w*)\s*=\s*(?:async\s*)?\()")
+        .expect("RE_SVELTE_FN: literal pattern, must compile")
+});
+
+static RE_RUST_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:pub\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)")
+        .expect("RE_RUST_TYPE: literal pattern, must compile")
+});
+static RE_PYTHON_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*class\s+([A-Za-z_]\w*)")
+        .expect("RE_PYTHON_TYPE: literal pattern, must compile")
+});
+static RE_TS_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:class|interface|type)\s+([A-Za-z_$]\w*)")
+        .expect("RE_TS_TYPE: literal pattern, must compile")
+});
+static RE_GO_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^type\s+([A-Za-z_]\w*)")
+        .expect("RE_GO_TYPE: literal pattern, must compile")
+});
+/// Svelte: type-like declarations land in `<script lang="ts">` blocks — reuse
+/// the TS shape but compile once for the Svelte registry slot so the helper
+/// stays branchless.
+static RE_SVELTE_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:class|interface|type)\s+([A-Za-z_$]\w*)")
+        .expect("RE_SVELTE_TYPE: literal pattern, must compile")
+});
+
+static RE_RUST_CONST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:pub\s+)?(?:const|static)\s+([A-Za-z_]\w*)")
+        .expect("RE_RUST_CONST: literal pattern, must compile")
+});
+static RE_PYTHON_CONST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^([A-Z][A-Z0-9_]+)\s*=")
+        .expect("RE_PYTHON_CONST: literal pattern, must compile")
+});
+static RE_TS_CONST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:export\s+)?const\s+([A-Z][A-Z0-9_]+)")
+        .expect("RE_TS_CONST: literal pattern, must compile")
+});
+static RE_GO_CONST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:const|var)\s+([A-Za-z_]\w*)")
+        .expect("RE_GO_CONST: literal pattern, must compile")
+});
+static RE_SVELTE_CONST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:export\s+)?const\s+([A-Z][A-Z0-9_]+)")
+        .expect("RE_SVELTE_CONST: literal pattern, must compile")
+});
+
+/// Returns the LazyLock-cached function regex for `lang`, or `None` for an
+/// unsupported language. Caller borrows `&'static Regex`; never allocates.
+fn function_regex_for_language(lang: &str) -> Option<&'static Regex> {
+    match lang {
+        "rust" => Some(&RE_RUST_FN),
+        "python" => Some(&RE_PYTHON_FN),
+        "typescript" | "javascript" => Some(&RE_TS_FN),
+        "go" => Some(&RE_GO_FN),
+        "svelte" => Some(&RE_SVELTE_FN),
+        _ => None,
     }
 }
 
-fn type_regex_for_language(lang: &str) -> Option<Regex> {
-    let pattern = match lang {
-        "rust" => r"(?m)^\s*(?:pub\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)",
-        "python" => r"(?m)^\s*class\s+([A-Za-z_]\w*)",
-        "typescript" | "javascript" => {
-            r"(?m)(?:class|interface|type)\s+([A-Za-z_$]\w*)"
-        }
-        "go" => r"(?m)^type\s+([A-Za-z_]\w*)",
-        _ => return None,
-    };
-    match Regex::new(pattern) {
-        Ok(re) => Some(re),
-        Err(e) => {
-            warn!(language = lang, error = %e, "failed to compile type regex");
-            None
-        }
+/// Returns the LazyLock-cached type regex for `lang`, or `None`.
+fn type_regex_for_language(lang: &str) -> Option<&'static Regex> {
+    match lang {
+        "rust" => Some(&RE_RUST_TYPE),
+        "python" => Some(&RE_PYTHON_TYPE),
+        "typescript" | "javascript" => Some(&RE_TS_TYPE),
+        "go" => Some(&RE_GO_TYPE),
+        "svelte" => Some(&RE_SVELTE_TYPE),
+        _ => None,
     }
 }
 
-fn const_regex_for_language(lang: &str) -> Option<Regex> {
-    let pattern = match lang {
-        "rust" => r"(?m)^\s*(?:pub\s+)?(?:const|static)\s+([A-Za-z_]\w*)",
-        "python" => r"(?m)^([A-Z][A-Z0-9_]+)\s*=",
-        "typescript" | "javascript" => r"(?m)^\s*(?:export\s+)?const\s+([A-Z][A-Z0-9_]+)",
-        "go" => r"(?m)^\s*(?:const|var)\s+([A-Za-z_]\w*)",
-        _ => return None,
-    };
-    match Regex::new(pattern) {
-        Ok(re) => Some(re),
-        Err(e) => {
-            warn!(language = lang, error = %e, "failed to compile const regex");
-            None
-        }
+/// Returns the LazyLock-cached const regex for `lang`, or `None`.
+fn const_regex_for_language(lang: &str) -> Option<&'static Regex> {
+    match lang {
+        "rust" => Some(&RE_RUST_CONST),
+        "python" => Some(&RE_PYTHON_CONST),
+        "typescript" | "javascript" => Some(&RE_TS_CONST),
+        "go" => Some(&RE_GO_CONST),
+        "svelte" => Some(&RE_SVELTE_CONST),
+        _ => None,
     }
 }
 
@@ -812,7 +931,63 @@ fn source_extensions_for_language(lang: &str) -> Vec<&'static str> {
         "go" => vec!["go"],
         "java" => vec!["java"],
         "csharp" => vec!["cs"],
+        "svelte" => vec!["svelte"],
         _ => vec![],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CorpusView + extract_conventions: unified entry point (spec Step 1)
+// ---------------------------------------------------------------------------
+
+/// Read-only view over the corpus an extractor needs to compute
+/// `ConventionStats`. Thin newtype wrapping the existing DKG nodes slice
+/// plus the regex-fallback fields, so callers do not have to pick between
+/// `extract_from_dkg` and `extract_from_regex_fallback` themselves.
+///
+/// Spec: phase-3L Step 1 — `extract_conventions(corpus: &CorpusView)`.
+#[derive(Debug, Clone, Copy)]
+pub struct CorpusView<'a> {
+    /// DKG node table for the indexed project, if available. When present
+    /// AND non-empty, takes precedence over the regex fallback.
+    pub dkg_nodes: Option<&'a [DkgNodeInfo]>,
+    /// Absolute path to the project root (used to relativize node paths and
+    /// to walk source files in the regex path).
+    pub project_root: &'a Path,
+    /// Primary language id (matches `Language::id_str()`, e.g. "rust",
+    /// "python", "typescript", "svelte"). Drives regex selection in the
+    /// fallback path; ignored in the DKG path.
+    pub primary_language: &'a str,
+}
+
+impl<'a> CorpusView<'a> {
+    /// Construct a CorpusView. `dkg_nodes=None` forces the regex-fallback path.
+    pub fn new(
+        dkg_nodes: Option<&'a [DkgNodeInfo]>,
+        project_root: &'a Path,
+        primary_language: &'a str,
+    ) -> Self {
+        Self {
+            dkg_nodes,
+            project_root,
+            primary_language,
+        }
+    }
+}
+
+/// Extract `ConventionStats` from a `CorpusView` using the DKG path when
+/// available (non-empty nodes) and the regex fallback otherwise.
+///
+/// Deterministic: same `CorpusView` -> byte-identical `ConventionStats`
+/// (modulo non-deterministic `std::fs` ordering, which is normalised by
+/// `ignore::WalkBuilder` + sorted intermediate aggregation; verified by the
+/// `determinism_matrix` test module below).
+///
+/// Spec: phase-3L Step 1.
+pub fn extract_conventions(corpus: &CorpusView<'_>) -> ConventionStats {
+    match corpus.dkg_nodes {
+        Some(nodes) if !nodes.is_empty() => extract_from_dkg(nodes, corpus.project_root),
+        _ => extract_from_regex_fallback(corpus.project_root, corpus.primary_language),
     }
 }
 
@@ -965,6 +1140,203 @@ mod tests {
         ];
         let org = detect_module_organization(&paths);
         assert_eq!(org.pattern, OrgPattern::ByFeature);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4-language determinism matrix (phase-3L Step 3 + P1 stub-closure).
+    // -----------------------------------------------------------------------
+    //
+    // Each language synthesises an 8-file corpus in a TempDir and asserts:
+    //   (1) the expected naming-style majority is captured in the dominant
+    //       Convention for functions (or types for Svelte components), AND
+    //   (2) extract_conventions(&CorpusView{regex path}) is byte-deterministic
+    //       across two consecutive runs (Debug format compare — ConventionStats
+    //       intentionally does not derive PartialEq to avoid forcing trait on
+    //       elai_core types, per phase-3L Pi-prefix decision in the
+    //       project_profile-interface.md source ingest).
+    //
+    // The DKG path is exercised by `dkg_conventions_with_nodes` below; this
+    // module is the regex-fallback determinism contract.
+
+    fn build_corpus(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        for (path, content) in files {
+            let full = dir.path().join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dirs");
+            }
+            std::fs::write(&full, content).expect("write file");
+        }
+        dir
+    }
+
+    fn run_twice_is_deterministic(corpus_root: &Path, lang: &str) {
+        let view = CorpusView::new(None, corpus_root, lang);
+        let a = extract_conventions(&view);
+        let b = extract_conventions(&view);
+        // ConventionStats lacks PartialEq (would force PartialEq on
+        // elai_core::project_profile types — out of scope per phase-3L
+        // pre-resolved decisions). Compare Debug for byte equality.
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "extract_conventions not deterministic for {lang}"
+        );
+    }
+
+    #[test]
+    fn rust_4lang_majority_snake_case() {
+        // 8 Rust files, each declaring 3 snake_case fns + 1 PascalCase type.
+        let files: Vec<(String, String)> = (0..8)
+            .map(|i| {
+                (
+                    format!("src/lib_{i}.rs"),
+                    format!(
+                        "pub fn parse_input_{i}() {{}}\n\
+                         pub fn handle_request_{i}() {{}}\n\
+                         pub fn render_output_{i}() {{}}\n\
+                         pub struct WidgetState{i};\n",
+                    ),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> =
+            files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+        let dir = build_corpus(&refs);
+        let view = CorpusView::new(None, dir.path(), "rust");
+        let stats = extract_conventions(&view);
+        assert_eq!(
+            stats.naming.functions,
+            Convention::Strong("snake_case".to_owned()),
+            "rust fn majority should be snake_case"
+        );
+        run_twice_is_deterministic(dir.path(), "rust");
+    }
+
+    #[test]
+    fn python_4lang_majority_snake_case() {
+        let files: Vec<(String, String)> = (0..8)
+            .map(|i| {
+                (
+                    format!("pkg/mod_{i}.py"),
+                    format!(
+                        "def parse_input_{i}():\n    return None\n\n\
+                         def handle_request_{i}():\n    return None\n\n\
+                         def render_output_{i}():\n    return None\n\n\
+                         class WidgetState{i}:\n    pass\n",
+                    ),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> =
+            files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+        let dir = build_corpus(&refs);
+        let view = CorpusView::new(None, dir.path(), "python");
+        let stats = extract_conventions(&view);
+        assert_eq!(
+            stats.naming.functions,
+            Convention::Strong("snake_case".to_owned()),
+            "python fn majority should be snake_case"
+        );
+        run_twice_is_deterministic(dir.path(), "python");
+    }
+
+    #[test]
+    fn typescript_4lang_majority_camel_case() {
+        let files: Vec<(String, String)> = (0..8)
+            .map(|i| {
+                (
+                    format!("src/mod_{i}.ts"),
+                    format!(
+                        "export function parseInput{i}() {{}}\n\
+                         export function handleRequest{i}() {{}}\n\
+                         export function renderOutput{i}() {{}}\n\
+                         export class WidgetState{i} {{}}\n",
+                    ),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> =
+            files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+        let dir = build_corpus(&refs);
+        let view = CorpusView::new(None, dir.path(), "typescript");
+        let stats = extract_conventions(&view);
+        assert_eq!(
+            stats.naming.functions,
+            Convention::Strong("camelCase".to_owned()),
+            "typescript fn majority should be camelCase"
+        );
+        run_twice_is_deterministic(dir.path(), "typescript");
+    }
+
+    #[test]
+    fn svelte_4lang_majority_pascal_case() {
+        // Svelte's canonical convention: component identity comes from the
+        // file name (kit.svelte.dev/docs). The fallback path captures the
+        // file stem as a TYPE-class PascalCase signal so .svelte-only
+        // projects still get a dominant convention.
+        let stems = [
+            "AlphaPanel",
+            "BetaModal",
+            "GammaDrawer",
+            "DeltaButton",
+            "EpsilonChart",
+            "ZetaTable",
+            "EtaForm",
+            "ThetaWindow",
+        ];
+        let files: Vec<(String, String)> = stems
+            .iter()
+            .map(|s| {
+                (
+                    format!("src/lib/components/{s}.svelte"),
+                    "<script>let n = 0;</script>\n<div />".to_owned(),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> =
+            files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+        let dir = build_corpus(&refs);
+        let view = CorpusView::new(None, dir.path(), "svelte");
+        let stats = extract_conventions(&view);
+        assert_eq!(
+            stats.naming.types,
+            Convention::Strong("PascalCase".to_owned()),
+            "svelte component majority should be PascalCase"
+        );
+        run_twice_is_deterministic(dir.path(), "svelte");
+    }
+
+    #[test]
+    fn extract_conventions_dispatches_to_dkg_when_nodes_present() {
+        let project_root = PathBuf::from("/project");
+        let nodes = vec![DkgNodeInfo {
+            node_id: 1,
+            symbol_name: "parse_thing".to_owned(),
+            file_path: PathBuf::from("/project/src/lib.rs"),
+            signature: "fn parse_thing() -> Result<(), Error>".to_owned(),
+            kind: SymbolKind::Function,
+            start_line: 1,
+            end_line: 5,
+        }];
+        let view = CorpusView::new(Some(&nodes), &project_root, "rust");
+        let stats = extract_conventions(&view);
+        assert_eq!(stats.source, "dkg");
+    }
+
+    #[test]
+    fn extract_conventions_falls_back_to_regex_when_dkg_empty() {
+        // Empty DKG slice -> regex path on an empty tmpdir (returns Unknown
+        // naming + "regex_fallback" source).
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let view = CorpusView::new(Some(&[]), dir.path(), "rust");
+        let stats = extract_conventions(&view);
+        assert_eq!(stats.source, "regex_fallback");
+    }
+
+    #[test]
+    fn conventions_schema_version_is_one() {
+        assert_eq!(CONVENTIONS_SCHEMA_VERSION, 1);
     }
 
     #[test]

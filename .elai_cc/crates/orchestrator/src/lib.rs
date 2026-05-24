@@ -13,6 +13,9 @@ pub mod adversary;
 // `orchestrator/src/ssb.rs`, which has in-flight B-28 work. Contract:
 // `crates/contracts/tests/artifacts_pipeline_contract.rs`.
 pub mod artifacts;
+// E-14: browser end-to-end agents (Playwright snapshot, axe-core gate,
+// journey assertions). Scope-lean cut — VLM tier RUNPOD-PENDING.
+pub mod browser_e2e;
 // B-42 Phase 2: cosmos briefing compiler (compile_cosmos_briefing).
 pub mod briefing;
 // B-41: per-level auditor mode dispatch. Defines AuditorMode (6 variants),
@@ -42,6 +45,11 @@ pub mod bsp;
 mod bash;
 pub mod checkpoint;
 pub mod coherence_check;
+// E-44: durability layer additions (idempotent dispatcher + saga/lock/
+// migrator/continue-as-new wrappers on top of the existing SessionDag +
+// AgentCheckpoint surface). All additions are additive — no existing
+// public APIs are modified. See `durability/mod.rs`.
+pub mod durability;
 pub mod dst;
 pub mod cloud_mode;
 pub mod context_budget;
@@ -58,6 +66,11 @@ pub mod evidence;
 pub mod focus_tunnel;
 pub mod fsm;
 pub mod gate;
+// C-40 — GitHub PR adapter (gh CLI shell-out). Producer of the four
+// SCHEMA_VERSION 109 SsbActionType::GithubPr* rows. Cross-language
+// pair: dashboard-v2/src-tauri/src/commands_c40.rs +
+// dashboard-v2/src/lib/windows/GithubWindow.svelte.
+pub mod github_pr;
 // B-40 — Idea-Framer + Domain Research Presets + Critic Loop. Inserts a
 // FRAMING substate before Phase 4D Recursive Decomposition. Public surface
 // re-exported below (FramedIdea, ProjectClass, CriticCategory, etc.).
@@ -199,7 +212,82 @@ pub mod self_mod_proposal;
 pub mod self_mod_orchestrator;
 pub mod self_mod_safety;
 pub mod self_mod_types;
+// C-43: Phase 4H scope-freeze enforcer + manifest. Loads
+// `<workspace>/scope-freeze.toml`, walks `frozen_items` against on-disk
+// mtimes, and produces the 2 SSB beacons (ScopeFreezeRatified +
+// ScopeFreezeViolated). ELAI design hypothesis — see
+// `workflow/sessions/s-25120/mistakes.md` for the bad-cite analysis of
+// the source plan's arXiv:2604.21725 citation.
+pub mod scope_freeze;
+// C-41: skills-driven workflow registry. SkillManifest schema +
+// deterministic top-k ranking + SSB observability for the prompt-engineer
+// harness-side agent to consume. Locally authored on top of the cli's
+// SkillSummary / SkillRoot prior art; paper motivation comes from
+// arXiv:2604.21910 (S0 -> S3 full-match accuracy 44.0% -> 83.3% on Claude
+// Opus 4.6, Section 5.1 Table 2). See workflow/papers/scientific-workflow-interface.md.
+pub mod skill_registry;
 pub mod ssb;
+// C-45: CANTANTE contrastive credit attribution. Paper-grounded against
+// arXiv:2605.13295 (Zehle 2026, Section 3.2 — K rollouts NOT K^N, scalar
+// c in [-1,+1], g=3 partition default). Wires per-role credit scores
+// back into C-41 SkillRegistry via SkillManifest.learned_credit_score.
+// See workflow/papers/cantante-credit-attribution.md for the interface.
+pub mod credit_attribution;
+// C-46: Uno-Orchestra parsimonious agent routing (selective delegation).
+// Paper-grounded against arXiv:2605.05007 (Cui et al 2026, Sections 5 +
+// 6.1 — (model, primitive) action space, alpha in [0, 1] convex blend,
+// S_max <= 0.10 cost-hack bound, direct-answer lazy-mode cost zero).
+// Composes on top of C-45 credit weights when available (cold-start
+// safe — falls back to difficulty-only policy). See
+// workflow/papers/uno-orchestra-interface.md for the interface.
+pub mod routing;
+// C-49: heuristic adaptation of arXiv:2605.14443 iterative-distillation
+// (Sayana, Todi, Jash 2026). Per-skill SuccessTrace bin + counting-based
+// fragment distiller + ExperienceCorpus LRU at MAX_TRACES_PER_SKILL=100.
+// The full RL-trained prompter (GRPO + KL anchor) is RUNPOD-PENDING; this
+// module ships the heuristic counting projection only. See
+// workflow/papers/iterative-distillation-interface.md for the grounding
+// caveats (per-skill not cross-model; buffer task-dependent; binary
+// audit signal vs paper's scalar reward).
+pub mod experience;
+// C-50: STRUCTURAL contract test scaffolding. Paper-grounded against
+// arXiv:2604.13100 (Lin, Zhao, Shi 2026 — Contract-Coding). The
+// paper's kernel is K = <N, Sigma, Delta> (Section 4.2); ELAI ships
+// the structural contract surface + heuristic discriminator +
+// test-file scaffolder. The full Generator -> Discriminator RL
+// training pipeline (paper Algorithm 1) is RUNPOD-PENDING. Citation
+// discipline: the headline "47%" is the Roguelike subset of
+// Greenfield-5 (Table 1) and TIES Trae; the differentiator is
+// structural integrity (failures confined to Local Logic Errors)
+// per Section 5.2. See workflow/papers/contract-coding-interface.md
+// and workflow/sessions/s-25120/mistakes.md (5th cite incident:
+// "real but misframed" pattern).
+pub mod contract_coding;
+// C-52: Dafny Formal Verification Spike host-side scaffolding. Paper-grounded
+// against arXiv:2604.22601 (NL2VC). Three-tier prompting (contextless ->
+// signature -> self_healing), uDebug vacuous-verification guard, capped
+// self-healing loop, tokio::process::Command shellout to `dafny verify`.
+// Live verification is RUNPOD-PENDING (local dev host lacks the dafny
+// binary; the integration must NOT use Gemma 4 per memory rule
+// feedback_no_gemma4 — substitutes from paper eval set include
+// Codestral-22B-v0.1, GPT-OSS-120B, Qwen 3 Coder 30B). See
+// workflow/papers/nl2vc-dafny-interface.md +
+// workflow/reasoning/C-52-decisions.md.
+pub mod dafny_verify;
+// E-12 Tier-B: framework profile + adapter + registry. Mirrors the
+// canonical `crate::task_runner::ScaffoldApplier` trait shape (Tier-A
+// guard 1 enforces — no parallel FrameworkAdapterV2 names). Loads
+// manifests from workflow/archetypes/ (canonical scope-clarity home,
+// E-11.A). See workflow/reasoning/E-12-tier-b-decisions.md.
+pub mod framework_profile;
+// E-12 Tier-B: 15 production-checklist runner modules — wire-dark
+// posture per memory:wire-dark-posture 5th application. Each runner
+// ships full subprocess wires + ToolchainMissing branch + structured
+// thiserror; live invocation of the 15 external CLIs (gitleaks,
+// trufflehog, semgrep, npm-audit, pip-audit, cargo-audit, lighthouse,
+// biome, ruff, clippy, sqlite3, cargo-machete, otel-check,
+// sentry-check, lsof) is RUNPOD-PENDING.
+pub mod production_checklist;
 // D-1: ReasoningTemplate typed schema + Blake3 content-hash + L3-frozen
 // closed-enum mutation surface. Bounded-capacity replacement for the
 // string-literal reasoning patterns (DGM §H unbounded-mutation gap).
@@ -211,6 +299,11 @@ pub mod reasoning_template;
 // from the policy SLM on port 8100. See workflow/reasoning/D-2-decisions.md.
 pub mod sidecar_ppm_hook;
 pub mod ppm_client;
+// D-2: production HTTP impl of SidecarPpmHook. Speaks /v1/ppm/score on the
+// second sidecar (port 8101). Defers to PpmClient for cache + gating; this
+// module owns only the wire boundary. See workflow/reasoning/D-2-decisions.md
+// "PpmClient does NOT impl RuntimeAdapter" deviation.
+pub mod http_sidecar_ppm_hook;
 // D-1: append-only ArchiveChain backing reasoning-template lifecycle.
 // JSON Lines on disk, Blake3 self_hash + parent_hash chain. Consumed by the
 // FSM gate + Tauri MutationArchivePanel.
@@ -223,6 +316,29 @@ pub mod benchmarks;
 // verifier substrate composed into a single AggregateVerdict consumed by the
 // pre-promotion chain gate. See workflow/reasoning/D-3-decisions.md.
 pub mod verification_result;
+// D-3 (closure): Cross-context verifier — same claim, two independent context
+// windows; blake3 content-hash + shingle-jaccard agreement. Produces
+// CrossContextAgreement + CrossContextRun consumed by run_consensus_pass /
+// task_runner's CLAIM-emit hook. See workflow/reasoning/D-3-decisions.md
+// (DECISION-3) for the citation-substitution rationale.
+pub mod cross_context;
+// E-45: host-side cross-language drift detector. Diffs Rust orchestrator
+// boundary structs against the Python sidecar + Tauri TS mirror per the
+// pair registry loaded from `.elai_cc/cross-lang-pairs.toml`. Producer
+// of the 3 E-45 SSB action types (CrossLangDriftDetected /
+// CrossLangPairScanned / SchemaVersionMismatch). Per D-10 DECISION-8,
+// the TS mirror is hand-authored — this module lints the mirror via
+// presence checks, it does NOT codegen. See
+// workflow/reasoning/E-45-decisions.md.
+pub mod cross_lang_drift;
+// E-49: coding-agent metric suite (scope-lean ship). Capture point
+// (CodingMetric) + SWE-Bench Pro / RefineBench live-run boundaries
+// (RUNPOD-PENDING) + per-session aggregator. Producer of 5 new SSB
+// action types at SCHEMA_VERSION 138. WIRE-DARK avoidance via
+// `crates/cli/src/metrics_cmd.rs`. Design source: SWE-bench Pro +
+// RefineBench (citations DEFERRED to mistakes.md cluster #9). See
+// workflow/reasoning/E-49-decisions.md.
+pub mod coding_metrics;
 // D-4: Tripwire stack — sliding-window KL + Δρ + IQR + perplexity + DDM
 // detectors with auto-revert wiring into archive_chain on threshold cross.
 // Consumed by agent_pool post-consensus. See module doc for paper grounding.
@@ -342,6 +458,19 @@ pub mod mutation_testing;
 // deterministic_auditor as Step 7 (post-Mutation). See
 // workflow/reasoning/C-29-decisions.md.
 pub mod metamorphic_testing;
+// E-13 — TDD verification agents module (Red/Green/Refactor cycle +
+// anti-mock heuristic + cargo-mutants subprocess wrapper +
+// D-3-aggregator adapter). Composes with `verification_result`'s
+// `ConsensusRule::VerifierKindHeterogeneous` so we don't ship a
+// parallel aggregator. See workflow/reasoning/E-13-decisions.md.
+pub mod tdd_verifier;
+// E-18 — Tool-use reliability gate. Reuse-heavy composition over D-11
+// RegistryCheck + E-35 SearchReplaceMatcher / SidecarXGrammarHook +
+// C-47 ToolCalibrationRegistry + C-42 AuthzPolicy + C-35 ToolGate.
+// Three-way verdict (Pass / Reject / Spill) consulted AFTER the
+// calibration step so the case base sees the same call shape regardless
+// of gate outcome. See workflow/reasoning/E-18-decisions.md.
+pub mod tool_reliability;
 pub mod staged_eval;
 pub mod ssb_viewer;
 // B-37C Phase 4M.5 — per-AgentRole runtime backend mapping +
@@ -363,14 +492,47 @@ pub mod escalation_policy;
 // `Ssb::write_payload`. Lives here (not in `knowledge`) so the
 // orchestrator -> knowledge dependency direction stays acyclic.
 pub mod knowledge_ssb_adapter;
+// C-35: orchestrator-side adapter that bridges the plugins-crate
+// `ToolGateSsbEmitter` trait into `Ssb::write_payload`. Lives here (not
+// in `plugins`) so the plugins -> orchestrator dependency direction
+// stays acyclic. Symmetric to `knowledge_ssb_adapter`.
+#[cfg(feature = "mcp")]
+pub mod tool_gate_ssb_adapter;
+// C-47: orchestrator-side adapter that bridges the plugins-crate
+// `CaseBaseSsbEmitter` trait (case-based tool-use calibration telemetry)
+// into `Ssb::write_payload`. Same dependency-inversion pattern as
+// `tool_gate_ssb_adapter`. Paper-grounded against arXiv:2605.15041
+// (CAST). See workflow/papers/case-based-calibration.md.
+#[cfg(feature = "mcp")]
+pub mod tool_calibration_ssb_adapter;
+// E-18: orchestrator-side adapter that bridges the plugins-crate
+// `ReliabilityGateSsbEmitter` trait (tool-use reliability gate
+// telemetry) into `Ssb::write_payload`. Same dependency-inversion
+// pattern as `tool_calibration_ssb_adapter`. Composes on top of D-11
+// RegistryCheck + E-35 SearchReplaceMatcher / SidecarXGrammarHook
+// + C-47 ToolCalibrationRegistry + C-42 AuthzPolicy + C-35 ToolGate
+// rather than re-implementing those surfaces. See
+// workflow/reasoning/E-18-decisions.md.
+#[cfg(feature = "mcp")]
+pub mod tool_reliability_ssb_adapter;
 // B-24 Phase 4I (Group C1): media validator skeleton. See
 // `media_validator/mod.rs` for the per-group rollout map.
 pub mod media_validator;
 pub mod system_probe;
 // Phase B2 — Symbol Graph Impact runtime (library skeleton). Lazy reader
 // for `.claude/tools/elai.map`; consumed by the SurgicalTelescope blast-radius
-// upgrade in a follow-up phase. See `symbol_graph.rs` for the typed surface
-// and `crates/contracts/tests/symbol_graph_contract.rs` for the contract.
+// upgrade in a follow-up phase. See `symbol_graph/legacy_b2.rs` for the
+// original typed surface and `crates/contracts/tests/symbol_graph_contract.rs`
+// for the contract.
+//
+// E-40 (SCHEMA_VERSION 134): the module is now a directory housing both
+// the original B2 surface (re-exported via legacy_b2) and the new
+// JSON-rooted SymbolGraphCache + query helpers + personalized PageRank +
+// SCIP-import wrapper + LSP oracle adapter. Sibling surface to
+// elai_knowledge::symbol_graph (SQLite-rooted SymbolGraphCache) and
+// elai_knowledge::pagerank (DKG-snapshot rooted whole-repo map); all
+// three coexist via distinct crate paths. See
+// workflow/reasoning/E-40-decisions.md.
 pub mod symbol_graph;
 pub mod telescope_caller;
 pub mod feasibility_probe;
@@ -392,11 +554,25 @@ pub mod ipc_accept;
 // AnthropicClient (sidecar or cloud via ELAI_GROUNDING_BACKEND) and
 // InProcessToolDispatcher.
 pub mod production_agent_rpc;
+// D-14 — sycophancy probe substrate (Sharma et al. arXiv:2310.13548).
+// Defensive detector: flags suspected sycophancy via inverted-framing
+// challenge per §3.2; does NOT auto-correct (PM does not reliably fix
+// sycophancy per §4 — 75% PM residual, 25% oracle floor).
+pub mod sycophancy;
 pub mod supervision;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
 pub mod worker_boot;
+// Phase 4J / B-25 — Empire integration (host-side scaffolding only). Gated
+// behind cfg(feature = "empire") so non-empire builds pay zero compile-time
+// or runtime cost (workspace-level `cargo build --no-default-features`
+// excludes the submodule entirely). Every external-IO seam inside is
+// labelled `EMPIRE-PENDING: <what-to-wire>` so a single follow-up patch can
+// locate and flip every wire-point when Empire deploys. See module doc for
+// the layout + decision-doc workflow/reasoning/phase-4J-decisions.md.
+#[cfg(feature = "empire")]
+pub mod empire;
 
 // Re-export modules from external crates under their old names so that
 // internal `crate::config::*`, `crate::sandbox::*`, etc. paths still resolve.
@@ -547,11 +723,13 @@ pub use hooks::{
 };
 pub use hook_dispatcher::{
     emit_hook_events_to_ssb, emit_hook_latency_violation_to_ssb,
-    emit_shortcoder_compression_to_ssb, emit_tiered_analysis_summary_to_ssb,
-    hook_tier_budget_ms, report_hook_latency, sanitized_block_message, HookDispatcher,
-    HookError as HookDispatcherError, HookFinding, HookInvocation, HookPoint, HookTier,
-    HookVerdictKind, InProcessHookDispatcher, ELAI_HOOKS_DISABLED_ENV, HOOK_EVENT_CATEGORY,
-    HOOK_T1_BUDGET_MS, HOOK_T2_BUDGET_MS, HOOK_T3_BUDGET_MS, SANITIZED_BLOCK_MESSAGE,
+    emit_marker_report_to_ssb, emit_shortcoder_compression_to_ssb,
+    emit_tiered_analysis_summary_to_ssb, hook_tier_budget_ms, report_hook_latency,
+    sanitized_block_message, HookDispatcher, HookError as HookDispatcherError, HookFinding,
+    HookInvocation, HookPoint, HookTier, HookVerdictKind, InProcessHookDispatcher,
+    IpcHookAsyncAdapter, PreCompactHandoffSaver, ELAI_HOOKS_DISABLED_ENV,
+    HOOK_EVENT_CATEGORY, HOOK_T1_BUDGET_MS, HOOK_T2_BUDGET_MS, HOOK_T3_BUDGET_MS,
+    PRE_COMPACT_HANDOFF_FRACTION, SANITIZED_BLOCK_MESSAGE,
 };
 pub use shortcoder_hook::{
     ShortCoderHook, ShortCoderHookError, ShortCoderOutcome, ELAI_DISABLE_SHORTCODER_ENV,
@@ -727,6 +905,7 @@ pub use worker_boot::{
 pub use ssb::{
     default_ssb_path, default_ssb_path_for_base, DairaTracePayload, DiffSummary, DkgReadyPayload,
     FailureClassifiedPayload, FeasibilityReportPayload, GitCommitPayload, HookEventPayload,
+    MarkerReportPayload,
     IndexingProgressPayload, CredentialField, InterventionCredentials,
     InterventionKeyword, InterventionOption, InterventionRequestPayload,
     InterventionResponsePayload, InterventionRetry, InterventionType, MistakeEntryPayload,
@@ -815,6 +994,10 @@ pub use ssb::{
     GrcStepEmittedPayload, GroundingSweepResultPayload, CsqEvaluatedPayload,
     AuditorRubberStampRejectedPayload, HydeQueryPayload,
     VectorCacheHitRatePayload, QueryTracePayload,
+    // C-37 (SCHEMA_VERSION 106): per-role decoding policy applied at
+    // agent_pool::spawn. Re-exported so contract tests + dashboard
+    // observers can decode the row without `::ssb::*` paths.
+    PerRoleDecodingAppliedPayload,
     // C-7 (SCHEMA_VERSION 49): reviewer verdict beacon. Re-exported so the
     // dashboard-v2 accept_change / decline_change / retry_audit Tauri
     // commands + the c7_change_decision_contract test can construct the
@@ -872,6 +1055,16 @@ pub use ssb::{
     // commands can construct payloads without `::ssb::*` paths.
     DeepPoolCappedPayload, RrfQualityGateFiredPayload,
     HydeSkippedCodeQueryPayload, RrfComponentWeightsPayload,
+    // E-1 (SCHEMA_VERSION 67-68): A-MEM / MemGPT / sleep-time compute
+    // payloads. Re-exported so the cli LiveCli + dashboard-v2 MemoryNotesPanel
+    // commands + contract tests can construct rows without `::ssb::*` paths.
+    // SleepComputeStarted + SleepComputeQueryCached were rebaselined to
+    // MemoryEvolutionRun(phase=start | cached_query) per
+    // workflow/reasoning/E-1-decisions.md DECISION-1 to honor the
+    // SCHEMA_VERSION=103 lock at executor brief time.
+    MemoryEvolutionRunPayload, MemoryNoteInsertedPayload,
+    MemoryNoteEvolvedPayload, MemoryConflictDetectedPayload,
+    CoreBlockReplacedPayload,
 };
 // D-2: PPM client + sidecar hook public surface.
 pub use ppm_client::{
@@ -881,6 +1074,13 @@ pub use ppm_client::{
 pub use sidecar_ppm_hook::{
     MockSidecarPpmHook, PpmHookError, PpmMode, PpmScoreRequest, PpmScoreResponse,
     SidecarPpmHook,
+};
+// D-2: production HTTP impl of SidecarPpmHook.
+pub use http_sidecar_ppm_hook::{
+    build_http_ppm_client, build_http_ppm_client_with_threshold, HealthReport,
+    HttpSidecarPpmHook, PPM_BACKOFF_CEILING_MS, PPM_BACKOFF_INITIAL_MS,
+    PPM_DEFAULT_BASE_URL, PPM_DEFAULT_MAX_RETRIES, PPM_DEFAULT_TIMEOUT_SECS,
+    PPM_HEALTH_PATH, PPM_SCORE_PATH,
 };
 // C-27 — Testing-Trust T(-1) DeterminismConfig public surface.
 pub use determinism::{
@@ -914,7 +1114,8 @@ pub use orch_context::{OrchContext, OrchPhase, OrchUserRole};
 // docs/thefinalglance/D-plan/D-11_constructive_checker_registry.md.
 pub use checker_registry::{
     Checker, CheckerId, CheckerKind, CheckerRegistry, CheckerResult, CompileRustChecker,
-    JsonSchemaDeferredChecker, NumericRangeChecker, RegexMatchChecker, SympyChecker,
+    JsonSchemaDeferredChecker, LoadError as CheckerLoadError, NumericRangeChecker,
+    RegexMatchChecker, ScriptChecker, SympyChecker, TomlCheckerEntry, TomlCheckerManifest,
     Z3DeferredChecker,
 };
 // D-12 — OperationalizationCheck baby-step predicate public surface.
@@ -940,12 +1141,21 @@ pub use metamorphic_testing::{
     parse_relation, MetamorphicConfig, MetamorphicError, MetamorphicRelation,
     MetamorphicTestRunner, MrResult, RelationLibrary,
 };
+// C-36 — MuCoCo mutation operator catalog. Operators run inside the Python
+// sidecar (python/elai_inference/mucoco/); the Rust surface exposes the
+// 11-variant enum, the dispatcher, and a registry helper. SSB payload type
+// lives at ssb::MucocoMutationAppliedPayload.
+pub use metamorphic_testing::{
+    dispatch_mucoco_mutation, list_mucoco_operators, MucocoError, MucocoMutationResult,
+    MucocoOperator,
+};
 // B-37C — multi-runtime orchestration public surfaces.
 pub use per_role_runtime::{
     auditor_executor_lineage_collision, LineageGroup, PerRoleRuntime,
 };
 pub use runtime_config::{
-    default_fallback_chain, RuntimeConfig as RuntimeBackendConfig, RuntimeConfigPolicyView,
+    default_fallback_chain, PpmRuntimeConfig, RuntimeConfig as RuntimeBackendConfig,
+    RuntimeConfigPolicyView, ELAI_PPM_ENABLE_ENV, ELAI_PPM_ENDPOINT_ENV,
 };
 pub use runtime_orchestrator::{
     CompleteOutcome, RuntimeOrchestrator, RuntimeOrchestratorError, RuntimeOrchestratorEvent,
@@ -953,6 +1163,12 @@ pub use runtime_orchestrator::{
 pub use runtime_event_sink_ssb::{install_runtime_event_sink_ssb, SsbRuntimeEventSink};
 // C-1: orchestrator adapter for the knowledge-side typed SSB sink.
 pub use knowledge_ssb_adapter::OrchestratorKnowledgeSsbSink;
+// C-35: orchestrator adapter for the plugins-side ToolGateSsbEmitter trait.
+#[cfg(feature = "mcp")]
+pub use tool_gate_ssb_adapter::OrchestratorToolGateSsbEmitter;
+// C-47: orchestrator adapter for the plugins-side CaseBaseSsbEmitter trait.
+#[cfg(feature = "mcp")]
+pub use tool_calibration_ssb_adapter::OrchestratorCaseBaseSsbEmitter;
 
 // Batch 4C — public surfaces for the new modules.
 pub use profile_selector::{
@@ -1017,6 +1233,11 @@ pub use msi::{
 };
 pub use osc::{compute_osc_verdict, compute_similarity};
 pub use regression::detect as detect_regressions;
+// E-30: named failure-taxonomy entries for the 5 plan-named symptom categories.
+pub use regression::{
+    e30_taxonomy_entry_for_category, e30_taxonomy_entry_for_ssb_action, E30TaxonomyEntry,
+    E30_FAILURE_TAXONOMY,
+};
 pub use evolution_gate::compute_evolution_gate;
 // B-23 Phase 4H Group F — top-level self-modification orchestration (4H.8).
 pub use self_mod_orchestrator::{
@@ -1078,13 +1299,14 @@ pub use system_probe::{
 };
 pub use feasibility_probe::{
     alternative_within_cap, check_constraints, decide_with_mode, enforce_stub_line_limit,
-    feasibility_probe_disabled_via_env, BabyStepEscalation, BabyStepFeasibilityReport,
-    BabyStepStubResult, ConstraintResult, DefaultFeasibilityProber, FeasibilityDecision,
-    FeasibilityEscalation, FeasibilityExecutionMode, FeasibilityProber, FeasibilityReport,
-    NovelStep, ResourceDelta, ResourceMargins, StubExecutor, StubResult, SyntheticStubExecutor,
-    SystemConstraintsRequired, TaskFeasibility,
-    ELAI_DISABLE_FEASIBILITY_PROBE_ENV, MAX_ALTERNATIVES_PER_STEP, RESOURCE_MARGIN_THRESHOLD_PCT,
-    STUB_LINE_LIMIT, STUB_TIMEOUT_GRACEFUL, STUB_TIMEOUT_HARD,
+    feasibility_probe_disabled_via_env, fsm_transition_idempotent, read_stub_results,
+    BabyStepEscalation, BabyStepFeasibilityReport, BabyStepStubResult, ConstraintResult,
+    DefaultFeasibilityProber, FeasibilityDecision, FeasibilityEscalation,
+    FeasibilityExecutionMode, FeasibilityFsmBridge, FeasibilityProber, FeasibilityReport,
+    NovelStep, ResourceDelta, ResourceMargins, StubExecutor, StubResult, StubResultsReadError,
+    SyntheticStubExecutor, SystemConstraintsRequired, TaskFeasibility, Tier3StubExecutor,
+    ELAI_DISABLE_FEASIBILITY_PROBE_ENV, FEASIBILITY_PROBE_TIMEOUT, MAX_ALTERNATIVES_PER_STEP,
+    RESOURCE_MARGIN_THRESHOLD_PCT, STUB_LINE_LIMIT, STUB_TIMEOUT_GRACEFUL, STUB_TIMEOUT_HARD,
 };
 pub use ssb_viewer::{
     ChatEntry, CloudSpendSummary, FeasibilityReportRow, FeasibilitySummary, FileChange,

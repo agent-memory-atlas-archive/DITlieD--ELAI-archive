@@ -1,0 +1,60 @@
+# E-14 browser-e2e journey fixture — reference shape.
+#
+# A journey is parsed by `crates/orchestrator/src/browser_e2e/journey.rs::load_journey`
+# and consumed by `PlaywrightRunner` + the assertion runner. Each journey
+# names a critical user flow (signup, first-value loop, checkout) so the
+# dashboard can attribute pass/fail counts to a stable identifier.
+#
+# Field reference:
+#   * `name`       — snake-case identifier, stable across runs.
+#   * `url`        — entry URL for the journey.
+#   * `[[steps]]`  — sequence of actions the runner walks. Step kinds:
+#                    `navigate`, `click`, `fill`, `wait_for`.
+#                    `target` is a URL (navigate) or selector (others);
+#                    `value` only used by `fill`.
+#   * `[[assertions]]` — pass/fail checks evaluated against the snapshot
+#                    after the steps finish. Assertion kinds:
+#                    `contains_text { needle }`,
+#                    `has_selector  { selector }`,
+#                    `status_ok`.
+#                    `label` is a snake-case identifier used by the SSB
+#                    rows + dashboard.
+
+name = "example_signup_smoke"
+url = "http://localhost:5173/signup"
+
+[[steps]]
+kind = "navigate"
+target = "http://localhost:5173/signup"
+
+[[steps]]
+kind = "fill"
+target = "input[name='email']"
+value = "elai-e2e@example.test"
+
+[[steps]]
+kind = "fill"
+target = "input[name='password']"
+value = "elai-e2e-pw-not-a-real-credential"
+
+[[steps]]
+kind = "click"
+target = "button[type='submit']"
+
+[[steps]]
+kind = "wait_for"
+target = "[data-testid='dashboard-welcome']"
+
+[[assertions]]
+kind = "status_ok"
+label = "page_loaded"
+
+[[assertions]]
+kind = "contains_text"
+label = "shows_signup_form"
+needle = "Sign up"
+
+[[assertions]]
+kind = "has_selector"
+label = "has_email_input"
+selector = "input[name='email']"

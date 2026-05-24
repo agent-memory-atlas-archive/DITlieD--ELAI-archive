@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::warn;
 
 use crate::reasoning_template::{
@@ -24,6 +25,99 @@ use crate::reasoning_template::{
     TemplateId, TemplateRegistry, ArchiveStatus,
 };
 use crate::ssb::{ArchiveEntryAddedPayload, Ssb, SsbPayload};
+
+// ---------------------------------------------------------------------------
+// D-8 — ArchiveVerifyError (typed verify failure modes)
+// ---------------------------------------------------------------------------
+
+/// D-8 (SCHEMA_VERSION 115) — per-entry verify failure mode surfaced by the
+/// `elai archive verify` CLI driver + the `ArchiveVerifyResult` SSB row.
+///
+/// Each variant carries the entry index (0-based, line-aligned with the
+/// underlying JSONL file) so dashboards / CI logs can highlight the broken
+/// row directly. Hash strings are 64-char lowercase hex (Blake3); the
+/// `MalformedJson` variant also carries the raw line text so operators can
+/// see exactly what failed to parse without re-reading the file.
+///
+/// Lives in `orchestrator` (not `cli`) because the SSB payload type
+/// references it — keeping it here lets the SSB schema cascade reference
+/// the same canonical type the CLI walks.
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArchiveVerifyError {
+    /// Recomputed `self_hash` (from `(template_body, parent_hash)`) did not
+    /// match the stored `self_hash` field. Lobotomy-attack signal — the
+    /// template body was rewritten without recomputing the chain.
+    #[error(
+        "hash_mismatch at entry {entry_index} (template_id={template_id}): expected={expected} computed={computed}"
+    )]
+    HashMismatch {
+        entry_index: u32,
+        expected: String,
+        computed: String,
+        template_id: String,
+    },
+    /// `parent_hash` references a hash not present earlier in the chain.
+    /// Either a forged parent reference or a chain-truncation attack.
+    #[error(
+        "broken_parent at entry {entry_index} (template_id={template_id}): parent_hash={parent_hash} not seen earlier"
+    )]
+    BrokenParent {
+        entry_index: u32,
+        parent_hash: String,
+        template_id: String,
+    },
+    /// Two entries in the chain carry the same `self_hash`. Either an
+    /// accidental double-append (chain integrity bug) or a deliberate
+    /// hash-collision attempt (cryptographically improbable for blake3 but
+    /// surfaced explicitly so the dashboard does not silently dedupe).
+    #[error(
+        "duplicate_hash at entry {second_at_index} (also seen at entry {first_at_index}): hash={hash}"
+    )]
+    DuplicateHash {
+        hash: String,
+        first_at_index: u32,
+        second_at_index: u32,
+    },
+    /// JSONL deserialise failure on a single line. `entry_index` is the
+    /// 0-based line index (counted across blank/whitespace skips so it
+    /// corresponds to the run of *attempted* entry parses, not the raw
+    /// file line number); `raw` is the full line text (truncated to
+    /// `MALFORMED_JSON_RAW_MAX` bytes if longer); `parse_error` is the
+    /// `serde_json` error message.
+    #[error(
+        "malformed_json at entry {entry_index}: {parse_error} (raw: {raw})"
+    )]
+    MalformedJson {
+        entry_index: u32,
+        raw: String,
+        parse_error: String,
+    },
+    /// I/O failure reading the JSONL file (open / read line). Missing file
+    /// becomes an empty chain via [`ArchiveChain::load`] / [`ArchiveChain::load_lenient`],
+    /// so this is *only* "exists but cannot read".
+    #[error("io error reading {path}: {source_msg}")]
+    Io { path: String, source_msg: String },
+}
+
+/// Truncation ceiling for `MalformedJson::raw`. Keeps the SSB payload bounded
+/// even when a tampered file contains multi-megabyte synthetic lines.
+const MALFORMED_JSON_RAW_MAX: usize = 4096;
+
+fn truncate_raw_line(raw: String) -> String {
+    if raw.len() <= MALFORMED_JSON_RAW_MAX {
+        return raw;
+    }
+    // Truncate on a char boundary to keep the JSON valid UTF-8.
+    let mut idx = MALFORMED_JSON_RAW_MAX;
+    while idx > 0 && !raw.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    let mut out = String::with_capacity(idx + 16);
+    out.push_str(&raw[..idx]);
+    out.push_str("...<truncated>");
+    out
+}
 
 // ---------------------------------------------------------------------------
 // StagedEvalResult
@@ -149,6 +243,68 @@ impl ArchiveChain {
         Ok(chain)
     }
 
+    /// D-8 (SCHEMA_VERSION 115) — lenient loader for `elai archive verify`.
+    ///
+    /// Returns a populated [`ArchiveChain`] paired with a list of
+    /// [`ArchiveVerifyError::MalformedJson`] rows, one per JSONL line that
+    /// failed to parse. Unlike [`ArchiveChain::load`] (which short-circuits
+    /// on the first parse error so production callers never operate on a
+    /// partial chain), this variant keeps walking so the verify driver can
+    /// report every parse failure in one pass.
+    ///
+    /// Semantics:
+    /// * Missing file -> Ok((empty chain, empty errors)).
+    /// * I/O failure during open or line read -> Err([`ArchiveVerifyError::Io`]).
+    /// * Empty / whitespace-only lines are skipped without incrementing the
+    ///   entry index (matches [`ArchiveChain::load`]).
+    /// * Lines that fail to deserialise are recorded as MalformedJson and
+    ///   skipped; subsequent lines continue to be parsed.
+    /// * Lines that deserialise successfully are appended to `chain.entries`.
+    ///
+    /// `entry_index` on MalformedJson rows tracks the position among
+    /// *attempted parses* (i.e. non-blank lines), so it lines up 1:1 with
+    /// the index a successful load would have used for the entry. This is
+    /// the index the dashboard / CI log highlights.
+    pub fn load_lenient(
+        storage_path: PathBuf,
+    ) -> Result<(Self, Vec<ArchiveVerifyError>), ArchiveVerifyError> {
+        let mut chain = Self::new(storage_path.clone());
+        let mut errors: Vec<ArchiveVerifyError> = Vec::new();
+        if !storage_path.exists() {
+            return Ok((chain, errors));
+        }
+        let path_str = storage_path.to_string_lossy().into_owned();
+        let file = std::fs::File::open(&storage_path).map_err(|e| ArchiveVerifyError::Io {
+            path: path_str.clone(),
+            source_msg: e.to_string(),
+        })?;
+        let reader = BufReader::new(file);
+        let mut entry_cursor: u32 = 0;
+        for line in reader.lines() {
+            let line = line.map_err(|e| ArchiveVerifyError::Io {
+                path: path_str.clone(),
+                source_msg: e.to_string(),
+            })?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<ArchiveEntry>(&line) {
+                Ok(entry) => {
+                    chain.entries.push(entry);
+                }
+                Err(parse_err) => {
+                    errors.push(ArchiveVerifyError::MalformedJson {
+                        entry_index: entry_cursor,
+                        raw: truncate_raw_line(line),
+                        parse_error: parse_err.to_string(),
+                    });
+                }
+            }
+            entry_cursor = entry_cursor.saturating_add(1);
+        }
+        Ok((chain, errors))
+    }
+
     /// On-disk path this chain reads/writes.
     #[must_use]
     pub fn storage_path(&self) -> &Path {
@@ -272,7 +428,7 @@ impl ArchiveChain {
     ///
     /// IMPORTANT: this mutates the in-memory entry only. Persisting the
     /// status flip to disk is the responsibility of the wiring layer
-    /// (`agent_pool::emit_promotion_round`), which records the promotion by
+    /// (`crate::bai::emit_bai_round`), which records the promotion by
     /// appending a new chain entry rather than rewriting the JSONL line —
     /// preserving the D-1 append-only invariant.
     pub fn set_entry_promoted(
@@ -311,6 +467,143 @@ impl ArchiveChain {
         }
         reg
     }
+}
+
+// ---------------------------------------------------------------------------
+// D-8 — full-walk verify_archive (collect-all + DuplicateHash detection)
+// ---------------------------------------------------------------------------
+
+/// D-8 — collect-all archive verify report. Mirrors the CLI driver's
+/// in-memory return shape so the contract test, the CLI, and any
+/// future programmatic consumer share one canonical walker.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveVerifyReport {
+    pub archive_path: String,
+    pub total_entries: u32,
+    pub verified: u32,
+    pub errors: Vec<ArchiveVerifyError>,
+    pub passed: bool,
+    pub fail_fast: bool,
+}
+
+/// D-8 — full-walk archive verify. Uses [`ArchiveChain::load_lenient`] to
+/// surface MalformedJson without short-circuiting, walks every entry
+/// (recomputing self_hash + checking parent reachability + detecting
+/// duplicate self_hash across entries), and returns a populated
+/// [`ArchiveVerifyReport`].
+///
+/// `fail_fast=true` short-circuits on the first error (matches CI mode);
+/// `fail_fast=false` collects every error encountered (dev mode).
+///
+/// `Err` is reserved for infrastructural failures (path-unreadable I/O).
+/// Tamper / mismatch / duplicate / malformed-JSON findings are encoded
+/// inside `report.errors`.
+pub fn verify_archive(
+    archive_path: &std::path::Path,
+    fail_fast: bool,
+) -> Result<ArchiveVerifyReport, ArchiveVerifyError> {
+    use std::collections::HashMap;
+
+    let path_str = archive_path.to_string_lossy().into_owned();
+
+    let (chain, parse_errors) = ArchiveChain::load_lenient(archive_path.to_path_buf())?;
+    let total_entries = u32::try_from(chain.len()).unwrap_or(u32::MAX);
+
+    let mut errors: Vec<ArchiveVerifyError> = Vec::new();
+    for err in parse_errors {
+        errors.push(err);
+        if fail_fast {
+            return Ok(ArchiveVerifyReport {
+                archive_path: path_str,
+                total_entries,
+                verified: 0,
+                errors,
+                passed: false,
+                fail_fast,
+            });
+        }
+    }
+
+    if chain.is_empty() && errors.is_empty() {
+        return Ok(ArchiveVerifyReport {
+            archive_path: path_str,
+            total_entries: 0,
+            verified: 0,
+            errors,
+            passed: true,
+            fail_fast,
+        });
+    }
+
+    let mut verified: u32 = 0;
+    let mut seen_hash_to_idx: HashMap<String, u32> = HashMap::new();
+
+    for (idx, entry) in chain.entries().iter().enumerate() {
+        let entry_index = u32::try_from(idx).unwrap_or(u32::MAX);
+        let template_id = entry.template.id.as_hex();
+        let self_hash_hex = entry.self_hash.as_hex();
+
+        if let Some(&first_idx) = seen_hash_to_idx.get(&self_hash_hex) {
+            errors.push(ArchiveVerifyError::DuplicateHash {
+                hash: self_hash_hex.clone(),
+                first_at_index: first_idx,
+                second_at_index: entry_index,
+            });
+            if fail_fast {
+                break;
+            }
+        }
+
+        if let Some(parent_hash) = entry.parent_hash {
+            let parent_hex = parent_hash.as_hex();
+            if !seen_hash_to_idx.contains_key(&parent_hex) {
+                errors.push(ArchiveVerifyError::BrokenParent {
+                    entry_index,
+                    parent_hash: parent_hex,
+                    template_id: template_id.clone(),
+                });
+                if fail_fast {
+                    break;
+                }
+                seen_hash_to_idx
+                    .entry(self_hash_hex)
+                    .or_insert(entry_index);
+                continue;
+            }
+        }
+
+        let recomputed = compute_content_hash(
+            entry.template.template_body.as_str(),
+            entry.parent_hash.as_ref(),
+        );
+        if recomputed != entry.self_hash {
+            errors.push(ArchiveVerifyError::HashMismatch {
+                entry_index,
+                expected: self_hash_hex.clone(),
+                computed: recomputed.as_hex(),
+                template_id,
+            });
+            if fail_fast {
+                break;
+            }
+        } else {
+            verified = verified.saturating_add(1);
+        }
+
+        seen_hash_to_idx
+            .entry(self_hash_hex)
+            .or_insert(entry_index);
+    }
+
+    let passed = errors.is_empty();
+    Ok(ArchiveVerifyReport {
+        archive_path: path_str,
+        total_entries,
+        verified,
+        errors,
+        passed,
+        fail_fast,
+    })
 }
 
 // ---------------------------------------------------------------------------

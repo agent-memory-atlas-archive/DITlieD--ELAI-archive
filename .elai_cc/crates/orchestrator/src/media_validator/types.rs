@@ -277,6 +277,31 @@ impl BoundingBox {
     }
 }
 
+/// Reason a verdict was skipped without running the full Tier 1 / Tier 2
+/// pipeline. E-14 introduces `ExternalProtection` for pages gated by a
+/// third-party challenge (Cloudflare Turnstile, hCaptcha, Akamai BMP) where
+/// bypass is a ToS / legal violation. New reasons go at the end so existing
+/// match sites don't break exhaustiveness without a deliberate update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum SkipReason {
+    /// Third-party bot-protection (Cloudflare Turnstile etc.) detected on
+    /// the rendered page. NEVER attempt bypass — surface the verdict to the
+    /// operator. Grounding: Browserless 2026 / Nerdbot Apr 2026 (Turnstile
+    /// JA4 + behavioral ML detection — bypass is a ToS / legal violation).
+    ExternalProtection,
+}
+
+impl SkipReason {
+    /// Stable wire string for SSB payloads + dashboard mapping. Snake-case
+    /// to match the rest of the action-type lock.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExternalProtection => "external_protection",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum Verdict {
@@ -284,6 +309,11 @@ pub enum Verdict {
     Fail,
     HumanReview,
     Degraded,
+    /// E-14 — page skipped because a third-party protection layer
+    /// (Cloudflare Turnstile / hCaptcha / Akamai BMP) was detected and
+    /// bypass is forbidden by ToS. Carries the detection reason so the
+    /// dashboard can render a non-fail badge.
+    Skipped(SkipReason),
 }
 
 /// Top-level result returned to the task runner. Holds both tiers so the
@@ -536,7 +566,7 @@ pub struct ClapConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Errors (thiserror — NOT Box<dyn Error>)
+// Errors (typed thiserror enum per CLAUDE.md anti-stale rule)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Error)]

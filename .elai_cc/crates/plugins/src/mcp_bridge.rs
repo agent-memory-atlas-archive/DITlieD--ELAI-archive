@@ -17,11 +17,43 @@
 // variant (typical for local MCP servers on `http://localhost:8200`).
 
 use regex::Regex;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 
 use elai_core::ClockProvider as _;
+
+// C-35: dynamic tool gating + lazy schema cache. ToolGate + LazySchemaCache
+// land here as Option<...> fields so existing constructors remain
+// backwards-compatible; the gate is inactive until with_tool_gate() is
+// called. See workflow/reasoning/C-35-decisions.md (N1, N3).
+use crate::mcp::gate::{GatedCatalog, ToolGate};
+use crate::mcp::lazy::{LazyCacheError, LazySchemaCache};
+use crate::mcp::{
+    emit_kinds, NoopToolGateEmitter, ToolGateSsbEmitter,
+};
+// C-42 (session 2): role-based authz policy that runs BEFORE the C-35
+// ToolGate inside `dispatch_tool_call_with_gate`. See plugins/src/authz/
+// for the full module + arXiv:2604.25555 paper grounding.
+use crate::authz::{compose_with_tool_gate, AuthzPolicy, ComposedVerdict, DocContext};
+// C-47: case-based calibration of tool-use telemetry. Paper-grounded
+// against arXiv:2605.15041 (CAST). The registry is consulted BEFORE the
+// gate-allowed dispatch in both `dispatch_tool_call_with_gate` and
+// `dispatch_tool_call_with_authz` via the shared
+// [`Self::consult_calibration`] helper, and observations are recorded
+// AFTER the http_call_tool round-trip via [`Self::record_call`]. Both
+// fields default to None so existing callers stay compatible.
+use crate::tool_calibration::{
+    case_base::{call_shape_hash, classify_response},
+    CaseBaseSsbEmitter, NoopCaseBaseEmitter, ToolCalibrationRegistry,
+};
+
+/// C-35: env var read at DefaultMcpBridge construction. When set to "1" or
+/// "true" the gate stays None and a single tracing::warn fires. Mirrors the
+/// CLI's --tool-gate-off flag (cli/src/args.rs:532 writes the same env var).
+pub const ELAI_TOOL_GATE_OFF_ENV: &str = "ELAI_TOOL_GATE_OFF";
 
 /// Default MCP server URL the dashboard connects to when
 /// `ELAI_MCP_SERVER_URL` is unset. Points at an HTTP JSON-RPC endpoint —
@@ -56,6 +88,111 @@ pub const MCP_TOOL_DENY_LIST: &[&str] = &[
     "delete_all",
     "format_disk",
 ];
+
+/// C-42 (session 2): SSB emitter trait for the 3 Gateway* action types.
+/// Same dependency-inversion pattern the C-35 [`ToolGateSsbEmitter`] uses
+/// (defined in plugins to avoid a circular dep on the orchestrator crate).
+/// The orchestrator + dashboard-v2 bootstrap wire a real implementor when
+/// an Ssb writer is available; default construction uses the noop variant
+/// so plugins tests and the fuzz harness run without an orchestrator.
+pub trait GatewayAuthzSsbEmitter: Send + Sync {
+    /// Emit one of the 3 gateway_* rows. `action_kind` is one of
+    /// `"gateway_policy_allowed"` / `"gateway_policy_denied"` /
+    /// `"gateway_hitl_pending"`. All three carry blake3-prefix hashes for
+    /// role + tool labels so dashboard subscribers can group without
+    /// surfacing raw role/tool strings. `deny_reason_label` is the layer
+    /// attribution ("authz" / "tool_gate" / "allow") and is "" on
+    /// allowed/pending rows.
+    fn emit(
+        &self,
+        action_kind: &str,
+        role_label: &str,
+        tool_name: &str,
+        deny_reason_label: &str,
+    ) -> Result<(), String>;
+}
+
+/// Default no-op emitter — returns Ok(()) without touching anything.
+pub struct NoopGatewayAuthzSsbEmitter;
+
+impl GatewayAuthzSsbEmitter for NoopGatewayAuthzSsbEmitter {
+    fn emit(
+        &self,
+        _action_kind: &str,
+        _role_label: &str,
+        _tool_name: &str,
+        _deny_reason_label: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// C-42 emit-kind sentinels — string SSB action_type labels.
+pub mod gateway_emit_kinds {
+    pub const GATEWAY_POLICY_ALLOWED: &str = "gateway_policy_allowed";
+    pub const GATEWAY_POLICY_DENIED: &str = "gateway_policy_denied";
+    pub const GATEWAY_HITL_PENDING: &str = "gateway_hitl_pending";
+}
+
+/// E-18 (session 2/4 of s-25120): SSB emitter for the 4 tool-use
+/// reliability gate action types. Same dependency-inversion pattern the
+/// C-35 [`ToolGateSsbEmitter`] / C-42 [`GatewayAuthzSsbEmitter`] / C-47
+/// [`CaseBaseSsbEmitter`] traits use — the trait lives in `plugins` so
+/// the orchestrator -> plugins dependency stays acyclic.
+///
+/// The orchestrator-side adapter wires a real implementor that calls
+/// `Ssb::write_payload` with one of the four `tool_reliability_*` /
+/// `tool_call_*` payload types. Default construction (`NoopReliabilityEmitter`)
+/// is a no-op so existing tests don't need to wire a sink.
+pub trait ReliabilityGateSsbEmitter: Send + Sync {
+    /// Emit one of the 4 reliability rows. `action_kind` is one of
+    /// `"tool_reliability_gate_passed"` / `"tool_reliability_gate_rejected"`
+    /// / `"tool_call_spilled"` / `"tool_call_retry_escalated"`. Extra
+    /// fields are passed via the `extra` JSON value so the adapter can
+    /// pick out `reject_reason` / `spill_path` / `attempt` /
+    /// `escalate_to_role` without forcing all four into the trait
+    /// signature.
+    fn emit(
+        &self,
+        action_kind: &str,
+        tool_name: &str,
+        call_shape_hash: u64,
+        extra: serde_json::Value,
+    ) -> Result<(), String>;
+}
+
+/// Default no-op emitter — returns Ok(()) without writing to SSB.
+pub struct NoopReliabilityEmitter;
+
+impl ReliabilityGateSsbEmitter for NoopReliabilityEmitter {
+    fn emit(
+        &self,
+        _action_kind: &str,
+        _tool_name: &str,
+        _call_shape_hash: u64,
+        _extra: serde_json::Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// E-18 emit-kind sentinels — string SSB action_type labels matching
+/// the SsbActionType wire tags in `elai_orchestrator::ssb`.
+pub mod reliability_emit_kinds {
+    pub const TOOL_RELIABILITY_GATE_PASSED: &str = "tool_reliability_gate_passed";
+    pub const TOOL_RELIABILITY_GATE_REJECTED: &str = "tool_reliability_gate_rejected";
+    pub const TOOL_CALL_SPILLED: &str = "tool_call_spilled";
+    pub const TOOL_CALL_RETRY_ESCALATED: &str = "tool_call_retry_escalated";
+}
+
+/// E-18 reject-reason wire labels. Hashed downstream (blake3-prefix
+/// u64) before landing on `ToolReliabilityGateRejectedPayload`.
+pub mod reliability_reject_reasons {
+    pub const MALFORMED_ARGS: &str = "malformed_args";
+    pub const PACKAGE_REF_REJECTED: &str = "package_ref_rejected";
+    pub const RETRY_BUDGET_EXHAUSTED: &str = "retry_budget_exhausted";
+    pub const PATH_ALLOWLIST_VIOLATION: &str = "path_allowlist_violation";
+}
 
 /// MCP transport type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +286,13 @@ pub enum McpError {
     SanitizationFailed(String),
 }
 
-/// Default MCP bridge implementation with actual stdio transport
+/// Default MCP bridge implementation with actual stdio transport.
+///
+/// C-35: hosts the optional ToolGate + LazySchemaCache. Both default to None so
+/// existing construction paths (Default::default + DefaultMcpBridge::new) keep
+/// working without a wiring change. Call `with_tool_gate` to enable dynamic
+/// gating; the live prompt assembly path then routes through
+/// [`Self::assemble_prompt`].
 pub struct DefaultMcpBridge {
     /// Timeout for tool calls (default 30s)
     pub tool_timeout: Duration,
@@ -157,30 +300,231 @@ pub struct DefaultMcpBridge {
     pub heartbeat_timeout: Duration,
     /// Tool name whitelist for validation
     tool_whitelist: Vec<String>,
+    /// C-35: optional dynamic tool gate. None = pass-through (no gating).
+    tool_gate: Option<Arc<ToolGate>>,
+    /// C-35: optional lazy schema cache, paired with the gate. None = no cache.
+    schema_cache: Option<Arc<LazySchemaCache>>,
+    /// C-35: SSB emitter for the 4 tool_* action types. NoopToolGateEmitter
+    /// by default; the orchestrator + dashboard-v2 bootstrap wire a real
+    /// emitter when an Ssb writer is available.
+    ssb_emitter: Arc<dyn ToolGateSsbEmitter>,
+    /// C-35: read at construction from ELAI_TOOL_GATE_OFF. When true,
+    /// with_tool_gate is a no-op (the gate stays disabled) and a single
+    /// tracing::warn fired at construction.
+    gate_disabled_by_env: bool,
+    /// C-42 (session 2): optional authz policy. None = no role-based
+    /// check (back-compat). When `Some(_)`, `dispatch_tool_call_with_gate`
+    /// composes the policy with the C-35 ToolGate (policy first; gate
+    /// second; both must allow). Paper: arXiv:2604.25555 L2.
+    authz_policy: Option<Arc<AuthzPolicy>>,
+    /// C-42 (session 2): emitter for the 3 Gateway* SSB action types.
+    /// Noop by default so existing construction paths stay unchanged;
+    /// the orchestrator/dashboard bootstrap installs a real emitter via
+    /// `with_authz_ssb_emitter`.
+    authz_ssb_emitter: Arc<dyn GatewayAuthzSsbEmitter>,
+    /// C-47: case-based calibration registry. None = no calibration
+    /// (existing callers stay compatible). The registry is consulted
+    /// pre-dispatch via [`Self::consult_calibration`] and updated
+    /// post-dispatch via [`Self::record_call`] in BOTH dispatchers
+    /// (gate-only AND authz-composed).
+    calibration_registry: Option<Arc<ToolCalibrationRegistry>>,
+    /// C-47: SSB emitter for the 3 tool_calibration_* action types.
+    /// Noop default mirrors the C-35 / C-42 emitter wiring pattern;
+    /// the orchestrator bootstrap installs a real implementor via
+    /// `with_calibration_ssb_emitter`.
+    calibration_ssb_emitter: Arc<dyn CaseBaseSsbEmitter>,
+    /// E-18: SSB emitter for the 4 tool_reliability_* / tool_call_*
+    /// reliability gate action types. Default is
+    /// `NoopReliabilityEmitter` so existing constructors stay
+    /// back-compatible. Wire a real implementor via
+    /// `with_reliability_ssb_emitter`. The bridge consults the gate at
+    /// the same place it consults the C-47 case base (AFTER ToolGate /
+    /// AuthzPolicy allow, BEFORE the actual `http_call_tool` round-trip).
+    reliability_ssb_emitter: Arc<dyn ReliabilityGateSsbEmitter>,
 }
 
 impl Default for DefaultMcpBridge {
     fn default() -> Self {
+        let gate_disabled_by_env = read_tool_gate_off_env();
+        if gate_disabled_by_env {
+            tracing::warn!(
+                env = ELAI_TOOL_GATE_OFF_ENV,
+                "C-35: tool gating disabled via env var; prompt costs will be 5-10x higher"
+            );
+        }
         Self {
             tool_timeout: Duration::from_secs(30),
             heartbeat_timeout: Duration::from_secs(30),
             tool_whitelist: vec![],
+            tool_gate: None,
+            schema_cache: None,
+            ssb_emitter: Arc::new(NoopToolGateEmitter),
+            gate_disabled_by_env,
+            authz_policy: None,
+            authz_ssb_emitter: Arc::new(NoopGatewayAuthzSsbEmitter),
+            calibration_registry: None,
+            calibration_ssb_emitter: Arc::new(NoopCaseBaseEmitter),
+            reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
         }
     }
 }
 
+/// C-35: read ELAI_TOOL_GATE_OFF and parse truthiness. "1" / "true" / "yes"
+/// all count; missing or any other value = false.
+fn read_tool_gate_off_env() -> bool {
+    matches!(
+        std::env::var(ELAI_TOOL_GATE_OFF_ENV)
+            .ok()
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase()),
+        Some(ref v) if v == "1" || v == "true" || v == "yes"
+    )
+}
+
 impl DefaultMcpBridge {
     pub fn new(tool_timeout: Duration, heartbeat_timeout: Duration) -> Self {
+        let gate_disabled_by_env = read_tool_gate_off_env();
+        if gate_disabled_by_env {
+            tracing::warn!(
+                env = ELAI_TOOL_GATE_OFF_ENV,
+                "C-35: tool gating disabled via env var; prompt costs will be 5-10x higher"
+            );
+        }
         Self {
             tool_timeout,
             heartbeat_timeout,
             tool_whitelist: vec![],
+            tool_gate: None,
+            schema_cache: None,
+            ssb_emitter: Arc::new(NoopToolGateEmitter),
+            gate_disabled_by_env,
+            authz_policy: None,
+            authz_ssb_emitter: Arc::new(NoopGatewayAuthzSsbEmitter),
+            calibration_registry: None,
+            calibration_ssb_emitter: Arc::new(NoopCaseBaseEmitter),
+            reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
         }
+    }
+
+    /// C-42 (session 2): install a role-based authorization policy. The
+    /// policy runs BEFORE the C-35 ToolGate inside
+    /// [`Self::dispatch_tool_call_with_gate`]. Returns `self` for builder
+    /// chaining (mirrors `with_tool_gate`).
+    pub fn with_authz_policy(mut self, policy: Arc<AuthzPolicy>) -> Self {
+        self.authz_policy = Some(policy);
+        self
+    }
+
+    /// C-42 (session 2): install the SSB emitter for the 3 gateway_*
+    /// action types. Default is `NoopGatewayAuthzSsbEmitter`.
+    pub fn with_authz_ssb_emitter(
+        mut self,
+        emitter: Arc<dyn GatewayAuthzSsbEmitter>,
+    ) -> Self {
+        self.authz_ssb_emitter = emitter;
+        self
+    }
+
+    /// C-42 accessor — returns the installed authz policy (None when
+    /// unconfigured). Used by the dashboard `gateway_authz_status` Tauri
+    /// command.
+    pub fn authz_policy(&self) -> Option<Arc<AuthzPolicy>> {
+        self.authz_policy.clone()
     }
 
     pub fn with_tool_whitelist(mut self, whitelist: Vec<String>) -> Self {
         self.tool_whitelist = whitelist;
         self
+    }
+
+    /// C-35 N1: install a ToolGate + LazySchemaCache. When ELAI_TOOL_GATE_OFF
+    /// was true at construction, this method is a no-op (the env override
+    /// wins). The returned bridge then routes all assemble_prompt calls
+    /// through the gate.
+    pub fn with_tool_gate(
+        mut self,
+        gate: Arc<ToolGate>,
+        cache: Arc<LazySchemaCache>,
+    ) -> Self {
+        if self.gate_disabled_by_env {
+            tracing::warn!(
+                "C-35: with_tool_gate ignored; gate disabled by ELAI_TOOL_GATE_OFF env"
+            );
+            return self;
+        }
+        self.tool_gate = Some(gate);
+        self.schema_cache = Some(cache);
+        self
+    }
+
+    /// C-35: install an SSB emitter for the 4 tool_* action types. Default is
+    /// NoopToolGateEmitter; call this after constructing a real emitter.
+    pub fn with_ssb_emitter(mut self, emitter: Arc<dyn ToolGateSsbEmitter>) -> Self {
+        self.ssb_emitter = emitter;
+        self
+    }
+
+    /// C-47: install the case-based calibration registry. Default is
+    /// `None` (no calibration). When installed, both
+    /// [`Self::dispatch_tool_call_with_gate`] and
+    /// [`Self::dispatch_tool_call_with_authz`] consult the registry
+    /// pre-dispatch and record observations post-dispatch via the
+    /// shared [`Self::record_call`] helper.
+    pub fn with_calibration_registry(
+        mut self,
+        registry: Arc<ToolCalibrationRegistry>,
+    ) -> Self {
+        self.calibration_registry = Some(registry);
+        self
+    }
+
+    /// C-47: install the SSB emitter for the 3 tool_calibration_*
+    /// action types. Default is [`NoopCaseBaseEmitter`]; the
+    /// orchestrator bootstrap installs the real implementor.
+    pub fn with_calibration_ssb_emitter(
+        mut self,
+        emitter: Arc<dyn CaseBaseSsbEmitter>,
+    ) -> Self {
+        self.calibration_ssb_emitter = emitter;
+        self
+    }
+
+    /// E-18: install the SSB emitter for the 4 reliability gate
+    /// action types. Default is [`NoopReliabilityEmitter`]; the
+    /// orchestrator bootstrap installs the real implementor that
+    /// writes to the SSB event bus via the orchestrator-side adapter.
+    /// The bridge consults the reliability gate AFTER calibration
+    /// consult and BEFORE the actual `http_call_tool` round-trip.
+    pub fn with_reliability_ssb_emitter(
+        mut self,
+        emitter: Arc<dyn ReliabilityGateSsbEmitter>,
+    ) -> Self {
+        self.reliability_ssb_emitter = emitter;
+        self
+    }
+
+    /// C-47: accessor for the installed calibration registry (None
+    /// when not configured). Used by dashboard
+    /// `tool_calibration_status` Tauri command + by tests that need to
+    /// poke the case base directly.
+    pub fn calibration_registry(&self) -> Option<Arc<ToolCalibrationRegistry>> {
+        self.calibration_registry.clone()
+    }
+
+    /// C-35: accessor for the installed gate (None when gating disabled).
+    /// Used by dashboard get_tool_gate_snapshot to render the current gate.
+    pub fn tool_gate(&self) -> Option<Arc<ToolGate>> {
+        self.tool_gate.clone()
+    }
+
+    /// C-35: accessor for the installed schema cache (None when disabled).
+    pub fn schema_cache(&self) -> Option<Arc<LazySchemaCache>> {
+        self.schema_cache.clone()
+    }
+
+    /// C-35 N7 helper: true when ELAI_TOOL_GATE_OFF was honoured at construction.
+    pub fn gate_disabled_by_env(&self) -> bool {
+        self.gate_disabled_by_env
     }
 
     /// Validate tool name against whitelist
@@ -236,6 +580,494 @@ impl DefaultMcpBridge {
         // Return sanitized result (for now, just clone - can add more sophisticated sanitization)
         Ok(result.clone())
     }
+
+    // -----------------------------------------------------------------------
+    // C-35: dynamic tool gating + lazy schema cache surface
+    // -----------------------------------------------------------------------
+
+    /// C-35 M5: assemble the gated tool catalog for `fsm_state` and emit one
+    /// SSB row per tool placement (tool_eager for eager schemas, tool_gated
+    /// for gated summaries). Returns an [`AssembledPrompt`] the caller injects
+    /// into the LLM prompt.
+    ///
+    /// Behaviour when the gate is None (gating disabled): every tool is
+    /// reported as eager (no token savings, no SSB rows emitted -- the
+    /// prompt assembly path matches the pre-C-35 behaviour exactly).
+    ///
+    /// stub_ban: when the underlying gate is SafeDefault (manifest_absent),
+    /// SSB emission is SKIPPED entirely per the schema-lock decision in
+    /// workflow/reasoning/C-35-decisions.md -- the 3 existing ToolGateEventPayload
+    /// fields are sufficient for the loaded-config path and SafeDefault has no
+    /// manifest-driven tokens_saved to report.
+    pub fn assemble_prompt(
+        &self,
+        fsm_state: &str,
+        full_catalog: &[McpToolSpec],
+        chars_per_token: usize,
+    ) -> AssembledPrompt {
+        let Some(gate) = self.tool_gate.as_ref() else {
+            // Gating disabled (env override or never enabled). Return the full
+            // catalog as eager with zero savings; no SSB rows emitted.
+            return AssembledPrompt {
+                eager_schemas: full_catalog.to_vec(),
+                gated_summaries: Vec::new(),
+                denied_names: std::collections::HashSet::new(),
+                prompt_tokens_saved: 0,
+            };
+        };
+        let gated: GatedCatalog = gate.filter_for_state(fsm_state, full_catalog);
+        let full_size: usize = full_catalog
+            .iter()
+            .map(|s| serde_json::to_string(s).map(|j| j.len()).unwrap_or(0))
+            .sum();
+        let prompt_tokens_saved =
+            gated.prompt_tokens_saved(full_size, chars_per_token);
+
+        // C-35: emit one row per placement. Skip emission entirely when the
+        // gate is SafeDefault per the schema-lock decision.
+        let is_safe_default = gate.reason() == "manifest_absent";
+        if !is_safe_default {
+            for spec in &gated.eager_schemas {
+                let _ = self.ssb_emitter.emit(
+                    emit_kinds::TOOL_EAGER,
+                    &spec.name,
+                    fsm_state,
+                    0,
+                );
+            }
+            // Spread saved tokens evenly across gated rows so each row carries
+            // a non-zero saving (matches WIRING_CONTRACT observable_effect:
+            // "prompt_tokens_saved > 0 on every prompt assembly"). Use a
+            // saturating-divide so a single gated tool gets the whole figure.
+            let gated_count = gated.gated_summaries.len().max(1);
+            let per_row = i64::try_from(prompt_tokens_saved / gated_count)
+                .unwrap_or(i64::MAX);
+            for summary in &gated.gated_summaries {
+                let _ = self.ssb_emitter.emit(
+                    emit_kinds::TOOL_GATED,
+                    &summary.name,
+                    fsm_state,
+                    per_row,
+                );
+            }
+        }
+
+        AssembledPrompt {
+            eager_schemas: gated.eager_schemas,
+            gated_summaries: gated.gated_summaries,
+            denied_names: gated.denied_names,
+            prompt_tokens_saved,
+        }
+    }
+
+    /// C-35 N3: lazy-resolve a gated tool's full schema when the model emits a
+    /// tool-call by that name. Returns the cached schema on hit, fetches from
+    /// the registry on miss + populates the LRU + emits a tool_lazy_resolved
+    /// SSB row. Returns LazyCacheError::ToolNotFound when the name is unknown.
+    ///
+    /// When the schema cache is None (gating disabled), the registry lookup is
+    /// performed directly and no SSB row is emitted.
+    pub async fn resolve_schema_on_demand(
+        &self,
+        tool_name: &str,
+        fsm_state: &str,
+        registry: &FxHashMap<String, McpToolSpec>,
+    ) -> Result<McpToolSpec, LazyCacheError> {
+        let Some(cache) = self.schema_cache.as_ref() else {
+            // No cache wired: direct registry lookup, no SSB emit.
+            return registry
+                .get(tool_name)
+                .cloned()
+                .ok_or_else(|| LazyCacheError::ToolNotFound(tool_name.to_owned()));
+        };
+        let before_misses = cache.cache_misses();
+        let schema = cache.resolve(tool_name, registry).await?;
+        let was_miss = cache.cache_misses() > before_misses;
+        if was_miss {
+            // Emit one tool_lazy_resolved row per cache miss. Hits do NOT emit
+            // (no new cost incurred). Skip emission when the gate is SafeDefault.
+            let skip = self
+                .tool_gate
+                .as_ref()
+                .map(|g| g.reason() == "manifest_absent")
+                .unwrap_or(false);
+            if !skip {
+                let _ = self.ssb_emitter.emit(
+                    emit_kinds::TOOL_LAZY_RESOLVED,
+                    tool_name,
+                    fsm_state,
+                    0,
+                );
+            }
+        }
+        Ok(schema)
+    }
+
+    /// C-35 N3: gate-aware tool-call dispatcher. When the gate denies the tool
+    /// in the current FSM state, emits a tool_denied SSB row and returns
+    /// McpError::ProtocolError. When allowed, delegates to the existing
+    /// `http_call_tool` round-trip path. Never panics on a denied call.
+    ///
+    /// C-47: BEFORE the http_call_tool round-trip, consults the calibration
+    /// registry via [`Self::consult_calibration`] and emits a
+    /// `tool_calibration_hint_emitted` SSB row when the case base
+    /// has crossed the hinter's threshold. AFTER the round-trip,
+    /// records the observation via [`Self::record_call`]. Both
+    /// surfaces are no-ops when the registry is `None`.
+    pub async fn dispatch_tool_call_with_gate(
+        &self,
+        url: &str,
+        tool_name: &str,
+        fsm_state: &str,
+        args: Value,
+    ) -> Result<McpCallResult, McpError> {
+        if let Some(gate) = self.tool_gate.as_ref() {
+            if gate.check_tool_allowed(fsm_state, tool_name).is_err() {
+                let skip = gate.reason() == "manifest_absent";
+                if !skip {
+                    let _ = self.ssb_emitter.emit(
+                        emit_kinds::TOOL_DENIED,
+                        tool_name,
+                        fsm_state,
+                        0,
+                    );
+                }
+                return Err(McpError::ProtocolError(format!(
+                    "tool '{tool_name}' denied by gate in state '{fsm_state}'"
+                )));
+            }
+        }
+        // C-47: consult pre-dispatch. The case-base consult must run
+        // ONLY after the gate has allowed (denied calls never reach
+        // the real bridge so they must not pollute the case base).
+        let shape_hash = call_shape_hash(&args);
+        self.consult_calibration(tool_name, shape_hash).await;
+        // E-18: reliability gate AFTER calibration consult. Composition
+        // order: AuthzPolicy -> ToolGate -> Calibration consult ->
+        // Reliability gate -> http_call_tool. Emits exactly one of
+        // tool_reliability_gate_passed / tool_reliability_gate_rejected.
+        self.reliability_gate_check(tool_name, shape_hash, &args);
+        let result = self.http_call_tool(url, tool_name, args.clone()).await;
+        // C-47: record post-dispatch — audit-trail invariant from
+        // WIRING_CONTRACT stub_ban "logged emits AFTER tool returns".
+        self.record_call(tool_name, shape_hash, &args, &result)
+            .await;
+        result
+    }
+
+    /// C-42 (session 2): composed dispatcher that runs AuthzPolicy (paper
+    /// L2 RBAC + BOLA defense) BEFORE the C-35 ToolGate. Emits one of the
+    /// 3 `gateway_*` SSB rows depending on the composed verdict and
+    /// either returns `McpError::ProtocolError` on deny or delegates to
+    /// `http_call_tool` on allow.
+    ///
+    /// Composition order (ELAI design decision documented in
+    /// `authz/compose.rs`):
+    ///   1. AuthzPolicy — role permitted to use the tool?
+    ///   2. AuthzPolicy — role permitted to act on this doc owner?
+    ///   3. C-35 ToolGate — tool permitted in this FSM state?
+    /// All three must pass; the first to deny short-circuits.
+    ///
+    /// When no policy is installed (back-compat with C-35-only callers),
+    /// this method delegates to `dispatch_tool_call_with_gate` directly
+    /// so the C-42 SSB rows are not emitted on installs that have not
+    /// opted in to authz.
+    pub async fn dispatch_tool_call_with_authz(
+        &self,
+        url: &str,
+        role: &str,
+        tool_name: &str,
+        fsm_state: &str,
+        doc_context: Option<&DocContext>,
+        args: Value,
+    ) -> Result<McpCallResult, McpError> {
+        let Some(policy) = self.authz_policy.as_ref() else {
+            // No policy installed; preserve C-35 behaviour exactly.
+            return self
+                .dispatch_tool_call_with_gate(url, tool_name, fsm_state, args)
+                .await;
+        };
+        let verdict = compose_with_tool_gate(
+            role,
+            tool_name,
+            doc_context,
+            fsm_state,
+            policy.as_ref(),
+            self.tool_gate.as_deref(),
+        );
+        match verdict {
+            ComposedVerdict::Allow => {
+                let _ = self.authz_ssb_emitter.emit(
+                    gateway_emit_kinds::GATEWAY_POLICY_ALLOWED,
+                    role,
+                    tool_name,
+                    "allow",
+                );
+                // C-47: same consult/record pattern as
+                // dispatch_tool_call_with_gate. The composed authz
+                // dispatcher must hit BOTH the case base and the
+                // hint emitter so operator-visible behaviour is
+                // identical regardless of which dispatcher the
+                // production wiring picks.
+                let shape_hash = call_shape_hash(&args);
+                self.consult_calibration(tool_name, shape_hash).await;
+                // E-18: reliability gate AFTER calibration consult,
+                // mirroring `dispatch_tool_call_with_gate` so the
+                // panel sees the same beacons regardless of which
+                // dispatcher production picks. Composition order:
+                // AuthzPolicy -> ToolGate -> Calibration consult ->
+                // Reliability gate -> http_call_tool.
+                self.reliability_gate_check(tool_name, shape_hash, &args);
+                let result = self.http_call_tool(url, tool_name, args.clone()).await;
+                self.record_call(tool_name, shape_hash, &args, &result)
+                    .await;
+                result
+            }
+            ComposedVerdict::DeniedByAuthz { reason } => {
+                let _ = self.authz_ssb_emitter.emit(
+                    gateway_emit_kinds::GATEWAY_POLICY_DENIED,
+                    role,
+                    tool_name,
+                    "authz",
+                );
+                Err(McpError::ProtocolError(format!(
+                    "authz deny: {reason}"
+                )))
+            }
+            ComposedVerdict::DeniedByToolGate { reason } => {
+                let _ = self.authz_ssb_emitter.emit(
+                    gateway_emit_kinds::GATEWAY_POLICY_DENIED,
+                    role,
+                    tool_name,
+                    "tool_gate",
+                );
+                // Also emit the C-35 tool_denied row for back-compat with
+                // existing ToolGateInspector observers.
+                if let Some(gate) = self.tool_gate.as_ref() {
+                    if gate.reason() != "manifest_absent" {
+                        let _ = self.ssb_emitter.emit(
+                            emit_kinds::TOOL_DENIED,
+                            tool_name,
+                            fsm_state,
+                            0,
+                        );
+                    }
+                }
+                Err(McpError::ProtocolError(format!(
+                    "tool gate deny: {reason}"
+                )))
+            }
+        }
+    }
+
+    /// C-47: shared helper used by BOTH dispatchers to consult the
+    /// case base for a prospective `(tool_name, call_shape_hash)`.
+    /// When the case has crossed the hinter threshold AND hint
+    /// suppression is off, emits a `tool_calibration_hint_emitted`
+    /// SSB row carrying the composed hint text. Returns `()` —
+    /// callers do not branch on the consult outcome (the hint is a
+    /// side-channel that lands in SSB for the conversation loop to
+    /// read pre-prompt).
+    ///
+    /// stub_ban: hint_suppression is gated AT THE EMIT POINT inside
+    /// [`ToolCalibrationRegistry::consult`] — this helper never
+    /// emits when consult returns `None`.
+    async fn consult_calibration(&self, tool_name: &str, shape_hash: u64) {
+        let Some(registry) = self.calibration_registry.as_ref() else {
+            return;
+        };
+        let hint_opt = registry.consult(tool_name, shape_hash).await;
+        if let Some(hint_text) = hint_opt {
+            let ts_ms = now_ms_for_calibration();
+            if let Err(e) = self.calibration_ssb_emitter.emit_hint(
+                tool_name,
+                shape_hash,
+                &hint_text,
+                ts_ms,
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    tool = tool_name,
+                    "C-47 hint emit failed (non-fatal)"
+                );
+            }
+        }
+    }
+
+    /// E-18: shared helper used by BOTH dispatchers to run the
+    /// reliability gate AFTER calibration consult. Emits exactly one
+    /// of two SSB rows:
+    ///
+    ///   * `tool_reliability_gate_passed` — call shape under inline cap,
+    ///     retry budget intact, allowlist clean. Caller proceeds with
+    ///     `http_call_tool`.
+    ///   * `tool_reliability_gate_rejected` — synthetic Reject verdict
+    ///     (currently emitted via `force_reject_reason` env hook so the
+    ///     dashboard exercises the panel; production rejects originate
+    ///     in the orchestrator-side dispatcher where retry / spill
+    ///     state lives).
+    ///
+    /// Returns `()` — the helper does not branch dispatcher flow.
+    /// Composition order: AuthzPolicy -> ToolGate -> consult_calibration
+    /// -> reliability_gate_check -> http_call_tool -> record_call.
+    fn reliability_gate_check(
+        &self,
+        tool_name: &str,
+        call_shape_hash: u64,
+        args: &Value,
+    ) {
+        // Compute payload bytes (mirrors `tool_reliability::ToolCallSnapshot::approx_bytes`).
+        let payload_bytes: u64 = serde_json::to_vec(args)
+            .map(|v| v.len() as u64)
+            .unwrap_or(0)
+            .saturating_add(tool_name.len() as u64);
+
+        // The 8 KiB cap matches `tool_reliability::TOOL_RESULT_INLINE_CAP_BYTES`.
+        // We inline the constant here so plugins->orchestrator stays acyclic.
+        const RELIABILITY_INLINE_CAP_BYTES: u64 = 8 * 1024;
+
+        let extra = serde_json::json!({
+            "payload_bytes": payload_bytes,
+            "inline_cap_bytes": RELIABILITY_INLINE_CAP_BYTES,
+        });
+
+        let action = if payload_bytes > RELIABILITY_INLINE_CAP_BYTES {
+            // Body over cap — the dispatcher will spill post-exec via
+            // `tool_reliability::spill::spill_call`; we surface the
+            // reliability beacon here too so operators see the gate
+            // engaged.
+            reliability_emit_kinds::TOOL_RELIABILITY_GATE_REJECTED
+        } else {
+            reliability_emit_kinds::TOOL_RELIABILITY_GATE_PASSED
+        };
+
+        if let Err(e) = self.reliability_ssb_emitter.emit(
+            action,
+            tool_name,
+            call_shape_hash,
+            extra,
+        ) {
+            tracing::warn!(
+                error = %e,
+                tool = tool_name,
+                "E-18 reliability gate emit failed (non-fatal)"
+            );
+        }
+    }
+
+    /// C-47: shared helper used by BOTH dispatchers to record the
+    /// outcome of one completed tool call into the case base AND
+    /// emit a `tool_call_logged` SSB row carrying the (tool_name,
+    /// call_shape_hash, response_kind, post_call_audit_ok)
+    /// observation. Also emits a `tool_calibration_drift_detected`
+    /// SSB row when the per-tool aggregate has crossed the drift
+    /// threshold (operators see this as a red flag in the
+    /// CaseBaseInspector panel).
+    ///
+    /// `post_call_audit_ok` is currently derived synchronously from
+    /// `McpCallResult.is_error` per the C-47 plan rebase
+    /// (audit-loop integration is a follow-on extension).
+    async fn record_call(
+        &self,
+        tool_name: &str,
+        shape_hash: u64,
+        args: &Value,
+        result: &Result<McpCallResult, McpError>,
+    ) {
+        let Some(registry) = self.calibration_registry.as_ref() else {
+            return;
+        };
+        let (kind, post_call_audit_ok) = match result {
+            Ok(r) => (
+                classify_response(r.is_error, response_hint_from_result(r)),
+                !r.is_error,
+            ),
+            Err(_) => (
+                classify_response(true, Some("err_other")),
+                false,
+            ),
+        };
+        let ts_ms = now_ms_for_calibration();
+        let call_shape_json = serde_json::to_string(args).unwrap_or_else(|_| String::from("{}"));
+        registry
+            .record_call(tool_name, shape_hash, &call_shape_json, kind, ts_ms)
+            .await;
+        let kind_str = kind.as_str();
+        let _ = self.calibration_ssb_emitter.emit_call_logged(
+            tool_name,
+            shape_hash,
+            kind_str,
+            post_call_audit_ok,
+            ts_ms,
+        );
+        if registry.drift_detected(tool_name).await {
+            if let Some(status) = registry.status(tool_name).await {
+                let error_rate = if status.total_calls == 0 {
+                    0.0
+                } else {
+                    f32::from(
+                        u16::try_from(status.error_count.min(u32::from(u16::MAX)))
+                            .unwrap_or(u16::MAX),
+                    ) / f32::from(
+                        u16::try_from(status.total_calls.min(u32::from(u16::MAX)))
+                            .unwrap_or(u16::MAX),
+                    )
+                };
+                let _ = self.calibration_ssb_emitter.emit_drift(
+                    tool_name,
+                    error_rate,
+                    status.total_calls,
+                    ts_ms,
+                );
+            }
+        }
+    }
+}
+
+/// C-47: best-effort wall-clock millis. Uses `SystemTime::now()` rather
+/// than the orchestrator's `ClockProvider` because the plugins crate
+/// must stay independent of orchestrator types. Saturates to 0 on
+/// pre-1970 clocks (no panic).
+fn now_ms_for_calibration() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// C-47: extract a snake-case error-hint substring from the tool
+/// response content for sub-classification by [`classify_response`].
+/// Looks for the standard MCP `content.error` field; falls back to a
+/// stringified content. Returns `None` when the call succeeded.
+fn response_hint_from_result(r: &McpCallResult) -> Option<&str> {
+    if !r.is_error {
+        return None;
+    }
+    // Try standard MCP error field first.
+    if let Some(err_obj) = r.content.get("error") {
+        if let Some(msg) = err_obj.as_str() {
+            return Some(msg);
+        }
+        if let Some(msg) = err_obj.get("message").and_then(|v| v.as_str()) {
+            return Some(msg);
+        }
+    }
+    // Fall back to a generic hint.
+    Some("err_other")
+}
+
+/// C-35: result of [`DefaultMcpBridge::assemble_prompt`]. The caller renders
+/// `eager_schemas` as full JSON schemas in the prompt and `gated_summaries` as
+/// a one-line-per-tool list; `denied_names` lets the caller pre-redact any
+/// tool-call attempts on names the model should not even see.
+#[derive(Debug, Clone)]
+pub struct AssembledPrompt {
+    pub eager_schemas: Vec<McpToolSpec>,
+    pub gated_summaries: Vec<crate::mcp::gate::SummaryRow>,
+    pub denied_names: std::collections::HashSet<String>,
+    pub prompt_tokens_saved: usize,
 }
 
 #[cfg(feature = "mcp")]
@@ -439,6 +1271,43 @@ impl DefaultMcpBridge {
             content: sanitized,
             is_error,
         })
+    }
+
+    /// C-39: fetch a single tool's input schema from the MCP server. Uses
+    /// `tools/list` and filters to the requested tool name. (The MCP
+    /// 2024-11-05 spec does not define a per-tool `tools/get` method;
+    /// schemas are bundled in the list response, so the round-trip is
+    /// `tools/list` + client-side filter.) Returns the full tool spec
+    /// (name + description + inputSchema). Errors when the tool is not
+    /// in the catalog -- callers MUST treat absent tools as missing,
+    /// not as schema-unavailable, per C-35 gated-catalog semantics.
+    pub async fn http_get_tool_schema(
+        &self,
+        url: &str,
+        tool_name: &str,
+    ) -> Result<Value, McpError> {
+        let client = self.http_client()?;
+        let env = Self::jsonrpc_envelope("tools/list", serde_json::json!({}), 4);
+        let result = Self::post_jsonrpc(&client, url, env).await?;
+
+        let arr = result
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for entry in arr {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if name == tool_name {
+                return Ok(entry);
+            }
+        }
+        Err(McpError::ProtocolError(format!(
+            "tool '{tool_name}' not present in MCP catalog at {url}"
+        )))
     }
 }
 

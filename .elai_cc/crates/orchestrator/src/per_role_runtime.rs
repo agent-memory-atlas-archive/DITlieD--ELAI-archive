@@ -78,6 +78,11 @@ impl Default for PerRoleRuntime {
         mapping.insert(AgentRole::PromptEngineer, RuntimeBackend::Sidecar);
         mapping.insert(AgentRole::IdeaFramer, RuntimeBackend::Sidecar);
         mapping.insert(AgentRole::IdeaCritic, RuntimeBackend::Sidecar);
+        // E-37 — off-model prompt-injection classifier. Sidecar tier by
+        // default (local Qwen-3B is cheap enough for per-tool classification
+        // batches per arXiv:2502.06703 cheap-monitors discipline); cloud
+        // Haiku is the fallback when the sidecar reports unavailable.
+        mapping.insert(AgentRole::InjectionClassifier, RuntimeBackend::Sidecar);
 
         Self {
             mapping,
@@ -183,6 +188,8 @@ mod tests {
             AgentRole::AuditorSteps,
             AgentRole::AuditorBabySteps,
             AgentRole::AuditorBabyStepDetail,
+            // E-37: off-model prompt-injection classifier.
+            AgentRole::InjectionClassifier,
         ]
     }
 

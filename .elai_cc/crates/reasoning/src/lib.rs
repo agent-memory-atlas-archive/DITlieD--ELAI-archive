@@ -4,6 +4,9 @@ pub mod chat_reflect;
 pub mod config;
 pub mod engine;
 pub mod layer_routing;
+// phase-3L Step 4 / M10: SYSTEM-prompt assembler that injects PI
+// CONVENTIONS blocks produced by elai_knowledge::PiT1Hook.
+pub mod prompt_builder;
 pub mod traversal;
 pub mod types;
 pub mod verification;
@@ -40,6 +43,9 @@ pub use types::{
     ThinkResult, ThinkStep, TopicState, VerificationMethod, VerificationResult,
 };
 pub use layer_routing::configure_layers_for_tier;
+pub use prompt_builder::{
+    build_with_conventions, CONVENTIONS_BLOCK_HEADER, CONVENTIONS_PROMPT_BUDGET_TOKENS,
+};
 pub use traversal::{default_answers_for_category, traverse_with_answers, TreeTraverser};
 pub use verification::{
     FileReader, LocalVerifier, MockFileReader, MockTestRunner, NetworkVerifier, NoopTestRunner,

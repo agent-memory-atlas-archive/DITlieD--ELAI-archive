@@ -24,6 +24,8 @@
     testRuntime,
     setRoleRuntime,
     runtimeCapabilityProbe,
+    runtimeComposer2Status,
+    type Composer2StatusReport,
   } from '$lib/api/stub';
   import {
     RUNTIME_BACKEND_IDS,
@@ -92,6 +94,39 @@
     }, 10_000);
     return () => clearInterval(id);
   });
+
+  // -----------------------------------------------------------------
+  // C-44: Composer 2 paid-backend status + cumulative cost rollup.
+  // Polls on the same 10s cadence as listRuntimes(). cost is in
+  // micro-dollars (1e-6 USD); divide by 1_000_000 for display USD.
+  // -----------------------------------------------------------------
+  let composer2Status = $state<Composer2StatusReport | null>(null);
+  let composer2Error = $state<string | null>(null);
+
+  async function refreshComposer2(): Promise<void> {
+    try {
+      composer2Status = await runtimeComposer2Status();
+      composer2Error = null;
+    } catch (err) {
+      composer2Error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  $effect(() => {
+    void refreshComposer2();
+    const id = setInterval(() => {
+      void refreshComposer2();
+    }, 10_000);
+    return () => clearInterval(id);
+  });
+
+  function formatCostMicros(micros: number): string {
+    if (micros <= 0) return '$0.00';
+    const usd = micros / 1_000_000;
+    if (usd < 0.01) return `$${usd.toFixed(6)}`;
+    if (usd < 1) return `$${usd.toFixed(4)}`;
+    return `$${usd.toFixed(2)}`;
+  }
 
   // -----------------------------------------------------------------
   // Derived state — per-role current backend (with optimistic
@@ -370,6 +405,54 @@
           </label>
         {/each}
       </div>
+    </div>
+
+    <!-- C-44: Composer 2 paid-backend status + cumulative cost. -->
+    <div class="runtime-panel__composer2-section">
+      <h4>Composer 2 (paid HTTP backend)</h4>
+      <p class="runtime-panel__hint">
+        Opt-in via [runtime.composer2].enabled = true in elai_cc.toml +
+        CURSOR_API_KEY env var. Cost is in micro-dollars
+        (1e-6 USD) rolled up from <code>backend_cost_accrued</code>
+        SSB rows.
+      </p>
+      {#if composer2Error}
+        <div class="runtime-panel__error" role="alert">composer2 status err: {composer2Error}</div>
+      {/if}
+      {#if composer2Status}
+        <table class="runtime-panel__table">
+          <thead>
+            <tr>
+              <th>backend</th>
+              <th>model</th>
+              <th>enabled</th>
+              <th>health</th>
+              <th>invocations</th>
+              <th>tokens in</th>
+              <th>tokens out</th>
+              <th>cumulative cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">composer2</td>
+              <td class="mono">{composer2Status.model}</td>
+              <td>{composer2Status.enabled ? 'yes' : 'no'}</td>
+              <td>
+                <span
+                  class="runtime-panel__health-pill"
+                  style="background: {healthColor(composer2Status.health.status)}"
+                  title={composer2Status.health.reason ?? ''}
+                >{healthLabel(composer2Status.health.status)}</span>
+              </td>
+              <td class="mono">{composer2Status.invocations}</td>
+              <td class="mono">{composer2Status.cumulative_tokens_in}</td>
+              <td class="mono">{composer2Status.cumulative_tokens_out}</td>
+              <td class="mono">{formatCostMicros(composer2Status.cumulative_cost_micros)}</td>
+            </tr>
+          </tbody>
+        </table>
+      {/if}
     </div>
 
     <!-- E-51: Platform capability badges for Mlx + LlamaCpp -->

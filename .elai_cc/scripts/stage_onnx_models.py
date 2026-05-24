@@ -45,6 +45,24 @@ MODELS: dict = {
         method="download", hf_repo="Xenova/ms-marco-MiniLM-L-6-v2",
         onnx_file="onnx/model.onnx", tok_file=None,
         expected_last_dim=None, optional=True),
+    # E-17 SP3 (optional default-flip path): BAAI/bge-reranker-v2-m3 staged
+    # from the community-maintained ONNX export at
+    # huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX (verified
+    # 2026-05-23 via WebSearch — repo exists, official BAAI provenance via
+    # the BAAI/bge-reranker-v2-m3 source). 568M params, multilingual, ~1.1 GB
+    # ONNX. Optional in the default sweep because it is large and only
+    # required if the user opts into ReRankerModel::BgeV2M3 via config.
+    # Once staged, the cli doctor knowledge-models probe surfaces presence
+    # and the default-flip block in reranker.rs can be lifted (still ops
+    # decision, not auto). JINA-MODEL-PENDING: jinaai/jina-reranker-v3
+    # has NO official ONNX as of 2026-05-23 (PyTorch / MLX / GGUF only);
+    # do NOT add to this recipe set until an official .onnx ships.
+    "bge-reranker-v2-m3": dict(
+        onnx=lambda r: r/"onnx"/"bge-reranker-v2-m3.onnx",
+        tok=lambda r:  r/"onnx"/"bge-reranker-v2-m3-tokenizer.json",
+        method="download", hf_repo="onnx-community/bge-reranker-v2-m3-ONNX",
+        onnx_file="onnx/model.onnx", tok_file="tokenizer.json",
+        expected_last_dim=None, optional=True),
     "splade": dict(
         onnx=lambda r: r/"splade"/"model.onnx",
         tok=lambda r:  r/"splade"/"tokenizer.json",

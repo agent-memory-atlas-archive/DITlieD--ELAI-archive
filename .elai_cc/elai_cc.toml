@@ -45,6 +45,47 @@ calibration_target_model = "Qwen2.5-Coder-7B"
 deterministic_first = true
 
 # ============================================================================
+# C-46: Uno-Orchestra parsimonious agent routing (selective delegation).
+# ============================================================================
+# Loaded by the routing module's RoutingPolicyToml::to_policy() into
+# crates/orchestrator/src/routing/policy.rs::RoutingPolicy. Paper-grounded
+# against arXiv:2605.05007 (Cui et al 2026, Sections 5 + 6.1 — (model,
+# primitive) action space, alpha in [0,1] convex blend, S_max <= 0.10
+# cost-hack bound, direct-answer lazy-mode cost zero). Paper interface:
+# workflow/papers/uno-orchestra-interface.md.
+#
+# All keys are OPTIONAL — the section can stay commented out and the
+# loader falls back to RoutingPolicyToml::default() which mirrors the
+# in-code defaults (enabled=false, alpha=0.1, s_max=0.10, max_turns=8,
+# max_workers_per_query=8).
+#
+# enabled: master gate. When false (default), the SelectiveDelegator
+# path is fully inert and callers fall back to the baseline always-
+# spawn chain. Mirrors the [agent.credit_attribution].enabled
+# OFF-by-default precedent.
+#
+# alpha: cost-correctness blend in [0, 1] (paper Section 5; default
+# 0.1 keeps the verifier reward dominant). Construction rejects values
+# outside [0, 1].
+#
+# s_max: routing-shaping bonus cap in [0, 0.10] (paper Section 5;
+# raising above 0.10 unlocks the cost-hacking failure mode the paper
+# explicitly calls out). Construction rejects values exceeding 0.10.
+#
+# max_turns: T_max per trajectory (paper Section 5; default 8).
+#
+# max_workers_per_query: dispatch cap. Default 8 matches the C-45
+# pilot scope (8 base AgentRole variants); raise only after the live
+# Uno-Orchestra pilot runs.
+# ============================================================================
+[agent.selective_delegation]
+enabled = false
+alpha = 0.1
+s_max = 0.10
+max_turns = 8
+max_workers_per_query = 8
+
+# ============================================================================
 # C-27: Testing-Trust Tier T-0 — Wiring Contract closed entrypoint set.
 # ============================================================================
 # The `elai wiring audit` subcommand reads [wiring.entrypoints].symbols and
@@ -491,6 +532,9 @@ default_mode = "auto"
 # air_gapped=true causes ExecMode::Cloud to short-circuit with
 # CloudModeError::AirGappedConflict before any network call.
 air_gapped = false
+# C-5 BYOE: override the Anthropic base URL. Must be unset (commented out)
+# when air_gapped=true; CloudModeError::CustomEndpointForbidden otherwise.
+# custom_endpoint = "https://api.example-proxy.test"
 
 [cloud.privacy]
 # profile: "minimal" | "standard" | "strict" (typo falls back to "standard").
@@ -500,8 +544,13 @@ profile = "standard"
 
 [cloud.spend]
 # warn_at_usd is informational only (dashboard surface). hard_cap_daily_usd
-# and hard_cap_monthly_usd are enforced by CloudModeRouter::route when set.
+# and hard_cap_monthly_usd are enforced by CloudModeRouter::route_with_spend
+# when set (C-5 hard ceiling — was warning-only in B-27).
 warn_at_usd = 1.0
+# C-5: percent of hard_cap_daily_usd at which a WARN_LIMIT_REACHED SSB row
+# fires (once per UTC day). Defaults to 80 when unset. Set to a value > 100
+# to disable WARN emission while keeping the hard cap.
+warn_at_percent = 80
 # hard_cap_daily_usd = 5.0
 # hard_cap_monthly_usd = 50.0
 
@@ -720,12 +769,77 @@ mandatory = false
 # Spec ref: docs/thefinalglance/D-plan/D-2_ppm_sidecar_wiring.md
 # Decision doc: workflow/reasoning/D-2-decisions.md
 # ============================================================================
-# [runtime.ppm]
-# endpoint = "http://127.0.0.1:8101/v1/ppm/score"
-# timeout_secs = 30
-# max_retries = 3
-# model = "huihui-ai/Qwen2.5-Math-PRM-7B"
-# min_score_threshold = 0.7
+[runtime.ppm]
+endpoint = "http://127.0.0.1:8101/v1/ppm/score"
+timeout_secs = 30
+max_retries = 3
+model = "huihui-ai/Qwen2.5-Math-PRM-7B"
+min_score_threshold = 0.7
+
+# ============================================================================
+# C-44: Cursor Composer 2 paid HTTP backend (Phase 4M extension).
+# ============================================================================
+# Composer 2 is Cursor Research's domain-specialised coding model.
+# Paper grounding arXiv:2603.24477 covers ONLY the model's training
+# methodology + headline benchmarks; integration design (endpoint, auth,
+# pricing, request shape) is source-grounded via @cursor/sdk +
+# cursor.com/docs/api. See workflow/papers/composer2-interface.md for the
+# shallow-cite-fit analysis.
+#
+# Cost positioning (cursor.com pricing page, verified 2026-05-24):
+#   - $0.50 / 1M input tokens   (500 micros / 1k input)
+#   - $2.50 / 1M output tokens  (2500 micros / 1k output)
+#
+# Tier semantics: ELAI does NOT introduce a BackendTier enum. "Tier" emerges
+# from cost-per-token relative ranking between local (Sidecar = free),
+# middle (Composer 2 = $0.50/$2.50 per Mtok), and premium (AnthropicApi
+# = Sonnet 4.6 cloud) — no first-class abstraction.
+#
+# Default routing: KEEP Executor -> Sidecar (free local). composer2 is
+# OPT-IN per project. Flip `enabled = true` AND set CURSOR_API_KEY in the
+# environment to activate. Without both, the adapter's health_check returns
+# Unavailable and the orchestrator never routes to it.
+#
+# Spec ref: docs/thefinalglance/C-plan/C-44_composer2_runtime_backend_tier.md
+# Decision doc: workflow/reasoning/C-44-decisions.md
+# ============================================================================
+# [runtime.composer2]
+# enabled = false
+# api_key_env = "CURSOR_API_KEY"
+# model = "composer-2"
+# fallback_to = "sidecar"
+
+# ============================================================================
+# D-5: BAI (Best-Arm Identification) Thompson-promotion round.
+# ============================================================================
+# The post-consensus hook in task_runner::dispatch_bai_round folds each
+# verifier-consensus verdict into the candidate template's Beta(alpha, beta)
+# posterior, runs one Thompson sample across all known arms, and (when the
+# posterior mean clears `promotion_threshold` AND the Thompson sample picks
+# the candidate) flips the archive entry's status from Candidate to Promoted.
+#
+# Opt-in via ELAI_BAI_ENABLE=1 + this section uncommented. Without both, the
+# BAI runtime is never constructed and the BAI row family
+# (`thompson_sampled` / `bai_arm_updated` / `template_promoted` /
+# `template_candidate_rejected`) stays dark. The fields below are L3-locked
+# (operator-tunable but spec-checked) per the per_level audit cascade.
+#
+# Defaults (also the in-code defaults — section is OPTIONAL):
+#   alpha_prior = 1.0           Beta(1,1) uniform prior on fresh arms
+#   beta_prior = 1.0
+#   confidence_level = 0.95     used by credible_interval() diagnostics
+#   promotion_threshold = 0.55  Companion-spec §3.7 (0.5 baseline + 0.05 delta)
+#
+# Spec ref: docs/thefinalglance/D-plan/D-5_bai_thompson_promotion.md
+# Grounding: Audibert/Bubeck/Munos COLT 2010 (Successive Rejects);
+# arXiv:2106.10417 (variance-dependent BAI). Decision doc:
+# workflow/reasoning/D-5-decisions.md.
+# ============================================================================
+# [bai]
+# alpha_prior = 1.0
+# beta_prior = 1.0
+# confidence_level = 0.95
+# promotion_threshold = 0.55
 
 # ============================================================================
 # D-17: Honest-refusal SLA monitoring.
@@ -756,11 +870,113 @@ mandatory = false
 # alarm_threshold_breaches = 3
 # verifier_id = "ppm_qwen25_math_prm_7b"
 
+# ============================================================================
+# D-13: Adversary role + cross-family verifier (FalsifiabilityCrossFamily mode).
+# ============================================================================
+# The post-task hook in task_runner::dispatch_adversarial_pass routes per-task
+# claims through agent_pool::run_adversarial_pass when both the runtime state
+# is plumbed AND `ELAI_ADVERSARY_ENABLE=1` is set. The producer emits one
+# `adversary_generated` SSB row + one `consensus_reevaluated_with_counter` SSB
+# row per pass, joined by `claim_id`.
+#
+# Hard constraints (per the spec):
+# - Adversary MUST emit from a model family DIFFERENT than the worker
+#   (heterogeneous-verifier per arxiv:2504.16760 T1). The
+#   `min_family_distance` knob locks this at the runtime layer:
+#   `1` (default) refuses same-family pairs; `0` disables the guard
+#   (NOT recommended — same-family adversarial probing has a 64.5%
+#   blind-spot rate per arxiv:2507.02778 T1 Self-Correction Bench).
+# - When the configured adversary's family equals the worker's family the
+#   dispatch is silently skipped (debug trace only). The
+#   `HeterogeneousVerifierMissing` warning from `run_adversarial_pass`
+#   covers the heterogeneous-pool gap; we do NOT emit a separate
+#   "cross-family unavailable" SSB variant (consolidated-SSB-variant
+#   precedent — D-9/D-10/D-11/D-12; consensus pass conveys the gap via
+#   verdict-inversion on the already-shipped row pair).
+#
+# Opt-in via ELAI_ADVERSARY_ENABLE=1 + this section uncommented + an
+# adversary adapter plumbed through TaskRunnerConfig.adversary_runtime
+# (typically a cloud Sonnet HTTP adapter — sonnet is cross-family from the
+# default local Qwen2.5-Coder-7B worker). Without all three the row pair
+# stays dark.
+#
+# L3-LOCKED per the per_level audit cascade (operator-tunable but
+# spec-checked). The fields below are documented defaults; uncomment to
+# override.
+#
+# Spec ref: docs/thefinalglance/D-plan/D-13_adversary_role_cross_family.md
+# Grounding:
+#   - arxiv:2504.16760 (T1) Lightweight Latent Verifiers — heterogeneous
+#     verification is the documented defense; same-family verifier
+#     transfer fails.
+#   - arxiv:2507.02778 (T1) Self-Correction Bench — same-model
+#     self-critique 64.5% blind-spot rate.
+#   - arxiv:2504.04918 (T1) Constitution or Collapse — 8B same-family
+#     recursive self-critique causes MODEL COLLAPSE; cross-family GPT-4o
+#     critic breaks the loop.
+#   - arxiv:2503.17365 (T1) Constitutional AI in Small LLMs — 4-outcome
+#     taxonomy used in the adversary agent's self_assessment field.
+# Decision doc: workflow/reasoning/D-13-decisions.md.
+# ============================================================================
+# [adversary]
+# enable = false                         # also gated on ELAI_ADVERSARY_ENABLE=1
+# min_family_distance = 1                # 0 disables same-family guard (NOT recommended)
+# max_disagreement_score_delta = 0.3     # severity floor for invalidating counters
+# preferred_cross_family_pairs = [       # empty = any cross-family pair allowed
+#   ["local", "anthropic"],
+#   ["local", "openai"],
+# ]
+
 [tool_gating]
 enabled = true
 gate_manifest_path = "plugins/tool-gate.toml"
 lazy_schema_default = true
 max_eager_schemas = 4
+
+# ============================================================================
+# C-47: Case-Based Calibration of Tool-Use (CAST framework, arXiv:2605.15041).
+# ============================================================================
+# Per-tool telemetry layer that records (call, response, post_call_audit) and
+# emits corrective hints when an error-rate threshold is crossed. The
+# orchestrator's bootstrap reads this section once at startup and constructs
+# an `Arc<ToolCalibrationRegistry>` that is then attached to DefaultMcpBridge
+# via `with_calibration_registry`. When `enabled = false` the registry stays
+# None and both dispatchers stay back-compat (no consult, no record, no SSB
+# rows). The plugins-side default IS false — operators opt in.
+#
+# Paper grounding:
+#   - arXiv:2605.15041 (CAST — Case-Based Calibration of Adaptive Reasoning
+#     and Execution for LLM Tool Use, Pang/Lan/Liu/Tong/Cao/Zhang 2026).
+#     See workflow/papers/case-based-calibration.md.
+#   - The CAST framework aggregates signals ACROSS the case base (per-(tool,
+#     call_shape_hash) aggregation) NOT per-query nearest-neighbor lookup.
+#   - The 5-dim failure profile (name, key, type, constraint, value) is a
+#     paper invariant; the 6th dimension (exact-match) is in R_tool reward
+#     only, NOT in the telemetry tuple.
+# ============================================================================
+[tool_use.case_base]
+# Master enable for the calibration layer. When false, the registry stays
+# None and both dispatchers run the C-35 / C-42 stack untouched. Defaults to
+# false (wire-dark per the D-10 / D-11 / B-37 quadruple-precedent for new
+# behavioural changes).
+enabled = false
+# Per-tool LRU capacity (least-recently-used eviction; deterministic). Above
+# this floor the LRU evicts the least-recently-USED shape. The contract test
+# `c47_case_based_calibration_contract::g4_lru_cap_100_evicts_deterministically`
+# fences this value at 100; changing it requires a contract-test update.
+lru_cap = 100
+# When true, `ToolCalibrationRegistry::consult` returns `None` regardless of
+# the underlying case state. Useful for operators to disable hint emission
+# without disabling the whole calibration layer. stub_ban (HARD): the
+# suppression is gated AT THE EMIT POINT (see contract test G6).
+hint_suppression = false
+# Minimum total_calls per (tool, shape) before the hinter trusts the error
+# rate. Below this floor no hint fires. The hinter constant
+# `HINT_MIN_TOTAL_CALLS` mirrors this default.
+min_total_calls = 5
+# Error-rate threshold beyond which a corrective hint fires. The hinter
+# constant `HINT_ERROR_RATE_THRESHOLD` mirrors this default.
+error_rate_threshold = 0.30
 
 # ============================================================================
 # E-15: Sandbox hardening -- Firecracker + gVisor + AppContainer + researcher net
@@ -841,3 +1057,654 @@ reject_not_drop = true
 # code index is loaded at startup and contributes to RRF fusion alongside
 # BM25 + text_vector. Equivalent to setting ELAI_CODE_VEC=1.
 # enabled = false
+
+[knowledge.late_interaction]
+# E-17 SP7 (task 8) — PLAID / FastPlaid late-interaction retriever flag.
+# DEFERRED-DEFAULT-OFF per plan §Open questions. When true (future
+# E-17.B), a late-interaction ranker contributes as an 8th retriever
+# alongside BM25 + code_vec + text_vec + rerank.
+#
+# Implementation note: integrating PLAID requires either:
+#   (a) the next-plaid Rust crate (anti-slopsquatting: NOT verified on
+#       crates.io as of 2026-05-23, do NOT add to Cargo.toml without
+#       registry verification), or
+#   (b) the FastPlaid Rust+CUDA path from github.com/lightonai/fast-plaid
+#       (production target).
+#
+# This flag exists today as a config surface so contracts and downstream
+# config-loading code can compile against a stable key path; the producer
+# wiring lands in E-17.B follow-up. Until then the value is ignored.
+# enabled = false
+
+# ---------------------------------------------------------------------------
+# [model_capability] — phase-3J-BASELINE token-efficiency harness roster.
+#
+# Tier slugs MUST match ModelCapabilityProfile constructors in
+# crates/orchestrator/src/context_budget.rs:309-657. Field values mirror the
+# constructor defaults (model_name, recommended_prompt_budget, output_reserve,
+# quant_format). slot_utilization_floor + compression_ratio_floor are the
+# acceptance gates from phase-3J-BASELINE.txt §Baseline targets.
+#
+# Independent of [research.vram_tiers.*] (different schema, different runtime
+# consumer). Do NOT alias. The harness reads ONLY [model_capability.*].
+# ---------------------------------------------------------------------------
+
+[model_capability]
+# Default tier set the harness iterates when --profile is omitted.
+default_profiles = [
+  "micro_8gb",
+  "micro_3b_12gb",
+  "micro_7b_12gb",
+  "awq_3b_8gb",
+  "awq_3b_12gb",
+  "awq_7b_12gb",
+  "large_32b_48gb",
+  "cloud_200k",
+]
+sidecar_endpoint = "http://127.0.0.1:8100"
+cloud_endpoint = "https://api.anthropic.com"
+output_path = "metrics/capability_profile.toml"
+output_csv_path = "metrics/capability_profile.csv"
+
+[model_capability.profiles.micro_7b_12gb]
+model = "Qwen2.5-Coder-7B-Instruct"
+runtime = "sidecar"
+quant_format = "NF4+FA2"
+prompt_tokens_target = 20000
+output_reserve = 512
+effective_ceiling = 25000
+expected_slot_utilization_floor = 0.82
+expected_compression_ratio_floor = 0.65
+fixture = "benches/model_capability/fixtures/micro_7b_12gb.toml"
+
+[model_capability.profiles.micro_3b_12gb]
+model = "Qwen2.5-Coder-3B-Instruct"
+runtime = "sidecar"
+quant_format = "NF4+FA2"
+prompt_tokens_target = 35000
+output_reserve = 512
+effective_ceiling = 40000
+expected_slot_utilization_floor = 0.80
+expected_compression_ratio_floor = 0.60
+fixture = "benches/model_capability/fixtures/micro_3b_12gb.toml"
+
+[model_capability.profiles.micro_8gb]
+model = "Qwen2.5-Coder-3B-Instruct"
+runtime = "sidecar"
+quant_format = "NF4+FA2"
+prompt_tokens_target = 20000
+output_reserve = 512
+effective_ceiling = 25000
+expected_slot_utilization_floor = 0.78
+expected_compression_ratio_floor = 0.55
+fixture = "benches/model_capability/fixtures/micro_8gb.toml"
+
+[model_capability.profiles.awq_7b_12gb]
+model = "Qwen2.5-Coder-7B-Instruct"
+runtime = "sidecar"
+quant_format = "AWQ-Marlin+FA2+FP8KV"
+prompt_tokens_target = 25000
+output_reserve = 512
+effective_ceiling = 30000
+expected_slot_utilization_floor = 0.83
+expected_compression_ratio_floor = 0.65
+fixture = "benches/model_capability/fixtures/awq_7b_12gb.toml"
+
+[model_capability.profiles.awq_3b_12gb]
+model = "Qwen2.5-Coder-3B-Instruct"
+runtime = "sidecar"
+quant_format = "AWQ-Marlin+FA2+FP8KV"
+prompt_tokens_target = 40000
+output_reserve = 512
+effective_ceiling = 45000
+expected_slot_utilization_floor = 0.82
+expected_compression_ratio_floor = 0.60
+fixture = "benches/model_capability/fixtures/awq_3b_12gb.toml"
+
+[model_capability.profiles.awq_3b_8gb]
+model = "Qwen2.5-Coder-3B-Instruct"
+runtime = "sidecar"
+quant_format = "AWQ-Marlin+FA2+FP8KV"
+prompt_tokens_target = 22000
+output_reserve = 512
+effective_ceiling = 28000
+expected_slot_utilization_floor = 0.78
+expected_compression_ratio_floor = 0.55
+fixture = "benches/model_capability/fixtures/awq_3b_8gb.toml"
+
+[model_capability.profiles.large_32b_48gb]
+model = "Qwen2.5-Coder-32B-Instruct"
+runtime = "sidecar"
+quant_format = "NF4+FA2"
+prompt_tokens_target = 30000
+output_reserve = 512
+effective_ceiling = 35000
+expected_slot_utilization_floor = 0.85
+expected_compression_ratio_floor = 0.70
+fixture = "benches/model_capability/fixtures/large_32b_48gb.toml"
+
+[model_capability.profiles.cloud_200k]
+model = "claude-sonnet-4-6"
+runtime = "cloud"
+quant_format = "FP16"
+prompt_tokens_target = 192000
+output_reserve = 8000
+effective_ceiling = 200000
+expected_slot_utilization_floor = 0.90
+expected_compression_ratio_floor = 0.70
+fixture = "benches/model_capability/fixtures/cloud_200k.toml"
+
+[model_capability.repair_context]
+# Mirrors REPAIR_CONTEXT_TOTAL constant in
+# crates/orchestrator/src/context_budget.rs:130 — the harness needs this
+# value but cannot import the crate (stub_ban). G3 regression threshold:
+# total_tokens_in with REPAIR_CONTEXT enabled MUST NOT exceed the baseline
+# by more than 15%.
+total_token_budget = 1400
+regression_threshold_pct = 15.0
+
+[model_capability.constrained_decoding]
+# G4 gate: 0 invalid-JSON outputs required across the json_schema fixture.
+# Sidecar wires JSON-schema only via LMFE (server.py:1829-1894). Grammar/
+# EBNF mode is DEFERRED — see phase-3J-BASELINE.txt §Constrained decoding.
+mode = "json_schema"
+invalid_outputs_allowed = 0
+json_schema_fixture = "benches/model_capability/fixtures/json_schema.toml"
+
+# ============================================================================
+# C-37 — Per-role decoding hyperparameters (paper-grounded for Critic +
+# Reflection; UNGROUNDED for Planner + Coder).
+# ============================================================================
+#
+# Paper grounding: arXiv:2604.06066 (Zhou 2026, "From Hallucination to
+# Structure Snowballing"). Paper Section 4.3: all roles use uniform
+# temperature=0.1, max_new_tokens=1024; only the Reflector (mapped to
+# ELAI's REFLECTION role) flips constrained=true.
+#
+# Paper role -> ELAI role mapping:
+#   Actor      <=> CODER       (free-text reasoning generator)
+#   Evaluator  <=> CRITIC      (free-text semantic-equivalence judge)
+#   Reflector  <=> REFLECTION  (constrained 5-class error diagnoser)
+#
+# Planner is an ELAI internal extension not in the paper; its values are
+# kept at the pre-C-37 defaults and tagged ungrounded-pending-eval.
+#
+# This block is the persistent surface for user overrides. The defaults
+# mirror crates/providers/src/decoding.rs::PER_ROLE_DECODING_PARAMS_PAPER
+# bit-for-bit; the contract test
+# crates/contracts/tests/c37_per_role_decoding_contract.rs asserts agreement.
+[decoding.per_role.planner]
+temperature = 0.7
+max_new_tokens = 2048
+constrained = false
+grounding = "ungrounded-pending-eval"
+
+[decoding.per_role.coder]
+temperature = 0.4
+max_new_tokens = 2048
+constrained = false
+grounding = "ungrounded-pending-eval"
+
+[decoding.per_role.critic]
+temperature = 0.1
+max_new_tokens = 1024
+constrained = false
+grounding = "paper-2604.06066-S4.3"
+
+[decoding.per_role.reflection]
+temperature = 0.1
+max_new_tokens = 1024
+constrained = true
+grounding = "paper-2604.06066-S3.3-S4.3"
+
+# ============================================================================
+# C-34: Empire Integration (host-side config carrier).
+# ============================================================================
+# Phase 4J + B-25 shipped the orchestrator::empire submodule, the EmpireBridge
+# state machine, the 5 SsbActionType empire arms, the --empire CLI flag, and
+# the EmpireBridgePanel. The remaining wire-point is the construction site
+# that hands a real Arc<EmpireBridge> to AppState. That construction needs a
+# transport + socket path + bridge identity, which this section carries.
+#
+# All keys are OPTIONAL — the section can stay commented out and the loader
+# falls back to EmpireConfig::default() (transport="unix",
+# socket_path=os-default, tcp_host="127.0.0.1", tcp_port=7430,
+# bridge_state_default="Disconnected", enabled=false).
+#
+# Validation policy (warn-not-panic): when `enabled = true` but the Empire
+# codebase is NOT detected at runtime (EmpireBridge::connect returns
+# NotConnected), runtime_config.rs emits a `tracing::warn!` once at startup
+# and continues. No panic, no abort — the bridge stays in the Disconnected
+# state and the EmpireBridgePanel renders its empty-state notice. This
+# matches the phase-4J anti-lazy compliance point (graceful degradation,
+# never abort the orchestrator when an optional integration is offline).
+#
+# Spec ref: docs/thefinalglance/C-plan/C-34_empire_integration_deferred.md
+# Decision doc: workflow/reasoning/C-34-decisions.md
+# ============================================================================
+[empire]
+# Master enable switch. When false (default), the empire feature path is
+# fully inert even if the `empire` cargo feature is compiled in.
+enabled = false
+# Transport selector: "unix" (AF_UNIX, Linux/macOS only) or "tcp"
+# (cross-platform fallback). Unknown values fall back to "unix" with a
+# tracing::warn.
+transport = "unix"
+# AF_UNIX socket path. Default uses $XDG_RUNTIME_DIR when set, otherwise
+# /tmp/elai-empire.sock. Ignored when transport = "tcp".
+socket_path = "$XDG_RUNTIME_DIR/elai-empire.sock"
+# TCP host + port. Ignored when transport = "unix". 7430 is a free
+# unprivileged port (IANA unassigned as of 2026-05); change if a local
+# listener already binds it.
+tcp_host = "127.0.0.1"
+tcp_port = 7430
+# Default bridge state at construction. "Disconnected" matches the
+# host-side scaffold default — see crates/orchestrator/src/empire/bridge.rs
+# BridgeState::Disconnected. The other valid values ("Connecting",
+# "Connected") are reserved for future replay-from-snapshot wiring; today
+# only "Disconnected" is honoured and any other value falls back to it
+# with a tracing::warn.
+bridge_state_default = "Disconnected"
+
+# ============================================================================
+# D-3: VerificationResult aggregator + multi-verifier consensus.
+# ============================================================================
+# Evaluator-side knobs for the multi-verifier consensus pass and the
+# cross-context agreement check. The agent must NOT edit this section at
+# runtime (L3-locked per D-9). All keys are optional — defaults from
+# crates/orchestrator/src/verification_result.rs and
+# crates/orchestrator/src/cross_context.rs are applied when absent.
+#
+# Spec ref: docs/thefinalglance/D-plan/D-3_verification_result_aggregator.md
+# Decision doc: workflow/reasoning/D-3-decisions.md
+# ============================================================================
+[verification]
+# Default consensus rule when a template carries no explicit override.
+# Valid values: "all_pass" | "k_of_n" | "weighted_score_threshold" |
+# "verifier_kind_heterogeneous". Defaults to "k_of_n" with k=2 / n=3 per
+# companion §3.3.
+consensus_rule = "k_of_n"
+# Minimum mean log-probability for an Intrinsic verifier signal to count
+# as Pass. Default -3.0 (see IntrinsicSignals::DEFAULT_LOGPROB_FLOOR).
+intrinsic_logprob_threshold = -3.0
+# Maximum mean predictive entropy (in nats) before the Intrinsic signal
+# is treated as uncertain. Default 3.5 (see
+# IntrinsicSignals::DEFAULT_ENTROPY_CEIL).
+intrinsic_entropy_max = 3.5
+# Minimum cross-context shingle-jaccard similarity for an Agree verdict.
+# Default 0.7 (see cross_context::DEFAULT_JACCARD_THRESHOLD).
+cross_context_jaccard_threshold = 0.7
+
+# ============================================================================
+# D-4 GAP-3: Tripwire stack thresholds + windows (L3-locked).
+# Spec ref: docs/thefinalglance/D-plan/D-4_tripwire_stack.md
+# Decision doc: workflow/reasoning/D-4-decisions.md
+# Paper refs:
+#   * arXiv:2507.05619 (reward-hacking detection): kl_spec_tau 0.3,
+#     iqr_multiplier 3.0, ppl_sigma_mult 2.0. The claim "approximately
+#     70-90% coverage of reward-hacking categories" decomposes per §5.3
+#     into 39.8% spec gaming + 31.2% proxy opt + 18.7% objective
+#     misalignment (sum 89.7% on 3 categories; 70.8% on 2 — see
+#     D-4-decisions.md DECISION-3).
+#   * arXiv:2004.05785 (Lu et al concept-drift survey): corr_window 50 +
+#     DDM warning/drift multipliers 2.0/3.0 (§3.2 Gama 2004 derivation).
+#   * arXiv:2210.10760 (Gao et al RM over-optimisation): inspires the
+#     CorrelationDrop detector pattern but does NOT specify a numeric
+#     delta_rho threshold; 0.5 is an implementation choice calibrated
+#     against ELAI baseline (see D-4-decisions.md DECISION-4).
+# Lock policy: L3-locked — values are tuned per VRAM tier / model and
+# may NOT be in-code edited; the loader is the sole reader so agent
+# edits to tripwire.rs defaults() cannot drift these.
+# ============================================================================
+[tripwire]
+# KL divergence threshold τ_spec for the KlDivergence detector
+# (arxiv:2507.05619 default 0.3).
+kl_spec_tau = 0.3
+# Pearson Δρ degradation threshold for the CorrelationDrop detector.
+# NOT paper-grounded numerically — arxiv:2210.10760 motivates the
+# pattern; 0.5 is an ELAI baseline-calibrated implementation choice
+# (see D-4-decisions.md DECISION-4).
+delta_rho = 0.5
+# Sliding-window length used by KL / Δρ / IQR / perplexity detectors
+# (Lu et al survey §3.2 default 50).
+corr_window = 50
+# Tukey IQR multiplier for the IqrOutlier detector
+# (arxiv:2507.05619 default 3.0).
+iqr_multiplier = 3.0
+# Perplexity σ multiplier for the Perplexity detector
+# (arxiv:2507.05619 default 2.0).
+ppl_sigma_mult = 2.0
+# DDM minimum-samples gate before drift evaluation begins (Gama 2004
+# warm-up; tripwire.rs `DdmState::MIN_SAMPLES_FOR_DRIFT`).
+ddm_min_instances = 30
+# DDM warning-level threshold multiplier (Gama 2004 default 2.0).
+ddm_warning_threshold = 2.0
+# DDM drift-level threshold multiplier (Gama 2004 default 3.0).
+ddm_drift_threshold = 3.0
+
+# C-40 — GitHub PR adapter (gh CLI shell-out). Opt-in per project; the
+# loader does not require this section. All keys are advisory in this
+# slice — the adapter reads them at the CLI / dashboard handler
+# boundary, not at config-load time.
+[github]
+# Enable the GitHub PR surface. When false (default), the `elai pr`
+# CLI subverb + dashboard GithubWindow still exist but every call
+# returns a `disabled` error before reaching `gh`. Flip to true once
+# `gh auth login` has been run for the active repo.
+enabled = false
+# Adapter implementation. Only "gh" is shipped in C-40. The plan also
+# sketches "rest" (reqwest + GITHUB_TOKEN) as a fallback — deferred
+# behind a separate plan because adding reqwest to the orchestrator
+# crate breaks the anti-deps rule without explicit user confirmation.
+adapter = "gh"
+# Default base branch for `elai pr open` when --base is omitted.
+default_base_branch = "main"
+# PR body template id. "default" loads .elai_cc/templates/pr_body_default.md;
+# any other value is interpreted as a path relative to the project root.
+pr_body_template = "default"
+# Review-comment poll interval, in seconds. Reserved for the
+# ReviewCommentWatcher follow-up (not active in C-40's slice).
+review_poll_interval_s = 60
+# When true, a review-comment SSB row will spawn a new ELAI session
+# scoped to the file mentioned in the comment. Default OFF —
+# follow-up. Flipping requires explicit user confirmation per
+# stub_ban in the C-40 plan.
+auto_respond_review_comments = false
+
+# ============================================================================
+# D-6 closure: held-out task store tunables (L3-locked).
+# ============================================================================
+# Contamination defense + retirement policy tunables for the held-out task
+# store. Loaded once at startup by the `[held_out]` reader; the orchestrator
+# `crate::held_out` module reads the resolved values via `HeldOutTunables`
+# from elai_rules. Defaults below match the Rust-side `DEFAULT_*` consts in
+# crates/orchestrator/src/held_out.rs so an absent section preserves the
+# shipped behaviour exactly.
+#
+# Grounding:
+#   - n-gram method is from Shi et al. 2023 (arXiv:2303.10130) + Riddell
+#     et al. 2024. LiveCodeBench (arxiv:2403.07974) §S6.SS3 cites these as
+#     EXTERNAL prior work, not as paper techniques.
+#   - LiveCodeBench's own contamination defense is the temporal date-
+#     windowing predicate (`task.release_date > model.training_cutoff`)
+#     in §S3.SS1.
+#   - The 6-month retirement window + the 100-uniformly-passing cutoff are
+#     ELAI policy choices (DECISION-5 in workflow/reasoning/D-6-decisions.md),
+#     NOT LiveCodeBench-specified.
+#   - Soft contamination cosine threshold reserved for the follow-up that
+#     wires sidecar-embedded fingerprints (arxiv:2602.12413).
+# ============================================================================
+[held_out]
+# n-gram window size for the Jaccard-overlap contamination filter.
+# ELAI-empirical default; override for experimental sweeps.
+ngram_n = 9
+# Jaccard-overlap threshold above which two task signatures are treated as
+# contaminating each other. ELAI-empirical default.
+ngram_threshold = 0.3
+# Cosine-similarity threshold for the soft-contamination defense (reserved
+# for the sidecar-embedded fingerprint follow-up).
+soft_contamination_cosine_threshold = 0.85
+# Retirement window for the auto-refresh policy. ELAI policy choice, NOT
+# LiveCodeBench-specified.
+retirement_window_months = 6
+# Pass-count threshold for the uniformly-passing retirement predicate
+# inside the window above. ELAI policy choice.
+retirement_uniformly_passing_count = 100
+# Auto-refresh tick interval in days. Default 30.
+auto_refresh_interval_days = 30
+
+# ============================================================================
+# D-7 closure: cross-domain transfer canary tunables (L3-locked).
+# ============================================================================
+# Per-family regression bands + sample floors for the cross-domain transfer
+# canary. Loaded once at startup by the `[canary]` reader; the orchestrator
+# `crate::canary` module reads the resolved values via
+# `CanaryRuntimeConfig::from_toml_value` and the BAI promotion gate consults
+# the result of `recent_canary_status()` against these thresholds before
+# flipping a candidate to Promoted. Defaults below mirror the in-code
+# `DEFAULT_*` consts in crates/orchestrator/src/canary.rs so an absent section
+# preserves the shipped behaviour exactly.
+#
+# Grounding:
+#   - NanoFlux (arXiv:2509.23252) is the empirical motivation for the
+#     cross-domain canary pattern — the paper reports that multi-domain
+#     improvement IS achievable but it does NOT define a canary mechanism,
+#     a 5% degradation threshold, or a cross-domain regression safeguard.
+#   - The 5% `fail_band` default, the 0.02 `marginal_band`, the 10-sample
+#     `min_per_family` floor, and the 5-sample `insufficient_data_min_samples`
+#     are ELAI policy choices (DECISION-3 in workflow/reasoning/D-7-decisions.md),
+#     NOT NanoFlux-specified.
+#   - Cross-domain regression detection is the wiring the BAI promotion gate
+#     consults to refuse promotion when a non-target family regresses. The
+#     canary itself does NOT introduce a new verifier — verifier consensus
+#     stays the D-3 multi-verifier / D-2 PPM path.
+# ============================================================================
+[canary]
+# Per-family `transfer_score` band beyond which a regression promotes to
+# `Fail`. ELAI policy choice — companion §3.5 suggested 5% as the noise-
+# balanced operating point (>=10 samples at p~0.7 gives std ~3%).
+fail_band = 0.05
+# Per-family `transfer_score` band beyond which a regression is flagged as
+# marginal but does not promote to `Fail`. Half-ish the fail band so a 2-3%
+# per-family regression still reaches the dashboard but does not auto-block
+# promotion. ELAI policy choice.
+marginal_band = 0.02
+# Minimum held-out tasks per family the canary run requires. Below this
+# floor the family's `FamilyEvalResult` is omitted from the report and a
+# `canary_insufficient_data` row is emitted. ELAI policy choice.
+min_per_family = 10
+# Cross-domain regression threshold the BAI promotion gate consults via
+# `recent_canary_status().blocks_promotion()`. Mirrors `fail_band` by
+# default; held distinct so operators can run the canary at a tighter band
+# than the gate enforces (observe-mode without blocking). ELAI policy choice.
+regression_threshold = 0.05
+# Sample-count floor below which a family is treated as INSUFFICIENT_DATA
+# rather than counted toward the overall decision. Strictly less than
+# `min_per_family`. ELAI policy choice.
+insufficient_data_min_samples = 5
+
+# ============================================================================
+# [sycophancy] (D-14 closure — L3-LOCKED)
+# Defensive sycophancy probe per Sharma et al. ("Towards Understanding
+# Sycophancy in Language Models", arXiv:2310.13548, Anthropic, ICLR 2024).
+# Detects user-disagreement-flips via the §3.2 inverted-framing challenge.
+# Defensive boundary: this stanza configures DETECTION ONLY. The probe
+# FLAGS suspected sycophancy on the SycophancyFlag SSB row; the auditor
+# consumes that row and BLOCKs. The probe does NOT auto-rewrite the
+# agent's response. Per §4, preference models do NOT reliably fix
+# sycophancy (75% PM residual with Claude 2 PM, 25% oracle floor); the
+# correction surface is a separate concern (out of scope for D-14).
+# ============================================================================
+[sycophancy]
+# Master enable flag. The `[sycophancy].enable` toml key + the
+# `ELAI_SYCOPHANCY_PROBE_ENABLE` env var BOTH must be truthy for the
+# `dispatch_sycophancy_probe_hook` hook in the task_runner to fire. The
+# env var takes precedence at runtime so the toggle can be flipped
+# without editing the file. Default false — opt-in.
+enable = false
+# Cosine-distance threshold above which a probe verdict counts as a
+# flip. Range [0.0, 1.0]. Default 0.20 per Sharma §3.2 conservative
+# cut (paper reports Claude 1.3 at 0.98 flip rate on QA; non-RLHF
+# models near 0.02-0.05; authors give no hard threshold).
+flip_threshold = 0.20
+# Minimum probe-side disagreement score the dispatch hook requires
+# before emitting a SycophancyFlag row. Below this, the probe records
+# an Inconclusive verdict (no flag, auditor escalates instead of
+# silently BLOCKing). Range [0.0, 1.0]. ELAI policy choice.
+min_disagreement_score = 0.5
+# Default probe kind when the call site does not specify one. One of:
+#   "feedback"     — §3.1 feedback sycophancy (positive/negative framing)
+#   "are_you_sure" — §3.2 user-disagreement-flip (default)
+#   "answer"       — §3.3 user-stated-belief-shifts-accuracy
+#   "mimicry"      — §3.4 repeat-user-wrong-attribution
+probe_kind_default = "are_you_sure"
+# Lock on the wire-form challenge text from §3.2. Default true —
+# overriding the challenge text invalidates comparison with the paper
+# baseline. Set false ONLY when intentionally running an
+# out-of-distribution variant; the auditor will still consume the flag
+# row but the dashboard renders an OOD badge. ELAI policy choice.
+challenge_text_locked = true
+
+# ============================================================================
+# [novelty] (D-15 closure — L3-LOCKED)
+# Discovery-vs-search labeling under a closed 3-bucket taxonomy
+# {Search, DistantSearch, DiscoveryCandidate}. Honesty layer per
+# real-problem-solving-grounded-2026-05-19.md §1 Mode C: the system
+# NEVER claims discovery autonomously — DiscoveryCandidate routes to a
+# human-review queue (D-27). Empirical 3-bucket grounding per Stojkovic
+# et al. arXiv:2406.05761 §4 (familiar / recombination / OOD).
+#
+# Paper-grounding labels (DECISION-7):
+#   * arXiv:2406.05761 (LLM Novelty Detection) — three-bucket
+#     classification is the directly grounded design.
+#   * arXiv:2310.06770 / Nature 2023 FunSearch — paper requires expert
+#     review to call results "discovery"; ELAI uses cosine-similarity
+#     proxy with the explicit "automated heuristic" tag (per
+#     workflow/papers/funsearch-nature-2023-interface.md).
+#   * arXiv:2506.13131 AlphaEvolve — no scored novelty variable in
+#     paper; MAP-Elites bin proxy is the closest analog. The
+#     discovery_candidate_threshold below is an ELAI calibration
+#     choice, not a paper-defined cut.
+#   * arXiv:1911.01547 Chollet — framework taxonomy describes
+#     benchmark-task novelty; the 3-arm bucket here is an
+#     ELAI-empirical extension labeling CLAIM novelty.
+# ============================================================================
+# [novelty]
+# Master enable flag. The `[novelty].enable` toml key + the
+# `ELAI_NOVELTY_LABEL_ENABLE` env var BOTH must be truthy for the
+# `dispatch_novelty_hook` hook in the task_runner to fire. The env var
+# takes precedence at runtime so the toggle can be flipped without
+# editing the file. Default false — opt-in.
+# enable = false
+# Cosine similarity threshold at which the Search arm fires (paired
+# with the DKG-match floor). Range [0.0, 1.0]. Default 0.85 —
+# arXiv:2406.05761 §4 empirical near-duplicate cut.
+# near_duplicate_threshold = 0.85
+# Cosine similarity threshold below which the DiscoveryCandidate arm
+# fires (paired with zero DKG matches). Range [0.0, 1.0]. Default
+# 0.40. Must be strictly < near_duplicate_threshold.
+# distant_threshold = 0.40
+# Minimum class confidence the dispatch hook requires before stamping
+# the verdict on the SSB row. Below this, the row carries an
+# inconclusive marker rather than a class label. Range [0.0, 1.0].
+# ELAI policy choice (no paper-defined floor). Default 0.6.
+# min_class_confidence = 0.6
+# Cosine-similarity cut for the DiscoveryCandidate label
+# (calibration heuristic). Default 0.20. IMPLEMENTATION CHOICE — NOT
+# directly grounded in arxiv:2506.13131 (AlphaEvolve has NO
+# paper-defined novelty score — only MAP-Elites binning). FunSearch
+# (Nature 2023) requires expert review to declare discovery; ELAI
+# uses cosine similarity as an automated heuristic. See
+# workflow/reasoning/D-15-decisions.md DECISION-6.
+# discovery_candidate_threshold = 0.20
+
+# ============================================================================
+# [conformal] (D-16 closure — L3-LOCKED)
+# UniCR conformal-refusal calibration thresholds. The orchestrator's
+# `GroundingMode::ConformalRefusal` arm consults the persisted tau
+# (written by `TauUpdater::update_tau` to the path below) per claim and
+# routes claims with non-conformity `(1 - claim_score) > tau` to the
+# formal "I don't know" surface.
+#
+# Paper-grounding labels (DECISION-1 + DECISION-4):
+#   * arXiv:2509.01455 (UniCR) — Eq.5 CRC quantile formula is the
+#     directly grounded design. `alpha` is the miscoverage rate (the
+#     fraction of correct claims allowed past tau); `rho` is the
+#     DISTINCT selective risk budget (the per-decision risk ceiling).
+#     Both quantities live in the toml; they are NOT
+#     interchangeable.
+#   * arXiv:2311.09731 (UnknownBench) — eval framework only; the
+#     Refusal Delta metric target lives in the dashboard
+#     `RefusalRateGauge`, not the toml.
+#   * arXiv:2503.02623 (Rewarding-Doubt) — supporting evidence on
+#     log-score calibration; the paper has NO abstention mechanism
+#     and does NOT specify implementation for refusal per
+#     D-16-decisions.md DECISION-6.
+# ============================================================================
+# [conformal]
+# Master enable flag. The `[conformal].enable` toml key + the
+# `ELAI_CONFORMAL_REFUSAL_ENABLE` env var BOTH must be truthy for the
+# `dispatch_conformal_corpus_grow_hook` hook in the task_runner to fire.
+# The env var takes precedence at runtime so the toggle can be flipped
+# without editing the file. Default false — opt-in.
+# enable = false
+# UniCR Eq.5 miscoverage rate. Range (0.0, 1.0); paper default 0.10.
+# The CRC quantile is taken at `1 - alpha`. DO NOT conflate with
+# `rho` below — they are paper-distinct quantities.
+# alpha = 0.10
+# UniCR selective risk budget — the per-decision risk ceiling
+# enforced separately from the global miscoverage rate. Range (0.0,
+# 1.0); ELAI default 0.05 per paper §4.2 typical operating point.
+# Strictly < alpha so the selective predictor is more conservative
+# than the marginal one.
+# rho = 0.05
+# Minimum tuple count below which `TauUpdater::update_tau` writes
+# the conservative fallback (0.9) instead of the computed quantile.
+# Default 50 — calibrated for early-bootstrap workflows; production
+# raises to >= 500 once the grower is online.
+# min_calibration_corpus_size = 50
+# Minimum interval (seconds) between successive corpus-grow events
+# emitted by `dispatch_conformal_corpus_grow_hook`. Throttles the
+# `calibration_corpus_updated` SSB row to one per hour by default so
+# the dashboard's audit-trail panel stays readable across long runs.
+# corpus_grow_min_interval_secs = 3600
+# On-disk path the durable tau scalar is written to. The string is
+# resolved relative to the project root; absolute paths bypass the
+# relative resolution. Default `.elai_cc/data/conformal_tau.txt`.
+# tau_path = ".elai_cc/data/conformal_tau.txt"
+
+# ============================================================================
+# [observable_effect] (D-18 closure — L3-LOCKED)
+# Typed-ObservableEffect predicate (Mode D upgrade extension of C-22
+# FeasibilityProber). Wires the 4-variant SSB pack
+# (observable_effect_dispatched / goodhart_risk_flag /
+# sandbox_observation / production_observation_proposal) under an
+# env-gated post-task dispatch hook (`dispatch_observable_effect_hook`
+# at layer-8 of the task_runner chain).
+#
+# Paper-grounding labels (DECISION-6 substituted citations):
+#   * Voyager arxiv:2305.16291 §3 — skill-with-measurable-effect +
+#     INV-5 state-delta invariant (a real observable effect must
+#     produce a non-zero delta in observed environment keys).
+#   * Eureka arxiv:2310.12931 §3.3 — component-variation reward
+#     invariant; constant components imply Goodhart's law applies.
+#   * Coscientist arxiv:2304.05332 §4 — SandboxObservation vs
+#     ProductionObservation taxonomy; ProductionObservation without an
+#     instrument_file MUST gate on human review.
+#   * The plan's arxiv:2412.16367 cite is REJECTED — WebSearch (May
+#     2026) confirmed it is "A Layered Swarm Optimization Method for
+#     Fitting Battery Thermal Runaway Models" (unrelated to typed
+#     test predicates). See
+#     workflow/reasoning/D-18-decisions.md DECISION-6.
+# ============================================================================
+# [observable_effect]
+# Master enable flag. The `[observable_effect].enable` toml key + the
+# `ELAI_OBSERVABLE_EFFECT_ENABLE` env var BOTH must be truthy for the
+# `dispatch_observable_effect_hook` hook in the task_runner to fire.
+# The env var takes precedence at runtime so the toggle can be flipped
+# without editing the file. Default false — opt-in.
+# enable = false
+# Eureka §3.3 component-variation invariant floor. When a per-effect
+# component's observed variation falls below this value, the Goodhart
+# guard fires a `goodhart_risk_flag` SSB row. ELAI policy choice (paper
+# does not specify a numeric default; 1e-3 chosen as the practical
+# "constant" floor). Range strictly positive.
+# goodhart_min_component_variation = 0.001
+# Coscientist §4 invariant: ProductionObservation without an
+# instrument_file MUST gate on human review. Default true. Setting to
+# false is a deliberate opt-out and is NOT recommended — it suppresses
+# the human-review gate the paper requires.
+# production_requires_instrument_file = true
+# Default sandbox tier (snake-case label) the dispatch hook uses when
+# the effect does not carry its own. One of:
+#   "no_sandbox"         — bare host process (smoke / dev only)
+#   "process_isolated"   — OS-process isolation (cwd jail + env scrub)
+#   "container_isolated" — container / namespace isolation (default)
+#   "network_blocked"    — container + net-deny
+# sandbox_default_tier = "container_isolated"
+# Voyager INV-5 state-delta minimum magnitude an effect must produce
+# to count as a real observable effect. Below this floor the dispatch
+# hook treats the effect as observational noise. ELAI policy choice
+# (paper does not specify a numeric default; near-zero so any
+# non-empty delta qualifies). Range strictly positive.
+# voyager_state_delta_threshold = 0.000000001

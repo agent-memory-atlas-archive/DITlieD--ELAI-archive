@@ -47,6 +47,10 @@ tracing.workspace = true
 tantivy = "0.26"
 elai-core = { path = "../core" }
 elai-rules = { path = "../rules" }
+# phase-3L: PI Tier hooks reuse HookVerdict from the plugins hook family
+# (per workflow/papers/tiered_analysis-interface.md "Re-use HookVerdict +
+# TieredAnalysisResult so the dispatch contract stays uniform").
+elai-plugins = { path = "../plugins" }
 ort = "=2.0.0-rc.12"
 tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 tokio = { version = "1", features = ["sync"] }

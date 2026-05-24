@@ -15,15 +15,16 @@
 use std::sync::Arc;
 
 use elai_knowledge::knowledge_ssb_sink::{
-    DeepPoolCappedEvent, HydeQueryEvent, HydeSkippedCodeQueryEvent, KnowledgeSsbSink,
-    QueryTraceEvent, RrfComponentWeightsEvent, RrfQualityGateFiredEvent, VectorCacheHitRateEvent,
+    DeepPoolCappedEvent, DkgRebuildCompleteEvent, DkgRebuildStartedEvent, HydeQueryEvent,
+    HydeSkippedCodeQueryEvent, KnowledgeSsbSink, PagerankRunEvent, QueryTraceEvent,
+    RrfComponentWeightsEvent, RrfQualityGateFiredEvent, VectorCacheHitRateEvent,
 };
 use tracing::warn;
 
 use crate::ssb::{
-    DeepPoolCappedPayload, HydeQueryPayload, HydeSkippedCodeQueryPayload, QueryTracePayload,
-    RrfComponentWeightsPayload, RrfQualityGateFiredPayload, Ssb, SsbPayload,
-    VectorCacheHitRatePayload,
+    DeepPoolCappedPayload, DkgRebuildCompletePayload, DkgRebuildStartedPayload, HydeQueryPayload,
+    HydeSkippedCodeQueryPayload, PagerankRunPayload, QueryTracePayload, RrfComponentWeightsPayload,
+    RrfQualityGateFiredPayload, Ssb, SsbPayload, VectorCacheHitRatePayload,
 };
 use crate::task_runner::{RUNNER_AGENT_ID, RUNNER_SUPERSTEP};
 
@@ -136,6 +137,34 @@ impl KnowledgeSsbSink for OrchestratorKnowledgeSsbSink {
             bm25_weight: event.bm25_weight,
             code_vec_weight: event.code_vec_weight,
             text_vec_weight: event.text_vec_weight,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_pagerank_run(&self, event: PagerankRunEvent) {
+        let payload = SsbPayload::PagerankRun(PagerankRunPayload {
+            workspace_root_hash: event.workspace_root_hash,
+            node_count: event.node_count,
+            top_node_hash: event.top_node_hash,
+            elapsed_ms: event.elapsed_ms,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_dkg_rebuild_started(&self, event: DkgRebuildStartedEvent) {
+        let payload = SsbPayload::DkgRebuildStarted(DkgRebuildStartedPayload {
+            workspace_root_hash: event.workspace_root_hash,
+            trigger_reason: event.trigger_reason,
+        });
+        self.dispatch_payload(payload);
+    }
+
+    fn emit_dkg_rebuild_complete(&self, event: DkgRebuildCompleteEvent) {
+        let payload = SsbPayload::DkgRebuildComplete(DkgRebuildCompletePayload {
+            workspace_root_hash: event.workspace_root_hash,
+            success: event.success,
+            duration_ms: event.duration_ms,
+            node_count: event.node_count,
         });
         self.dispatch_payload(payload);
     }

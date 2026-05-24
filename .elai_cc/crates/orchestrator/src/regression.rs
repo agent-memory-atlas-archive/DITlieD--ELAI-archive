@@ -28,6 +28,92 @@ use crate::self_mod_types::{
     AcRegression, FullPipelineOutcome, PipelineId, RegressionReport, TestOutcomeReport,
 };
 
+// ---------------------------------------------------------------------------
+// E-30: Named failure-taxonomy entries (Rust-side parallel to
+// .claude/tools/failure_taxonomy.py CATEGORY_PATTERNS).
+//
+// The 5 plan-named symptom categories surfaced by the public-incident
+// hardening work. Each entry pairs the canonical category name (used by the
+// .py classifier and by downstream counter consumers) with the SSB action
+// string emitted when the safeguard fires. Keep this list in lock-step with
+// failure_taxonomy.py and with the SsbActionType variants -- a category
+// without a producer is a tombstone, and a producer without a category line
+// here is invisible to the regression detector.
+// ---------------------------------------------------------------------------
+
+/// One named taxonomy entry: the (category_name, ssb_action_type, description)
+/// triple referenced by both Rust-side counters and the Python classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct E30TaxonomyEntry {
+    /// Canonical category name surfaced by counters and reports.
+    pub category: &'static str,
+    /// SSB `action_type` sql_str emitted by the producing safeguard.
+    pub ssb_action: &'static str,
+    /// Short human-readable description used by reports.
+    pub description: &'static str,
+}
+
+/// The 5 E-30 named taxonomy entries. Keep aligned with
+/// `.claude/tools/failure_taxonomy.py` (each `category` field MUST appear as a
+/// regex name there) and with `SsbActionType` (each `ssb_action` MUST be one
+/// of the shipped sql_str values at ssb.rs).
+///
+/// Producer wiring per entry:
+///   DestructiveVerbBlocked     -- crates/safety::check_argv() Deny path
+///                                 -> hook_dispatcher.rs::dispatch_pre_tool_use
+///   TrustDialogDeferredLoad    -- crates/safety::ensure_session_trust() refusal
+///                                 -> boot path (cli/runtime_config)
+///   McpServerPinMismatch       -- crates/plugins::mcp::pins enforcement refusal
+///                                 -> mcp loader call site
+///   AuditorLineageCollision    -- per_role_runtime::auditor_executor_lineage_collision == true
+///                                 -> agent_pool::spawn_auditor
+///   UntrustedMemoryWriteRefused -- conversation::TextSource::is_trusted_for_memory_write == false
+///                                 -> mcp_memorize call site
+pub const E30_FAILURE_TAXONOMY: &[E30TaxonomyEntry] = &[
+    E30TaxonomyEntry {
+        category: "DestructiveVerbBlocked",
+        ssb_action: "argv_destructive_denied",
+        description: "argv-regex allowlist denied a destructive verb (rm -rf, git restore ., DROP TABLE, ...).",
+    },
+    E30TaxonomyEntry {
+        category: "TrustDialogDeferredLoad",
+        ssb_action: "trust_dialog_hook_deferred",
+        description: "trust-dialog ordering deferred a hook/env load until the user minted a session trust token (CVE-2025-59536 / CVE-2026-21852 fix pattern).",
+    },
+    E30TaxonomyEntry {
+        category: "McpServerPinMismatch",
+        ssb_action: "mcp_pin_version_refused",
+        description: "MCP server version did not match the exact pin in mcp_pins.toml; semver float refused per postmark-mcp v1.0.16 backdoor precedent.",
+    },
+    E30TaxonomyEntry {
+        category: "AuditorLineageCollision",
+        ssb_action: "auditor_lineage_collision",
+        description: "auditor and executor agents resolved to the same model lineage; correlated reward-hacking bias per arXiv:2511.18397.",
+    },
+    E30TaxonomyEntry {
+        category: "UntrustedMemoryWriteRefused",
+        ssb_action: "untrusted_memory_write_blocked",
+        description: "mcp_memorize call originated from an untrusted TextSource (external tool / web fetch / OCR / clipboard); refused per SpAIware ChatGPT memory-injection precedent.",
+    },
+];
+
+/// Lookup the taxonomy entry for a given category name. Returns `None` when
+/// the category is unknown — caller should fall back to a generic
+/// `unknown` bucket rather than panicking.
+#[must_use]
+pub fn e30_taxonomy_entry_for_category(category: &str) -> Option<&'static E30TaxonomyEntry> {
+    E30_FAILURE_TAXONOMY.iter().find(|e| e.category == category)
+}
+
+/// Lookup the taxonomy entry for a given SSB action_type sql_str. Used by
+/// the SSB row -> regression-report mapper to bin rows by named category.
+#[must_use]
+pub fn e30_taxonomy_entry_for_ssb_action(ssb_action: &str) -> Option<&'static E30TaxonomyEntry> {
+    E30_FAILURE_TAXONOMY
+        .iter()
+        .find(|e| e.ssb_action == ssb_action)
+}
+
 /// Detect cross-pipeline AC regressions. `history` is ordered **oldest
 /// first** with the latest pipeline at `history.last()`. Returns an empty
 /// report when fewer than 2 entries are available.
@@ -238,5 +324,64 @@ mod tests {
         ];
         let r = detect(&history);
         assert!(!r.has_regressions);
+    }
+
+    // -----------------------------------------------------------------
+    // E-30: named taxonomy entries
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e30_taxonomy_has_five_named_entries() {
+        // Plan Task 7 promises exactly 5 named symptom categories.
+        assert_eq!(E30_FAILURE_TAXONOMY.len(), 5);
+    }
+
+    #[test]
+    fn e30_taxonomy_includes_all_plan_named_categories() {
+        let expected = [
+            "DestructiveVerbBlocked",
+            "TrustDialogDeferredLoad",
+            "McpServerPinMismatch",
+            "AuditorLineageCollision",
+            "UntrustedMemoryWriteRefused",
+        ];
+        for name in expected {
+            assert!(
+                e30_taxonomy_entry_for_category(name).is_some(),
+                "E-30 taxonomy missing plan-named category: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn e30_taxonomy_ssb_actions_match_shipped_sql_strs() {
+        // These sql_str values are LOCKED by ssb.rs and the action_type_lock
+        // golden. If any of them change, this test trips and forces an
+        // explicit rename across regression.rs + failure_taxonomy.py.
+        let expected_ssb_actions = [
+            "argv_destructive_denied",
+            "trust_dialog_hook_deferred",
+            "mcp_pin_version_refused",
+            "auditor_lineage_collision",
+            "untrusted_memory_write_blocked",
+        ];
+        for ssb_action in expected_ssb_actions {
+            assert!(
+                e30_taxonomy_entry_for_ssb_action(ssb_action).is_some(),
+                "E-30 taxonomy missing entry for SSB action: {ssb_action}"
+            );
+        }
+    }
+
+    #[test]
+    fn e30_taxonomy_category_names_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in E30_FAILURE_TAXONOMY {
+            assert!(
+                seen.insert(entry.category),
+                "duplicate E-30 taxonomy category: {}",
+                entry.category
+            );
+        }
     }
 }

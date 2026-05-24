@@ -82,8 +82,8 @@ const KIND_TABLE: &[(&str, &str, bool)] = &[
     ),
     (
         "z3",
-        "Z3 SMT solver (deferred — helper script not yet deployed)",
-        false,
+        "Z3 SMT solver (shell-out to .elai_cc/checkers/math/z3.py; requires z3-solver Python dep)",
+        true,
     ),
     (
         "compile_rust",
@@ -103,6 +103,16 @@ const KIND_TABLE: &[(&str, &str, bool)] = &[
     (
         "numeric_range",
         "Inclusive numeric range check on a parsed f64 (in-process)",
+        true,
+    ),
+    (
+        "compile_py",
+        "python3 -m py_compile on a candidate Python source (shell-out to .elai_cc/checkers/code/compile_py.sh)",
+        true,
+    ),
+    (
+        "registry_check",
+        "PyPI/npm registry existence + recent-publish check (canonical anti-slopsquatting defense; .elai_cc/checkers/registry/registry_check.py)",
         true,
     ),
 ];
@@ -213,8 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn kind_table_covers_six_closed_enum_variants() {
-        assert_eq!(KIND_TABLE.len(), 6);
+    fn kind_table_covers_eight_closed_enum_variants() {
+        // D-11 closure: +2 variants (compile_py + registry_check)
+        // atomic-extended alongside their helper scripts. See
+        // workflow/reasoning/D-11-decisions.md DECISION-3 + DECISION-5.
+        assert_eq!(KIND_TABLE.len(), 8);
         let kinds: Vec<&str> = KIND_TABLE.iter().map(|(k, _, _)| *k).collect();
         for required in [
             "sympy",
@@ -223,6 +236,8 @@ mod tests {
             "regex_match",
             "json_schema_validate",
             "numeric_range",
+            "compile_py",
+            "registry_check",
         ] {
             assert!(kinds.contains(&required), "missing kind {required}");
         }
@@ -238,15 +253,27 @@ mod tests {
                 builtin_available: *b,
             })
             .collect();
-        let z3 = kinds.iter().find(|e| e.kind == "z3").expect("has z3");
+        // json_schema_validate remains the sole deferred kind post-D-11
+        // closure (Z3 graduated when z3.py landed).
+        let jsv = kinds
+            .iter()
+            .find(|e| e.kind == "json_schema_validate")
+            .expect("has json_schema_validate");
         assert!(
-            !z3.builtin_available,
-            "z3 should be marked deferred until helper script lands"
+            !jsv.builtin_available,
+            "json_schema_validate should remain deferred (no validator vendored)"
         );
         let regex = kinds
             .iter()
             .find(|e| e.kind == "regex_match")
             .expect("has regex_match");
         assert!(regex.builtin_available);
+        // D-11 closure: registry_check is THE anti-slopsquatting defense
+        // — it MUST be marked available so the panel surfaces it.
+        let reg = kinds
+            .iter()
+            .find(|e| e.kind == "registry_check")
+            .expect("has registry_check");
+        assert!(reg.builtin_available);
     }
 }

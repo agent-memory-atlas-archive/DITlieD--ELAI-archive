@@ -50,7 +50,8 @@ use thiserror::Error;
 use crate::held_out::HeldOutTask;
 use crate::reasoning_template::Domain;
 use crate::ssb::{
-    CanaryFamilyEvaluatedPayload, CanaryRunCompletedPayload, Ssb, SsbError, SsbPayload,
+    CanaryFamilyEvaluatedPayload, CanaryFamilyPassPayload, CanaryInsufficientDataPayload,
+    CanaryRunCompletedPayload, CrossDomainRegressionPayload, Ssb, SsbError, SsbPayload,
 };
 
 // ---------------------------------------------------------------------------
@@ -467,11 +468,45 @@ pub fn decide(
 /// write are logged at `warn` level — they do NOT propagate, matching
 /// the held_out / bai pattern: the canary's decision logic must not
 /// depend on whether the dashboard can persist the SSB row.
+///
+/// D-7 closure (SCHEMA_VERSION 114): alongside the existing two variants
+/// this also emits per-family observation rows pinned to the three new
+/// [`SsbActionType::CrossDomainRegression`] / [`SsbActionType::CanaryFamilyPass`]
+/// / [`SsbActionType::CanaryInsufficientData`] variants. ELAI design
+/// hypothesis — NanoFlux (arXiv:2509.23252) provides empirical motivation
+/// only; no canary mechanism in the paper itself.
+///
+/// `source_domain` is the candidate's target-family domain (the one where
+/// the win was observed); it carries forward into every emitted
+/// `CrossDomainRegression` payload so the dashboard can render the source
+/// -> regressed-family edge without re-joining tables. Pass
+/// [`Domain::Mixed`] when the caller has no opinion (e.g. evaluation runs
+/// not tied to a specific target family).
 pub async fn emit_canary_run(
     report: &CanaryReport,
     ssb: &Arc<Ssb>,
     agent_id: &str,
     superstep: i64,
+) {
+    emit_canary_run_with_source(report, ssb, agent_id, superstep, Domain::Mixed, DEFAULT_FAIL_BAND)
+        .await;
+}
+
+/// D-7 closure variant of [`emit_canary_run`] that emits the three new
+/// SCHEMA 114 observation rows alongside the two shipped variants.
+/// `source_domain` + `fail_band` are caller-supplied so the BAI promotion
+/// gate can attribute regressions to the candidate's target family and
+/// pin the threshold to the loaded `[canary]` toml stanza.
+///
+/// ELAI design hypothesis — NanoFlux (arXiv:2509.23252) provides empirical
+/// motivation only; no canary mechanism in the paper itself.
+pub async fn emit_canary_run_with_source(
+    report: &CanaryReport,
+    ssb: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    source_domain: Domain,
+    fail_band: f64,
 ) {
     let dominant_fail_family = match &report.canary_decision {
         CanaryDecision::Fail { dominant_family } => dominant_family.as_str().to_string(),
@@ -515,6 +550,111 @@ pub async fn emit_canary_run(
                 "canary::emit_canary_run: CanaryFamilyEvaluated write failed"
             );
         }
+
+        // D-7 closure SCHEMA 114: emit the per-family observation row.
+        // Exactly one of the three new variants fires per family.
+        emit_per_family_observation(
+            ssb,
+            agent_id,
+            superstep,
+            &report.report_id,
+            fam,
+            source_domain,
+            fail_band,
+            report.ts_ms,
+        )
+        .await;
+    }
+}
+
+/// D-7 closure (SCHEMA_VERSION 114): emit exactly one of the three new
+/// per-family observation rows for a single [`FamilyEvalResult`]:
+///   - [`SsbActionType::CrossDomainRegression`] when transfer_score is
+///     below `-fail_band` (the family regressed beyond the band).
+///   - [`SsbActionType::CanaryInsufficientData`] when `n_evaluated <
+///     min_required` (the family was under-sampled).
+///   - [`SsbActionType::CanaryFamilyPass`] otherwise (clean pass at or
+///     above the marginal-band tolerance).
+///
+/// `min_required` is the in-code default [`DEFAULT_MIN_PER_FAMILY`]; for
+/// non-default deployments the caller's toml-loaded
+/// `CanaryRuntimeConfig::min_per_family` should be used instead. This
+/// helper is `async` so the SSB write surface stays uniform with
+/// [`emit_canary_run`].
+async fn emit_per_family_observation(
+    ssb: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    report_id: &str,
+    fam: &FamilyEvalResult,
+    source_domain: Domain,
+    fail_band: f64,
+    ts_ms: i64,
+) {
+    let min_required = DEFAULT_MIN_PER_FAMILY as u32;
+    if fam.n_evaluated < min_required {
+        let payload = SsbPayload::CanaryInsufficientData(CanaryInsufficientDataPayload {
+            family: fam.family.as_str().to_string(),
+            sample_count: fam.n_evaluated,
+            min_required,
+            ts_ms,
+        });
+        if let Err(e) = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await {
+            tracing::warn!(
+                error = %e,
+                report_id = report_id,
+                family = fam.family.as_str(),
+                "canary::emit_canary_run: CanaryInsufficientData write failed"
+            );
+        }
+        return;
+    }
+
+    if fam.transfer_score <= -fail_band {
+        // Regression beyond the fail-band — emit CrossDomainRegression with
+        // the absolute magnitude in percent.
+        let delta_pct = (-fam.transfer_score) * 100.0;
+        let threshold_pct = fail_band * 100.0;
+        let payload = SsbPayload::CrossDomainRegression(CrossDomainRegressionPayload {
+            source_domain,
+            regressed_domain: fam.family.domain(),
+            delta_pct,
+            threshold_pct,
+            ts_ms,
+        });
+        if let Err(e) = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await {
+            tracing::warn!(
+                error = %e,
+                report_id = report_id,
+                family = fam.family.as_str(),
+                "canary::emit_canary_run: CrossDomainRegression write failed"
+            );
+        }
+        return;
+    }
+
+    // Clean pass — candidate met or beat baseline (transfer_score above the
+    // negative fail-band). Emit CanaryFamilyPass with the candidate's
+    // pass-rate in percent.
+    let candidate_rate = if fam.n_evaluated == 0 {
+        0.0
+    } else {
+        f64::from(fam.pass_count) / f64::from(fam.n_evaluated)
+    };
+    let score_pct = candidate_rate * 100.0;
+    let payload = SsbPayload::CanaryFamilyPass(CanaryFamilyPassPayload {
+        family: fam.family.as_str().to_string(),
+        score_pct,
+        sample_count: fam.n_evaluated,
+        ts_ms,
+    });
+    if let Err(e) = ssb.write_payload(agent_id, superstep, payload, Vec::new()).await {
+        tracing::warn!(
+            error = %e,
+            report_id = report_id,
+            family = fam.family.as_str(),
+            "canary::emit_canary_run: CanaryFamilyPass write failed"
+        );
     }
 }
 

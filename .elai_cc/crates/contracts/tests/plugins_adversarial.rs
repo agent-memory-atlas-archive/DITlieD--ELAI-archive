@@ -3,7 +3,7 @@
 //! 10 tests covering edge cases, information leakage prevention,
 //! concurrent lock scenarios, and FSM state enforcement.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use elai_plugins::ipc_hooks::{
     CrossSessionLockChecker, HookContext, IpcHookDispatcher, IpcHookTrait,
@@ -70,14 +70,16 @@ fn make_dispatcher() -> IpcHookDispatcher {
 }
 
 /// SSB writer that records verdicts for inspection.
+/// B-19: `Mutex` (not `RefCell`) so the type is `Send + Sync` to satisfy
+/// the upstream `SsbFindingWriter: Send + Sync` supertrait.
 struct SpySsbWriter {
-    verdicts: RefCell<Vec<String>>,
+    verdicts: Mutex<Vec<String>>,
 }
 
 impl SpySsbWriter {
     fn new() -> Self {
         Self {
-            verdicts: RefCell::new(Vec::new()),
+            verdicts: Mutex::new(Vec::new()),
         }
     }
 }
@@ -90,8 +92,13 @@ impl SsbFindingWriter for SpySsbWriter {
         verdict_json: &str,
         _files: &[String],
     ) -> Result<(), String> {
-        self.verdicts.borrow_mut().push(verdict_json.to_string());
-        Ok(())
+        match self.verdicts.lock() {
+            Ok(mut g) => {
+                g.push(verdict_json.to_string());
+                Ok(())
+            }
+            Err(e) => Err(format!("spy lock poisoned: {e}")),
+        }
     }
 }
 

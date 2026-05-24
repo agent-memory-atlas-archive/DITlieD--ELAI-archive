@@ -7,7 +7,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 
 cd "${ELAI_ROOT}"
 RESULT=$(cargo test -p elai-tools --release near_match_emits_hint 2>&1) || true

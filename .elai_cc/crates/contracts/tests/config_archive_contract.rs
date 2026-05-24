@@ -3,7 +3,7 @@
 //! Verifies DGM parent-selection formula invariants, archive overflow with
 //! deceptive-dip resilience, mode-filtered selection, and per-mode unique
 //! ACTIVE invariant. All formulas grounded in
-//! `D:\.ELAI_workflow\workflow\papers\dgm-interface.md`.
+//! `F:\.ELAI_workflow\workflow\papers\dgm-interface.md`.
 
 use elai_orchestrator::config_archive::{
     parent_selection_weights, parent_selection_probabilities, sigmoid_perf_score,

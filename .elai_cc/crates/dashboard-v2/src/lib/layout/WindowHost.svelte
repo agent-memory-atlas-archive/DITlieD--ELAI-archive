@@ -15,11 +15,19 @@
   import AuditTimelineWindow from '../windows/AuditTimelineWindow.svelte';
   // C-7: Q&A oracle / codebase-explorer surface.
   import ExploreWindow from '../windows/ExploreWindow.svelte';
+  // C-40: GitHub PR adapter window (gh CLI shell-out).
+  import GithubWindow from '../windows/GithubWindow.svelte';
+  // E-40: orchestrator-rooted symbol-graph operator window.
+  import SymbolGraphWindow from '../windows/SymbolGraphWindow.svelte';
   import FallbackWindow from './FallbackWindow.svelte';
   // E-33: persistent activity ribbon + per-window mode footer.
   import ActivityRibbon from '../components/ActivityRibbon.svelte';
   import WindowFooterMode from '../components/WindowFooterMode.svelte';
+  import SnackBarPermission from '../components/SnackBarPermission.svelte';
   import { motion } from '../state/motion.svelte';
+  import { grc } from '../state/grc.svelte';
+  import { permissionPrompts } from '../state/permission_prompts.svelte';
+  import { uxPrefs } from '../state/ux_prefs.svelte';
 
   interface Props {
     type: WindowType;
@@ -27,12 +35,21 @@
 
   let { type }: Props = $props();
 
-  // Bootstrap the reduced-motion observer once on first WindowHost mount.
-  // Idempotent — re-runs are safe because motion.bootstrap() clears the
-  // prior listener before re-attaching.
+  // Bootstrap the reduced-motion observer + GRC confidence store +
+  // permission-prompt store once on first WindowHost mount. Each
+  // bootstrap is idempotent so re-mounts (window switches) are safe.
   onMount(() => {
     motion.bootstrap();
-    return () => motion.teardown();
+    // UX prefs must bootstrap AFTER motion so the persisted motion override
+    // applies through motion.setUserOverride before the first render tick.
+    uxPrefs.bootstrap();
+    grc.bootstrap();
+    permissionPrompts.bootstrap();
+    return () => {
+      motion.teardown();
+      grc.teardown();
+      permissionPrompts.teardown();
+    };
   });
 
   // Human-readable scope label for the per-window footer.
@@ -47,6 +64,8 @@
     idea_framing: 'idea-framing',
     audit_timeline: 'audit-timeline',
     explore: 'explore',
+    github: 'github',
+    symbol_graph: 'symbol-graph',
   };
   let scope = $derived(SCOPE_LABEL[type] ?? String(type));
 </script>
@@ -76,10 +95,25 @@
       <AuditTimelineWindow />
     {:else if type === 'explore'}
       <ExploreWindow />
+    {:else if type === 'github'}
+      <GithubWindow />
+    {:else if type === 'symbol_graph'}
+      <SymbolGraphWindow />
     {:else}
       <FallbackWindow {type} />
     {/if}
   </div>
+
+  <!-- E-33: snack-bar permission prompts. Hidden when prompts list is
+       empty (the component itself renders nothing in that case), so the
+       mount is cheap. Buttons route through permissionPrompts.* helpers
+       which deduplicate per id. -->
+  <SnackBarPermission
+    prompts={permissionPrompts.prompts}
+    onApprove={(id) => permissionPrompts.approve(id)}
+    onReject={(id) => permissionPrompts.reject(id)}
+    onAlwaysAllow={(id) => permissionPrompts.alwaysAllow(id)}
+  />
 
   <!-- E-33: per-window mode footer — distinct from app-level StatusBar. -->
   <WindowFooterMode {scope} />

@@ -40,6 +40,11 @@ mcp = ["dep:reqwest", "dep:toml"]
 
 [dev-dependencies]
 tempfile = "3"
+# C-42 (session 2): proptest + proptest-state-machine for the authz fuzz
+# harness (plugins/src/authz/fuzz.rs). Same workspace pin orchestrator already
+# uses (see crates/orchestrator/Cargo.toml:128-129); no new external dep.
+proptest = "1.11"
+proptest-state-machine = "0.8"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

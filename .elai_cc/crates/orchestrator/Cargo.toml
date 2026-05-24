@@ -14,6 +14,12 @@ elai-plugins = { path = "../plugins" }
 elai-providers = { path = "../providers" }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
+# E-1 Task 4: PhaseSpec slot retarget — orchestrator's emit_memory_note_constraints
+# (production) + the emit_mistake_book_constraints back-compat shim both read
+# the new A-MEM note table via elai_memory::NoteStore + ppr_seeded_top_k. No
+# new external crate is introduced — elai-memory is workspace-internal and
+# already declared by reasoning/dashboard-v2/cli.
+elai-memory = { path = "../memory" }
 # B-28 E-1: focus_tunnel/fim.rs reuses Qwen FIM sentinels + strip_fim_artifacts
 # from the scaffold crate (single source of truth for upstream-tokeniser-verified
 # constants — see scaffold/src/fim.rs L38-48). Workspace-internal path dep only;
@@ -44,13 +50,23 @@ image-compare = "0.4"
 # decoder which is all we need; we disable the other format decoders to
 # keep the build graph small.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# ort and nvml-wrapper are gated behind `vlm-integration`; Phase 0 ships
-# the MockVlmBackend so CI does not require either crate. ort is pinned to
-# the same `=2.0.0-rc.12` already used by elai-knowledge (paper
-# ort-cpu-ep-interface.md L20-23 — 1.x line yanked). nvml-wrapper version
-# matches elai-providers (0.11) for workspace coherence.
+# ort gated behind `vlm-integration`; Phase 0 ships the MockVlmBackend so
+# CI does not require it. ort is pinned to the same `=2.0.0-rc.12` already
+# used by elai-knowledge (paper ort-cpu-ep-interface.md L20-23 — 1.x line
+# yanked).
+#
+# E-22 phase-4F M1 (2026-05-22): nvml-wrapper promoted to non-optional so
+# `crates/orchestrator/src/system_probe.rs` can run the canonical
+# `Nvml::init() -> device_by_index(n) -> device.memory_info()` path
+# (mirroring `crates/orchestrator/src/media_validator/types.rs:493-519`)
+# without a feature flag dance. nvml-wrapper 0.11 was already resolved in
+# the workspace via `vlm-integration` + `providers/Cargo.toml:34`, so the
+# build graph cost is unchanged. CLAUDE.md no-new-deps rule does not block
+# (activation, not new dep). Graceful fallback when `Nvml::init()` returns
+# Err (no NVIDIA driver / no GPU) is documented in
+# `phase-4F.txt` risk R-4F-1.
 ort = { version = "=2.0.0-rc.12", optional = true }
-nvml-wrapper = { version = "0.11", optional = true }
+nvml-wrapper = "0.11"
 rmp-serde = "1.3"
 rusqlite.workspace = true
 postcard.workspace = true
@@ -128,6 +144,10 @@ default = []
 # tests outside the orchestrator crate. The module is always available to
 # orchestrator's own integration tests (tests/) because cfg(test) is set there.
 test-support = []
+# C-35: forwards to elai-plugins/mcp so the orchestrator-side
+# tool_gate_ssb_adapter (OrchestratorToolGateSsbEmitter) compiles. Activated
+# by dashboard-v2 + cli when the dashboard's `mcp` feature is on.
+mcp = ["elai-plugins/mcp"]
 # Batch 1B: pass-through to providers crate's sidecar feature so the
 # concrete `SidecarProviderSignalReader` compiles. The trait surface in
 # `provider_signals` is unconditional; only the concrete impl is gated.
@@ -136,10 +156,13 @@ sidecar = ["elai-providers/sidecar"]
 obscura = ["elai-web-search/obscura"]
 # B-24 Phase 4I: VLM (Tier 2) integration toggle. Off by default — Phase 0
 # ships MockVlmBackend so CI runs without ONNX runtime or a CUDA-capable GPU.
-# Enabling this feature pulls in `ort` (CPU EP for SSIM/LPIPS/CLAP) and
-# `nvml-wrapper` (hardware guard for VlmProcessConfig::new — Mode A requires
-# >= 24 GB VRAM per workflow/papers/qwen-vl-internvl-interface.md L30-37).
-vlm-integration = ["dep:ort", "dep:nvml-wrapper"]
+# Enabling this feature pulls in `ort` (CPU EP for SSIM/LPIPS/CLAP). Note:
+# nvml-wrapper is now a non-optional workspace dep (see E-22 phase-4F M1
+# above) so it stays linked regardless of this feature; the
+# `#[cfg(feature = "vlm-integration")]` arm in
+# `media_validator/types.rs:493` controls only the VRAM-guard import path,
+# not the dep presence itself.
+vlm-integration = ["dep:ort"]
 # B-24 Phase 4I Group C5 (4I.7 SKELETON): marker feature for the
 # Render-Capture-Evaluate (RCE) surface. Today the feature is a pure
 # marker (no extra deps) so the SKELETON in render_adapters/* compiles
@@ -153,6 +176,19 @@ media-validator-rce = []
 # auditor_mode.rs is `#[cfg(feature = "visual_audit")]`-gated so no match-arm
 # obligation propagates to downstream code until B-43 ships.
 visual_audit = []
+# Phase 4J / B-25 — Empire integration. Marker-only feature that compiles
+# the `empire::*` submodule (FactoryLine client outline, BrainManifest,
+# EmpireBridge state machine, 5-variant EmpireEventKind dispatcher). Off by
+# default; the entire integration is host-side scaffolding behind
+# `EMPIRE-PENDING` markers until the Empire codebase (workspace/factory-brain)
+# is deployed. Non-empire builds pay zero compile/runtime cost.
+empire = []
+# C-43: hard CI gate for Phase 4H scope-freeze violations. When CI
+# observes a ScopeFreezeViolated SSB row it enables this feature on the
+# next build; the `compile_error!` in `scope_freeze.rs` then breaks the
+# build with a pointer back to the ratification doc. Pure stable Rust —
+# no custom clippy lint, no nightly toolchain. Off by default.
+phase_4h_freeze_violated = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

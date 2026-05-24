@@ -7,7 +7,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 pass_count() { echo "$1" | awk '/passed/{match($0,/[0-9]+ passed/); s=substr($0,RSTART,RLENGTH); match(s,/[0-9]+/); print substr(s,RSTART,RLENGTH)}' | head -1; }
 
 cd "${ELAI_ROOT}"

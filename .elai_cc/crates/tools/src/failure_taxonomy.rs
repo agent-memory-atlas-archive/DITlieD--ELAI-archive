@@ -188,6 +188,10 @@ impl ClassifyHandler {
             return FailureCategory::RuntimePanic;
         }
         // Default: treat as RuntimePanic (was RuntimeError in the old 13-list).
+        // B-20A DECISION (s-25120 DRIFT-5): PERMISSION_DENIED is intentionally
+        // folded into RuntimePanic via this default fallback rather than given
+        // a dedicated variant; phase-4B.txt's competing list is rejected for
+        // this phase. See workflow/reasoning/B-20A-decisions.md.
         FailureCategory::RuntimePanic
     }
 

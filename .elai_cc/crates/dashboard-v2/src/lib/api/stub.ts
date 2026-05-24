@@ -15,6 +15,8 @@
 
 import type {
   FsmSnapshot,
+  // B-26 T4 — Plan progress for the MonitorWindow phase-dot row.
+  PlanProgress,
   QueryTrace,
   SearchMode,
   EmbeddingBreaker,
@@ -29,6 +31,8 @@ import type {
   DecompNode,
   PipelineNode,
   DagRepairEvent,
+  // B-7 (SCHEMA_VERSION 100): producer-wire surfaces.
+  PackageRefVerified,
   ResearchTreeNode,
   VramGauge,
   InferenceMetrics,
@@ -80,6 +84,8 @@ import type {
   OAuthLoginInfo,
   CloudModelInfo,
   CloudSpendInfo,
+  // C-5 follow-on — Cloud routing status (RouteBlocked / WarnLimitReached / CostEstimate).
+  CloudRouteStatus,
   MutationGaugeInfo,
   // C-32 — Code-Completeness Layer 2 gauge.
   CompletenessRatioInfo,
@@ -116,6 +122,11 @@ import type {
   RrfQualityGateRow,
   HydeSkippedCodeQueryRow,
   RrfComponentWeightsRow,
+  // B-3 — feature-flag + query-tier + rule-transition surfaces.
+  FeatureFlags,
+  QueryTierStats,
+  RuleTransitionRow,
+  SessionHandoffEntry,
 } from './types';
 
 import {
@@ -182,6 +193,18 @@ const TAURI_AVAILABLE: boolean =
   (Boolean((window as any).__TAURI_INTERNALS__) ||
     Boolean((window as any).__TAURI__));
 
+// B-3 V2 rebaseline: `VITE_ELAI_DASHBOARD_OFFLINE=1` (compile-time) or
+// `window.__ELAI_DASHBOARD_OFFLINE__=true` (runtime, set by the Tauri shell
+// from the `ELAI_DASHBOARD_OFFLINE` env var via the feature-flag command)
+// forces stub.ts to short-circuit Tauri invocation and serve mock-data.
+// Useful for headless screenshot runs, smoke tests, and dashboard-dev
+// iteration without booting the full orchestrator stack.
+const DASHBOARD_OFFLINE: boolean =
+  (typeof window !== 'undefined' &&
+    Boolean((window as any).__ELAI_DASHBOARD_OFFLINE__)) ||
+  (typeof import.meta !== 'undefined' &&
+    (import.meta as any).env?.VITE_ELAI_DASHBOARD_OFFLINE === '1');
+
 let _invokeFn:
   | (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>)
   | null = null;
@@ -198,13 +221,19 @@ async function ensureInvoke(): Promise<typeof _invokeFn> {
   return _invokeFn;
 }
 
-/** Try to invoke a Tauri command; on any failure (or if not in Tauri),
+/** Try to invoke a Tauri command; on any failure (or if not in Tauri,
+ *  or if the dashboard is forced offline via `ELAI_DASHBOARD_OFFLINE`),
  *  return `undefined` so the caller falls through to mock data. */
 async function tryInvoke<T>(
   cmd: string,
   args?: Record<string, unknown>,
 ): Promise<T | undefined> {
   if (!TAURI_AVAILABLE) return undefined;
+  // B-3 V2 rebaseline: short-circuit when the dashboard is forced offline.
+  // The `get_feature_flags` command is exempt — it is the canonical source
+  // of the runtime offline signal so the shell can hydrate
+  // `window.__ELAI_DASHBOARD_OFFLINE__` from the Tauri env-var read.
+  if (DASHBOARD_OFFLINE && cmd !== 'get_feature_flags') return undefined;
   const inv = await ensureInvoke();
   if (!inv) return undefined;
   try {
@@ -241,6 +270,30 @@ export async function get_fsm_state(): Promise<FsmSnapshot> {
   if (live) return live;
   await delay();
   return { ..._fsmState };
+}
+
+// ------------------------------------------------------------------
+// B-26 T4 — plan progress for the MonitorWindow phase-dot row.
+// Returns the live Tauri payload when available; falls through to a
+// pending-only stub when offline so the dashboard renders an empty
+// 5-phase row instead of an error.
+// ------------------------------------------------------------------
+export async function get_plan_progress(): Promise<PlanProgress> {
+  logStub('get_plan_progress');
+  const live = await tryInvoke<PlanProgress>('get_plan_progress');
+  if (live) return live;
+  await delay();
+  return {
+    phases: [
+      { num: 1, label: 'Plan', steps: 0, status: 'pending' },
+      { num: 2, label: 'Feasibility', steps: 0, status: 'pending' },
+      { num: 3, label: 'Execute', steps: 0, status: 'pending' },
+      { num: 4, label: 'Audit', steps: 0, status: 'pending' },
+      { num: 5, label: 'Memorize', steps: 0, status: 'pending' },
+    ],
+    current_phase: null,
+    total_pct: 0,
+  };
 }
 
 // ------------------------------------------------------------------
@@ -348,6 +401,41 @@ export async function get_feasibility_report(): Promise<FeasibilityReport> {
   if (live) return live;
   await delay();
   return FEASIBILITY_REPORT;
+}
+
+// E-22 phase-4F P5: stub_results.msgpack reader. Live-only — the mock
+// returns an empty envelope when invoke() is unavailable so the browser-
+// only dev mode does not synthesize fake stub results.
+export interface StubResultsEnvelope {
+  task_id: string;
+  path: string;
+  count: number;
+  results: Array<{
+    step_id: string;
+    stub_passed: boolean;
+    elapsed_ms: number;
+    error: string | null;
+    alternative_index: number;
+    stdout_hash: string | null;
+    stderr_summary: string | null;
+    resource_delta: {
+      vram_bytes_before: number;
+      vram_bytes_after: number;
+      ram_bytes_before: number;
+      ram_bytes_after: number;
+    } | null;
+  }>;
+}
+
+export async function get_stub_results_msgpack(
+  taskId: string,
+): Promise<StubResultsEnvelope> {
+  logStub('get_stub_results_msgpack', { taskId });
+  const live = await tryInvoke<StubResultsEnvelope>('get_stub_results_msgpack', {
+    taskId,
+  });
+  if (live) return live;
+  return { task_id: taskId, path: '', count: 0, results: [] };
 }
 
 // ------------------------------------------------------------------
@@ -597,6 +685,72 @@ export async function get_recall_metrics(): Promise<RecallMetrics[]> {
   return RECALL_METRICS;
 }
 
+// ------------------------------------------------------------------
+// B-4: knowledge dashboard reads — canary drift, freshness state,
+// vector-cache hit rate, pagerank top, query tier stats.
+//
+// Each wrapper mirrors the matching Tauri command name 1:1 and falls
+// back to a `known:false` empty shape when outside the Tauri runtime
+// (browser-only `pnpm dev`) so the panels render "(no data)" instead
+// of crashing on undefined.
+// ------------------------------------------------------------------
+
+export interface CanaryDriftSnapshot {
+  known: boolean;
+  similarity: number;
+  drift_threshold: number;
+  passed: boolean;
+  reference_present: boolean;
+  ts: number;
+}
+
+export async function get_canary_drift(): Promise<CanaryDriftSnapshot> {
+  logStub('get_canary_drift');
+  const live = await tryInvoke<CanaryDriftSnapshot>('get_canary_drift');
+  if (live) return live;
+  await delay();
+  return {
+    known: false,
+    similarity: 0.0,
+    drift_threshold: 0.85,
+    passed: false,
+    reference_present: false,
+    ts: 0,
+  };
+}
+
+export interface FreshnessStateSnapshot {
+  known: boolean;
+  decay_rate: number;
+  access_boost: number;
+  last_recalc_ms: number;
+}
+
+export async function get_freshness_state(): Promise<FreshnessStateSnapshot> {
+  logStub('get_freshness_state');
+  const live = await tryInvoke<FreshnessStateSnapshot>('get_freshness_state');
+  if (live) return live;
+  await delay();
+  return { known: false, decay_rate: 0.0, access_boost: 0.0, last_recalc_ms: 0 };
+}
+
+export interface VectorCacheHitRateSnapshot {
+  known: boolean;
+  session_id: string;
+  hits: number;
+  misses: number;
+  hit_rate_pct: number;
+  ts: number;
+}
+
+export async function get_vector_cache_hit_rate(): Promise<VectorCacheHitRateSnapshot> {
+  logStub('get_vector_cache_hit_rate');
+  const live = await tryInvoke<VectorCacheHitRateSnapshot>('get_vector_cache_hit_rate');
+  if (live) return live;
+  await delay();
+  return { known: false, session_id: '', hits: 0, misses: 0, hit_rate_pct: 0.0, ts: 0 };
+}
+
 export async function get_dkg_stats(): Promise<DkgStats> {
   logStub('get_dkg_stats');
   const live = await tryInvoke<DkgStats>('get_dkg_stats');
@@ -811,6 +965,18 @@ export async function get_dag_repair_log(): Promise<DagRepairEvent[]> {
   return DAG_REPAIR_EVENTS;
 }
 
+// B-7 (SCHEMA_VERSION 100): producer-wire surface — package_ref_verified
+// rows from SSB. Used by PlanWindow concept/phase detail pane. Cold start
+// returns an empty array (no mock data fallback — these are session-scoped
+// outcomes; a static mock would be misleading).
+export async function get_package_verifications(): Promise<PackageRefVerified[]> {
+  logStub('get_package_verifications');
+  const live = await tryInvoke<PackageRefVerified[]>('get_package_verifications');
+  if (live) return live;
+  await delay();
+  return [];
+}
+
 // ------------------------------------------------------------------
 // RESEARCH
 // ------------------------------------------------------------------
@@ -885,6 +1051,79 @@ export async function get_deprecated_patterns(): Promise<DeprecatedPattern[]> {
   if (live) return live;
   await delay();
   return DEPRECATED_PATTERNS;
+}
+
+/** B-3 #11. RulesDrawer rule_transition feed. Returns the most recent N
+ *  rule lifecycle transitions emitted on the SSB stream. Falls back to
+ *  `[]` (not mock data) because "no transitions yet" is a legitimate
+ *  empty state — the dashboard renders an explicit empty note. */
+export async function get_rule_transitions(n = 5): Promise<RuleTransitionRow[]> {
+  logStub('get_rule_transitions', { n });
+  const live = await tryInvoke<RuleTransitionRow[]>('get_rule_transitions', { n });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+/** B-3 #3. KnowledgeDrawer query-tier histogram. Falls back to a zeroed
+ *  shape (sample_size=0 is the "no data yet" signal). */
+export async function get_query_tier_stats(): Promise<QueryTierStats> {
+  logStub('get_query_tier_stats');
+  const live = await tryInvoke<QueryTierStats>('get_query_tier_stats');
+  if (live) return live;
+  await delay();
+  return {
+    fast_pct: 0,
+    standard_pct: 0,
+    deep_pct: 0,
+    avg_latency_ms_fast: 0,
+    avg_latency_ms_standard: 0,
+    avg_latency_ms_deep: 0,
+    sample_size: 0,
+  };
+}
+
+/** B-3 #27/#28 + V2 rebaseline. Compile-time + runtime feature flags
+ *  driving panel visibility for future-phase UI sneak-ins. Falls back to
+ *  all-false so the panels stay hidden in pure-browser mode. */
+export async function get_feature_flags(): Promise<FeatureFlags> {
+  logStub('get_feature_flags');
+  const live = await tryInvoke<FeatureFlags>('get_feature_flags');
+  if (live) return live;
+  // Note: stub.ts is loaded BEFORE the panel mount decision, so the
+  // mock path returns "all false" to keep ProposalsPanel +
+  // AutoAdvanceStats hidden in pure-browser mode (matching the V2
+  // CLASS C deferral until B-22/B-23 producers land).
+  return {
+    autonomous_mode: false,
+    self_modification: false,
+    dashboard_offline: false,
+  };
+}
+
+/** B-3 #19 (CLASS B, V2-rebaseline): isolation_metric renderer
+ *  defer-flag. V2 has no ActivityEntry.svelte; the isolation_metric
+ *  caption/orbit-signal is intentionally NOT rendered until Tier C IPC
+ *  interception lands in B-18. This stub exists as a stable callable
+ *  surface so any future renderer (orbit caption, drawer panel) has a
+ *  one-line wire point — until then it returns the explicit deferral
+ *  envelope so callers do not silently render zero rows. */
+export interface IsolationMetricStatus {
+  enabled: boolean;
+  deferred_until: string;
+  reason: string;
+}
+export async function get_isolation_metric_status(): Promise<IsolationMetricStatus> {
+  logStub('get_isolation_metric_status');
+  // Not wired to a Tauri command yet — Tier C IPC interception (B-18)
+  // is the producer; until then the renderer must hide itself. We do
+  // NOT call tryInvoke here because there is no command behind it; the
+  // shape is the canonical "not yet" envelope.
+  return {
+    enabled: false,
+    deferred_until: 'B-18',
+    reason: 'Tier C IPC interception not yet implemented; compute_isolation_metric has no production caller',
+  };
 }
 
 // ------------------------------------------------------------------
@@ -1437,6 +1676,24 @@ export async function get_cloud_spend(): Promise<CloudSpendInfo> {
     cache_creation_tokens: 0,
     cache_read_tokens: 0,
     redaction_count: 0,
+  };
+}
+
+// ------------------------------------------------------------------
+// CLOUD ROUTE STATUS (C-5 follow-on — SCHEMA_VERSION 103)
+// ------------------------------------------------------------------
+
+export async function get_cloud_route_status(): Promise<CloudRouteStatus> {
+  logStub('get_cloud_route_status');
+  const live = await tryInvoke<CloudRouteStatus>('get_cloud_route_status');
+  if (live !== undefined && live !== null) return live;
+  await delay();
+  // Stub default: all-null. CloudPanel hides the banners while every
+  // field is null (no SSB row of that type written yet).
+  return {
+    route_blocked: null,
+    warn_limit_reached: null,
+    cost_estimate: null,
   };
 }
 
@@ -2631,6 +2888,46 @@ export async function runtimeCapabilityProbe(backend: string): Promise<Record<st
 }
 
 // ------------------------------------------------------------------
+// C-44 — Composer 2 runtime status surface (paid HTTP backend tier).
+// Returns the adapter's current health + cumulative cost rollup
+// derived from `backend_cost_accrued` SSB rows for the active
+// session. Mocked when Tauri is unavailable.
+// ------------------------------------------------------------------
+
+export interface Composer2StatusReport {
+  enabled: boolean;
+  model: string;
+  health: { status: 'ready' | 'degraded' | 'unavailable'; reason?: string };
+  /** Cumulative cost in micro-dollars (1e-6 USD) for the active session. */
+  cumulative_cost_micros: number;
+  /** Total input tokens billed across all rolled-up rows. */
+  cumulative_tokens_in: number;
+  /** Total output tokens billed across all rolled-up rows. */
+  cumulative_tokens_out: number;
+  /** Number of invocations folded into the rollup. */
+  invocations: number;
+}
+
+export async function runtimeComposer2Status(): Promise<Composer2StatusReport> {
+  logStub('runtimeComposer2Status');
+  const live = await tryInvoke<Composer2StatusReport>('runtime_composer2_status');
+  if (live) return live;
+  await delay(80, 160);
+  return {
+    enabled: false,
+    model: 'composer-2',
+    health: {
+      status: 'unavailable',
+      reason: 'composer2 disabled in elai_cc.toml (default opt-out)',
+    },
+    cumulative_cost_micros: 0,
+    cumulative_tokens_in: 0,
+    cumulative_tokens_out: 0,
+    invocations: 0,
+  };
+}
+
+// ------------------------------------------------------------------
 // C-4 — Tauri commands orchestration + cloud spend surface
 //
 // Thin invoke() wrappers for the 9 commands added by the C-4 executor
@@ -2792,5 +3089,406 @@ export async function create_project(
     name,
     path: `${parentPath}/${name}`,
     last_opened_ms: Date.now(),
+  };
+}
+
+// ------------------------------------------------------------------
+// C-40 — GitHub PR adapter (gh CLI shell-out)
+// cross-lang-pair: dashboard/tauri/api
+//
+// Five exports mirror the Tauri commands declared in
+// `dashboard-v2/src-tauri/src/commands_c40.rs`. Each returns either the
+// live Tauri response or a mock fallback so the dashboard renders even
+// without an active SSB writer.
+// ------------------------------------------------------------------
+
+export interface PrOpenArgs {
+  repo?: string;
+  title: string;
+  body?: string;
+  head: string;
+  base?: string;
+  draft?: boolean;
+}
+
+export interface PrSummaryDto {
+  number: number;
+  title: string;
+  state: 'open' | 'closed' | 'merged' | 'unknown';
+  url: string;
+  head_ref_name: string;
+  base_ref_name: string;
+  is_draft: boolean;
+}
+
+export interface PrCheckRunDto {
+  name: string;
+  status: string;
+  conclusion: string;
+}
+
+export interface PrStatusDto {
+  state: 'open' | 'closed' | 'merged' | 'unknown';
+  review_decision: string;
+  ci_rollup_label: string;
+  review_state_label: string;
+  check_runs: PrCheckRunDto[];
+}
+
+export interface ActivePrUrlDto {
+  url: string | null;
+  pr_number: number | null;
+  ts_ms: number | null;
+}
+
+export async function github_pr_open(args: PrOpenArgs): Promise<PrSummaryDto> {
+  logStub('github_pr_open', args);
+  const live = await tryInvoke<PrSummaryDto>('github_pr_open', { args });
+  if (live) return live;
+  await delay();
+  // Mock fallback: synthesize a draft-PR-style row so the dashboard
+  // renders. Number 0 is the sentinel for "no live PR".
+  return {
+    number: 0,
+    title: args.title,
+    state: 'unknown',
+    url: '',
+    head_ref_name: args.head,
+    base_ref_name: args.base ?? 'main',
+    is_draft: args.draft ?? false,
+  };
+}
+
+export async function github_pr_list(
+  repo?: string,
+  stateFilter?: string,
+  limit?: number,
+): Promise<PrSummaryDto[]> {
+  logStub('github_pr_list', { repo, stateFilter, limit });
+  const live = await tryInvoke<PrSummaryDto[]>('github_pr_list', {
+    repo,
+    stateFilter,
+    limit,
+  });
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function github_pr_status(
+  prNumber: number,
+  repo?: string,
+): Promise<PrStatusDto> {
+  logStub('github_pr_status', { prNumber, repo });
+  const live = await tryInvoke<PrStatusDto>('github_pr_status', {
+    repo,
+    prNumber,
+  });
+  if (live) return live;
+  await delay();
+  return {
+    state: 'unknown',
+    review_decision: '',
+    ci_rollup_label: 'none',
+    review_state_label: 'none',
+    check_runs: [],
+  };
+}
+
+export async function github_pr_close(
+  prNumber: number,
+  repo?: string,
+): Promise<{ pr_number: number; closed: boolean }> {
+  logStub('github_pr_close', { prNumber, repo });
+  const live = await tryInvoke<{ pr_number: number; closed: boolean }>(
+    'github_pr_close',
+    { repo, prNumber },
+  );
+  if (live) return live;
+  await delay();
+  return { pr_number: prNumber, closed: false };
+}
+
+export async function github_pr_get_active_url(): Promise<ActivePrUrlDto> {
+  logStub('github_pr_get_active_url');
+  const live = await tryInvoke<ActivePrUrlDto>('github_pr_get_active_url');
+  if (live) return live;
+  await delay();
+  return { url: null, pr_number: null, ts_ms: null };
+}
+
+// ============================================================================
+// E-41: PR review surface (mirror of crates/orchestrator/src/github_pr/
+// review.rs + comment_watcher.rs + package_verify.rs + semgrep_gate.rs +
+// auto_merge_guard.rs). Reads the last N SSB rows for each variant so the
+// GithubWindow PR Review section renders without needing a live gh call.
+// ============================================================================
+
+export interface PrReviewRecentDto {
+  pr_number_hash: number;
+  comment_kind_hash: number;
+  comment_kind_label: string;
+  ts_ms: number;
+}
+
+export interface PrCommentWatchedDto {
+  pr_number_hash: number;
+  new_comments_count: number;
+  ts_ms: number;
+}
+
+export interface PrPackageVerifyResultDto {
+  pr_number_hash: number;
+  slopsquat_count: number;
+  ts_ms: number;
+}
+
+export interface PrSemgrepGateResultDto {
+  pr_number_hash: number;
+  findings_count: number;
+  severity_max_hash: number;
+  ts_ms: number;
+}
+
+export interface PrAutoMergeBlockedDto {
+  pr_number_hash: number;
+  block_reason_hash: number;
+  ts_ms: number;
+}
+
+export interface PrReviewStatusDto {
+  recent_reviews: PrReviewRecentDto[];
+  last_watcher_tick: PrCommentWatchedDto | null;
+  last_slopsquat: PrPackageVerifyResultDto | null;
+  last_semgrep: PrSemgrepGateResultDto | null;
+  last_auto_merge_block: PrAutoMergeBlockedDto | null;
+}
+
+export async function pr_review_status(): Promise<PrReviewStatusDto> {
+  logStub('pr_review_status');
+  const live = await tryInvoke<PrReviewStatusDto>('pr_review_status');
+  if (live) return live;
+  await delay();
+  return {
+    recent_reviews: [],
+    last_watcher_tick: null,
+    last_slopsquat: null,
+    last_semgrep: null,
+    last_auto_merge_block: null,
+  };
+}
+
+// ============================================================================
+// C-47: Case-based calibration of tool-use telemetry.
+// Mirrors the Rust DTOs in `dashboard-v2/src-tauri/src/commands_c47.rs`.
+// Paper grounding: arXiv:2605.15041 (CAST). See
+// workflow/papers/case-based-calibration.md.
+// ============================================================================
+
+export interface ToolCalibrationStatusDto {
+  tool_name: string;
+  shape_count: number;
+  total_calls: number;
+  error_count: number;
+  last_ts_ms: number;
+}
+
+export interface ToolCalibrationRowDto {
+  tool_name_hash: string;
+  call_shape_hash: string;
+  action_type: string;
+  ts_ms: number;
+  post_call_audit_ok: boolean | null;
+  error_rate: number | null;
+  total_calls: number | null;
+}
+
+export async function tool_calibration_status(): Promise<
+  ToolCalibrationStatusDto[]
+> {
+  logStub('tool_calibration_status');
+  const live = await tryInvoke<ToolCalibrationStatusDto[]>(
+    'tool_calibration_status',
+  );
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+export async function list_tool_calibration_rows(
+  windowMs?: number,
+  limit?: number,
+): Promise<ToolCalibrationRowDto[]> {
+  logStub('list_tool_calibration_rows', { windowMs, limit });
+  const live = await tryInvoke<ToolCalibrationRowDto[]>(
+    'list_tool_calibration_rows',
+    { windowMs, limit },
+  );
+  if (live) return live;
+  await delay();
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// E-12 Tier-B — Production fullstack codegen surface
+// ---------------------------------------------------------------------------
+
+export type FrameworkProfileDto = {
+  project_class: string;
+  profile_name: string;
+  version_pin: string;
+  language: string;
+  package_manager: string;
+  lint_config: string;
+  test_runner: string;
+  security_checks: string[];
+  runpod_pending: boolean;
+};
+
+export type ProductionChecklistRunDto = {
+  profile_name: string;
+  target_path: string;
+  rows: Array<{
+    check: string;
+    result:
+      | { kind: 'ok'; findings: Array<unknown> }
+      | { kind: 'toolchain_missing'; tool: string; install_hint: string }
+      | { kind: 'error'; details: string; stderr_excerpt: string };
+  }>;
+  runpod_pending: boolean;
+};
+
+/**
+ * E-12 Tier-B — resolve FrameworkProfile for a ProjectClass.
+ * Wire-dark posture: returns the orchestrator's
+ * `FrameworkProfile::generic()` fallback when no manifest matches,
+ * NEVER mock data.
+ */
+export async function get_framework_profile(
+  projectClass: string,
+): Promise<FrameworkProfileDto | null> {
+  logStub('get_framework_profile', { projectClass });
+  const live = await tryInvoke<FrameworkProfileDto | null>(
+    'get_framework_profile',
+    { projectClass },
+  );
+  return live ?? null;
+}
+
+/**
+ * E-12 Tier-B — run the 15-runner production checklist against a target
+ * path. Live invocation of the 15 external CLIs is RUNPOD-PENDING — on
+ * the local dev host every runner returns
+ * `{kind: 'toolchain_missing', ...}`.
+ */
+export async function run_production_checklist(
+  projectClass: string,
+  targetPath: string,
+): Promise<ProductionChecklistRunDto | null> {
+  logStub('run_production_checklist', { projectClass, targetPath });
+  const live = await tryInvoke<ProductionChecklistRunDto | null>(
+    'run_production_checklist',
+    { projectClass, targetPath },
+  );
+  return live ?? null;
+}
+
+// ------------------------------------------------------------------
+// E-40 — Orchestrator-rooted symbol-graph dashboard surface.
+// Three read-only Tauri commands feed the new SymbolGraphWindow.
+// Reads .claude/tools/elai_graph.json on the Rust side. Mock-mode
+// fallback returns empty results / zeroed status so the window
+// degrades to a "no graph mounted" empty state. See
+// workflow/reasoning/E-40-decisions.md.
+// ------------------------------------------------------------------
+
+export interface SymbolMatchDto {
+  id: string;
+  name: string;
+  file: string;
+  line: number;
+  kind: string;
+}
+
+export interface RankedSymbolDto {
+  id: string;
+  score: number;
+}
+
+export interface SymbolGraphQueryReport {
+  kind: string;
+  symbol: string;
+  result_count: number;
+  results: SymbolMatchDto[];
+  graph_path: string;
+  node_count: number;
+}
+
+export interface SymbolGraphPageRankReport {
+  seed: string;
+  k: number;
+  ranked: RankedSymbolDto[];
+  graph_path: string;
+  node_count: number;
+}
+
+export interface SymbolGraphStatusReport {
+  graph_path: string;
+  graph_present: boolean;
+  node_count: number;
+  lru_capacity: number;
+}
+
+export async function symbolGraphQuery(
+  symbol: string,
+  kind: string,
+): Promise<SymbolGraphQueryReport> {
+  logStub('symbolGraphQuery', { symbol, kind });
+  const live = await tryInvoke<SymbolGraphQueryReport>('symbol_graph_query', {
+    symbol,
+    kind,
+  });
+  if (live) return live;
+  await delay(60, 120);
+  return {
+    kind,
+    symbol,
+    result_count: 0,
+    results: [],
+    graph_path: '.claude/tools/elai_graph.json',
+    node_count: 0,
+  };
+}
+
+export async function symbolGraphPageRank(
+  seed: string,
+  k: number,
+): Promise<SymbolGraphPageRankReport> {
+  logStub('symbolGraphPageRank', { seed, k });
+  const live = await tryInvoke<SymbolGraphPageRankReport>(
+    'symbol_graph_pagerank',
+    { seed, k },
+  );
+  if (live) return live;
+  await delay(60, 120);
+  return {
+    seed,
+    k,
+    ranked: [],
+    graph_path: '.claude/tools/elai_graph.json',
+    node_count: 0,
+  };
+}
+
+export async function symbolGraphStatus(): Promise<SymbolGraphStatusReport> {
+  logStub('symbolGraphStatus');
+  const live = await tryInvoke<SymbolGraphStatusReport>('symbol_graph_status');
+  if (live) return live;
+  await delay(60, 120);
+  return {
+    graph_path: '.claude/tools/elai_graph.json',
+    graph_present: false,
+    node_count: 0,
+    lru_capacity: 1000,
   };
 }

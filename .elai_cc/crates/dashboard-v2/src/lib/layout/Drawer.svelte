@@ -28,6 +28,7 @@
     'ppm-scores':           'PPM SCORES',
     'verification-consensus': 'VERIFIER CONSENSUS',
     'tripwires':            'TRIPWIRES',
+    'incidents':            'INCIDENTS (E-30)',
     'prmbench':             'PRMBENCH',
     'bai-arms':             'BAI ARMS',
     'held-out':             'HELD-OUT TASKS',

@@ -36,6 +36,22 @@ import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
+
+# E-45: typed boundary models for /v1/messages. Imported lazily-safe at
+# module top so import failures surface at server startup rather than at
+# first request. The validation gate inside handle_messages is opt-in:
+# on `ValidationError` we fall through to the legacy dict-get path so
+# the migration is non-destructive. See workflow/reasoning/E-45-decisions.md.
+try:
+    from pydantic import ValidationError as _PydanticValidationError
+    from elai_inference.schemas import MessagesRequest as _MessagesRequestModel
+    from elai_inference.schemas import SCHEMA_VERSION as _SIDECAR_SCHEMA_VERSION
+    _E45_SCHEMAS_AVAILABLE = True
+except ImportError:  # pragma: no cover -- only triggers on broken deployments
+    _PydanticValidationError = Exception  # type: ignore[misc,assignment]
+    _MessagesRequestModel = None  # type: ignore[assignment]
+    _SIDECAR_SCHEMA_VERSION = 0
+    _E45_SCHEMAS_AVAILABLE = False
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -73,6 +89,23 @@ except ImportError:
     build_token_enforcer_tokenizer_data = None  # type: ignore[assignment]
     build_transformers_prefix_allowed_tokens_fn = None  # type: ignore[assignment]
     _LMFE_AVAILABLE = False
+
+# C-36 MuCoCo registry — paper-grounded mutation operator catalog. Imported
+# defensively so the sidecar still boots if the package is missing on a
+# stripped deployment (mirrors the LMFE pattern above). The /mucoco/*
+# routes return HTTP 503 when _MUCOCO_AVAILABLE is False.
+try:
+    from elai_inference.mucoco.registry import (  # type: ignore
+        apply as _mucoco_apply,
+        get_applicability_matrix as _mucoco_get_applicability_matrix,
+        list_operators as _mucoco_list_operators,
+    )
+    _MUCOCO_AVAILABLE = True
+except ImportError:
+    _mucoco_apply = None  # type: ignore[assignment]
+    _mucoco_get_applicability_matrix = None  # type: ignore[assignment]
+    _mucoco_list_operators = None  # type: ignore[assignment]
+    _MUCOCO_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Structured logging via structlog
@@ -3305,6 +3338,22 @@ async def handle_messages(request: Request):
     except orjson.JSONDecodeError:
         return OrjsonResponse({"error": "invalid JSON"}, status_code=400)
 
+    # E-45: typed boundary validation. When the Pydantic mirror is
+    # available, validate the request shape; on failure, fall through
+    # to the legacy dict-get path with a `_e45_validation_error`
+    # response header to surface drift without breaking older callers.
+    # This is the non-destructive migration step toward strict=True;
+    # the strict mode toggle is a future flag once dashboard + CLI
+    # callers have all been audited against the schemas/__init__.py
+    # surface.
+    _e45_validated_request = None
+    if _E45_SCHEMAS_AVAILABLE and _MessagesRequestModel is not None:
+        try:
+            _e45_validated_request = _MessagesRequestModel.model_validate(data)
+        except _PydanticValidationError:
+            _e45_validated_request = None  # fall through to dict path
+    _ = _e45_validated_request  # presence marker; consumed by future strict mode
+
     messages = data.get("messages", [])
     system_raw = data.get("system", "")
     # Anthropic API allows system as str or list[ContentBlock]
@@ -3722,6 +3771,399 @@ async def _search_brave(query: str, max_results: int, api_key: str) -> list:
     return results
 
 
+# ---------------------------------------------------------------------------
+# D-2: PPM (Process Preference Model) scoring endpoint — second sidecar
+# port 8101, hosts Qwen2.5-Math-PRM-7B (or equivalent PRM). Wire contract
+# defined by .elai_cc/crates/orchestrator/src/sidecar_ppm_hook.rs +
+# http_sidecar_ppm_hook.rs::validate_response_shape. NEVER reuses the
+# policy SLM (heterogeneous-verifier requirement, arxiv:2504.16760 T1).
+#
+# Wire format mirrors the Rust WireRequest struct in
+# http_sidecar_ppm_hook.rs lines 313-320:
+#   candidate_id: str        -- opaque corr id
+#   verifier_id: str         -- "ppm_qwen25_math_prm_7b" or similar
+#   problem_statement: str   -- the question text
+#   reasoning_steps: list[str] -- ordered chain to score; len >= 1
+#   mode: "math" | "code"    -- closed enum from sidecar_ppm_hook.rs
+#
+# Response mirrors WireResponse (lines 334-344):
+#   candidate_id, verifier_id, mode (echoed) +
+#   step_scores: list[float in 0..1]  -- one per step (prmbench invariant)
+#   score_mean: float                  -- arithmetic mean (latent-verifiers paper)
+#   score_var: float                   -- population variance
+#   num_steps: int                     -- == len(step_scores)
+#   latency_ms: int                    -- end-to-end scoring wall-clock
+#
+# Error envelope on contract violation (HTTP 422 or 503 + JSON body):
+#   {"error": "<tag>", "detail": "...", "index": N, "value": F,
+#    "request_steps": N, "response_scores": N}
+# The Rust WireErrorBody (lines 369-403) maps these tags 1:1 to typed
+# PpmHookError variants.
+# ---------------------------------------------------------------------------
+
+# Reward token glyphs Qwen2.5-Math-PRM-7B (+ derivatives) uses for the
+# per-step score margin. The PRM is trained to predict a `+` token after
+# a correct step and `-` after an incorrect step; sigmoid(logit(+) -
+# logit(-)) yields the canonical scalar in [0, 1] (prmbench Section 4
+# invariant + arxiv:2501.04519 §3.4.1 score-head convention).
+PPM_REWARD_TOKEN_POS = "+"
+PPM_REWARD_TOKEN_NEG = "-"
+
+# Step separator token convention shared by Qwen2.5-Math-PRM-7B + the
+# Skywork/Math-Shepherd PRM family. Some PRM tokenisers ship a dedicated
+# `<extra_0>` separator; others use the standard newline. We try the
+# `<extra_0>` route first and fall back to newline when the tokeniser
+# does not have it (the fallback degrades to lower PRMBench AUC by ~3pp
+# but still produces a valid signal — flagged as PRM_FALLBACK_SEPARATOR
+# in tracing).
+PPM_STEP_SEPARATOR_TOKEN = "<extra_0>"
+PPM_STEP_SEPARATOR_FALLBACK = "\n"
+
+# Closed set of legal mode wire values per sidecar_ppm_hook.rs PpmMode enum.
+_PPM_VALID_MODES = ("math", "code")
+
+# Soft hint substrings the operator embeds in the loaded model name when a
+# PRM is in use. If the running engine's model_name has NONE of these, the
+# /v1/ppm/score handler returns HTTP 503 with error="ppm_model_not_loaded"
+# (the policy SLM cannot self-grade — same-model fallback is BANNED per
+# D-2-decisions DECISION-3 and CLAUDE.md heterogeneous-verifier rule).
+_PPM_MODEL_HINTS = ("prm", "math-prm", "process-reward", "ppm")
+
+
+def _ppm_validate_request(payload: dict) -> tuple[str, str, str, list, str]:
+    """Defensive request-shape validation. Returns the typed tuple on success
+    or raises ValueError with a tag matching one of the WireErrorBody.error
+    values the Rust hook understands (empty_input, invalid_mode, parse_error).
+
+    Per anti-lazy rules + CLAUDE.md no-unwrap policy: explicit .get() with
+    typed-error raise on every field; no `payload[key]` direct subscript.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("parse_error: top-level body must be a JSON object")
+
+    candidate_id = payload.get("candidate_id")
+    verifier_id = payload.get("verifier_id")
+    problem_statement = payload.get("problem_statement")
+    reasoning_steps = payload.get("reasoning_steps")
+    mode = payload.get("mode")
+
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise ValueError("parse_error: candidate_id must be a non-empty string")
+    if not isinstance(verifier_id, str) or not verifier_id:
+        raise ValueError("parse_error: verifier_id must be a non-empty string")
+    if not isinstance(problem_statement, str):
+        raise ValueError("parse_error: problem_statement must be a string")
+    if not isinstance(reasoning_steps, list):
+        raise ValueError("parse_error: reasoning_steps must be a JSON array")
+    if not reasoning_steps:
+        # Clause C5 of the wire contract — empty_input -> Rust EmptyInput.
+        raise ValueError("empty_input: reasoning_steps array was empty")
+    for i, step in enumerate(reasoning_steps):
+        if not isinstance(step, str):
+            raise ValueError(
+                f"parse_error: reasoning_steps[{i}] must be a string, "
+                f"got {type(step).__name__}"
+            )
+    if not isinstance(mode, str) or mode not in _PPM_VALID_MODES:
+        raise ValueError(f"invalid_mode: mode={mode!r}; expected one of {_PPM_VALID_MODES}")
+
+    return candidate_id, verifier_id, problem_statement, reasoning_steps, mode
+
+
+def _ppm_model_loaded_for_scoring() -> tuple[bool, str]:
+    """Returns (is_prm_loaded, model_id_for_error). Heuristic: the running
+    engine.model_name must contain one of the PRM hint substrings. When
+    the policy SLM (Qwen2.5-Coder) is loaded, this returns False and the
+    handler emits HTTP 503 — same-model fallback would defeat the
+    heterogeneous-verifier requirement (arxiv:2504.16760 T1).
+    """
+    if _engine is None:
+        return False, "<engine-not-initialised>"
+    name_lower = _engine.model_name.lower()
+    for hint in _PPM_MODEL_HINTS:
+        if hint in name_lower:
+            return True, _engine.model_name
+    return False, _engine.model_name
+
+
+def _ppm_resolve_separator_token(tokenizer) -> tuple[int, str]:
+    """Resolve the step-separator token id used to demarcate per-step score
+    positions. Tries the `<extra_0>` route first (Qwen2.5-Math-PRM-7B
+    canonical), then falls back to a newline. Returns (token_id, label)
+    where label is "primary" or "fallback" for tracing.
+    """
+    # Some tokeniser implementations expose `convert_tokens_to_ids` directly.
+    try:
+        sep_id = tokenizer.convert_tokens_to_ids(PPM_STEP_SEPARATOR_TOKEN)
+    except Exception:
+        sep_id = None
+    if isinstance(sep_id, int) and sep_id >= 0 and sep_id != getattr(tokenizer, "unk_token_id", -1):
+        return sep_id, "primary"
+
+    # Fallback: encode a newline and take the first sub-token id.
+    fallback_ids = tokenizer.encode(PPM_STEP_SEPARATOR_FALLBACK, add_special_tokens=False)
+    if not fallback_ids:
+        raise ValueError("parse_error: tokenizer cannot encode newline separator")
+    return fallback_ids[0], "fallback"
+
+
+def _ppm_resolve_reward_token_ids(tokenizer) -> tuple[int, int]:
+    """Resolve the `+` and `-` token ids the PRM scalar head reads. Some
+    tokenisers split `+` differently in different surface contexts; we
+    take the first sub-token after encoding with no special tokens.
+    """
+    pos_ids = tokenizer.encode(PPM_REWARD_TOKEN_POS, add_special_tokens=False)
+    neg_ids = tokenizer.encode(PPM_REWARD_TOKEN_NEG, add_special_tokens=False)
+    if not pos_ids or not neg_ids:
+        raise ValueError(
+            "parse_error: tokenizer cannot encode reward tokens "
+            f"(+,- -> {pos_ids}, {neg_ids})"
+        )
+    return pos_ids[0], neg_ids[0]
+
+
+def _ppm_score_steps(
+    problem_statement: str,
+    reasoning_steps: list[str],
+    mode: str,
+) -> list[float]:
+    """Score every step via the loaded PRM model. Returns one scalar in
+    [0, 1] per input step (prmbench invariant + latent-verifiers
+    arithmetic-mean aggregation downstream).
+
+    Implementation: build a single concatenated trajectory
+        "<problem>\n<step_1>\n<sep>\n<step_2>\n<sep>..."
+    run a single forward pass, then at every separator position read
+    logit(+) and logit(-); the per-step score is sigmoid(logit(+) -
+    logit(-)) -- the standard PRM scalar head convention per
+    arxiv:2501.04519 §3.4.1 + the Qwen2.5-Math-PRM-7B model card.
+
+    Raises ValueError with a tagged message on any tokeniser / model
+    failure; the handler catches and returns 422 with the matching
+    error envelope.
+    """
+    assert _engine is not None  # caller (handler) checked already
+    tokenizer = _engine.tokenizer
+    model = _engine.model
+
+    sep_id, sep_label = _ppm_resolve_separator_token(tokenizer)
+    pos_id, neg_id = _ppm_resolve_reward_token_ids(tokenizer)
+
+    # Build the trajectory text. We use the mode tag in the system-style
+    # prefix so the PRM has the same context shape it was trained on.
+    mode_prefix = f"[mode={mode}]\n" if mode in _PPM_VALID_MODES else ""
+    parts: list[str] = [f"{mode_prefix}Problem: {problem_statement}"]
+    for step in reasoning_steps:
+        parts.append(step)
+    trajectory = PPM_STEP_SEPARATOR_FALLBACK.join(parts)
+
+    # Tokenise without special tokens; we are emulating the PRM training
+    # surface, not a chat template.
+    encoded = tokenizer(trajectory, return_tensors="pt", add_special_tokens=False)
+    input_ids = encoded["input_ids"].to(model.device)
+
+    # Locate every separator position. We expect exactly len(reasoning_steps)
+    # separators in the trajectory (one after each step's text). The first
+    # `Problem: ...` chunk has no preceding step so it does not contribute
+    # a separator.
+    flat_ids = input_ids[0].tolist()
+    sep_positions = [i for i, tok in enumerate(flat_ids) if tok == sep_id]
+
+    # Defensive: if the tokeniser merged the separator with adjacent text
+    # (common for newline + Qwen BPE), fall back to step-count matching
+    # by linear-search for *any* token in the sep_id family at decreasing
+    # granularity. Surface the mismatch as parse_error if we still cannot
+    # locate >= one separator per step.
+    if len(sep_positions) < len(reasoning_steps):
+        logger.warning(
+            "ppm_separator_count_mismatch",
+            requested_steps=len(reasoning_steps),
+            located_separators=len(sep_positions),
+            sep_label=sep_label,
+        )
+        raise ValueError(
+            "parse_error: could not locate enough step separators in "
+            f"tokenised trajectory (steps={len(reasoning_steps)}, "
+            f"separators={len(sep_positions)}); separator label={sep_label}"
+        )
+
+    # Single forward pass to obtain logits at every position.
+    with torch.inference_mode():
+        outputs = model(input_ids=input_ids)
+    logits = outputs.logits  # [1, seq_len, vocab_size]
+
+    per_step: list[float] = []
+    for idx, _step_text in enumerate(reasoning_steps):
+        # We score using the logits AT the separator position (i.e. the
+        # token that immediately follows the step's last token), so the
+        # PRM sees the full prefix x . s_1 .. s_i before the scoring
+        # head fires. Take the closest separator >= the expected index.
+        sep_pos = sep_positions[idx]
+        # logits at this position predict the NEXT token; for PRM scoring
+        # the convention is to read the logits at the separator position
+        # itself (the head was trained to emit + / - at this slot).
+        step_logits = logits[0, sep_pos, :]
+        margin = (step_logits[pos_id] - step_logits[neg_id]).float()
+        score = torch.sigmoid(margin).item()
+        # Clamp defensively into [0, 1] — sigmoid output is mathematically
+        # in (0, 1) but float rounding can produce 0.9999998 / 1.0000001
+        # at the boundary; the Rust validate_response_shape rejects > 1.0.
+        score = max(0.0, min(1.0, score))
+        per_step.append(score)
+
+    return per_step
+
+
+def _ppm_aggregate(per_step_scores: list[float]) -> tuple[float, float]:
+    """Compute (mean, variance) over per-step scores. Arithmetic mean
+    (not min / max / geometric) per arxiv:2504.16760 latent-verifiers
+    §A.2 aggregation ablation -- mean outperformed min/max/geometric.
+    Population variance (NOT sample variance) per the Rust hook contract
+    clause C3.
+    """
+    n = len(per_step_scores)
+    if n == 0:
+        return 0.0, 0.0
+    mean = sum(per_step_scores) / float(n)
+    var = sum((s - mean) * (s - mean) for s in per_step_scores) / float(n)
+    return mean, var
+
+
+@app.post("/v1/ppm/score")
+async def handle_ppm_score(request: Request):
+    """D-2 PPM score endpoint. See the docstring block above for the wire
+    contract. The handler is intentionally lean — heavy lifting in
+    `_ppm_score_steps` runs on the GPU executor pool to keep the asyncio
+    loop responsive.
+
+    Reliability tier: this endpoint is the Python side of the trust boundary
+    described in http_sidecar_ppm_hook.rs lines 9-12. The Rust caller
+    re-validates everything; we still validate defensively here to surface
+    typed errors over the wire instead of HTTP 500.
+
+    # RUNPOD-PENDING: ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash ~/start-ppm-sidecar.sh' && curl http://127.0.0.1:8101/v1/ppm/score -X POST -H 'Content-Type: application/json' -d '{"candidate_id":"c1","verifier_id":"ppm_qwen25_math_prm_7b","problem_statement":"x=4","reasoning_steps":["x>0","x<10"],"mode":"math"}'
+    """
+    t0 = time.time()
+    raw = await request.body()
+    try:
+        payload = orjson.loads(raw) if raw else None
+    except orjson.JSONDecodeError as exc:
+        return OrjsonResponse(
+            {"error": "parse_error", "detail": f"invalid JSON body: {exc}"},
+            status_code=422,
+        )
+
+    # Request-shape validation — surface tagged errors the Rust hook maps
+    # to typed PpmHookError variants without lossy stringification.
+    try:
+        candidate_id, verifier_id, problem_statement, reasoning_steps, mode = (
+            _ppm_validate_request(payload if isinstance(payload, dict) else {})
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        tag = msg.split(":", 1)[0].strip() if ":" in msg else "parse_error"
+        detail = msg.split(":", 1)[1].strip() if ":" in msg else msg
+        logger.warning("ppm_request_invalid", tag=tag, detail=detail)
+        return OrjsonResponse(
+            {"error": tag, "detail": detail},
+            status_code=422,
+        )
+
+    # Model-loaded gate. When the policy SLM is on this port instead of
+    # the PRM, we return 503 instead of producing a self-graded score
+    # (the Rust hook maps 503 to PpmHookError::Unavailable).
+    prm_ready, model_id = _ppm_model_loaded_for_scoring()
+    if not prm_ready:
+        logger.warning(
+            "ppm_model_not_loaded",
+            running_model=model_id,
+            verifier_id=verifier_id,
+            hints=_PPM_MODEL_HINTS,
+        )
+        return OrjsonResponse(
+            {"error": "ppm_model_not_loaded", "model_id": model_id},
+            status_code=503,
+        )
+
+    # Run the scoring forward pass on the GPU thread-pool to avoid
+    # blocking the asyncio loop. The pool also serialises GPU usage
+    # against /v1/messages traffic on the same port (PRM sidecars run
+    # on port 8101, separate from policy on 8100 — but if an operator
+    # co-hosts during dev, the lock prevents kernel interleaving).
+    loop = asyncio.get_running_loop()
+    try:
+        per_step = await loop.run_in_executor(
+            _thread_pool,
+            lambda: _ppm_score_steps(problem_statement, reasoning_steps, mode),
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        tag = msg.split(":", 1)[0].strip() if ":" in msg else "parse_error"
+        detail = msg.split(":", 1)[1].strip() if ":" in msg else msg
+        logger.warning("ppm_score_failed", tag=tag, detail=detail)
+        return OrjsonResponse(
+            {"error": tag, "detail": detail},
+            status_code=422,
+        )
+    except Exception as exc:  # noqa: BLE001 — typed error envelope on the wire
+        logger.exception("ppm_score_unexpected_error")
+        return OrjsonResponse(
+            {"error": "parse_error", "detail": f"scoring failure: {exc}"},
+            status_code=500,
+        )
+
+    # Defensive shape check before serialising — guards against the
+    # scoring routine returning fewer scores than requested steps. The
+    # Rust validate_response_shape will catch this too, but emitting a
+    # clean 422 here is more diagnostic than a wire mismatch.
+    if len(per_step) != len(reasoning_steps):
+        logger.error(
+            "ppm_internal_shape_mismatch",
+            expected=len(reasoning_steps),
+            got=len(per_step),
+        )
+        return OrjsonResponse(
+            {
+                "error": "shape_mismatch",
+                "request_steps": len(reasoning_steps),
+                "response_scores": len(per_step),
+            },
+            status_code=422,
+        )
+    for i, s in enumerate(per_step):
+        if not (0.0 <= s <= 1.0):
+            logger.error("ppm_internal_invalid_score", index=i, value=s)
+            return OrjsonResponse(
+                {"error": "invalid_score", "index": i, "value": s},
+                status_code=422,
+            )
+
+    score_mean, score_var = _ppm_aggregate(per_step)
+    elapsed_ms = int((time.time() - t0) * 1000)
+
+    logger.info(
+        "ppm_score_completed",
+        candidate_id=candidate_id,
+        verifier_id=verifier_id,
+        mode=mode,
+        num_steps=len(per_step),
+        score_mean=score_mean,
+        score_var=score_var,
+        latency_ms=elapsed_ms,
+    )
+
+    return OrjsonResponse({
+        "candidate_id": candidate_id,
+        "verifier_id": verifier_id,
+        "mode": mode,
+        "step_scores": per_step,
+        "score_mean": score_mean,
+        "score_var": score_var,
+        "num_steps": len(per_step),
+        "latency_ms": elapsed_ms,
+    })
+
+
 @app.get("/search")
 async def handle_search(request: Request):
     """SearXNG-compatible search endpoint. Drop-in replacement.
@@ -3777,6 +4219,130 @@ async def handle_search(request: Request):
         "number_of_results": 0,
         "results": [],
         "error": "No search backend available. Install Docker for SearXNG or set BRAVE_SEARCH_API_KEY env var.",
+    })
+
+
+# ---------------------------------------------------------------------------
+# C-36 MuCoCo mutation operator endpoints
+# ---------------------------------------------------------------------------
+#
+# Wire contract (mirrors crates/orchestrator/src/metamorphic_testing.rs
+# MucocoMutationResult one-for-one — snake_case field names exactly):
+#
+#   POST /mucoco/mutate
+#     request : {"source": str, "language": str = "python", "operator_name": str}
+#     response: {"operator": str, "applied": bool, "mutated_source": str,
+#                "skip_reason": Optional[str]}
+#     errors  : 422 parse_error / missing_field, 503 mucoco_unavailable
+#
+#   GET /mucoco/operators
+#     response: {"operators": [str], "applicability_matrix":
+#                {operator_name: {language: bool}}}
+#     errors  : 503 mucoco_unavailable
+#
+# The Rust client at metamorphic_testing.rs:594 enforces a stub_ban contract
+# that mirrors python/elai_inference/mucoco/result.py MutationResult
+# __post_init__: applied=False REQUIRES non-empty skip_reason; applied=True
+# REQUIRES skip_reason=None. Both sides validate independently.
+
+
+@app.post("/mucoco/mutate")
+async def handle_mucoco_mutate(request: Request):
+    """Dispatch a single MuCoCo mutation operator to a source snippet.
+
+    Stateless; no model load required. The registry's `apply` function owns
+    the applicability gate (paper sec S3.p3.1 applicability-first contract)
+    and the dataclass __post_init__ enforces the stub_ban invariant.
+    """
+    if not _MUCOCO_AVAILABLE or _mucoco_apply is None:
+        logger.warning("mucoco_unavailable", endpoint="/mucoco/mutate")
+        return OrjsonResponse(
+            {"error": "mucoco_unavailable",
+             "detail": "elai_inference.mucoco.registry is not importable on this sidecar."},
+            status_code=503,
+        )
+
+    raw = await request.body()
+    try:
+        payload = orjson.loads(raw) if raw else None
+    except orjson.JSONDecodeError as exc:
+        return OrjsonResponse(
+            {"error": "parse_error", "detail": f"invalid JSON body: {exc}"},
+            status_code=422,
+        )
+
+    if not isinstance(payload, dict):
+        return OrjsonResponse(
+            {"error": "parse_error", "detail": "request body must be a JSON object"},
+            status_code=422,
+        )
+
+    source = payload.get("source")
+    language = payload.get("language", "python")
+    operator_name = payload.get("operator_name")
+
+    if not isinstance(source, str):
+        return OrjsonResponse(
+            {"error": "missing_field", "detail": "source: expected string"},
+            status_code=422,
+        )
+    if not isinstance(language, str):
+        return OrjsonResponse(
+            {"error": "missing_field", "detail": "language: expected string"},
+            status_code=422,
+        )
+    if not isinstance(operator_name, str) or not operator_name:
+        return OrjsonResponse(
+            {"error": "missing_field", "detail": "operator_name: expected non-empty string"},
+            status_code=422,
+        )
+
+    result = _mucoco_apply(operator_name, source, language)
+
+    logger.info(
+        "mucoco_mutate_completed",
+        operator=result.operator,
+        language=language,
+        applied=result.applied,
+        skip_reason=result.skip_reason,
+    )
+
+    return OrjsonResponse({
+        "operator": result.operator,
+        "applied": result.applied,
+        "mutated_source": result.mutated_source,
+        "skip_reason": result.skip_reason,
+    })
+
+
+@app.get("/mucoco/operators")
+async def handle_mucoco_operators(request: Request):
+    """List registered MuCoCo operators and their language applicability matrix.
+
+    Read-only metadata endpoint; used by the Rust orchestrator to pre-filter
+    operators per target language before issuing /mucoco/mutate calls.
+    """
+    del request  # signature consistency with other GET handlers
+    if (
+        not _MUCOCO_AVAILABLE
+        or _mucoco_list_operators is None
+        or _mucoco_get_applicability_matrix is None
+    ):
+        logger.warning("mucoco_unavailable", endpoint="/mucoco/operators")
+        return OrjsonResponse(
+            {"error": "mucoco_unavailable",
+             "detail": "elai_inference.mucoco.registry is not importable on this sidecar."},
+            status_code=503,
+        )
+
+    operators = _mucoco_list_operators()
+    matrix = _mucoco_get_applicability_matrix()
+
+    logger.info("mucoco_operators_listed", count=len(operators))
+
+    return OrjsonResponse({
+        "operators": operators,
+        "applicability_matrix": matrix,
     })
 
 

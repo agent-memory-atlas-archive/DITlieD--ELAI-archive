@@ -105,6 +105,56 @@ pub struct RrfComponentWeightsEvent {
     pub text_vec_weight: Option<f64>,
 }
 
+/// C-38: per-invocation `compute_repo_map` SSB beacon. Emitted from
+/// `QueryPipeline::query_with_tier` Stage 2 after `compute_repo_map`
+/// returns (whether or not it produced ranked symbols). Distinct from
+/// `query_trace` which aggregates all stages — this is a Stage-2-only
+/// row that lets the dashboard answer "did PageRank actually fire for
+/// this repo, and what did the top-ranked node look like ?".
+///
+/// `workspace_root_hash` is a stable 64-bit blake3-prefix hash of the
+/// project root path so the dashboard can group rows by workspace
+/// without leaking absolute paths into SSB. `node_count` is the size
+/// of the DKG snapshot fed to PageRank (zero on the absent-engine
+/// path; the row is still emitted so "PageRank ran with empty graph"
+/// is observable). `top_node_hash` is a 64-bit blake3-prefix hash of
+/// the top-ranked symbol name (or 0 when `node_count == 0`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagerankRunEvent {
+    pub workspace_root_hash: u64,
+    pub node_count: u32,
+    pub top_node_hash: u64,
+    pub elapsed_ms: u64,
+}
+
+/// C-38: emitted when the CLI's `ensure_dkg_or_rebuild` helper begins
+/// a rebuild because `.elai/dkg.db` is absent or stale. The matching
+/// `DkgRebuildCompleteEvent` row brackets the rebuild's end.
+///
+/// `trigger_reason` is a snake-case label (`"missing"`, `"stale"`)
+/// carried so the dashboard can render WHY a rebuild fired. The
+/// staleness window is the caller's choice (default 24h, configurable
+/// per call); this event records the verdict, not the threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgRebuildStartedEvent {
+    pub workspace_root_hash: u64,
+    pub trigger_reason: String,
+}
+
+/// C-38: emitted when `ensure_dkg_or_rebuild` finishes a rebuild
+/// (success or failure). `success=false` rows MUST still be emitted so
+/// dashboards see the failure and operators can drill into the
+/// tracing log for the underlying error. `node_count` is the number
+/// of DKG nodes produced (0 on failure or empty repo). `duration_ms`
+/// measures the wall-clock time from start to end of the rebuild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkgRebuildCompleteEvent {
+    pub workspace_root_hash: u64,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub node_count: u32,
+}
+
 /// C-1 knowledge-side SSB sink.
 ///
 /// Implementations forward typed events to the orchestrator's
@@ -131,6 +181,18 @@ pub trait KnowledgeSsbSink: Send + Sync {
     fn emit_hyde_skipped_code_query(&self, event: HydeSkippedCodeQueryEvent);
     /// E-17 SP2 task 7: per-query RRF component weights.
     fn emit_rrf_component_weights(&self, event: RrfComponentWeightsEvent);
+    /// C-38: emitted once per Stage 2 `compute_repo_map` invocation
+    /// in [`crate::pipeline::QueryPipeline::query_with_tier`]. Carries
+    /// the workspace hash + node count + top-node hash + elapsed time.
+    fn emit_pagerank_run(&self, event: PagerankRunEvent);
+    /// C-38: emitted at the start of a CLI-driven DKG rebuild
+    /// (production wiring lives in the cli crate's `dkg_lifecycle`
+    /// module).
+    fn emit_dkg_rebuild_started(&self, event: DkgRebuildStartedEvent);
+    /// C-38: emitted at the end of a CLI-driven DKG rebuild
+    /// (success OR failure). Bracketed with
+    /// [`Self::emit_dkg_rebuild_started`].
+    fn emit_dkg_rebuild_complete(&self, event: DkgRebuildCompleteEvent);
 }
 
 /// Default no-op sink used in tests and when SSB is not configured.
@@ -145,6 +207,9 @@ impl KnowledgeSsbSink for NoopKnowledgeSsbSink {
     fn emit_rrf_quality_gate_fired(&self, _event: RrfQualityGateFiredEvent) {}
     fn emit_hyde_skipped_code_query(&self, _event: HydeSkippedCodeQueryEvent) {}
     fn emit_rrf_component_weights(&self, _event: RrfComponentWeightsEvent) {}
+    fn emit_pagerank_run(&self, _event: PagerankRunEvent) {}
+    fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
+    fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
 }
 
 /// Convenience constructor for the default no-op sink.
@@ -193,6 +258,9 @@ mod tests {
         fn emit_rrf_quality_gate_fired(&self, _event: RrfQualityGateFiredEvent) {}
         fn emit_hyde_skipped_code_query(&self, _event: HydeSkippedCodeQueryEvent) {}
         fn emit_rrf_component_weights(&self, _event: RrfComponentWeightsEvent) {}
+        fn emit_pagerank_run(&self, _event: PagerankRunEvent) {}
+        fn emit_dkg_rebuild_started(&self, _event: DkgRebuildStartedEvent) {}
+        fn emit_dkg_rebuild_complete(&self, _event: DkgRebuildCompleteEvent) {}
     }
 
     #[test]

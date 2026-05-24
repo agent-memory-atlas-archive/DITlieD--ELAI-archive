@@ -273,6 +273,7 @@ mod tests {
             tool_results: vec!["result-1".into()],
             output_draft: "draft".into(),
             channel_references: vec![],
+            schema_version: crate::checkpoint::LEGACY_CHECKPOINT_SCHEMA_VERSION,
         }
     }
 

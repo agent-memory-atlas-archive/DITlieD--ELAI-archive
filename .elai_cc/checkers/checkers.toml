@@ -1,0 +1,77 @@
+# D-11 constructive checker registry manifest.
+#
+# Loaded by `elai_orchestrator::checker_registry::CheckerRegistry::load_from_toml`.
+# Each [[checker]] row registers one boxed `ScriptChecker` impl under
+# `id`, mapping to one `CheckerKind` variant. The registry runs every
+# applicable checker for each emitted claim (see
+# `dispatch_constructive_checkers` in agent_pool.rs).
+#
+# Schema for each row:
+#   id          -- stable, sorted-order identifier (becomes CheckerId)
+#   kind        -- one of: sympy | z3 | compile_rust | compile_py |
+#                  regex_match | registry_check | json_schema_validate |
+#                  numeric_range  (closed CheckerKind enum, L3-locked
+#                  with +2 extension per D-11-decisions.md DECISION-3)
+#   script      -- path RELATIVE to the workspace root (.elai_cc/...)
+#   interpreter -- "python" | "python3" | "sh" | "bash" (process invoker
+#                  for the script; subprocess timeout = 30s enforced by
+#                  the Rust runner)
+#   applies_to  -- array of ClaimType variants the checker applies to
+#                  (snake_case: factual | procedural | normative |
+#                  speculative | hypothetical | computational |
+#                  meta_query). Empty array = applies to all claim types.
+#   version     -- helper-script semver (informational; bumps trigger
+#                  re-audit but do not change registry behaviour)
+#
+# Grounding (paper-anchored):
+#   PoT          arxiv:2211.12588 §3.1  (Python interpreter = ground truth)
+#   CodeAct      arxiv:2402.01030 §2.3  (code execution as action space)
+#   AlphaProof   Nature 2025 Methods   (symbolic kernel = sole oracle)
+
+[[checker]]
+id          = "sympy-equality"
+kind        = "sympy"
+script      = ".elai_cc/checkers/math/sympy.py"
+interpreter = "python3"
+applies_to  = ["computational", "factual"]
+version     = "0.1.0"
+
+[[checker]]
+id          = "z3-smt"
+kind        = "z3"
+script      = ".elai_cc/checkers/math/z3.py"
+interpreter = "python3"
+applies_to  = ["computational", "factual", "hypothetical"]
+version     = "0.1.0"
+
+[[checker]]
+id          = "compile-rust"
+kind        = "compile_rust"
+script      = ".elai_cc/checkers/code/compile_rust.sh"
+interpreter = "sh"
+applies_to  = ["computational", "procedural"]
+version     = "0.1.0"
+
+[[checker]]
+id          = "compile-py"
+kind        = "compile_py"
+script      = ".elai_cc/checkers/code/compile_py.sh"
+interpreter = "sh"
+applies_to  = ["computational", "procedural"]
+version     = "0.1.0"
+
+[[checker]]
+id          = "registry-check"
+kind        = "registry_check"
+script      = ".elai_cc/checkers/registry/registry_check.py"
+interpreter = "python3"
+applies_to  = ["factual", "procedural"]
+version     = "0.1.0"
+
+[[checker]]
+id          = "regex-assertion"
+kind        = "regex_match"
+script      = ".elai_cc/checkers/text/regex_assertion.py"
+interpreter = "python3"
+applies_to  = []
+version     = "0.1.0"

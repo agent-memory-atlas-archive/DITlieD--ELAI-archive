@@ -420,6 +420,262 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// C-36 — MuCoCo Mutation Operator Catalog (sidecar-backed)
+// ---------------------------------------------------------------------------
+//
+// Eleven Python-source mutation operators from arXiv:2604.19086 (MuCoCo).
+// Paper interface map at workflow/papers/mucoco-2604.19086-interface.md
+// (HIGH reliability). The operators themselves run inside the Python
+// sidecar (python/elai_inference/mucoco/) because the paper (Appendix G)
+// uses the Python stdlib `ast` module — reimplementing them in Rust would
+// duplicate an entire Python AST emitter for zero correctness gain.
+//
+// Rust-side surface (this module):
+//   - MucocoOperator enum         : eleven variants matching paper Table 9
+//   - MucocoMutationResult struct : sidecar /mucoco/mutate response shape
+//   - dispatch_mucoco_mutation()  : async HTTP shell-out to sidecar
+//   - list_mucoco_operators()     : pure-function enumerator
+//
+// Wire shape (HTTP via reqwest):
+//   POST <base>/mucoco/mutate
+//   { "source": str, "language": str, "operator_name": str }
+//   -> { "operator": str, "applied": bool, "mutated_source": str,
+//        "skip_reason": str | null }
+//
+// SSB beacon: every dispatch_mucoco_mutation result yields one
+// SsbActionType::MucocoMutationApplied row (see ssb.rs SCHEMA_VERSION 104
+// atomic landing). Producer wiring (auditor / metamorphic_runner) emits
+// the row; this module stays SSB-agnostic so unit tests need no writer.
+
+use std::fmt;
+use std::str::FromStr;
+
+/// Eleven paper-grounded MuCoCo mutation operators (Python-source only).
+///
+/// Categories (paper Appendix B):
+///   Lexical    : RandomMutation, SequentialMutation, LiteralFormat
+///   Syntactic  : ForToEnumerate, ForToWhile
+///   Logical    : DeMorgan, BooleanLiteral, CommutativeReorder,
+///                ConstantUnfolding, ConstantUnfoldingAdd, ConstantUnfoldingMul
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MucocoOperator {
+    RandomMutation,
+    SequentialMutation,
+    LiteralFormat,
+    ForToEnumerate,
+    ForToWhile,
+    DeMorgan,
+    BooleanLiteral,
+    CommutativeReorder,
+    ConstantUnfolding,
+    ConstantUnfoldingAdd,
+    ConstantUnfoldingMul,
+}
+
+impl MucocoOperator {
+    /// snake_case identifier matching the sidecar registry name + the SSB
+    /// payload operator string. Single source of truth for the wire tag.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RandomMutation => "random_mutation",
+            Self::SequentialMutation => "sequential_mutation",
+            Self::LiteralFormat => "literal_format",
+            Self::ForToEnumerate => "for_to_enumerate",
+            Self::ForToWhile => "for_to_while",
+            Self::DeMorgan => "demorgan",
+            Self::BooleanLiteral => "boolean_literal",
+            Self::CommutativeReorder => "commutative_reorder",
+            Self::ConstantUnfolding => "constant_unfolding",
+            Self::ConstantUnfoldingAdd => "constant_unfolding_add",
+            Self::ConstantUnfoldingMul => "constant_unfolding_mul",
+        }
+    }
+}
+
+impl fmt::Display for MucocoOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for MucocoOperator {
+    type Err = MucocoError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "random_mutation" => Ok(Self::RandomMutation),
+            "sequential_mutation" => Ok(Self::SequentialMutation),
+            "literal_format" => Ok(Self::LiteralFormat),
+            "for_to_enumerate" => Ok(Self::ForToEnumerate),
+            "for_to_while" => Ok(Self::ForToWhile),
+            "demorgan" => Ok(Self::DeMorgan),
+            "boolean_literal" => Ok(Self::BooleanLiteral),
+            "commutative_reorder" => Ok(Self::CommutativeReorder),
+            "constant_unfolding" => Ok(Self::ConstantUnfolding),
+            "constant_unfolding_add" => Ok(Self::ConstantUnfoldingAdd),
+            "constant_unfolding_mul" => Ok(Self::ConstantUnfoldingMul),
+            other => Err(MucocoError::UnknownOperator(other.to_owned())),
+        }
+    }
+}
+
+/// Enumerate every MuCoCo operator in stable declaration order. Used by
+/// the dashboard / CLI to populate operator pickers without re-reading
+/// the paper.
+#[must_use]
+pub fn list_mucoco_operators() -> Vec<MucocoOperator> {
+    vec![
+        MucocoOperator::RandomMutation,
+        MucocoOperator::SequentialMutation,
+        MucocoOperator::LiteralFormat,
+        MucocoOperator::ForToEnumerate,
+        MucocoOperator::ForToWhile,
+        MucocoOperator::DeMorgan,
+        MucocoOperator::BooleanLiteral,
+        MucocoOperator::CommutativeReorder,
+        MucocoOperator::ConstantUnfolding,
+        MucocoOperator::ConstantUnfoldingAdd,
+        MucocoOperator::ConstantUnfoldingMul,
+    ]
+}
+
+/// Errors that may arise from a MuCoCo dispatch round-trip.
+#[derive(Debug, thiserror::Error)]
+pub enum MucocoError {
+    #[error("unknown MuCoCo operator: {0}")]
+    UnknownOperator(String),
+    #[error("sidecar request failed: {0}")]
+    Transport(String),
+    #[error("sidecar returned non-success status {status}: {body}")]
+    Status { status: u16, body: String },
+    #[error("sidecar response not parseable: {0}")]
+    Parse(String),
+}
+
+/// Wire response from the sidecar /mucoco/mutate endpoint.
+///
+/// Mirrors python/elai_inference/mucoco/result.py MutationResult one-for-one.
+/// `applied=False` REQUIRES non-empty skip_reason (paper sec S3.p3.1
+/// applicability-first contract). The hash-stable record used by the SSB
+/// payload sits in the producer wiring (so this struct stays a pure DTO).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MucocoMutationResult {
+    pub operator: String,
+    pub applied: bool,
+    pub mutated_source: String,
+    pub skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MucocoMutateRequest<'a> {
+    source: &'a str,
+    language: &'a str,
+    operator_name: &'a str,
+}
+
+/// Dispatch a single mutation to the sidecar.
+///
+/// `base_url` is the sidecar root (e.g. "http://127.0.0.1:8100"). Returns
+/// the parsed [`MucocoMutationResult`] on success. The function does NOT
+/// emit an SSB row itself — the producer wiring layer owns the SSB write
+/// path so unit tests in this module can run without a writer.
+///
+/// Anti-staleness: native async fn (no async-trait crate), reqwest::Client
+/// constructed fresh per call (callers can hoist to a shared client if
+/// hot-path optimisation is needed later). Errors via thiserror.
+pub async fn dispatch_mucoco_mutation(
+    base_url: &str,
+    source: &str,
+    language: &str,
+    operator: MucocoOperator,
+) -> Result<MucocoMutationResult, MucocoError> {
+    let url = format!("{}/mucoco/mutate", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let request = MucocoMutateRequest {
+        source,
+        language,
+        operator_name: operator.as_str(),
+    };
+    let response = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| MucocoError::Transport(e.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<no body>"));
+        return Err(MucocoError::Status {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    let result: MucocoMutationResult = response
+        .json()
+        .await
+        .map_err(|e| MucocoError::Parse(e.to_string()))?;
+    // Stub-ban contract: applied=False MUST carry a non-empty skip_reason.
+    // This is enforced server-side in result.py too; we double-check here
+    // to surface protocol drift loudly rather than emit a corrupt SSB row.
+    if !result.applied && result.skip_reason.as_deref().unwrap_or("").is_empty() {
+        return Err(MucocoError::Parse(
+            "sidecar returned applied=false with empty skip_reason (stub_ban contract)"
+                .to_owned(),
+        ));
+    }
+    if result.applied && result.skip_reason.is_some() {
+        return Err(MucocoError::Parse(
+            "sidecar returned applied=true with non-null skip_reason (mutually exclusive)"
+                .to_owned(),
+        ));
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod mucoco_tests {
+    use super::*;
+
+    #[test]
+    fn list_mucoco_operators_has_eleven() {
+        assert_eq!(list_mucoco_operators().len(), 11);
+    }
+
+    #[test]
+    fn mucoco_operator_as_str_round_trips() {
+        for op in list_mucoco_operators() {
+            let parsed: MucocoOperator = op.as_str().parse().unwrap_or_else(|e| {
+                panic!("operator {} failed to round-trip from_str: {e}", op.as_str())
+            });
+            assert_eq!(parsed, op);
+        }
+    }
+
+    #[test]
+    fn mucoco_operator_from_str_rejects_unknown() {
+        let r: Result<MucocoOperator, _> = "not_a_real_operator".parse();
+        match r {
+            Err(MucocoError::UnknownOperator(name)) => {
+                assert_eq!(name, "not_a_real_operator");
+            }
+            _ => panic!("expected UnknownOperator error"),
+        }
+    }
+
+    #[test]
+    fn mucoco_operator_display_matches_as_str() {
+        for op in list_mucoco_operators() {
+            assert_eq!(format!("{op}"), op.as_str());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -706,7 +706,7 @@ mod tests {
         // fails. Use std::time::Instant::now() — test-only fidelity (not used
         // by cosmos paths).
         fn instant_now(&self) -> std::time::Instant {
-            std::time::Instant::now()
+            std::time::Instant::now() // entropy-allow: test-only-clock-impl-cfg-test-mod
         }
     }
 

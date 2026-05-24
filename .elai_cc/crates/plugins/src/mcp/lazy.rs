@@ -3,12 +3,17 @@
 //! stub_ban: cache_hit/cache_miss SSB rows are mandatory (no silent caching).
 //! resolve MUST NOT panic; returns Result for unknown tool names.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: FxHashMap chosen for the registry parameter.
+// Lookup-only (registry.get(tool_name)); no iteration. rustc-hash is
+// already in plugins/Cargo.toml. Test file tests/tool_gate.rs gets a
+// cascade fix (changelog 2026-04-29 B-15B-FX rule: cfg(test) migrates
+// atomically with prod).
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 use lru::LruCache;
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 use crate::mcp_bridge::McpToolSpec;
@@ -44,7 +49,7 @@ impl LazySchemaCache {
     pub async fn resolve(
         &self,
         tool_name: &str,
-        registry: &HashMap<String, FullSchema>,
+        registry: &FxHashMap<String, FullSchema>,
     ) -> Result<FullSchema, LazyCacheError> {
         let start = Instant::now();
         {

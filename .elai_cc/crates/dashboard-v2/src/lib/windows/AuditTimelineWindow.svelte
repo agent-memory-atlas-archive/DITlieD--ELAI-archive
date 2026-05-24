@@ -44,6 +44,7 @@
     babysteps: '#f97316', // orange
     babystep_detail: '#ef4444', // red
     plan: '#a855f7', // purple
+    production_grade: '#ec4899', // pink
   };
 
   const modeLabel: Record<AuditorMode, string> = {
@@ -53,6 +54,7 @@
     babysteps: 'BabySteps',
     babystep_detail: 'BabyStepDetail',
     plan: 'Plan',
+    production_grade: 'ProductionGrade',
   };
 
   async function load() {

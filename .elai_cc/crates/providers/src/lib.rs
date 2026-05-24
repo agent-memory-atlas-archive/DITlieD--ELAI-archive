@@ -32,8 +32,9 @@ pub use oauth::{
     DEFAULT_CLOUD_MODEL_ID,
 };
 pub use decoding::{
-    crane_adaptive_eligible, default_decoding_for, ConstrainedDecodingConfig, DecodingMode,
-    RoleDecoding, PER_ROLE_DECODING_DEFAULTS,
+    crane_adaptive_eligible, default_decoding_for, paper_decoding_params_for,
+    ConstrainedDecodingConfig, DecodingMode, PaperDecodingParams, PaperRole, RoleDecoding,
+    PER_ROLE_DECODING_DEFAULTS, PER_ROLE_DECODING_PARAMS_PAPER,
 };
 pub use error::ApiError;
 pub use prompt_cache::{

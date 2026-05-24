@@ -344,6 +344,22 @@ pub struct AppState {
     /// handlers — no guard is held across `.await`. BTreeMap (not
     /// HashMap) per CLAUDE.md coding standards.
     pub intent_pairs: Arc<Mutex<BTreeMap<u64, elai_orchestrator::IntentPairSet>>>,
+    /// B-25 Phase 4J: optional shared `EmpireBridge` handle. `None` until
+    /// the CLI launches with `--empire` AND the orchestrator is compiled
+    /// with `--features empire`; in that case the launcher passes a
+    /// pre-constructed `Arc<EmpireBridge>` via `AppState::with_empire_bridge`.
+    /// Always `None` for non-empire builds and for empire-feature builds
+    /// not opted into via CLI.
+    ///
+    /// commands_empire.rs reads this snapshot so that bridge state survives
+    /// across Tauri command invocations (a fresh `EmpireBridge::new()` per
+    /// call would reset state every time and break the dashboard render).
+    ///
+    /// EMPIRE-PENDING flip: once the activation patch wires the bridge to
+    /// a live FactoryLine transport, this field's `Some(...)` arm is the
+    /// one place the dashboard learns the bridge is connected.
+    #[cfg(feature = "empire")]
+    pub empire_bridge: Option<Arc<elai_orchestrator::empire::EmpireBridge>>,
     /// C-23: optional resolved path to the active SessionDag's `dag.db`.
     /// Per-call DAG open trade-off: dashboard-v2 does not hold a long-
     /// lived `SessionDag` handle (Q3 orchestrator decision). Each
@@ -458,9 +474,36 @@ impl AppState {
         // Phase 4F: feasibility prober rooted at <project_root>/.elai_cc/feasibility/.
         // Construction is cheap (no shell-out / no I/O until probe() is called)
         // so this stays inside AppState::new() without slowing startup.
+        //
+        // E-22 phase-4F M1 + Tier3 injection (2026-05-22): mirror the
+        // production wiring at `runtime_setup.rs::build_task_runner_wiring`
+        // by injecting both a system_prober and a Tier3StubExecutor
+        // (locating `elai_cc_agent` via `locate_default_agent_binary`).
+        // Binary-not-found is non-fatal — the prober falls back to the
+        // synthetic stub path so the dashboard renders even on agentless
+        // dev hosts.
         let feasibility_root = project_root.join(".elai_cc").join("feasibility");
-        let feasibility_prober: Arc<dyn FeasibilityProber> =
-            Arc::new(DefaultFeasibilityProber::new(feasibility_root));
+        let clock_for_probe: Arc<dyn ClockProvider> = Arc::new(OsClock);
+        let system_prober_for_feasibility: Arc<dyn elai_orchestrator::SystemProber> =
+            Arc::new(elai_orchestrator::DefaultSystemProber::new(
+                Some(project_root.clone()),
+                clock_for_probe,
+            ));
+        let mut prober = DefaultFeasibilityProber::new(feasibility_root.clone())
+            .with_system_prober(Arc::clone(&system_prober_for_feasibility));
+        match elai_orchestrator::locate_default_agent_binary() {
+            Ok(agent_path) => {
+                let tier3 = elai_orchestrator::Tier3StubExecutor::new(agent_path);
+                prober = prober.with_stub_executor(Arc::new(tier3));
+            }
+            Err(e) => {
+                tracing::info!(
+                    error = %e,
+                    "AppState::new: elai_cc_agent not located — feasibility prober keeps the synthetic stub path"
+                );
+            }
+        }
+        let feasibility_prober: Arc<dyn FeasibilityProber> = Arc::new(prober);
 
         Self {
             viewer,
@@ -518,7 +561,37 @@ impl AppState {
             // C-29: empty IntentPair registry at startup. PlanWindow
             // populates it via the `add_intent_pair` command.
             intent_pairs: Arc::new(Mutex::new(BTreeMap::new())),
+            // B-25 Phase 4J: empire_bridge defaults to None even with the
+            // feature on; the CLI / dashboard launcher constructs the Arc
+            // and swaps it via with_empire_bridge before the Tauri runtime
+            // takes ownership of AppState.
+            #[cfg(feature = "empire")]
+            empire_bridge: None,
         }
+    }
+
+    /// B-25 Phase 4J: install a pre-constructed `EmpireBridge` on AppState.
+    /// Called by the dashboard launcher when the user passes `--empire` and
+    /// the orchestrator is compiled with `--features empire`. Returns the
+    /// updated AppState by value so the caller can chain it into
+    /// `tauri::Builder::manage`.
+    #[cfg(feature = "empire")]
+    pub fn with_empire_bridge(
+        mut self,
+        bridge: Arc<elai_orchestrator::empire::EmpireBridge>,
+    ) -> Self {
+        self.empire_bridge = Some(bridge);
+        self
+    }
+
+    /// B-25 Phase 4J: snapshot helper for the shared `EmpireBridge` handle.
+    /// Returns `None` when the dashboard launched without the empire
+    /// feature OR without `--empire`. Cheap Arc clone, no lock acquisition.
+    #[cfg(feature = "empire")]
+    pub fn empire_bridge_snapshot(
+        &self,
+    ) -> Option<Arc<elai_orchestrator::empire::EmpireBridge>> {
+        self.empire_bridge.clone()
     }
 
     /// C-29 helper: snapshot the IntentPairSet for `step_id`. Returns the

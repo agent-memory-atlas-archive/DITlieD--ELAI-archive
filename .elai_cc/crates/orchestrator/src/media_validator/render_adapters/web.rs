@@ -137,6 +137,12 @@ pub struct WebRenderAdapter {
     /// Per-instance tempdir tracker. Small scope (one entry per render
     /// call); `std::sync::Mutex` is fine — no async contention.
     tempdirs: std::sync::Mutex<Vec<PathBuf>>,
+    /// E-14 — Optional set of browser-e2e assertions paired with this
+    /// adapter. When `Some`, callers may invoke
+    /// [`WebRenderAdapter::run_e2e_assertions`] to evaluate the
+    /// assertions against a snapshot the `browser_e2e` runner produced.
+    /// `None` preserves the original B-24 behavior (no E2E surface).
+    pub e2e_assertions: Option<Vec<crate::browser_e2e::Assertion>>,
 }
 
 impl std::fmt::Debug for WebRenderAdapter {
@@ -178,6 +184,7 @@ impl WebRenderAdapter {
                 Viewport::desktop(),
             ],
             tempdirs: std::sync::Mutex::new(Vec::new()),
+            e2e_assertions: None,
         }
     }
 
@@ -192,7 +199,32 @@ impl WebRenderAdapter {
                 Viewport::desktop(),
             ],
             tempdirs: std::sync::Mutex::new(Vec::new()),
+            e2e_assertions: None,
         }
+    }
+
+    /// E-14 — attach a fixed bundle of browser-e2e assertions. Builder
+    /// pattern so existing call sites stay one-liner-friendly.
+    pub fn with_e2e_assertions(
+        mut self,
+        assertions: Vec<crate::browser_e2e::Assertion>,
+    ) -> Self {
+        self.e2e_assertions = Some(assertions);
+        self
+    }
+
+    /// E-14 — run the attached assertions against an already-captured
+    /// `PageSnapshot`. Returns `None` when no assertions were attached
+    /// (preserves B-24 behavior for callers that ignore the E2E surface);
+    /// returns `Some(report)` otherwise. Delegates to
+    /// [`crate::browser_e2e::run_assertions`] — single source of truth.
+    pub fn run_e2e_assertions(
+        &self,
+        snapshot: &crate::browser_e2e::PageSnapshot,
+    ) -> Option<crate::browser_e2e::AssertionReport> {
+        self.e2e_assertions
+            .as_ref()
+            .map(|a| crate::browser_e2e::run_assertions(snapshot, a))
     }
 
     /// Pick the configured viewports if non-empty; else fall back to

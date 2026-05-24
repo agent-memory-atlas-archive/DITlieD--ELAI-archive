@@ -9,6 +9,7 @@ pub mod mcp_bridge;
 #[cfg(feature = "mcp")]
 mod mcp_lifecycle;
 // C-35: dynamic gating + lazy schema cache modules.
+// E-30: pins submodule landed under `mcp::pins` for version-pin enforcement.
 #[cfg(feature = "mcp")]
 pub mod mcp;
 // E-24: MCP hardening modules.
@@ -18,6 +19,25 @@ pub mod mcp_schema_pin;
 pub mod mcp_budget;
 #[cfg(feature = "mcp")]
 pub mod llm_guard;
+// C-42 (session 2): Semantic Gateway L2 — role-based authorization policy
+// running BEFORE the C-35 ToolGate at mcp_bridge::dispatch_tool_call_with_gate.
+// Paper grounding: arXiv:2604.25555 (MEDIUM reliability, single-author
+// preprint). Wired only when the `mcp` feature is on; the policy itself
+// is pure deterministic code (no async, no network) but lives behind `mcp`
+// because composition with the ToolGate (which is `mcp`-gated) is what makes
+// the surface useful in production.
+#[cfg(feature = "mcp")]
+pub mod authz;
+// C-47: Case-based calibration of tool-use telemetry. Paper-grounded against
+// arXiv:2605.15041 (CAST). Aggregates per-(tool, call_shape_hash) telemetry
+// into a 5-dim failure profile + complexity score, then emits corrective
+// hints once an error-rate threshold is crossed. Lives behind the `mcp`
+// feature alongside the C-35 gate + C-42 authz surfaces (the registry is
+// consulted from `DefaultMcpBridge::dispatch_tool_call_with_gate` and
+// `dispatch_tool_call_with_authz`). See workflow/papers/case-based-
+// calibration.md + workflow/reasoning/C-47-decisions.md.
+#[cfg(feature = "mcp")]
+pub mod tool_calibration;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -45,9 +65,50 @@ pub use mcp_bridge::{
     McpToolSummary, McpCallResult, DEFAULT_MCP_SERVER_URL, ELAI_ENABLE_MCP_ENV,
     ELAI_MCP_SERVER_URL_ENV, MCP_TOOL_DENY_LIST,
     SanitizeRuleId, SanitizeResult, sanitize_description,
+    // E-18: reliability gate emitter trait + noop + emit-kind sentinels +
+    // reject-reason wire labels. The orchestrator wires a real
+    // implementor via `with_reliability_ssb_emitter`. The trait + noop
+    // ship from the plugins crate so `plugins -> orchestrator` stays
+    // acyclic, mirroring C-35 ToolGateSsbEmitter / C-42
+    // GatewayAuthzSsbEmitter / C-47 CaseBaseSsbEmitter precedent.
+    ReliabilityGateSsbEmitter, NoopReliabilityEmitter,
+    reliability_emit_kinds, reliability_reject_reasons,
 };
 #[cfg(feature = "mcp")]
 pub use mcp_lifecycle::{HeartbeatMonitor, McpConnectionManager, RetryPolicy};
+// C-35: re-export the new gating surface so downstream crates (orchestrator,
+// dashboard-v2) can wire ToolGate + LazySchemaCache + the SSB emitter trait
+// without reaching into mcp/ submodules. Free-function aliases
+// render_gated_catalog + resolve_schema_on_demand satisfy the WIRING_CONTRACT
+// produces clause (M1 + M2 in workflow/reasoning/C-35-decisions.md).
+#[cfg(feature = "mcp")]
+pub use mcp::{
+    render_gated_catalog, resolve_schema_on_demand,
+    NoopToolGateEmitter, ToolGateSsbEmitter, emit_kinds as tool_gate_emit_kinds,
+};
+#[cfg(feature = "mcp")]
+pub use mcp::gate::{
+    GatedCatalog, Summarize, SummaryRow, ToolGate, ToolGateConfig, ToolGateError,
+    ToolGateStateConfig, load_gate,
+};
+#[cfg(feature = "mcp")]
+pub use mcp::lazy::{LazyCacheError, LazySchemaCache};
+// C-47: re-export the calibration surface so the orchestrator + dashboard-v2
+// bootstrap can wire the registry + the SSB emitter trait without reaching
+// into the submodule paths.
+#[cfg(feature = "mcp")]
+pub use tool_calibration::{
+    classify_response, complexity_score, emit_kinds as tool_calibration_emit_kinds,
+    generate_hint, AggregatedCase, CaseBaseSsbEmitter, FailureProfile, NoopCaseBaseEmitter,
+    ResponseKind, ToolCalibrationRegistry, ToolCalibrationStatus, CASE_BASE_LRU_CAP,
+    HINT_ERROR_RATE_THRESHOLD, HINT_MIN_TOTAL_CALLS,
+};
+// E-30: MCP version-pin loader + enforcer (extends mcp_pins.toml).
+#[cfg(feature = "mcp")]
+pub use mcp::pins::{
+    McpPinPolicy, McpPinVerdict, McpPinsConfig, McpPinsError, McpServerPin,
+    DEFAULT_PINS_PATH as MCP_PINS_DEFAULT_PATH,
+};
 #[cfg(feature = "mcp")]
 pub use mcp_schema_pin::{PinStatus, PinRecord, ToolDef, SchemaPinError, pin_or_verify, update_pin, hash_tool_list};
 #[cfg(feature = "mcp")]

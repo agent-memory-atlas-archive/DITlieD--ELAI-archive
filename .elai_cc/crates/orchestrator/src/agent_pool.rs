@@ -501,6 +501,41 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
         let mut grc_engine = BasicGrcEngine::new();
         grc_engine.with_agent_config(grc_config.clone());
 
+        // C-37 — closes GAP-B (default_decoding_for had no production
+        // callers): emit a tracing::info row at the role-dispatch site so the
+        // per-role decoding policy table actually influences run config.
+        //
+        // We can NOT call SidecarProvider::apply_role_default_decoding here
+        // because the orchestrator does not own the SidecarProvider — the
+        // spawned child process owns it. The child reads its role from the
+        // IPC AgentRequest frame and is the natural site to apply the
+        // policy; this log makes the dispatch event observable so audit
+        // tooling can correlate the child's policy application with the
+        // parent's spawn decision.
+        //
+        // Paper grounding: arXiv:2604.06066 Section 4.3. See
+        // providers/src/decoding.rs:PER_ROLE_DECODING_PARAMS_PAPER.
+        let role_label = agent_role_to_snake_case(role);
+        if let Some(decoding_role) = elai_providers::decoding::RoleDecoding::from_snake_case(role_label) {
+            let cfg = elai_providers::decoding::default_decoding_for(decoding_role);
+            tracing::info!(
+                target: "orchestrator::agent_pool",
+                agent_id = %agent_id,
+                role = role_label,
+                decoding_mode = cfg.mode.discriminant(),
+                max_retries = cfg.max_retries_on_invalid,
+                strict = cfg.strict,
+                "C-37: per-role default decoding policy resolved at dispatch"
+            );
+        } else {
+            tracing::debug!(
+                target: "orchestrator::agent_pool",
+                agent_id = %agent_id,
+                role = role_label,
+                "C-37: no decoding policy mapping for role; keeping legacy un-constrained behaviour"
+            );
+        }
+
         // B-8 Tasks#6: anti-rubber-stamp activation for the Auditor role.
         //
         // The reasoning engine enforces "Auditor must record >= 1 FINDING:
@@ -540,6 +575,7 @@ impl<E: EntropySource> AgentPool for InProcessAgentPool<E> {
                 | AgentRole::AuditorSteps
                 | AgentRole::AuditorBabySteps
                 | AgentRole::AuditorBabyStepDetail
+                | AgentRole::AuditorProductionGrade
         ) && !crate::grc::pipeline_grc_disabled_via_env()
         {
             let seed = elai_reasoning::ThinkStep {
@@ -711,6 +747,12 @@ fn agent_role_to_snake_case(role: AgentRole) -> &'static str {
         AgentRole::AuditorSteps => "auditor_steps",
         AgentRole::AuditorBabySteps => "auditor_babysteps",
         AgentRole::AuditorBabyStepDetail => "auditor_babystep_detail",
+        // E-12: production-grade auditor (E-11 prereq, fulfilled in E-12).
+        // Plan-scope; runs the 15-item production checklist + framework
+        // profile gates against the emitted FilePlan.
+        AgentRole::AuditorProductionGrade => "auditor_production_grade",
+        // E-37: prompt-injection classifier (off-model, PromptArmor-style).
+        AgentRole::InjectionClassifier => "injection_classifier",
     }
 }
 
@@ -903,6 +945,32 @@ pub fn default_grc_config(role: &AgentRole) -> AgentGrcConfig {
                 }
             })
         }
+        // E-12: production-grade auditor. No reasoning::config table entry
+        // exists yet — fall back to Plan-mode auditor budget (6/1000) which
+        // is the closest published shape. When reasoning::config gains an
+        // explicit `auditor_production_grade` arm the unwrap_or_else
+        // fallback becomes unreachable. Per E-12-tier-b-decisions.md the
+        // explicit table arm is RUNPOD-PENDING (lives alongside the live
+        // 15-runner toolchain install on the remote box).
+        AgentRole::AuditorProductionGrade => {
+            agent_grc_config_for_role("auditor_production_grade").unwrap_or_else(|| {
+                AgentGrcConfig {
+                    role: "auditor_production_grade".into(),
+                    ..AgentGrcConfig::default()
+                }
+            })
+        }
+        // E-37: injection classifier role — restricted GRC budget (small,
+        // 1-shot classification, no chain-of-thought required). Falls back
+        // to the published config or a conservative default.
+        AgentRole::InjectionClassifier => {
+            agent_grc_config_for_role("injection_classifier").unwrap_or_else(|| {
+                AgentGrcConfig {
+                    role: "injection_classifier".into(),
+                    ..AgentGrcConfig::default()
+                }
+            })
+        }
     }
 }
 
@@ -930,7 +998,8 @@ pub fn role_default_allowed_paths(role: &AgentRole, project_path: &std::path::Pa
         | AgentRole::AuditorPhases
         | AgentRole::AuditorSteps
         | AgentRole::AuditorBabySteps
-        | AgentRole::AuditorBabyStepDetail => {
+        | AgentRole::AuditorBabyStepDetail
+        | AgentRole::AuditorProductionGrade => {
             // Auditor needs read access to everything in the project
             vec![project_glob, "**".to_string()]
         }

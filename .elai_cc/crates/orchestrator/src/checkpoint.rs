@@ -67,6 +67,19 @@ pub struct GrcHistoryEntry {
 // AgentCheckpointData: the full serializable checkpoint payload
 // ---------------------------------------------------------------------------
 
+/// E-44 (SCHEMA_VERSION 136): assumed checkpoint schema version when an
+/// on-disk msgpack blob predates the `schema_version` field. Existing
+/// files written before E-44 lack the field; serde's `#[serde(default)]`
+/// invokes the default constructor and the lazy migrator
+/// (`durability::checkpoint_migrator::migrate_checkpoint`) chains
+/// registered transforms from this baseline up to the current schema
+/// version on read.
+pub const LEGACY_CHECKPOINT_SCHEMA_VERSION: u32 = 40;
+
+fn default_checkpoint_schema_version() -> u32 {
+    LEGACY_CHECKPOINT_SCHEMA_VERSION
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentCheckpointData {
     pub agent_status: String,
@@ -75,6 +88,13 @@ pub struct AgentCheckpointData {
     pub tool_results: Vec<String>,
     pub output_draft: String,
     pub channel_references: Vec<ChannelReference>,
+    /// E-44: schema version stamped at write time. Older blobs without
+    /// this field deserialise at [`LEGACY_CHECKPOINT_SCHEMA_VERSION`]
+    /// (40) via `serde(default)`, then the lazy migrator
+    /// (`durability::checkpoint_migrator::migrate_checkpoint`) walks
+    /// registered transforms up to the current version on read.
+    #[serde(default = "default_checkpoint_schema_version")]
+    pub schema_version: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +399,7 @@ mod tests {
             tool_results: vec!["result-1".into()],
             output_draft: "draft output".into(),
             channel_references: vec![],
+            schema_version: super::LEGACY_CHECKPOINT_SCHEMA_VERSION,
         }
     }
 

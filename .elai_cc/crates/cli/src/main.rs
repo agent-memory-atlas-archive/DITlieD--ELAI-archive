@@ -38,6 +38,99 @@ mod wip_squash_subcommand;
 // C-27: T(-1)+T-0 wiring contract audit dispatcher.
 mod wiring_audit;
 mod archive_verify;
+// C-43: `elai freeze status|verify|ratify` — Phase 4H scope-freeze CLI
+// driver. Wraps elai_orchestrator::scope_freeze. ELAI design hypothesis
+// — no paper grounding (see workflow/sessions/s-25120/mistakes.md for
+// the bad-cite analysis of arXiv:2604.21725).
+mod freeze_cmd;
+// C-45: `elai credit attribute|table|export` — CANTANTE contrastive
+// credit-attribution CLI driver. Wraps elai_orchestrator::credit_attribution.
+// Paper-grounded against arXiv:2605.13295 (Zehle 2026, Section 3.2 — K
+// rollouts NOT K^N, scalar c in [-1,+1], g=3 partition default). See
+// workflow/papers/cantante-credit-attribution.md.
+mod credit_cmd;
+// C-46: `elai routing decisions|pilot|status|export` — Uno-Orchestra
+// parsimonious agent routing (selective delegation) CLI driver. Wraps
+// elai_orchestrator::routing. Paper-grounded against arXiv:2605.05007
+// (Cui et al 2026, Sections 5 + 6.1 — (model, primitive) action space,
+// alpha in [0, 1] convex blend, S_max <= 0.10 cost-hack bound). See
+// workflow/papers/uno-orchestra-interface.md.
+mod routing_cmd;
+// C-47: `elai calibration status|reset-hints|export` — case-based
+// tool-use calibration CLI driver. Wraps
+// `elai_plugins::ToolCalibrationRegistry`. Paper-grounded against
+// arXiv:2605.15041 (CAST — Case-Based Calibration of Adaptive Reasoning
+// and Execution for LLM Tool Use). See
+// workflow/papers/case-based-calibration.md.
+mod calibration_cmd;
+// E-14: `elai browser run|list-journeys|status` — browser-e2e agent
+// CLI driver. Wraps elai_orchestrator::browser_e2e (Playwright snapshot
+// + axe-core gate + journey assertions). Wire-dark for absent
+// npx/playwright; VLM tier RUNPOD-PENDING.
+mod browser_e2e_cmd;
+mod reliability_cmd;
+// E-44: `elai durability status|validate-checkpoint|migrate|
+//                  continue-as-new-preview|acquire-lock` — durability
+// layer operator surface anchoring the orchestrator's `durability::*`
+// module as a production callable (WIRE-DARK avoidance per E-41
+// precedent). See workflow/reasoning/E-44-decisions.md.
+mod durability_cmd;
+// E-45: `elai drift detect|list-pairs|baseline` — cross-language drift
+// detector operator surface. Anchors cross_lang_drift::DriftDetector +
+// PairRegistry as production callables (WIRE-DARK avoidance per E-41
+// precedent). See workflow/reasoning/E-45-decisions.md.
+mod drift_cmd;
+// E-49: `elai metrics capture|swe-bench-pro|refinebench|aggregate|status` —
+// coding-agent metric suite operator surface (scope-lean ship). Anchors
+// coding_metrics::MetricsCollector + aggregate_session_metrics + the
+// SWE-Bench Pro / RefineBench live-run boundaries (RUNPOD-PENDING) as
+// production callables (WIRE-DARK avoidance per E-41 precedent). See
+// workflow/reasoning/E-49-decisions.md.
+mod metrics_cmd;
+// E-37: `elai safety status|list-pins|verify-pins|fixture-replay` —
+// prompt-injection defense operator surface (OWASP LLM Top 10 LLM01).
+// Wraps elai_orchestrator::Ssb + elai_safety pin / classifier helpers.
+// Read-only; live model fixture replay RUNPOD-PENDING. See
+// workflow/reasoning/E-37-decisions.md.
+mod safety_cmd;
+// E-40: `elai scip <query|defs|refs|callers|callees|pagerank|status|import>` —
+// orchestrator-rooted symbol-graph operator surface. Production caller for
+// elai_orchestrator::symbol_graph (defends against E37_WIRE_DARK_GAP_PATTERN).
+// See workflow/reasoning/E-40-decisions.md.
+mod scip_cmd;
+// D-16: `elai conformal-calibration status|update` — durable UniCR
+// tau threshold CLI driver. Wraps elai_orchestrator::conformal_calibration.
+// Paper-grounded against arXiv:2509.01455 (UniCR Eq.5). Namespace
+// distinct from C-47 `elai calibration` per D-16-decisions.md
+// DECISION-5.
+mod conformal_calibration_cli;
+mod experience_cmd;
+// C-50: `elai contract scaffold|audit|list` — Contract-Coding
+// STRUCTURAL contract test scaffolding CLI driver. Wraps
+// elai_orchestrator::contract_coding. Paper-grounded against
+// arXiv:2604.13100 (Lin, Zhao, Shi 2026 — kernel K = <N, Sigma,
+// Delta> §4.2). Full Generator -> Discriminator RL pipeline
+// (Algorithm 1) is RUNPOD-PENDING. See
+// workflow/papers/contract-coding-interface.md.
+mod contract_cmd;
+// C-52: `elai dafny <verify|status|list-tiers>` — Dafny Formal
+// Verification Spike CLI driver. Paper-grounded against
+// arXiv:2604.22601 (NL2VC). Live `dafny verify` execution is
+// RUNPOD-PENDING (local dev host lacks the dafny binary; model
+// substitution mandatory — Gemma 4 BLOCKED per memory
+// feedback_no_gemma4). See workflow/papers/nl2vc-dafny-interface.md
+// + workflow/reasoning/C-52-decisions.md.
+mod dafny_cmd;
+// E-13: `elai tdd <run|status|mutation-score>` — TDD verifier
+// agent CLI surface. Drives orchestrator::tdd_verifier (Red/Green/
+// Refactor cycle + anti-mock heuristic + cargo-mutants subprocess
+// wrapper). Composes with D-3's
+// ConsensusRule::VerifierKindHeterogeneous for aggregation.
+mod tdd_cmd;
+// C-40: `elai pr <open|list|status|close>` — GitHub PR adapter CLI.
+// Shells out to gh via the orchestrator's github_pr::GhCliAdapter.
+mod github_pr_cmd;
+mod pr_review_cmd;
 // D-9: `elai audit-locked-keys ...` — LockedKeysAuditor CLI driver.
 mod audit_locked_keys;
 // D-19: `elai bench prmbench` — PRMBench adversarial-gaming benchmark
@@ -65,9 +158,24 @@ mod bench_arc;
 mod bench_rag;
 mod runtime_client;
 mod runtime_cmd;
+// D-2: `elai ppm health` — three-step PPM sidecar health probe
+// (TCP -> /health -> canary /v1/ppm/score). Sync entrypoint owning a
+// tokio current-thread runtime (mirrors archive_verify::run).
+mod ppm_health;
+mod mucoco_cmd;
 mod mcp_client;
+// C-42 (session 2): `elai mcp authz [status|list-rejections|fuzz-report]`
+// — Semantic Gateway L2 RBAC dashboard surface. Reads the workspace-root
+// `authz-policy.toml` and prints status / recent denies / a bounded fuzz
+// summary. Sibling of `mcp_client`. Paper grounding: arXiv:2604.25555.
+mod mcp_authz_cmd;
 mod tool_executor;
 mod tool_formatting;
+// C-38: DKG lifecycle helper. Replaces the never-fires "if dkg.db
+// exists" gate at live_cli.rs:1722-1732 with an ensure-or-rebuild
+// helper that emits paired SSB beacons (DkgRebuildStarted /
+// DkgRebuildComplete) around the rebuild path.
+mod dkg_lifecycle;
 
 #[cfg(test)]
 mod cli_tests;
@@ -343,6 +451,133 @@ fn run() -> Result<(), anyhow::Error> {
             project_root,
             output_format,
         } => doctor::run_knowledge_models_probe(&project_root, output_format)?,
+        // C-43 — `elai freeze status|verify|ratify`. Phase 4H scope-freeze
+        // CLI surface. ELAI design hypothesis (see
+        // workflow/sessions/s-25120/mistakes.md for the bad-cite
+        // analysis of arXiv:2604.21725).
+        CliAction::Freeze { action, output_format } => {
+            freeze_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-45 — `elai credit attribute|table|export`. CANTANTE
+        // contrastive credit-attribution surface; paper-grounded against
+        // arXiv:2605.13295. Synthetic-fixture path is GPU-free; live
+        // pilot is `RUNPOD-PENDING: cantante_pilot_450runs_qwen3_8b`.
+        CliAction::Credit { action, output_format } => {
+            credit_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-46 — `elai routing decisions|pilot|status|export`.
+        // Uno-Orchestra parsimonious agent routing surface; paper-
+        // grounded against arXiv:2605.05007. Synthetic-fixture path is
+        // GPU-free; live pilot is
+        // `RUNPOD-PENDING: uno_orchestra_pilot_8roles_qwen3_8b`.
+        CliAction::Routing { action, output_format } => {
+            routing_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-47 — `elai calibration status|reset-hints|export`. Case-based
+        // tool-use calibration; paper-grounded against arXiv:2605.15041
+        // (CAST). The CLI surface is synthetic + GPU-free; live registry
+        // IPC is `RUNPOD-PENDING`.
+        CliAction::Calibration { action, output_format } => {
+            calibration_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-14 — `elai browser run|list-journeys|status`. Browser-e2e
+        // agent surface; wraps elai_orchestrator::browser_e2e. Wire-dark
+        // posture for absent npx/playwright; live VLM-tier RUNPOD-PENDING.
+        CliAction::Browser { action, output_format } => {
+            browser_e2e_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-18 — `elai reliability status|list-spills|replay-spill`.
+        // Tool-use reliability gate surface; handler at
+        // crates/cli/src/reliability_cmd.rs. Composes on D-11 +
+        // E-35 + C-47 + C-42 + C-35 (reuse-heavy posture). See
+        // workflow/reasoning/E-18-decisions.md.
+        CliAction::Durability { action, output_format } => {
+            durability_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-45 — `elai drift detect|list-pairs|baseline`. Cross-language
+        // drift detector operator surface; handler at
+        // crates/cli/src/drift_cmd.rs. WIRE-DARK avoidance for
+        // cross_lang_drift::DriftDetector + PairRegistry per E-41
+        // precedent. See workflow/reasoning/E-45-decisions.md.
+        CliAction::Drift { action, output_format } => {
+            drift_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-49 — `elai metrics capture|swe-bench-pro|refinebench|aggregate|status`.
+        // Coding-agent metric suite operator surface (scope-lean ship);
+        // handler at crates/cli/src/metrics_cmd.rs. WIRE-DARK avoidance
+        // for coding_metrics::MetricsCollector + aggregate_session_metrics
+        // per E-41 precedent. Live SWE-Bench Pro + RefineBench transports
+        // are RUNPOD-PENDING. See workflow/reasoning/E-49-decisions.md.
+        CliAction::Metrics { action, output_format } => {
+            metrics_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        CliAction::Reliability { action, output_format } => {
+            reliability_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-37 — `elai safety status|list-pins|verify-pins|fixture-replay`.
+        // Prompt-injection defense operator surface (OWASP LLM01); handler
+        // at crates/cli/src/safety_cmd.rs. Layers additively atop E-24
+        // mcp_schema_pin + sanitize_result + llm_guard and E-30
+        // destructive_verb_allowlist. See
+        // workflow/reasoning/E-37-decisions.md.
+        CliAction::Safety { action, output_format } => {
+            safety_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-40 — `elai scip query|defs|refs|callers|callees|pagerank|status|import`.
+        // Orchestrator-rooted symbol-graph operator surface; handler at
+        // crates/cli/src/scip_cmd.rs. Production caller for the new
+        // elai_orchestrator::symbol_graph module — defends against
+        // E37_WIRE_DARK_GAP_PATTERN. See workflow/reasoning/E-40-decisions.md.
+        CliAction::SymbolGraph { action, output_format } => {
+            scip_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // D-16 — `elai conformal-calibration status|update`. Durable
+        // UniCR tau persistence; handler at
+        // crates/cli/src/conformal_calibration_cli.rs. Paper-grounded
+        // against arXiv:2509.01455 (UniCR Eq.5). Namespace distinct
+        // from C-47's `elai calibration` per D-16-decisions.md
+        // DECISION-5.
+        CliAction::ConformalCalibration { action, output_format } => {
+            conformal_calibration_cli::run(action, output_format)
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-49 — `elai experience distill|list|export|reset`. ELAI
+        // heuristic adaptation of arXiv:2605.14443 (Sayana, Todi, Jash
+        // 2026). Synthetic-fixture path is GPU-free; live trace
+        // recorder is `RUNPOD-PENDING:
+        // iterative_distillation_prompter_rl_qwen3_8b`.
+        CliAction::Experience { action, output_format } => {
+            experience_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-50 — `elai contract scaffold|audit|list`. Contract-Coding
+        // STRUCTURAL contract test scaffolding surface; paper-
+        // grounded against arXiv:2604.13100. Synthetic-fixture path
+        // is GPU-free; the live Generator -> Discriminator RL
+        // pipeline (Algorithm 1) is `RUNPOD-PENDING:
+        // contract_coding_gen_disc_rl_qwen3_8b`. Citation
+        // discipline: the "47%" is the Roguelike subset of
+        // Greenfield-5 (Table 1) and TIES Trae; the differentiator
+        // is structural integrity per Section 5.2.
+        CliAction::Contract { action, output_format } => {
+            contract_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // C-52 — `elai dafny verify|status|list-tiers`. Dafny Formal
+        // Verification Spike CLI surface; paper-grounded against
+        // arXiv:2604.22601 (NL2VC). Live `dafny verify` execution
+        // is `RUNPOD-PENDING: live_dafny_verification_with_non_gemma_substitution`.
+        // Model substitution mandatory (Gemma 4 BLOCKED per memory
+        // feedback_no_gemma4).
+        CliAction::Dafny { action, output_format } => {
+            dafny_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-13: `elai tdd run|status|mutation-score`. TDD verifier
+        // agent dispatch — composes with orchestrator::tdd_verifier
+        // and D-3's ConsensusRule::VerifierKindHeterogeneous. Live
+        // cargo-mutants execution is RUNPOD-PENDING when the binary
+        // is absent (wire-dark posture).
+        CliAction::Tdd { action, output_format } => {
+            tdd_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
         CliAction::Init { output_format } => live_cli::run_init(output_format)?,
         CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } => {
             // C-17 (DRIFT-D/E): auto-resume + signal observer for the
@@ -358,17 +593,23 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Dashboard => dashboard::run_dashboard()?,
         // Phase A1a: production caller of `start_task_runner`. Pinned by
         // `crates/contracts/tests/task_runner_chokepoint_contract.rs`.
-        CliAction::Run { project_root, mode, provider, via_mcp } => {
+        CliAction::Run { project_root, mode, provider, via_mcp, empire, export_ssb } => {
             // C-17 (DRIFT-D/E): auto-resume + process-wide signal observer
             // for the long-lived `elai run` task_runner scope. Runs BEFORE
             // run_subcommand builds its own tokio runtime so the resume
             // pass uses a transient runtime that finishes promptly.
+            // C-40 session-2 minimal repair: surface the empire + export_ssb
+            // fields added by args.rs (session 3 is editing main.rs
+            // concurrently and owns the canonical wiring; this is the
+            // smallest valid destructure so the workspace compiles).
             c17_lifecycle::install_lifecycle(&project_root);
             run_subcommand::run_task_runner_subcommand(run_subcommand::RunArgs {
                 project_root,
                 mode,
                 provider,
                 via_mcp,
+                empire,
+                export_ssb,
             })?
         }
         CliAction::RemoteSidecar => remote_sidecar::run_remote_sidecar()?,
@@ -512,8 +753,196 @@ fn run() -> Result<(), anyhow::Error> {
         } => {
             cmd_incident_record(title, incident_date, source_url, incident_id)?;
         }
+        // D-2: `elai ppm health [--endpoint URL] [--timeout SECS] [--json]`.
+        // Three-step PPM sidecar health probe (TCP -> /health -> canary
+        // /v1/ppm/score). Owns its own tokio runtime in `ppm_health::run`
+        // (sync entrypoint pattern, same as `archive_verify::run`). Exits 1
+        // on any step failure via std::process::exit inside the handler.
+        CliAction::PpmHealth {
+            endpoint,
+            timeout_secs,
+            json,
+        } => {
+            ppm_health::run(endpoint, timeout_secs, json)?;
+        }
+        // E-5 session-2: `elai memory <sub>` — heuristic memory inspector.
+        // Concurrent session 3 (s-31708) owns the canonical dispatcher; this
+        // arm surfaces a typed error so the workspace builds while session 3
+        // lands the real handler. NOT a silent stub — the user gets a clear
+        // diagnostic and exit code 1.
+        CliAction::Memory { sub, .. } => {
+            return Err(anyhow::anyhow!(
+                "elai memory {sub:?}: handler is being wired in session s-31708; \
+                 not yet routed at the main.rs dispatch site"
+            ));
+        }
+        // C-40: `elai pr <open|list|status|close> [args...]` — GitHub
+        // PR adapter CLI surface. Owns its own current-thread tokio
+        // runtime in `run_pr_subcommand` (sync entry, mirrors
+        // archive_verify::run + wip_squash_subcommand::run).
+        CliAction::Pr {
+            sub,
+            repo,
+            title,
+            body,
+            head,
+            base,
+            draft,
+            pr_number,
+            state_filter,
+            limit,
+            json,
+        } => {
+            github_pr_cmd::run_pr_subcommand(
+                sub,
+                repo,
+                title,
+                body,
+                head,
+                base,
+                draft,
+                pr_number,
+                state_filter,
+                limit,
+                json,
+            )?;
+        }
+        CliAction::PrReview {
+            sub,
+            pr,
+            body,
+            file,
+            line,
+            template,
+            kv_pairs,
+            since,
+            ruleset,
+            loc_added,
+            loc_removed,
+            files_changed,
+            touches_owned,
+            repo,
+            branch,
+            touched_files,
+            default_owner,
+            title,
+            json,
+        } => {
+            let action = build_pr_review_action(
+                &sub,
+                pr,
+                body,
+                file,
+                line,
+                template,
+                kv_pairs,
+                since,
+                ruleset,
+                loc_added,
+                loc_removed,
+                files_changed,
+                touches_owned,
+                repo,
+                branch,
+                touched_files,
+                default_owner,
+                title,
+            )?;
+            pr_review_cmd::run_pr_review_subcommand(action, json)?;
+        }
     }
     Ok(())
+}
+
+/// E-41: assemble a `PrReviewAction` from the args layer's flat shape.
+/// Returns the structured action OR an actionable error when a required
+/// flag is missing for the given subverb. Validation lives here (not in
+/// the args parser) so the args layer stays free of orchestrator types.
+#[allow(clippy::too_many_arguments)]
+fn build_pr_review_action(
+    sub: &str,
+    pr: Option<u32>,
+    body: Option<String>,
+    file: Option<String>,
+    line: Option<u32>,
+    template: Option<String>,
+    kv_pairs: Vec<(String, String)>,
+    since: Option<i64>,
+    ruleset: Option<String>,
+    loc_added: Option<u32>,
+    loc_removed: Option<u32>,
+    files_changed: Option<u32>,
+    touches_owned: bool,
+    repo: Option<String>,
+    branch: Option<String>,
+    touched_files: Vec<String>,
+    default_owner: Option<String>,
+    title: Option<String>,
+) -> anyhow::Result<pr_review_cmd::PrReviewAction> {
+    use pr_review_cmd::PrReviewAction;
+    let require_pr = |hint: &str| -> anyhow::Result<u32> {
+        pr.ok_or_else(|| anyhow::anyhow!("pr-review {hint}: PR number positional required"))
+    };
+    match sub {
+        "compose-body" => Ok(PrReviewAction::ComposeBody {
+            pr: require_pr("compose-body")?,
+            template: template
+                .ok_or_else(|| anyhow::anyhow!("--template is required for compose-body"))?,
+            kv_pairs,
+        }),
+        "comment" => Ok(PrReviewAction::Comment {
+            pr: require_pr("comment")?,
+            body: body.ok_or_else(|| anyhow::anyhow!("--body is required for comment"))?,
+            file,
+            line,
+        }),
+        "watch" => Ok(PrReviewAction::Watch {
+            pr: require_pr("watch")?,
+            since,
+        }),
+        "verify-deps" => Ok(PrReviewAction::VerifyDeps {
+            pr: require_pr("verify-deps")?,
+        }),
+        "semgrep-gate" => Ok(PrReviewAction::SemgrepGate {
+            pr: require_pr("semgrep-gate")?,
+            ruleset: ruleset.unwrap_or_else(|| "auto".to_string()),
+        }),
+        "auto-merge-assess" => Ok(PrReviewAction::AutoMergeAssess {
+            pr: require_pr("auto-merge-assess")?,
+            loc_added: loc_added.unwrap_or(0),
+            loc_removed: loc_removed.unwrap_or(0),
+            files_changed: files_changed.unwrap_or(1),
+            touches_owned,
+        }),
+        "apply-branch-protection" => Ok(PrReviewAction::ApplyBranchProtection {
+            repo: repo.ok_or_else(|| {
+                anyhow::anyhow!("--repo is required for apply-branch-protection")
+            })?,
+            branch: branch.unwrap_or_else(|| "main".to_string()),
+        }),
+        "gen-codeowners" => Ok(PrReviewAction::GenCodeowners {
+            touched: touched_files
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
+            default_owner: default_owner
+                .ok_or_else(|| anyhow::anyhow!("--default-owner is required for gen-codeowners"))?,
+        }),
+        "suggest-squash" => Ok(PrReviewAction::SuggestSquash {
+            title: title
+                .ok_or_else(|| anyhow::anyhow!("--title is required for suggest-squash"))?,
+            body_hint: body.unwrap_or_default(),
+        }),
+        "detect-force-push" => Ok(PrReviewAction::DetectForcePush {
+            pr: require_pr("detect-force-push")?,
+            repo,
+        }),
+        other => Err(anyhow::anyhow!(
+            "unknown pr-review sub-action '{other}' (compose-body | comment | watch | verify-deps | \
+             semgrep-gate | auto-merge-assess | apply-branch-protection | gen-codeowners | \
+             suggest-squash | detect-force-push)"
+        )),
+    }
 }
 
 /// E-30: Store an incident postmortem entry in the SSB.

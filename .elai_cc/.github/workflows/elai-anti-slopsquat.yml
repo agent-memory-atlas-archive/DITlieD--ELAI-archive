@@ -1,0 +1,51 @@
+name: elai-anti-slopsquat
+
+# E-41: dedicated anti-slopsquat workflow that fires only when a PR
+# touches dependency manifests. Keeps the noise low for unrelated PRs
+# while ensuring no AI-suggested package name lands unverified
+# (Snyk reports ~20% of AI-suggested packages are hallucinated).
+
+on:
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/package.json'
+      - '**/pyproject.toml'
+      - '**/requirements.txt'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  slopsquat-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build elai CLI
+        working-directory: .elai_cc
+        run: cargo build --release -p elai-cli --bin elai
+
+      - name: Verify PR deps (BLOCKING on known-squat)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.elai_cc/target/release/elai pr-review verify-deps "$PR_NUMBER" --json

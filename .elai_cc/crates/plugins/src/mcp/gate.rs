@@ -9,6 +9,22 @@ use crate::mcp_bridge::McpToolSpec;
 
 pub type FullSchema = McpToolSpec;
 
+/// C-35 M4: Summarize trait. Maps a full tool schema to the 1-line summary that
+/// goes into the gated_summaries section of the assembled prompt. Plan-promised
+/// "schema.rs Summarize trait" lands here alongside the gate types to keep
+/// related logic in one module (mcp_bridge.rs already owns McpToolSpec, splitting
+/// across three modules buys nothing).
+pub trait Summarize {
+    /// Single-line tool summary suitable for the gated section of the prompt.
+    fn summarize(&self) -> String;
+}
+
+impl Summarize for McpToolSpec {
+    fn summarize(&self) -> String {
+        self.description.clone()
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SummaryRow {
     pub name: String,

@@ -21,6 +21,21 @@
     MediaValidationEntry,
     ReviewDecision,
   } from '$lib/api/types';
+  import { invoke } from '@tauri-apps/api/core';
+
+  // E-14 — browser e2e status row, fetched once on mount and refreshed
+  // on user request. Stays optional so the panel keeps rendering when
+  // the backend has no browser_e2e_* SSB rows yet.
+  type BrowserE2eStatus = {
+    runs_started: number;
+    assertions_passed: number;
+    assertions_failed: number;
+    snapshots_captured: number;
+    last_journey_name_hash: string | null;
+    last_ts_ms: number | null;
+  };
+  let browserE2eStatus = $state<BrowserE2eStatus | null>(null);
+  let browserE2eError = $state<string>('');
 
   // Expanded step ids — local UI state; not persisted.
   let expanded = $state<Record<string, boolean>>({});
@@ -35,10 +50,25 @@
   // Mount: bind the store to live data. unmount: tear down the listener.
   onMount(() => {
     void mediaValidation.mount();
+    void refreshBrowserE2eStatus();
   });
   onDestroy(() => {
     mediaValidation.unmount();
   });
+
+  // E-14 — Tauri-side query for the browser-e2e SSB summary. The
+  // backend command `browser_e2e_status` aggregates the latest 4
+  // browser_e2e_* SSB action types and returns a typed summary.
+  async function refreshBrowserE2eStatus(): Promise<void> {
+    try {
+      const s = await invoke<BrowserE2eStatus>('browser_e2e_status');
+      browserE2eStatus = s;
+      browserE2eError = '';
+    } catch (e) {
+      browserE2eStatus = null;
+      browserE2eError = String(e);
+    }
+  }
 
   // Derived: live entries from the store, already sorted by updated_at desc.
   let entries = $derived(mediaValidation.entries);
@@ -155,6 +185,40 @@
       live: {lastEvent.action} · {lastEvent.step_id}
     </div>
   {/if}
+
+  <!--
+    E-14 — Browser E2E summary row. Shows aggregate counts from the
+    browser_e2e_run_started / browser_e2e_assertion_passed /
+    browser_e2e_assertion_failed / browser_e2e_snapshot_captured SSB
+    rows so operators can verify the runner is producing observable
+    effect without leaving the media-validation panel.
+  -->
+  <section class="mvp-browser-e2e" aria-label="browser e2e summary">
+    <div class="mvp-be2e-label mono">browser e2e</div>
+    {#if browserE2eError}
+      <div class="mvp-error mono">browser e2e: {browserE2eError}</div>
+    {:else if browserE2eStatus}
+      <div class="mvp-be2e-row mono">
+        <span class="mvp-be2e-stat">runs: {browserE2eStatus.runs_started}</span>
+        <span class="mvp-be2e-stat mvp-be2e-pass">
+          asserts pass: {browserE2eStatus.assertions_passed}
+        </span>
+        <span class="mvp-be2e-stat mvp-be2e-fail">
+          asserts fail: {browserE2eStatus.assertions_failed}
+        </span>
+        <span class="mvp-be2e-stat">
+          snapshots: {browserE2eStatus.snapshots_captured}
+        </span>
+        <button
+          class="mvp-refresh"
+          onclick={() => void refreshBrowserE2eStatus()}
+          aria-label="Refresh browser e2e status"
+        >refresh</button>
+      </div>
+    {:else}
+      <div class="mvp-be2e-row mono">no browser-e2e rows yet</div>
+    {/if}
+  </section>
 
   {#if loadError}
     <div class="mvp-error mono">load error: {loadError}</div>

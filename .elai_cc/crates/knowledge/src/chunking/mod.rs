@@ -15,6 +15,12 @@ pub mod constants;
 pub mod detect;
 pub mod cap;
 pub mod character;
+// E-17 SP5: AST-aware code chunker (cAST per arxiv:2506.15655). Recursive
+// split + sibling merge across tree-sitter named-node boundaries, with
+// token-budget aware leaves. Ships as opt-in alongside the legacy
+// bm25::try_ast_chunk path; ACCEPTANCE keeps the legacy chunker as
+// fallback when SP6 eval delta is < +2 Recall@5.
+pub mod cast;
 // E-36 Tier-A: vision artifact types (foundation for 9th VerificationMethod).
 // Types-only foundation; producer wiring deferred to E-36.B per
 // workflow/reasoning/E-36-decisions.md.

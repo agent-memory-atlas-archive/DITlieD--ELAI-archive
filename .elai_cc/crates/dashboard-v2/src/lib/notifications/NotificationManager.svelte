@@ -14,6 +14,7 @@
   import { onMount } from 'svelte';
   import * as stub from '$lib/api/stub';
   import type { FsmState } from '$lib/api/types';
+  import { postWebhook, type WebhookSeverity } from '$lib/notifications/webhook';
 
   const STORAGE_KEY = 'elai_notif_pref';
   type NotifPref = 'granted' | 'denied' | 'deferred';
@@ -68,13 +69,22 @@
     }
   }
 
-  function fire(title: string, body: string) {
-    if (typeof Notification === 'undefined') return;
-    if (Notification.permission !== 'granted') return;
-    try {
-      new Notification(title, { body, silent: false });
-    } catch {
-      // Notification API not available in this webview context
+  function fire(title: string, body: string, severity: WebhookSeverity = 'info') {
+    // Browser Notification API — guarded on permission. The webhook
+    // dispatch runs in parallel (not awaited) so a slow webhook never
+    // blocks the desktop notification surface.
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try {
+        new Notification(title, { body, silent: false });
+      } catch {
+        // Notification API not available in this webview context
+      }
+    }
+    // Webhook dispatch — gated on the same user preference as the
+    // Browser Notification (pref === 'granted'). postWebhook returns
+    // false (never throws) when no URL is configured.
+    if (pref === 'granted') {
+      void postWebhook(title, body, { severity, ts_ms: Date.now() });
     }
   }
 
@@ -92,10 +102,10 @@
       if (prevState !== null && prevState !== currentState) {
         if (currentState === 'AUDITING') {
           const ok = await ensurePermission();
-          if (ok) fire('ELAI — Auditing', 'Phase moved to AUDITING — review may be required');
+          if (ok) fire('ELAI — Auditing', 'Phase moved to AUDITING — review may be required', 'warn');
         } else if (currentState === 'IDLE' && (prevState === 'MEMORIZING' || prevState === 'COMPLETE')) {
           const ok = await ensurePermission();
-          if (ok) fire('ELAI — Task Complete', 'Autonomous task finished and returned to IDLE');
+          if (ok) fire('ELAI — Task Complete', 'Autonomous task finished and returned to IDLE', 'info');
         }
       }
 

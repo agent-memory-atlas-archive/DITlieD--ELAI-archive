@@ -24,6 +24,18 @@ elai-plugins = { path = "../plugins", features = ["mcp"] }
 elai-providers = { path = "../providers", features = ["sidecar"] }
 elai-reasoning = { path = "../reasoning" }
 elai-rules = { path = "../rules" }
+# E-37: prompt-injection defense — safety_cmd dispatch uses the safety
+# crate's classifier + spotlight + pin surface for `elai safety` operator
+# commands.
+elai-safety = { path = "../safety" }
+# E-1 Task 6+8: deterministic-preamble emitter (top-K PPR notes streamed
+# synchronously before the model's first token) + SLEEP_COMPUTE substate
+# trigger surface. Both read NoteStore directly from the LiveCli loop —
+# routing through reasoning's chat_memory_reflect re-exports would still
+# work but reads cleaner as a direct dep. Workspace-internal path dep
+# already declared by orchestrator + reasoning + dashboard-v2 (no new
+# external crate).
+elai-memory = { path = "../memory" }
 elai-tools = { path = "../tools" }
 # A5.2: optional; activated by the "obscura" feature for doctor() wiring.
 elai-web-search = { path = "../web_search", optional = true }
@@ -57,10 +69,16 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 tempfile = "3"
 
 [features]
+default = ["mcp"]
 # D4: pass-through to orchestrator's obscura feature (headless-browser fetch via obscura subprocess).
 # Also enables elai-web-search/obscura directly so doctor.rs can call obscura_fetcher::doctor().
 # Enable with: cargo build --features obscura
 obscura = ["elai-orchestrator/obscura", "elai-web-search/obscura", "dep:elai-web-search"]
+# C-39: mcp feature gates the CliMcpClient HTTP-bridge calls. Enabled by
+# default because the CLI ships elai-plugins with `features = ["mcp"]`
+# unconditionally; the feature flag here exists so the cfg(feature="mcp")
+# gates in mcp_client.rs are not flagged as "unexpected" by check-cfg.
+mcp = ["elai-plugins/mcp"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

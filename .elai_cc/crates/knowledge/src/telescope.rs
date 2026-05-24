@@ -15,6 +15,7 @@ use elai_core::project_profile::{
     ArchitecturePattern, Convention, Language, ProjectProfile,
 };
 use crate::DkgNodeInfo;
+use crate::project_intelligence::ProjectIntelligenceHook;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -258,6 +259,65 @@ pub fn import_template(profile: &ProjectProfile) -> &'static str {
         Language::CSharp => "using {namespace};",
         _ => "import {module}",
     }
+}
+
+// ---------------------------------------------------------------------------
+// phase-3L: PI Tier hook assembly
+// ---------------------------------------------------------------------------
+
+/// Alias for the boxed-hook slice consumed by
+/// [`assemble_telescope_with_hooks`]. Holds owned `Box<dyn ...>` rather
+/// than borrowed references so callers can build the registry once at
+/// session start and reuse it across phases.
+pub type PiHookList = [Box<dyn ProjectIntelligenceHook>];
+
+/// Assemble a TelescopeContext AND a deterministic priority-ordered
+/// concatenation of PI hook blocks for the given profile.
+///
+/// Returns `(context, hook_blocks)`:
+///   - `context`: same shape as `assemble_telescope(profile)` (legacy
+///     callers in cli/src/main.rs:5447 + the existing pi_telescope_contract
+///     suite continue to call `assemble_telescope` directly and are
+///     unaffected).
+///   - `hook_blocks`: ordered text blocks from `hook.render_block(profile)`,
+///     sorted by `hook.priority()` desc (T1 wins over T2 wins over T3),
+///     capped at a cumulative `TELESCOPE_MAX_CHARS / 4` token budget
+///     (mirrors the existing TelescopeContext::estimated_tokens convention,
+///     so the assembled output cannot inflate the prompt past one
+///     TelescopeContext-worth of material).
+///
+/// Spec: phase-3L Step 7 (wire 3 tier hooks into telescope.rs as ordered
+/// priority sources).
+pub fn assemble_telescope_with_hooks(
+    profile: &ProjectProfile,
+    hooks: &PiHookList,
+) -> (TelescopeContext, Vec<String>) {
+    let ctx = assemble_telescope(profile);
+
+    // Sort hooks by priority desc. Stable secondary key = hook id so
+    // ties resolve deterministically across runs.
+    let mut ordered: Vec<&Box<dyn ProjectIntelligenceHook>> = hooks.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.priority()
+            .cmp(&a.priority())
+            .then_with(|| a.id().cmp(b.id()))
+    });
+
+    let max_chars = TELESCOPE_MAX_CHARS;
+    let mut used = 0usize;
+    let mut blocks: Vec<String> = Vec::with_capacity(ordered.len());
+    for hook in ordered {
+        if let Some(block) = hook.render_block(profile) {
+            if used + block.len() > max_chars {
+                // Budget breached — drop this and all later (lower-priority)
+                // blocks so the cumulative cap holds without partial lines.
+                break;
+            }
+            used += block.len();
+            blocks.push(block);
+        }
+    }
+    (ctx, blocks)
 }
 
 // ---------------------------------------------------------------------------

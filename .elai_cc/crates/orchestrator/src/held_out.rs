@@ -14,12 +14,22 @@
 //!     `(submission_date, source)` covering index. Mirrors the memory
 //!     crate's per-project SQLite pattern (see `crates/memory/src/store.rs`).
 //!
-//! Contamination defense:
-//!   - [`ngram_filter`] — sliding `n`-gram hash signature over the
-//!     normalized task body; default `n=9` per LiveCodeBench §3.2
-//!     (arxiv:2403.07974, T1).
-//!   - [`is_contaminated`] — Jaccard overlap on two `ngram_filter`
-//!     signatures. Threshold defaults to 0.3 per the same paper.
+//! Contamination defense (two stacked techniques):
+//!   - TEMPORAL DATE-WINDOWING — `task.release_date > model.training_cutoff`
+//!     per LiveCodeBench (arxiv:2403.07974, T1) §S3.SS1 + §S6. This is the
+//!     paper's central + only contamination mechanism. See
+//!     [`ModelTrainingCutoff`] / [`is_task_after_cutoff`].
+//!   - 9-gram Jaccard fingerprint — sliding n-gram hash signature with the
+//!     n + threshold defaults below. The n-gram method itself is the
+//!     external Shi et al. 2023 / Riddell et al. 2024 family that
+//!     LiveCodeBench §S6.SS3 cites as PRIOR WORK, not a paper technique.
+//!     ELAI bolts n-gram on top of date-windowing as a defense-in-depth
+//!     layer — the defaults below are ELAI-empirical, NOT
+//!     LiveCodeBench-specified.
+//!   - Soft Contamination (arxiv:2602.12413, T1) is a SEPARATE replacement
+//!     for n-gram (cosine + LLM annotation), not an n-gram extension. It
+//!     does not cite LiveCodeBench. ELAI integrates the two with explicit
+//!     layering; see workflow/reasoning/D-6-decisions.md DECISION-6.
 //!
 //! Anti-stale: blake3 (not sha2 / blake2) is the workspace hash family.
 //! 9-gram fingerprints are computed as blake3 truncated-to-`u64` hashes so
@@ -49,18 +59,24 @@ use crate::ssb::{
 };
 
 // ---------------------------------------------------------------------------
-// Tunables (defaults match LiveCodeBench §3.2)
+// Tunables (ELAI-empirical defaults — see DECISION-4 in D-6-decisions.md)
 // ---------------------------------------------------------------------------
 
-/// Default n-gram window size. LiveCodeBench (arxiv:2403.07974, T1) §3.2
-/// published 9 as the contamination-detection sweet spot — large enough to
-/// avoid common-bigram false positives, small enough that paraphrase still
-/// trips the filter.
+/// Default n-gram window size. ELAI-empirical default: 9. The n-gram
+/// contamination-detection technique itself is from Shi et al. 2023
+/// (arXiv:2303.10130) and Riddell et al. 2024 — LiveCodeBench
+/// (arxiv:2403.07974) §S6.SS3 cites them as PRIOR WORK. The paper does NOT
+/// publish n-gram defaults. ELAI picked 9 as a defense-in-depth operating
+/// point: large enough to avoid common-bigram false positives, small enough
+/// that paraphrase still trips the filter. Override via the `[held_out]`
+/// section of elai_cc.toml (`ngram_n`).
 pub const DEFAULT_NGRAM_SIZE: usize = 9;
 
 /// Default Jaccard threshold above which two signatures count as
-/// contaminating each other. LiveCodeBench §3.2 reports 0.3 as the
-/// false-positive-balanced operating point.
+/// contaminating each other. ELAI-empirical default: 0.3, calibrated
+/// against the ELAI baseline corpus (NOT a LiveCodeBench published value).
+/// Override via the `[held_out]` section of elai_cc.toml
+/// (`ngram_threshold`).
 pub const DEFAULT_JACCARD_THRESHOLD: f32 = 0.3;
 
 /// Default eligibility window in milliseconds. Tasks are not "active" for
@@ -112,6 +128,16 @@ pub enum ExpectedOutcome {
 
 /// Provenance of a held-out task. Closed sum; new sources require an
 /// additive enum bump (caller-visible, not silent).
+///
+/// `fetched_at_ms` / `curated_at_ms` carries the UNIX-ms wall-clock at
+/// fetch/curate time on the two D-6-closure variants (ArxivRepro +
+/// HumanCurated). The original three variants (GitHubIssue,
+/// BenchmarkFixture, Synthetic) intentionally do NOT carry a fetched-at
+/// field: their `ingested_ts_ms` on the surrounding [`HeldOutTask`]
+/// already covers the wall-clock dimension and 15+ construction sites
+/// across the workspace would break under an additive field change. ELAI
+/// workspace policy is i64-ms (chrono is not a workspace dep — see
+/// D-6-decisions.md DECISION-8).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source_kind", rename_all = "snake_case")]
 pub enum TaskSource {
@@ -123,6 +149,25 @@ pub enum TaskSource {
     /// Synthesized deterministically from a seed (D-7 cross-domain canary
     /// + D-15 NoveltyClass generators).
     Synthetic { seed: u64 },
+    /// D-6 closure (GAP-4) — sourced from an arXiv reproducibility task.
+    /// `arxiv_id` is the bare paper id (e.g. "2403.07974"); `fetched_at_ms`
+    /// is wall-clock at fetch time. Used by the paper-ingestor follow-up
+    /// to seed held-out tasks tied to a paper's release date for the
+    /// temporal date-windowing defense (LiveCodeBench S3.SS1).
+    ArxivRepro {
+        arxiv_id: String,
+        #[serde(default)]
+        fetched_at_ms: i64,
+    },
+    /// D-6 closure (GAP-4) — hand-curated by a named operator. `curator_id`
+    /// is the curator's stable identifier; `curated_at_ms` is wall-clock
+    /// at curation. Useful for human-authored math/prose seeds where
+    /// neither GitHubIssue nor BenchmarkFixture nor Synthetic applies.
+    HumanCurated {
+        curator_id: String,
+        #[serde(default)]
+        curated_at_ms: i64,
+    },
 }
 
 impl TaskSource {
@@ -135,6 +180,25 @@ impl TaskSource {
             Self::GitHubIssue { .. } => "github_issue",
             Self::BenchmarkFixture { .. } => "benchmark_fixture",
             Self::Synthetic { .. } => "synthetic",
+            Self::ArxivRepro { .. } => "arxiv_repro",
+            Self::HumanCurated { .. } => "human_curated",
+        }
+    }
+
+    /// D-6 closure (GAP-4) — best-effort wall-clock UNIX-ms when this
+    /// task source was fetched / curated. Returns `None` for the original
+    /// three variants (where the surrounding `HeldOutTask.ingested_ts_ms`
+    /// is the source of truth) and `Some(_)` for the ArxivRepro /
+    /// HumanCurated variants whose provenance carries an explicit fetch
+    /// timestamp distinct from ingest.
+    #[must_use]
+    pub fn fetched_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::ArxivRepro { fetched_at_ms, .. } => Some(*fetched_at_ms),
+            Self::HumanCurated { curated_at_ms, .. } => Some(*curated_at_ms),
+            Self::GitHubIssue { .. } | Self::BenchmarkFixture { .. } | Self::Synthetic { .. } => {
+                None
+            }
         }
     }
 }
@@ -693,6 +757,307 @@ pub fn held_out_month_dir(root: &Path, year_month: &str) -> PathBuf {
     root.join(year_month)
 }
 
+// ---------------------------------------------------------------------------
+// D-6 closure (GAP-3) — HeldOutStatus / RetireReason / AutoRefreshPolicy
+// ---------------------------------------------------------------------------
+//
+// Status + retire-reason taxonomy. Adds the AutoRetired marker path called
+// for by the D-6 plan (§stub_ban "HeldOutStore MUST NOT delete task files;
+// AutoRetired is status-marked"). The status is currently surfaced via
+// SSB rows + the new helpers below; the SQLite store does NOT carry a
+// status column on the row layout (the closure preserves wire-compat with
+// the shipped row layout — status transitions are recorded in SSB as
+// HeldOutAutoRetire rows, mirrored to memory).
+
+/// Lifecycle status of a held-out task. `Active` covers the
+/// just-ingested-and-eligible path; `RecentlyAdded` covers the
+/// pre-eligibility window; the three retire / quarantine states capture
+/// the LiveCodeBench-style refresh policy + the contamination-detected
+/// path the n-gram filter exposes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldOutStatus {
+    /// Past eligibility window; currently usable by the BAI eval pool.
+    Active,
+    /// Inside the eligibility window; not yet exposed to the eval pool.
+    RecentlyAdded,
+    /// Auto-retired because the task uniformly passed across the
+    /// retirement-window. ELAI policy choice — NOT a LiveCodeBench
+    /// technique (the paper retires by date, not by pass-rate). See
+    /// [`RetireReason::UniformlyPassing`].
+    RetiredUniformlyPassing,
+    /// Auto-retired because the contamination filter (n-gram /
+    /// soft-contamination) flagged the body as overlapping training
+    /// corpus content.
+    RetiredContaminated,
+    /// Manually held out of the pool by operator decision.
+    Quarantined,
+}
+
+/// Provenance of a contamination signal. Closed enum so the retire-reason
+/// path can carry the originating signal source without crossing module
+/// boundaries. `Eq` is intentionally NOT derived: `f32` payloads
+/// (jaccard / cosine / threshold) do not satisfy total equality; use
+/// `PartialEq` for round-trip + assertion paths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContaminationSource {
+    /// 9-gram Jaccard-overlap signature (Shi et al. 2023 / Riddell et al.
+    /// 2024) — the [`is_contaminated`] path. `jaccard` is the measured
+    /// overlap that crossed [`DEFAULT_JACCARD_THRESHOLD`] (or its
+    /// elai_cc.toml override).
+    NgramJaccard { jaccard: f32, threshold: f32 },
+    /// Cosine + LLM-annotation semantic fingerprint (Soft Contamination
+    /// arxiv:2602.12413). Reserved for the follow-up that wires the
+    /// sidecar-embedded fingerprint path; the variant lands now so the
+    /// retire-reason serde surface is stable.
+    SoftContamination { cosine: f32, threshold: f32 },
+    /// Operator-supplied contamination evidence (e.g. paper-ingestor
+    /// flagged the source as already in training corpus).
+    OperatorEvidence { note: String },
+}
+
+/// Reason a held-out task was retired. Carried inside SSB
+/// `HeldOutAutoRetire` rows + memory-bank entries so the audit trail is
+/// machine-readable. `Eq` not derived: the nested
+/// [`ContaminationSource`] carries `f32` payloads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RetireReason {
+    /// Task passed uniformly inside the retirement window (suspected
+    /// contamination via training-set leakage). ELAI policy — NOT
+    /// LiveCodeBench-specified; the paper retires by date-windowing
+    /// alone.
+    UniformlyPassing { passes_in_window: u32, window_months: u32 },
+    /// Contamination filter flagged the body. Carries the originating
+    /// signal source for audit.
+    ContaminationDetected { source: ContaminationSource },
+    /// Operator decision (manual). `note` is free text.
+    OperatorRetired { note: String },
+}
+
+/// Auto-refresh policy. Controls when [`check_for_auto_retire`] picks a
+/// candidate task for retirement; loaded from the `[held_out]` section of
+/// elai_cc.toml at boot (see [`elai_rules::held_out::HeldOutTunables`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AutoRefreshPolicy {
+    /// Refresh disabled (default for `cargo test` runs to keep determinism
+    /// untouched by clock-dependent retirement).
+    Disabled,
+    /// Refresh every `interval_days` of wall-clock time.
+    OnSchedule { interval_days: u32 },
+    /// Refresh whenever the contamination filter fires (event-driven).
+    OnContamination,
+    /// Refresh when the held-out accuracy drift exceeds `threshold`
+    /// against the BAI baseline.
+    OnAccuracyDrift { threshold: f64 },
+}
+
+/// Model training cutoff for the temporal date-windowing defense. Tasks
+/// with `release_date > cutoff.date_ms` are eligible; older tasks are
+/// presumed in-training and excluded. Matches LiveCodeBench (arxiv:
+/// 2403.07974) §S3.SS1 — the paper's PRIMARY contamination mechanism.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelTrainingCutoff {
+    /// Stable label for the model (e.g. `claude-sonnet-4.6`,
+    /// `qwen2.5-coder-7b`). Used by the audit trail.
+    pub model_id: String,
+    /// UNIX-ms wall-clock of the training data cutoff. Tasks with
+    /// `release_date_ms > date_ms` are considered post-cutoff and
+    /// therefore eligible.
+    pub date_ms: i64,
+}
+
+/// True when the task's release date is STRICTLY AFTER the model's
+/// training cutoff — the LiveCodeBench S3.SS1 temporal eligibility
+/// predicate. ELAI bridges `release_date` from the surrounding
+/// `HeldOutTask.ingested_ts_ms` (ingest is a proxy for release on
+/// synthesized / curated tasks) plus the optional [`TaskSource::fetched_at_ms`]
+/// when the source carries a more precise wall-clock.
+#[must_use]
+pub fn is_task_after_cutoff(task: &HeldOutTask, cutoff: &ModelTrainingCutoff) -> bool {
+    // Prefer the source-supplied fetched_at_ms when present (ArxivRepro
+    // and HumanCurated variants), otherwise fall back to ingest.
+    let release_ms = task.source.fetched_at_ms().unwrap_or(task.ingested_ts_ms);
+    release_ms > cutoff.date_ms
+}
+
+// ---------------------------------------------------------------------------
+// D-6 closure (GAP-3) — check_for_auto_retire
+// ---------------------------------------------------------------------------
+
+/// Per-task evaluation history snapshot. Provided by the BAI / canary
+/// evaluator pipeline so the retire-decision logic is unit-testable
+/// without dragging in the full Bandit posterior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalHistorySnapshot {
+    /// How many distinct evaluations have run against this task.
+    pub eval_count: u32,
+    /// Number of those evaluations that passed.
+    pub pass_count: u32,
+}
+
+impl EvalHistorySnapshot {
+    /// Pass-rate in `[0.0, 1.0]`. Returns 0.0 on `eval_count == 0` to
+    /// avoid undefined behaviour at the divide-by-zero path.
+    #[must_use]
+    pub fn pass_rate(&self) -> f32 {
+        if self.eval_count == 0 {
+            0.0
+        } else {
+            self.pass_count as f32 / self.eval_count as f32
+        }
+    }
+}
+
+/// Walk the store and decide which tasks merit auto-retire under the
+/// `policy`. Returns `(task_id, retire_reason)` pairs the caller can feed
+/// to the SSB `HeldOutAutoRetire` emitter.
+///
+/// Pure decision logic — does NOT mutate the store. The caller is
+/// responsible for writing the SSB row + updating the in-memory status
+/// mirror. `eval_history` is a function that maps a task id to its eval
+/// snapshot (Closure-driven so tests can provide synthetic histories
+/// without an EvalHistory store dependency).
+///
+/// Defense against premature retirement (plan stub_ban): no task with
+/// fewer than `min_evals_for_retire` evaluations can be retired, even if
+/// the pass-rate predicate fires.
+pub fn check_for_auto_retire<F>(
+    store: &HeldOutStore,
+    now_ms: i64,
+    policy: &AutoRefreshPolicy,
+    eval_history: F,
+    retirement_window_months: u32,
+    retirement_uniformly_passing_count: u32,
+    min_evals_for_retire: u32,
+) -> Result<Vec<(TaskId, RetireReason)>, HeldOutError>
+where
+    F: Fn(&TaskId) -> EvalHistorySnapshot,
+{
+    // Disabled-policy short-circuit — no work, no retire candidates.
+    if matches!(policy, AutoRefreshPolicy::Disabled) {
+        return Ok(Vec::new());
+    }
+    let window_ms = (retirement_window_months as i64) * 30 * 86_400 * 1000;
+    let active = store.active_tasks(now_ms)?;
+    let mut out = Vec::new();
+    for task in &active {
+        // Age gate — task must be older than the retirement window.
+        if now_ms.saturating_sub(task.ingested_ts_ms) < window_ms {
+            continue;
+        }
+        let snap = eval_history(&task.task_id);
+        // Premature-retirement guard — small samples never retire.
+        if snap.eval_count < min_evals_for_retire {
+            continue;
+        }
+        // Uniformly-passing predicate. ELAI policy choice (NOT
+        // LiveCodeBench-specified): pass_count >= retirement_uniformly_
+        // passing_count AND pass_rate == 1.0. The hard count guards
+        // against tiny eval pools coincidentally hitting 100%.
+        if snap.pass_count >= retirement_uniformly_passing_count
+            && (snap.pass_rate() - 1.0).abs() < f32::EPSILON
+        {
+            out.push((
+                task.task_id.clone(),
+                RetireReason::UniformlyPassing {
+                    passes_in_window: snap.pass_count,
+                    window_months: retirement_window_months,
+                },
+            ));
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// D-6 closure (GAP-8) — Promotion gate (PromotionGateResult, gate_promotion,
+// held_out_regression, gate_promotion_via_held_out)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a held-out promotion gate evaluation. Renamed from
+/// `GateResult` to avoid the collision with the
+/// [`crate::gate::GateResult`] evidence-gate type — see
+/// workflow/reasoning/D-6-decisions.md DECISION-3.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromotionGateResult {
+    /// True when the candidate template does NOT regress on the held-out
+    /// pool beyond the configured threshold.
+    pub allow: bool,
+    /// Human-readable reason for the gate's decision. Carries the
+    /// measured delta in pp + the threshold for the audit trail.
+    pub reason: String,
+    /// Measured pass-rate delta in `[-1.0, 1.0]` (candidate - baseline).
+    pub delta: f32,
+}
+
+/// Compute the pass-rate delta between baseline and candidate eval
+/// histories on a shared held-out subset (positive = improvement,
+/// negative = regression). The pass-rate is taken over the union of task
+/// ids in both histories.
+#[must_use]
+pub fn held_out_regression(
+    baseline: &[(TaskId, EvalHistorySnapshot)],
+    candidate: &[(TaskId, EvalHistorySnapshot)],
+) -> f32 {
+    let baseline_rate: f32 = if baseline.is_empty() {
+        0.0
+    } else {
+        baseline.iter().map(|(_, s)| s.pass_rate()).sum::<f32>() / baseline.len() as f32
+    };
+    let candidate_rate: f32 = if candidate.is_empty() {
+        0.0
+    } else {
+        candidate.iter().map(|(_, s)| s.pass_rate()).sum::<f32>() / candidate.len() as f32
+    };
+    candidate_rate - baseline_rate
+}
+
+/// Apply the regression-threshold predicate to a measured `delta`. The
+/// threshold MUST come from the loaded `[held_out]` section of
+/// elai_cc.toml — never hard-coded by the caller (per the D-6 plan
+/// stub_ban rule).
+#[must_use]
+pub fn gate_promotion(delta: f32, regression_threshold: f32) -> PromotionGateResult {
+    let allow = delta >= -regression_threshold;
+    let reason = if allow {
+        format!(
+            "delta={:.4} pp (allowed: >= -{:.4} pp regression threshold)",
+            delta, regression_threshold
+        )
+    } else {
+        format!(
+            "delta={:.4} pp (BLOCK: exceeds -{:.4} pp regression threshold)",
+            delta, regression_threshold
+        )
+    };
+    PromotionGateResult {
+        allow,
+        reason,
+        delta,
+    }
+}
+
+/// D-6 closure (GAP-8) — thin wrapper that documents the BAI consumer
+/// layering. The shipped BAI promotion path routes through
+/// `agent_pool::sample_held_out_task` which yields the next held-out
+/// task; this helper bundles the regression + gate computation against
+/// pre-collected eval histories so a call site that wants the
+/// promotion-gate decision can stay inside this module rather than
+/// reimporting agent_pool. The decision doc DECISION-7 has the layering
+/// rationale.
+#[must_use]
+pub fn gate_promotion_via_held_out(
+    baseline: &[(TaskId, EvalHistorySnapshot)],
+    candidate: &[(TaskId, EvalHistorySnapshot)],
+    regression_threshold: f32,
+) -> PromotionGateResult {
+    let delta = held_out_regression(baseline, candidate);
+    gate_promotion(delta, regression_threshold)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -998,5 +1363,279 @@ mod tests {
             .query_by_type(crate::ssb::SsbActionType::HeldOutTaskUsed)
             .expect("query");
         assert!(!entries.is_empty(), "ssb must carry a HeldOutTaskUsed row");
+    }
+
+    // -----------------------------------------------------------------------
+    // D-6 closure (GAP-3/4/7/8) — new types + helpers coverage.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_source_label_covers_all_variants() {
+        assert_eq!(
+            TaskSource::GitHubIssue {
+                repo: "owner/name".into(),
+                issue_id: 1
+            }
+            .label(),
+            "github_issue"
+        );
+        assert_eq!(
+            TaskSource::BenchmarkFixture {
+                name: "lcb".into()
+            }
+            .label(),
+            "benchmark_fixture"
+        );
+        assert_eq!(
+            TaskSource::Synthetic { seed: 7 }.label(),
+            "synthetic"
+        );
+        assert_eq!(
+            TaskSource::ArxivRepro {
+                arxiv_id: "2403.07974".into(),
+                fetched_at_ms: 1_700_000_000_000
+            }
+            .label(),
+            "arxiv_repro"
+        );
+        assert_eq!(
+            TaskSource::HumanCurated {
+                curator_id: "maintainer".into(),
+                curated_at_ms: 1_700_000_000_000
+            }
+            .label(),
+            "human_curated"
+        );
+    }
+
+    #[test]
+    fn task_source_fetched_at_ms_some_for_d6_variants() {
+        assert_eq!(
+            TaskSource::ArxivRepro {
+                arxiv_id: "2403.07974".into(),
+                fetched_at_ms: 42
+            }
+            .fetched_at_ms(),
+            Some(42)
+        );
+        assert_eq!(
+            TaskSource::HumanCurated {
+                curator_id: "maintainer".into(),
+                curated_at_ms: 99
+            }
+            .fetched_at_ms(),
+            Some(99)
+        );
+        assert!(TaskSource::Synthetic { seed: 1 }.fetched_at_ms().is_none());
+    }
+
+    #[test]
+    fn is_task_after_cutoff_uses_fetched_at_ms_when_present() {
+        let cutoff = ModelTrainingCutoff {
+            model_id: "qwen2.5-coder-7b".into(),
+            date_ms: 1_700_000_000_000,
+        };
+        // ArxivRepro with fetched_at_ms strictly after cutoff -> true.
+        let task_after = build_task(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+            TaskSource::ArxivRepro {
+                arxiv_id: "2403.07974".into(),
+                fetched_at_ms: 1_700_000_000_001,
+            },
+            ExpectedOutcome::Code("ok".into()),
+            // ingest BEFORE cutoff to prove the predicate prefers
+            // fetched_at_ms when present.
+            1_500_000_000_000,
+            0,
+            DEFAULT_NGRAM_SIZE,
+        );
+        assert!(is_task_after_cutoff(&task_after, &cutoff));
+
+        // Synthetic falls back to ingested_ts_ms.
+        let task_before = build_task(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+            TaskSource::Synthetic { seed: 1 },
+            ExpectedOutcome::Code("ok".into()),
+            1_500_000_000_000,
+            0,
+            DEFAULT_NGRAM_SIZE,
+        );
+        assert!(!is_task_after_cutoff(&task_before, &cutoff));
+    }
+
+    #[test]
+    fn check_for_auto_retire_respects_disabled_policy() {
+        let store = HeldOutStore::open_in_memory().expect("open");
+        let task = build_task(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+            TaskSource::Synthetic { seed: 1 },
+            ExpectedOutcome::Code("ok".into()),
+            1_000,
+            0,
+            DEFAULT_NGRAM_SIZE,
+        );
+        store.insert(&task).expect("insert");
+        let out = check_for_auto_retire(
+            &store,
+            i64::MAX / 4,
+            &AutoRefreshPolicy::Disabled,
+            |_| EvalHistorySnapshot {
+                eval_count: 1_000,
+                pass_count: 1_000,
+            },
+            6,
+            100,
+            20,
+        )
+        .expect("retire");
+        assert!(out.is_empty(), "Disabled policy must never retire");
+    }
+
+    #[test]
+    fn check_for_auto_retire_requires_min_evals() {
+        let store = HeldOutStore::open_in_memory().expect("open");
+        let task = build_task(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+            TaskSource::Synthetic { seed: 1 },
+            ExpectedOutcome::Code("ok".into()),
+            // ingested 12 months ago at "now".
+            0,
+            0,
+            DEFAULT_NGRAM_SIZE,
+        );
+        store.insert(&task).expect("insert");
+        let now = 12 * 30 * 86_400 * 1_000;
+        // pass_rate is 1.0 but eval_count below min_evals_for_retire.
+        let out = check_for_auto_retire(
+            &store,
+            now,
+            &AutoRefreshPolicy::OnSchedule { interval_days: 30 },
+            |_| EvalHistorySnapshot {
+                eval_count: 5,
+                pass_count: 5,
+            },
+            6,
+            3,
+            20, // min_evals_for_retire = 20, only 5 evals available
+        )
+        .expect("retire");
+        assert!(out.is_empty(), "must not retire below min_evals_for_retire");
+    }
+
+    #[test]
+    fn check_for_auto_retire_uniformly_passing_retires() {
+        let store = HeldOutStore::open_in_memory().expect("open");
+        let task = build_task(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa".into(),
+            TaskSource::Synthetic { seed: 1 },
+            ExpectedOutcome::Code("ok".into()),
+            // ingested 12 months ago at "now".
+            0,
+            0,
+            DEFAULT_NGRAM_SIZE,
+        );
+        store.insert(&task).expect("insert");
+        let now = 12 * 30 * 86_400 * 1_000;
+        let out = check_for_auto_retire(
+            &store,
+            now,
+            &AutoRefreshPolicy::OnSchedule { interval_days: 30 },
+            |_| EvalHistorySnapshot {
+                eval_count: 100,
+                pass_count: 100,
+            },
+            6,
+            100,
+            20,
+        )
+        .expect("retire");
+        assert_eq!(out.len(), 1, "uniformly-passing aged task must retire");
+        match &out[0].1 {
+            RetireReason::UniformlyPassing {
+                passes_in_window,
+                window_months,
+            } => {
+                assert_eq!(*passes_in_window, 100);
+                assert_eq!(*window_months, 6);
+            }
+            other => panic!("unexpected reason: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_promotion_allows_within_threshold() {
+        let r = gate_promotion(-0.03, 0.05);
+        assert!(r.allow);
+        assert!((r.delta - (-0.03)).abs() < 1e-6);
+        assert!(r.reason.contains("allowed"));
+    }
+
+    #[test]
+    fn gate_promotion_blocks_beyond_threshold() {
+        let r = gate_promotion(-0.07, 0.05);
+        assert!(!r.allow);
+        assert!(r.reason.contains("BLOCK"));
+    }
+
+    #[test]
+    fn held_out_regression_returns_delta() {
+        let baseline = vec![
+            (
+                TaskId::new_v4(),
+                EvalHistorySnapshot {
+                    eval_count: 10,
+                    pass_count: 8,
+                },
+            ),
+            (
+                TaskId::new_v4(),
+                EvalHistorySnapshot {
+                    eval_count: 10,
+                    pass_count: 6,
+                },
+            ),
+        ];
+        let candidate = vec![
+            (
+                TaskId::new_v4(),
+                EvalHistorySnapshot {
+                    eval_count: 10,
+                    pass_count: 9,
+                },
+            ),
+            (
+                TaskId::new_v4(),
+                EvalHistorySnapshot {
+                    eval_count: 10,
+                    pass_count: 9,
+                },
+            ),
+        ];
+        // baseline mean = (0.8 + 0.6) / 2 = 0.7
+        // candidate mean = (0.9 + 0.9) / 2 = 0.9
+        // delta = 0.2
+        let delta = held_out_regression(&baseline, &candidate);
+        assert!((delta - 0.2).abs() < 1e-6, "delta={delta}");
+    }
+
+    #[test]
+    fn gate_promotion_via_held_out_combines_path() {
+        let baseline = vec![(
+            TaskId::new_v4(),
+            EvalHistorySnapshot {
+                eval_count: 10,
+                pass_count: 10,
+            },
+        )];
+        let candidate = vec![(
+            TaskId::new_v4(),
+            EvalHistorySnapshot {
+                eval_count: 10,
+                pass_count: 3,
+            },
+        )];
+        let r = gate_promotion_via_held_out(&baseline, &candidate, 0.05);
+        assert!(!r.allow, "70% regression must block");
+        assert!((r.delta - (-0.7)).abs() < 1e-6);
     }
 }

@@ -9,7 +9,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 # Sum all N values from "N passed" across all test result lines
 total_passed() { echo "$1" | awk '/[0-9]+ passed/{match($0,/[0-9]+ passed/); s=substr($0,RSTART,RLENGTH); match(s,/[0-9]+/); n+=substr(s,RSTART,RLENGTH)} END{print n+0}'; }
 # Check if any individual test line is "test <name> ... ok"

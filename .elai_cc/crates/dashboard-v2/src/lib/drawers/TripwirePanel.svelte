@@ -17,22 +17,13 @@
   // the SSB rows separately. This panel polls on a 10s cadence.
 
   import { onMount, onDestroy } from 'svelte';
-
-  type TripwireRow = {
-    seq: number;
-    ts: number;
-    kind: 'fired' | 'auto_reverted';
-    event_id: string | null;
-    tripwire_kind: string | null;
-    candidate_id: string | null;
-    observed_value: number | null;
-    threshold: number | null;
-    fired_at_ms: number | null;
-    template_id: string | null;
-    parent_template_id: string | null;
-    retirement_reason: string | null;
-    fired_tripwire_id: string | null;
-  };
+  // D-4 GAP-2: TripwireRow lifted to $lib/api/types.ts (shared surface
+  // between commands_d4.rs and this panel). Local copy removed so the
+  // 'fired_concurrent' kind admitted by SCHEMA_VERSION 108 +
+  // TripwireFiredConcurrent stays in sync with the Rust DTO + the rest
+  // of the dashboard. Widening the kind union here required updating
+  // the Rust DTO in src-tauri/src/commands_d4.rs in the same commit.
+  import type { TripwireRow } from '$lib/api/types';
 
   let rows = $state<TripwireRow[]>([]);
   let loaded = $state(false);
@@ -146,10 +137,10 @@
               {/if}
             </td>
             <td>
-              {#if row.kind === 'fired'}
-                <code>{shortId(row.candidate_id)}</code>
-              {:else}
+              {#if row.kind === 'auto_reverted'}
                 <code>{shortId(row.template_id)}</code>
+              {:else}
+                <code>{shortId(row.candidate_id)}</code>
               {/if}
             </td>
             <td>{fmtNum(row.observed_value)}</td>
@@ -157,6 +148,17 @@
             <td>
               {#if row.kind === 'fired'}
                 <span class="event">id <code>{shortId(row.event_id)}</code></span>
+                {#if row.source}
+                  <span class="lineage"> · src <code>{row.source}</code></span>
+                {/if}
+              {:else if row.kind === 'fired_concurrent'}
+                <span class="event">
+                  <code>{row.tripwire_a ?? '—'}</code>
+                  + <code>{row.tripwire_b ?? '—'}</code>
+                </span>
+                {#if row.fired_within_ms !== null && row.fired_within_ms !== undefined}
+                  <span class="lineage"> within {row.fired_within_ms}ms</span>
+                {/if}
               {:else}
                 <span class="reason">{row.retirement_reason ?? ''}</span>
                 {#if row.parent_template_id}
@@ -251,6 +253,18 @@
   .badge-kind-auto_reverted {
     background: rgba(220, 80, 80, 0.15);
     border-color: rgba(220, 80, 80, 0.4);
+  }
+
+  /* D-4 GAP-2: concurrent-fire row styled distinctly from single-fire +
+     auto_revert so the new SCHEMA_VERSION 108 variant surfaces at a
+     glance. */
+  .badge-kind-fired_concurrent {
+    background: rgba(220, 120, 80, 0.18);
+    border-color: rgba(220, 120, 80, 0.5);
+  }
+
+  .row-fired_concurrent {
+    background: rgba(220, 120, 80, 0.06);
   }
 
   .badge-detector {

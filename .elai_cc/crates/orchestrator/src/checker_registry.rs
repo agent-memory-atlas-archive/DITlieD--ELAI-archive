@@ -38,7 +38,13 @@
 //!     `get_checker_results_recent` + `get_checker_registry_state`
 //!     Tauri commands.
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen for the checker registry. The codebase
+// already manually sorts on every consumer path (`ids_sorted`, `entries_sorted`,
+// `run_all_applicable` all sort by id explicitly because non-deterministic
+// dispatch ordering would flake the dashboard's checker-state view).
+// BTreeMap gives that ordering natively; the manual `.sort()` calls are
+// kept defensively in case the consumer type ever shifts back.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -74,6 +80,17 @@ pub enum CheckerKind {
     /// Numeric range / interval predicate on a candidate value. Pure
     /// in-process arithmetic — no subprocess.
     NumericRange,
+    /// `python3 -m py_compile` on a candidate Python source (shell-out
+    /// to `.elai_cc/checkers/code/compile_py.sh`). Atomic-extension
+    /// added in D-11 closure pass alongside the helper script — see
+    /// workflow/reasoning/D-11-decisions.md DECISION-3.
+    CompilePy,
+    /// PyPI / npm registry existence + recent-publish check
+    /// (shell-out to `.elai_cc/checkers/registry/registry_check.py`).
+    /// Canonical anti-slopsquatting defense per CLAUDE.md HARD RULE.
+    /// Atomic-extension added in D-11 closure pass — see
+    /// workflow/reasoning/D-11-decisions.md DECISION-5.
+    RegistryCheck,
 }
 
 impl CheckerKind {
@@ -87,13 +104,33 @@ impl CheckerKind {
             Self::RegexMatch => "regex_match",
             Self::JsonSchemaValidate => "json_schema_validate",
             Self::NumericRange => "numeric_range",
+            Self::CompilePy => "compile_py",
+            Self::RegistryCheck => "registry_check",
+        }
+    }
+
+    /// Parse a snake-case kind label back into the enum. Inverse of
+    /// [`Self::as_str`]; used by the TOML registry loader to map the
+    /// manifest's `kind = "..."` field to a closed variant.
+    #[must_use]
+    pub fn from_str(s: &str) -> Option<CheckerKind> {
+        match s {
+            "sympy" => Some(Self::Sympy),
+            "z3" => Some(Self::Z3),
+            "compile_rust" => Some(Self::CompileRust),
+            "regex_match" => Some(Self::RegexMatch),
+            "json_schema_validate" => Some(Self::JsonSchemaValidate),
+            "numeric_range" => Some(Self::NumericRange),
+            "compile_py" => Some(Self::CompilePy),
+            "registry_check" => Some(Self::RegistryCheck),
+            _ => None,
         }
     }
 
     /// Every variant in declaration order. Used by the dashboard to
     /// render the registry table without hard-coding the list.
     #[must_use]
-    pub const fn all() -> [CheckerKind; 6] {
+    pub const fn all() -> [CheckerKind; 8] {
         [
             Self::Sympy,
             Self::Z3,
@@ -101,6 +138,8 @@ impl CheckerKind {
             Self::RegexMatch,
             Self::JsonSchemaValidate,
             Self::NumericRange,
+            Self::CompilePy,
+            Self::RegistryCheck,
         ]
     }
 }
@@ -184,7 +223,7 @@ pub trait Checker: Send + Sync {
 /// common path — but additional registrations are allowed during
 /// tests.
 pub struct CheckerRegistry {
-    entries: HashMap<CheckerId, Box<dyn Checker>>,
+    entries: BTreeMap<CheckerId, Box<dyn Checker>>,
 }
 
 impl Default for CheckerRegistry {
@@ -215,7 +254,7 @@ impl CheckerRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: BTreeMap::new(),
         }
     }
 
@@ -746,6 +785,233 @@ pub(crate) fn parse_shellout_stdout(s: &str) -> CheckerResult {
         other => CheckerResult::Error {
             source: format!("unknown result kind: {}", other),
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-11 closure: ScriptChecker + TOML registry loader.
+//
+// The shipped registry historically only supported per-kind concrete
+// types (SympyChecker, CompileRustChecker, etc). The D-11 plan calls
+// for a declarative manifest at `.elai_cc/checkers/checkers.toml` so
+// new helper scripts can be registered without recompiling the
+// orchestrator. `ScriptChecker` is the dynamic shim: one struct that
+// holds (kind, interpreter, script_path, applies_to whitelist) and
+// dispatches via the existing `run_shellout_check` protocol.
+//
+// Determinism: `load_from_toml` registers entries in TOML row order,
+// then `ids_sorted` re-orders by id at read time. Same TOML always
+// yields the same registry state (no HashMap, no random seeds).
+// ---------------------------------------------------------------------------
+
+/// Single row in `.elai_cc/checkers/checkers.toml`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TomlCheckerEntry {
+    /// Stable id (becomes [`CheckerId`]). Required.
+    pub id: String,
+    /// Snake-case [`CheckerKind`] label. Required. Validated against
+    /// [`CheckerKind::from_str`] at load time; unknown kinds yield a
+    /// `LoadError::UnknownKind`.
+    pub kind: String,
+    /// Path to the helper script, RELATIVE to the workspace root
+    /// (e.g. `.elai_cc/checkers/math/z3.py`). Required.
+    pub script: String,
+    /// Process invoker: `python3` / `python` / `sh` / `bash`. Required.
+    pub interpreter: String,
+    /// Closed-set `ClaimType` whitelist (snake_case). Empty Vec = the
+    /// checker applies to every claim type (matches plan semantics).
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+    /// Informational helper version. Bumping does not change registry
+    /// behaviour but a future hash-pin contract can compare against it.
+    #[serde(default)]
+    pub version: String,
+}
+
+/// Top-level TOML document at `.elai_cc/checkers/checkers.toml`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TomlCheckerManifest {
+    /// `[[checker]]` rows in declaration order.
+    #[serde(default)]
+    pub checker: Vec<TomlCheckerEntry>,
+}
+
+/// Errors returned by [`CheckerRegistry::load_from_toml`].
+#[derive(Debug)]
+pub enum LoadError {
+    /// I/O failure reading the manifest file.
+    Io(std::io::Error),
+    /// TOML parse failure (returned verbatim from the `toml` crate).
+    Parse(String),
+    /// A row referenced a [`CheckerKind`] label not in the closed enum.
+    UnknownKind { id: String, kind: String },
+    /// A row referenced a [`ClaimType`] label not in the closed enum.
+    UnknownClaimType { id: String, claim_type: String },
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "io: {e}"),
+            Self::Parse(s) => write!(f, "toml parse: {s}"),
+            Self::UnknownKind { id, kind } => {
+                write!(f, "checker '{id}' has unknown kind '{kind}'")
+            }
+            Self::UnknownClaimType { id, claim_type } => {
+                write!(f, "checker '{id}' has unknown applies_to claim_type '{claim_type}'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+impl From<std::io::Error> for LoadError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+/// Generic script-backed checker registered by the TOML loader. Holds
+/// the manifest-derived (kind, interpreter, script_path, applies_to)
+/// tuple and delegates to [`run_shellout_check`] at dispatch time.
+///
+/// Public so tests + the loader can construct it; in production the
+/// canonical construction path is [`CheckerRegistry::load_from_toml`].
+pub struct ScriptChecker {
+    kind: CheckerKind,
+    interpreter: PathBuf,
+    script_path: PathBuf,
+    /// `None` means "applies to every claim type". `Some(...)` is a
+    /// closed-enum whitelist (validated at load time).
+    applies_to: Option<Vec<ClaimType>>,
+}
+
+impl ScriptChecker {
+    /// Construct directly. Validation of `interpreter` + `script_path`
+    /// existence is deferred to [`Checker::check`] time so a registry
+    /// that lists a not-yet-deployed script still loads.
+    #[must_use]
+    pub fn new(
+        kind: CheckerKind,
+        interpreter: impl Into<PathBuf>,
+        script_path: impl Into<PathBuf>,
+        applies_to: Option<Vec<ClaimType>>,
+    ) -> Self {
+        Self {
+            kind,
+            interpreter: interpreter.into(),
+            script_path: script_path.into(),
+            applies_to,
+        }
+    }
+}
+
+impl Checker for ScriptChecker {
+    fn kind(&self) -> CheckerKind {
+        self.kind
+    }
+
+    fn applies_to(&self, claim: &Claim) -> bool {
+        match self.applies_to.as_ref() {
+            None => true,
+            Some(allowed) => allowed.iter().any(|c| *c == claim.claim_type),
+        }
+    }
+
+    fn check<'a>(
+        &'a self,
+        claim: &'a Claim,
+    ) -> Pin<Box<dyn std::future::Future<Output = CheckerResult> + Send + 'a>> {
+        Box::pin(async move {
+            if !self.script_path.exists() {
+                return CheckerResult::Inapplicable {
+                    reason: format!(
+                        "script-checker helper missing at {}",
+                        self.script_path.display()
+                    ),
+                };
+            }
+            // Every helper-script protocol the registry ships with reads
+            // `{"claim": <text>, "candidate": null}` on stdin; checkers
+            // that need a richer candidate (regex pattern, ecosystem
+            // selector, etc.) read their own fields from the same JSON
+            // object. The producer (`dispatch_constructive_checkers`)
+            // owns claim-text framing; this shim is intentionally thin.
+            let stdin_json = serde_json::json!({
+                "claim": claim.text,
+                "candidate": serde_json::Value::Null,
+            })
+            .to_string();
+            run_shellout_check(&self.interpreter, &self.script_path, &stdin_json).await
+        })
+    }
+}
+
+fn parse_claim_type(s: &str) -> Option<ClaimType> {
+    match s {
+        "factual" => Some(ClaimType::Factual),
+        "procedural" => Some(ClaimType::Procedural),
+        "normative" => Some(ClaimType::Normative),
+        "speculative" => Some(ClaimType::Speculative),
+        "hypothetical" => Some(ClaimType::Hypothetical),
+        "computational" => Some(ClaimType::Computational),
+        "meta_query" => Some(ClaimType::MetaQuery),
+        _ => None,
+    }
+}
+
+impl CheckerRegistry {
+    /// D-11 closure: load the manifest at `<root>/.elai_cc/checkers/checkers.toml`
+    /// and register one [`ScriptChecker`] per `[[checker]]` row. Empty
+    /// manifest -> empty registry (no error). Missing manifest file ->
+    /// `LoadError::Io` (caller decides whether absence is fatal).
+    ///
+    /// Deterministic: same TOML text + same `root` always yields the
+    /// same registry state (rows sort by id at read time via
+    /// [`Self::ids_sorted`]).
+    ///
+    /// Wiring: the production boot path (post-D-11 closure)
+    /// constructs `CheckerRegistry::load_from_toml(workspace_root)` once
+    /// at orchestrator start; tests construct the registry inline via
+    /// [`Self::register`].
+    pub fn load_from_toml(root: &Path) -> Result<Self, LoadError> {
+        let manifest_path = root.join(".elai_cc/checkers/checkers.toml");
+        let raw = std::fs::read_to_string(&manifest_path)?;
+        Self::load_from_toml_str(&raw, root)
+    }
+
+    /// Same as [`Self::load_from_toml`] but reads the TOML body from a
+    /// string — useful for tests that materialise a synthetic manifest.
+    pub fn load_from_toml_str(toml_body: &str, root: &Path) -> Result<Self, LoadError> {
+        let manifest: TomlCheckerManifest = match toml::from_str(toml_body) {
+            Ok(m) => m,
+            Err(e) => return Err(LoadError::Parse(e.to_string())),
+        };
+        let mut reg = Self::new();
+        for entry in manifest.checker {
+            let kind = CheckerKind::from_str(&entry.kind).ok_or_else(|| LoadError::UnknownKind {
+                id: entry.id.clone(),
+                kind: entry.kind.clone(),
+            })?;
+            let applies_to: Option<Vec<ClaimType>> = if entry.applies_to.is_empty() {
+                None
+            } else {
+                let mut out = Vec::with_capacity(entry.applies_to.len());
+                for raw in &entry.applies_to {
+                    let ct = parse_claim_type(raw).ok_or_else(|| LoadError::UnknownClaimType {
+                        id: entry.id.clone(),
+                        claim_type: raw.clone(),
+                    })?;
+                    out.push(ct);
+                }
+                Some(out)
+            };
+            let script_path = root.join(&entry.script);
+            let checker = ScriptChecker::new(kind, &entry.interpreter, &script_path, applies_to);
+            reg.register(entry.id, Box::new(checker));
+        }
+        Ok(reg)
     }
 }
 

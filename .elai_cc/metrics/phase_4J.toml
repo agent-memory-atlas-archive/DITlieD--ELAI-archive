@@ -1,0 +1,117 @@
+# Phase 4J Metrics — Empire Integration (host-side scaffolding)
+# Date: 2026-05-22
+# Steps completed: 4J.1 scaffolding only (host-side surface). 4J.2-4J.9 are
+# EMPIRE-PENDING until the Empire codebase (workspace/factory-brain) is
+# accessible — see workflow/reasoning/phase-4J-decisions.md.
+
+[model]
+test_model = "n/a (host-side scaffolding; no LLM inference and no live socket I/O)"
+
+[scope]
+phase = "4J"
+implementation_mode = "host_side_scaffolding"
+empire_codebase_accessible = false
+pre_resolved_decisions = [
+  "1: EMPIRE-PENDING markers on all live-integration seams (RUNPOD-PENDING analog)",
+  "2: orchestrator submodule (NOT separate crate); cfg(feature='empire') gating",
+  "3: 5 separate SSB action_type variants (NOT single 'empire_event')",
+  "4: empire::ipc::EmpireIpcMessageType namespace (avoid IpcMessageType collision)",
+  "5: orchestrator.txt 'Section 7 (agents)' -> 'Section 12 (agents+Tier C)'",
+  "6: 4J.9 perf numbers labelled UNGROUNDED_TARGET (no prior bench citation)",
+]
+
+[empire_bridge]
+state_machine_variants = 3  # Disconnected | Connecting | Connected
+error_variants = 5  # NotConnected | Encode | Decode | Io | Protocol
+event_kind_variants = 5  # Connected | Disconnected | EventReceived | CapabilityInvoked | RepairProposed
+empire_pending_markers_count = 11  # grep "EMPIRE-PENDING" in src/empire/* + commands_empire.rs
+graceful_degradation = true  # bridge returns NotConnected/empty without panic
+zero_unwrap_in_library = true  # production code paths use Result/Option propagation only
+zero_lazy_code = true  # no TODO / FIXME / unimplemented! / todo! / placeholder
+feature_gate = "cfg(feature = \"empire\")"
+non_empire_build_cost = "zero"
+
+[factory_lines]
+factory_cmd_variants = 4  # Register | Heartbeat | List | RequestUpdate
+ipc_message_type_variants = 9  # RegisterHook | Emit | QueryHooks | Subscribe | Unsubscribe | BusCreate | BusJoin | BusLeave | BusList
+engine_tier_variants = 3  # MKI | MKII | MKIII
+hook_kind_variants = 2  # Route | Event
+brain_manifest_validate_rules = 4  # empty brain_id, empty neurons, duplicate neuron_ids, zero heartbeat
+elai_neuron_capability_count = 4  # task_submit | task_status | pipeline_result | health_check
+elai_neuron_capability_hardcoded = true  # NEVER dynamic from internal registry (4J.5 adversarial)
+
+[dashboard]
+tauri_commands_added = 2  # get_empire_status + list_empire_factory_lines
+ts_api_wrappers_added = 2  # get_empire_status + list_empire_factory_lines in api/empire.ts
+svelte_components_added = 1  # EmpireBridgePanel.svelte
+invoke_calls_in_svelte = 2  # get_empire_status + list_empire_factory_lines invoked on mount + 10s poll
+cross_lang_pair_marker_present = true  # "cross-lang-pair: dashboard/tauri/api"
+empty_state_message = "Empire bridge unavailable; activate when factory-brain deployed."
+
+[tests]
+empire_types_unit_tests = 3  # factory_cmd_round_trip + elai_neuron_has_exactly_four_capabilities + engine_tier_serializes_uppercase
+empire_ipc_unit_tests = 2  # all_nine_variants_round_trip + message_round_trip_preserves_mac_and_ip
+empire_brain_manifest_unit_tests = 5  # valid + empty_brain_id + empty_neurons + duplicate + zero_heartbeat
+empire_factory_line_unit_tests = 3  # encode_terminates_with_single_newline + protocol_version_one + connect_returns_not_connected
+empire_bridge_unit_tests = 4  # starts_disconnected + connect_round_trips + emit_action_all_five + factory_lines_empty
+empire_commands_unit_tests = 2  # status_shape_has_expected_fields + factory_lines_empty
+total_unit_tests = 19
+
+[wire_format]
+newline_delimiter = "\n"  # PHASE-4J 4J.3 ADVERSARIAL: NOT "\r\n"
+protocol_version = 1  # FactoryLineCommand.v hardcoded per Empire bus.py
+encoding = "newline_delimited_json"  # serde_json + b'\n' per frame
+
+# Aspirational targets pulled from 4J.9. These are UNGROUNDED_TARGET per
+# PRE-RESOLVED DECISION 6 — neither the orchestrator.txt Firecracker citation
+# nor any prior benchmark backs these numbers. They are MEASURE acceptance
+# thresholds, not verified prior art. Re-measure once Empire is live and
+# replace these placeholders with the actual p50/p95/p99.
+[aspirational_targets]
+unverified_grounding = "UNGROUNDED_TARGET — no prior benchmark citation available"
+connection_latency_unix_ms_target = "<100"
+connection_latency_tcp_ms_target = "<500"
+heartbeat_jitter_ms_target = "<500"
+event_bridge_throughput_per_sec_target = ">=90"  # at rate_limit=100/sec
+event_bridge_latency_p95_ms_target = "<10"
+capability_status_roundtrip_ms_target = "<50"
+capability_submit_roundtrip_ms_target = "<500"
+repair_scan_time_ms_target = "<5000"
+firecracker_boot_ms_reference = "<125"  # orchestrator.txt:454 — referenced indirectly, ingest before relying on it
+
+[next_steps]
+empire_codebase_access_required = true
+live_activation_path = "flip the 11 EMPIRE-PENDING markers + add 5-variant SSB lockstep (9-tuple per variant) + SCHEMA_VERSION 97 -> 98 bump"
+test_coverage_floor_at_completion = 40  # 4J.9 ACCEPTANCE; current scaffolding ships 19
+remaining_work = [
+  "FactoryLineTransport trait + Unix/Tcp impls (4J.1)",
+  "EventFilter + RateLimiter + Priority (4J.4) + dropped_count metric",
+  "ElaiNeuron ToolFilter integration + IPC proxy wire (4J.5)",
+  "EmpireRepairTarget + EmpireIssue detection (Python AST) + repair pipeline factory (4J.6)",
+  "Cross-platform parity tests over TcpTransport (4J.7)",
+  "FSB header parsing + bounded payload_len cap (4J.7)",
+  "phase_4J.toml UPDATE with measured numbers when Empire is live (4J.9)",
+]
+
+# APPEND-only: do not edit existing blocks above this line.
+# C-34 closure block — appended 2026-05-23 (s-25120). Mirrors the
+# classification + counts recorded in workflow/reasoning/C-34-decisions.md.
+[c34_closure]
+date = "2026-05-23"
+session = "s-25120"
+status = "CLOSURE_PENDING_ACTIVATION"
+schema_version_at_close = 103  # ssb.rs L1043 — past B-25-A's 102 bump (sibling work layered on)
+empire_pending_markers_count = 47  # grew from phase-4J close (11) via B-25 residual passes
+empire_pending_marker_files = 16
+shipped_via_phase_4J = 2  # Task 3 partial (orchestrator submodule per DECISION 2) + Task 11 (EmpireBridgePanel)
+shipped_via_b_25 = 4  # Task 4 (ipc namespace per DECISION 4) + Task 5 types + Task 6 (5 SSB variants) + Task 10 (--empire flag)
+empire_pending_tasks = 4  # Task 1 source-grounding + Task 7 ElaiNeuron MCP HTTP handler + Task 8 live round-trip + Task 9 production wiring
+active_tasks_this_session = 2  # Task 2 (elai_cc.toml [empire] section) + Task 12 (contract test file)
+contract_test_path = "crates/contracts/tests/c34_empire_integration_contract.rs"
+contract_test_assertions = 8
+toml_section_added = "[empire]"
+runtime_config_validator_added = "validate_empire_section_when_enabled"
+plan_rebaseline_drifts = 5  # DRIFT-A through DRIFT-E per C-34-decisions.md
+deterministic_check_corrections = 5  # DC1-DC5 corrected forms documented in C-34-decisions.md
+elai_map_stale = true  # 0 hits for FactoryLine|empire_bridge in .claude/tools/elai.map; scheduled post-C-34 regen
+ready_for_activation_patch = true

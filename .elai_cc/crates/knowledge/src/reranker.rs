@@ -43,6 +43,26 @@ pub enum ReRankerModel {
 }
 
 impl Default for ReRankerModel {
+    /// E-17 SP3 default-flip JINA-MODEL-PENDING:
+    /// keeps MsMarcoMiniLmL12 as Default until ONE of the following lands:
+    ///   (a) jinaai/jina-reranker-v3 publishes an official ONNX artifact
+    ///       (verified 2026-05-23 via WebSearch — only PyTorch / MLX / GGUF
+    ///       formats currently published; no .onnx file in the canonical
+    ///       repo). Track via huggingface.co/jinaai/jina-reranker-v3 release
+    ///       feed. When/if jina-rerank-v3.onnx ships, flip Default and
+    ///       drop this comment.
+    ///   (b) onnx-community/bge-reranker-v2-m3-ONNX is staged via
+    ///       `python scripts/stage_onnx_models.py --only bge-reranker-v2-m3`
+    ///       AND the doctor probe confirms the file under
+    ///       `models/onnx/bge-reranker-v2-m3.onnx`. Then flip to
+    ///       Self::BgeV2M3 (still requires ops staging, not auto-default).
+    ///
+    /// Flipping prematurely would silently degrade every install that has
+    /// not run the staging script (load() at :282 returns ModelLoad Err
+    /// and live_cli falls back to unranked). The plan's ACCEPTANCE
+    /// bullet "Jina-rerank-v3 (or BGE-v2-m3) is the DEFAULT reranker
+    /// model" is therefore deferred to E-17 ops follow-up per
+    /// workflow/reasoning/E-17-decisions.md SECTION "JINA-MODEL-PENDING".
     fn default() -> Self {
         Self::MsMarcoMiniLmL12
     }

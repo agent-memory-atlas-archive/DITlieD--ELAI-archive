@@ -73,27 +73,38 @@
 # locked" and always allows; the audit-run SSB row is still emitted so
 # dashboard consumers can see the auditor ran.)
 #
-# D-10 — mode-routing predicate L3 locks (commented seed; live
-# activation deferred to the L3_OVERRIDE follow-up patch per the
-# bootstrap policy above). Grounding: arxiv:1908.04734 (Everitt
-# current-RF principle, T1) — the agent must not edit the routing
-# logic that picks how its claims are graded.
+# D-10 — mode-routing predicate L3 locks (LIVE).
 #
-# [[locked_keys]]
-# path = "crates/orchestrator/src/grounding_mode.rs"
-# line_range = [0, 4294967295]
-# reason = "select_grounding_mode + GroundingMode closed enum per D-10 §3.2; agent cannot alter routing logic (arxiv:1908.04734)"
-# owner_session = "bootstrap-seed"
-# freeze_ts_ms = 0
-# signature_blake3 = ""
+# These are the first non-empty entries in the bootstrap registry. The
+# D-9 bootstrap policy (see header) keeps the registry empty by default
+# so the D-9 orchestrate run itself cannot trip the hook on its own
+# commits. D-10 is the legitimate first-mode use case: the mode-routing
+# predicate IS the function the agent must never edit (Cohen Boxed
+# Myopic + Everitt current-RF). D-10's own write is the bootstrap, and
+# the D-10 integration test under crates/orchestrator/tests/ asserts
+# that a synthetic edit to crates/orchestrator/src/grounding_mode.rs
+# fires a LockedKeysViolationDetected row.
 #
-# [[locked_keys]]
-# path = "crates/orchestrator/src/claim.rs"
-# line_range = [0, 4294967295]
-# reason = "ClaimType + EvidenceKind closed enums per D-10 companion §4; agent cannot add new claim types"
-# owner_session = "bootstrap-seed"
-# freeze_ts_ms = 0
-# signature_blake3 = ""
+# Grounding: arxiv:1908.04734 (Everitt current-RF principle, T1) — the
+# agent must not edit the routing logic that picks how its claims are
+# graded; arxiv:1905.12186 (Cohen Boxed Myopic AI) — the optimiser must
+# not influence its own grading function.
+
+[[locked_keys]]
+path = "crates/orchestrator/src/grounding_mode.rs"
+line_range = [0, 4294967295]
+reason = "select_grounding_mode + GroundingMode closed enum per D-10 §3.2; agent cannot alter routing logic (arxiv:1908.04734)"
+owner_session = "d-10-closure"
+freeze_ts_ms = 0
+signature_blake3 = ""
+
+[[locked_keys]]
+path = "crates/orchestrator/src/claim.rs"
+line_range = [0, 4294967295]
+reason = "ClaimType + EvidenceKind closed enums per D-10 companion §4; agent cannot add new claim types"
+owner_session = "d-10-closure"
+freeze_ts_ms = 0
+signature_blake3 = ""
 
 # D-16 — UniCR conformal-refusal calibration L3 locks (commented seed;
 # live activation deferred to the L3_OVERRIDE follow-up patch per the

@@ -18,37 +18,20 @@
   // agent must not edit the function that grades it.
 
   import { onMount, onDestroy } from 'svelte';
+  // D-10 closure GAP-3: snake_case mode + claim-type keys + UPPERCASE
+  // labels now live in the shared api/types.ts module so the Rust
+  // GroundingMode / ClaimType enums have a single TS mirror.
+  // Hand-authored per D-5 DECISION-7 (ts-rs not adopted in this repo).
+  import {
+    GROUNDING_MODES,
+    GROUNDING_MODE_LABELS,
+    type ClaimRoutedRow,
+    type RecentClaimRoutings,
+  } from '../api/types';
 
-  type ClaimRoutedRow = {
-    claim_id: string;
-    claim_type: string;
-    mode: string;
-    ts_ms: number;
-    ctx_summary_blake3: string;
-  };
-
-  type RecentClaimRoutings = {
-    rows: ClaimRoutedRow[];
-    counts_by_mode: Record<string, number>;
-    total: number;
-  };
-
-  // Snake-case mode keys matching the Rust `GroundingMode::as_str` arm.
-  const MODES: ReadonlyArray<string> = [
-    'constructive',
-    'falsifiability_cross_family',
-    'conformal_refusal',
-    'operational_deferred',
-    'conservative_fallback',
-  ];
-
-  const MODE_LABELS: Record<string, string> = {
-    constructive: 'CONSTRUCTIVE',
-    falsifiability_cross_family: 'FALSIFIABILITY (CROSS-FAMILY)',
-    conformal_refusal: 'CONFORMAL REFUSAL',
-    operational_deferred: 'OPERATIONAL DEFERRED',
-    conservative_fallback: 'CONSERVATIVE FALLBACK',
-  };
+  // Local aliases preserve the previous template variable names.
+  const MODES: typeof GROUNDING_MODES = GROUNDING_MODES;
+  const MODE_LABELS: Record<string, string> = GROUNDING_MODE_LABELS;
 
   let data = $state<RecentClaimRoutings>({
     rows: [],

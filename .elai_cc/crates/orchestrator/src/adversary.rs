@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::claim::{Claim, EvidenceRef};
+use elai_providers::ProviderKind;
 
 // ---------------------------------------------------------------------------
 // ModelFamily — closed enum of verifier model families
@@ -95,6 +96,180 @@ impl ModelFamily {
             Self::Local => "local",
             Self::Other(s) => s.as_str(),
         }
+    }
+
+    /// D-13 closure GAP-2 — bridge a [`elai_providers::ProviderKind`]
+    /// classification into the adversary's [`ModelFamily`] partition.
+    ///
+    /// This replaces caller-asserted family with a runtime classification
+    /// that defers to the shared provider detection layer
+    /// ([`elai_providers::detect_provider_kind`]). The two enums are
+    /// intentionally disjoint surfaces (`ProviderKind` is the wire-level
+    /// transport; `ModelFamily` is the heterogeneous-verifier semantic
+    /// partition per arxiv:2504.16760 T1), but the mapping is total:
+    /// every `ProviderKind` lands on exactly one `ModelFamily`. The
+    /// `Ollama` and `Vllm` providers collapse to `ModelFamily::Local`
+    /// because both run on-device — same-family-as-worker for the
+    /// default Qwen2.5-Coder-7B local deployment.
+    ///
+    /// Per D-13 plan task 2 cross-family check: callers MUST NOT use the
+    /// caller-asserted family when the runtime can be classified. The
+    /// bridge is preferred so a misconfigured cloud Sonnet caller cannot
+    /// accidentally pair against another Anthropic adversary.
+    #[must_use]
+    pub fn from_provider_kind(kind: ProviderKind) -> Self {
+        match kind {
+            ProviderKind::Anthropic => Self::Anthropic,
+            ProviderKind::OpenAi => Self::OpenAi,
+            // Xai uses the OpenAI-compat transport but is a distinct
+            // model family. The closed enum does not have an Xai variant
+            // so it lands on `Other("xai")` for the cross-family check.
+            ProviderKind::Xai => Self::Other("xai".into()),
+            // Ollama + Vllm both host local-weights models. Treat both
+            // as `Local` per the existing adversary.rs:75-78
+            // doc-comment ("local-vs-local pairings are same-family by
+            // design"). This is intentional: pairing two on-device
+            // models — regardless of checkpoint — is same-family for
+            // the cross-family guard.
+            ProviderKind::Ollama => Self::Local,
+            #[cfg(feature = "vllm")]
+            ProviderKind::Vllm => Self::Local,
+        }
+    }
+
+    /// D-13 closure GAP-2 — model_id substring classifier used when
+    /// only the model identifier string is available (e.g. local
+    /// sidecar boot where no `ProviderKind` is yet computed). Mirrors
+    /// the `_PPM_MODEL_HINTS` substring approach from
+    /// [`crate::ppm_client`] (D-2 precedent).
+    ///
+    /// Substring matching is case-insensitive and runs in declaration
+    /// order; first match wins. Falls back to `Local` (rather than
+    /// `Other`) because every shipped local model_id today is a Qwen
+    /// or Llama checkpoint — both correctly classified as `Local` per
+    /// the same-family-on-device rationale above.
+    ///
+    /// Use this when only `model_id` is in hand. Prefer
+    /// [`Self::from_provider_kind`] when a `ProviderKind` is already
+    /// computed (cheaper + already-classified).
+    #[must_use]
+    pub fn from_model_id(model_id: &str) -> Self {
+        let lower = model_id.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            return Self::Local;
+        }
+        // Cloud-provider id hints first (most specific). The substring
+        // set mirrors D-2's PpmAdapter model hints + the provider
+        // crate's MODEL_REGISTRY canonical aliases.
+        if lower.contains("claude") || lower.starts_with("anthropic") {
+            return Self::Anthropic;
+        }
+        if lower.contains("gpt") || lower.starts_with("openai") {
+            return Self::OpenAi;
+        }
+        if lower.contains("grok") || lower.starts_with("xai") {
+            return Self::Other("xai".into());
+        }
+        if lower.contains("deepseek") {
+            return Self::DeepSeek;
+        }
+        if lower.contains("llama") {
+            // Llama-family hosted locally OR via Meta endpoints. The
+            // closed-enum `Meta` variant covers both — heterogeneous
+            // check treats Meta-Llama as distinct from Local-Qwen.
+            return Self::Meta;
+        }
+        if lower.contains("mistral") || lower.contains("mixtral") {
+            return Self::Mistral;
+        }
+        if lower.contains("gemma") {
+            // Gemma is Google's open-weights family; no closed-enum
+            // slot yet, so it lands on `Other("gemma")` so a
+            // future-deployment Gemma adversary still satisfies the
+            // cross-family check against Local-Qwen.
+            return Self::Other("gemma".into());
+        }
+        if lower.contains("qwen") {
+            return Self::Local;
+        }
+        // Unknown id — default to Local to be conservative. A Local
+        // adversary against a Local worker triggers SameFamilyPairing
+        // in `run_adversarial_pass` so the misclassification is
+        // observable rather than silent.
+        Self::Local
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SourceTierCitation — typed citation enforcement for adversary prompts
+// ---------------------------------------------------------------------------
+
+/// D-13 closure GAP-3 (plan task 4) — typed citation tag for the
+/// counter-evidence the adversary cites in its system message.
+///
+/// This is the ONE genuinely missing-without-substitute type per the
+/// D-13 plan: `EvidenceRef` (from `crate::claim`) carries `kind`
+/// + `content` + `ref` but does NOT discriminate by source tier
+/// (T1 peer-reviewed vs T2 web vs T3 unverified training memory).
+/// Tier discrimination matters because the adversary prompt's grounding
+/// contract requires T1/T2 evidence and explicitly forbids T3 — citing
+/// training memory as if it were verified evidence is the failure mode
+/// `C42_PAPER_DESIGN_VS_GROUND_TRUTH` catches.
+///
+/// Per arxiv:2503.17365 (Constitutional AI in Small LLMs, T1) 4-outcome
+/// taxonomy: small-LM critics flagged as "amplification" almost always
+/// failed to distinguish T3 training memory from T1 cited evidence. The
+/// enum makes that discrimination first-class.
+///
+/// Scoped to the prompt-construction layer; NOT carried in SSB rows so
+/// no SCHEMA bump is required. Internal-only — the consensus pass
+/// consults [`CounterEvidenceSchema::counter_evidence`] (a
+/// `Vec<EvidenceRef>`) for the gating decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tier", rename_all = "snake_case")]
+pub enum SourceTierCitation {
+    /// T1 peer-reviewed arXiv paper. `id` is the canonical arXiv id
+    /// (e.g. `"2504.16760"`), `title` is the verified paper title.
+    T1Arxiv { id: String, title: String },
+    /// T1 peer-reviewed Nature / Science / IEEE journal paper. `doi`
+    /// is the canonical DOI string; `title` is the verified title.
+    T1Nature { doi: String, title: String },
+    /// T2 official documentation or vendor blog / SDK release notes.
+    /// `url` is the canonical citable URL; `title` is the page title.
+    T2Web { url: String, title: String },
+    /// T3 unverified training-memory claim. The adversary prompt MUST
+    /// flag this as untrustworthy — it is the wrong tier for any
+    /// load-bearing counter-evidence. Construction is permitted so
+    /// the adversary can be explicit ("I would cite X here but I have
+    /// no T1/T2 source"), but the consensus pass treats T3 citations
+    /// as zero-weight.
+    T3Training,
+}
+
+impl SourceTierCitation {
+    /// Stable wire-label discriminator used in serialisation snapshots
+    /// + dashboard rendering. Mirrors the [`ModelFamily::as_str`]
+    /// pattern so the closed-enum partition has one canonical label
+    /// producer.
+    #[must_use]
+    pub fn tier_label(&self) -> &'static str {
+        match self {
+            Self::T1Arxiv { .. } => "t1_arxiv",
+            Self::T1Nature { .. } => "t1_nature",
+            Self::T2Web { .. } => "t2_web",
+            Self::T3Training => "t3_training",
+        }
+    }
+
+    /// True iff this citation is high-enough tier to carry weight in
+    /// the consensus pass. T1 + T2 are load-bearing; T3 is documentary
+    /// only (the adversary admitting it has no verified source).
+    #[must_use]
+    pub fn is_load_bearing(&self) -> bool {
+        matches!(
+            self,
+            Self::T1Arxiv { .. } | Self::T1Nature { .. } | Self::T2Web { .. }
+        )
     }
 }
 
@@ -557,5 +732,161 @@ mod tests {
         };
         let msg = format!("{e}");
         assert!(msg.contains("same_family_pairing"));
+    }
+
+    // ----- D-13 closure GAP-2: from_provider_kind + from_model_id bridge tests
+
+    #[test]
+    fn from_provider_kind_anthropic_maps_to_anthropic() {
+        assert_eq!(
+            ModelFamily::from_provider_kind(ProviderKind::Anthropic),
+            ModelFamily::Anthropic
+        );
+    }
+
+    #[test]
+    fn from_provider_kind_openai_maps_to_openai() {
+        assert_eq!(
+            ModelFamily::from_provider_kind(ProviderKind::OpenAi),
+            ModelFamily::OpenAi
+        );
+    }
+
+    #[test]
+    fn from_provider_kind_xai_lands_on_other_xai() {
+        let fam = ModelFamily::from_provider_kind(ProviderKind::Xai);
+        assert_eq!(fam, ModelFamily::Other("xai".into()));
+        assert_eq!(fam.as_str(), "xai");
+    }
+
+    #[test]
+    fn from_provider_kind_ollama_maps_to_local() {
+        assert_eq!(
+            ModelFamily::from_provider_kind(ProviderKind::Ollama),
+            ModelFamily::Local
+        );
+    }
+
+    #[test]
+    fn from_model_id_qwen_maps_to_local() {
+        assert_eq!(
+            ModelFamily::from_model_id("qwen2.5-coder-7b-instruct"),
+            ModelFamily::Local
+        );
+    }
+
+    #[test]
+    fn from_model_id_llama_maps_to_meta() {
+        assert_eq!(
+            ModelFamily::from_model_id("llama-3-70b-instruct"),
+            ModelFamily::Meta
+        );
+    }
+
+    #[test]
+    fn from_model_id_gemma_lands_on_other_gemma() {
+        let fam = ModelFamily::from_model_id("gemma-3-12b-it");
+        assert_eq!(fam, ModelFamily::Other("gemma".into()));
+        assert_eq!(fam.as_str(), "gemma");
+    }
+
+    #[test]
+    fn from_model_id_claude_maps_to_anthropic() {
+        assert_eq!(
+            ModelFamily::from_model_id("claude-sonnet-4-6"),
+            ModelFamily::Anthropic
+        );
+    }
+
+    #[test]
+    fn from_model_id_deepseek_maps_to_deepseek() {
+        assert_eq!(
+            ModelFamily::from_model_id("deepseek-coder-v3"),
+            ModelFamily::DeepSeek
+        );
+    }
+
+    #[test]
+    fn from_model_id_unknown_defaults_to_local() {
+        // Unknown id defaults to Local (conservative — Local-vs-Local
+        // worker pair triggers SameFamilyPairing so the
+        // misclassification is observable rather than silent).
+        assert_eq!(
+            ModelFamily::from_model_id("some-unknown-model"),
+            ModelFamily::Local
+        );
+    }
+
+    #[test]
+    fn from_model_id_empty_defaults_to_local() {
+        assert_eq!(ModelFamily::from_model_id(""), ModelFamily::Local);
+        assert_eq!(ModelFamily::from_model_id("   "), ModelFamily::Local);
+    }
+
+    // ----- D-13 closure GAP-3: SourceTierCitation enum tests
+
+    #[test]
+    fn source_tier_citation_tier_labels_are_stable() {
+        let t1a = SourceTierCitation::T1Arxiv {
+            id: "2504.16760".into(),
+            title: "Lightweight Latent Verifiers".into(),
+        };
+        let t1n = SourceTierCitation::T1Nature {
+            doi: "10.1038/x".into(),
+            title: "Some paper".into(),
+        };
+        let t2 = SourceTierCitation::T2Web {
+            url: "https://docs.rs/x".into(),
+            title: "Docs".into(),
+        };
+        let t3 = SourceTierCitation::T3Training;
+        assert_eq!(t1a.tier_label(), "t1_arxiv");
+        assert_eq!(t1n.tier_label(), "t1_nature");
+        assert_eq!(t2.tier_label(), "t2_web");
+        assert_eq!(t3.tier_label(), "t3_training");
+    }
+
+    #[test]
+    fn source_tier_citation_load_bearing_partition() {
+        assert!(SourceTierCitation::T1Arxiv {
+            id: "x".into(),
+            title: "y".into()
+        }
+        .is_load_bearing());
+        assert!(SourceTierCitation::T1Nature {
+            doi: "x".into(),
+            title: "y".into()
+        }
+        .is_load_bearing());
+        assert!(SourceTierCitation::T2Web {
+            url: "x".into(),
+            title: "y".into()
+        }
+        .is_load_bearing());
+        assert!(!SourceTierCitation::T3Training.is_load_bearing());
+    }
+
+    #[test]
+    fn source_tier_citation_round_trip_serde() {
+        let cases = [
+            SourceTierCitation::T1Arxiv {
+                id: "2504.16760".into(),
+                title: "Lightweight Latent Verifiers".into(),
+            },
+            SourceTierCitation::T1Nature {
+                doi: "10.1038/s41586-024-xxxxx".into(),
+                title: "A Nature paper".into(),
+            },
+            SourceTierCitation::T2Web {
+                url: "https://doc.rust-lang.org/book/".into(),
+                title: "The Rust Programming Language".into(),
+            },
+            SourceTierCitation::T3Training,
+        ];
+        for c in &cases {
+            let s = serde_json::to_string(c).expect("serialize");
+            let back: SourceTierCitation = serde_json::from_str(&s).expect("deserialize");
+            assert_eq!(c, &back, "round-trip failed: {s}");
+        }
     }
 }

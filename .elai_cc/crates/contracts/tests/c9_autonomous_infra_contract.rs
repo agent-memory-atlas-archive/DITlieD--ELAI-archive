@@ -431,6 +431,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         compiled_pipeline_store: None,
         background_task_manager: None,
         via_mcp: false,
+        // C-39: legacy contract path -- no Dispatch impl wired.
+        mcp_dispatch: None,
     };
     let cfg_none = apply_task_runner_wiring(root.join("cursor.json"), &wiring_none);
     assert!(
@@ -452,6 +454,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         compiled_pipeline_store: None,
         background_task_manager: None,
         via_mcp: false,
+        // C-39: legacy contract path -- no Dispatch impl wired.
+        mcp_dispatch: None,
     };
     let cfg_inter = apply_task_runner_wiring(root.join("cursor.json"), &wiring_inter);
     let gate = cfg_inter
@@ -474,6 +478,8 @@ async fn c9_contract_apply_task_runner_wiring_installs_gate() {
         compiled_pipeline_store: None,
         background_task_manager: None,
         via_mcp: false,
+        // C-39: legacy contract path -- no Dispatch impl wired.
+        mcp_dispatch: None,
     };
     let cfg_auto = apply_task_runner_wiring(root.join("cursor.json"), &wiring_auto);
     let gate_auto = cfg_auto

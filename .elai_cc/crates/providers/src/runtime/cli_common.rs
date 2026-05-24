@@ -78,7 +78,14 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         | RuntimeBackend::Ollama
         | RuntimeBackend::Vllm
         | RuntimeBackend::Mlx
-        | RuntimeBackend::LlamaCpp => "<non-cli>",
+        | RuntimeBackend::LlamaCpp
+        | RuntimeBackend::Ppm
+        // C-44 — Composer 2 is HTTP+API-key, not a CLI subprocess.
+        | RuntimeBackend::Composer2
+        // E-40 — Lsp is a subprocess oracle dispatched via
+        // elai_orchestrator::symbol_graph::lsp_oracle, not the generic CLI
+        // subprocess shape.
+        | RuntimeBackend::Lsp => "<non-cli>",
     }
 }
 

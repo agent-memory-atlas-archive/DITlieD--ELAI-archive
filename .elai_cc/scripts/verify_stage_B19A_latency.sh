@@ -4,7 +4,7 @@
 # Exit:  0 = PASS, 1 = FAIL
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
 DEPS="${ELAI_ROOT}/target/debug/deps"
 DISPATCHER="${ELAI_ROOT}/crates/orchestrator/src/hook_dispatcher.rs"
 

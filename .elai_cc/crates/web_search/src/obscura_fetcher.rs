@@ -45,7 +45,7 @@ const OBSCURA_READ_CHUNK: usize = 64 * 1024;
 /// The binary ships inside the project at .elai_cc/tools/obscura/obscura.exe.
 #[cfg(target_os = "windows")]
 const OBSCURA_DEFAULT_PATH: &str =
-    r"D:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe";
+    r"F:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe";
 
 /// Compile-time default on non-Windows: assume it is on PATH.
 #[cfg(not(target_os = "windows"))]
@@ -289,7 +289,7 @@ async fn run_obscura_streaming(
 /// 1. `OBSCURA_PATH` environment variable (if set and non-empty).
 /// 2. On Windows:
 ///    a. cwd-relative `tools/obscura/obscura.exe` (works when run from project root).
-///    b. Absolute fallback `D:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe`.
+///    b. Absolute fallback `F:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe`.
 /// 3. On non-Windows: scan PATH for `obscura` using `which`-style lookup.
 ///
 /// Returns `Ok(resolved_path)` if the binary is found and readable, or
@@ -322,7 +322,7 @@ pub fn check_obscura_binary() -> Result<PathBuf, WebSearchError> {
 
         // Step 2b: absolute project path fallback.
         let absolute =
-            PathBuf::from(r"D:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe");
+            PathBuf::from(r"F:\.ELAI_workflow\.elai_cc\tools\obscura\obscura.exe");
         if absolute.exists() {
             return Ok(absolute);
         }

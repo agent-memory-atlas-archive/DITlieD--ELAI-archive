@@ -137,6 +137,17 @@ pub enum FsmSubstate {
     /// transitions SLEEP_COMPUTE -> IDLE (top-level state unchanged at
     /// IDLE — substate is the only marker).
     SleepCompute,
+    /// E-13: TDD verifier-agent pass under EXECUTING / AUDITING.
+    /// `Tdd` marks an active Red->Green->Refactor cycle driven by
+    /// [`crate::tdd_verifier::TddVerifierAgent`]. While in this
+    /// substate the agent emits `TddCycleStarted`, `TddTestFailed`,
+    /// and `TddTestPassed` SSB beacons; the auditor consumes the
+    /// cycle result via D-3's `ConsensusRule::
+    /// VerifierKindHeterogeneous { required_kinds:
+    /// vec![VerifierKind::Deterministic] }`. PreToolUse hooks gate
+    /// tool access on (state, substate) — under Tdd the agent is
+    /// restricted to test-file writes + cargo-mutants invocation.
+    Tdd,
 }
 
 impl FsmSubstate {
@@ -144,6 +155,7 @@ impl FsmSubstate {
         match self {
             FsmSubstate::Framing => "framing",
             FsmSubstate::SleepCompute => "sleep_compute",
+            FsmSubstate::Tdd => "tdd",
         }
     }
 }

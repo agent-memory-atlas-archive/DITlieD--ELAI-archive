@@ -3,9 +3,13 @@
   // the phase orbit and the step orbit. Verdict drives color + lock state.
   //
   // E-33: shape-distinct verdict glyph + Wong-palette color so the signal
-  // never depends on hue alone (WCAG 2.2 1.4.1).
+  // never depends on hue alone (WCAG 2.2 1.4.1). Plan task 4 wires
+  // ConfidenceTag for the hovered gate — the gate verdict (pass / block /
+  // warn / pending) maps onto the binary-confidence band so the same
+  // Fuselab 2026 4-state surface renders here as on OrbitGrcDots.
 
   import type { EvidenceGate } from '../api/types';
+  import ConfidenceTag from '../components/ConfidenceTag.svelte';
 
   interface Props {
     gates: EvidenceGate[];
@@ -14,6 +18,24 @@
     radius: number;
   }
   let { gates, cx, cy, radius }: Props = $props();
+
+  /// Map a gate verdict onto a 0..1 value matching ConfidenceTag thresholds:
+  ///   pass    -> 0.95  (verified)
+  ///   warn    -> 0.30  (low)
+  ///   block   -> 0.10  (needs-evidence)
+  ///   pending -> 0.60  (ok / awaiting outcome)
+  function verdictToValue(v: EvidenceGate['verdict']): number {
+    switch (v) {
+      case 'pass':
+        return 0.95;
+      case 'warn':
+        return 0.30;
+      case 'block':
+        return 0.10;
+      case 'pending':
+        return 0.60;
+    }
+  }
 
   function color(v: EvidenceGate['verdict']): string {
     switch (v) {
@@ -63,6 +85,12 @@
               paint-order="stroke" stroke="var(--bg-base)" stroke-width="2" stroke-linejoin="round">
           {g.name.toLowerCase()}: {g.verdict}
         </text>
+        <!-- E-33 task 4: ConfidenceTag binary surface for the hovered gate.
+             Rendered in a foreignObject so the HTML component lives inside
+             the SVG coordinate space. -->
+        <foreignObject x={x + 6} y={y + 6} width="96" height="20" class="gate-confidence">
+          <ConfidenceTag value={verdictToValue(g.verdict)} size="sm" label={g.verdict} />
+        </foreignObject>
       {/if}
     </g>
   {/each}

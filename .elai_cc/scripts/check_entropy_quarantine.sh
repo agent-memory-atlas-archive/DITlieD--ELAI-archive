@@ -28,6 +28,14 @@
 #     configs that can't carry an Arc<dyn ClockProvider>). The manifest
 #     convention (top-of-file comment listing all annotated sites) is
 #     documented but not script-enforced (see C-15 D9).
+#
+# C-15 closure (s-25120):
+#   - Excluded `**/measure.rs` (benchmark/measurement-intrinsic timing harness;
+#     measure.rs IS the timing measurement, not a producer leak — see
+#     C-15-decisions.md Option A rationale).
+#   - Excluded `**/bench_*.rs` (cli/bench_arc.rs, cli/bench_conformal.rs and
+#     any future bench_-prefixed file are benchmark code; the script already
+#     excludes `/benches/` subdirs but bench_-prefixed files live in /src/).
 
 set -e
 
@@ -97,6 +105,8 @@ if command -v rg >/dev/null 2>&1; then
         --glob '!**/.bkp_old/**' \
         --glob '!**/pipeline_builder_tests.rs' \
         --glob '!**/pipeline_builder_bench.rs' \
+        --glob '!**/measure.rs' \
+        --glob '!**/bench_*.rs' \
         "$PATTERN" "$CRATES_DIR" \
         | grep -v 'TEST_KEEP' \
         | strip_comments \
@@ -109,6 +119,8 @@ else
         --exclude='entropy.rs' \
         --exclude='pipeline_builder_tests.rs' \
         --exclude='pipeline_builder_bench.rs' \
+        --exclude='measure.rs' \
+        --exclude='bench_*.rs' \
         --exclude-dir='tests' \
         --exclude-dir='test' \
         --exclude-dir='examples' \

@@ -135,6 +135,14 @@ pub struct RuntimeWiring {
     /// dashboard timeline. Closes audit WARN-4.
     pub background_task_manager: Option<Arc<BackgroundTaskManager>>,
     pub via_mcp: bool,
+    /// C-39 -- production tool dispatch impl. When `Some`,
+    /// [`apply_task_runner_wiring`] plumbs this `Arc<dyn Dispatch>` onto
+    /// [`TaskRunnerConfig::mcp_dispatch`] so production tool calls go
+    /// through the chosen leg (in-process or via-mcp). When `None`, the
+    /// legacy C-13 `ToolDispatcher` path remains the sole dispatch
+    /// surface (zero-regression default). The CLI / dashboard wiring
+    /// sites construct this Arc based on `wiring.via_mcp`.
+    pub mcp_dispatch: Option<Arc<dyn crate::dispatch::Dispatch>>,
 }
 
 /// Build the production wiring bundle for `start_task_runner`.
@@ -202,8 +210,36 @@ pub async fn build_task_runner_wiring(
 
     // 3. Construct the production feasibility prober. Mirrors
     //    `dashboard-v2/src-tauri/src/state.rs:381-383`.
+    //
+    //    E-22 phase-4F M1 + STUB-1 + Tier3 injection (2026-05-22): the
+    //    prober is now wired with BOTH a `system_prober` (so
+    //    `ResourceDelta::after` reflects live VRAM) AND a `Tier3StubExecutor`
+    //    when the `elai_cc_agent` binary is locatable on disk. Failure to
+    //    locate the agent binary is non-fatal — the prober falls back to
+    //    the synthetic stub path (input-parse only) so existing contract
+    //    tests / agentless setups keep passing. The system_prober is
+    //    constructed unconditionally because nvml + nvidia-smi are
+    //    cheap and the prober owns its own 60s cache.
     let feasibility_root = data_dir.join("feasibility");
-    let feasibility_prober = Arc::new(DefaultFeasibilityProber::new(feasibility_root));
+    let clock_for_probe: Arc<dyn ClockProvider> = Arc::new(OsClock);
+    let system_prober_for_feasibility: Arc<dyn crate::system_probe::SystemProber> = Arc::new(
+        crate::system_probe::DefaultSystemProber::new(Some(project_root.to_path_buf()), clock_for_probe),
+    );
+    let mut prober = DefaultFeasibilityProber::new(feasibility_root)
+        .with_system_prober(Arc::clone(&system_prober_for_feasibility));
+    match locate_default_agent_binary() {
+        Ok(agent_path) => {
+            let tier3 = crate::feasibility_probe::Tier3StubExecutor::new(agent_path);
+            prober = prober.with_stub_executor(Arc::new(tier3));
+        }
+        Err(e) => {
+            tracing::info!(
+                error = %e,
+                "build_task_runner_wiring: elai_cc_agent not located — feasibility prober keeps the synthetic stub path"
+            );
+        }
+    }
+    let feasibility_prober = Arc::new(prober);
 
     // 4. Open the project rules.db via the canonical helper. This runs the
     //    standard schema migration; the resulting Connection is then wrapped
@@ -284,6 +320,10 @@ pub async fn build_task_runner_wiring(
         compiled_pipeline_store: Some(compiled_pipeline_store),
         background_task_manager: Some(background_task_manager),
         via_mcp: false,
+        // C-39: default to None so non-CLI callers (legacy tests,
+        // dashboard pre-C-39) keep the unchanged tool-dispatch surface.
+        // The CLI run_subcommand populates this based on wiring.via_mcp.
+        mcp_dispatch: None,
     })
 }
 
@@ -409,6 +449,25 @@ pub fn apply_task_runner_wiring(
     cfg.compiled_pipeline_store = wiring.compiled_pipeline_store.clone();
     cfg.background_task_manager = wiring.background_task_manager.clone();
 
+    // C-39 — plumb the optional Dispatch impl onto TaskRunnerConfig so
+    // future tool-call sites can route through this seam. When
+    // `wiring.via_mcp` is true and the caller has NOT pre-constructed a
+    // mcp_dispatch impl, we default to a no-SSB McpClientDispatch bound
+    // to the canonical 8200 port (matches DEFAULT_MCP_SERVER_URL in
+    // plugins/src/mcp_bridge.rs). When `via_mcp` is false and no
+    // dispatch was provided, the field stays None and the runner keeps
+    // the legacy C-13 ToolDispatcher path -- zero regression on the
+    // default leg.
+    if let Some(dispatch) = wiring.mcp_dispatch.as_ref() {
+        cfg.mcp_dispatch = Some(dispatch.clone());
+    } else if wiring.via_mcp {
+        let mcp = crate::dispatch::McpClientDispatch::new(8200, wiring.ssb.clone());
+        cfg.mcp_dispatch = Some(Arc::new(mcp));
+        tracing::info!(
+            "C-39: --via-mcp default dispatch wired (McpClientDispatch port 8200)"
+        );
+    }
+
     cfg
 }
 
@@ -510,6 +569,130 @@ pub fn build_production_hook_dispatcher() -> Arc<InProcessHookDispatcher> {
     let ruff = Arc::new(elai_plugins::post_tool_use::RuffPostToolUseRunner::new());
     let dispatcher = InProcessHookDispatcher::new(None).with_ruff_runner(ruff);
     Arc::new(dispatcher)
+}
+
+/// B-19 — build a production `elai_plugins::IpcHookDispatcher` wrapped in the
+/// `IpcHookAsyncAdapter` so callers can install it as the unified
+/// `Arc<dyn HookDispatcher>` on `RuntimeWiring.hook_dispatcher`. This is the
+/// "keep IpcHookDispatcher live in production" path the B-19 plan task #1
+/// describes — the adapter resolves the sync/async trait mismatch documented
+/// in `workflow/sessions/s-25120/completion-drive/exploration/
+/// B-19_hook_system_unification-exploration.md` GAP-1.
+///
+/// Production-side wires:
+///   * `SsbFindingWriter` — `RuntimeSsbFindingWriter` wraps the orchestrator's
+///     `Arc<Ssb>` and emits one `SsbActionType::Finding` row per BLOCK verdict
+///     so the dashboard surfaces the IPC-frame rejections in the activity
+///     feed alongside in-process findings.
+///   * `CrossSessionLockChecker` — `NoopLockChecker` is used in single-session
+///     contexts. Multi-session deployments should swap in a checker that
+///     queries the cross-session lock cache.
+///
+/// The `TieredAnalysis` instance is constructed by the caller (e.g. the CLI
+/// or dashboard bootstrap) and threaded in. Callers without a tiered bundle
+/// today should prefer `build_production_hook_dispatcher` (in-process); the
+/// IPC adapter is reserved for the Tier-C accept-loop callers wired by
+/// `crate::ipc_accept::run_agent_session`.
+///
+/// The B-19 unification is at the DISPATCHER level
+/// (`Arc<dyn HookDispatcher>`), NOT the trait level — both
+/// `InProcessHookDispatcher` and `IpcHookDispatcher` keep their distinct
+/// upstream traits. The adapter is the missing piece that lets either one
+/// plug into the `task_runner` callsite.
+#[must_use]
+pub fn build_production_ipc_hook_dispatcher(
+    tiered: elai_plugins::tiered_analysis::TieredAnalysis,
+    ssb: Arc<Ssb>,
+) -> Arc<dyn HookDispatcher + Send + Sync> {
+    use elai_plugins::{IpcHookDispatcher, NoopLockChecker};
+    let writer: Box<dyn elai_plugins::SsbFindingWriter + Send + Sync> =
+        Box::new(RuntimeSsbFindingWriter::new(ssb));
+    let lock_checker: Box<dyn elai_plugins::CrossSessionLockChecker + Send + Sync> =
+        Box::new(NoopLockChecker);
+    let inner: Arc<dyn elai_plugins::IpcHookTrait + Send + Sync> =
+        Arc::new(IpcHookDispatcher::new(tiered, writer, lock_checker));
+    Arc::new(crate::hook_dispatcher::IpcHookAsyncAdapter::new(inner))
+}
+
+/// B-19 — production `SsbFindingWriter` implementation wrapping the
+/// orchestrator's `Arc<Ssb>`. The `IpcHookDispatcher` (in the plugins crate)
+/// cannot depend on the orchestrator's `Ssb` type directly without a
+/// circular dep, so the trait lives upstream and the concrete adapter
+/// lives here.
+///
+/// Write semantics: per `elai_plugins::SsbFindingWriter`, the implementor
+/// MUST inject `project_id` per `SSB_READER_PROJECT_ID_SCOPING`. The
+/// orchestrator's `Ssb` already carries the project_id on its `SsbConfig`
+/// (set at construction in `build_task_runner_wiring`), so the bridge here
+/// is a simple `block_in_place` + `Handle::block_on` over `write_payload`.
+///
+/// Failure mode: a write failure is recorded by returning `Err(String)`;
+/// the `IpcHookDispatcher` logs and treats SSB write errors as non-blocking
+/// (`finding_written=false`). The dispatcher itself never aborts on this.
+///
+/// `superstep` defaults to `0` — the IPC-frame surface does not have a
+/// running superstep counter the way `task_runner` does. The Finding row
+/// still surfaces in the activity feed; only ordering across other tracked
+/// supersteps may drift, which is acceptable for hook telemetry.
+pub struct RuntimeSsbFindingWriter {
+    ssb: Arc<Ssb>,
+}
+
+impl RuntimeSsbFindingWriter {
+    /// Wrap an `Arc<Ssb>` so it can satisfy the upstream
+    /// `elai_plugins::SsbFindingWriter` trait.
+    #[must_use]
+    pub fn new(ssb: Arc<Ssb>) -> Self {
+        Self { ssb }
+    }
+}
+
+impl elai_plugins::SsbFindingWriter for RuntimeSsbFindingWriter {
+    fn write_finding(
+        &self,
+        agent_id: &str,
+        pattern_hash: &str,
+        verdict_json: &str,
+        files: &[String],
+    ) -> Result<(), String> {
+        let payload = crate::ssb::SsbPayload::Finding(crate::ssb::FindingPayload {
+            severity: "INFO".to_string(),
+            category: "ipc_hook".to_string(),
+            message: format!("verdict={verdict_json} pattern_hash={pattern_hash}"),
+            file_path: files.first().cloned(),
+            line: None,
+            failure_category: None,
+            audit_step: None,
+            few_shot_examples: None,
+        });
+        let ssb = Arc::clone(&self.ssb);
+        let agent_id_owned = agent_id.to_string();
+        let files_owned: Vec<String> = files.to_vec();
+        // The trait method is sync but `Ssb::write_payload` is async. Bridge
+        // via the current runtime handle; we only call this from inside the
+        // tokio runtime (the IpcHookDispatcher runs under spawn_blocking
+        // from the IpcHookAsyncAdapter, so a Handle::current() is available).
+        // Fall back to a tracing::warn + Err if no runtime is active so the
+        // dispatcher reports the failure rather than panic.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return Err(
+                "RuntimeSsbFindingWriter::write_finding: no tokio runtime".to_string(),
+            );
+        };
+        // `block_in_place` requires multi-thread runtime; if we are on a
+        // current-thread runtime the call would deadlock. Detect and bail
+        // gracefully — production runtimes are multi-thread (per
+        // `Ssb::new` and the dashboard tauri setup).
+        let result = tokio::task::block_in_place(move || {
+            handle.block_on(async move {
+                ssb.write_payload(&agent_id_owned, 0, payload, files_owned).await
+            })
+        });
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("ssb write_payload failed: {e}")),
+        }
+    }
 }
 
 /// Locate the `elai_cc_agent[.exe]` binary.

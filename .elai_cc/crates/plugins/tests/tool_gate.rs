@@ -1,7 +1,10 @@
 use elai_plugins::mcp::gate::{GatedCatalog, ToolGate, ToolGateConfig, ToolGateStateConfig};
 use elai_plugins::mcp::lazy::LazySchemaCache;
 use elai_plugins::McpToolSpec;
+use rustc_hash::FxHashMap;
 use serde_json::json;
+// HashMap retained for `planning_gate` (ToolGateConfig.states uses HashMap;
+// gate.rs is out of B-15 17-file scope, scheduled for B-15-followup).
 use std::collections::HashMap;
 
 fn synthetic_catalog() -> Vec<McpToolSpec> {
@@ -48,7 +51,8 @@ fn tool_gate_filter_state() {
 async fn tool_gate_lru_eager() {
     let cache = LazySchemaCache::new(3);
     let catalog = synthetic_catalog();
-    let registry: HashMap<String, McpToolSpec> = catalog.into_iter().map(|s| (s.name.clone(), s)).collect();
+    // B-15 HashMap ban cascade: LazySchemaCache::resolve now takes FxHashMap.
+    let registry: FxHashMap<String, McpToolSpec> = catalog.into_iter().map(|s| (s.name.clone(), s)).collect();
     cache.resolve("knowledge.search", &registry).await.expect("resolve 1");
     cache.resolve("fs.read", &registry).await.expect("resolve 2");
     cache.resolve("fs.edit", &registry).await.expect("resolve 3");
@@ -63,7 +67,7 @@ async fn tool_gate_lru_eager() {
 async fn tool_gate_resolve_schema() {
     let cache = LazySchemaCache::new(16);
     let catalog = synthetic_catalog();
-    let registry: HashMap<String, McpToolSpec> = catalog.iter().map(|s| (s.name.clone(), s.clone())).collect();
+    let registry: FxHashMap<String, McpToolSpec> = catalog.iter().map(|s| (s.name.clone(), s.clone())).collect();
     for original in &catalog {
         let resolved = cache.resolve(&original.name, &registry).await
             .unwrap_or_else(|_| panic!("resolve failed for {}", original.name));
@@ -86,6 +90,76 @@ fn tool_gate_denied_structured_error() {
     assert!(absent.check_tool_allowed("any_state", "git.commit").is_ok(), "safe default allows all");
     assert_eq!(absent.reason(), "manifest_absent");
 }
+// C-35 N3 wiring tests: verify DefaultMcpBridge::assemble_prompt + the
+// ToolGateSsbEmitter trait + the SafeDefault emission-skip rule. These
+// exercise the wiring half of the plan, not the library shape.
+
+#[derive(Default)]
+struct CapturingEmitter {
+    rows: std::sync::Mutex<Vec<(String, String, String, i64)>>,
+}
+impl elai_plugins::ToolGateSsbEmitter for CapturingEmitter {
+    fn emit(
+        &self,
+        action_kind: &str,
+        tool_name: &str,
+        fsm_state: &str,
+        prompt_tokens_saved: i64,
+    ) -> Result<(), String> {
+        self.rows.lock().expect("lock").push((
+            action_kind.to_owned(),
+            tool_name.to_owned(),
+            fsm_state.to_owned(),
+            prompt_tokens_saved,
+        ));
+        Ok(())
+    }
+}
+
+#[test]
+fn assemble_prompt_emits_tool_gated_and_tool_eager() {
+    use std::sync::Arc;
+    let gate = Arc::new(planning_gate());
+    let cache = Arc::new(LazySchemaCache::new(4));
+    let emitter = Arc::new(CapturingEmitter::default());
+    let bridge = elai_plugins::DefaultMcpBridge::default()
+        .with_tool_gate(gate, cache)
+        .with_ssb_emitter(emitter.clone());
+    let catalog = synthetic_catalog();
+    let result = bridge.assemble_prompt("planning", &catalog, 4);
+    assert!(!result.eager_schemas.is_empty(), "eager schemas non-empty in planning state");
+    assert!(!result.gated_summaries.is_empty(), "gated summaries non-empty");
+    assert!(result.prompt_tokens_saved > 0, "tokens_saved must be > 0");
+    let rows = emitter.rows.lock().expect("lock");
+    let eager_count = rows.iter().filter(|r| r.0 == "tool_eager").count();
+    let gated_count = rows.iter().filter(|r| r.0 == "tool_gated").count();
+    assert_eq!(eager_count, result.eager_schemas.len(), "one tool_eager row per eager schema");
+    assert_eq!(gated_count, result.gated_summaries.len(), "one tool_gated row per gated summary");
+    for (kind, _, fsm, _) in rows.iter() {
+        assert_eq!(fsm, "planning", "row carries fsm_state from call");
+        assert!(matches!(kind.as_str(), "tool_gated" | "tool_eager"));
+    }
+}
+
+#[test]
+fn assemble_prompt_safe_default_skips_emission() {
+    use std::sync::Arc;
+    let gate = Arc::new(elai_plugins::ToolGate::safe_default());
+    let cache = Arc::new(LazySchemaCache::new(4));
+    let emitter = Arc::new(CapturingEmitter::default());
+    let bridge = elai_plugins::DefaultMcpBridge::default()
+        .with_tool_gate(gate, cache)
+        .with_ssb_emitter(emitter.clone());
+    let catalog = synthetic_catalog();
+    let result = bridge.assemble_prompt("planning", &catalog, 4);
+    // Safe-default: ALL tools land in gated_summaries with empty eager.
+    assert_eq!(result.eager_schemas.len(), 0);
+    assert_eq!(result.gated_summaries.len(), catalog.len());
+    // C-35 schema lock: NO emission on SafeDefault path.
+    let rows = emitter.rows.lock().expect("lock");
+    assert!(rows.is_empty(), "SafeDefault must skip SSB emission; got {} rows", rows.len());
+}
+
 #[test]
 fn tool_gate_tokens_saved_metric() {
     let gate = planning_gate();

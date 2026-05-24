@@ -6,7 +6,7 @@
 # NOTE: measure_bm25 example requires compilation (disk-full workaround: check BM25 index db directly)
 set -euo pipefail
 
-CORPUS_ROOT="${1:-D:/.ELAI_workflow/docs/.source/nextest-main}"
+CORPUS_ROOT="${1:-F:/.ELAI_workflow/docs/.source/nextest-main}"
 BM25_DIR="${CORPUS_ROOT}/.elai_cc/indexes"
 
 if [ ! -d "$BM25_DIR" ]; then

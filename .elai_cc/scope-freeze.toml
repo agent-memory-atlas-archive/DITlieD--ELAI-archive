@@ -1,0 +1,40 @@
+# Phase 4H scope freeze manifest.
+#
+# C-43 ratification artifact. Lists the workspace items frozen at the
+# Phase 4H boundary (i.e. the post-Phase-4G surface that subsequent
+# self-modification rounds MUST NOT mutate without an explicit
+# re-ratification event).
+#
+# This is an ELAI design hypothesis. No prior-art grounding was found at
+# the C-43 session-2 close; arXiv:2604.21725 (AEL) was incorrectly cited
+# in the source plan and has been removed — see
+# workflow/sessions/s-25120/mistakes.md for the bad-cite analysis.
+#
+# Verification: `elai freeze verify` walks each frozen_item, compares its
+# mtime against ratification_ts_ms, and emits a
+# ScopeFreezeViolated SSB row when a frozen item has changed.
+
+# Wall-clock millisecond epoch of the ratification event. 2026-05-24 UTC
+# 00:00:00 is the Phase 4H scope-freeze cutover used for the example.
+# Producers MUST overwrite this with the real ratification timestamp.
+ratification_ts_ms = 1_748_044_800_000
+
+# Stable 64-bit hash of the ratifier identity (blake3 truncated to 64
+# bits). The plaintext identity is never stored on disk; the dashboard
+# resolves it through the ratifier-registry lookup keyed by this hash.
+ratifier_id_hash = 4_660
+
+# Workspace-relative paths of items frozen by this ratification. Paths
+# are normalized to forward slashes regardless of host OS. Items are
+# resolved against the workspace root passed to verify_freeze.
+frozen_items = [
+    "crates/orchestrator/src/self_mod_orchestrator.rs",
+    "crates/orchestrator/src/self_mod_safety.rs",
+    "crates/orchestrator/src/self_mod_layer1a.rs",
+    "crates/orchestrator/src/self_mod_types.rs",
+    "crates/orchestrator/src/self_mod_bridge.rs",
+    "crates/orchestrator/src/self_mod_proposal.rs",
+    "crates/orchestrator/src/msi.rs",
+    "crates/orchestrator/src/evolution_gate.rs",
+    "crates/orchestrator/src/config_archive.rs",
+]

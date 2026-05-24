@@ -148,6 +148,8 @@ async fn contract_task_runner_accepts_llm_provider() {
             crystallizer: None,
             compiled_pipeline_store: None,
             background_task_manager: None,
+            // C-39: legacy contract fixture -- no Dispatch wired.
+            mcp_dispatch: None,
         },
     );
 

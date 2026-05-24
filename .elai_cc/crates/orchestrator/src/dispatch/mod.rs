@@ -12,10 +12,13 @@
 mod in_process;
 mod mcp;
 
-pub use in_process::InProcessDispatch;
+pub use in_process::{InProcessDispatch, InProcessToolRunner};
 pub use mcp::McpClientDispatch;
 
-use std::collections::HashMap;
+// B-15 HashMap ban: prior unused std::collections imports removed.
+// (52-line file, no map type appears.) If a future edit adds a real
+// map, choose FxHashMap (lookup hot path) or BTreeMap (serialization)
+// per B-15-decisions.md per-file rationale.
 
 /// A tool dispatch request carrying the tool name and JSON arguments.
 /// Both InProcessDispatch and McpClientDispatch accept this type.

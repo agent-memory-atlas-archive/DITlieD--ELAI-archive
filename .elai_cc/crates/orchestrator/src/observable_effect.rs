@@ -45,7 +45,11 @@
 //! anchors: Voyager arxiv:2305.16291 §3 skill-with-measurable-effect;
 //! Coscientist arxiv:2304.05332 §4 sandbox vs production observation).
 
-use std::collections::HashMap;
+// B-15 HashMap ban: BTreeMap chosen for MockSandboxExecutor fixtures map
+// (line ~299). Lookup-only usage (insert + get); BTreeMap pays O(log n)
+// vs O(1) but n is per-test (~dozens) and determinism is preferable for a
+// test scaffold that's intentionally reproducible.
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -296,7 +300,7 @@ pub struct MockSandboxExecutor {
     /// command string, the file path's display form). Keeps the mock
     /// honest — same trigger always returns the same observation in a
     /// single test run.
-    fixtures: HashMap<(String, &'static str), CapturedObservation>,
+    fixtures: BTreeMap<(String, &'static str), CapturedObservation>,
 }
 
 impl MockSandboxExecutor {
@@ -304,7 +308,7 @@ impl MockSandboxExecutor {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            fixtures: HashMap::new(),
+            fixtures: BTreeMap::new(),
         }
     }
 
@@ -718,6 +722,294 @@ fn observable_effect_detail_to_row(
 }
 
 // ---------------------------------------------------------------------------
+// D-18 closure — EffectSet + Goodhart guard + Coscientist observation taxonomy
+// ---------------------------------------------------------------------------
+//
+// Paper grounding (all anchors verified post-WebSearch May 2026):
+//   * Voyager arxiv:2305.16291 §3 (skill-with-measurable-effect; INV-5
+//     state-delta invariant: a real observable effect must produce a
+//     non-zero delta in observed environment keys between pre-effect
+//     and post-effect snapshots).
+//   * Eureka arxiv:2310.12931 §3.3 (component-variation reward
+//     invariant: when a reward component is constant across runs, it
+//     is not measuring what it claims and Goodhart's law applies).
+//   * Coscientist arxiv:2304.05332 §4 (SandboxObservation vs
+//     ProductionObservation taxonomy; ProductionObservation requires
+//     an instrument_file or it must gate on human review).
+//
+// The plan's arxiv:2412.16367 cite is REJECTED per WebSearch — the
+// paper is "A Layered Swarm Optimization Method for Fitting Battery
+// Thermal Runaway Models" (unrelated to typed test predicates). See
+// workflow/reasoning/D-18-decisions.md DECISION-6.
+
+/// Distinct from [`VerificationOutcome`] — `ObservationOutcome` is the
+/// Coscientist-style taxonomy for an observation in the sandbox or
+/// production context. `VerificationOutcome` is the typed-predicate
+/// outcome of `verify_observable_effect` against an expected
+/// [`TypedObservation`]; `ObservationOutcome` is the observation's
+/// own confidence label (did we see the effect we expected to see, or
+/// not, or was the evidence inconclusive). See
+/// workflow/reasoning/D-18-decisions.md DECISION-4 for the rationale
+/// behind the dual taxonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationOutcome {
+    /// Effect observed; expected behaviour confirmed.
+    Confirmed,
+    /// Effect NOT observed; expected behaviour refuted.
+    Refuted,
+    /// Evidence ambiguous; not enough signal to decide.
+    Inconclusive,
+}
+
+impl ObservationOutcome {
+    /// Stable snake-case wire label used in SSB rows + the dashboard.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Refuted => "refuted",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+}
+
+/// Coscientist-style observation context. SandboxTier carries the tier
+/// label for the sandboxed case; the Production arm is unparameterized
+/// because production observations are surfaced via `instrument_file`
+/// (carried by [`ObservationResult`] / the proposal SSB row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObservationContext {
+    /// Observed inside a sandbox at the named tier.
+    Sandbox(SandboxTier),
+    /// Observed in production (instrument file required for automatic
+    /// promotion — see [`ObservationResult.instrument_file`]).
+    Production,
+}
+
+impl ObservationContext {
+    /// Stable snake-case kind label used in SSB rows.
+    #[must_use]
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Sandbox(_) => "sandbox",
+            Self::Production => "production",
+        }
+    }
+}
+
+/// Snapshot of the environment keys an effect can observe.
+///
+/// Voyager arxiv:2305.16291 §3 INV-5 state-delta invariant: a real
+/// observable effect must produce a NON-EMPTY delta between the
+/// pre-effect and post-effect snapshots. [`EnvironmentSnapshot::delta`]
+/// returns the set difference; callers gate on
+/// `voyager_state_delta_threshold` (from `[observable_effect]` toml) to
+/// distinguish a real effect from observational noise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSnapshot {
+    /// Observable environment keys at snapshot time. Snake-case ASCII
+    /// strings (file paths, env var names, etc).
+    pub observable_keys: Vec<String>,
+    /// Wall-clock UNIX ms at snapshot time.
+    pub observed_at_ts: i64,
+}
+
+impl EnvironmentSnapshot {
+    /// Set-difference between this snapshot and a pre-effect snapshot.
+    /// Returns the keys present in `self` (post-effect) but absent from
+    /// `pre` (pre-effect). Used by Voyager INV-5 gating.
+    #[must_use]
+    pub fn delta(&self, pre: &Self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let pre_keys: BTreeSet<&String> = pre.observable_keys.iter().collect();
+        self.observable_keys
+            .iter()
+            .filter(|k| !pre_keys.contains(k))
+            .cloned()
+            .collect()
+    }
+
+    /// True iff [`delta`] has at least `threshold_count` keys. Used to
+    /// gate Voyager INV-5: a real observable effect must produce a
+    /// state delta of meaningful size; tiny deltas are noise.
+    #[must_use]
+    pub fn delta_meets_threshold(&self, pre: &Self, threshold_count: usize) -> bool {
+        self.delta(pre).len() >= threshold_count
+    }
+}
+
+/// Result of an observation round-trip — Coscientist-style.
+///
+/// Distinct from [`ObservableEffectRow`] (the verified-effect read
+/// surface). An `ObservationResult` carries the observation's
+/// `ObservationContext` (sandbox tier or production) + outcome
+/// (`Confirmed | Refuted | Inconclusive`) + the optional
+/// `instrument_file` that surfaces the observation in production.
+///
+/// Per Coscientist §4 invariant: when `context == Production` and
+/// `instrument_file == None`, the observation is NOT safe to
+/// auto-promote and must gate on human review (see
+/// [`ProductionObservationProposalPayload.requires_human_review`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationResult {
+    pub effect_id: EffectId,
+    pub context: ObservationContext,
+    pub outcome: ObservationOutcome,
+    /// Path to the instrument file that surfaces the observation in
+    /// production. `None` is permitted for sandbox observations; for
+    /// production observations, `None` triggers the Coscientist
+    /// human-review gate.
+    pub instrument_file: Option<std::path::PathBuf>,
+}
+
+impl ObservationResult {
+    /// Coscientist §4 invariant guard. Returns `true` iff the result
+    /// requires human review before auto-promotion. Always `true` for
+    /// production observations without an `instrument_file`.
+    #[must_use]
+    pub fn requires_human_review(&self) -> bool {
+        matches!(self.context, ObservationContext::Production) && self.instrument_file.is_none()
+    }
+}
+
+/// A set of observable effects exercised together.
+///
+/// Provides [`Self::validate_orthogonality`]: paired effects in a set
+/// must observe DISTINCT `(trigger.kind, observation.kind)` pairs
+/// across the set. Duplicate pairings are evidence the set is not
+/// actually measuring N orthogonal facets of the system; instead it is
+/// measuring one facet N times.
+///
+/// Paper grounding: Voyager arxiv:2305.16291 §3 skill-with-measurable-
+/// effect (one skill = one measurable effect; redundant skills do not
+/// expand coverage).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EffectSet {
+    pub effects: Vec<ObservableEffect>,
+}
+
+impl EffectSet {
+    /// Construct an empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            effects: Vec::new(),
+        }
+    }
+
+    /// Add an effect to the set.
+    pub fn push(&mut self, effect: ObservableEffect) {
+        self.effects.push(effect);
+    }
+
+    /// Validate orthogonality of the set's effects: each
+    /// `(trigger.kind_str, observation.kind_str)` pair must appear
+    /// AT MOST ONCE across the set. Returns the list of duplicate
+    /// pair labels (snake-case, comma-separated) — empty when the set
+    /// is orthogonal.
+    ///
+    /// Empty sets and singleton sets are trivially orthogonal.
+    #[must_use]
+    pub fn validate_orthogonality(&self) -> Vec<String> {
+        // BTreeMap preferred over HashMap per CLAUDE.md anti-stale-training
+        // (deterministic iteration order).
+        let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+        for e in &self.effects {
+            let key = format!("{}->{}", e.trigger.kind_str(), e.expected.kind_str());
+            *seen.entry(key).or_insert(0) += 1;
+        }
+        seen.into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// True iff the set is orthogonal (no duplicate
+    /// `(trigger.kind, observation.kind)` pairs).
+    #[must_use]
+    pub fn is_orthogonal(&self) -> bool {
+        self.validate_orthogonality().is_empty()
+    }
+}
+
+/// One Goodhart flag produced by [`check_goodhart_risk`].
+///
+/// Paper grounding: Eureka arxiv:2310.12931 §3.3 component-variation
+/// reward invariant — when a reward component is constant across runs,
+/// it is not measuring what it claims and Goodhart's law applies. The
+/// flag fires when a per-effect component's observed variation falls
+/// below the configured `goodhart_min_component_variation` threshold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoodhartFlag {
+    pub effect_id: EffectId,
+    pub risk_kind: String,
+    pub evidence: String,
+}
+
+impl GoodhartFlag {
+    /// Construct a flag from the parts the producer side carries.
+    #[must_use]
+    pub fn new(
+        effect_id: impl Into<String>,
+        risk_kind: impl Into<String>,
+        evidence: impl Into<String>,
+    ) -> Self {
+        Self {
+            effect_id: effect_id.into(),
+            risk_kind: risk_kind.into(),
+            evidence: evidence.into(),
+        }
+    }
+}
+
+/// Component-variation Goodhart guard against an [`EffectSet`].
+///
+/// For each effect in the set we surface ONE flag when the effect is
+/// not orthogonal to its siblings (duplicate
+/// `(trigger.kind, observation.kind)` pair = constant pairing across
+/// the set, i.e. the set is measuring one facet N times instead of N
+/// facets). This is the closest analogue to Eureka's component-
+/// variation invariant we can compute without per-effect run history;
+/// once D-18 producers begin recording per-run variation snapshots,
+/// extend this function to flag low-variation components per effect.
+///
+/// Returns a Vec of [`GoodhartFlag`] (one per offending effect). Empty
+/// vec when the set passes the guard.
+///
+/// Paper grounding: Eureka arxiv:2310.12931 §3.3 (Section 3.3
+/// "Component variation invariant" — a reward component that does not
+/// vary across runs is not measuring what it claims; we use trigger
+/// and observation kind duplication as the surrogate signal because
+/// the per-component reward variation is not directly observable from
+/// the EffectSet snapshot).
+#[must_use]
+pub fn check_goodhart_risk(set: &EffectSet) -> Vec<GoodhartFlag> {
+    let duplicates = set.validate_orthogonality();
+    if duplicates.is_empty() {
+        return Vec::new();
+    }
+    // Map duplicate keys back to the offending effects.
+    let mut flags: Vec<GoodhartFlag> = Vec::new();
+    for e in &set.effects {
+        let key = format!("{}->{}", e.trigger.kind_str(), e.expected.kind_str());
+        if duplicates.iter().any(|d| d == &key) {
+            flags.push(GoodhartFlag::new(
+                e.effect_id.clone(),
+                "constant_component",
+                format!(
+                    "trigger->observation pair `{}` appears more than once in the EffectSet \
+                     (Eureka §3.3 component-variation guard)",
+                    key
+                ),
+            ));
+        }
+    }
+    flags
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -967,5 +1259,159 @@ mod tests {
             .await
             .expect("verify (executor error should not be an SsbError)");
         assert_eq!(outcome, VerificationOutcome::Skipped);
+    }
+
+    // ---- D-18 closure unit tests ----
+
+    fn sample_effect(id: &str, trigger: TriggerSpec, expected: TypedObservation) -> ObservableEffect {
+        ObservableEffect {
+            effect_id: id.into(),
+            trigger,
+            expected,
+            sandbox: SandboxTier::NoSandbox,
+            confound_flags: ConfoundFlags::default(),
+        }
+    }
+
+    #[test]
+    fn observation_outcome_labels_stable() {
+        assert_eq!(ObservationOutcome::Confirmed.as_str(), "confirmed");
+        assert_eq!(ObservationOutcome::Refuted.as_str(), "refuted");
+        assert_eq!(ObservationOutcome::Inconclusive.as_str(), "inconclusive");
+    }
+
+    #[test]
+    fn observation_context_kind_labels_stable() {
+        assert_eq!(
+            ObservationContext::Sandbox(SandboxTier::ContainerIsolated).kind_str(),
+            "sandbox"
+        );
+        assert_eq!(ObservationContext::Production.kind_str(), "production");
+    }
+
+    #[test]
+    fn observation_result_requires_human_review_when_production_lacks_instrument() {
+        let r = ObservationResult {
+            effect_id: "e-prod".into(),
+            context: ObservationContext::Production,
+            outcome: ObservationOutcome::Confirmed,
+            instrument_file: None,
+        };
+        assert!(r.requires_human_review());
+
+        let with_instrument = ObservationResult {
+            instrument_file: Some(PathBuf::from("crates/x/src/instrument.rs")),
+            ..r
+        };
+        assert!(!with_instrument.requires_human_review());
+    }
+
+    #[test]
+    fn observation_result_sandbox_never_requires_human_review_by_default() {
+        let r = ObservationResult {
+            effect_id: "e-sandbox".into(),
+            context: ObservationContext::Sandbox(SandboxTier::ContainerIsolated),
+            outcome: ObservationOutcome::Confirmed,
+            instrument_file: None,
+        };
+        assert!(!r.requires_human_review());
+    }
+
+    #[test]
+    fn environment_snapshot_delta_voyager_inv5() {
+        let pre = EnvironmentSnapshot {
+            observable_keys: vec!["k1".into(), "k2".into()],
+            observed_at_ts: 100,
+        };
+        let post = EnvironmentSnapshot {
+            observable_keys: vec!["k1".into(), "k2".into(), "k3".into(), "k4".into()],
+            observed_at_ts: 200,
+        };
+        let delta = post.delta(&pre);
+        assert_eq!(delta.len(), 2);
+        assert!(post.delta_meets_threshold(&pre, 2));
+        assert!(!post.delta_meets_threshold(&pre, 3));
+    }
+
+    #[test]
+    fn effect_set_orthogonal_when_pairings_distinct() {
+        let mut set = EffectSet::new();
+        set.push(sample_effect(
+            "e1",
+            TriggerSpec::TestCommand("a".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        set.push(sample_effect(
+            "e2",
+            TriggerSpec::HttpEndpointGet {
+                url: "http://x".into(),
+                expected_status: 200,
+            },
+            TypedObservation::HttpStatus(200),
+        ));
+        assert!(set.is_orthogonal());
+        assert!(set.validate_orthogonality().is_empty());
+    }
+
+    #[test]
+    fn effect_set_rejects_duplicate_trigger_observation_pairing() {
+        let mut set = EffectSet::new();
+        set.push(sample_effect(
+            "e1",
+            TriggerSpec::TestCommand("a".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        set.push(sample_effect(
+            "e2",
+            TriggerSpec::TestCommand("b".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        let dupes = set.validate_orthogonality();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0], "test_command->string_match");
+        assert!(!set.is_orthogonal());
+    }
+
+    #[test]
+    fn check_goodhart_risk_flags_each_offending_effect() {
+        let mut set = EffectSet::new();
+        set.push(sample_effect(
+            "e1",
+            TriggerSpec::TestCommand("a".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        set.push(sample_effect(
+            "e2",
+            TriggerSpec::TestCommand("b".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        let flags = check_goodhart_risk(&set);
+        assert_eq!(flags.len(), 2);
+        let ids: Vec<&str> = flags.iter().map(|f| f.effect_id.as_str()).collect();
+        assert!(ids.contains(&"e1"));
+        assert!(ids.contains(&"e2"));
+        for f in &flags {
+            assert_eq!(f.risk_kind, "constant_component");
+            assert!(f.evidence.contains("test_command->string_match"));
+        }
+    }
+
+    #[test]
+    fn check_goodhart_risk_orthogonal_set_yields_no_flags() {
+        let mut set = EffectSet::new();
+        set.push(sample_effect(
+            "e1",
+            TriggerSpec::TestCommand("a".into()),
+            TypedObservation::StringMatch("ok".into()),
+        ));
+        set.push(sample_effect(
+            "e2",
+            TriggerSpec::HttpEndpointGet {
+                url: "http://x".into(),
+                expected_status: 200,
+            },
+            TypedObservation::HttpStatus(200),
+        ));
+        assert!(check_goodhart_risk(&set).is_empty());
     }
 }

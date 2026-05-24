@@ -16,6 +16,10 @@ pub mod catrag;
 pub mod chunk_strategy;
 pub mod chunking;
 pub mod conventions;
+// E-17 SP4 task 2: Anthropic Contextual Retrieval at ingest. Heuristic
+// ground-floor + LLM-backed template scaffold. See
+// workflow/reasoning/E-17-decisions.md.
+pub mod contextual_retrieval;
 // E-17 SP2 task 4: DEEP candidate pool cap + RRF quality gate.
 pub mod deep;
 pub mod degradation;
@@ -42,6 +46,10 @@ pub mod index_version;
 pub mod metadata;
 pub mod pagerank;
 pub mod pipeline;
+// phase-3L: Project Intelligence Tier hooks (PiT1/PiT2/PiT3) + persistence
+// helper. Pi-prefixed types live here to avoid collision with the SSB-write
+// rule hook family in elai_plugins::tiered_analysis (T1Hook/T2Hook/T3Hook).
+pub mod project_intelligence;
 pub mod project_profile;
 // E-17 SP2 task 5: heuristic query-class classifier (Layer A).
 pub mod query_class;
@@ -321,4 +329,18 @@ pub use cosmos_worker::{
 };
 // C-8 Task #10: cosmos artifact retrieval stage for QueryPipeline.
 pub use cosmos_stage::CosmosStage;
-pub use telescope::{assemble_telescope, TelescopeContext};
+pub use telescope::{
+    assemble_telescope, assemble_telescope_with_hooks, TelescopeContext, PiHookList,
+};
+// phase-3L: re-export the PI hook surface so external callers (reasoning
+// crate, contracts/tests, CLI dispatch) can construct hooks without
+// reaching into the submodule path.
+pub use project_intelligence::{
+    persist_profile, PiT1Hook, PiT2Hook, PiT3Hook, ProjectIntelligenceError,
+    ProjectIntelligenceHook, CONVENTIONS_MIGRATION_V1_SQL, PI_T1_ID, PI_T1_PRIORITY,
+    PI_T1_TOKEN_BUDGET, PI_T2_CIRCUIT_BREAKER_LINES, PI_T2_ID, PI_T2_PRIORITY,
+    PI_T2_TOKEN_BUDGET, PI_T3_ID, PI_T3_PRIORITY, PI_T3_TOKEN_BUDGET,
+};
+pub use conventions::{
+    extract_conventions, ConventionStats, CorpusView, CONVENTIONS_SCHEMA_VERSION,
+};

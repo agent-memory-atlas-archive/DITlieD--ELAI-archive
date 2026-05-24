@@ -4,7 +4,7 @@
 //! T3 firing conditions, cross-session lock checks, SSB write-on-block, and
 //! the PostToolUse circuit breaker.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use elai_plugins::ipc_hooks::{
     CrossSessionLockChecker, HookContext, IpcHookDispatcher, IpcHookEvent, IpcHookTrait,
@@ -87,19 +87,24 @@ fn make_idle_ctx() -> HookContext {
 }
 
 /// SSB writer that records all findings.
+/// B-19: `Mutex` (not `RefCell`) so the type is `Send + Sync` per the
+/// upstream `SsbFindingWriter: Send + Sync` supertrait.
 struct RecordingSsbWriter {
-    findings: RefCell<Vec<(String, String, String)>>,
+    findings: Mutex<Vec<(String, String, String)>>,
 }
 
 impl RecordingSsbWriter {
     fn new() -> Self {
         Self {
-            findings: RefCell::new(Vec::new()),
+            findings: Mutex::new(Vec::new()),
         }
     }
 
     fn finding_count(&self) -> usize {
-        self.findings.borrow().len()
+        match self.findings.lock() {
+            Ok(g) => g.len(),
+            Err(p) => p.into_inner().len(),
+        }
     }
 }
 
@@ -111,12 +116,17 @@ impl SsbFindingWriter for RecordingSsbWriter {
         verdict_json: &str,
         _files: &[String],
     ) -> Result<(), String> {
-        self.findings.borrow_mut().push((
-            agent_id.to_string(),
-            pattern_hash.to_string(),
-            verdict_json.to_string(),
-        ));
-        Ok(())
+        match self.findings.lock() {
+            Ok(mut g) => {
+                g.push((
+                    agent_id.to_string(),
+                    pattern_hash.to_string(),
+                    verdict_json.to_string(),
+                ));
+                Ok(())
+            }
+            Err(e) => Err(format!("recording writer lock poisoned: {e}")),
+        }
     }
 }
 

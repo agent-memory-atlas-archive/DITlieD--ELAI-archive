@@ -42,10 +42,22 @@ impl CliMcpClient {
         result.map(|r| r.content).map_err(|e| format!("cli_mcp_client: invoke_tool failed: {}", e))
     }
     pub fn get_tool_schema(&self, tool_name: &str) -> Result<serde_json::Value, String> {
-        // TODO[C39.stub]: full schema resolution deferred; returns name + available flag
-        let tools = self.list_tools()?;
-        let available = tools.iter().any(|t| t == tool_name);
-        Ok(serde_json::json!({"tool_name": tool_name, "available": available, "port": self.port}))
+        // C-39 stub-close: real schema resolution via
+        // DefaultMcpBridge::http_get_tool_schema. The bridge fetches the
+        // full MCP `tools/list` response and filters to the named tool;
+        // the returned JSON is the unmodified MCP tool spec (name +
+        // description + inputSchema). C-35 lazy-resolution is satisfied:
+        // the bridge only fetches schemas on-demand, never eagerly.
+        use elai_plugins::mcp_bridge::DefaultMcpBridge;
+        let bridge = DefaultMcpBridge::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("cli_mcp_client: runtime build failed: {}", e))?;
+        let url = self.url.clone();
+        let tn = tool_name.to_owned();
+        let result = rt.block_on(async move { bridge.http_get_tool_schema(&url, &tn).await });
+        result.map_err(|e| format!("cli_mcp_client: get_tool_schema failed: {}", e))
     }
 }
 

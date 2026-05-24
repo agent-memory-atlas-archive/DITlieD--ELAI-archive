@@ -5,8 +5,8 @@
 # Usage: verify_stage_1D.sh [corpus_root]
 set -euo pipefail
 
-ELAI_ROOT="D:/.ELAI_workflow/.elai_cc"
-CORPUS_ROOT="${1:-D:/.ELAI_workflow/docs/.source/nextest-main}"
+ELAI_ROOT="F:/.ELAI_workflow/.elai_cc"
+CORPUS_ROOT="${1:-F:/.ELAI_workflow/docs/.source/nextest-main}"
 DKG="${CORPUS_ROOT}/.elai_cc/indexes/dkg.db"
 DEPS="${ELAI_ROOT}/target/debug/deps"
 

@@ -233,6 +233,105 @@
     if (action_type === 'watchdog_timeout') return 'wd-to';
     return action_type;
   }
+
+  // C-45: CANTANTE contrastive credit attribution — read-only credit
+  // table surfaced via the new `credit_attribution_status` Tauri
+  // command. Paper-grounded against arXiv:2605.13295 (Zehle 2026,
+  // Section 3.2 — K rollouts NOT K^N, scalar c in [-1,+1], g=3).
+  // The live runpod pilot is RUNPOD-PENDING; this surface renders the
+  // most-recent in-process synthetic-fixture result so dashboard users
+  // can see the shape of the eventual real measurement.
+  type CreditAttributionRow = {
+    role: string;
+    score: number;
+  };
+  type CreditAttributionSnapshot = {
+    rows: CreditAttributionRow[];
+    ts_ms: number;
+    runpod_pending: boolean;
+  };
+
+  let creditSnapshot = $state<CreditAttributionSnapshot | null>(null);
+  let creditError = $state<string | null>(null);
+
+  async function refreshCredit() {
+    try {
+      creditSnapshot = await invoke<CreditAttributionSnapshot>('credit_attribution_status');
+      creditError = null;
+    } catch (e) {
+      creditError = String(e);
+    }
+  }
+
+  $effect(() => {
+    refreshCredit();
+    const id = setInterval(refreshCredit, 10_000);
+    return () => clearInterval(id);
+  });
+
+  function creditScoreTone(score: number): string {
+    if (score > 0.3) return 'teal';
+    if (score < -0.3) return 'fail';
+    if (score < 0) return 'warn';
+    return 'ghost';
+  }
+
+  // C-46: Uno-Orchestra parsimonious agent routing — recent selective-
+  // delegation decisions surfaced via the `routing_decisions_status`
+  // Tauri command. Paper-grounded against arXiv:2605.05007 (Cui et al
+  // 2026, Sections 5 + 6.1 — (model, primitive) action space, alpha in
+  // [0, 1] convex blend, S_max <= 0.10 cost-hack bound, direct-answer
+  // lazy-mode cost zero). Live runs are RUNPOD-PENDING; this surface
+  // renders the synthetic-pilot result so dashboard users can see the
+  // shape of the eventual real measurement.
+  type RoutingDispatchPair = {
+    role: string;
+    primitive: string;
+  };
+  type RoutingDecisionRow = {
+    task_id: string;
+    difficulty: number;
+    alpha: number;
+    dispatched: RoutingDispatchPair[];
+    is_lazy_mode: boolean;
+  };
+  type RoutingPolicySnapshot = {
+    enabled: boolean;
+    alpha: number;
+    s_max: number;
+    max_turns: number;
+    max_workers_per_query: number;
+  };
+  type RoutingDecisionsSnapshot = {
+    rows: RoutingDecisionRow[];
+    policy: RoutingPolicySnapshot;
+    ts_ms: number;
+    runpod_pending: boolean;
+  };
+
+  let routingSnapshot = $state<RoutingDecisionsSnapshot | null>(null);
+  let routingError = $state<string | null>(null);
+
+  async function refreshRouting() {
+    try {
+      routingSnapshot = await invoke<RoutingDecisionsSnapshot>('routing_decisions_status');
+      routingError = null;
+    } catch (e) {
+      routingError = String(e);
+    }
+  }
+
+  $effect(() => {
+    refreshRouting();
+    const id = setInterval(refreshRouting, 10_000);
+    return () => clearInterval(id);
+  });
+
+  function difficultyTone(d: number): string {
+    if (d >= 0.7) return 'fail';
+    if (d >= 0.3) return 'warn';
+    return 'teal';
+  }
 </script>
 
 <div class="orchestration-drawer">
@@ -470,6 +569,120 @@
         </div>
       {/each}
     </div>
+  </Card>
+
+  <!-- C-45: CANTANTE contrastive credit attribution table.
+       Paper-grounded against arXiv:2605.13295 (Zehle 2026, Section 3.2).
+       The current rows reflect the synthetic-fixture harness; real
+       credits land via the runpod-pending pilot. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">CREDIT ATTRIBUTION (CANTANTE)</div>
+    {#if creditError}
+      <p class="ambig-error">{creditError}</p>
+    {:else if !creditSnapshot}
+      <p class="ambig-loading">Loading…</p>
+    {:else}
+      <div class="credit-meta">
+        <span class="credit-ts">ts {creditSnapshot.ts_ms}</span>
+        {#if creditSnapshot.runpod_pending}
+          <Badge tone="warn" size="xs">runpod-pending</Badge>
+        {:else}
+          <Badge tone="teal" size="xs">live</Badge>
+        {/if}
+      </div>
+      {#if creditSnapshot.rows.length === 0}
+        <p class="ambig-loading">No credit rows yet.</p>
+      {:else}
+        <table class="credit-table">
+          <thead>
+            <tr>
+              <th>role</th>
+              <th>credit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each creditSnapshot.rows as row (row.role)}
+              <tr>
+                <td>{row.role}</td>
+                <td>
+                  <Badge tone={creditScoreTone(row.score)} size="xs">
+                    {row.score >= 0 ? '+' : ''}{row.score.toFixed(3)}
+                  </Badge>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    {/if}
+  </Card>
+
+  <!-- C-46: Uno-Orchestra parsimonious agent routing (selective
+       delegation) decisions table. Paper-grounded against
+       arXiv:2605.05007 (Cui et al 2026, Sections 5 + 6.1). The current
+       rows reflect the synthetic-pilot harness; real decisions land
+       via the runpod-pending pilot. -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">ROUTING DECISIONS (UNO-ORCHESTRA)</div>
+    {#if routingError}
+      <p class="ambig-error">{routingError}</p>
+    {:else if !routingSnapshot}
+      <p class="ambig-loading">Loading…</p>
+    {:else}
+      <div class="credit-meta">
+        <span class="credit-ts">ts {routingSnapshot.ts_ms}</span>
+        {#if routingSnapshot.runpod_pending}
+          <Badge tone="warn" size="xs">runpod-pending</Badge>
+        {:else}
+          <Badge tone="teal" size="xs">live</Badge>
+        {/if}
+        <span class="credit-ts">
+          alpha={routingSnapshot.policy.alpha.toFixed(2)} s_max={routingSnapshot.policy.s_max.toFixed(2)}
+        </span>
+      </div>
+      {#if routingSnapshot.rows.length === 0}
+        <p class="ambig-loading">No routing decisions yet.</p>
+      {:else}
+        <table class="credit-table">
+          <thead>
+            <tr>
+              <th>task</th>
+              <th>difficulty</th>
+              <th>dispatched</th>
+              <th>mode</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each routingSnapshot.rows as row (row.task_id)}
+              <tr>
+                <td>{row.task_id}</td>
+                <td>
+                  <Badge tone={difficultyTone(row.difficulty)} size="xs">
+                    {row.difficulty.toFixed(3)}
+                  </Badge>
+                </td>
+                <td>
+                  {#if row.dispatched.length === 0}
+                    <span class="ambig-loading">none</span>
+                  {:else}
+                    {row.dispatched.length}
+                  {/if}
+                </td>
+                <td>
+                  {#if row.is_lazy_mode}
+                    <Badge tone="teal" size="xs">lazy-mode</Badge>
+                  {:else if row.dispatched.length === 0}
+                    <Badge tone="ghost" size="xs">disabled</Badge>
+                  {:else}
+                    <Badge tone="warn" size="xs">dispatch</Badge>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    {/if}
   </Card>
 
 </div>
@@ -910,5 +1123,34 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-ghost);
+  }
+
+  /* C-45: CANTANTE contrastive credit-attribution table styles. */
+  .credit-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    margin-bottom: 6px;
+  }
+  .credit-ts {
+    color: var(--text-ghost);
+  }
+  .credit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .credit-table th {
+    text-align: left;
+    font-weight: normal;
+    color: var(--text-ghost);
+    padding-bottom: 4px;
+  }
+  .credit-table td {
+    padding: 2px 0;
   }
 </style>

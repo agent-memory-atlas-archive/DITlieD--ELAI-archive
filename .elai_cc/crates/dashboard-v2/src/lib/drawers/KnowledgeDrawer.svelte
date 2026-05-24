@@ -6,7 +6,17 @@
   // B-35 Phase C: Context Artifacts panel.
   import ArtifactsPanel from '../components/ArtifactsPanel.svelte';
   import type { BreakerState, SearchMode } from '../api/types';
-  import { get_impact_analysis, submit_task, type ImpactAnalysis } from '../api/stub';
+  import {
+    get_impact_analysis,
+    submit_task,
+    get_canary_drift,
+    get_freshness_state,
+    get_vector_cache_hit_rate,
+    type ImpactAnalysis,
+    type CanaryDriftSnapshot,
+    type FreshnessStateSnapshot,
+    type VectorCacheHitRateSnapshot,
+  } from '../api/stub';
   // B-33 — Visualize button cross-link: open GraphWindow + push impact target.
   import { graph } from '../state/graph.svelte';
   import { workspace } from '../state/workspace.svelte';
@@ -41,11 +51,40 @@
   let impact = $state<ImpactAnalysis>({ target: '', total_files: 0, hop_bands: [], unresolved_pct: 0.0 });
   let impactLoaded = $state(false);
 
+  // B-4 task #11 + #12 + #14: live snapshots of the 3 knowledge SSB
+  // beacons we now own producers for. Each poll-state defaults to a
+  // `known:false` empty shape so the cards render "(no data yet)"
+  // before the first SSB emission lands.
+  let canaryDrift = $state<CanaryDriftSnapshot>({
+    known: false,
+    similarity: 0.0,
+    drift_threshold: 0.85,
+    passed: false,
+    reference_present: false,
+    ts: 0,
+  });
+  let freshnessState = $state<FreshnessStateSnapshot>({
+    known: false,
+    decay_rate: 0.0,
+    access_boost: 0.0,
+    last_recalc_ms: 0,
+  });
+  let vectorCacheHitRate = $state<VectorCacheHitRateSnapshot>({
+    known: false,
+    session_id: '',
+    hits: 0,
+    misses: 0,
+    hit_rate_pct: 0.0,
+    ts: 0,
+  });
+
   onMount(() => {
     knowledgeData.bootstrap();
     // B-29 Phase 5: poll the most recent symbol_query SSB row every 5s
     // so the IMPACT ANALYSIS panel reflects fresh tool output without
     // forcing the user to reload the drawer.
+    // B-4: poll canary drift + freshness + vector-cache hit rate on the
+    // same 5s cadence — single setInterval keeps the timer count low.
     const refresh = async () => {
       try {
         impact = await get_impact_analysis();
@@ -53,6 +92,21 @@
         // get_impact_analysis falls back to empty shape; no console spam.
       } finally {
         impactLoaded = true;
+      }
+      try {
+        canaryDrift = await get_canary_drift();
+      } catch (e) {
+        // wrapper falls back to known:false; suppress spam.
+      }
+      try {
+        freshnessState = await get_freshness_state();
+      } catch (e) {
+        // wrapper falls back to known:false; suppress spam.
+      }
+      try {
+        vectorCacheHitRate = await get_vector_cache_hit_rate();
+      } catch (e) {
+        // wrapper falls back to known:false; suppress spam.
       }
     };
     refresh();
@@ -486,17 +540,85 @@
     </div>
   </Card>
 
-  <!-- 5. FRESHNESS DECAY -->
+  <!-- 5. FRESHNESS DECAY (B-4: real wire via get_freshness_state) -->
   <Card variant="plain" padding={12}>
     <div class="section-label">FRESHNESS DECAY</div>
-    <div class="freshness-row">
-      <Toggle
-        bind:checked={freshnessEnabled}
-        label="enabled"
-        onchange={(v) => { freshnessEnabled = v; }}
-      />
-      <span class="ghost-text">last-recalc {lastRecalcTs}</span>
-    </div>
+    {#if freshnessState.known}
+      <div class="freshness-row">
+        <Toggle
+          bind:checked={freshnessEnabled}
+          label="enabled"
+          onchange={(v) => { freshnessEnabled = v; }}
+        />
+        <span class="ghost-text">
+          decay {(freshnessState.decay_rate * 100).toFixed(2)}% /
+          boost {freshnessState.access_boost.toFixed(3)}
+        </span>
+      </div>
+      <div class="freshness-row">
+        <span class="ghost-text">
+          last-recalc {freshnessState.last_recalc_ms
+            ? new Date(freshnessState.last_recalc_ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z'
+            : '(never)'}
+        </span>
+      </div>
+    {:else}
+      <div class="freshness-row">
+        <Toggle
+          bind:checked={freshnessEnabled}
+          label="enabled"
+          onchange={(v) => { freshnessEnabled = v; }}
+        />
+        <span class="ghost-text">(no freshness snapshot yet -- emits after first reindex)</span>
+      </div>
+    {/if}
+  </Card>
+
+  <!-- B-4 task #12: VECTOR CACHE HIT RATE -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">VECTOR CACHE HIT RATE</div>
+    {#if vectorCacheHitRate.known}
+      {@const total = vectorCacheHitRate.hits + vectorCacheHitRate.misses}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">latest</span>
+        <span class="rag-stat-value">
+          {vectorCacheHitRate.hit_rate_pct.toFixed(1)}%
+          ({vectorCacheHitRate.hits}/{total === 0 ? 1 : total} hits)
+        </span>
+      </div>
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">session</span>
+        <span class="rag-stat-value mono">{vectorCacheHitRate.session_id || '(default)'}</span>
+      </div>
+    {:else}
+      <span class="ghost-text">no vector-cache flush yet -- run a STANDARD/DEEP query.</span>
+    {/if}
+  </Card>
+
+  <!-- B-4 task #14: CANARY DRIFT (cosine vs persisted reference) -->
+  <Card variant="plain" padding={12}>
+    <div class="section-label">CANARY DRIFT</div>
+    {#if canaryDrift.known}
+      {@const sim = canaryDrift.similarity}
+      {@const thr = canaryDrift.drift_threshold}
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">cosine vs reference</span>
+        <span class="rag-stat-value">
+          <Badge tone={canaryDrift.passed ? 'teal' : 'fail'} size="xs">
+            {sim.toFixed(4)} {canaryDrift.passed ? 'OK' : '< THR'}
+          </Badge>
+          <span class="ghost-text">threshold {thr.toFixed(2)}</span>
+        </span>
+      </div>
+      <div class="rag-stat-row">
+        <span class="rag-stat-label">reference</span>
+        <span class="rag-stat-value">
+          {canaryDrift.reference_present ? 'persisted' : '(first startup -- reference generated)'}
+        </span>
+      </div>
+    {:else}
+      <span class="ghost-text">no canary drift snapshot yet -- emits after first startup readiness check.</span>
+    {/if}
   </Card>
 
   <!-- 6. RECALL @ TIER -->
