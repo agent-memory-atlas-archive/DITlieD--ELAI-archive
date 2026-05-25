@@ -114,6 +114,62 @@ pub struct Diagnostic {
     pub code: Option<String>,
 }
 
+/// E-52 Tier-B (DRIFT-14 closure) — sibling enum that surfaces probe-run
+/// exit conditions WITHOUT breaking the locked Tier-A
+/// `DiagnosticProbeOutcome` struct shape (pinned by
+/// `crates/contracts/tests/diagnostic_envelope_contract.rs`). The Tier-A
+/// outcome reports per-severity diagnostic counts and assumes the probe
+/// ran to completion. Tier-B subprocess invocations can also TimeOut or
+/// fail because the underlying tool is missing on PATH (RUNPOD-PENDING);
+/// this sibling enum carries that information alongside the outcome.
+///
+/// Serde: snake_case rename so the wire tag matches LSP-canonical
+/// shorthand (`completed`, `timed_out`, `tool_missing`).
+///
+/// Back-compat: this is a NEW enum (additive). The existing
+/// `DiagnosticProbeOutcome` gets an optional `run_status` field with
+/// `#[serde(default)]` so older payloads (pre-E-52 Tier-B) deserialize
+/// cleanly with `Completed` as the implicit default — matching the
+/// Tier-A semantics ("counters are valid because the probe completed").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticProbeRunStatus {
+    /// Probe subprocess exited cleanly within budget. The per-severity
+    /// counters on the carrying [`DiagnosticProbeOutcome`] are
+    /// authoritative.
+    #[default]
+    Completed,
+    /// Probe wall-clock budget exceeded. The carrying outcome's counters
+    /// may be partial; the auditor MUST treat this as a soft-fail
+    /// (anti-rubber-stamp per `workflow/reasoning/E-52-decisions.md`).
+    TimedOut,
+    /// Toolchain binary not on PATH (e.g. `rust-analyzer` absent on CI
+    /// lane). The outcome's counters are zero by construction; the
+    /// auditor MUST treat this as a soft warning, NOT a hard pass —
+    /// missing toolchain != clean run. RUNPOD-PENDING marker.
+    ToolMissing,
+}
+
+impl DiagnosticProbeRunStatus {
+    /// Stable lower-snake-case tag mirroring serde rename_all. Used by
+    /// SSB beacon hashing (`DiagnosticProbeCompletedPayload.run_status_hash`).
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::TimedOut => "timed_out",
+            Self::ToolMissing => "tool_missing",
+        }
+    }
+
+    /// True only for `Completed`. The auditor uses this to discriminate
+    /// the "probe is authoritative" path from the soft-fail paths.
+    #[must_use]
+    pub const fn is_authoritative(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
 /// One probe run's full output. Producers emit exactly one
 /// `DiagnosticProbeOutcome` per probe invocation (per file or per project
 /// depending on probe).
@@ -135,6 +191,14 @@ pub struct DiagnosticProbeOutcome {
     /// probes will truncate at 1000 / probe to avoid OOM on broken
     /// codebases).
     pub diagnostics: Vec<Diagnostic>,
+    /// E-52 Tier-B (DRIFT-14 closure) — exit condition of the probe run.
+    /// Defaults to `Completed` for back-compat with Tier-A payloads that
+    /// pre-date this field (older producers + the locked Tier-A envelope
+    /// contract test do not emit `run_status`; serde fills it with
+    /// `Completed` so the counters above are honoured as authoritative).
+    /// Tier-B subprocess producers MUST set this explicitly.
+    #[serde(default)]
+    pub run_status: DiagnosticProbeRunStatus,
 }
 
 impl DiagnosticProbeOutcome {
@@ -210,6 +274,7 @@ mod tests {
             hint_count: 0,
             duration_ms: 420,
             diagnostics: vec![],
+            run_status: DiagnosticProbeRunStatus::Completed,
         };
         assert_eq!(outcome.total(), 8);
         assert!(!outcome.is_clean());
@@ -221,6 +286,7 @@ mod tests {
             hint_count: 0,
             duration_ms: 200,
             diagnostics: vec![],
+            run_status: DiagnosticProbeRunStatus::Completed,
         };
         assert!(clean.is_clean());
         assert_eq!(clean.total(), 3);

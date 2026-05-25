@@ -32,7 +32,7 @@ use elai_orchestrator::ssb::SsbActionType;
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
 /// `_count_is_locked` test below holds the line.
-const TOTAL_VARIANTS: usize = 399;
+const TOTAL_VARIANTS: usize = 414;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -617,6 +617,63 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     SsbActionType::SweBenchProRunCompleted,
     SsbActionType::RefineBenchScoreEmitted,
     SsbActionType::MetricsAggregationRun,
+    // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic probe +
+    // SCIP refresh beacon family. 4 atomic variants emitted by
+    // `orchestrator::lsp_oracle::handshake` (JSON-RPC initialize +
+    // initialized + shutdown + exit Tier-B path), the future PostToolUse
+    // diagnostic-probe dispatcher (Tier-B+1), and the `.claude/tools/
+    // scip_refresh.py` map-refresh wrapper. Live rust-analyzer/pylsp
+    // handshakes are RUNPOD-PENDING; the variant set is stable. See
+    // workflow/reasoning/E-52-decisions.md.
+    SsbActionType::DiagnosticProbeDispatched,
+    SsbActionType::DiagnosticProbeCompleted,
+    SsbActionType::DiagnosticProbeBlock,
+    SsbActionType::ScipRefreshCompleted,
+    // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary
+    // beacon. Single atomic +1 bump per the C-52
+    // DafnyVerifyCompleted single-variant precedent. Composes C-50
+    // contract_coding (StructuralContract emission) + C-52
+    // dafny_verify (invoke_dafny_cli dispatch) + new csq.rs
+    // classifier (CounterfactualClass gating). Live Z3 / Kani /
+    // Verus dispatch is RUNPOD-PENDING; Dafny dispatch reuses C-52.
+    // Gemma-4 BLOCKED per memory feedback_no_gemma4 (substrate
+    // inheritance from C-52). VerifierKind enum in
+    // verification_result.rs extended atomically per the L3-lock
+    // escape clause "New kinds land via plan-level schema bumps"
+    // (Z3SmtCheck variant added; 4 -> 5 variants). See
+    // workflow/reasoning/E-53-decisions.md.
+    SsbActionType::FormalVerifierCompleted,
+    // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+    // 10 atomic variants for XGrammar / INSTRUCTOR / CodeAct /
+    // SEARCH/REPLACE / cloud strict-schema / engine-refusal. Lean
+    // ship per session-2 autonomous-mode brief: AgentRole::Runner
+    // DEFERRED per E41_AGENTROLE_FROZEN_AT_17 (230 match-arm cascade
+    // — CodeAct composes through existing role + RuntimeBackend);
+    // Python sidecar tool_parser.py + XGrammarLogitsProcessor
+    // RUNPOD-PENDING; SearchReplaceMatcher dispatcher tier-0 wire
+    // DEFERRED to patch-N; DCCD (Task 9) DEFERRED behind env flag.
+    // Composes on the already-shipped Rust substrate (StructuredMode,
+    // ToolParserVariant, XGrammarRequest/Response, CodeActAction,
+    // SearchReplaceTier1 at crates/ipc-types; SidecarXGrammarHook +
+    // xgrammar_cache_key at crates/providers/src/runtime/
+    // sidecar_xgrammar_hook.rs; SearchReplaceMatcher +
+    // DelimiterCollisionGuard at crates/tools/src/search_replace.rs;
+    // GrammarCompilePanel + commands_e35.rs in crates/dashboard-v2).
+    // Inline cite ONLY codeact-2402.01030 per cite-discipline cluster
+    // s-25120 (mistakes.md cite-incident cluster #13 for XGrammar /
+    // JSONSchemaBench / CRANE / Diff-XYZ / "Think Inside the JSON" /
+    // DCCD / "When Correct Isn't Usable" name-only references). See
+    // workflow/reasoning/E-35-decisions.md.
+    SsbActionType::XgrammarMaskApplied,
+    SsbActionType::InstructorModeActivated,
+    SsbActionType::GrammarModeActivated,
+    SsbActionType::CodeactActionExecuted,
+    SsbActionType::SearchReplaceTier1Hit,
+    SsbActionType::SearchReplaceCollisionFallback,
+    SsbActionType::CloudStrictSchemaApplied,
+    SsbActionType::GrammarCacheLoaded,
+    SsbActionType::StructuredEngineRejected,
+    SsbActionType::LegacyJsonObjectRefused,
 ];
 
 /// Compile-time exhaustiveness check: if a new variant lands in ssb.rs without
@@ -1065,6 +1122,25 @@ fn exhaustive_match_guard(v: SsbActionType) {
         SsbActionType::SweBenchProRunCompleted => (),
         SsbActionType::RefineBenchScoreEmitted => (),
         SsbActionType::MetricsAggregationRun => (),
+        // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic
+        // probe + SCIP refresh beacons.
+        SsbActionType::DiagnosticProbeDispatched => (),
+        SsbActionType::DiagnosticProbeCompleted => (),
+        SsbActionType::DiagnosticProbeBlock => (),
+        SsbActionType::ScipRefreshCompleted => (),
+        // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+        SsbActionType::FormalVerifierCompleted => (),
+        // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+        SsbActionType::XgrammarMaskApplied => (),
+        SsbActionType::InstructorModeActivated => (),
+        SsbActionType::GrammarModeActivated => (),
+        SsbActionType::CodeactActionExecuted => (),
+        SsbActionType::SearchReplaceTier1Hit => (),
+        SsbActionType::SearchReplaceCollisionFallback => (),
+        SsbActionType::CloudStrictSchemaApplied => (),
+        SsbActionType::GrammarCacheLoaded => (),
+        SsbActionType::StructuredEngineRejected => (),
+        SsbActionType::LegacyJsonObjectRefused => (),
     }
 }
 

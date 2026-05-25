@@ -31,6 +31,72 @@ pub struct SandboxConfig {
     pub network_isolation: Option<bool>,
     pub filesystem_mode: Option<FilesystemIsolationMode>,
     pub allowed_mounts: Vec<String>,
+    // E-15: nested sub-tables parsed from elai_cc.toml. All optional; None
+    // means the host should use code-side defaults
+    // (FirecrackerHotPool::with_defaults / select_backend / etc).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firecracker: Option<FirecrackerConfigToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gvisor: Option<GvisorConfigToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appcontainer: Option<AppContainerConfigToml>,
+}
+
+/// E-15: [sandbox.firecracker] table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FirecrackerConfigToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_budget_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_snapshots: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uniqueness_mitigation: Option<bool>,
+}
+
+/// E-15: [sandbox.gvisor] table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GvisorConfigToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_if_no_kvm: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+}
+
+/// E-15: [sandbox.appcontainer] table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AppContainerConfigToml {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_kill_on_close: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_process_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low_il_descriptor: Option<bool>,
+}
+
+/// E-15: `[researcher.net]` table schema mirror. The toml owner key is
+/// `researcher`, not `sandbox`, so this struct is NOT carried inside
+/// `SandboxConfig` (sub-tables would force `sandbox.researcher.net` nesting).
+/// Parser routing into `core::config` is patch-N follow-on; the runtime
+/// fallback today is `crate::sandbox::researcher_net::ResearcherNetConfig::default()`
+/// in the orchestrator crate (allowed_hosts = arxiv.org + huggingface.co per
+/// the plan acceptance). The type is exported here so the
+/// `e15_sandboxed_exec_contract` test can pin the field shape against the
+/// elai_cc.toml schema without depending on the orchestrator crate's
+/// internal Default impl.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ResearcherNetConfigToml {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_resolvers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reject_not_drop: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -343,6 +409,7 @@ mod tests {
             network_isolation: Some(false),
             filesystem_mode: Some(FilesystemIsolationMode::WorkspaceOnly),
             allowed_mounts: vec!["logs".to_string()],
+            ..Default::default()
         };
 
         let request = config.resolve_request(

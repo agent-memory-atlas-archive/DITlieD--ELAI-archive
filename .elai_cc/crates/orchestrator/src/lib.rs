@@ -45,6 +45,12 @@ pub mod bsp;
 mod bash;
 pub mod checkpoint;
 pub mod coherence_check;
+// E-35: CodeAct sandbox scaffolding (Runner-role-FREE dispatch wrapper on
+// top of the existing crates/sandbox substrate). Composes at the boundary
+// — full CodeAct role-cascade adoption DEFERRED to E-35.D patch-N per
+// gotchas.md E41_AGENTROLE_FROZEN_AT_17 (230 match-arm cascade avoidance).
+// See `codeact_sandbox.rs` module docs.
+pub mod codeact_sandbox;
 // E-44: durability layer additions (idempotent dispatcher + saga/lock/
 // migrator/continue-as-new wrappers on top of the existing SessionDag +
 // AgentCheckpoint surface). All additions are additive — no existing
@@ -339,6 +345,22 @@ pub mod cross_lang_drift;
 // RefineBench (citations DEFERRED to mistakes.md cluster #9). See
 // workflow/reasoning/E-49-decisions.md.
 pub mod coding_metrics;
+// E-53: Counterfactual Safety Question (CSQ) classifier runtime
+// Rust impl. CLAUDE.md prose CSQ rule remains authoritative for LLM
+// behavior; this module is the runtime gate consumed by
+// `crate::formal_verify::orchestrator::run` to decide whether a path
+// dispatches a formal verifier. See workflow/reasoning/E-53-decisions.md.
+pub mod csq;
+// E-53: formal-verify pipeline orchestrator (lean ship). Composes
+// C-50 contract_coding + C-52 dafny_verify into an end-to-end
+// verifier dispatch routed by the csq classifier. Producer of 1 new
+// SSB action type (FormalVerifierCompleted) at SCHEMA_VERSION 140.
+// Gemma-4 is BLOCKED per memory rule feedback_no_gemma4; all 4
+// toolchains (Z3 / Dafny / Kani / Verus) are RUNPOD-PENDING on local
+// dev hosts — runtime detection at boundary returns
+// `VerifierOutcome::RunpodPending`. See
+// workflow/reasoning/E-53-decisions.md.
+pub mod formal_verify;
 // D-4: Tripwire stack — sliding-window KL + Δρ + IQR + perplexity + DDM
 // detectors with auto-revert wiring into archive_chain on threshold cross.
 // Consumed by agent_pool post-consensus. See module doc for paper grounding.

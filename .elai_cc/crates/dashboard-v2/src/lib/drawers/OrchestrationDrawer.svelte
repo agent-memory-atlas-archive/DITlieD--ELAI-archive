@@ -5,6 +5,10 @@
   import { Card, Badge, Button } from '$lib/ui';
   import { logStub, get_sandbox_status } from '../api/stub';
   import { tooltip } from '$lib/ui/tooltip';
+  // E-15: dedicated panel for FirecrackerHotPool + Gvisor + AppContainer
+  // backend selection + researcher-net allowlist surface. Mounted next to
+  // the existing SANDBOX tier badge below.
+  import SandboxBackendPanel from '../components/SandboxBackendPanel.svelte';
   import type {
     FsmState, GateVerdict, AgentLifecycle, BspSuperstep, SandboxStatus, SandboxTier,
     AmbiguityState, AmbiguityComponent,
@@ -538,6 +542,8 @@
           <span class="sandbox-vf-hit" use:tooltip={{ label: 'Last visibility filter hit' }}>{sandboxStatus.last_visibility_filter_hit_ms}ms</span>
         {/if}
       </div>
+      <!-- E-15: backend + Firecracker + researcher-net surface. -->
+      <SandboxBackendPanel {sandboxStatus} />
     </Card>
   {/if}
 

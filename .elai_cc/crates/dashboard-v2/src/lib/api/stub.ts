@@ -823,6 +823,13 @@ export async function get_sandbox_status(): Promise<SandboxStatus> {
       { role: 'Researcher',      path_count: 2 },
     ],
     last_visibility_filter_hit_ms: null,
+    // E-15 additive fields (browser-dev defaults).
+    backend_selected: 'None',
+    restore_p50_ms: null,
+    snapshot_count: 0,
+    uniqueness_regenerations_count: 0,
+    researcher_net_allowed_hosts: ['arxiv.org', 'huggingface.co'],
+    researcher_net_blocked_attempts: [],
   };
 }
 

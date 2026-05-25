@@ -4,7 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::json::JsonValue;
-use crate::sandbox::{FilesystemIsolationMode, SandboxConfig};
+use crate::sandbox::{
+    AppContainerConfigToml, FilesystemIsolationMode, FirecrackerConfigToml, GvisorConfigToml,
+    SandboxConfig,
+};
 
 /// Schema name advertised by generated settings files.
 pub const ELAI_SETTINGS_SCHEMA_NAME: &str = "SettingsSchema";
@@ -768,6 +771,13 @@ fn parse_optional_sandbox_config(root: &JsonValue) -> Result<SandboxConfig, Conf
     let filesystem_mode = optional_string(sandbox, "filesystemMode", "merged settings.sandbox")?
         .map(parse_filesystem_mode_label)
         .transpose()?;
+    // E-15: parse [sandbox.firecracker], [sandbox.gvisor], [sandbox.appcontainer]
+    // sub-tables. All three are optional and default to None when the table is
+    // absent from elai_cc.toml; downstream code (FirecrackerHotPool::with_defaults,
+    // select_backend, AppContainerConfig::new) falls back to its own defaults.
+    let firecracker = parse_optional_firecracker_config(sandbox)?;
+    let gvisor = parse_optional_gvisor_config(sandbox)?;
+    let appcontainer = parse_optional_appcontainer_config(sandbox)?;
     Ok(SandboxConfig {
         enabled: optional_bool(sandbox, "enabled", "merged settings.sandbox")?,
         namespace_restrictions: optional_bool(
@@ -779,7 +789,63 @@ fn parse_optional_sandbox_config(root: &JsonValue) -> Result<SandboxConfig, Conf
         filesystem_mode,
         allowed_mounts: optional_string_array(sandbox, "allowedMounts", "merged settings.sandbox")?
             .unwrap_or_default(),
+        firecracker,
+        gvisor,
+        appcontainer,
     })
+}
+
+/// E-15: parse `[sandbox.firecracker]` sub-table. Returns `None` if absent.
+fn parse_optional_firecracker_config(
+    sandbox: &BTreeMap<String, JsonValue>,
+) -> Result<Option<FirecrackerConfigToml>, ConfigError> {
+    let Some(firecracker_value) = sandbox.get("firecracker") else {
+        return Ok(None);
+    };
+    let firecracker = expect_object(firecracker_value, "merged settings.sandbox.firecracker")?;
+    let max_snapshots = optional_u64(firecracker, "max_snapshots", "merged settings.sandbox.firecracker")?
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+    Ok(Some(FirecrackerConfigToml {
+        enabled: optional_bool(firecracker, "enabled", "merged settings.sandbox.firecracker")?,
+        snapshot_dir: optional_string(firecracker, "snapshot_dir", "merged settings.sandbox.firecracker")?
+            .map(str::to_string),
+        restore_budget_ms: optional_u64(firecracker, "restore_budget_ms", "merged settings.sandbox.firecracker")?,
+        max_snapshots,
+        max_age_secs: optional_u64(firecracker, "max_age_secs", "merged settings.sandbox.firecracker")?,
+        uniqueness_mitigation: optional_bool(firecracker, "uniqueness_mitigation", "merged settings.sandbox.firecracker")?,
+    }))
+}
+
+/// E-15: parse `[sandbox.gvisor]` sub-table. Returns `None` if absent.
+fn parse_optional_gvisor_config(
+    sandbox: &BTreeMap<String, JsonValue>,
+) -> Result<Option<GvisorConfigToml>, ConfigError> {
+    let Some(gvisor_value) = sandbox.get("gvisor") else {
+        return Ok(None);
+    };
+    let gvisor = expect_object(gvisor_value, "merged settings.sandbox.gvisor")?;
+    Ok(Some(GvisorConfigToml {
+        enabled_if_no_kvm: optional_bool(gvisor, "enabled_if_no_kvm", "merged settings.sandbox.gvisor")?,
+        platform: optional_string(gvisor, "platform", "merged settings.sandbox.gvisor")?
+            .map(str::to_string),
+    }))
+}
+
+/// E-15: parse `[sandbox.appcontainer]` sub-table. Returns `None` if absent.
+fn parse_optional_appcontainer_config(
+    sandbox: &BTreeMap<String, JsonValue>,
+) -> Result<Option<AppContainerConfigToml>, ConfigError> {
+    let Some(appc_value) = sandbox.get("appcontainer") else {
+        return Ok(None);
+    };
+    let appc = expect_object(appc_value, "merged settings.sandbox.appcontainer")?;
+    let active_process_limit = optional_u64(appc, "active_process_limit", "merged settings.sandbox.appcontainer")?
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+    Ok(Some(AppContainerConfigToml {
+        job_kill_on_close: optional_bool(appc, "job_kill_on_close", "merged settings.sandbox.appcontainer")?,
+        active_process_limit,
+        low_il_descriptor: optional_bool(appc, "low_il_descriptor", "merged settings.sandbox.appcontainer")?,
+    }))
 }
 
 fn parse_filesystem_mode_label(value: &str) -> Result<FilesystemIsolationMode, ConfigError> {

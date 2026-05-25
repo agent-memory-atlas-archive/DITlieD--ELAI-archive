@@ -87,6 +87,13 @@ mod drift_cmd;
 // production callables (WIRE-DARK avoidance per E-41 precedent). See
 // workflow/reasoning/E-49-decisions.md.
 mod metrics_cmd;
+// E-35: structured-output substrate operator surface (XGrammar /
+// INSTRUCTOR / CodeAct / SEARCH/REPLACE / cloud strict-schema).
+// WIRE-DARK avoidance per E40_WIRE_DARK_AVOIDANCE_VIA_CLI for the
+// 10 new SsbActionType variants this plan introduces. AgentRole::Runner
+// DEFERRED per E41_AGENTROLE_FROZEN_AT_17. See
+// workflow/reasoning/E-35-decisions.md.
+mod structured_output_cmd;
 // E-37: `elai safety status|list-pins|verify-pins|fixture-replay` —
 // prompt-injection defense operator surface (OWASP LLM Top 10 LLM01).
 // Wraps elai_orchestrator::Ssb + elai_safety pin / classifier helpers.
@@ -127,6 +134,15 @@ mod dafny_cmd;
 // wrapper). Composes with D-3's
 // ConsensusRule::VerifierKindHeterogeneous for aggregation.
 mod tdd_cmd;
+// E-53: `elai formal-verify <run|status>` — formal-verify pipeline
+// CLI surface. Drives orchestrator::formal_verify (which composes
+// C-50 contract_coding + C-52 dafny_verify under a CSQ-classifier
+// gate). Live Z3 / Kani / Verus dispatch is RUNPOD-PENDING; Dafny
+// dispatch reuses C-52 invoke_dafny_cli and surfaces toolchain
+// absence as RunpodPending. Gemma-4 BLOCKED per memory
+// feedback_no_gemma4 (substrate inheritance from C-52). See
+// workflow/reasoning/E-53-decisions.md.
+mod formal_verify_cmd;
 // C-40: `elai pr <open|list|status|close>` — GitHub PR adapter CLI.
 // Shells out to gh via the orchestrator's github_pr::GhCliAdapter.
 mod github_pr_cmd;
@@ -511,6 +527,17 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Metrics { action, output_format } => {
             metrics_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
+        // E-35 — `elai structured-output status|codeact-run|strict-mode|
+        // grammar emit-test|search-replace check|reject-engine`.
+        // Anchors host-side structured-output substrate so the 10 new
+        // E-35 SSB beacon variants are not WIRE-DARK. Python sidecar
+        // wiring is RUNPOD-PENDING; AgentRole::Runner DEFERRED per
+        // E41_AGENTROLE_FROZEN_AT_17. See
+        // workflow/reasoning/E-35-decisions.md.
+        CliAction::StructuredOutput { action, output_format } => {
+            structured_output_cmd::run(action, output_format)
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
         CliAction::Reliability { action, output_format } => {
             reliability_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
@@ -577,6 +604,15 @@ fn run() -> Result<(), anyhow::Error> {
         // is absent (wire-dark posture).
         CliAction::Tdd { action, output_format } => {
             tdd_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-53 — `elai formal-verify run|status`. Formal-verify
+        // pipeline dispatch — composes orchestrator::formal_verify
+        // (C-50 contract_coding + C-52 dafny_verify under CSQ gate).
+        // Live Z3 / Kani / Verus dispatch is RUNPOD-PENDING; Dafny
+        // dispatch reuses C-52 invoke_dafny_cli. Gemma-4 BLOCKED per
+        // memory feedback_no_gemma4 (substrate inheritance from C-52).
+        CliAction::FormalVerify { action, output_format } => {
+            formal_verify_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
         CliAction::Init { output_format } => live_cli::run_init(output_format)?,
         CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } => {

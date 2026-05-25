@@ -1654,7 +1654,68 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // mistakes.md cluster #9). 10th lockstep site (action_type_lock.rs
 // TOTAL_VARIANTS) bumped 394 -> 399 in lockstep.
 // all_test_payloads().len() goes 328 -> 333 (5 new entries).
-const SCHEMA_VERSION: i64 = 138;
+//
+// E-52 Tier-B (SCHEMA_VERSION 139): atomic bump 138 -> 139 for 4 new SSB
+// action types tied to the LSP-as-verifier diagnostic-probe surface and
+// the SCIP refresh pipeline:
+//   - DiagnosticProbeDispatched (one row per language-grouped probe dispatch)
+//   - DiagnosticProbeCompleted  (one row per probe completion with outcome)
+//   - DiagnosticProbeBlock      (one row when error-severity diagnostics block)
+//   - ScipRefreshCompleted      (one row per .claude/tools/elai.map SCIP merge)
+// Design source: LSP base protocol v3.17 (verified spec
+// microsoft/language-server-protocol/3.17). Live rust-analyzer/pylsp
+// handshakes are RUNPOD-PENDING (entry 15 cluster handoff); the variant
+// emission shape is stable. 10th lockstep site (action_type_lock.rs
+// TOTAL_VARIANTS) bumped 399 -> 403 in lockstep with this commit.
+// all_test_payloads().len() goes 333 -> 337 (4 new entries).
+//
+// E-53 (SCHEMA_VERSION 140): atomic +1 bump for the formal-verify
+// pipeline boundary beacon. Composes C-50 contract_coding +
+// C-52 dafny_verify. Lean-scope ship per
+// workflow/sessions/s-25120/completion-drive/exploration/E-53-integration.md
+// — the plan originally proposed 13 SsbActionType variants; the
+// rebased scope consolidates to ONE FormalVerifierCompleted carrying
+// verifier_kind + outcome + csq_class discriminators per the C-52
+// DafnyVerifyCompleted precedent. 10th lockstep site (action_type_
+// lock.rs TOTAL_VARIANTS) bumped 403 -> 404 in lockstep with this
+// commit. all_test_payloads().len() goes 337 -> 338 (1 new entry).
+// VerifierKind enum in verification_result.rs extended atomically per
+// the L3-lock escape clause "New kinds land via plan-level schema
+// bumps" (Z3SmtCheck variant added). Gemma-4 BLOCKED per memory
+// `feedback_no_gemma4` — pipeline substitutes Codestral / GPT-OSS /
+// Qwen3 documented in workflow/reasoning/E-53-decisions.md.
+//
+// E-35 (SCHEMA_VERSION 141): atomic 10-variant bump for the
+// structured-output substrate (XGrammar canonical + INSTRUCTOR +
+// per-role grammar cache + CodeAct + SEARCH/REPLACE + cloud
+// strict-schema + lm-format-enforcer / legacy json_object refusal).
+// Lean-scope ship per the session-2 autonomous-mode brief:
+// AgentRole::Runner variant addition DEFERRED per
+// E41_AGENTROLE_FROZEN_AT_17 gotcha (230 match-arm cascade — CodeAct
+// composes through existing role + RuntimeBackend composition);
+// Python sidecar tool_parser.py + XGrammarLogitsProcessor are
+// RUNPOD-PENDING (sidecar boot required); SearchReplaceMatcher
+// dispatcher tier-0 wire DEFERRED to patch-N (the substrate ships in
+// crates/tools/src/search_replace.rs and the SSB beacons are in
+// scope; the dispatcher.rs touch is a single-file follow-on); DCCD
+// (Task 9) DEFERRED behind env flag per plan L65. 10th lockstep site
+// (action_type_lock.rs TOTAL_VARIANTS) bumped 404 -> 414 in lockstep
+// with this commit. all_test_payloads().len() goes 338 -> 348 (10
+// new entries). Composes on top of the already-shipped Rust
+// substrate: StructuredMode / ToolParserVariant / XGrammarRequest /
+// XGrammarResponse / CodeActAction / SearchReplaceTier1 in
+// crates/ipc-types/src/lib.rs; SidecarXGrammarHook trait +
+// xgrammar_cache_key in crates/providers/src/runtime/
+// sidecar_xgrammar_hook.rs; SearchReplaceMatcher +
+// DelimiterCollisionGuard in crates/tools/src/search_replace.rs;
+// GrammarCompilePanel.svelte + commands_e35::get_grammar_compilations
+// in crates/dashboard-v2. Inline cite ONLY codeact-2402.01030
+// (ingested at workflow/papers/codeact-2402.01030-interface.md);
+// XGrammar / JSONSchemaBench / CRANE / Diff-XYZ / "Think Inside the
+// JSON" / DCCD / "When Correct Isn't Usable" referenced by name
+// only per cluster s-25120 cite-discipline (mistakes.md cite-incident
+// cluster #13). See workflow/reasoning/E-35-decisions.md.
+const SCHEMA_VERSION: i64 = 141;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -2769,7 +2830,78 @@ CREATE TABLE IF NOT EXISTS ssb (
         'swe_bench_pro_run_started',
         'swe_bench_pro_run_completed',
         'refinebench_score_emitted',
-        'metrics_aggregation_run'
+        'metrics_aggregation_run',
+        -- E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic-probe
+        -- + SCIP refresh beacons. 4 atomic variants.
+        -- diagnostic_probe_dispatched -- one row per language-grouped
+        --   PostToolUse probe dispatch. Carries probe_kind_hash,
+        --   file_count, language_hash, ts_ms.
+        -- diagnostic_probe_completed -- one row per probe completion
+        --   regardless of outcome. Carries probe_kind_hash, run_status_hash
+        --   (Completed|TimedOut|ToolMissing), error_count, duration_ms,
+        --   ts_ms.
+        -- diagnostic_probe_block -- one row when error-severity
+        --   diagnostics blocked the EXECUTING -> AUDITING transition.
+        --   Carries probe_kind_hash, error_count, first_path_hash, ts_ms.
+        -- scip_refresh_completed -- one row per .claude/tools/elai.map
+        --   incremental SCIP merge invocation. Carries shard_count,
+        --   crate_count, duration_ms, ts_ms.
+        'diagnostic_probe_dispatched',
+        'diagnostic_probe_completed',
+        'diagnostic_probe_block',
+        'scip_refresh_completed',
+        -- E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+        -- formal_verifier_completed -- one row per
+        --   `crate::formal_verify::orchestrator::run` pipeline boundary.
+        --   Carries verifier_kind_hash (z3_smt|dafny|kani|verus),
+        --   outcome_hash (verified|refuted|inapplicable|runpod_pending),
+        --   csq_class_hash (counterfactual_risky|unknown|safe),
+        --   contract_emitted (bool), duration_ms, ts_ms. Single atomic
+        --   +1 bump (139 -> 140) consolidating the plan's originally-
+        --   proposed 13 variants per the C-52 DafnyVerifyCompleted
+        --   single-variant precedent.
+        'formal_verifier_completed',
+        -- E-35 (SCHEMA_VERSION 141): structured-output substrate (XGrammar +
+        -- INSTRUCTOR + CodeAct + SEARCH/REPLACE + cloud strict-schema)
+        -- atomic 10-variant bump. Producers split across the sidecar (Python
+        -- side; RUNPOD-PENDING for XGrammar wiring) and the host (Rust
+        -- codeact_sandbox dispatcher + CloudGroundingClient strict-mode +
+        -- CLI subverb `elai structured-output ...`). AgentRole::Runner
+        -- variant addition DEFERRED per E41_AGENTROLE_FROZEN_AT_17
+        -- gotcha (230 match-arm cascade); CodeAct runs through existing
+        -- role + RuntimeBackend composition.
+        --
+        -- xgrammar_mask_applied            -- one row per sidecar XGrammar
+        --   mask application; carries schema_id_hash, mask_applied_count,
+        --   generation_ms, cache_hit, ts_ms.
+        -- instructor_mode_activated        -- one row per INSTRUCTOR-mode
+        --   dispatch (reasoning roles per CRANE).
+        -- grammar_mode_activated           -- one row per GRAMMAR-mode
+        --   dispatch (low-reasoning enum/header blocks).
+        -- codeact_action_executed          -- one row per CodeAct snippet
+        --   dispatch via codeact_sandbox::execute_code_act.
+        -- search_replace_tier1_hit         -- one row per successful
+        --   SearchReplaceMatcher::apply (custom non-git ELAI fences).
+        -- search_replace_collision_fallback -- one row per
+        --   DelimiterCollisionGuard rejection + whole-file rewrite.
+        -- cloud_strict_schema_applied      -- one row per
+        --   CloudGroundingClient strict-schema directive.
+        -- grammar_cache_loaded             -- one row per sidecar boot
+        --   warmup completion (RUNPOD-PENDING producer).
+        -- structured_engine_rejected       -- one row per lm-format-enforcer
+        --   refusal (XGrammar is canonical).
+        -- legacy_json_object_refused       -- one row per legacy vendor
+        --   json_object refusal.
+        'xgrammar_mask_applied',
+        'instructor_mode_activated',
+        'grammar_mode_activated',
+        'codeact_action_executed',
+        'search_replace_tier1_hit',
+        'search_replace_collision_fallback',
+        'cloud_strict_schema_applied',
+        'grammar_cache_loaded',
+        'structured_engine_rejected',
+        'legacy_json_object_refused'
     )),
     payload     BLOB NOT NULL,
     created_at  INTEGER NOT NULL
@@ -4792,6 +4924,112 @@ pub enum SsbActionType {
     /// `coding_metrics::aggregate_session_metrics` call. Carries a
     /// [`MetricsAggregationRunPayload`].
     MetricsAggregationRun,
+    // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic-probe +
+    // SCIP refresh beacons. 4 atomic variants. The diagnostic-probe
+    // surface composes the E-52 Tier-A envelope shipped at
+    // `crates/knowledge/src/diagnostic.rs` (DiagnosticSeverity + ProbeKind
+    // + Diagnostic + DiagnosticProbeOutcome). Live rust-analyzer/pylsp
+    // JSON-RPC handshakes are RUNPOD-PENDING; the variant emission shape
+    // is stable. See workflow/reasoning/E-52-decisions.md.
+    /// E-52 Tier-B — one row per language-grouped PostToolUse probe
+    /// dispatch (e.g. `.rs` files routed to rust-analyzer). Carries
+    /// [`DiagnosticProbeDispatchedPayload`].
+    DiagnosticProbeDispatched,
+    /// E-52 Tier-B — one row per probe completion regardless of outcome
+    /// (Completed / TimedOut / ToolMissing). Carries
+    /// [`DiagnosticProbeCompletedPayload`].
+    DiagnosticProbeCompleted,
+    /// E-52 Tier-B — one row when error-severity diagnostics blocked the
+    /// EXECUTING -> AUDITING transition. Carries
+    /// [`DiagnosticProbeBlockPayload`].
+    DiagnosticProbeBlock,
+    /// E-52 Tier-B — one row per `.claude/tools/elai.map` incremental
+    /// SCIP merge invocation. Carries [`ScipRefreshCompletedPayload`].
+    ScipRefreshCompleted,
+    /// E-53 (SCHEMA_VERSION 140) — emitted once per
+    /// [`crate::formal_verify::orchestrator::run`] pipeline boundary
+    /// regardless of outcome (Verified / Refuted / Inapplicable /
+    /// RunpodPending). Carries a [`FormalVerifierCompletedPayload`]
+    /// with `verifier_kind_hash` (blake3 prefix of
+    /// [`crate::formal_verify::VerifierKind::as_str`] — one of
+    /// `z3_smt` / `dafny` / `kani` / `verus`), `outcome_hash` (blake3
+    /// prefix of [`crate::formal_verify::VerifierOutcome::as_str`] —
+    /// one of `verified` / `refuted` / `inapplicable` /
+    /// `runpod_pending`), `csq_class_hash` (blake3 prefix of the
+    /// [`crate::csq::CounterfactualClass::as_str`] gating decision),
+    /// `contract_emitted` (whether the C-50 structural-contract
+    /// emission step ran before dispatch), `duration_ms`, and
+    /// producer `ts_ms`. Live Z3 / Kani / Verus dispatch is
+    /// RUNPOD-PENDING; Dafny dispatch reuses C-52
+    /// `invoke_dafny_cli`. Gemma-4 BLOCKED per memory
+    /// `feedback_no_gemma4` (substrate inheritance from C-52). See
+    /// workflow/reasoning/E-53-decisions.md.
+    FormalVerifierCompleted,
+    /// E-35 (SCHEMA_VERSION 141) — XGrammar mask was applied to the
+    /// answer-phase token stream. Carries
+    /// [`XgrammarMaskAppliedPayload`] with `schema_id_hash`,
+    /// `schema_hash_hash`, `mask_applied_count`, `generation_ms`,
+    /// `cache_hit`, `ts_ms`. Producer: the sidecar XGrammar hook
+    /// post-`generate_structured` (RUNPOD-PENDING for Python wiring;
+    /// host-side caller is `codeact_sandbox::execute_code_act` and
+    /// the CLI subverb `elai structured-output grammar emit-test`).
+    XgrammarMaskApplied,
+    /// E-35 (SCHEMA_VERSION 141) — INSTRUCTOR-mode structured
+    /// decoding selected for a (role, block) pair. Reasoning roles
+    /// (Auditor / Planner / Decomposer / IdeaFramer) default to this
+    /// per CRANE. Carries [`InstructorModeActivatedPayload`].
+    InstructorModeActivated,
+    /// E-35 (SCHEMA_VERSION 141) — GRAMMAR-mode structured decoding
+    /// selected for a low-reasoning enum/header block (BabyStepStatus,
+    /// FailureTaxonomy, ReasoningTemplate type-tag). Carries
+    /// [`GrammarModeActivatedPayload`].
+    GrammarModeActivated,
+    /// E-35 (SCHEMA_VERSION 141) — one CodeAct-style python snippet
+    /// dispatched through `codeact_sandbox::execute_code_act`. Carries
+    /// [`CodeactActionExecutedPayload`] with `action_hash`,
+    /// `line_count`, `outcome_hash` (ok|sandbox_absent|cap_exceeded|
+    /// allowlist_violation), `duration_ms`, `ts_ms`. AgentRole::Runner
+    /// addition DEFERRED per E41_AGENTROLE_FROZEN_AT_17 gotcha; this
+    /// variant emits from the sandbox dispatcher itself.
+    CodeactActionExecuted,
+    /// E-35 (SCHEMA_VERSION 141) — SEARCH/REPLACE tier-1 matcher
+    /// succeeded on a file edit (custom non-git ELAI fences). Carries
+    /// [`SearchReplaceTier1HitPayload`] with `file_path_hash`,
+    /// `edit_count`, `ts_ms`.
+    SearchReplaceTier1Hit,
+    /// E-35 (SCHEMA_VERSION 141) — SEARCH/REPLACE DelimiterCollision
+    /// guard fired; matcher fell back to whole-file rewrite tier.
+    /// Carries [`SearchReplaceCollisionFallbackPayload`] with
+    /// `file_path_hash`, `collision_token_hash`, `ts_ms`.
+    SearchReplaceCollisionFallback,
+    /// E-35 (SCHEMA_VERSION 141) — CloudGroundingClient passed a
+    /// provider-strict-schema directive (Anthropic
+    /// `structured-outputs-2025-11-13` beta header / OpenAI
+    /// `strict:true` / Gemini `responseJsonSchema`). Carries
+    /// [`CloudStrictSchemaAppliedPayload`] with `provider_hash`,
+    /// `schema_id_hash`, `ts_ms`. Header propagation to the
+    /// AnthropicClient surface is RUNPOD-PENDING (provider crate
+    /// extension); this beacon records the intent.
+    CloudStrictSchemaApplied,
+    /// E-35 (SCHEMA_VERSION 141) — sidecar boot completed grammar
+    /// cache warmup. Carries [`GrammarCacheLoadedPayload`] with
+    /// `compiled_count`, `cache_hits`, `cache_misses`,
+    /// `total_compile_ms`, `ts_ms`. Producer is the sidecar's
+    /// `compile_all_schemas_at_boot` (RUNPOD-PENDING); host-side
+    /// emitter is the CLI `grammar emit-test` smoke + the contract
+    /// test.
+    GrammarCacheLoaded,
+    /// E-35 (SCHEMA_VERSION 141) — caller requested a structured-
+    /// output engine (lm-format-enforcer) that is EXPLICITLY rejected
+    /// in favour of the canonical XGrammar substrate. Carries
+    /// [`StructuredEngineRejectedPayload`] with `engine_hash`,
+    /// `reason_hash`, `ts_ms`. Refuse loud; never silent fallback.
+    StructuredEngineRejected,
+    /// E-35 (SCHEMA_VERSION 141) — caller requested the legacy vendor
+    /// `json_object` mode; CloudGroundingClient refuses + returns a
+    /// typed error. Carries [`LegacyJsonObjectRefusedPayload`] with
+    /// `provider_hash`, `ts_ms`.
+    LegacyJsonObjectRefused,
 }
 
 impl SsbActionType {
@@ -5310,6 +5548,30 @@ impl SsbActionType {
             Self::SweBenchProRunCompleted => "swe_bench_pro_run_completed",
             Self::RefineBenchScoreEmitted => "refinebench_score_emitted",
             Self::MetricsAggregationRun => "metrics_aggregation_run",
+            // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic
+            // probe + SCIP refresh beacons.
+            Self::DiagnosticProbeDispatched => "diagnostic_probe_dispatched",
+            Self::DiagnosticProbeCompleted => "diagnostic_probe_completed",
+            Self::DiagnosticProbeBlock => "diagnostic_probe_block",
+            Self::ScipRefreshCompleted => "scip_refresh_completed",
+            // E-53 (SCHEMA_VERSION 140): formal-verify pipeline
+            // boundary beacon. Single atomic +1 bump consolidating
+            // the plan's originally-proposed 13 variants per the
+            // C-52 single-DafnyVerifyCompleted precedent.
+            Self::FormalVerifierCompleted => "formal_verifier_completed",
+            // E-35 (SCHEMA_VERSION 141): 10-variant atomic bump for
+            // the structured-output substrate (XGrammar + INSTRUCTOR +
+            // CodeAct + SEARCH/REPLACE + cloud strict-schema).
+            Self::XgrammarMaskApplied => "xgrammar_mask_applied",
+            Self::InstructorModeActivated => "instructor_mode_activated",
+            Self::GrammarModeActivated => "grammar_mode_activated",
+            Self::CodeactActionExecuted => "codeact_action_executed",
+            Self::SearchReplaceTier1Hit => "search_replace_tier1_hit",
+            Self::SearchReplaceCollisionFallback => "search_replace_collision_fallback",
+            Self::CloudStrictSchemaApplied => "cloud_strict_schema_applied",
+            Self::GrammarCacheLoaded => "grammar_cache_loaded",
+            Self::StructuredEngineRejected => "structured_engine_rejected",
+            Self::LegacyJsonObjectRefused => "legacy_json_object_refused",
         }
     }
 }
@@ -5838,6 +6100,24 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         "swe_bench_pro_run_completed"     => Ok(SsbActionType::SweBenchProRunCompleted),
         "refinebench_score_emitted"       => Ok(SsbActionType::RefineBenchScoreEmitted),
         "metrics_aggregation_run"         => Ok(SsbActionType::MetricsAggregationRun),
+        // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier beacons.
+        "diagnostic_probe_dispatched"     => Ok(SsbActionType::DiagnosticProbeDispatched),
+        "diagnostic_probe_completed"      => Ok(SsbActionType::DiagnosticProbeCompleted),
+        "diagnostic_probe_block"          => Ok(SsbActionType::DiagnosticProbeBlock),
+        "scip_refresh_completed"          => Ok(SsbActionType::ScipRefreshCompleted),
+        // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+        "formal_verifier_completed"       => Ok(SsbActionType::FormalVerifierCompleted),
+        // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+        "xgrammar_mask_applied"           => Ok(SsbActionType::XgrammarMaskApplied),
+        "instructor_mode_activated"       => Ok(SsbActionType::InstructorModeActivated),
+        "grammar_mode_activated"          => Ok(SsbActionType::GrammarModeActivated),
+        "codeact_action_executed"         => Ok(SsbActionType::CodeactActionExecuted),
+        "search_replace_tier1_hit"        => Ok(SsbActionType::SearchReplaceTier1Hit),
+        "search_replace_collision_fallback" => Ok(SsbActionType::SearchReplaceCollisionFallback),
+        "cloud_strict_schema_applied"     => Ok(SsbActionType::CloudStrictSchemaApplied),
+        "grammar_cache_loaded"            => Ok(SsbActionType::GrammarCacheLoaded),
+        "structured_engine_rejected"      => Ok(SsbActionType::StructuredEngineRejected),
+        "legacy_json_object_refused"      => Ok(SsbActionType::LegacyJsonObjectRefused),
         other => Err(SsbError::UnknownActionType(other.to_owned())),
     }
 }
@@ -8888,6 +9168,36 @@ pub enum SsbPayload {
     SweBenchProRunCompleted(SweBenchProRunCompletedPayload),
     RefineBenchScoreEmitted(RefineBenchScoreEmittedPayload),
     MetricsAggregationRun(MetricsAggregationRunPayload),
+    // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier diagnostic probe +
+    // SCIP refresh beacons. 4 atomic variants. See
+    // `DiagnosticProbeDispatchedPayload`, `DiagnosticProbeCompletedPayload`,
+    // `DiagnosticProbeBlockPayload`, `ScipRefreshCompletedPayload`.
+    DiagnosticProbeDispatched(DiagnosticProbeDispatchedPayload),
+    DiagnosticProbeCompleted(DiagnosticProbeCompletedPayload),
+    DiagnosticProbeBlock(DiagnosticProbeBlockPayload),
+    ScipRefreshCompleted(ScipRefreshCompletedPayload),
+    // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary
+    // beacon. Single atomic +1 bump per the C-52
+    // DafnyVerifyCompleted single-variant precedent. See
+    // `FormalVerifierCompletedPayload` for field docs.
+    FormalVerifierCompleted(FormalVerifierCompletedPayload),
+    // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+    // 10 atomic variants for the XGrammar / INSTRUCTOR / CodeAct /
+    // SEARCH/REPLACE / cloud strict-schema substrate. See per-payload
+    // struct docs below. Python sidecar wiring + AnthropicClient
+    // beta-header propagation are RUNPOD-PENDING; host-side emitters
+    // are the codeact_sandbox dispatcher + the CLI subverb
+    // `elai structured-output ...` + the contract test.
+    XgrammarMaskApplied(XgrammarMaskAppliedPayload),
+    InstructorModeActivated(InstructorModeActivatedPayload),
+    GrammarModeActivated(GrammarModeActivatedPayload),
+    CodeactActionExecuted(CodeactActionExecutedPayload),
+    SearchReplaceTier1Hit(SearchReplaceTier1HitPayload),
+    SearchReplaceCollisionFallback(SearchReplaceCollisionFallbackPayload),
+    CloudStrictSchemaApplied(CloudStrictSchemaAppliedPayload),
+    GrammarCacheLoaded(GrammarCacheLoadedPayload),
+    StructuredEngineRejected(StructuredEngineRejectedPayload),
+    LegacyJsonObjectRefused(LegacyJsonObjectRefusedPayload),
 }
 
 impl SsbPayload {
@@ -9402,6 +9712,26 @@ impl SsbPayload {
             Self::SweBenchProRunCompleted(_) => SsbActionType::SweBenchProRunCompleted,
             Self::RefineBenchScoreEmitted(_) => SsbActionType::RefineBenchScoreEmitted,
             Self::MetricsAggregationRun(_) => SsbActionType::MetricsAggregationRun,
+            // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier beacons.
+            Self::DiagnosticProbeDispatched(_) => SsbActionType::DiagnosticProbeDispatched,
+            Self::DiagnosticProbeCompleted(_) => SsbActionType::DiagnosticProbeCompleted,
+            Self::DiagnosticProbeBlock(_) => SsbActionType::DiagnosticProbeBlock,
+            Self::ScipRefreshCompleted(_) => SsbActionType::ScipRefreshCompleted,
+            // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+            Self::FormalVerifierCompleted(_) => SsbActionType::FormalVerifierCompleted,
+            // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+            Self::XgrammarMaskApplied(_) => SsbActionType::XgrammarMaskApplied,
+            Self::InstructorModeActivated(_) => SsbActionType::InstructorModeActivated,
+            Self::GrammarModeActivated(_) => SsbActionType::GrammarModeActivated,
+            Self::CodeactActionExecuted(_) => SsbActionType::CodeactActionExecuted,
+            Self::SearchReplaceTier1Hit(_) => SsbActionType::SearchReplaceTier1Hit,
+            Self::SearchReplaceCollisionFallback(_) => {
+                SsbActionType::SearchReplaceCollisionFallback
+            }
+            Self::CloudStrictSchemaApplied(_) => SsbActionType::CloudStrictSchemaApplied,
+            Self::GrammarCacheLoaded(_) => SsbActionType::GrammarCacheLoaded,
+            Self::StructuredEngineRejected(_) => SsbActionType::StructuredEngineRejected,
+            Self::LegacyJsonObjectRefused(_) => SsbActionType::LegacyJsonObjectRefused,
         }
     }
 }
@@ -15302,6 +15632,256 @@ pub struct MetricsAggregationRunPayload {
 }
 
 // ---------------------------------------------------------------------------
+// E-52 Tier-B payloads (SCHEMA_VERSION 139) — LSP-as-verifier diagnostic
+// probe + SCIP refresh beacons. Composed with the Tier-A envelope at
+// `crates/knowledge/src/diagnostic.rs` (DiagnosticSeverity + ProbeKind +
+// Diagnostic + DiagnosticProbeOutcome). All wire fields stay integer /
+// blake3-prefix scalars so the msgpack hash is deterministic.
+// ---------------------------------------------------------------------------
+
+/// E-52 Tier-B — payload for [`SsbActionType::DiagnosticProbeDispatched`].
+/// Emitted once per language-grouped PostToolUse probe dispatch. The
+/// `probe_kind_hash` is the blake3-prefix of [`ProbeKind::as_str`]
+/// (rust_analyzer / pyright / tsc_no_emit / svelte_check / generic_lsp);
+/// `language_hash` is the blake3-prefix of the language slug
+/// (rust / python / typescript / svelte).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticProbeDispatchedPayload {
+    pub probe_kind_hash: u64,
+    pub language_hash: u64,
+    pub file_count: u32,
+    pub ts_ms: u64,
+}
+
+/// E-52 Tier-B — payload for [`SsbActionType::DiagnosticProbeCompleted`].
+/// Emitted once per probe completion regardless of outcome. The
+/// `run_status_hash` is the blake3-prefix of the sibling
+/// `DiagnosticProbeRunStatus` snake-case label (completed / timed_out /
+/// tool_missing) — added for the DRIFT-14 closure so Timeout and
+/// ToolMissing surface without breaking the locked Tier-A envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticProbeCompletedPayload {
+    pub probe_kind_hash: u64,
+    pub run_status_hash: u64,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub duration_ms: u32,
+    pub ts_ms: u64,
+}
+
+/// E-52 Tier-B — payload for [`SsbActionType::DiagnosticProbeBlock`].
+/// Emitted when error-severity diagnostics blocked the EXECUTING ->
+/// AUDITING transition. `first_path_hash` is the blake3-prefix of the
+/// first diagnostic's file path (privacy-preserving — the full path is
+/// never written to SSB; the EvidenceGate carries the full list out-of-
+/// band).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticProbeBlockPayload {
+    pub probe_kind_hash: u64,
+    pub error_count: u32,
+    pub first_path_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-52 Tier-B — payload for [`SsbActionType::ScipRefreshCompleted`].
+/// Emitted once per `.claude/tools/elai.map` incremental SCIP merge
+/// invocation (driven by `.claude/tools/scip_refresh.py` or a future
+/// in-tree refresher). `shard_count` is the number of per-crate SCIP
+/// shards merged; `crate_count` is the number of distinct crates the
+/// refresh touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScipRefreshCompletedPayload {
+    pub shard_count: u32,
+    pub crate_count: u32,
+    pub duration_ms: u32,
+    pub ts_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// E-53 payload (SCHEMA_VERSION 140) — formal-verify pipeline boundary beacon.
+// Single atomic +1 bump per the C-52 DafnyVerifyCompleted precedent (the plan
+// originally proposed 13 variants; lean-scope rebase per
+// workflow/sessions/s-25120/completion-drive/exploration/E-53-integration.md
+// consolidates to one). Producer:
+// `crate::formal_verify::orchestrator::run`. Gemma-4 BLOCKED per memory
+// `feedback_no_gemma4` (substrate inheritance from C-52
+// `dafny_verify::GEMMA4_BLOCKED`). Live Z3 / Kani / Verus dispatch is
+// RUNPOD-PENDING; Dafny dispatch reuses C-52 `invoke_dafny_cli`.
+// ---------------------------------------------------------------------------
+
+/// E-53 — payload for [`SsbActionType::FormalVerifierCompleted`].
+///
+/// Emitted once per `crate::formal_verify::orchestrator::run`
+/// pipeline boundary regardless of outcome. Hashed identifiers
+/// (no plaintext) so the wire format is privacy-preserving and
+/// stable across sessions.
+///
+/// Field semantics:
+///   * `verifier_kind_hash` — blake3 prefix (first 8 bytes as
+///     `u64`) of the [`crate::formal_verify::VerifierKind::as_str`]
+///     wire tag (`z3_smt` | `dafny` | `kani` | `verus`).
+///   * `outcome_hash` — blake3 prefix of the
+///     [`crate::formal_verify::VerifierOutcome::as_str`] wire tag
+///     (`verified` | `refuted` | `inapplicable` | `runpod_pending`).
+///     The aggregator MUST NOT count `inapplicable` or
+///     `runpod_pending` toward consensus per the L3-lock comment on
+///     [`crate::verification_result::VerifierKind`].
+///   * `csq_class_hash` — blake3 prefix of the
+///     [`crate::csq::CounterfactualClass::as_str`] gating decision
+///     (`counterfactual_risky` | `counterfactual_unknown` |
+///     `counterfactual_safe`).
+///   * `contract_emitted` — whether the C-50 structural-contract
+///     emission step ran before dispatch. Always `true` in the lean
+///     E-53 ship (the emission helper is infallible); future
+///     extensions may surface emission failure.
+///   * `duration_ms` — wall-clock pipeline duration. Producer is
+///     responsible for using the injected `ClockProvider` (never
+///     `std::time::SystemTime`).
+///   * `ts_ms` — producer-side wall-clock timestamp via the injected
+///     `ClockProvider`. Never `std::time::SystemTime`.
+///
+/// Grounding: 3 GROUNDED inline citations live on the
+/// `crate::formal_verify` mod docstring; 11 unverified arXiv IDs from
+/// the E-53 plan reads block are DEFERRED to
+/// workflow/sessions/s-25120/completion-drive/mistakes.md cite-
+/// incident #11 (E-53-INGEST-pending) per cluster cite-discipline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FormalVerifierCompletedPayload {
+    pub verifier_kind_hash: u64,
+    pub outcome_hash: u64,
+    pub csq_class_hash: u64,
+    pub contract_emitted: bool,
+    pub duration_ms: u32,
+    pub ts_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// E-35 payloads (SCHEMA_VERSION 141) — structured-output substrate beacons.
+// 10 atomic payloads for XGrammar / INSTRUCTOR / CodeAct / SEARCH/REPLACE /
+// cloud strict-schema / engine-refusal beacons. All hashed identifiers
+// (no plaintext) for stable, privacy-preserving wire format. Producers:
+// (Python sidecar — RUNPOD-PENDING) + (Rust codeact_sandbox::execute_code_act)
+// + (CloudGroundingClient::with_strict_schema) + (CLI subverb
+// `elai structured-output ...`). AgentRole::Runner addition DEFERRED per
+// E41_AGENTROLE_FROZEN_AT_17 (230 match-arm cascade). See
+// workflow/reasoning/E-35-decisions.md.
+// ---------------------------------------------------------------------------
+
+/// E-35 — payload for [`SsbActionType::XgrammarMaskApplied`].
+/// Emitted once per sidecar XGrammar mask application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct XgrammarMaskAppliedPayload {
+    pub schema_id_hash: u64,
+    pub schema_hash_hash: u64,
+    pub mask_applied_count: u32,
+    pub generation_ms: u32,
+    pub cache_hit: bool,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::InstructorModeActivated`].
+/// Emitted once per INSTRUCTOR-mode dispatch (reasoning roles per CRANE:
+/// Auditor / Planner / Decomposer / IdeaFramer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InstructorModeActivatedPayload {
+    pub role_hash: u64,
+    pub block_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::GrammarModeActivated`].
+/// Emitted once per GRAMMAR-mode dispatch (low-reasoning enum/header blocks:
+/// FailureTaxonomy / BabyStepStatus / ReasoningTemplate type-tag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrammarModeActivatedPayload {
+    pub role_hash: u64,
+    pub block_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::CodeactActionExecuted`].
+/// Emitted once per `codeact_sandbox::execute_code_act` dispatch regardless
+/// of outcome. AgentRole::Runner addition DEFERRED — CodeAct routes through
+/// the existing role + RuntimeBackend composition per
+/// E41_AGENTROLE_FROZEN_AT_17.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CodeactActionExecutedPayload {
+    pub action_hash: u64,
+    pub line_count: u32,
+    pub outcome_hash: u64,
+    pub duration_ms: u32,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::SearchReplaceTier1Hit`].
+/// Emitted on successful `SearchReplaceMatcher::apply` (custom non-git
+/// ELAI fences `<<< ELAI_SEARCH` / `=== ELAI_REPLACE` / `>>> ELAI_END`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SearchReplaceTier1HitPayload {
+    pub file_path_hash: u64,
+    pub edit_count: u32,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::SearchReplaceCollisionFallback`].
+/// Emitted when `DelimiterCollisionGuard` flags ELAI fence text in the
+/// source buffer; matcher falls back to whole-file rewrite tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SearchReplaceCollisionFallbackPayload {
+    pub file_path_hash: u64,
+    pub collision_token_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::CloudStrictSchemaApplied`].
+/// Emitted once per `CloudGroundingClient::with_strict_schema` activation.
+/// Anthropic / OpenAI / Gemini provider-strict body propagation lives at
+/// the call site; header propagation through AnthropicClient is
+/// RUNPOD-PENDING (provider-crate extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CloudStrictSchemaAppliedPayload {
+    pub provider_hash: u64,
+    pub schema_id_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::GrammarCacheLoaded`].
+/// Emitted once on sidecar boot after `compile_all_schemas_at_boot` +
+/// `warm_grammar_cache_from_disk` complete. Producer is the sidecar
+/// (RUNPOD-PENDING); host-side emitter is the CLI smoke + contract test.
+/// Expected `compiled_count` for full warmup is 64 (8 AgentRole values *
+/// 8 BabyStepSpec blocks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrammarCacheLoadedPayload {
+    pub compiled_count: u32,
+    pub cache_hits: u32,
+    pub cache_misses: u32,
+    pub total_compile_ms: u32,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::StructuredEngineRejected`].
+/// Emitted when caller requests a structured-output engine
+/// (lm-format-enforcer) that is EXPLICITLY rejected in favour of XGrammar.
+/// Refuse loud; never silent fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StructuredEngineRejectedPayload {
+    pub engine_hash: u64,
+    pub reason_hash: u64,
+    pub ts_ms: u64,
+}
+
+/// E-35 — payload for [`SsbActionType::LegacyJsonObjectRefused`].
+/// Emitted when caller passes legacy vendor `json_object` mode through
+/// CloudGroundingClient; the call is refused with a typed error rather
+/// than silently downgrading to free-form JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LegacyJsonObjectRefusedPayload {
+    pub provider_hash: u64,
+    pub ts_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -18069,6 +18649,131 @@ mod tests {
                     pass_at_1_avg_x10000: 7000,
                     refine_rate_avg_x10000: 5800,
                     ts_ms: 1_700_000_138_005,
+                },
+            ),
+            // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier beacons.
+            SsbActionType::DiagnosticProbeDispatched => SsbPayload::DiagnosticProbeDispatched(
+                DiagnosticProbeDispatchedPayload {
+                    probe_kind_hash: 0xE052_0001_0000_0000,
+                    language_hash: 0xE052_0001_0000_0001,
+                    file_count: 3,
+                    ts_ms: 1_700_000_139_001,
+                },
+            ),
+            SsbActionType::DiagnosticProbeCompleted => SsbPayload::DiagnosticProbeCompleted(
+                DiagnosticProbeCompletedPayload {
+                    probe_kind_hash: 0xE052_0002_0000_0000,
+                    run_status_hash: 0xE052_0002_0000_0001,
+                    error_count: 0,
+                    warning_count: 2,
+                    duration_ms: 420,
+                    ts_ms: 1_700_000_139_002,
+                },
+            ),
+            SsbActionType::DiagnosticProbeBlock => SsbPayload::DiagnosticProbeBlock(
+                DiagnosticProbeBlockPayload {
+                    probe_kind_hash: 0xE052_0003_0000_0000,
+                    error_count: 5,
+                    first_path_hash: 0xE052_0003_0000_0001,
+                    ts_ms: 1_700_000_139_003,
+                },
+            ),
+            SsbActionType::ScipRefreshCompleted => SsbPayload::ScipRefreshCompleted(
+                ScipRefreshCompletedPayload {
+                    shard_count: 7,
+                    crate_count: 4,
+                    duration_ms: 12_500,
+                    ts_ms: 1_700_000_139_004,
+                },
+            ),
+            // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+            SsbActionType::FormalVerifierCompleted => SsbPayload::FormalVerifierCompleted(
+                FormalVerifierCompletedPayload {
+                    verifier_kind_hash: 0xE053_0001_0000_0000,
+                    outcome_hash: 0xE053_0001_0000_0001,
+                    csq_class_hash: 0xE053_0001_0000_0002,
+                    contract_emitted: true,
+                    duration_ms: 32,
+                    ts_ms: 1_700_000_140_001,
+                },
+            ),
+            // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+            SsbActionType::XgrammarMaskApplied => SsbPayload::XgrammarMaskApplied(
+                XgrammarMaskAppliedPayload {
+                    schema_id_hash: 0xE035_0001_0000_0000,
+                    schema_hash_hash: 0xE035_0001_0000_0001,
+                    mask_applied_count: 12,
+                    generation_ms: 311,
+                    cache_hit: true,
+                    ts_ms: 1_700_000_141_001,
+                },
+            ),
+            SsbActionType::InstructorModeActivated => SsbPayload::InstructorModeActivated(
+                InstructorModeActivatedPayload {
+                    role_hash: 0xE035_0002_0000_0000,
+                    block_hash: 0xE035_0002_0000_0001,
+                    ts_ms: 1_700_000_141_002,
+                },
+            ),
+            SsbActionType::GrammarModeActivated => SsbPayload::GrammarModeActivated(
+                GrammarModeActivatedPayload {
+                    role_hash: 0xE035_0003_0000_0000,
+                    block_hash: 0xE035_0003_0000_0001,
+                    ts_ms: 1_700_000_141_003,
+                },
+            ),
+            SsbActionType::CodeactActionExecuted => SsbPayload::CodeactActionExecuted(
+                CodeactActionExecutedPayload {
+                    action_hash: 0xE035_0004_0000_0000,
+                    line_count: 18,
+                    outcome_hash: 0xE035_0004_0000_0001,
+                    duration_ms: 42,
+                    ts_ms: 1_700_000_141_004,
+                },
+            ),
+            SsbActionType::SearchReplaceTier1Hit => SsbPayload::SearchReplaceTier1Hit(
+                SearchReplaceTier1HitPayload {
+                    file_path_hash: 0xE035_0005_0000_0000,
+                    edit_count: 3,
+                    ts_ms: 1_700_000_141_005,
+                },
+            ),
+            SsbActionType::SearchReplaceCollisionFallback => {
+                SsbPayload::SearchReplaceCollisionFallback(
+                    SearchReplaceCollisionFallbackPayload {
+                        file_path_hash: 0xE035_0006_0000_0000,
+                        collision_token_hash: 0xE035_0006_0000_0001,
+                        ts_ms: 1_700_000_141_006,
+                    },
+                )
+            }
+            SsbActionType::CloudStrictSchemaApplied => SsbPayload::CloudStrictSchemaApplied(
+                CloudStrictSchemaAppliedPayload {
+                    provider_hash: 0xE035_0007_0000_0000,
+                    schema_id_hash: 0xE035_0007_0000_0001,
+                    ts_ms: 1_700_000_141_007,
+                },
+            ),
+            SsbActionType::GrammarCacheLoaded => SsbPayload::GrammarCacheLoaded(
+                GrammarCacheLoadedPayload {
+                    compiled_count: 64,
+                    cache_hits: 48,
+                    cache_misses: 16,
+                    total_compile_ms: 4_200,
+                    ts_ms: 1_700_000_141_008,
+                },
+            ),
+            SsbActionType::StructuredEngineRejected => SsbPayload::StructuredEngineRejected(
+                StructuredEngineRejectedPayload {
+                    engine_hash: 0xE035_0009_0000_0000,
+                    reason_hash: 0xE035_0009_0000_0001,
+                    ts_ms: 1_700_000_141_009,
+                },
+            ),
+            SsbActionType::LegacyJsonObjectRefused => SsbPayload::LegacyJsonObjectRefused(
+                LegacyJsonObjectRefusedPayload {
+                    provider_hash: 0xE035_000A_0000_0000,
+                    ts_ms: 1_700_000_141_010,
                 },
             ),
             // s-68264 audit cleanup: dedup'd 3 duplicate CliMcp* arms and added wildcard
@@ -21056,6 +21761,110 @@ mod tests {
                 refine_rate_avg_x10000: 5800,
                 ts_ms: 1_700_000_138_005,
             }),
+            // E-52 Tier-B (SCHEMA_VERSION 139): LSP-as-verifier beacons.
+            SsbPayload::DiagnosticProbeDispatched(DiagnosticProbeDispatchedPayload {
+                probe_kind_hash: 0xE052_0001_0000_0000,
+                language_hash: 0xE052_0001_0000_0001,
+                file_count: 3,
+                ts_ms: 1_700_000_139_001,
+            }),
+            SsbPayload::DiagnosticProbeCompleted(DiagnosticProbeCompletedPayload {
+                probe_kind_hash: 0xE052_0002_0000_0000,
+                run_status_hash: 0xE052_0002_0000_0001,
+                error_count: 0,
+                warning_count: 2,
+                duration_ms: 420,
+                ts_ms: 1_700_000_139_002,
+            }),
+            SsbPayload::DiagnosticProbeBlock(DiagnosticProbeBlockPayload {
+                probe_kind_hash: 0xE052_0003_0000_0000,
+                error_count: 5,
+                first_path_hash: 0xE052_0003_0000_0001,
+                ts_ms: 1_700_000_139_003,
+            }),
+            SsbPayload::ScipRefreshCompleted(ScipRefreshCompletedPayload {
+                shard_count: 7,
+                crate_count: 4,
+                duration_ms: 12_500,
+                ts_ms: 1_700_000_139_004,
+            }),
+            // E-53 (SCHEMA_VERSION 140): formal-verify pipeline boundary beacon.
+            // Single atomic +1 bump consolidating the plan's originally-
+            // proposed 13 variants per the C-52 DafnyVerifyCompleted
+            // precedent. Composes C-50 contract_coding + C-52 dafny_verify.
+            // Gemma-4 BLOCKED per memory feedback_no_gemma4. Live Z3 /
+            // Kani / Verus dispatch is RUNPOD-PENDING.
+            SsbPayload::FormalVerifierCompleted(FormalVerifierCompletedPayload {
+                verifier_kind_hash: 0xE053_0001_0000_0000,
+                outcome_hash: 0xE053_0001_0000_0001,
+                csq_class_hash: 0xE053_0001_0000_0002,
+                contract_emitted: true,
+                duration_ms: 32,
+                ts_ms: 1_700_000_140_001,
+            }),
+            // E-35 (SCHEMA_VERSION 141): structured-output substrate beacons.
+            // 10 atomic variants for XGrammar / INSTRUCTOR / CodeAct /
+            // SEARCH/REPLACE / cloud strict-schema. AgentRole::Runner addition
+            // DEFERRED per E41_AGENTROLE_FROZEN_AT_17. Python sidecar wiring +
+            // AnthropicClient beta-header propagation RUNPOD-PENDING.
+            SsbPayload::XgrammarMaskApplied(XgrammarMaskAppliedPayload {
+                schema_id_hash: 0xE035_0001_0000_0000,
+                schema_hash_hash: 0xE035_0001_0000_0001,
+                mask_applied_count: 12,
+                generation_ms: 311,
+                cache_hit: true,
+                ts_ms: 1_700_000_141_001,
+            }),
+            SsbPayload::InstructorModeActivated(InstructorModeActivatedPayload {
+                role_hash: 0xE035_0002_0000_0000,
+                block_hash: 0xE035_0002_0000_0001,
+                ts_ms: 1_700_000_141_002,
+            }),
+            SsbPayload::GrammarModeActivated(GrammarModeActivatedPayload {
+                role_hash: 0xE035_0003_0000_0000,
+                block_hash: 0xE035_0003_0000_0001,
+                ts_ms: 1_700_000_141_003,
+            }),
+            SsbPayload::CodeactActionExecuted(CodeactActionExecutedPayload {
+                action_hash: 0xE035_0004_0000_0000,
+                line_count: 18,
+                outcome_hash: 0xE035_0004_0000_0001,
+                duration_ms: 42,
+                ts_ms: 1_700_000_141_004,
+            }),
+            SsbPayload::SearchReplaceTier1Hit(SearchReplaceTier1HitPayload {
+                file_path_hash: 0xE035_0005_0000_0000,
+                edit_count: 3,
+                ts_ms: 1_700_000_141_005,
+            }),
+            SsbPayload::SearchReplaceCollisionFallback(
+                SearchReplaceCollisionFallbackPayload {
+                    file_path_hash: 0xE035_0006_0000_0000,
+                    collision_token_hash: 0xE035_0006_0000_0001,
+                    ts_ms: 1_700_000_141_006,
+                },
+            ),
+            SsbPayload::CloudStrictSchemaApplied(CloudStrictSchemaAppliedPayload {
+                provider_hash: 0xE035_0007_0000_0000,
+                schema_id_hash: 0xE035_0007_0000_0001,
+                ts_ms: 1_700_000_141_007,
+            }),
+            SsbPayload::GrammarCacheLoaded(GrammarCacheLoadedPayload {
+                compiled_count: 64,
+                cache_hits: 48,
+                cache_misses: 16,
+                total_compile_ms: 4_200,
+                ts_ms: 1_700_000_141_008,
+            }),
+            SsbPayload::StructuredEngineRejected(StructuredEngineRejectedPayload {
+                engine_hash: 0xE035_0009_0000_0000,
+                reason_hash: 0xE035_0009_0000_0001,
+                ts_ms: 1_700_000_141_009,
+            }),
+            SsbPayload::LegacyJsonObjectRefused(LegacyJsonObjectRefusedPayload {
+                provider_hash: 0xE035_000A_0000_0000,
+                ts_ms: 1_700_000_141_010,
+            }),
         ]
     }
 
@@ -21067,8 +21876,8 @@ mod tests {
         let payloads = all_test_payloads();
         assert_eq!(
             payloads.len(),
-            333,
-            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun)",
+            348,
+            "must cover original 32 + 2 CHAT + 1 Tier 4 EXECUTION_MODE_CHANGED + 2 B-10 + 4 B-39 + 6 B-24 + 1 B-28 E-3 + 1 B-28 E-4 + 3 B-28 WIRING-1 + 1 B-30 + 1 B-29 + 5 B-31.5 + 1 B-33-followup + 5 B-40 + 4 B-34 + 3 B-38 + 4 B-42 + 3 B-41 + 4 B-37C + 7 C-1 + 10 C-2 + 1 C-7 + 1 C-8 + 1 C-5 + 3 C-10 + 1 C-13 + 2 C-22 + 3 C-23 + 5 C-25 + 1 C-25-audit + 2 C-26 + 3 C-27 + 1 C-28 + 2 C-29 + 5 C-30 + 5 C-32 + 4 D-1 + 2 E-5 + 2 D-2 + 2 E-1 + 4 E-1 dashboard slice + 2 D-3 + 2 D-4 + 1 D-19 + 1 D-5 + 2 D-6 + 2 D-7 + 2 D-9 + 3 E-46 + 1 D-10 (ClaimRouted) + 1 D-21 (ModeRoutingBenchRunCompleted) + 1 D-11 (CheckerResultEmitted) + 2 D-13 (AdversaryGenerated + ConsensusReevaluatedWithCounter) + 1 D-12 (BabyStepDispatched) + 2 D-16 (ConformalTauComputed + ConformalRefusalDecided) + 1 D-15 (NoveltyClassified) + 1 D-18 (ObservableEffectVerified) + 2 D-17 (RefusalRateSnapshot + RefusalSlaBreach) + 1 D-22 (ConformalValidationCompleted) + 1 D-20 (ARCBenchmarkCompleted) + 4 C-35 (ToolGated + ToolEager + ToolLazyResolved + ToolDenied) + 3 E-27 (QuantBackendSelected + KvCacheDtypeSoftwareSim + AwqCheckpointBuilt) + 3 C-39 (CliMcpDispatch + CliMcpServerStarted + CliMcpServerStopped) + 6 E-15 (FirecrackerRestoreSlow + SnapshotUniquenessRegenerated + SnapshotEvicted + SandboxBackendSelected + AgentForkedFromSnapshot + ResearcherNetEgressBlocked) + 6 E-24 (McpSchemaPinViolation + McpSanitizationRuleApplied + McpBudgetEnforced + McpLegacySseTransport + McpLlmGuardBlocked + AnthropicGatewayDetected) + 3 C-48 (MemoryTierAssigned + MemoryQueryFiltered + SafetyCriticalBlocked) + 8 E-30 (ArgvDestructiveDenied + ArgvApprovalRequired + TrustDialogHookDeferred + TrustDialogEnvDeferred + McpPinVersionRefused + AuditorLineageCollision + UntrustedMemoryWriteBlocked + IncidentRecordCreated) + 4 E-32 (FitmCalibrationApplied + DeepModeActivated + DeepModeEscalationChosen + YarnRefused) + 7 E-51 (MlxSubprocessSpawned + MlxSubprocessKilled + LlamaCppSubprocessSpawned + LlamaCppSubprocessKilled + MlxApplePlatformDetected + LlamaCppEpDetected + RuntimeChainBuilt) + 4 E-17 SP2 (DeepPoolCapped + RrfQualityGateFired + HydeSkippedCodeQuery + RrfComponentWeights) + 4 B-3 (DepAuditCompleted + BaselineRunCompleted + DeterministicAuditRun + RuleTransition) + 1 B-4 (CanaryDrift) + 4 B-7 (TreePositionChanged + FailureRecorded + PackageRefVerified + TechStackDecided) + 1 B-19 (MarkerReport) + 5 B-25 (EmpireConnected + EmpireDisconnected + EmpireEventReceived + EmpireCapabilityInvoked + EmpireRepairProposed) + 3 C-5 (RouteBlocked + WarnLimitReached + CostEstimate) + 1 C-36 (MucocoMutationApplied) + 3 D-3 closure (PpmUnavailable + VerifierDisagreement + CrossContextDispatched) + 3 C-38 (PagerankRun + DkgRebuildStarted + DkgRebuildComplete) + 1 D-4 GAP-2 (TripwireFiredConcurrent) + 1 D-5 closure (ThompsonSampled) + 2 C-41 (SkillTriggered + SkillExecuted) + 2 D-6 closure (HeldOutPromotionGate + HeldOutRefresh) + 3 C-42 (GatewayPolicyAllowed + GatewayPolicyDenied + GatewayHitlPending) + 3 D-7 closure (CrossDomainRegression + CanaryFamilyPass + CanaryInsufficientData) + 1 D-8 closure (ArchiveVerifyResult) + 2 C-43 closure (ScopeFreezeRatified + ScopeFreezeViolated) + 1 C-44 (BackendCostAccrued) + 3 C-45 (AgentRoleDropped + CreditAttributionRun + CreditAttributionResult) + 3 C-46 (SelectiveDelegationDecision + SelectiveDelegationEscalated + SelectiveDelegationCostSaved) + 3 C-47 (ToolCallLogged + ToolCalibrationHintEmitted + ToolCalibrationDriftDetected) + 3 C-49 (PromptPolicyDistillationRun + PromptFragmentSelected + PromptFragmentDiscarded) + 2 D-14 (SycophancyProbeDispatched + SycophancyFlag) + 2 C-50 (ContractTestScaffolded + ContractViolationDetected) + 1 C-52 (DafnyVerifyCompleted) + 1 D-16 closure (CalibrationCorpusUpdated) + 2 E-12 Tier-B (FrameworkProfileSelected + LegacyConfigStripped) + 4 D-18 closure (ObservableEffectDispatched + GoodhartRiskFlag + SandboxObservation + ProductionObservationProposal) + 3 E-13 (TddCycleStarted + TddTestFailed + TddTestPassed) + 4 E-14 (BrowserE2eRunStarted + BrowserE2eAssertionFailed + BrowserE2eAssertionPassed + BrowserE2eSnapshotCaptured) + 4 E-18 (ToolReliabilityGatePassed + ToolReliabilityGateRejected + ToolCallSpilled + ToolCallRetryEscalated) + 9 E-37 (InjectionAttemptDetected + InjectionAttemptBlocked + SpotlightWrapped + SpotlightBreached + ToolDescriptionPinMismatch + CapabilityGateRejected + ProvenanceTagged + PromptArmorVerdict + InjectionFixtureReplayed) + 3 E-40 (SymbolGraphQueried + SymbolGraphCacheLoaded + LspOracleConsulted) + 5 E-44 (CheckpointWritten + CheckpointResumed + CheckpointMigrated + IdempotentDispatchSkipped + DurabilityLockBlocked) + 3 E-45 (CrossLangDriftDetected + CrossLangPairScanned + SchemaVersionMismatch) + 5 E-49 (CodingAgentMetricsCaptured + SweBenchProRunStarted + SweBenchProRunCompleted + RefineBenchScoreEmitted + MetricsAggregationRun) + 4 E-52 Tier-B (DiagnosticProbeDispatched + DiagnosticProbeCompleted + DiagnosticProbeBlock + ScipRefreshCompleted) + 1 E-53 (FormalVerifierCompleted) + 10 E-35 (XgrammarMaskApplied + InstructorModeActivated + GrammarModeActivated + CodeactActionExecuted + SearchReplaceTier1Hit + SearchReplaceCollisionFallback + CloudStrictSchemaApplied + GrammarCacheLoaded + StructuredEngineRejected + LegacyJsonObjectRefused)",
         );
 
         for (i, payload) in payloads.iter().enumerate() {

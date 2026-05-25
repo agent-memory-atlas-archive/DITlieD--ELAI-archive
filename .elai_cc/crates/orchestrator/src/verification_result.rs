@@ -33,6 +33,11 @@ use crate::ppm_client::PpmScore;
 /// L3-locked: agent self-modification must not introduce new kinds; doing so
 /// would silently re-shape the consensus rule. New kinds land via plan-level
 /// schema bumps.
+///
+/// E-53 plan-level extension (SCHEMA 139 -> 140): adds [`Self::Z3SmtCheck`]
+/// as the 5th variant per the lock's documented escape clause "New kinds
+/// land via plan-level schema bumps." See
+/// workflow/reasoning/E-53-decisions.md for the L3-unlock rationale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerifierKind {
@@ -47,6 +52,16 @@ pub enum VerifierKind {
     /// Cross-context agreement — same claim run in two independent context
     /// windows; agreement threshold producer-side.
     CrossContext,
+    /// E-53 plan-level extension (SCHEMA 139 -> 140): Z3 SMT-checker
+    /// outcome. Distinct from `Deterministic` because SMT outcomes carry
+    /// three abstain states (Unknown / Timeout / Inapplicable) that MUST
+    /// NOT contribute to a `VerifierKindHeterogeneous` consensus vote.
+    /// The aggregator treats Z3SmtCheck as a single source family per the
+    /// L3-lock comment; the Z3 binary is RUNPOD-PENDING on the local dev
+    /// host (anti-slopsquatting: no z3 crate dep added in this ship; the
+    /// runner shells out at the boundary and surfaces Inapplicable when
+    /// the binary is absent). See workflow/reasoning/E-53-decisions.md.
+    Z3SmtCheck,
 }
 
 impl VerifierKind {
@@ -58,6 +73,7 @@ impl VerifierKind {
             Self::Intrinsic => "intrinsic",
             Self::Deterministic => "deterministic",
             Self::CrossContext => "cross_context",
+            Self::Z3SmtCheck => "z3_smt_check",
         }
     }
 }
@@ -728,6 +744,7 @@ mod tests {
             VerifierKind::Intrinsic,
             VerifierKind::Deterministic,
             VerifierKind::CrossContext,
+            VerifierKind::Z3SmtCheck,
         ] {
             let s = serde_json::to_string(&k).expect("serialize");
             let back: VerifierKind = serde_json::from_str(&s).expect("deserialize");

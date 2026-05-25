@@ -10,7 +10,7 @@
 //! workflow/reasoning/E-52-decisions.md per the campaign 6-of-6 discipline.
 
 use elai_knowledge::diagnostic::{
-    Diagnostic, DiagnosticProbeOutcome, DiagnosticSeverity, ProbeKind,
+    Diagnostic, DiagnosticProbeOutcome, DiagnosticProbeRunStatus, DiagnosticSeverity, ProbeKind,
 };
 
 #[test]
@@ -62,6 +62,10 @@ fn outcome_counter_consistency() {
         hint_count: 5,
         duration_ms: 1234,
         diagnostics: vec![],
+        // E-52 Tier-B (DRIFT-14 closure): explicit Completed preserves the
+        // Tier-A semantics that "counters are authoritative" while making
+        // the run-status discriminator visible at the contract layer.
+        run_status: DiagnosticProbeRunStatus::Completed,
     };
     // total() must be the sum of the four counters — invariant a future
     // refactor (e.g. adding a Fatal severity above Error) must NOT silently
@@ -84,6 +88,7 @@ fn is_clean_only_checks_errors() {
         hint_count: 0,
         duration_ms: 500,
         diagnostics: vec![],
+        run_status: DiagnosticProbeRunStatus::Completed,
     };
     assert!(
         warnings_only.is_clean(),
@@ -133,8 +138,32 @@ fn outcome_serde_round_trip() {
         hint_count: 0,
         duration_ms: 4200,
         diagnostics: vec![],
+        run_status: DiagnosticProbeRunStatus::Completed,
     };
     let json = serde_json::to_string(&outcome).expect("serialize ok");
     let back: DiagnosticProbeOutcome = serde_json::from_str(&json).expect("deserialize ok");
     assert_eq!(back, outcome);
+}
+
+#[test]
+fn outcome_run_status_back_compat_defaults_to_completed() {
+    // E-52 Tier-B (DRIFT-14 closure) — Tier-A producers that pre-date the
+    // `run_status` field MUST still deserialize cleanly. The field is
+    // `#[serde(default)]` and the enum's `Default` impl returns
+    // `Completed`, so legacy JSON without the field reads as a
+    // completed-run outcome. This is the canonical back-compat pin.
+    let legacy_json = r#"{
+        "kind": "rust_analyzer",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 0,
+        "hint_count": 0,
+        "duration_ms": 100,
+        "diagnostics": []
+    }"#;
+    let outcome: DiagnosticProbeOutcome =
+        serde_json::from_str(legacy_json).expect("legacy payload must parse");
+    assert_eq!(outcome.run_status, DiagnosticProbeRunStatus::Completed);
+    assert!(outcome.is_clean());
+    assert!(outcome.run_status.is_authoritative());
 }

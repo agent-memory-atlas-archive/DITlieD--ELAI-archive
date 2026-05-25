@@ -491,6 +491,10 @@ fn parse_verifier(s: &str) -> Option<VerifierKind> {
         "intrinsic" => Some(VerifierKind::Intrinsic),
         "deterministic" => Some(VerifierKind::Deterministic),
         "cross_context" => Some(VerifierKind::CrossContext),
+        // E-53 plan-level extension (SCHEMA 140): mirror the new VerifierKind
+        // variant on the string-roundtrip helper so mode_routing benchmarks
+        // can reference Z3SmtCheck verdicts when the binary is available.
+        "z3_smt_check" => Some(VerifierKind::Z3SmtCheck),
         _ => None,
     }
 }

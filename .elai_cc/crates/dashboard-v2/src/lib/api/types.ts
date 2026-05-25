@@ -1585,9 +1585,25 @@ export interface LighthouseReport {
 
 export type SandboxTier = 'A++' | 'C-Windows' | 'C-Linux' | 'None';
 
+/** E-15: backend selected by orchestrator::sandbox::select_backend(). */
+export type SandboxBackendKind =
+  | 'Firecracker'
+  | 'Gvisor'
+  | 'AppContainer'
+  | 'None';
+
 export interface SandboxAgentPathCount {
   role: string;
   path_count: number;
+}
+
+/** E-15: a single researcher-net egress reject sampled from the orchestrator
+ *  ring buffer. `ts_ms` is wall-clock millis, `dest_ip` is the destination
+ *  attempted, `reason` is the iptables rule that fired the REJECT. */
+export interface SandboxResearcherNetBlockedAttempt {
+  ts_ms: number;
+  dest_ip: string;
+  reason: string;
 }
 
 /** Sandbox status payload from get_sandbox_status Tauri command. */
@@ -1600,6 +1616,23 @@ export interface SandboxStatus {
   allowed_paths_per_agent: SandboxAgentPathCount[];
   /** Timestamp of last visibility-filter hit in ms, or null if not tracked. */
   last_visibility_filter_hit_ms: number | null;
+  // ---- E-15 (additive) ------------------------------------------------
+  /** Sandbox backend selected at runtime. `None` when no isolation is active
+   *  (e.g. browser-dev fallback). */
+  backend_selected: SandboxBackendKind;
+  /** FirecrackerHotPool snapshot-restore p50 in milliseconds, or null when
+   *  the pool has not recorded any restores yet (cold start / KVM absent). */
+  restore_p50_ms: number | null;
+  /** Number of warm snapshots resident in the FirecrackerHotPool. */
+  snapshot_count: number;
+  /** Process-local counter of `regenerate_uniqueness_seeds` calls. */
+  uniqueness_regenerations_count: number;
+  /** Hostnames pinned in the researcher-net iptables OUTPUT allowlist
+   *  (sourced from [researcher.net].allowed_hosts in elai_cc.toml). */
+  researcher_net_allowed_hosts: string[];
+  /** Sample (last 10) of researcher-net egress attempts blocked by the
+   *  REJECT rule. Empty when no rejects have been recorded. */
+  researcher_net_blocked_attempts: SandboxResearcherNetBlockedAttempt[];
 }
 
 // ------------------------------------------------------------------

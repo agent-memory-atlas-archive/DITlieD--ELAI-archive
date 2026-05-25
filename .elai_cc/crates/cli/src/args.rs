@@ -415,6 +415,21 @@ pub(crate) enum CliAction {
         action: MetricsAction,
         output_format: CliOutputFormat,
     },
+    /// E-35 — `elai structured-output <sub>` — structured-output substrate
+    /// operator surface. Anchors the host-side substrate
+    /// (`codeact_sandbox::execute_code_act`,
+    /// `CloudGroundingClient::mark_strict_schema_applied`, the 10 E-35
+    /// SSB beacons, the `GrammarCompilePanel` placeholder producer) as
+    /// production-callable so they are not WIRE-DARK per
+    /// E40_WIRE_DARK_AVOIDANCE_VIA_CLI. Python sidecar wiring
+    /// (XGrammarLogitsProcessor + tool_parser.py) is RUNPOD-PENDING and
+    /// owned by a separate session. Handler at
+    /// crates/cli/src/structured_output_cmd.rs. See
+    /// `workflow/reasoning/E-35-decisions.md`.
+    StructuredOutput {
+        action: StructuredOutputAction,
+        output_format: CliOutputFormat,
+    },
     /// D-16: `elai conformal-calibration <status|update>` — durable
     /// UniCR tau threshold surface driven by
     /// `crate::conformal_calibration_cli`. Paper-grounded against
@@ -489,6 +504,22 @@ pub(crate) enum CliAction {
     /// precedents).
     Tdd {
         action: TddAction,
+        output_format: CliOutputFormat,
+    },
+    /// E-53: `elai formal-verify <run|status>` — formal-verify
+    /// pipeline CLI surface driven by `crate::formal_verify_cmd`.
+    /// Composes the orchestrator's `formal_verify` module (which
+    /// composes C-50 `contract_coding` + C-52 `dafny_verify`) and
+    /// emits the `formal_verifier_completed` SSB beacon at the
+    /// pipeline boundary. `run` dispatches a single verifier against
+    /// a target; `status` prints the available verifier toolchains +
+    /// each one's RUNPOD-PENDING status. Live Z3 / Kani / Verus
+    /// dispatch is RUNPOD-PENDING; Dafny dispatch reuses C-52
+    /// `invoke_dafny_cli` and surfaces toolchain absence as
+    /// `RunpodPending`. Gemma-4 BLOCKED per memory
+    /// `feedback_no_gemma4`.
+    FormalVerify {
+        action: FormalVerifyAction,
         output_format: CliOutputFormat,
     },
     /// D-2: `elai ppm health [--endpoint URL] [--timeout SECS] [--json]`.
@@ -734,6 +765,15 @@ pub(crate) enum SymbolGraphAction {
     /// `elai scip import --dir <path>` — enumerate SCIP shards under
     /// `<path>` (default `.claude/tools/scip_indices/`).
     ImportScip { dir: String },
+    /// E-52 Tier-B — `elai scip lsp-probe --symbol NAME --language SLUG
+    /// [--mode probe|full_handshake]`. Production caller for the
+    /// `symbol_graph::lsp_oracle` JSON-RPC handshake path; defeats the
+    /// E37_WIRE_DARK_GAP_PATTERN by giving the new
+    /// `oracle_lookup_with_mode` function a real production call site.
+    /// `--mode probe` (default) preserves the E-40 `--version` smoke
+    /// probe; `--mode full_handshake` runs the LSP base-protocol v3.17
+    /// initialize/initialized/shutdown/exit dance.
+    LspProbe { symbol: String, language: String, mode: String },
 }
 
 /// E-37 — `elai safety <sub>` sub-verb. Prompt-injection defense
@@ -940,6 +980,38 @@ pub(crate) enum DafnyAction {
     /// list (Contextless / Signature / SelfHealing per RQ1/RQ2/RQ3)
     /// so operators can see what `--tier` accepts.
     ListTiers,
+}
+
+/// E-53 — `elai formal-verify <sub>` sub-verb. Drives the
+/// orchestrator's `formal_verify` module (composing C-50
+/// contract_coding + C-52 dafny_verify under a CSQ-classifier gate).
+///
+/// `run --target PATH --verifier KIND` dispatches one verifier
+/// (z3_smt | dafny | kani | verus) against a target path. `status`
+/// reports each toolchain's RUNPOD-PENDING posture (all 4 are
+/// expected absent on local dev hosts per memory + C-52 substrate).
+///
+/// Citation discipline (per workflow/sessions/s-25120/mistakes.md):
+/// the E-53 plan cites 14 arXiv IDs; only 3 (arXiv:2604.22601 NL2VC,
+/// arXiv:2501.03124 PRMBench, AlphaProof Nature 2025) are inline-
+/// cited in the formal_verify mod docstring. The other 11 are
+/// deferred to mistakes.md cite-incident #11 (E-53-INGEST-pending).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FormalVerifyAction {
+    /// `elai formal-verify run --target PATH --verifier KIND` —
+    /// dispatch one verifier against a target file. KIND must be one
+    /// of `z3_smt` / `dafny` / `kani` / `verus`. Z3 / Kani / Verus
+    /// routes are RUNPOD-PENDING stubs returning Inapplicable in the
+    /// lean E-53 ship; Dafny route reuses C-52 invoke_dafny_cli and
+    /// surfaces RunpodPending when the binary is absent.
+    Run {
+        target: String,
+        verifier: String,
+    },
+    /// `elai formal-verify status` — print the 4 verifier toolchains
+    /// + each one's RUNPOD-PENDING posture + the substitute-models
+    /// list inherited from C-52 (Gemma-4 BLOCKED per memory).
+    Status,
 }
 
 /// E-13 — `elai tdd <sub>` sub-verb. Drives the orchestrator's
@@ -1459,6 +1531,21 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // handler at crates/cli/src/metrics_cmd.rs. WIRE-DARK avoidance
         // per E-41 precedent. See workflow/reasoning/E-49-decisions.md.
         "metrics" => parse_metrics_subcommand_args(&rest[1..], output_format),
+        // E-35 — `elai structured-output status|codeact-run|strict-mode|
+        // grammar emit-test|search-replace check|reject-engine`.
+        // Structured-output substrate operator surface (XGrammar /
+        // INSTRUCTOR / CodeAct / SEARCH/REPLACE / cloud strict-schema).
+        // WIRE-DARK avoidance per E40_WIRE_DARK_AVOIDANCE_VIA_CLI:
+        // every new SSB beacon variant in the +10 atomic bump has at
+        // least one production caller via this subverb tree. Python
+        // sidecar wiring is RUNPOD-PENDING; AgentRole::Runner DEFERRED
+        // per E41_AGENTROLE_FROZEN_AT_17 (CodeAct routes through
+        // existing role + RuntimeBackend). Handler at
+        // crates/cli/src/structured_output_cmd.rs. See
+        // workflow/reasoning/E-35-decisions.md.
+        "structured-output" => {
+            parse_structured_output_subcommand_args(&rest[1..], output_format)
+        }
         // E-37 — `elai safety status|list-pins|verify-pins|fixture-replay`.
         // Prompt-injection defense operator surface; handler at
         // crates/cli/src/safety_cmd.rs. Layers additively atop E-24 +
@@ -1495,6 +1582,19 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // (model substitution mandatory — Gemma 4 BLOCKED per
         // memory feedback_no_gemma4).
         "dafny" => parse_dafny_subcommand_args(&rest[1..], output_format),
+        // E-53 — `elai formal-verify run|status`. Formal-verify
+        // pipeline CLI surface; handler at
+        // crates/cli/src/formal_verify_cmd.rs. Composes
+        // orchestrator::formal_verify (which composes C-50
+        // contract_coding + C-52 dafny_verify). Live Z3 / Kani /
+        // Verus dispatch is RUNPOD-PENDING; Dafny dispatch reuses
+        // C-52 invoke_dafny_cli. Gemma-4 BLOCKED per memory
+        // feedback_no_gemma4. Mirrors C-52 dafny subcommand shape +
+        // the snake-case variant convention. Also accepts the
+        // underscore variant (`formal_verify`) for caller ergonomics.
+        "formal-verify" | "formal_verify" => {
+            parse_formal_verify_subcommand_args(&rest[1..], output_format)
+        }
         // E-13 — `elai tdd run|status|mutation-score`. TDD verifier
         // agent CLI surface; handler at crates/cli/src/tdd_cmd.rs.
         // Composes with orchestrator::tdd_verifier (Red/Green/
@@ -3699,9 +3799,68 @@ pub(crate) fn parse_scip_subcommand_args(
                 output_format,
             })
         }
+        "lsp-probe" => {
+            // E-52 Tier-B — production caller for the lsp_oracle JSON-RPC
+            // handshake path. Flag-walking pattern mirrors `scip query`
+            // for consistency.
+            let mut symbol: Option<String> = None;
+            let mut language: Option<String> = None;
+            let mut mode: String = "probe".to_string();
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--symbol" => {
+                        symbol = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| "missing value for `--symbol`".to_string())?
+                                .clone(),
+                        );
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--symbol=") => {
+                        symbol = Some(flag["--symbol=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--language" => {
+                        language = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| "missing value for `--language`".to_string())?
+                                .clone(),
+                        );
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--language=") => {
+                        language = Some(flag["--language=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--mode" => {
+                        mode = args
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--mode`".to_string())?
+                            .clone();
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--mode=") => {
+                        mode = flag["--mode=".len()..].to_string();
+                        i += 1;
+                    }
+                    other => return Err(format!("unknown `scip lsp-probe` argument: {other}")),
+                }
+            }
+            let symbol = symbol.ok_or_else(|| {
+                "`scip lsp-probe` requires --symbol <NAME>".to_string()
+            })?;
+            let language = language.ok_or_else(|| {
+                "`scip lsp-probe` requires --language <rust|python|typescript|go>".to_string()
+            })?;
+            Ok(CliAction::SymbolGraph {
+                action: SymbolGraphAction::LspProbe { symbol, language, mode },
+                output_format,
+            })
+        }
         other => Err(format!(
             "unknown `scip` sub-action `{other}`; \
-             expected one of: query, defs, refs, callers, callees, pagerank, status, import"
+             expected one of: query, defs, refs, callers, callees, pagerank, status, import, lsp-probe"
         )),
     }
 }
@@ -4169,6 +4328,91 @@ pub(crate) fn parse_dafny_subcommand_args(
         other => Err(format!(
             "unknown `dafny` sub-action `{other}`; \
              expected one of: verify, status, list-tiers"
+        )),
+    }
+}
+
+/// E-53 — parse `elai formal-verify <sub>` arguments. Two sub-actions:
+///   `elai formal-verify run --target PATH --verifier KIND`
+///   `elai formal-verify status`
+///
+/// Mirrors the C-52 dafny parser shape for consistency. KIND must be
+/// one of `z3_smt` / `dafny` / `kani` / `verus`. Live Z3 / Kani /
+/// Verus dispatch is RUNPOD-PENDING in the lean E-53 ship (the
+/// pipeline returns `Inapplicable` with a `<verifier>_stub` reason);
+/// Dafny dispatch reuses C-52 `invoke_dafny_cli` and surfaces
+/// `RunpodPending` when the binary is absent on the local dev host.
+/// Gemma-4 BLOCKED per memory `feedback_no_gemma4`.
+pub(crate) fn parse_formal_verify_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| {
+            "missing `formal-verify` sub-action; expected one of: run, status".to_string()
+        })?
+        .as_str();
+    match sub {
+        "run" => {
+            let mut target: Option<String> = None;
+            let mut verifier: Option<String> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--target" => {
+                        let value = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--target`".to_string())?;
+                        target = Some(value.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--target=") => {
+                        target = Some(flag["--target=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--verifier" => {
+                        let value = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--verifier`".to_string())?;
+                        verifier = Some(value.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--verifier=") => {
+                        verifier = Some(flag["--verifier=".len()..].to_string());
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `formal-verify run` argument: {other}"));
+                    }
+                }
+            }
+            let target = target.ok_or_else(|| {
+                "`formal-verify run` requires --target <PATH>".to_string()
+            })?;
+            let verifier = verifier.ok_or_else(|| {
+                "`formal-verify run` requires --verifier <z3_smt|dafny|kani|verus>".to_string()
+            })?;
+            Ok(CliAction::FormalVerify {
+                action: FormalVerifyAction::Run { target, verifier },
+                output_format,
+            })
+        }
+        "status" => {
+            if rest.len() > 1 {
+                return Err(format!(
+                    "unexpected argument after `formal-verify status`: {}",
+                    rest[1]
+                ));
+            }
+            Ok(CliAction::FormalVerify {
+                action: FormalVerifyAction::Status,
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `formal-verify` sub-action `{other}`; \
+             expected one of: run, status"
         )),
     }
 }
@@ -5151,6 +5395,57 @@ pub(crate) fn parse_drift_subcommand_args(
     }
 }
 
+/// E-35 — `elai structured-output <sub>` sub-verb. Anchors the
+/// host-side structured-output substrate (codeact_sandbox + cloud
+/// strict-schema marker + SearchReplaceMatcher smoke + grammar cache
+/// emit-test) as production callable. WIRE-DARK avoidance per
+/// E40_WIRE_DARK_AVOIDANCE_VIA_CLI. Each subverb emits at least one
+/// of the 10 new E-35 SSB beacons so no variant ships unwired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StructuredOutputAction {
+    /// `elai structured-output status` — print the 10 E-35 SSB action
+    /// types + host-side wired primitives + RUNPOD-PENDING boundaries.
+    /// GPU-free synthetic snapshot.
+    Status,
+    /// `elai structured-output codeact-run --python CODE [--allow TOOL]...`
+    /// — invoke `codeact_sandbox::execute_code_act` against the
+    /// supplied Python snippet (Runner-role-FREE). Returns
+    /// SandboxAbsent when no sandbox is wired (RUNPOD-PENDING).
+    /// Emits a `CodeactActionExecuted` SSB row regardless of outcome.
+    CodeactRun {
+        python: String,
+        allow: Vec<String>,
+    },
+    /// `elai structured-output strict-mode --provider P --schema-id S
+    /// --mode MODE` — invoke
+    /// `CloudGroundingClient::mark_strict_schema_applied`. Emits a
+    /// `CloudStrictSchemaApplied` SSB row when `mode != json_object`;
+    /// refuses + emits `LegacyJsonObjectRefused` SSB row when
+    /// `mode == json_object`.
+    StrictModeMark {
+        provider: String,
+        schema_id: String,
+        mode: String,
+    },
+    /// `elai structured-output grammar emit-test` — emit a synthetic
+    /// `GrammarCacheLoaded` SSB row (host-side smoke). Real producer
+    /// is the Python sidecar's `compile_all_schemas_at_boot`
+    /// (RUNPOD-PENDING).
+    GrammarEmitTest,
+    /// `elai structured-output search-replace check --path PATH
+    /// --buffer-text TEXT` — exercise
+    /// `SearchReplaceMatcher`/`DelimiterCollisionGuard` against the
+    /// supplied buffer text. Emits either
+    /// `SearchReplaceTier1Hit` or `SearchReplaceCollisionFallback`
+    /// SSB row depending on whether ELAI fences collide with the buffer.
+    SearchReplaceCheck { path: String, buffer_text: String },
+    /// `elai structured-output reject-engine --engine ENGINE
+    /// --reason REASON` — emit a `StructuredEngineRejected` SSB row
+    /// recording that an alternative engine (lm-format-enforcer) is
+    /// being refused in favour of canonical XGrammar.
+    RejectEngine { engine: String, reason: String },
+}
+
 /// E-49 — `elai metrics <sub>` sub-verb. Anchors the orchestrator's
 /// `coding_metrics::*` module as the production callable for the
 /// coding-agent metric suite. WIRE-DARK avoidance per E-41 precedent.
@@ -5264,6 +5559,258 @@ pub(crate) fn parse_metrics_subcommand_args(
         other => Err(format!(
             "unknown `metrics` sub-action: {other}; expected one of: \
              capture, swe-bench-pro, refinebench, aggregate, status"
+        )),
+    }
+}
+
+pub(crate) fn parse_structured_output_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| {
+            "missing `structured-output` sub-action; expected one of: status, \
+             codeact-run, strict-mode, grammar, search-replace, reject-engine"
+                .to_string()
+        })?
+        .as_str();
+    match sub {
+        "status" => {
+            if rest.len() > 1 {
+                return Err(format!(
+                    "unexpected argument after `structured-output status`: {}",
+                    rest[1]
+                ));
+            }
+            Ok(CliAction::StructuredOutput {
+                action: StructuredOutputAction::Status,
+                output_format,
+            })
+        }
+        "codeact-run" => {
+            let mut python: Option<String> = None;
+            let mut allow: Vec<String> = Vec::new();
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--python" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--python`".to_string())?;
+                        python = Some(v.clone());
+                        i += 2;
+                    }
+                    "--allow" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--allow`".to_string())?;
+                        allow.push(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--python=") => {
+                        python = Some(flag["--python=".len()..].to_string());
+                        i += 1;
+                    }
+                    flag if flag.starts_with("--allow=") => {
+                        allow.push(flag["--allow=".len()..].to_string());
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `structured-output codeact-run` arg: {other}"
+                        ))
+                    }
+                }
+            }
+            let python = python.ok_or_else(|| {
+                "`structured-output codeact-run` requires --python".to_string()
+            })?;
+            Ok(CliAction::StructuredOutput {
+                action: StructuredOutputAction::CodeactRun { python, allow },
+                output_format,
+            })
+        }
+        "strict-mode" => {
+            let mut provider: Option<String> = None;
+            let mut schema_id: Option<String> = None;
+            let mut mode: Option<String> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--provider" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--provider`".to_string())?;
+                        provider = Some(v.clone());
+                        i += 2;
+                    }
+                    "--schema-id" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--schema-id`".to_string())?;
+                        schema_id = Some(v.clone());
+                        i += 2;
+                    }
+                    "--mode" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--mode`".to_string())?;
+                        mode = Some(v.clone());
+                        i += 2;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `structured-output strict-mode` arg: {other}"
+                        ))
+                    }
+                }
+            }
+            let provider = provider.ok_or_else(|| {
+                "`structured-output strict-mode` requires --provider".to_string()
+            })?;
+            let schema_id = schema_id.ok_or_else(|| {
+                "`structured-output strict-mode` requires --schema-id".to_string()
+            })?;
+            let mode = mode.ok_or_else(|| {
+                "`structured-output strict-mode` requires --mode".to_string()
+            })?;
+            Ok(CliAction::StructuredOutput {
+                action: StructuredOutputAction::StrictModeMark {
+                    provider,
+                    schema_id,
+                    mode,
+                },
+                output_format,
+            })
+        }
+        "grammar" => {
+            let sub2 = rest
+                .get(1)
+                .ok_or_else(|| {
+                    "missing `grammar` sub-sub-action; expected: emit-test".to_string()
+                })?
+                .as_str();
+            match sub2 {
+                "emit-test" => {
+                    if rest.len() > 2 {
+                        return Err(format!(
+                            "unexpected argument after `structured-output grammar \
+                             emit-test`: {}",
+                            rest[2]
+                        ));
+                    }
+                    Ok(CliAction::StructuredOutput {
+                        action: StructuredOutputAction::GrammarEmitTest,
+                        output_format,
+                    })
+                }
+                other => Err(format!(
+                    "unknown `structured-output grammar` sub-action: {other}; \
+                     expected: emit-test"
+                )),
+            }
+        }
+        "search-replace" => {
+            let sub2 = rest
+                .get(1)
+                .ok_or_else(|| {
+                    "missing `search-replace` sub-sub-action; expected: check".to_string()
+                })?
+                .as_str();
+            match sub2 {
+                "check" => {
+                    let mut path: Option<String> = None;
+                    let mut buffer_text: Option<String> = None;
+                    let mut i = 2;
+                    while i < rest.len() {
+                        match rest[i].as_str() {
+                            "--path" => {
+                                let v = rest.get(i + 1).ok_or_else(|| {
+                                    "missing value for `--path`".to_string()
+                                })?;
+                                path = Some(v.clone());
+                                i += 2;
+                            }
+                            "--buffer-text" => {
+                                let v = rest.get(i + 1).ok_or_else(|| {
+                                    "missing value for `--buffer-text`".to_string()
+                                })?;
+                                buffer_text = Some(v.clone());
+                                i += 2;
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown `structured-output search-replace check` \
+                                     arg: {other}"
+                                ))
+                            }
+                        }
+                    }
+                    let path = path.ok_or_else(|| {
+                        "`structured-output search-replace check` requires --path"
+                            .to_string()
+                    })?;
+                    let buffer_text = buffer_text.ok_or_else(|| {
+                        "`structured-output search-replace check` requires \
+                         --buffer-text"
+                            .to_string()
+                    })?;
+                    Ok(CliAction::StructuredOutput {
+                        action: StructuredOutputAction::SearchReplaceCheck {
+                            path,
+                            buffer_text,
+                        },
+                        output_format,
+                    })
+                }
+                other => Err(format!(
+                    "unknown `structured-output search-replace` sub-action: {other}; \
+                     expected: check"
+                )),
+            }
+        }
+        "reject-engine" => {
+            let mut engine: Option<String> = None;
+            let mut reason: Option<String> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--engine" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--engine`".to_string())?;
+                        engine = Some(v.clone());
+                        i += 2;
+                    }
+                    "--reason" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--reason`".to_string())?;
+                        reason = Some(v.clone());
+                        i += 2;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `structured-output reject-engine` arg: {other}"
+                        ))
+                    }
+                }
+            }
+            let engine = engine.ok_or_else(|| {
+                "`structured-output reject-engine` requires --engine".to_string()
+            })?;
+            let reason = reason.ok_or_else(|| {
+                "`structured-output reject-engine` requires --reason".to_string()
+            })?;
+            Ok(CliAction::StructuredOutput {
+                action: StructuredOutputAction::RejectEngine { engine, reason },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `structured-output` sub-action: {other}; expected one of: \
+             status, codeact-run, strict-mode, grammar, search-replace, reject-engine"
         )),
     }
 }

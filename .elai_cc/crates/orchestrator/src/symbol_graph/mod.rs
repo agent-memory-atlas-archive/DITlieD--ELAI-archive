@@ -51,7 +51,9 @@ pub use cache::{SymbolGraphCache, SymbolGraphCacheError, SymbolNode};
 // by the same `codebase_mapper.py` pipeline. See
 // workflow/reasoning/E-40-decisions.md DECISION-1 + DECISION-5.
 pub use legacy_b2::{SymbolGraph, SymbolGraphError, SymbolRecord, SymbolTag};
-pub use lsp_oracle::{oracle_lookup, LspOracleError, OracleAnswer, OracleKind};
+pub use lsp_oracle::{
+    oracle_lookup, oracle_lookup_with_mode, LspMode, LspOracleError, OracleAnswer, OracleKind,
+};
 pub use pagerank::{personalized_top_k, RankedSymbol};
 pub use query::{find_callees, find_callers, find_defs, find_refs, QueryError, SymbolMatch};
 pub use scip_import::{import_scip_indices, ScipImportError};

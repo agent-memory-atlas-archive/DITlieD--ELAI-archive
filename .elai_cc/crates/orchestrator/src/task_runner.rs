@@ -1221,6 +1221,15 @@ pub struct AgentPoolBabyStepExecutor<E: elai_core::EntropySource + Send + 'stati
     /// Wrapped in Mutex so execute(&self) can take the sender without &mut self.
     #[cfg(any(test, feature = "test-support"))]
     socket_path_notifier: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PathBuf>>>,
+    /// E-15: opt-in Firecracker hot snapshot-restore pool. When `Some`, the
+    /// executor calls `pool.spawn_from_snapshot()` before
+    /// `launch_agent_process` so the agent process restores from a per-(agent_id,
+    /// role) snapshot instead of cold-booting. On KVM-absent hosts (Windows,
+    /// Linux without /dev/kvm) the pool returns `FirecrackerError::KvmUnavailable`
+    /// which is treated as RUNPOD-PENDING and silently bypassed; the executor
+    /// falls through to the standard launch_agent_process path. None is the
+    /// production default until the dashboard wires the toml-driven config.
+    firecracker_pool: Option<Arc<crate::sandbox::FirecrackerHotPool>>,
 }
 
 /// Default timeout for a single baby-step agent execution (matches
@@ -1258,7 +1267,23 @@ impl<E: elai_core::EntropySource + Send + 'static> AgentPoolBabyStepExecutor<E> 
             clock: Arc::new(OsClock),
             #[cfg(any(test, feature = "test-support"))]
             socket_path_notifier: std::sync::Mutex::new(None),
+            firecracker_pool: None,
         }
+    }
+
+    /// E-15: install a Firecracker hot snapshot-restore pool. When set the
+    /// executor calls `pool.spawn_from_snapshot()` before
+    /// `launch_agent_process`; on KVM-absent hosts the pool returns
+    /// `KvmUnavailable` and the executor falls through to the cold-boot path.
+    /// The result is observable via `tracing` (SSB enqueue requires
+    /// `Arc<SsbWriter>` plumbing tracked in a follow-on patch).
+    #[must_use]
+    pub fn with_firecracker_pool(
+        mut self,
+        pool: Arc<crate::sandbox::FirecrackerHotPool>,
+    ) -> Self {
+        self.firecracker_pool = Some(pool);
+        self
     }
 
     /// C-15: override the `ClockProvider` (default is `Arc<OsClock>`).
@@ -1401,6 +1426,53 @@ impl<E: elai_core::EntropySource + Send + 'static> BabyStepExecutor
                     };
                 }
             };
+
+            // E-15 (M2): if a FirecrackerHotPool is wired, attempt
+            // per-(agent_id, role) snapshot restore BEFORE the cold launch
+            // path. On KVM-absent hosts (Windows, Linux without /dev/kvm) the
+            // pool returns `FirecrackerError::KvmUnavailable` which is the
+            // canonical RUNPOD-PENDING signal (mirrors E-49/E-52/E-53). We do
+            // NOT short-circuit launch_agent_process: spawn_from_snapshot is
+            // additive observability today; agent processes still go through
+            // `pool.launch_agent_process` so the cold-boot path keeps working
+            // unchanged. tracing emit only — SsbWriter plumbing deferred to
+            // a follow-on patch tracked under workflow/reasoning/E-15-decisions.md.
+            if let Some(fc_pool) = self.firecracker_pool.as_ref() {
+                let key = crate::sandbox::SnapshotKey {
+                    agent_id,
+                    role: self.role,
+                };
+                match fc_pool.spawn_from_snapshot(
+                    &key,
+                    self.agent_binary_path.to_string_lossy().as_ref(),
+                    &[],
+                ) {
+                    Ok(result) => {
+                        tracing::debug!(
+                            agent_id = %agent_id,
+                            role = ?self.role,
+                            was_cold_boot = result.was_cold_boot,
+                            restore_ms = result.restore_ms,
+                            budget_exceeded = result.budget_exceeded,
+                            uniqueness_regenerated = result.uniqueness_regenerated,
+                            "agent_forked_from_snapshot: firecracker hot pool dispatch ok"
+                        );
+                    }
+                    Err(crate::sandbox::firecracker::FirecrackerError::KvmUnavailable) => {
+                        tracing::trace!(
+                            agent_id = %agent_id,
+                            "firecracker_pool: KVM unavailable on this host, RUNPOD-PENDING (cold-boot fallback active)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            error = %e,
+                            "firecracker_pool: spawn_from_snapshot failed; cold-boot fallback"
+                        );
+                    }
+                }
+            }
 
             // Ensure socket directory exists.
             if let Err(e) = std::fs::create_dir_all(&self.socket_dir) {

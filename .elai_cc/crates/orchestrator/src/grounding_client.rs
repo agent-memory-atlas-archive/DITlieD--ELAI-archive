@@ -18,6 +18,23 @@ use crate::research_tree::{
     Alternative, ConvergenceStatus, EvidenceLevel, ResearchReport, ResearchTreeSnapshot,
     SubQuestionResult,
 };
+use crate::ssb::SsbPayload;
+
+/// E-35 helper — derive a deterministic `u64` from a domain-tagged blake3
+/// hash so per-provider / per-schema labels can be carried on SSB payloads
+/// without storing the raw label. Domain tag namespaces the hash so the
+/// same label hashes distinctly per field (provider_hash vs schema_id_hash).
+fn e35_blake3_u64_prefix(domain: &[u8], label: &str) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    hasher.update(label.as_bytes());
+    let digest = hasher.finalize();
+    let bytes = digest.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
 
 // ---------------------------------------------------------------------------
 // Constants — named per codeRules (no magic numbers).
@@ -482,6 +499,92 @@ impl CloudGroundingClient {
     pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
         self.task_id = task_id.into();
         self
+    }
+
+    /// E-35 — emit a `CloudStrictSchemaApplied` SSB beacon recording that
+    /// a strict-schema directive is being applied for the supplied
+    /// `(provider, schema_id)` pair. Anthropic / OpenAI / Gemini have
+    /// distinct strict-mode bodies (Anthropic
+    /// `structured-outputs-2025-11-13` beta header / OpenAI `strict:true`
+    /// / Gemini `responseJsonSchema`); the request-body shape is wired
+    /// at the existing `build_request_with_decoding` Tool-API path which
+    /// is the Sonnet-supported strict-schema entry. Header propagation
+    /// to the AnthropicClient surface (the canonical `anthropic-beta`
+    /// list) is RUNPOD-PENDING (provider-crate extension — see
+    /// `workflow/reasoning/E-35-decisions.md` DECISION-3).
+    ///
+    /// Refuses loud per plan L67 when the caller requests the legacy
+    /// vendor `json_object` mode: returns `GroundingError::RequestFailed`
+    /// and emits a `LegacyJsonObjectRefused` SSB row. Never silent
+    /// fallback.
+    ///
+    /// The `provider_label` is one of "anthropic" / "openai" / "gemini"
+    /// — used to derive the blake3-prefixed `provider_hash` field on
+    /// the SSB payload (hashed so the wire format is privacy-preserving
+    /// across providers).
+    ///
+    /// `now_ms` is injected so call sites use a deterministic clock
+    /// (never `std::time::SystemTime` per the entropy quarantine rule).
+    pub async fn mark_strict_schema_applied(
+        &self,
+        provider_label: &str,
+        schema_id: &str,
+        mode_label: &str,
+        now_ms: u64,
+    ) -> Result<(), GroundingError> {
+        // Refuse legacy json_object loud. Per plan L67 + cite-discipline
+        // CITE-RECORD #11: vendor json_object dropped quality vs strict
+        // schemas across all three providers per "When Correct Isn't
+        // Usable" (referenced by name only — arXiv DEFERRED to mistakes.md
+        // cite-incident cluster #13).
+        if mode_label.eq_ignore_ascii_case("json_object") {
+            if let Some(ssb) = &self.ssb_writer {
+                let provider_hash = e35_blake3_u64_prefix(b"cloud.provider.", provider_label);
+                let payload =
+                    SsbPayload::LegacyJsonObjectRefused(crate::ssb::LegacyJsonObjectRefusedPayload {
+                        provider_hash,
+                        ts_ms: now_ms,
+                    });
+                if let Err(err) = ssb
+                    .write_payload("cloud_grounding", 0, payload, Vec::new())
+                    .await
+                {
+                    tracing::warn!(
+                        target: "cloud_grounding",
+                        error = %err,
+                        "failed to emit LegacyJsonObjectRefused SSB row"
+                    );
+                }
+            }
+            return Err(GroundingError::RequestFailed {
+                reason: format!(
+                    "legacy json_object mode refused for provider={provider_label}; \
+                     use strict json_schema instead"
+                ),
+            });
+        }
+
+        if let Some(ssb) = &self.ssb_writer {
+            let provider_hash = e35_blake3_u64_prefix(b"cloud.provider.", provider_label);
+            let schema_id_hash = e35_blake3_u64_prefix(b"cloud.schema_id.", schema_id);
+            let payload =
+                SsbPayload::CloudStrictSchemaApplied(crate::ssb::CloudStrictSchemaAppliedPayload {
+                    provider_hash,
+                    schema_id_hash,
+                    ts_ms: now_ms,
+                });
+            if let Err(err) = ssb
+                .write_payload("cloud_grounding", 0, payload, Vec::new())
+                .await
+            {
+                tracing::warn!(
+                    target: "cloud_grounding",
+                    error = %err,
+                    "failed to emit CloudStrictSchemaApplied SSB row"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Construct from env: resolves auth via `AuthSource::from_env_or_saved`,
@@ -1197,7 +1300,7 @@ impl ResearchDispatcher for HttpCosmosResearchDispatcher {
 use elai_knowledge::cosmos_worker::SsbEmitter as KnowledgeSsbEmitter;
 use crate::ssb::{
     CosmosArtifactDecayedPayload, CosmosArtifactUpdatedPayload, CosmosRefreshStartedPayload,
-    Ssb, SsbPayload,
+    Ssb,
 };
 
 /// Constant agent id for SSB rows emitted by the in-process cosmos tick.

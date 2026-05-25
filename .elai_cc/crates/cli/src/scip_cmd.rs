@@ -18,7 +18,8 @@
 use std::path::PathBuf;
 
 use elai_orchestrator::symbol_graph::{
-    self, oracle_lookup, personalized_top_k, OracleKind, SymbolGraphCache,
+    self, oracle_lookup, oracle_lookup_with_mode, personalized_top_k, LspMode, OracleKind,
+    SymbolGraphCache,
 };
 use serde::Serialize;
 
@@ -39,6 +40,9 @@ pub(crate) fn run(
         SymbolGraphAction::PageRank { seed, k } => run_pagerank(&seed, k, output_format),
         SymbolGraphAction::Status => run_status(output_format),
         SymbolGraphAction::ImportScip { dir } => run_import(&dir, output_format),
+        SymbolGraphAction::LspProbe { symbol, language, mode } => {
+            run_lsp_probe(&symbol, &language, &mode, output_format)
+        }
     }
 }
 
@@ -161,12 +165,11 @@ fn run_import(dir: &str, output_format: CliOutputFormat) -> Result<(), String> {
     emit(&report, output_format)
 }
 
-/// Best-effort oracle probe exposed to the dispatcher. NOT wired to a
-/// dedicated sub-verb yet — kept here so the WIRE-DARK guard can still
-/// grep `scip_cmd::oracle_probe` as a production caller for
-/// `symbol_graph::lsp_oracle::oracle_lookup`. Returns the synthetic
-/// answer when the toolchain is absent (the documented RUNPOD-PENDING
-/// path).
+/// Best-effort oracle probe exposed to the dispatcher. Wrapper around
+/// the default-mode `oracle_lookup` for back-compat with the E-40
+/// WIRE-DARK guard; the new `lsp-probe` sub-verb (E-52 Tier-B) drives
+/// the explicit-mode variant. Returns the synthetic answer when the
+/// toolchain is absent (the documented RUNPOD-PENDING path).
 #[allow(dead_code)]
 pub(crate) async fn oracle_probe(
     symbol: &str,
@@ -175,6 +178,63 @@ pub(crate) async fn oracle_probe(
     oracle_lookup(symbol, language)
         .await
         .map_err(|e| format!("{e}"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LspProbeReport {
+    pub symbol: String,
+    pub language: String,
+    pub mode: String,
+    pub binary: String,
+    pub invoked: bool,
+}
+
+/// E-52 Tier-B — production caller for
+/// `symbol_graph::lsp_oracle::oracle_lookup_with_mode`. Bridges the
+/// async oracle into the synchronous CLI dispatcher via a per-call
+/// `tokio::runtime::Runtime` (matches the safety_cmd async-bridging
+/// pattern; no new top-level runtime required because main.rs is
+/// already synchronous on this path).
+fn run_lsp_probe(
+    symbol: &str,
+    language: &str,
+    mode: &str,
+    output_format: CliOutputFormat,
+) -> Result<(), String> {
+    if symbol.is_empty() {
+        return Err("scip lsp-probe: --symbol must be non-empty".to_string());
+    }
+    let lsp_mode = match mode.to_ascii_lowercase().as_str() {
+        "probe" | "" => LspMode::Probe,
+        "full_handshake" | "handshake" | "full" => LspMode::FullHandshake,
+        other => {
+            return Err(format!(
+                "scip lsp-probe: unknown --mode '{other}' (expected probe|full_handshake)"
+            ));
+        }
+    };
+    // Validate language slug up-front so the synchronous error path
+    // surfaces cleanly without spinning up a runtime.
+    if OracleKind::from_slug(language).is_none() {
+        return Err(format!(
+            "scip lsp-probe: unsupported language '{language}' (rust|python|typescript|go)"
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("scip lsp-probe: runtime build failed: {e}"))?;
+    let answer = runtime
+        .block_on(oracle_lookup_with_mode(symbol, language, lsp_mode))
+        .map_err(|e| format!("scip lsp-probe: {e}"))?;
+    let report = LspProbeReport {
+        symbol: answer.symbol,
+        language: language.to_string(),
+        mode: lsp_mode.as_str().to_string(),
+        binary: answer.binary,
+        invoked: answer.invoked,
+    };
+    emit(&report, output_format)
 }
 
 /// Use [`OracleKind::canonical_binary`] downstream so the dispatcher can

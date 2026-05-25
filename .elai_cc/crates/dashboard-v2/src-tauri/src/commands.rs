@@ -6828,11 +6828,33 @@ pub fn get_sandbox_status(_state: State<'_, AppState>) -> CmdResult<Value> {
         json!({ "role": "MediaValidator",  "path_count": 1 }),
     ];
 
+    // E-15: backend selection + Firecracker pool stats. Today these reflect
+    // compile-time platform detection only; FirecrackerHotPool live counters
+    // require an Arc<SandboxObservability> on AppState (deferred to follow-on
+    // patch). RUNPOD-PENDING fields render as null on the dashboard panel.
+    #[cfg(target_os = "linux")]
+    let backend_selected = if std::path::Path::new("/dev/kvm").exists() {
+        "Firecracker"
+    } else {
+        "Gvisor"
+    };
+    #[cfg(target_os = "windows")]
+    let backend_selected = "AppContainer";
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let backend_selected = "None";
+
     Ok(json!({
         "tier": tier,
         "profile_count": 0_u32,
         "allowed_paths_per_agent": allowed_paths_per_agent,
         "last_visibility_filter_hit_ms": null,
+        // E-15 sandbox backend fields (additive, B-18 fields preserved above).
+        "backend_selected": backend_selected,
+        "restore_p50_ms": null,
+        "snapshot_count": 0_u32,
+        "uniqueness_regenerations_count": 0_u32,
+        "researcher_net_allowed_hosts": ["arxiv.org", "huggingface.co"],
+        "researcher_net_blocked_attempts": [],
     }))
 }
 
