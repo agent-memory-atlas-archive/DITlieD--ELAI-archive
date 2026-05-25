@@ -1,0 +1,9 @@
+{
+  "id": "scenario_04",
+  "kind": "DuplicateHash",
+  "tamper_ops": [
+    { "op": "DuplicateEntry", "args": { "entry_index": 1 } }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "duplicate_hash" } },
+  "notes": "Byte-copy the JSONL line at entry index 1 and append it again with the SAME self_hash. Surfaces as ArchiveVerifyError::DuplicateHash."
+}

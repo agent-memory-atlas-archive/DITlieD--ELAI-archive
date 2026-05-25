@@ -1,8 +1,9 @@
 //! D-26: Reasoning template archive dashboard surface (extension).
 //!
-//! Adds two additive read-only Tauri commands that compose existing D-1 /
-//! D-4 / D-5 surfaces into views consumed by the new
-//! `LineageGraphView` + `ArchiveExplorerView` Svelte components.
+//! Adds additive read-only Tauri commands that compose existing D-1 /
+//! D-4 / D-5 / D-8 surfaces into views consumed by the new
+//! `LineageGraphView` + `ArchiveExplorerView` Svelte components plus the
+//! `ArchiveVerifyGauge` inline widget.
 //!
 //! * [`get_archive_lineage`] — walks the [`ArchiveChain`] backwards from a
 //!   requested template id, returning every ancestor node in parent-first
@@ -12,6 +13,11 @@
 //!   refresh. Returns recent archive entries + recent tripwire rows + active
 //!   BAI arm rows so the explorer can render header summary without paying
 //!   three round-trips to the backend.
+//! * [`get_archive_verify_status`] — D-26 GAP-3: most-recent
+//!   `archive_verify_result` SSB row projected to a flat
+//!   [`ArchiveVerifyStatus`]. The producer is the
+//!   `elai archive verify` CLI driver (D-8); this command only reads. Used
+//!   by the `ArchiveVerifyGauge` Svelte widget.
 //!
 //! Additive — does not refactor `commands.rs` / `commands_d1.rs` /
 //! `commands_d4.rs` / `commands_d5.rs`. No new SSB variant, no new producer.
@@ -329,6 +335,146 @@ pub async fn get_template_archive_combined(
     })
 }
 
+/// D-26 GAP-3: flat projection of the most recent
+/// `archive_verify_result` SSB row (producer is the
+/// `elai archive verify` CLI driver — see D-8 ssb.rs comment block).
+///
+/// Empty / never-verified state:
+///   verified=false, total_entries=0, error_count=0,
+///   last_verified_ts_ms=None, errors=[]. The frontend gauge displays
+///   "never verified" in this case (distinguished from a true verify
+///   failure by `last_verified_ts_ms.is_none()`).
+///
+/// The `errors` list carries short kind labels (e.g. "HashMismatch",
+/// "BrokenParent") rather than the full typed
+/// `ArchiveVerifyError` — the gauge only needs to render a few badges,
+/// and serializing the full enum here would require importing the
+/// non-public `archive_chain` types across crate boundaries. The richer
+/// MutationArchivePanel already uses the typed payload directly via the
+/// raw SSB row when a deep view is needed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveVerifyStatus {
+    /// True iff the most recent row's `verified` flag is true. False also
+    /// when no `archive_verify_result` row exists yet.
+    pub verified: bool,
+    /// Total chain entries observed in the most recent verify pass. 0
+    /// when no row exists.
+    pub total_entries: u32,
+    /// Length of the `errors` list in the most recent row. 0 when no row
+    /// exists or `verified=true`.
+    pub error_count: u32,
+    /// Producer-side wall-clock timestamp of the most recent verify row,
+    /// milliseconds since UNIX epoch. None when no row exists.
+    pub last_verified_ts_ms: Option<i64>,
+    /// Short error-kind labels from the most recent row (e.g.
+    /// "HashMismatch"). Empty when no row exists or `verified=true`.
+    pub errors: Vec<String>,
+}
+
+impl Default for ArchiveVerifyStatus {
+    fn default() -> Self {
+        Self {
+            verified: false,
+            total_entries: 0,
+            error_count: 0,
+            last_verified_ts_ms: None,
+            errors: Vec::new(),
+        }
+    }
+}
+
+/// D-26 GAP-3: pure projection from the most recent `archive_verify_result`
+/// SSB row to the flat [`ArchiveVerifyStatus`] DTO. Public so the
+/// integration test can call it without going through the Tauri command
+/// machinery.
+///
+/// Returns [`ArchiveVerifyStatus::default`] when `rows.is_empty()`. Walks
+/// the supplied rows to find the highest-seq entry (defensive — the
+/// viewer already returns newest-first but the projection does not
+/// depend on that ordering).
+pub fn project_archive_verify_status(
+    rows: Vec<elai_orchestrator::SsbActionDetail>,
+) -> ArchiveVerifyStatus {
+    let latest = rows
+        .into_iter()
+        .filter(|d| d.action_type == "archive_verify_result")
+        .max_by_key(|d| d.seq);
+    let detail = match latest {
+        Some(d) => d,
+        None => return ArchiveVerifyStatus::default(),
+    };
+    let obj = match detail.payload_json.as_object() {
+        Some(o) => o,
+        None => return ArchiveVerifyStatus::default(),
+    };
+    let verified = obj
+        .get("verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let total_entries = obj
+        .get("total_entries")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(0);
+    let error_count = obj
+        .get("error_count")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(0);
+    let last_verified_ts_ms = obj.get("ts_ms").and_then(|v| v.as_i64());
+    let errors: Vec<String> = obj
+        .get("errors")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    // ArchiveVerifyError serialises as an externally-tagged
+                    // enum: `{ "HashMismatch": { ... } }`. The first
+                    // object key is the variant name; we surface that as
+                    // the short label. Free-form string variants (if any
+                    // future variant adopts that shape) fall through to
+                    // the string branch.
+                    if let Some(o) = e.as_object() {
+                        o.keys().next().cloned()
+                    } else {
+                        e.as_str().map(String::from)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ArchiveVerifyStatus {
+        verified,
+        total_entries,
+        error_count,
+        last_verified_ts_ms,
+        errors,
+    }
+}
+
+/// D-26 GAP-3: read the most recent `archive_verify_result` SSB row and
+/// project it to a flat status DTO. Non-blocking — returns the empty
+/// default when SSB is missing or no verify row has been emitted yet.
+#[tauri::command]
+pub async fn get_archive_verify_status(
+    state: State<'_, AppState>,
+) -> Result<ArchiveVerifyStatus, String> {
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => return Ok(ArchiveVerifyStatus::default()),
+    };
+    match viewer.recent_rows_of_type("archive_verify_result", 1) {
+        Ok(rows) => Ok(project_archive_verify_status(rows)),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "get_archive_verify_status: viewer error"
+            );
+            Ok(ArchiveVerifyStatus::default())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +564,110 @@ mod tests {
         assert_eq!(lineage.depth, 0);
         assert!(lineage.entries.is_empty());
         assert!(lineage.root_id.is_none());
+    }
+
+    // D-26 GAP-3 projection tests. These exercise the pure function
+    // against synthetic SsbActionDetail rows; the Tauri command is a
+    // thin wrapper around viewer.recent_rows_of_type() + the
+    // projection.
+    fn mk_detail(seq: i64, payload: serde_json::Value) -> elai_orchestrator::SsbActionDetail {
+        elai_orchestrator::SsbActionDetail {
+            seq,
+            ts: 1_700_000_000_000 + seq,
+            action_type: "archive_verify_result".to_string(),
+            agent_id: "test-agent".to_string(),
+            payload_json: payload,
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn project_archive_verify_status_empty_returns_default() {
+        let status = project_archive_verify_status(Vec::new());
+        assert!(!status.verified);
+        assert_eq!(status.total_entries, 0);
+        assert_eq!(status.error_count, 0);
+        assert!(status.last_verified_ts_ms.is_none());
+        assert!(status.errors.is_empty());
+    }
+
+    #[test]
+    fn project_archive_verify_status_picks_highest_seq_pass() {
+        let rows = vec![
+            mk_detail(
+                10,
+                serde_json::json!({
+                    "audit_id": "older",
+                    "total_entries": 3,
+                    "verified": false,
+                    "error_count": 1,
+                    "errors": [{"HashMismatch": {"line": 2}}],
+                    "ts_ms": 1_700_000_000_010_i64,
+                }),
+            ),
+            mk_detail(
+                20,
+                serde_json::json!({
+                    "audit_id": "newer",
+                    "total_entries": 7,
+                    "verified": true,
+                    "error_count": 0,
+                    "errors": [],
+                    "ts_ms": 1_700_000_000_020_i64,
+                }),
+            ),
+        ];
+        let status = project_archive_verify_status(rows);
+        assert!(status.verified, "highest-seq row was a pass");
+        assert_eq!(status.total_entries, 7);
+        assert_eq!(status.error_count, 0);
+        assert_eq!(status.last_verified_ts_ms, Some(1_700_000_000_020));
+        assert!(status.errors.is_empty());
+    }
+
+    #[test]
+    fn project_archive_verify_status_extracts_typed_error_kinds() {
+        let rows = vec![mk_detail(
+            1,
+            serde_json::json!({
+                "audit_id": "fail-chain",
+                "total_entries": 4,
+                "verified": false,
+                "error_count": 2,
+                "errors": [
+                    {"HashMismatch": {"line": 2}},
+                    {"BrokenParent": {"line": 3}},
+                ],
+                "ts_ms": 1_700_000_000_500_i64,
+            }),
+        )];
+        let status = project_archive_verify_status(rows);
+        assert!(!status.verified);
+        assert_eq!(status.total_entries, 4);
+        assert_eq!(status.error_count, 2);
+        assert_eq!(status.last_verified_ts_ms, Some(1_700_000_000_500));
+        assert_eq!(
+            status.errors,
+            vec!["HashMismatch".to_string(), "BrokenParent".to_string()]
+        );
+    }
+
+    #[test]
+    fn project_archive_verify_status_ignores_unrelated_action_types() {
+        let mut wrong = mk_detail(
+            999,
+            serde_json::json!({
+                "audit_id": "x",
+                "total_entries": 99,
+                "verified": true,
+                "error_count": 0,
+                "errors": [],
+                "ts_ms": 1_700_000_999_999_i64,
+            }),
+        );
+        wrong.action_type = "tripwire_fired".to_string();
+        let status = project_archive_verify_status(vec![wrong]);
+        // Default — the wrong action_type row is filtered out.
+        assert_eq!(status, ArchiveVerifyStatus::default());
     }
 }

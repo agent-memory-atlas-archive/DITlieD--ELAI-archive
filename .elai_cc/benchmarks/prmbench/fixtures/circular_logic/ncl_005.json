@@ -1,0 +1,17 @@
+{
+  "idx": "ncl_005",
+  "classification": "circular_logic",
+  "original_question": "Prove that 0! = 1.",
+  "modified_question": "Prove that 0! = 1.",
+  "original_process": [
+    "Step 1: Recall n! = n * (n-1)! for n >= 1.",
+    "Step 2: For 1! we need 1 * 0! = 1, so 0! = 1 by convention to keep the recurrence consistent."
+  ],
+  "modified_process": [
+    "Step 1: Recall n! = n * (n-1)! for n >= 1.",
+    "Step 2: We define 0! = 1 because 0! = 1 by definition; hence 0! = 1."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Modified step 2 'proves' 0! = 1 by citing the definition 0! = 1; PRM must reject the self-referential argument."
+}

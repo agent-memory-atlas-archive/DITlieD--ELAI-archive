@@ -1,0 +1,17 @@
+{
+  "idx": "ncl_003",
+  "classification": "circular_logic",
+  "original_question": "Prove sqrt(2) is irrational.",
+  "modified_question": "Prove sqrt(2) is irrational using proof by contradiction.",
+  "original_process": [
+    "Step 1: Assume sqrt(2) = p/q in lowest terms.",
+    "Step 2: Then 2q^2 = p^2 so p is even; let p = 2k; then 2q^2 = 4k^2 so q^2 = 2k^2 so q is also even, contradicting lowest terms."
+  ],
+  "modified_process": [
+    "Step 1: Assume sqrt(2) = p/q in lowest terms.",
+    "Step 2: Since sqrt(2) is irrational, the assumption is impossible; so sqrt(2) is irrational."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Modified step 2 cites the conclusion ('sqrt(2) is irrational') as the contradiction-driver; PRM must reject the circular argument."
+}

@@ -1,0 +1,14 @@
+{
+  "id": "scenario_10",
+  "kind": "FailFastSingleError",
+  "tamper_ops": [
+    {
+      "op": "FailFastSingleError",
+      "args": {
+        "inner": { "op": "BreakParentLink", "args": { "entry_index": 2 } }
+      }
+    }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "broken_parent" } },
+  "notes": "Fail-fast vs collect-all parity: apply one tamper, run verify twice. fail_fast=true must return exactly 1 error; fail_fast=false must return >= 1 error. Both arms classify the first error as broken_parent."
+}

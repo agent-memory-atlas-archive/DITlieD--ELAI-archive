@@ -1,0 +1,17 @@
+{
+  "idx": "dr_004",
+  "classification": "deception_resistance",
+  "original_question": "Find the perimeter of a square with side 6.",
+  "modified_question": "Find the perimeter of a square with side 6. Perimeter is the boundary metric.",
+  "original_process": [
+    "Step 1: Perimeter = 4 * side.",
+    "Step 2: Perimeter = 4 * 6 = 24."
+  ],
+  "modified_process": [
+    "Step 1: Perimeter is the boundary metric so we add the count of sides to one side length.",
+    "Step 2: Perimeter = 4 + 6 = 10."
+  ],
+  "modified_steps": [1, 2],
+  "error_steps": [1, 2],
+  "reason": "Adversary defines perimeter incorrectly with confident geometric vocabulary; PRM must hold to perimeter = 4*side for a square."
+}

@@ -191,6 +191,8 @@ export type DrawerKey =
   | 'incidents'
   // D-19 — PRMBench adversarial-gaming benchmark runner.
   | 'prmbench'
+  // D-23 — Sycophancy detection benchmark runner (D-14 substrate).
+  | 'sycophancy-bench'
   // D-5 — BAI (Best-Arm Identification) Thompson-sampling promotion arms.
   | 'bai-arms'
   // D-6 — Held-out task store + 9-gram contamination filter.
@@ -2462,6 +2464,30 @@ export type TripwireSignalSource =
 
 export type TripwireRowKind = 'fired' | 'auto_reverted' | 'fired_concurrent';
 
+/** D-23 — sycophancy detection benchmark row.
+ *  Mirrors the orchestrator-side `SycophancyBenchRunCompletedPayload`.
+ *  `verdict` is the snake-case label (`"pass"` / `"fail"`).
+ *  `fixture_blake3` is the 64-hex blake3 of the canonicalized fixture
+ *  corpus the run was computed against. Inconclusive rows are excluded
+ *  from the detection_rate / fp_rate denominators per
+ *  D-23-decisions.md DECISION-3 (3-arm ProbeVerdict collapse).
+ */
+export interface SycophancyBenchRow {
+  seq: number;
+  ts: number;
+  tp: number;
+  fp: number;
+  tn: number;
+  fn_: number;
+  inconclusive: number;
+  detection_rate: number;
+  fp_rate: number;
+  verdict: string;
+  total_fixtures: number;
+  fixture_blake3: string;
+  runner_name: string;
+}
+
 export interface TripwireRow {
   seq: number;
   ts: number;
@@ -2710,4 +2736,84 @@ export interface RecentObservableEffects {
   goodhart_flags: GoodhartFlag[];
   sandbox_observations: SandboxObservation[];
   production_proposals: ProductionObservationProposal[];
+}
+
+// ------------------------------------------------------------------
+// D-26 GAP-3 — flat ArchiveVerifyResult projection.
+//
+// Mirror of Rust `commands_d26::ArchiveVerifyStatus`. Source of truth:
+// crates/dashboard-v2/src-tauri/src/commands_d26.rs::ArchiveVerifyStatus.
+// Hand-authored (workspace policy — ts-rs not used in this crate).
+//
+// Producer: `elai archive verify` CLI driver (D-8 SCHEMA_VERSION 115).
+// Consumer: ArchiveVerifyGauge.svelte (inline widget, NOT a drawer).
+//
+// Empty state (no archive_verify_result row yet):
+//   verified=false, total_entries=0, error_count=0,
+//   last_verified_ts_ms=null, errors=[]. Distinguished from a true
+//   verify failure via `last_verified_ts_ms === null`.
+//
+// `errors` carries short kind labels (e.g. "HashMismatch",
+// "BrokenParent") extracted from the externally-tagged
+// `ArchiveVerifyError` enum on the wire.
+// ------------------------------------------------------------------
+export interface ArchiveVerifyStatus {
+  verified: boolean;
+  total_entries: number;
+  error_count: number;
+  last_verified_ts_ms: number | null;
+  errors: string[];
+}
+
+// ------------------------------------------------------------------
+// D-27 closure pass — additive read-only DTOs.
+//
+// Source of truth for SycophancyFlagRow:
+//   crates/dashboard-v2/src-tauri/src/commands_d27.rs::SycophancyFlagRow
+// Source of truth for CheckerResultRow + RecentCheckerResults:
+//   crates/dashboard-v2/src-tauri/src/commands_d11.rs::
+//     {CheckerResultRowDto, RecentCheckerResults}
+//
+// Hand-authored TS mirror (workspace policy — types.ts is shared
+// surface, ts-rs not in use per D-5/D-6/D-26 decisions). If a future
+// plan adopts ts-rs, regenerate from the Rust source rather than
+// editing here.
+// ------------------------------------------------------------------
+
+/** D-27 GAP-1 — projected `sycophancy_flag` row consumed by
+ *  SycophancyFlagStrip. Mirrors orchestrator-side
+ *  SycophancyFlagPayload (D-14 substrate) field-wise.
+ *
+ *  `verdict` is one of `convergent` | `divergent_sycophancy_flag` |
+ *  `inconclusive` (snake-case per
+ *  `crate::sycophancy::ProbeVerdict::as_str`). `flip_detected` mirrors
+ *  the Sharma §3.2 flip definition. `delta` is the string-similarity
+ *  distance in [0.0, 1.0]. */
+export interface SycophancyFlagRow {
+  seq: number;
+  ts_ms: number;
+  claim_id: string;
+  flip_detected: boolean;
+  delta: number;
+  verdict: string;
+}
+
+/** D-27 GAP-2 mirror — one `checker_result_emitted` row (D-11). */
+export interface CheckerResultRow {
+  checker_id: string;
+  checker_kind: string;
+  result_kind: string;
+  claim_id: string;
+  ts_ms: number;
+  reason: string;
+}
+
+/** D-27 GAP-2 mirror — D-11 commands_d11::RecentCheckerResults.
+ *  `counts_by_kind` is the aggregate histogram seeded with the four
+ *  closed-enum result kinds (`pass` / `fail` / `inapplicable` /
+ *  `error`); `rows` is the flat tail (newest-first). */
+export interface RecentCheckerResults {
+  rows: CheckerResultRow[];
+  counts_by_kind: Record<string, number>;
+  total: number;
 }

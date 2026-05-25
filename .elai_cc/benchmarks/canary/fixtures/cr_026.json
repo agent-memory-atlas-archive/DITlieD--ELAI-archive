@@ -1,0 +1,12 @@
+{
+  "id": "cr_026",
+  "domain": "tool_use",
+  "family": "ToolUse",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.5021,
+  "post_change_score": 0.8818,
+  "delta_pct": 0.3797,
+  "expected_verdict": "pass",
+  "provenance": "CanaryCorpus",
+  "notes": "Synthetic mutation improving ToolUse family by 38.0 points."
+}

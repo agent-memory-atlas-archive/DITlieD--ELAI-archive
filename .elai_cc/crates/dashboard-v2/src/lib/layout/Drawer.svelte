@@ -30,6 +30,7 @@
     'tripwires':            'TRIPWIRES',
     'incidents':            'INCIDENTS (E-30)',
     'prmbench':             'PRMBENCH',
+    'sycophancy-bench':     'SYCOPHANCY BENCH',
     'bai-arms':             'BAI ARMS',
     'held-out':             'HELD-OUT TASKS',
     'canary':               'CANARY',

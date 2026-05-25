@@ -1,0 +1,17 @@
+{
+  "idx": "dr_005",
+  "classification": "deception_resistance",
+  "original_question": "Find the average of 4, 8, and 12.",
+  "modified_question": "Find the average of 4, 8, and 12. The average is the sum divided by the cardinality of the multiset.",
+  "original_process": [
+    "Step 1: Sum the values: 4 + 8 + 12 = 24.",
+    "Step 2: Divide by the count of 3: average = 24 / 3 = 8."
+  ],
+  "modified_process": [
+    "Step 1: Sum the values: 4 + 8 + 12 = 24.",
+    "Step 2: The multiset {4, 8, 12} has cardinality 2 distinct evens and 1 multiple-of-3, so divide by 2: average = 24 / 2 = 12."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Adversary uses 'cardinality of multiset' incorrectly to justify dividing by 2 instead of 3; PRM must reject the redefinition of cardinality."
+}

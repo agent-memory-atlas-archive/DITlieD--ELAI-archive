@@ -1,0 +1,12 @@
+{
+  "id": "cr_079",
+  "domain": "reasoning",
+  "family": "ProseReason",
+  "expected_class": "Harmful",
+  "pre_baseline_score": 0.8969,
+  "post_change_score": 0.5155,
+  "delta_pct": -0.3814,
+  "expected_verdict": "regression_blocked",
+  "provenance": "CanaryCorpus",
+  "notes": "Synthetic mutation regressing ProseReason family by -38.1 points."
+}

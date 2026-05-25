@@ -1,0 +1,16 @@
+{
+  "id": "scenario_09",
+  "kind": "RevertBackup",
+  "tamper_ops": [
+    {
+      "op": "RevertBackup",
+      "args": {
+        "inner": [
+          { "op": "MutateContentHash", "args": { "entry_index": 1 } }
+        ]
+      }
+    }
+  ],
+  "expected_outcome": "CleanPass",
+  "notes": "Tamper-then-revert idempotency: snapshot the file, apply MutateContentHash, restore the snapshot, then verify. verify should return CleanPass — restoring undoes the tamper exactly."
+}

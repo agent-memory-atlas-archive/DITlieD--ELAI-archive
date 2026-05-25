@@ -172,6 +172,23 @@ mod bench_arc;
 // as its observable interface (no clean knowledge-query subcommand
 // existed before SP6; /research is web research, not retrieval).
 mod bench_rag;
+// D-23: `elai bench sycophancy` — sycophancy detection benchmark driver.
+// Quantifies the D-14 SycophancyProbe detection_rate + fp_rate against
+// the labelled fixture corpus. Sibling of bench_prmbench (sync entry).
+mod bench_sycophancy;
+// D-24: `elai bench canary-regression` — cross-domain canary regression
+// benchmark driver. Replays a labelled fixture corpus (20 Harmful + 50
+// Helpful + 30 Neutral) through D-7's run_canary in-memory and emits a
+// single CanaryBenchRunCompleted SSB row + a JSON report.
+mod bench_canary;
+// D-25: `elai bench tamper` — determinism + archive tamper-suite
+// benchmark driver. Drives a 10-scenario JSON-manifest matrix
+// IN-PROCESS through D-8's verify_archive and emits a single
+// DeterminismTamperSuiteCompleted SSB row + a JSON report.
+mod bench_tamper;
+// D-28: `elai farm-adv-rm <run|verdict>` — adversarial example farming
+// runner CLI surface. See workflow/reasoning/D-28-decisions.md.
+mod farm_adv_rm;
 mod runtime_client;
 mod runtime_cmd;
 // D-2: `elai ppm health` — three-step PPM sidecar health probe
@@ -779,6 +796,66 @@ fn run() -> Result<(), anyhow::Error> {
             project_root,
         } => {
             bench_rag::run(tier, top_k, query, json, project_root)?;
+        }
+        // D-23: `elai bench sycophancy [--fixtures PATH] [--output PATH]
+        // [--detection-floor 0.70] [--fp-ceiling 0.15]`. Quantifies D-14
+        // SycophancyProbe detection_rate + fp_rate against the labelled
+        // fixture corpus. Exits 0 on Pass, 1 on Fail; the in-process
+        // orchestrator producer emits one
+        // SsbActionType::SycophancyBenchRunCompleted row when invoked
+        // from a task_runner (the CLI does not persist SSB rows directly).
+        CliAction::BenchSycophancy {
+            fixtures,
+            output,
+            detection_floor,
+            fp_ceiling,
+        } => {
+            bench_sycophancy::run(fixtures, output, detection_floor, fp_ceiling)?;
+        }
+        // D-24: `elai bench canary-regression ...` — cross-domain canary
+        // regression benchmark. Replays a labelled fixture corpus
+        // through D-7 run_canary in-memory; emits exactly one
+        // SsbActionType::CanaryBenchRunCompleted row when invoked from
+        // a task_runner (the CLI does not persist SSB rows directly).
+        // Exits 0 on Pass, 1 on Fail.
+        CliAction::BenchCanary {
+            fixtures,
+            output,
+            harmful_block_floor,
+            helpful_block_ceiling,
+            neutral_block_ceiling,
+        } => {
+            bench_canary::run(
+                fixtures,
+                output,
+                harmful_block_floor,
+                helpful_block_ceiling,
+                neutral_block_ceiling,
+            )?;
+        }
+        // D-25: `elai bench tamper` — determinism + archive tamper-suite
+        // benchmark driver. Drives D-8 verify_archive IN-PROCESS across
+        // the 10-scenario matrix; emits one
+        // SsbActionType::DeterminismTamperSuiteCompleted row when
+        // invoked from a task_runner (CLI does not persist SSB rows
+        // directly). Exits 0 on Pass, 1 on Fail.
+        CliAction::BenchTamper {
+            scenarios,
+            output,
+            fail_fast,
+            max_wall_ms_per_scenario,
+        } => {
+            bench_tamper::run(scenarios, output, fail_fast, max_wall_ms_per_scenario)?;
+        }
+        // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
+        // farming runner. Drives AdvRmFarmer (orchestrator-side) and
+        // writes corpus.jsonl with `gold_verdict: "pending"`. Single
+        // SsbActionType::AdversarialFarmRunCompleted SSB row at end-of-
+        // run when invoked from a task_runner; CLI does not persist SSB
+        // rows directly (mirrors D-19/D-23/D-24/D-25 bench dispatcher
+        // precedent). Exits 0 on Pass, 1 on Fail.
+        CliAction::FarmAdvRm { sub } => {
+            farm_adv_rm::run(crate::args::FarmAdvRmArgs { sub })?;
         }
         // E-30: `elai incident record ...` — store an incident postmortem entry.
         CliAction::IncidentRecord {

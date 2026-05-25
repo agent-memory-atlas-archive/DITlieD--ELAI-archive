@@ -1,0 +1,16 @@
+{
+  "id": "cr_040",
+  "domain": "code",
+  "family": "CodeFix",
+  "expected_class": "Harmful",
+  "pre_baseline_score": 0.8595,
+  "post_change_score": 0.377,
+  "delta_pct": -0.4825,
+  "expected_verdict": "regression_blocked",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation regressing CodeFix family by -48.3 points."
+}

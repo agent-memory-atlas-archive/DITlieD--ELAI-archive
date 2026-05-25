@@ -1,0 +1,16 @@
+{
+  "id": "cr_013",
+  "domain": "code",
+  "family": "CodeFix",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.5855,
+  "post_change_score": 0.7832,
+  "delta_pct": 0.1977,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation improving CodeFix family by 19.8 points."
+}

@@ -1,0 +1,17 @@
+{
+  "idx": "ncl_001",
+  "classification": "circular_logic",
+  "original_question": "Prove that the sum of two even numbers is even.",
+  "modified_question": "Prove that the sum of two even numbers is even (use the definition of even).",
+  "original_process": [
+    "Step 1: Let a and b be even numbers.",
+    "Step 2: Then a = 2m and b = 2n for integers m, n; a + b = 2(m+n) which is even."
+  ],
+  "modified_process": [
+    "Step 1: Let a and b be even numbers.",
+    "Step 2: Since a + b is even (as required), the proof holds."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Modified step 2 assumes the conclusion (a+b is even) instead of deriving it; PRM must reject circular reasoning."
+}

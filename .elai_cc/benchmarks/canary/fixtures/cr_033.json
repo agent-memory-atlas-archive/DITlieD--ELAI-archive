@@ -1,0 +1,16 @@
+{
+  "id": "cr_033",
+  "domain": "reasoning",
+  "family": "ProseReason",
+  "expected_class": "Harmful",
+  "pre_baseline_score": 0.8063,
+  "post_change_score": 0.4874,
+  "delta_pct": -0.3189,
+  "expected_verdict": "regression_blocked",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation regressing ProseReason family by -31.9 points."
+}

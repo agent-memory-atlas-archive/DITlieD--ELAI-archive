@@ -385,6 +385,112 @@ mod ppm_config_tests {
 /// surface.
 pub const ELAI_BAI_ENABLE_ENV: &str = "ELAI_BAI_ENABLE";
 
+/// D-29: env var that selects between the flat D-5 Beta/Thompson path and
+/// the hierarchical D-29 path. Defaults to "flat" when unset OR when the
+/// value is not a recognised mode token. Recognised tokens
+/// (case-insensitive): "flat" (D-5 baseline) and "hierarchical" (D-29
+/// Beta-hyperprior layer). String-valued (NOT a boolean) so future modes
+/// — e.g. "hierarchical_3level" — slot in without churning the env name.
+/// Mirrors the [`ELAI_BAI_ENABLE_ENV`] precedent for naming consistency.
+pub const ELAI_BAI_MODE_ENV: &str = "ELAI_BAI_MODE";
+
+/// D-29: BAI dispatch mode. `Flat` is the D-5 baseline (default); `Hierarchical`
+/// routes through `crate::bai_hierarchical::hierarchical_arm_select` with
+/// the family-pooled Beta posterior. ELAI_BAI_ENABLE is the outer
+/// gate; ELAI_BAI_MODE selects WHICH path runs once the outer gate is
+/// open (so a wire-dark deployment sees neither path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaiMode {
+    /// D-5 baseline Beta/Thompson path (`crate::bai::emit_bai_round_with_canary`).
+    Flat,
+    /// D-29 hierarchical Beta-hyperprior path (gated wire-dark; see
+    /// `crate::bai_hierarchical`).
+    Hierarchical,
+}
+
+impl BaiMode {
+    /// Read [`ELAI_BAI_MODE_ENV`] and parse it into a [`BaiMode`].
+    /// Returns [`BaiMode::Flat`] when the env var is unset OR carries
+    /// an unrecognised value (wire-dark default per pattern-4).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(ELAI_BAI_MODE_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "hierarchical" => Self::Hierarchical,
+                _ => Self::Flat,
+            },
+            Err(_) => Self::Flat,
+        }
+    }
+
+    /// Stable snake_case wire tag for the mode (used by tracing /
+    /// dashboard payloads).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Flat => "flat",
+            Self::Hierarchical => "hierarchical",
+        }
+    }
+}
+
+/// D-30: Production wire-dark gate for the
+/// `crate::calibration_bootstrap` warm-start path. Unset OR unrecognised
+/// values map to [`CalibrationBootstrapMode::Off`] per pattern-4.
+/// `ELAI_CALIBRATION_BOOTSTRAP_ENABLE=1` (case-insensitive
+/// `"1" / "on" / "true" / "yes"`) flips the gate `On`.
+pub const ELAI_CALIBRATION_BOOTSTRAP_ENABLE_ENV: &str = "ELAI_CALIBRATION_BOOTSTRAP_ENABLE";
+
+/// D-30: Wire-dark mode gate for the calibration bootstrap warm-start
+/// dispatch. `Off` is the default — production callers MUST observe this
+/// before emitting `CalibrationBootstrapCompleted` SSB rows. Mirrors the
+/// [`BaiMode`] precedent so the orchestrator's runtime probes follow one
+/// shape across modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalibrationBootstrapMode {
+    /// Bootstrap dispatch suppressed — orchestrator falls back to the
+    /// local D-6 / D-16 path. Default.
+    Off,
+    /// Bootstrap dispatch live — the warm-start fixture is loaded and
+    /// `tau_bootstrap.txt` is updated on the orchestrator's nightly
+    /// (or per-session) cycle.
+    On,
+}
+
+impl CalibrationBootstrapMode {
+    /// Read [`ELAI_CALIBRATION_BOOTSTRAP_ENABLE_ENV`] and parse it into a
+    /// [`CalibrationBootstrapMode`]. Returns [`Self::Off`] when the env
+    /// var is unset OR carries an unrecognised value (wire-dark default
+    /// per pattern-4 — same shape as [`BaiMode::from_env`]).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(ELAI_CALIBRATION_BOOTSTRAP_ENABLE_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "on" | "true" | "yes" => Self::On,
+                _ => Self::Off,
+            },
+            Err(_) => Self::Off,
+        }
+    }
+
+    /// Stable snake_case wire tag for the mode (mirrors
+    /// [`BaiMode::as_str`]).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// True iff the gate is `On`. Convenience for callers that only
+    /// need the boolean.
+    #[must_use]
+    pub fn is_on(&self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
 /// D-5 closure: configuration for the BAI Thompson-promotion round.
 ///
 /// Loaded from elai_cc.toml `[bai]` via

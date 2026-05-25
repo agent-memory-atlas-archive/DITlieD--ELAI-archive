@@ -1,0 +1,9 @@
+{
+  "id": "scenario_03",
+  "kind": "ContentHashMismatch",
+  "tamper_ops": [
+    { "op": "MutateContentHash", "args": { "entry_index": 1 } }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "hash_mismatch" } },
+  "notes": "Rewrite template.template_body at entry index 1 without recomputing self_hash. Surfaces as ArchiveVerifyError::HashMismatch."
+}

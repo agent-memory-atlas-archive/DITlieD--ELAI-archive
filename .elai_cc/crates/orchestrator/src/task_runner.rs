@@ -8712,6 +8712,20 @@ async fn dispatch_bai_round(
     let mut arms = runtime.arms.lock().await;
     let mut rng = runtime.rng.lock().await;
 
+    // D-29: BAI mode dispatch. `Flat` (default) routes to the D-5
+    // canonical path. `Hierarchical` runs the flat path FIRST (so the
+    // per-arm Beta(alpha, beta) stays honest + canary gate is still
+    // enforced) and THEN emits a HierarchicalBaiRoundCompleted summary
+    // row using the post-update arm state. This keeps the flat row
+    // family (BaiArmUpdated / TemplatePromoted / TemplateCandidateRejected)
+    // intact while adding the hierarchical aggregate as a sibling row —
+    // matches integration-explorer SEE-ALSO §"SSB row count semantics"
+    // (Recommendation: 3-row sequence + 1 hierarchical aggregate).
+    let bai_mode = crate::runtime_config::BaiMode::from_env();
+    let canary_blocks = canary_status
+        .as_ref()
+        .is_some_and(|c| c.blocks_promotion());
+
     if let Err(e) = crate::bai::emit_bai_round_with_canary(
         &mut *chain,
         writer,
@@ -8731,6 +8745,132 @@ async fn dispatch_bai_round(
             error = %e,
             "task_runner::dispatch_bai_round: emit_bai_round failed; arm update skipped"
         );
+    }
+
+    if matches!(bai_mode, crate::runtime_config::BaiMode::Hierarchical) {
+        // D-29 hierarchical aggregate row. The flat path above has
+        // already updated `arms`; we now read the post-update state,
+        // run the hierarchical TS selector, and emit one
+        // HierarchicalBaiRoundCompleted summary. The hierarchical
+        // state itself is held inline (no persistent state — the
+        // hyperprior is re-derived per dispatch from the live arm
+        // posteriors, which is the equivalent of running the Gibbs
+        // sampler with a fresh init each round; mixing is fast on
+        // conjugate-adjacent posteriors per Gelman BDA3 §11.5).
+        let mut hier_state =
+            crate::bai_hierarchical::HierarchicalBaiState::new();
+        // All arms route to FamilyId(0) by default (the runtime does
+        // not yet ship a family-routing map; this is the
+        // RUNPOD-PENDING wiring stub — see D-29-decisions.md
+        // DECISION-7).
+        for arm in arms.iter() {
+            hier_state.assign_arm(
+                arm.template_id,
+                crate::bai_hierarchical::FamilyId(0),
+            );
+        }
+        let family = crate::bai_hierarchical::FamilyId(0);
+        let arm_refs: Vec<&crate::bai::ArmPosterior> = arms.iter().collect();
+        let family_post = crate::bai_hierarchical::hierarchical_update(
+            &mut hier_state,
+            family,
+            &arm_refs,
+            &mut *rng,
+        );
+        let select = crate::bai_hierarchical::hierarchical_arm_select(
+            &hier_state,
+            &arms,
+            &mut *rng,
+        );
+
+        let (selected_arm_index, selected_template_id, basis): (
+            u32,
+            String,
+            crate::bai_hierarchical::SelectionBasis,
+        ) = match select {
+            Some((idx, b)) => {
+                let id = arms[idx].template_id.as_hex();
+                (idx as u32, id, b)
+            }
+            None => (
+                u32::MAX,
+                "0".repeat(32),
+                if canary_blocks {
+                    crate::bai_hierarchical::SelectionBasis::CanaryOverride
+                } else {
+                    crate::bai_hierarchical::SelectionBasis::FlatTs
+                },
+            ),
+        };
+
+        let basis_final = if canary_blocks {
+            crate::bai_hierarchical::SelectionBasis::CanaryOverride
+        } else {
+            basis
+        };
+
+        let arm_posteriors: Vec<crate::ssb::ArmPosteriorSummary> = arms
+            .iter()
+            .map(|arm| {
+                let (alpha, beta) = (arm.alpha, arm.beta);
+                let mean = arm.mean();
+                let denom = alpha + beta;
+                let variance = if denom > 0.0 {
+                    (alpha * beta) / (denom * denom * (denom + 1.0))
+                } else {
+                    0.0
+                };
+                let (ci_low, ci_high) =
+                    crate::bai::credible_interval(arm, 0.95);
+                let (hyper_a, hyper_b) = family_post.implied_beta_params();
+                let pooled_denom = alpha + hyper_a + beta + hyper_b;
+                let pooled_mean = if pooled_denom > 0.0 {
+                    (alpha + hyper_a) / pooled_denom
+                } else {
+                    mean
+                };
+                crate::ssb::ArmPosteriorSummary {
+                    template_id: arm.template_id.as_hex(),
+                    family_id: 0,
+                    alpha,
+                    beta,
+                    mean,
+                    variance,
+                    ci_low,
+                    ci_high,
+                    pooled_mean,
+                }
+            })
+            .collect();
+
+        let payload =
+            crate::ssb::SsbPayload::HierarchicalBaiRoundCompleted(
+                crate::ssb::HierarchicalBaiRoundCompletedPayload {
+                    round: family_post.n_gibbs_iterations,
+                    family_id: family.as_u32(),
+                    mu_posterior_mean: family_post.mu_mean,
+                    mu_posterior_variance: family_post.mu_variance,
+                    kappa_posterior_mean: family_post.kappa_mean,
+                    kappa_posterior_variance: family_post.kappa_variance,
+                    arm_posteriors,
+                    selected_arm_index,
+                    selected_template_id,
+                    selection_basis: basis_final.as_str().to_string(),
+                    gibbs_iterations: crate::bai_hierarchical::MAX_GIBBS_ITERATIONS
+                        - crate::bai_hierarchical::GIBBS_BURN_IN,
+                    canary_gate_passed: !canary_blocks,
+                },
+            );
+        if let Err(e) = writer
+            .write_payload(RUNNER_AGENT_ID, RUNNER_SUPERSTEP, payload, Vec::new())
+            .await
+        {
+            tracing::warn!(
+                template_id = template_id_str,
+                error = %e,
+                "task_runner::dispatch_bai_round: HierarchicalBaiRoundCompleted SSB write failed"
+            );
+        }
     }
 }
 

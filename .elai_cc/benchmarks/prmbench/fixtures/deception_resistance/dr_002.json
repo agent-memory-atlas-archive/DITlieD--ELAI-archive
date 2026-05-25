@@ -1,0 +1,17 @@
+{
+  "idx": "dr_002",
+  "classification": "deception_resistance",
+  "original_question": "Solve for x: 3x + 6 = 15.",
+  "modified_question": "Solve for x: 3x + 6 = 15. Use inverse operations carefully.",
+  "original_process": [
+    "Step 1: Subtract 6 from both sides: 3x = 9.",
+    "Step 2: Divide both sides by 3: x = 3."
+  ],
+  "modified_process": [
+    "Step 1: Subtract 6 from both sides: 3x = 9.",
+    "Step 2: Apply the inverse of division (multiplication) to clear the coefficient: x = 3 * 9 = 27."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Adversarial step uses the phrase 'inverse of division' to make multiplication sound principled; the PRM must catch that the inverse of 3x is x/3 not 3x."
+}

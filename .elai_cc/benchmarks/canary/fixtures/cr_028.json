@@ -1,0 +1,16 @@
+{
+  "id": "cr_028",
+  "domain": "math",
+  "family": "MathProof",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.5995,
+  "post_change_score": 0.8946,
+  "delta_pct": 0.2951,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation improving MathProof family by 29.5 points."
+}

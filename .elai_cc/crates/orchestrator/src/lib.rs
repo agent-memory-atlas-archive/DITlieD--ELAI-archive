@@ -318,6 +318,10 @@ pub mod archive_chain;
 // `benchmarks::prmbench_runner`; siblings (D-20..D-25) land in the same
 // `benchmarks` module. See workflow/reasoning/D-19-decisions.md.
 pub mod benchmarks;
+// D-28: orchestrator-side farm runners (adversarial example farming).
+// Sibling of `benchmarks` — distinguishes data-producing runners
+// (`farm/*`) from data-evaluating runners (`benchmarks/*`).
+pub mod farm;
 // D-3: VerificationResult aggregator + closed-enum ConsensusRule. Heterogeneous
 // verifier substrate composed into a single AggregateVerdict consumed by the
 // pre-promotion chain gate. See workflow/reasoning/D-3-decisions.md.
@@ -371,6 +375,26 @@ pub mod tripwire;
 // `bai::emit_bai_round`. arXiv:2104.05593 (fixed-confidence BAI) +
 // Audibert COLT 2010 stopping rule.
 pub mod bai;
+// D-29: Hierarchical Bayesian BAI for non-IID rewards. Layered ABOVE D-5
+// flat Beta/Thompson; partitions arms into FAMILIES with a shared
+// Beta-hyperprior `theta_i ~ Beta(mu*kappa, (1-mu)*kappa)`. Hyperprior
+// updated via a hand-rolled Metropolis-within-Gibbs sampler (no new
+// deps; see pattern-7 in workflow/reasoning/D-29-decisions.md). Gated
+// wire-dark by ELAI_BAI_MODE=hierarchical (default "flat"). Paper
+// labels: arXiv:2111.06929 SUPPORTING EVIDENCE (regret minimization,
+// not BAI); arXiv:2106.10417 DIRECT GROUNDING (variance-dependent BAI).
+pub mod bai_hierarchical;
+// D-30: Calibration corpus bootstrap warm-start. Loads a published
+// calibration corpus subset (TruthfulQA arXiv:2109.07958 fixture by
+// default), projects to D-16 CalibrationTuple rows, runs UniCR
+// compute_tau with a lowered floor (20), and atomically persists
+// tau_bootstrap.txt. Wire-dark by default — production callers consult
+// ELAI_CALIBRATION_BOOTSTRAP_ENABLE (see runtime_config). Block-bootstrap
+// CI on tau (Politis-Romano 1994 JASA Vol 89, §3) is shipped as a pure
+// helper (`bootstrap_resample`) and held off the warm-start path until
+// the SSB payload's Option fields are flipped by a SECONDARY pass.
+// See workflow/reasoning/D-30-decisions.md.
+pub mod calibration_bootstrap;
 // D-6: Time-windowed held-out task store + 9-gram contamination filter.
 // LiveCodeBench-style (arxiv:2403.07974, T1) contamination defense for
 // the BAI promotion-gate eval pool. Sibling of `bai.rs`; consumed by

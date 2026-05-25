@@ -43,11 +43,31 @@
     is_breaching: boolean;
   };
 
-  // Defaults reflect the orchestrator's RefusalSlaConfig::default().
-  // Surfaced visually only; the producer is the source of truth for
-  // classification.
-  const HEALTHY_BAND_LO = 0.05;
-  const HEALTHY_BAND_HI = 0.20;
+  // D-27 GAP-4: HEALTHY_BAND_LO / _HI are now caller-overridable props
+  // with defaults that mirror the orchestrator's RefusalSlaConfig::
+  // default() (DEFAULT_HEALTHY_BAND_LO=0.05 + DEFAULT_HEALTHY_BAND_HI=
+  // 0.20 — see crates/orchestrator/src/refusal_sla.rs:79+84). The
+  // visual band is a hint only; classification is driven by the
+  // backend `health_band` string carried on each snapshot row, so the
+  // producer remains the source of truth. Callers that need to mirror
+  // a non-default config can thread their own values through, or fall
+  // back to these defaults when no override is available. See
+  // workflow/reasoning/D-27-decisions.md DECISION-6.
+  interface Props {
+    healthyBandLo?: number;
+    healthyBandHi?: number;
+  }
+  const {
+    healthyBandLo = 0.05,
+    healthyBandHi = 0.20,
+  }: Props = $props();
+  // Local aliases preserve the original constant names used throughout
+  // the template below — keeps the diff scoped to the source line and
+  // avoids a sweep edit across 5 template sites. $derived so updates
+  // to the props re-flow through the template even though the defaults
+  // are static.
+  const HEALTHY_BAND_LO = $derived(healthyBandLo);
+  const HEALTHY_BAND_HI = $derived(healthyBandHi);
 
   let recent = $state<RecentRefusalSla>({
     snapshot_rows: [],

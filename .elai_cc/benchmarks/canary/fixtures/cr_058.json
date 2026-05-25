@@ -1,0 +1,16 @@
+{
+  "id": "cr_058",
+  "domain": "planning",
+  "family": "PlanningDecomposition",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.5708,
+  "post_change_score": 0.9104,
+  "delta_pct": 0.3396,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation improving PlanningDecomposition family by 34.0 points."
+}

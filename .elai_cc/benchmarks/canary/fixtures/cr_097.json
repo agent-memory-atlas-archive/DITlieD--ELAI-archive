@@ -1,0 +1,16 @@
+{
+  "id": "cr_097",
+  "domain": "math",
+  "family": "MathProof",
+  "expected_class": "Neutral",
+  "pre_baseline_score": 0.7456,
+  "post_change_score": 0.7363,
+  "delta_pct": -0.0093,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Neutral mutation on MathProof family within noise floor."
+}

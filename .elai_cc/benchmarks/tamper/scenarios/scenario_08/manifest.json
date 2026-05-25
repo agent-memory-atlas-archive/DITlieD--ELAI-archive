@@ -1,0 +1,17 @@
+{
+  "id": "scenario_08",
+  "kind": "MultiTamper",
+  "tamper_ops": [
+    {
+      "op": "MultiTamper",
+      "args": {
+        "inner": [
+          { "op": "BreakParentLink", "args": { "entry_index": 1 } },
+          { "op": "MutateContentHash", "args": { "entry_index": 3 } }
+        ]
+      }
+    }
+  ],
+  "expected_outcome": { "MultiError": { "kinds": ["broken_parent", "hash_mismatch"] } },
+  "notes": "Apply two tamper ops to the same archive (broken parent at index 1 + hash mismatch at index 3). collect-all should surface multiple errors. The runner's first-error classification matches the FIRST tamper-op's kind."
+}

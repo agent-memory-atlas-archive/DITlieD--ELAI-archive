@@ -223,6 +223,67 @@ fn verdict_label(report: &ConformalValidationReport) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Plan-named helper fns (D-22 closure shim)
+//
+// The D-22 plan section "MODIFY: .elai_cc/crates/cli/src/commands.rs
+// (SlashCommand::BenchConformalValidate)" called for a `status` + `validate`
+// pair on the conformal-validation CLI surface. The shipped substrate routes
+// dispatch through `CliAction::BenchConformal` -> the module-private
+// `run(...)` above; no separate SlashCommand variant landed (see
+// workflow/reasoning/D-22-decisions.md DECISION-5).
+//
+// `status()` and `validate()` below are thin pub helpers exposing the
+// plan-named entry points so integration tests + downstream tooling can
+// drive the benchmark without going through the `std::process::exit` path
+// of `run(...)`. They are additive — they call into the existing
+// `run_async` core; no behavior change.
+// ---------------------------------------------------------------------------
+
+/// D-22 plan-named `status` entry point.
+///
+/// Returns a freshly computed `ConformalValidationReport` against the
+/// supplied dataset + (optional) calibration corpus. Mirrors
+/// `bench conformal --dataset ... --corpus ... --epsilon ...` without
+/// rendering JSON or exiting the process. Construction is a single
+/// current-thread tokio runtime; safe to call from sync context.
+///
+/// Drift note: the plan named this `status()` to mirror the
+/// `conformal-calibration status` shape. The shipped substrate routes the
+/// same call through `CliAction::BenchConformal { dataset, corpus, output,
+/// epsilon }`. See DECISION-4 / DECISION-5 in
+/// workflow/reasoning/D-22-decisions.md.
+pub fn status(
+    dataset_path: PathBuf,
+    corpus_path: Option<PathBuf>,
+    epsilon: Option<f64>,
+) -> Result<ConformalValidationReport, BenchConformalError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| BenchConformalError::OutputIo {
+            path: "<tokio runtime>".to_string(),
+            source_msg: format!("{e}"),
+        })?;
+    rt.block_on(async move { run_async(dataset_path, corpus_path, epsilon).await })
+}
+
+/// D-22 plan-named `validate` entry point.
+///
+/// Runs the conformal-validation benchmark and returns `Ok(true)` iff the
+/// report's `gating_verdict` is `Pass`. Mirrors the
+/// `elai bench conformal-validate` exit-code semantics the plan called
+/// for, without invoking `std::process::exit`. Pure delegation to the
+/// shipped `run_async` core path.
+pub fn validate(
+    dataset_path: PathBuf,
+    corpus_path: Option<PathBuf>,
+    epsilon: Option<f64>,
+) -> Result<bool, BenchConformalError> {
+    let report = status(dataset_path, corpus_path, epsilon)?;
+    Ok(report.passed())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +313,27 @@ mod tests {
         let report = run_async(path, None, None).await.expect("run ok");
         assert!(report.passed());
         assert_eq!(report.total, 15);
+    }
+
+    #[test]
+    fn status_shim_returns_report_against_balanced_fixture() {
+        // D-22 closure: plan-named `status()` helper must hand back the
+        // ConformalValidationReport without rendering / exiting.
+        let dir = TempDir::new().expect("tempdir");
+        let path = write_mini_fixture(&dir);
+        let report = status(path, None, None).expect("status ok");
+        assert!(report.passed());
+        assert_eq!(report.total, 15);
+        assert!(report.tau.is_finite());
+    }
+
+    #[test]
+    fn validate_shim_returns_true_against_balanced_fixture() {
+        // D-22 closure: plan-named `validate()` helper must return true
+        // iff the gating verdict is Pass.
+        let dir = TempDir::new().expect("tempdir");
+        let path = write_mini_fixture(&dir);
+        let passed = validate(path, None, None).expect("validate ok");
+        assert!(passed);
     }
 }

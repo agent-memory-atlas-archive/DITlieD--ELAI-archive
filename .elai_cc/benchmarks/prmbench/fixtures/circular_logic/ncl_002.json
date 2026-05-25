@@ -1,0 +1,17 @@
+{
+  "idx": "ncl_002",
+  "classification": "circular_logic",
+  "original_question": "Show that if n is prime and n > 2, then n is odd.",
+  "modified_question": "Show that if n is prime and n > 2, then n is odd.",
+  "original_process": [
+    "Step 1: Assume n is prime and n > 2.",
+    "Step 2: If n were even and > 2 it would be divisible by 2, contradicting primality; hence n is odd."
+  ],
+  "modified_process": [
+    "Step 1: Assume n is prime and n > 2.",
+    "Step 2: We know n is odd because all primes > 2 are odd; hence n is odd."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Modified step 2 cites 'all primes > 2 are odd' which IS the statement being proved; PRM must reject the circular appeal."
+}

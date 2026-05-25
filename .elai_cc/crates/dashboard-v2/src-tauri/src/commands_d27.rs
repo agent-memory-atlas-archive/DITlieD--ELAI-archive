@@ -30,8 +30,15 @@
 //! composite struct returned, frontend renders header summary + per-
 //! sub-panel state without three round-trips.
 //!
-//! No new SSB variant. No new producer. SCHEMA stays at 87 (Wave-2
-//! producers already shipped in D-10/D-15/D-16/D-17).
+//! No new SSB variant. No new producer. SCHEMA stays at <current head>;
+//! read-only composite consumes existing producer rows per D-26
+//! precedent (Wave-2 producers already shipped in D-10/D-15/D-16/D-17).
+//! See workflow/reasoning/D-27-decisions.md DECISION-1 for the rule.
+//!
+//! D-27 closure pass additions (read-only, additive):
+//!   * [`get_sycophancy_flags_recent`] — recent `sycophancy_flag` SSB
+//!     rows (D-14 substrate) for the inline `SycophancyFlagStrip`. Pure
+//!     projection over `viewer.recent_rows_of_type("sycophancy_flag")`.
 //!
 //! See docs/thefinalglance/D-plan/D-27_mode_routing_refusal_dashboard.md.
 
@@ -247,6 +254,99 @@ pub async fn get_mode_routing_refusal_combined(
     })
 }
 
+/// One projected `sycophancy_flag` SSB row consumed by the
+/// `SycophancyFlagStrip` inline widget. Mirrors the orchestrator-side
+/// [`elai_orchestrator::ssb::SycophancyFlagPayload`] field-wise so the
+/// frontend can render the chip without re-decoding the raw payload.
+///
+/// `verdict` is the snake-case label
+/// (`"convergent"` | `"divergent_sycophancy_flag"` | `"inconclusive"`).
+/// `flip_detected` and `delta` come straight from D-14 (Sharma §3.2
+/// flip definition). `seq` + `ts_ms` are SSB row coordinates so the
+/// strip can sort + key without secondary keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SycophancyFlagRow {
+    pub seq: i64,
+    pub ts_ms: i64,
+    pub claim_id: String,
+    pub flip_detected: bool,
+    pub delta: f64,
+    pub verdict: String,
+}
+
+/// Read the last `limit` (capped at [`MAX_LIMIT`]) `sycophancy_flag`
+/// SSB rows for the inline strip. Empty Vec when the SSB viewer is
+/// absent (Tauri-dev fresh boot) or no rows have been emitted.
+///
+/// Read-only — pure projection over `viewer.recent_rows_of_type`. The
+/// producer is `elai_orchestrator::sycophancy` (D-14), unchanged by
+/// this pass.
+#[tauri::command]
+pub async fn get_sycophancy_flags_recent(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<SycophancyFlagRow>, String> {
+    let cap = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let viewer = match &state.viewer {
+        Some(v) => v.clone(),
+        None => return Ok(Vec::new()),
+    };
+
+    let mut rows: Vec<SycophancyFlagRow> = Vec::new();
+    match viewer.recent_rows_of_type("sycophancy_flag", cap) {
+        Ok(details) => {
+            for detail in details {
+                if let Some(row) = sycophancy_flag_detail_to_row(detail) {
+                    rows.push(row);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                action_type = "sycophancy_flag",
+                error = %e,
+                "get_sycophancy_flags_recent: viewer error"
+            );
+        }
+    }
+    // viewer returns rows newest-first via SEQ DESC; preserve that order
+    // for the strip (left = newest).
+    rows.truncate(cap);
+    Ok(rows)
+}
+
+/// Pure helper: map an `SsbActionDetail` carrying a `sycophancy_flag`
+/// payload to the projected `SycophancyFlagRow`. Returns `None` when
+/// the payload does not match (defensive — the producer is the only
+/// writer so this should never fire in practice).
+fn sycophancy_flag_detail_to_row(
+    d: elai_orchestrator::SsbActionDetail,
+) -> Option<SycophancyFlagRow> {
+    if d.action_type != "sycophancy_flag" {
+        return None;
+    }
+    let obj = d.payload_json.as_object()?;
+    // The serde-flatten outer object wraps the SycophancyFlag variant;
+    // pluck either the wrapped object or the top-level fields so we are
+    // robust to both representations.
+    let inner = obj
+        .get("SycophancyFlag")
+        .and_then(|v| v.as_object())
+        .unwrap_or(obj);
+    let claim_id = inner.get("claim_id")?.as_str()?.to_string();
+    let flip_detected = inner.get("flip_detected")?.as_bool()?;
+    let delta = inner.get("delta")?.as_f64()?;
+    let verdict = inner.get("verdict")?.as_str()?.to_string();
+    Some(SycophancyFlagRow {
+        seq: d.seq,
+        ts_ms: d.ts,
+        claim_id,
+        flip_detected,
+        delta,
+        verdict,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +537,28 @@ mod tests {
         assert_eq!(reparsed.mode_breakdown.get("conformal_refusal"), Some(&2));
         assert_eq!(reparsed.recent_classifications.len(), 3);
         assert_eq!(reparsed.discovery_queue.len(), 1);
+    }
+
+    #[test]
+    fn sycophancy_flag_row_serializes_with_expected_field_names() {
+        let row = SycophancyFlagRow {
+            seq: 42,
+            ts_ms: 1_700_000_000_000,
+            claim_id: "c-flip-1".into(),
+            flip_detected: true,
+            delta: 0.37,
+            verdict: "divergent_sycophancy_flag".into(),
+        };
+        let s = serde_json::to_string(&row).expect("serialize");
+        for key in [
+            "\"seq\"",
+            "\"ts_ms\"",
+            "\"claim_id\"",
+            "\"flip_detected\"",
+            "\"delta\"",
+            "\"verdict\"",
+        ] {
+            assert!(s.contains(key), "missing key {key} in {s}");
+        }
     }
 }

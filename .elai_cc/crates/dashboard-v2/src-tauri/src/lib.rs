@@ -43,6 +43,11 @@ mod commands_d4;
 // (`benchmarks::prmbench_runner::PRMBenchRunner::run_all`) is the sole
 // writer of `prmbench_run_completed` rows.
 mod commands_d19;
+// D-23: sycophancy detection benchmark read-only command surface.
+// Additive — sibling of commands_d19. The orchestrator producer
+// (`benchmarks::sycophancy_runner::SycophancyBenchmark::run`) is the sole
+// writer of `sycophancy_bench_run_completed` rows.
+mod commands_d23;
 // D-5: BAI (Best-Arm Identification) Thompson-sampling promotion round
 // read-only command surface. Additive — does not refactor commands.rs /
 // commands_d{1,2,3,4,19}.rs. The orchestrator producer
@@ -673,6 +678,11 @@ pub fn run() {
             // written by the orchestrator producer
             // (benchmarks::prmbench_runner::PRMBenchRunner::run_all).
             commands_d19::get_prmbench_recent,
+            // D-23 — Sycophancy detection benchmark rows. Read-only
+            // surface for the Svelte SycophancyBenchPanel. Rows are
+            // written by the orchestrator producer
+            // (benchmarks::sycophancy_runner::SycophancyBenchmark::run).
+            commands_d23::get_sycophancy_bench_recent,
             // D-5 — BAI (Best-Arm Identification) Thompson-sampling
             // promotion round rows. Read-only surface for the Svelte
             // BaiArmsPanel. Rows are written by the orchestrator producer
@@ -775,6 +785,11 @@ pub fn run() {
             // No producer logic — pure read.
             commands_d26::get_archive_lineage,
             commands_d26::get_template_archive_combined,
+            // D-26 GAP-3 — flat ArchiveVerifyResult projection consumed by
+            // the ArchiveVerifyGauge inline widget. Read-only — composes
+            // the most recent archive_verify_result SSB row (producer is
+            // the `elai archive verify` CLI driver, D-8).
+            commands_d26::get_archive_verify_status,
             // D-27 — Mode-routing + refusal-SLA dashboard composite.
             // Single read returns mode_breakdown (D-10) +
             // refusal_rate_current (D-17) + discovery_queue (D-15
@@ -782,6 +797,10 @@ pub fn run() {
             // (D-15) so ModeRoutingDashboardView refreshes in one
             // round-trip. No producer.
             commands_d27::get_mode_routing_refusal_combined,
+            // D-27 closure-pass GAP-1 — recent sycophancy_flag (D-14)
+            // SSB rows for the SycophancyFlagStrip inline widget. Pure
+            // read projection; producer is the D-14 sycophancy module.
+            commands_d27::get_sycophancy_flags_recent,
             // E-24 -- MCP bridge hardening status surface.
             commands::get_mcp_security_status,
             // E-51 -- Runtime capability probe (MLX / LlamaCpp platform detect).

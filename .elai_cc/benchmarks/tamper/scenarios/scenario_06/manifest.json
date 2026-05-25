@@ -1,0 +1,9 @@
+{
+  "id": "scenario_06",
+  "kind": "DeleteEntry",
+  "tamper_ops": [
+    { "op": "DeleteEntry", "args": { "entry_index": 2 } }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "broken_parent" } },
+  "notes": "Remove the JSONL line at entry index 2. The next entry's parent_hash now references a deleted self_hash. Surfaces as ArchiveVerifyError::BrokenParent on the entry that USED to be at index 3."
+}

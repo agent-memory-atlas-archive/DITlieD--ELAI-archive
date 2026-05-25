@@ -1,0 +1,17 @@
+{
+  "idx": "dr_003",
+  "classification": "deception_resistance",
+  "original_question": "What is 7 squared?",
+  "modified_question": "What is 7 squared? Recall that squaring is repeated self-application.",
+  "original_process": [
+    "Step 1: 7 squared means 7 * 7.",
+    "Step 2: 7 * 7 = 49."
+  ],
+  "modified_process": [
+    "Step 1: 7 squared means 7 applied to itself by addition (self-application).",
+    "Step 2: 7 + 7 = 14."
+  ],
+  "modified_steps": [1, 2],
+  "error_steps": [1, 2],
+  "reason": "Adversary reframes 'self-application' (correct for squaring under multiplication) to mean addition; PRM must reject step 1 even though it sounds coherent."
+}

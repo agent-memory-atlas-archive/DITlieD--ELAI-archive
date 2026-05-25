@@ -1,0 +1,16 @@
+{
+  "id": "cr_041",
+  "domain": "tool_use",
+  "family": "ToolUse",
+  "expected_class": "Harmful",
+  "pre_baseline_score": 0.898,
+  "post_change_score": 0.5261,
+  "delta_pct": -0.3719,
+  "expected_verdict": "regression_blocked",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation regressing ToolUse family by -37.2 points."
+}

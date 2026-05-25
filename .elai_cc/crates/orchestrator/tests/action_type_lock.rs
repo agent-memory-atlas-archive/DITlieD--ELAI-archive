@@ -32,7 +32,7 @@ use elai_orchestrator::ssb::SsbActionType;
 /// Total number of SsbActionType variants currently locked. Bumping this
 /// requires regenerating action_type_lock.golden in the SAME commit; the
 /// `_count_is_locked` test below holds the line.
-const TOTAL_VARIANTS: usize = 414;
+const TOTAL_VARIANTS: usize = 420;
 
 /// All SsbActionType variants in enum DECLARATION order. Append-only -- new
 /// variants go at the end of this array AND at the end of the enum AND get a
@@ -485,6 +485,49 @@ const ALL_VARIANTS: [SsbActionType; TOTAL_VARIANTS] = [
     // 2024). See workflow/papers/sharma-sycophancy-2310.13548-interface.md.
     SsbActionType::SycophancyProbeDispatched,
     SsbActionType::SycophancyFlag,
+    // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+    SsbActionType::SycophancyBenchRunCompleted,
+    // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+    // benchmark. NanoFlux arXiv:2509.23252 provides empirical motivation
+    // only; no canary mechanism in the paper itself — D-24 is an ELAI
+    // design hypothesis layered on top of D-7's run_canary substrate.
+    SsbActionType::CanaryBenchRunCompleted,
+    // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+    // benchmark. arxiv:2507.05619 (T1) provides integrity-checksum
+    // motivation only; no tamper-suite mechanism in the paper itself —
+    // D-25 is an ELAI design hypothesis driving D-8's verify_archive
+    // IN-PROCESS across a 10-scenario JSON-manifest matrix with a
+    // 5000ms per-scenario wall budget.
+    SsbActionType::DeterminismTamperSuiteCompleted,
+    // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+    // arXiv:2504.06141 (Adv-RM) §3.2 farming loop. Host-side
+    // scaffolding for AdvRmFarmer::run; live PPM scoring loop +
+    // ppm_finetune.sh + dual bench_prmbench v1/v2 are RUNPOD-PENDING.
+    // Paper-cite calibration: plan's "+5pp / 3-epoch / K>=2"
+    // ungrounded — recalibrated to +1pp / 1 epoch / K=1 proxy>>gold
+    // gap fallback per workflow/reasoning/D-28-decisions.md.
+    SsbActionType::AdversarialFarmRunCompleted,
+    // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+    // Wire-dark gated by ELAI_BAI_MODE=hierarchical AND
+    // ELAI_BAI_ENABLE=1. arXiv:2111.06929 SUPPORTING EVIDENCE (HierTS;
+    // regret minimization, NOT BAI; paper grounds the Beta-hyperprior
+    // shape). arXiv:2106.10417 DIRECT GROUNDING (variance-dependent
+    // BAI sample complexity bound H_var). Plan's "30-50% regret
+    // reduction" claim UNGROUNDED for BAI; live baseline RUNPOD-PENDING.
+    // Single-variant by D-19/D-23/D-24/D-25/D-28 precedent.
+    SsbActionType::HierarchicalBaiRoundCompleted,
+    // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start
+    // completion. Wire-dark gated by ELAI_CALIBRATION_BOOTSTRAP_ENABLE.
+    // arXiv:2509.01455 UniCR COMPOSITION (consumes compute_tau_with_min).
+    // arXiv:2109.07958 TruthfulQA DATA ORIGIN (corpus fixture; not
+    // algorithm-source). Politis & Romano 1994 JASA Vol 89 §3 DIRECT
+    // GROUNDING (stationary bootstrap; only active when SECONDARY runs).
+    // Single-variant by D-19/D-23/D-24/D-25/D-28/D-29 precedent (11th
+    // application of pattern-2); the SECONDARY block-bootstrap CI path
+    // extends the payload via `Option` fields instead of a 2nd variant.
+    // Live D-22 validation + 817-row corpus + block-bootstrap activation
+    // are RUNPOD-PENDING.
+    SsbActionType::CalibrationBootstrapCompleted,
     // C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL contract
     // test scaffolding. Paper-grounded against arXiv:2604.13100 (Lin,
     // Zhao, Shi 2026; kernel K = <N, Sigma, Delta> §4.2). Full RL
@@ -1062,6 +1105,20 @@ fn exhaustive_match_guard(v: SsbActionType) {
         // D-14 (SCHEMA_VERSION 124): sycophancy probe row pair.
         SsbActionType::SycophancyProbeDispatched => (),
         SsbActionType::SycophancyFlag => (),
+        // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+        SsbActionType::SycophancyBenchRunCompleted => (),
+        // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+        // benchmark.
+        SsbActionType::CanaryBenchRunCompleted => (),
+        // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+        // benchmark.
+        SsbActionType::DeterminismTamperSuiteCompleted => (),
+        // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+        SsbActionType::AdversarialFarmRunCompleted => (),
+        // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+        SsbActionType::HierarchicalBaiRoundCompleted => (),
+        // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+        SsbActionType::CalibrationBootstrapCompleted => (),
         // C-50 (SCHEMA_VERSION 125): Contract-Coding scaffolding pair.
         SsbActionType::ContractTestScaffolded => (),
         SsbActionType::ContractViolationDetected => (),

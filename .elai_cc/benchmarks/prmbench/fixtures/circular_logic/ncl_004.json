@@ -1,0 +1,17 @@
+{
+  "idx": "ncl_004",
+  "classification": "circular_logic",
+  "original_question": "Prove the sum 1 + 2 + ... + n = n(n+1)/2 by induction.",
+  "modified_question": "Prove the sum 1 + 2 + ... + n = n(n+1)/2 by induction.",
+  "original_process": [
+    "Step 1: Base case n = 1: LHS = 1, RHS = 1*2/2 = 1; holds.",
+    "Step 2: Inductive step: assume holds for n=k; for n=k+1, sum = k(k+1)/2 + (k+1) = (k+1)(k+2)/2."
+  ],
+  "modified_process": [
+    "Step 1: Base case n = 1: LHS = 1, RHS = 1*2/2 = 1; holds.",
+    "Step 2: By the formula n(n+1)/2, the sum is n(n+1)/2 for all n."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Modified step 2 'proves' the formula by citing the formula; PRM must reject the missing inductive step."
+}

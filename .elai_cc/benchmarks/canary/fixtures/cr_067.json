@@ -1,0 +1,12 @@
+{
+  "id": "cr_067",
+  "domain": "code",
+  "family": "CodeFix",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.6347,
+  "post_change_score": 0.9105,
+  "delta_pct": 0.2758,
+  "expected_verdict": "pass",
+  "provenance": "CanaryCorpus",
+  "notes": "Synthetic mutation improving CodeFix family by 27.6 points."
+}

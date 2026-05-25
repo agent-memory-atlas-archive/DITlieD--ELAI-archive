@@ -28,6 +28,12 @@
   import NoveltyPanel from '../drawers/NoveltyPanel.svelte';
   import ConformalCalibrationPanel from '../drawers/ConformalCalibrationPanel.svelte';
   import RefusalRateGauge from '../drawers/RefusalRateGauge.svelte';
+  // D-27 GAP-1 + GAP-2 closure-pass inline widgets. Mounted in this
+  // composite view (and NOT in MonitorWindow/ChatWindow — see
+  // workflow/reasoning/D-27-decisions.md KNOWN-RESIDUAL KR-4 + KR-5
+  // for per-window mounts that remain deferred).
+  import SycophancyFlagStrip from '../components/SycophancyFlagStrip.svelte';
+  import CheckerStatusPanel from '../components/CheckerStatusPanel.svelte';
 
   type DiscoveryQueueRow = {
     template_id: string;
@@ -174,6 +180,18 @@
     <p class="mrd-loading">loading composite…</p>
   {/if}
 
+  <!-- D-27 GAP-1 + GAP-2 closure-pass inline widgets. SycophancyFlagStrip
+       (D-14 substrate) and CheckerStatusPanel (D-11 substrate) round
+       out the Wave-2 surface alongside the 2x2 panel grid below. -->
+  <div class="mrd-inline-row">
+    <div class="mrd-inline-cell">
+      <SycophancyFlagStrip />
+    </div>
+    <div class="mrd-inline-cell">
+      <CheckerStatusPanel />
+    </div>
+  </div>
+
   <!-- 2x2 panel grid, composing the existing D-10/D-15/D-16/D-17 panels. -->
   <div class="mrd-grid">
     <div class="mrd-panel-wrap">
@@ -257,6 +275,22 @@
     font-size: 11px;
     color: var(--text-muted, #888);
     margin: 0;
+  }
+  /* D-27 GAP-6 — inline widgets row (SycophancyFlagStrip +
+     CheckerStatusPanel). Two columns on wide screens, stacks to one
+     column when the dashboard narrows. */
+  .mrd-inline-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .mrd-inline-cell {
+    min-width: 0;
+  }
+  @media (max-width: 800px) {
+    .mrd-inline-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   .mrd-grid {
     display: grid;

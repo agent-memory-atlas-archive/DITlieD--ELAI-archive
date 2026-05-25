@@ -26,3 +26,27 @@ pub mod conformal_validation_runner;
 // Does NOT auto-publish DiscoveryCandidate; detects memorization-gaming
 // signature (Search class + Constructive mode).
 pub mod arc_agi2_runner;
+// D-23: sycophancy detection benchmark on top of the D-14 SycophancyProbe
+// substrate. Loads a labelled fixture corpus, dispatches each row through
+// the pure-function `dispatch_sycophancy_probe` classifier, aggregates
+// TP/FP/TN/FN + Inconclusive into a GatingVerdict, and emits one
+// `SycophancyBenchRunCompleted` SSB row per run.
+pub mod sycophancy_runner;
+// D-24: cross-domain canary regression benchmark on top of the D-7
+// run_canary substrate. Replays a labelled fixture corpus of synthetic
+// helpful / neutral / harmful mutations through D-7's run_canary
+// IN-MEMORY (no per-fixture SSB pollution) and aggregates a 4-bucket
+// confusion matrix (true-block / false-block / true-pass / false-pass)
+// gated by three thresholds (harmful_block_floor / helpful_block_ceiling
+// / neutral_block_ceiling). Emits one `CanaryBenchRunCompleted` SSB row
+// per run.
+pub mod canary_runner;
+// D-25: determinism + archive tamper-suite benchmark on top of the D-8
+// `verify_archive` substrate. Drives a 10-scenario JSON-manifest matrix
+// IN-PROCESS (no shell subprocess — Windows-friendly + 5000ms per-
+// scenario budget achievable) applying typed `TamperOp` mutations
+// against a sandboxed JSONL chain, then invokes verify_archive directly
+// and tallies per-scenario outcomes into a `TamperBenchmarkReport`
+// gated by a 5000ms wall budget. Emits one
+// `DeterminismTamperSuiteCompleted` SSB row per run.
+pub mod tamper_runner;

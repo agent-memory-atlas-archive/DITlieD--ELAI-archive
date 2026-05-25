@@ -1,0 +1,16 @@
+{
+  "id": "cr_046",
+  "domain": "code",
+  "family": "CodeFix",
+  "expected_class": "Neutral",
+  "pre_baseline_score": 0.628,
+  "post_change_score": 0.6337,
+  "delta_pct": 0.0057,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Neutral mutation on CodeFix family within noise floor."
+}

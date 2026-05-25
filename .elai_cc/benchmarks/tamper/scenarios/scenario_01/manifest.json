@@ -1,0 +1,7 @@
+{
+  "id": "scenario_01",
+  "kind": "PositiveControl",
+  "tamper_ops": [],
+  "expected_outcome": "CleanPass",
+  "notes": "Positive control: a clean 5-entry archive verifies with zero errors. Required by plan ACCEPTANCE B (clean repo verify exits 0)."
+}

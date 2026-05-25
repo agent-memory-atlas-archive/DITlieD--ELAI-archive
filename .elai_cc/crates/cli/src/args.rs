@@ -589,6 +589,55 @@ pub(crate) enum CliAction {
         output: Option<String>,
         novelty_config: Option<String>,
     },
+    /// D-23: `elai bench sycophancy [--fixtures PATH] [--output PATH]
+    /// [--detection-floor 0.70] [--fp-ceiling 0.15]`. Runs the
+    /// sycophancy detection benchmark against the labelled fixture
+    /// corpus. Exits 0 on Pass, 1 on Fail. JSON report written to
+    /// `--output` (default stdout). Owns its own tokio runtime
+    /// (sync entrypoint pattern — mirrors `bench_prmbench`). Floor and
+    /// ceiling carried as String (CliAction derives Eq; f64 does not)
+    /// and parsed at the handler boundary.
+    BenchSycophancy {
+        fixtures: Option<String>,
+        output: Option<String>,
+        detection_floor: Option<String>,
+        fp_ceiling: Option<String>,
+    },
+    /// D-24: `elai bench canary-regression [--fixtures PATH] [--output
+    /// PATH] [--harmful-block-floor 20] [--helpful-block-ceiling 5]
+    /// [--neutral-block-ceiling 2]`. Runs the cross-domain canary
+    /// regression benchmark against the labelled fixture corpus
+    /// (20 Harmful + 50 Helpful + 30 Neutral). Exits 0 on Pass, 1 on
+    /// Fail. JSON report written to `--output` (default stdout). Owns
+    /// its own tokio runtime (sync entrypoint pattern — mirrors
+    /// `bench_sycophancy`). Thresholds carried as String (CliAction
+    /// derives Eq) and parsed at the handler boundary.
+    BenchCanary {
+        fixtures: Option<String>,
+        output: Option<String>,
+        harmful_block_floor: Option<String>,
+        helpful_block_ceiling: Option<String>,
+        neutral_block_ceiling: Option<String>,
+    },
+    /// D-25: `elai bench tamper [--scenarios PATH] [--output PATH]
+    /// [--fail-fast=<true|false>] [--max-wall-ms-per-scenario N]`.
+    /// Runs the determinism + archive tamper-suite benchmark against
+    /// the 10-scenario JSON-manifest matrix at
+    /// `benchmarks/tamper/scenarios/` driving D-8 `verify_archive`
+    /// IN-PROCESS. Exits 0 on Pass (every scenario matched expected
+    /// outcome AND max_wall_ms <= 5000), 1 on Fail. JSON report
+    /// written to `--output` (default stdout). Owns its own tokio
+    /// runtime (sync entrypoint pattern — mirrors `bench_canary`).
+    /// `fail_fast` is reserved (the runner selects ff mode per
+    /// manifest); parsed for forward compat. Wall budget carried as
+    /// String (CliAction derives Eq) and parsed at the handler
+    /// boundary.
+    BenchTamper {
+        scenarios: Option<String>,
+        output: Option<String>,
+        fail_fast: Option<String>,
+        max_wall_ms_per_scenario: Option<String>,
+    },
     /// E-17 SP6: `elai bench rag --tier <STANDARD|DEEP> --top-k <N>
     /// [--project-root PATH] [--json] -- <QUERY...>`. Runs the local
     /// knowledge pipeline at the requested tier and emits the final-stage
@@ -743,6 +792,52 @@ pub(crate) enum CliAction {
         action: SymbolGraphAction,
         output_format: CliOutputFormat,
     },
+    /// D-28: `elai farm-adv-rm <run|verdict>` — adversarial example
+    /// farming runner CLI surface. Drives
+    /// `elai_orchestrator::farm::adv_rm::AdvRmFarmer` which walks a seed
+    /// dataset, applies the Z>1.96 dual-filter, and writes
+    /// `corpus.jsonl` with `gold_verdict: "pending"`. Live PPM scoring
+    /// loop + Bradley-Terry retrain + dual `bench_prmbench` v1/v2 runs
+    /// are RUNPOD-PENDING (see `python/elai_inference/ppm_adversarial.py`
+    /// and `workflow/remote-setup/ppm_finetune.sh`). Emits one
+    /// `SsbActionType::AdversarialFarmRunCompleted` SSB row at end-of-
+    /// run. Single new variant per workflow/reasoning/D-28-decisions.md
+    /// DECISION-2.
+    FarmAdvRm { sub: FarmAdvRmSub },
+}
+
+/// D-28 — `elai farm-adv-rm <sub>` carrier struct. Mirrors the
+/// DafnyAction / TddAction parent-variant pattern so the dispatcher
+/// matches a single CliAction arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FarmAdvRmArgs {
+    pub(crate) sub: FarmAdvRmSub,
+}
+
+/// D-28 — closed sub-verb enum for `elai farm-adv-rm`. Two arms this
+/// pass: `Run` (drive the farm loop end-to-end) + `Verdict` (re-evaluate
+/// a previously-written JSON report). Numerical knobs on `Run` are
+/// carried as Option<String> so CliAction derives Eq cleanly (f64
+/// does not).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FarmAdvRmSub {
+    /// `elai farm-adv-rm run --dataset PATH [...]` — drive the farm
+    /// loop end-to-end. Validation of the numerical knobs lives in the
+    /// `farm_adv_rm` handler so this layer stays free of orchestrator
+    /// type deps.
+    Run {
+        dataset: String,
+        corpus_dir: Option<String>,
+        output: Option<String>,
+        max_samples: Option<String>,
+        max_rounds: Option<String>,
+        z_threshold: Option<String>,
+        paper_floor_pp: Option<String>,
+        source_session: Option<String>,
+    },
+    /// `elai farm-adv-rm verdict --report PATH` — re-evaluate the
+    /// verdict on a previously-written JSON report. No hook calls.
+    Verdict { report: String },
 }
 
 /// E-40 — `elai scip <sub>` sub-verb. Bundled with the parent
@@ -1610,6 +1705,11 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "wip-squash" | "wip_squash" => parse_wip_squash_args(&rest[1..]),
         // D-19: `elai bench prmbench ...` — PRMBench adversarial-gaming benchmark.
         "bench" => parse_bench_subcommand_args(&rest[1..]),
+        // D-28: `elai farm-adv-rm <run|verdict> ...` — adversarial example
+        // farming runner. Drives the AdvRmFarmer (orchestrator-side) and
+        // writes corpus.jsonl with `gold_verdict: "pending"`. Single
+        // SsbActionType::AdversarialFarmRunCompleted row at end-of-run.
+        "farm-adv-rm" | "farm_adv_rm" => parse_farm_adv_rm_args(&rest[1..]),
         // C-20: route `elai measure …` through the slash-command parser so
         // the grammar is a single source of truth (mirrors the `runtime`
         // routing immediately above).
@@ -2502,9 +2602,18 @@ pub(crate) fn parse_bench_subcommand_args(rest: &[String]) -> Result<CliAction, 
     if sub == "rag" {
         return parse_bench_rag_args(&rest[1..]);
     }
+    if sub == "sycophancy" {
+        return parse_bench_sycophancy_args(&rest[1..]);
+    }
+    if sub == "canary-regression" {
+        return parse_bench_canary_args(&rest[1..]);
+    }
+    if sub == "tamper" {
+        return parse_bench_tamper_args(&rest[1..]);
+    }
     if sub != "prmbench" {
         return Err(format!(
-            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag')"
+            "unknown `bench` sub-command: '{sub}' (expected 'prmbench' | 'mode-routing' | 'conformal' | 'arc' | 'rag' | 'sycophancy' | 'canary-regression' | 'tamper')"
         ));
     }
     let mut dataset: Option<String> = None;
@@ -2914,6 +3023,482 @@ pub(crate) fn parse_bench_rag_args(rest: &[String]) -> Result<CliAction, String>
         query,
         json,
         project_root: resolved_project_root,
+    })
+}
+
+/// D-23 — parse `elai bench sycophancy [--fixtures PATH] [--output PATH]
+/// [--detection-floor 0.70] [--fp-ceiling 0.15]`. Mirrors the prmbench
+/// parser; hand-rolled per the CLAUDE.md "no new clap dep" rule.
+/// Validation of the floor / ceiling values lives at the handler boundary.
+pub(crate) fn parse_bench_sycophancy_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut fixtures: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut detection_floor: Option<String> = None;
+    let mut fp_ceiling: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixtures" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fixtures".to_string())?;
+                fixtures = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fixtures=") => {
+                fixtures = Some(flag["--fixtures=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--detection-floor" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --detection-floor".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --detection-floor {value:?}: {e}"))?;
+                detection_floor = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--detection-floor=") => {
+                let value = &flag["--detection-floor=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --detection-floor {value:?}: {e}"))?;
+                detection_floor = Some(value.to_string());
+                i += 1;
+            }
+            "--fp-ceiling" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fp-ceiling".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --fp-ceiling {value:?}: {e}"))?;
+                fp_ceiling = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fp-ceiling=") => {
+                let value = &flag["--fp-ceiling=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --fp-ceiling {value:?}: {e}"))?;
+                fp_ceiling = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench sycophancy` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchSycophancy {
+        fixtures,
+        output,
+        detection_floor,
+        fp_ceiling,
+    })
+}
+
+/// D-24 — parse `elai bench canary-regression [--fixtures PATH] [--output
+/// PATH] [--harmful-block-floor N] [--helpful-block-ceiling N]
+/// [--neutral-block-ceiling N]`. Mirrors the sycophancy parser; hand-
+/// rolled per the CLAUDE.md "no new clap dep" rule. Threshold values
+/// are validated as u32 here so a stray `-1` or `foo` is caught at
+/// parse time rather than during the runner's gate evaluation.
+pub(crate) fn parse_bench_canary_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut fixtures: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut harmful_block_floor: Option<String> = None;
+    let mut helpful_block_ceiling: Option<String> = None;
+    let mut neutral_block_ceiling: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixtures" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fixtures".to_string())?;
+                fixtures = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fixtures=") => {
+                fixtures = Some(flag["--fixtures=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--harmful-block-floor" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --harmful-block-floor".to_string())?;
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --harmful-block-floor {value:?}: {e}"))?;
+                harmful_block_floor = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--harmful-block-floor=") => {
+                let value = &flag["--harmful-block-floor=".len()..];
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --harmful-block-floor {value:?}: {e}"))?;
+                harmful_block_floor = Some(value.to_string());
+                i += 1;
+            }
+            "--helpful-block-ceiling" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --helpful-block-ceiling".to_string())?;
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --helpful-block-ceiling {value:?}: {e}"))?;
+                helpful_block_ceiling = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--helpful-block-ceiling=") => {
+                let value = &flag["--helpful-block-ceiling=".len()..];
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --helpful-block-ceiling {value:?}: {e}"))?;
+                helpful_block_ceiling = Some(value.to_string());
+                i += 1;
+            }
+            "--neutral-block-ceiling" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --neutral-block-ceiling".to_string())?;
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --neutral-block-ceiling {value:?}: {e}"))?;
+                neutral_block_ceiling = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--neutral-block-ceiling=") => {
+                let value = &flag["--neutral-block-ceiling=".len()..];
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --neutral-block-ceiling {value:?}: {e}"))?;
+                neutral_block_ceiling = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench canary-regression` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchCanary {
+        fixtures,
+        output,
+        harmful_block_floor,
+        helpful_block_ceiling,
+        neutral_block_ceiling,
+    })
+}
+
+/// D-25 — parse `elai bench tamper [--scenarios PATH] [--output PATH]
+/// [--fail-fast=<true|false>] [--max-wall-ms-per-scenario N]`. Mirrors
+/// the canary parser; hand-rolled per the CLAUDE.md "no new clap dep"
+/// rule. Threshold values are validated as u64 here so a stray `-1` or
+/// `foo` is caught at parse time rather than during the runner's gate
+/// evaluation.
+pub(crate) fn parse_bench_tamper_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut scenarios: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut fail_fast: Option<String> = None;
+    let mut max_wall_ms_per_scenario: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--scenarios" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --scenarios".to_string())?;
+                scenarios = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--scenarios=") => {
+                scenarios = Some(flag["--scenarios=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--fail-fast" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --fail-fast".to_string())?;
+                validate_bool_arg("--fail-fast", value)?;
+                fail_fast = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--fail-fast=") => {
+                let value = &flag["--fail-fast=".len()..];
+                validate_bool_arg("--fail-fast", value)?;
+                fail_fast = Some(value.to_string());
+                i += 1;
+            }
+            "--max-wall-ms-per-scenario" => {
+                let value = rest.get(i + 1).ok_or_else(|| {
+                    "missing value for --max-wall-ms-per-scenario".to_string()
+                })?;
+                let _: u64 = value.parse().map_err(|e| {
+                    format!("invalid --max-wall-ms-per-scenario {value:?}: {e}")
+                })?;
+                max_wall_ms_per_scenario = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--max-wall-ms-per-scenario=") => {
+                let value = &flag["--max-wall-ms-per-scenario=".len()..];
+                let _: u64 = value.parse().map_err(|e| {
+                    format!("invalid --max-wall-ms-per-scenario {value:?}: {e}")
+                })?;
+                max_wall_ms_per_scenario = Some(value.to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `bench tamper` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::BenchTamper {
+        scenarios,
+        output,
+        fail_fast,
+        max_wall_ms_per_scenario,
+    })
+}
+
+fn validate_bool_arg(name: &str, value: &str) -> Result<(), String> {
+    match value {
+        "true" | "false" | "1" | "0" | "TRUE" | "FALSE" | "True" | "False" => Ok(()),
+        other => Err(format!(
+            "invalid {name} {other:?}: expected 'true'|'false'|'1'|'0'"
+        )),
+    }
+}
+
+/// D-28 — parse `elai farm-adv-rm <run|verdict> [...]`. Mirrors the
+/// `parse_bench_subcommand_args` sub-verb dispatch pattern. Numerical
+/// knobs (`--max-samples`, `--max-rounds`, `--z-threshold`,
+/// `--paper-floor-pp`) are carried as Option<String> so CliAction
+/// derives Eq cleanly; validation lives in the `farm_adv_rm` handler
+/// boundary.
+pub(crate) fn parse_farm_adv_rm_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    match sub {
+        "run" => parse_farm_adv_rm_run_args(&rest[1..]),
+        "verdict" => parse_farm_adv_rm_verdict_args(&rest[1..]),
+        other => Err(format!(
+            "unknown `farm-adv-rm` sub-command: '{other}' (expected 'run' | 'verdict')"
+        )),
+    }
+}
+
+/// D-28 — parse `elai farm-adv-rm run --dataset PATH [...]`.
+fn parse_farm_adv_rm_run_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut dataset: Option<String> = None;
+    let mut corpus_dir: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut max_samples: Option<String> = None;
+    let mut max_rounds: Option<String> = None;
+    let mut z_threshold: Option<String> = None;
+    let mut paper_floor_pp: Option<String> = None;
+    let mut source_session: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--dataset" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --dataset".to_string())?;
+                dataset = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--dataset=") => {
+                dataset = Some(flag["--dataset=".len()..].to_string());
+                i += 1;
+            }
+            "--corpus-dir" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --corpus-dir".to_string())?;
+                corpus_dir = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--corpus-dir=") => {
+                corpus_dir = Some(flag["--corpus-dir=".len()..].to_string());
+                i += 1;
+            }
+            "--output" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--output=") => {
+                output = Some(flag["--output=".len()..].to_string());
+                i += 1;
+            }
+            "--max-samples" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --max-samples".to_string())?;
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --max-samples {value:?}: {e}"))?;
+                max_samples = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--max-samples=") => {
+                let value = &flag["--max-samples=".len()..];
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --max-samples {value:?}: {e}"))?;
+                max_samples = Some(value.to_string());
+                i += 1;
+            }
+            "--max-rounds" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --max-rounds".to_string())?;
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --max-rounds {value:?}: {e}"))?;
+                max_rounds = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--max-rounds=") => {
+                let value = &flag["--max-rounds=".len()..];
+                let _: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --max-rounds {value:?}: {e}"))?;
+                max_rounds = Some(value.to_string());
+                i += 1;
+            }
+            "--z-threshold" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --z-threshold".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --z-threshold {value:?}: {e}"))?;
+                z_threshold = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--z-threshold=") => {
+                let value = &flag["--z-threshold=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --z-threshold {value:?}: {e}"))?;
+                z_threshold = Some(value.to_string());
+                i += 1;
+            }
+            "--paper-floor-pp" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --paper-floor-pp".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --paper-floor-pp {value:?}: {e}"))?;
+                paper_floor_pp = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--paper-floor-pp=") => {
+                let value = &flag["--paper-floor-pp=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --paper-floor-pp {value:?}: {e}"))?;
+                paper_floor_pp = Some(value.to_string());
+                i += 1;
+            }
+            "--source-session" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --source-session".to_string())?;
+                source_session = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--source-session=") => {
+                source_session = Some(flag["--source-session=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `farm-adv-rm run` argument: {other}"));
+            }
+        }
+    }
+    let dataset = dataset
+        .ok_or_else(|| "missing required --dataset PATH for `farm-adv-rm run`".to_string())?;
+    Ok(CliAction::FarmAdvRm {
+        sub: FarmAdvRmSub::Run {
+            dataset,
+            corpus_dir,
+            output,
+            max_samples,
+            max_rounds,
+            z_threshold,
+            paper_floor_pp,
+            source_session,
+        },
+    })
+}
+
+/// D-28 — parse `elai farm-adv-rm verdict --report PATH`. Re-evaluates
+/// the gate against a previously-written report without re-running the
+/// hook loop. No hook calls; no SSB writes.
+fn parse_farm_adv_rm_verdict_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut report: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--report" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --report".to_string())?;
+                report = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--report=") => {
+                report = Some(flag["--report=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `farm-adv-rm verdict` argument: {other}"));
+            }
+        }
+    }
+    let report = report
+        .ok_or_else(|| "missing required --report PATH for `farm-adv-rm verdict`".to_string())?;
+    Ok(CliAction::FarmAdvRm {
+        sub: FarmAdvRmSub::Verdict { report },
     })
 }
 

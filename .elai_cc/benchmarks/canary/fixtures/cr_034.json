@@ -1,0 +1,16 @@
+{
+  "id": "cr_034",
+  "domain": "tool_use",
+  "family": "ToolUse",
+  "expected_class": "Helpful",
+  "pre_baseline_score": 0.5965,
+  "post_change_score": 0.8463,
+  "delta_pct": 0.2498,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Synthetic mutation improving ToolUse family by 25.0 points."
+}

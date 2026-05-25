@@ -1,0 +1,9 @@
+{
+  "id": "scenario_05",
+  "kind": "MalformedJson",
+  "tamper_ops": [
+    { "op": "CorruptJsonl", "args": { "entry_index": 2 } }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "malformed_json" } },
+  "notes": "Replace the JSONL line at entry index 2 with garbage that fails serde_json::from_str. Surfaces as ArchiveVerifyError::MalformedJson via ArchiveChain::load_lenient."
+}

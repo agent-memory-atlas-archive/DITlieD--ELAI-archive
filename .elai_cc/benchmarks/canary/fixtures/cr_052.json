@@ -1,0 +1,16 @@
+{
+  "id": "cr_052",
+  "domain": "reasoning",
+  "family": "ProseReason",
+  "expected_class": "Neutral",
+  "pre_baseline_score": 0.6375,
+  "post_change_score": 0.634,
+  "delta_pct": -0.0035,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Neutral mutation on ProseReason family within noise floor."
+}

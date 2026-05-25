@@ -1,0 +1,16 @@
+{
+  "id": "cr_054",
+  "domain": "tool_use",
+  "family": "ToolUse",
+  "expected_class": "Neutral",
+  "pre_baseline_score": 0.6512,
+  "post_change_score": 0.6435,
+  "delta_pct": -0.0077,
+  "expected_verdict": "pass",
+  "provenance": {
+    "ElaiSynthetic": {
+      "author": "s-25120-D-24-author"
+    }
+  },
+  "notes": "Neutral mutation on ToolUse family within noise floor."
+}

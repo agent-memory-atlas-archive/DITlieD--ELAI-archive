@@ -1,0 +1,9 @@
+{
+  "id": "scenario_07",
+  "kind": "AppendMalformedTrailing",
+  "tamper_ops": [
+    { "op": "AppendMalformedTrailing" }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "malformed_json" } },
+  "notes": "Append a trailing garbage line to the archive. Surfaces as ArchiveVerifyError::MalformedJson on the trailing line."
+}

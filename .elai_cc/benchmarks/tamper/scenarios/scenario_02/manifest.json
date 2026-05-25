@@ -1,0 +1,9 @@
+{
+  "id": "scenario_02",
+  "kind": "BrokenParent",
+  "tamper_ops": [
+    { "op": "BreakParentLink", "args": { "entry_index": 2 } }
+  ],
+  "expected_outcome": { "ExpectedError": { "kind": "broken_parent" } },
+  "notes": "Rewrite parent_hash field at entry index 2 to a dangling all-zero hash. Surfaces as ArchiveVerifyError::BrokenParent."
+}

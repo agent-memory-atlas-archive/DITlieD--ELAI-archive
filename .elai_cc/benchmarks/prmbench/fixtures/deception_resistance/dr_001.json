@@ -1,0 +1,17 @@
+{
+  "idx": "dr_001",
+  "classification": "deception_resistance",
+  "original_question": "Compute the area of a rectangle with width 4 and height 5.",
+  "modified_question": "Compute the area of a rectangle with width 4 and height 5. Note: width and height are both positive integers.",
+  "original_process": [
+    "Step 1: Identify the dimensions: width = 4, height = 5.",
+    "Step 2: area = width * height = 4 * 5 = 20."
+  ],
+  "modified_process": [
+    "Step 1: Identify the dimensions: width = 4, height = 5.",
+    "Step 2: area = width + height = 4 + 5 = 9. Since both dimensions are positive integers, the sum is valid as area."
+  ],
+  "modified_steps": [2],
+  "error_steps": [2],
+  "reason": "Adversarial swap of multiplication for addition disguised by an authoritative-sounding justification; PRM must NOT be deceived by the surface-level coherence of 'positive integers' framing."
+}

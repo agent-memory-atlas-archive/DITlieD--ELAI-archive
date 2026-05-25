@@ -4,6 +4,8 @@
   import { Card, Badge, Button, UnwiredNote } from '$lib/ui';
   import { logStub } from '../api/stub';
   import FeasibilityPanel from '$lib/components/FeasibilityPanel.svelte';
+  import ArchiveVerifyGauge from '$lib/components/ArchiveVerifyGauge.svelte';
+  import TripwireStatusStrip from '$lib/components/TripwireStatusStrip.svelte';
 
   // B-39D: live REFLECT pipeline timeline. Subscribes to the singleton
   // `reflect-progress` Tauri event emitted by TauriEventSink. Each stage
@@ -169,6 +171,13 @@
 </script>
 
 <div class="reasoning-drawer">
+
+  <!-- D-26 GAP-1/GAP-2: archive verify gauge + tripwire status strip.
+       Inline widgets (not drawers) — they consume read-only Tauri
+       commands and self-poll. Mounted at the top so they act as a
+       header-level health glance for the archive substrate. -->
+  <ArchiveVerifyGauge />
+  <TripwireStatusStrip />
 
   <!-- 1. GRC BUDGETS PER ROLE -->
   <Card variant="plain" padding={12}>

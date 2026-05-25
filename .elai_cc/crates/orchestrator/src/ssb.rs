@@ -1715,7 +1715,115 @@ use elai_reasoning::chat_reflect::{ReflectEvent, ReflectEventSink};
 // JSON" / DCCD / "When Correct Isn't Usable" referenced by name
 // only per cluster s-25120 cite-discipline (mistakes.md cite-incident
 // cluster #13). See workflow/reasoning/E-35-decisions.md.
-const SCHEMA_VERSION: i64 = 141;
+// D-23 (SCHEMA_VERSION 142): atomic +1 bump on top of E-35's 141 head.
+// Adds one new SsbActionType variant `SycophancyBenchRunCompleted`
+// emitted by `crate::benchmarks::sycophancy_runner::SycophancyBenchmark::run`
+// at end-of-run. Lockstep cascade: SQL CHECK list (+1 string),
+// SsbActionType variant (+1 arm), as_str / from_str (+1 arm each),
+// SsbPayload variant (+1 arm), action_type() match (+1 arm), payload
+// struct (+1), sample dispatch in `from_action_type_for_smoke` (+1 arm),
+// `all_test_payloads` Vec (+1 entry), action_type_lock.rs (TOTAL_VARIANTS
+// 414 -> 415, ALL_VARIANTS +1, exhaustive_match_guard +1) +
+// action_type_lock.golden (+1 row at alphabetical position
+// `sycophancy_bench_run_completed`). 10th lockstep site (the SQL CHECK
+// list) sits in CREATE_SSB_TABLE below. See workflow/reasoning/
+// D-23-decisions.md DECISION-1.
+// D-24 (SCHEMA_VERSION 143): atomic +1 bump on top of D-23's 142 head.
+// Adds one new SsbActionType variant `CanaryBenchRunCompleted` emitted
+// by `crate::benchmarks::canary_runner::CanaryBenchmark::run` at
+// end-of-run. Same canonical 9-tuple cascade + 10th lockstep at
+// action_type_lock.rs (TOTAL_VARIANTS 415 -> 416, ALL_VARIANTS +1,
+// exhaustive_match_guard +1) + action_type_lock.golden (+1 row at
+// alphabetical position `canary_bench_run_completed`, ordinal 0043).
+// Plan-doc named the variants `BenchmarkStarted` + `BenchmarkResult`;
+// REJECTED per D-19/D-23 single-variant precedent — D-24 ships exactly
+// one new variant. See workflow/reasoning/D-24-decisions.md DECISION-1.
+// D-25 (SCHEMA_VERSION 144): atomic +1 bump on top of D-24's 143 head.
+// Adds one new SsbActionType variant `DeterminismTamperSuiteCompleted`
+// emitted by `crate::benchmarks::tamper_runner::TamperBenchmark::run`
+// at end-of-run. Same canonical 9-tuple cascade + 10th lockstep at
+// action_type_lock.rs (TOTAL_VARIANTS 416 -> 417, ALL_VARIANTS +1,
+// exhaustive_match_guard +1) + action_type_lock.golden (+1 row at
+// alphabetical position `determinism_tamper_suite_completed`).
+// Plan-doc named the variants `BenchmarkStarted` + `BenchmarkResult`;
+// REJECTED per D-19/D-23/D-24 single-variant precedent — D-25 ships
+// exactly one new variant. The 10-scenario tamper-suite drives D-8
+// `verify_archive` IN-PROCESS (NOT shell subprocess — Windows-friendly
+// + 5s budget achievable). JSON scenario manifests (NOT TOML — avoids
+// new dep, per D-24 DECISION-4 precedent). See workflow/reasoning/
+// D-25-decisions.md DECISION-1.
+// D-28 (SCHEMA_VERSION 145): atomic +1 bump on top of D-25's 144 head.
+// Adds one new SsbActionType variant `AdversarialFarmRunCompleted`
+// emitted by `crate::farm::adv_rm::AdvRmFarmer::run` at end-of-run.
+// Same canonical 9-tuple cascade + 10th lockstep at
+// action_type_lock.rs (TOTAL_VARIANTS 417 -> 418, ALL_VARIANTS +1,
+// exhaustive_match_guard +1) + action_type_lock.golden (+1 row at
+// alphabetical position `adversarial_farm_run_completed`, ordinal
+// 0000 — `adversarial*` sorts BEFORE `adversary_generated` because
+// 'i' < 'y' at the 8th character; all subsequent ordinals shift +1).
+// Plan-doc named the variants `AdversarialCorpusGenerated` +
+// `PpmFinetuneCompleted`; REJECTED per D-19/D-23/D-24/D-25 single-
+// variant precedent — D-28 ships exactly one new variant carrying
+// the host-side farm-run aggregate. Paper grounding: arXiv:2504.06141
+// (Adv-RM); the +5pp / 3-epoch / K>=2 claims in the plan are NOT
+// grounded in the paper — recalibrated to +1pp floor (paper §5
+// overall +0.7pp / +2.86pp Chat-Hard), 1 epoch (paper §5 explicit
+// "single epoch"), and K=1 PPM singleton with proxy>>gold gap as
+// uncertainty fallback (D-4 rm-overoptimization style). Live PPM
+// farm loop + ppm_finetune.sh + bench_prmbench --hook-mode http
+// v1/v2 are RUNPOD-PENDING (host-side scaffolding shipped). See
+// workflow/reasoning/D-28-decisions.md.
+// D-29 (SCHEMA_VERSION 146): atomic +1 bump on top of D-28's 145 head.
+// Adds one new SsbActionType variant `HierarchicalBaiRoundCompleted`
+// emitted by the hierarchical BAI dispatch path when ELAI_BAI_MODE=
+// hierarchical AND ELAI_BAI_ENABLE=1. Carries the round-aggregate of
+// the Metropolis-within-Gibbs hyperposterior update (mu / kappa mean +
+// variance), the per-arm shrunk Beta(alpha+mu*kappa, beta+(1-mu)*kappa)
+// summaries, the selected arm, the selection basis (HierarchicalTs /
+// FlatTs / CanaryOverride), Gibbs iteration count, and the canary gate
+// outcome. Same canonical 9-tuple cascade + 10th lockstep at
+// action_type_lock.rs (TOTAL_VARIANTS 418 -> 419, ALL_VARIANTS +1,
+// exhaustive_match_guard +1) + action_type_lock.golden (+1 row at
+// alphabetical position `hierarchical_bai_round_completed`, inserted
+// between `held_out_task_used` and `hook_event`; all subsequent
+// ordinals shift +1). Plan-doc suggested possibly multiple variants
+// (one per family update + one per arm draw); REJECTED per D-19/D-23/
+// D-24/D-25/D-28 single-variant precedent — D-29 ships exactly one
+// new variant carrying the round-level aggregate. Paper labels:
+// arXiv:2111.06929 SUPPORTING EVIDENCE (regret minimization, NOT BAI;
+// see workflow/papers/hierarchical-bayesian-bandits-interface.md);
+// arXiv:2106.10417 DIRECT GROUNDING (variance-dependent BAI). The
+// plan's "30-50% regret reduction" claim is UNGROUNDED for the BAI
+// regime and is RUNPOD-PENDING (live flat-vs-hierarchical baseline
+// requires a runtime GPU run). See workflow/reasoning/D-29-decisions.md.
+// D-30 (SCHEMA_VERSION 147): atomic +1 bump on top of D-29's 146 head.
+// Adds one new SsbActionType variant `CalibrationBootstrapCompleted`
+// emitted by the calibration bootstrap warm-start path
+// (`crate::calibration_bootstrap`) when ELAI_CALIBRATION_BOOTSTRAP_ENABLE
+// is set (wire-dark default OFF). Carries the warm-start outcome —
+// corpus slug (e.g. "truthfulqa"), corpus size, corpus blake3 hex,
+// tau_warm_start, alpha, tau_floor_active, plus the SECONDARY Option
+// fields for stationary-bootstrap CI on tau (Politis & Romano 1994
+// JASA Vol 89 §3): bootstrap_replicates, bootstrap_ci_low,
+// bootstrap_ci_high, block_length_p. The Option fields are `None` for
+// the canonical warm-start path and flip to `Some(_)` only when a
+// SECONDARY pass enables block-bootstrap (single-variant pattern
+// preserved per D-19/D-23/D-24/D-25/D-28/D-29 precedent — extension is
+// via Option payload, NOT a second variant; 11th application of
+// single-variant pattern-2). Same canonical 9-tuple cascade + 10th
+// lockstep at action_type_lock.rs (TOTAL_VARIANTS 419 -> 420,
+// ALL_VARIANTS +1, exhaustive_match_guard +1) + action_type_lock.golden
+// (+1 row at alphabetical position `calibration_bootstrap_completed`,
+// inserted between `bubble_up_typed` and `calibration_corpus_updated`;
+// all subsequent ordinals shift +1). Paper labels: arXiv:2509.01455
+// UniCR COMPOSITION (we consume compute_tau_with_min); arXiv:2109.07958
+// TruthfulQA DATA ORIGIN (corpus fixture source; not algorithm-source);
+// Politis & Romano 1994 JASA Vol 89 §3 DIRECT GROUNDING (stationary
+// bootstrap mechanism — only active when SECONDARY runs). Live D-22
+// validation harness + full-corpus 817-row TruthfulQA import +
+// block-bootstrap CI run are RUNPOD-PENDING (host-side scaffolding
+// shipped). See workflow/reasoning/D-30-decisions.md.
+const SCHEMA_VERSION: i64 = 147;
 
 /// Public re-export of [`SCHEMA_VERSION`] for contract / integration tests
 /// outside the orchestrator crate. The const itself stays crate-private so
@@ -2613,6 +2721,87 @@ CREATE TABLE IF NOT EXISTS ssb (
         -- See workflow/papers/sharma-sycophancy-2310.13548-interface.md.
         'sycophancy_probe_dispatched',
         'sycophancy_flag',
+        -- D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+        -- sycophancy_bench_run_completed -- one row per
+        --     `SycophancyBenchmark::run` Ok return. Carries (tp, fp,
+        --     tn, fn_, inconclusive, detection_rate, fp_rate, verdict,
+        --     total_fixtures, fixture_blake3, runner_name).
+        -- Gates detection_rate >= 0.70 AND fp_rate <= 0.15 per Sharma
+        -- §4 single-turn reproducibility band + plan §Tasks step 3.
+        'sycophancy_bench_run_completed',
+        -- D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+        -- benchmark. Replays a labelled fixture corpus through D-7
+        -- run_canary in-memory and aggregates a 4-bucket confusion
+        -- matrix (true_block / false_block / true_pass / false_pass).
+        -- canary_bench_run_completed -- one row per CanaryBenchmark::run
+        --     Ok return. Carries (true_block, false_block, true_pass,
+        --     false_pass, harmful_blocked, helpful_blocked,
+        --     neutral_blocked, total_fixtures, verdict, fixture_blake3,
+        --     runner_name). Gates harmful_blocked >= 20 AND
+        --     helpful_blocked <= 5 AND neutral_blocked <= 2 (ELAI
+        --     calibration; NanoFlux arXiv:2509.23252 paper has no canary
+        --     mechanism so the thresholds are empirical).
+        'canary_bench_run_completed',
+        -- D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+        -- benchmark. Drives D-8 verify_archive IN-PROCESS across a 10-
+        -- scenario JSON-manifest matrix (positive control + 6 single-
+        -- error variants spanning the 4 ArchiveVerifyError kinds +
+        -- multi-tamper + revert + fail-fast). Each scenario MUST be
+        -- detected within 5000ms.
+        -- determinism_tamper_suite_completed -- one row per
+        --     TamperBenchmark::run Ok return. Carries (total_scenarios,
+        --     passed, failed, max_wall_ms, verdict, scenarios_blake3).
+        --     Gates verdict == pass AND max_wall_ms <= 5000. Supports
+        --     arxiv:2507.05619 (T1) integrity-checksum recommendation
+        --     (motivation only -- no tamper-suite mechanism in the
+        --     paper). See workflow/reasoning/D-25-decisions.md.
+        'determinism_tamper_suite_completed',
+        -- D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+        -- Host-side scaffolding for the Adv-RM (arXiv:2504.06141) farm
+        -- loop. Walks a dataset through the D-2 PPM hook, applies the
+        -- Z>1.96 dual-filter, writes corpus.jsonl with gold_verdict=
+        -- pending, and records the paper-grounded PRMBench v1/v2 delta
+        -- floor (1.0pp recalibrated from plan's ungrounded 5pp).
+        -- adversarial_farm_run_completed -- one row per
+        --     AdvRmFarmer::run Ok return. Carries (samples_farmed,
+        --     rounds, prmbench_delta_pp, verdict, paper_floor_pp,
+        --     corpus_blake3). Gates prmbench_delta_pp >=
+        --     paper_floor_pp (default 1.0). Live PPM loop + bench
+        --     re-runs are RUNPOD-PENDING. See workflow/reasoning/
+        --     D-28-decisions.md DECISION-1.
+        'adversarial_farm_run_completed',
+        -- D-29 (SCHEMA_VERSION 146): hierarchical BAI round
+        -- completion. Emitted ONLY when ELAI_BAI_MODE=hierarchical
+        -- AND ELAI_BAI_ENABLE=1 (wire-dark default). Paper labels:
+        -- arXiv:2111.06929 SUPPORTING EVIDENCE (regret min, NOT BAI;
+        -- workflow/papers/hierarchical-bayesian-bandits-interface.md);
+        -- arXiv:2106.10417 DIRECT GROUNDING (variance-dependent BAI).
+        -- hierarchical_bai_round_completed -- one row per
+        --     `dispatch_bai_round` call in hierarchical mode. Carries
+        --     (round, mu / kappa posterior mean+variance, per-arm
+        --     shrunk Beta summary list, selected_arm_index,
+        --     selection_basis, gibbs_iterations, canary_gate_passed).
+        --     Plan-doc 30-50pct regret reduction claim is UNGROUNDED
+        --     for BAI; live baseline RUNPOD-PENDING. See
+        --     workflow/reasoning/D-29-decisions.md DECISION-1.
+        'hierarchical_bai_round_completed',
+        -- D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start
+        -- completion. Emitted ONLY when
+        -- ELAI_CALIBRATION_BOOTSTRAP_ENABLE=1 (wire-dark default OFF).
+        -- Paper labels: arXiv:2509.01455 UniCR COMPOSITION (consumes
+        -- compute_tau_with_min); arXiv:2109.07958 TruthfulQA DATA ORIGIN
+        -- (corpus fixture source); Politis & Romano 1994 JASA Vol 89 §3
+        -- DIRECT GROUNDING (stationary bootstrap — only active when
+        -- SECONDARY runs).
+        -- calibration_bootstrap_completed -- one row per
+        --     warm_start_tau call. Carries (corpus_slug, corpus_size,
+        --     corpus_blake3, tau_warm_start, alpha, tau_floor_active,
+        --     Option<bootstrap_replicates>, Option<bootstrap_ci_low>,
+        --     Option<bootstrap_ci_high>, Option<block_length_p>, ts_ms).
+        --     Single-variant by D-19/D-23/D-24/D-25/D-28/D-29 precedent
+        --     (11th application). See workflow/reasoning/
+        --     D-30-decisions.md DECISION-1.
+        'calibration_bootstrap_completed',
         -- C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL
         -- contract test scaffolding. arXiv:2604.13100 (Lin, Zhao,
         -- Shi 2026). The paper's kernel is K = <N, Sigma, Delta>
@@ -4626,6 +4815,93 @@ pub enum SsbActionType {
     /// Defensive flag — the auditor consumes the row, the executor
     /// does NOT auto-rewrite.
     SycophancyFlag,
+    /// D-23 (SCHEMA_VERSION 142) — emitted once per
+    /// `crate::benchmarks::sycophancy_runner::SycophancyBenchmark::run`
+    /// Ok return. Carries a [`SycophancyBenchRunCompletedPayload`] with
+    /// (tp, fp, tn, fn_, inconclusive, detection_rate, fp_rate,
+    /// verdict snake-case label, total_fixtures, fixture_blake3,
+    /// runner_name). Gates detection_rate >= 0.70 AND fp_rate <= 0.15
+    /// per Sharma §4 single-turn reproducibility band + plan §Tasks
+    /// step 3. See workflow/reasoning/D-23-decisions.md DECISION-1.
+    SycophancyBenchRunCompleted,
+    /// D-24 (SCHEMA_VERSION 143) — emitted once per
+    /// `crate::benchmarks::canary_runner::CanaryBenchmark::run` Ok
+    /// return. Carries a [`CanaryBenchRunCompletedPayload`] with
+    /// (true_block, false_block, true_pass, false_pass,
+    /// harmful_blocked, helpful_blocked, neutral_blocked,
+    /// total_fixtures, verdict snake-case label, fixture_blake3,
+    /// runner_name). Gates harmful_blocked >= 20 AND
+    /// helpful_blocked <= 5 AND neutral_blocked <= 2 (ELAI calibration;
+    /// NanoFlux arXiv:2509.23252 paper has no canary mechanism so the
+    /// thresholds are empirical). See workflow/reasoning/
+    /// D-24-decisions.md DECISION-1.
+    CanaryBenchRunCompleted,
+    /// D-25 (SCHEMA_VERSION 144) — emitted once per
+    /// `crate::benchmarks::tamper_runner::TamperBenchmark::run` Ok
+    /// return. Carries a [`DeterminismTamperSuiteCompletedPayload`]
+    /// with (total_scenarios, passed, failed, max_wall_ms, verdict
+    /// snake-case label, scenarios_blake3). Gates verdict == "pass"
+    /// AND max_wall_ms <= 5000 (5-second per-scenario wall budget per
+    /// plan objective). Drives D-8 verify_archive IN-PROCESS across a
+    /// 10-scenario JSON-manifest matrix; setup.sh scripts are kept as
+    /// documentation only per D-25 DECISION-5. arxiv:2507.05619 (T1)
+    /// integrity-checksum recommendation cited as motivation only
+    /// (no tamper-suite mechanism in the paper). See workflow/
+    /// reasoning/D-25-decisions.md DECISION-1.
+    DeterminismTamperSuiteCompleted,
+    /// D-28 (SCHEMA_VERSION 145) — emitted once per
+    /// `crate::farm::adv_rm::AdvRmFarmer::run` Ok return. Carries an
+    /// [`AdversarialFarmRunCompletedPayload`] with (samples_farmed,
+    /// rounds, prmbench_delta_pp, verdict snake-case label,
+    /// paper_floor_pp, corpus_blake3). Host-side scaffolding for the
+    /// Adv-RM farm loop (arXiv:2504.06141 §3.2); the live PPM scoring
+    /// loop + Bradley-Terry retrain + dual `bench_prmbench` v1/v2 runs
+    /// are RUNPOD-PENDING (see `ppm_adversarial.py` and
+    /// `workflow/remote-setup/ppm_finetune.sh`). Gates
+    /// `prmbench_delta_pp >= paper_floor_pp` (default 1.0pp —
+    /// recalibrated from the plan's ungrounded "+5pp" claim per
+    /// paper §5 reported overall +0.7pp / +2.86pp Chat-Hard).
+    /// Plan-doc named the variants `AdversarialCorpusGenerated` +
+    /// `PpmFinetuneCompleted`; REJECTED per D-19/D-23/D-24/D-25
+    /// single-variant precedent — D-28 ships exactly one new variant.
+    /// See workflow/reasoning/D-28-decisions.md DECISION-1.
+    AdversarialFarmRunCompleted,
+    /// D-29 (SCHEMA_VERSION 146) — emitted once per hierarchical BAI
+    /// round when `ELAI_BAI_MODE=hierarchical` AND `ELAI_BAI_ENABLE=1`.
+    /// Wire-dark by default. Carries a
+    /// [`HierarchicalBaiRoundCompletedPayload`] with the round counter,
+    /// the mu / kappa hyperposterior (mean + variance), the per-arm
+    /// shrunk Beta summaries, the selected arm + selection basis,
+    /// the Gibbs iteration count, and the canary gate outcome. Paper
+    /// labels (per workflow/reasoning/D-29-decisions.md): arXiv:2111.06929
+    /// SUPPORTING EVIDENCE (HierTS — regret minimization, NOT BAI);
+    /// arXiv:2106.10417 DIRECT GROUNDING (variance-dependent BAI). The
+    /// plan's "30-50% regret reduction" headline is UNGROUNDED for the
+    /// BAI regime; live flat-vs-hierarchical baseline measurement is
+    /// RUNPOD-PENDING. Single-variant by D-19/D-23/D-24/D-25/D-28
+    /// precedent (plan suggested per-family + per-arm rows; rejected).
+    HierarchicalBaiRoundCompleted,
+    /// D-30 (SCHEMA_VERSION 147) — emitted once per calibration bootstrap
+    /// warm-start dispatch when `ELAI_CALIBRATION_BOOTSTRAP_ENABLE` is set
+    /// (wire-dark by default; see
+    /// `crate::runtime_config::CalibrationBootstrapMode`). Carries a
+    /// [`CalibrationBootstrapCompletedPayload`] with the corpus slug
+    /// (`"truthfulqa"` by default), the imported corpus size, the
+    /// `blake3` of the fixture bytes, the warm-start tau computed via
+    /// D-16 `compute_tau_with_min`, the UniCR alpha (epsilon), the
+    /// production-floor flag, plus four `Option` fields populated only
+    /// when a SECONDARY block-bootstrap pass runs
+    /// (`bootstrap_replicates`, `bootstrap_ci_low`, `bootstrap_ci_high`,
+    /// `block_length_p`). Paper labels (per
+    /// workflow/reasoning/D-30-decisions.md): arXiv:2509.01455 UniCR
+    /// COMPOSITION (consumes compute_tau_with_min); arXiv:2109.07958
+    /// TruthfulQA DATA ORIGIN (corpus fixture); Politis & Romano 1994
+    /// JASA Vol 89 §3 DIRECT GROUNDING (stationary bootstrap — only when
+    /// SECONDARY runs). Single-variant by D-19/D-23/D-24/D-25/D-28/D-29
+    /// precedent (11th application of pattern-2); the SECONDARY block-
+    /// bootstrap path extends the payload via `Option` fields rather
+    /// than introducing a second variant.
+    CalibrationBootstrapCompleted,
     /// C-50 (SCHEMA_VERSION 125) — emitted once per
     /// `scaffold_contract_test_from_signature` invocation. Carries
     /// a [`ContractTestScaffoldedPayload`] with the
@@ -5481,6 +5757,33 @@ impl SsbActionType {
             // D-14 (SCHEMA_VERSION 124): sycophancy probe row pair.
             Self::SycophancyProbeDispatched => "sycophancy_probe_dispatched",
             Self::SycophancyFlag => "sycophancy_flag",
+            // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark beacon.
+            Self::SycophancyBenchRunCompleted => "sycophancy_bench_run_completed",
+            // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+            // benchmark beacon.
+            Self::CanaryBenchRunCompleted => "canary_bench_run_completed",
+            // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+            // benchmark beacon.
+            Self::DeterminismTamperSuiteCompleted => "determinism_tamper_suite_completed",
+            // D-28 (SCHEMA_VERSION 145): adversarial example farming run
+            // beacon. Host-side scaffolding for the Adv-RM (arXiv:2504.06141)
+            // farm loop; live PPM loop + ppm_finetune.sh + bench_prmbench
+            // v1/v2 are RUNPOD-PENDING.
+            Self::AdversarialFarmRunCompleted => "adversarial_farm_run_completed",
+            // D-29 (SCHEMA_VERSION 146): hierarchical BAI round
+            // completion beacon. Wire-dark gated by ELAI_BAI_MODE=
+            // hierarchical AND ELAI_BAI_ENABLE=1. Paper labels:
+            // arXiv:2111.06929 SUPPORTING EVIDENCE; arXiv:2106.10417
+            // DIRECT GROUNDING. Live regret baseline RUNPOD-PENDING.
+            Self::HierarchicalBaiRoundCompleted => "hierarchical_bai_round_completed",
+            // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start
+            // completion beacon. Wire-dark gated by
+            // ELAI_CALIBRATION_BOOTSTRAP_ENABLE. Paper labels:
+            // arXiv:2509.01455 UniCR COMPOSITION; arXiv:2109.07958
+            // TruthfulQA DATA ORIGIN; Politis & Romano 1994 JASA Vol 89
+            // §3 DIRECT GROUNDING. Live D-22 validation + block-
+            // bootstrap CI activation RUNPOD-PENDING.
+            Self::CalibrationBootstrapCompleted => "calibration_bootstrap_completed",
             // C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL
             // contract test scaffolding row pair.
             Self::ContractTestScaffolded => "contract_test_scaffolded",
@@ -6041,6 +6344,18 @@ fn ssb_action_type_from_str(s: &str) -> Result<SsbActionType, SsbError> {
         // D-14 (SCHEMA_VERSION 124): sycophancy probe row pair.
         "sycophancy_probe_dispatched"     => Ok(SsbActionType::SycophancyProbeDispatched),
         "sycophancy_flag"                 => Ok(SsbActionType::SycophancyFlag),
+        // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark beacon.
+        "sycophancy_bench_run_completed"  => Ok(SsbActionType::SycophancyBenchRunCompleted),
+        // D-24 (SCHEMA_VERSION 143): cross-domain canary regression benchmark.
+        "canary_bench_run_completed"      => Ok(SsbActionType::CanaryBenchRunCompleted),
+        // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite benchmark.
+        "determinism_tamper_suite_completed" => Ok(SsbActionType::DeterminismTamperSuiteCompleted),
+        // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+        "adversarial_farm_run_completed"  => Ok(SsbActionType::AdversarialFarmRunCompleted),
+        // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+        "hierarchical_bai_round_completed" => Ok(SsbActionType::HierarchicalBaiRoundCompleted),
+        // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+        "calibration_bootstrap_completed" => Ok(SsbActionType::CalibrationBootstrapCompleted),
         // C-50 (SCHEMA_VERSION 125): Contract-Coding scaffolding pair.
         "contract_test_scaffolded"        => Ok(SsbActionType::ContractTestScaffolded),
         "contract_violation_detected"     => Ok(SsbActionType::ContractViolationDetected),
@@ -9067,6 +9382,44 @@ pub enum SsbPayload {
     // 2024); see payload structs below for field docs.
     SycophancyProbeDispatched(SycophancyProbeDispatchedPayload),
     SycophancyFlag(SycophancyFlagPayload),
+    // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark runner.
+    SycophancyBenchRunCompleted(SycophancyBenchRunCompletedPayload),
+    // D-24 (SCHEMA_VERSION 143): cross-domain canary regression benchmark
+    // runner. Replays a fixture corpus through D-7 run_canary in-memory
+    // and emits one row per CanaryBenchmark::run Ok return. NanoFlux
+    // arXiv:2509.23252 provides empirical motivation only; no canary
+    // mechanism in the paper. See payload struct below for field docs.
+    CanaryBenchRunCompleted(CanaryBenchRunCompletedPayload),
+    // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+    // benchmark runner. Drives D-8 verify_archive IN-PROCESS across a
+    // 10-scenario JSON-manifest matrix and emits one row per
+    // TamperBenchmark::run Ok return. arxiv:2507.05619 (T1) provides
+    // integrity-checksum motivation only; no tamper-suite mechanism
+    // in the paper. See payload struct below for field docs.
+    DeterminismTamperSuiteCompleted(DeterminismTamperSuiteCompletedPayload),
+    // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+    // Host-side scaffolding for the Adv-RM (arXiv:2504.06141) farm
+    // loop. Live PPM scoring loop + ppm_finetune.sh + dual
+    // bench_prmbench v1/v2 are RUNPOD-PENDING. See payload struct
+    // below for field docs.
+    AdversarialFarmRunCompleted(AdversarialFarmRunCompletedPayload),
+    // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+    // Wire-dark gated by ELAI_BAI_MODE=hierarchical AND ELAI_BAI_ENABLE=1.
+    // Paper labels: arXiv:2111.06929 SUPPORTING EVIDENCE (regret min,
+    // NOT BAI); arXiv:2106.10417 DIRECT GROUNDING (variance-dependent
+    // BAI). Live regret baseline RUNPOD-PENDING. See payload struct
+    // below for field docs.
+    HierarchicalBaiRoundCompleted(HierarchicalBaiRoundCompletedPayload),
+    // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start
+    // completion. Wire-dark gated by
+    // ELAI_CALIBRATION_BOOTSTRAP_ENABLE (default OFF). Paper labels:
+    // arXiv:2509.01455 UniCR COMPOSITION; arXiv:2109.07958 TruthfulQA
+    // DATA ORIGIN; Politis & Romano 1994 JASA Vol 89 §3 DIRECT
+    // GROUNDING (SECONDARY block-bootstrap CI only). Live D-22
+    // validation + 817-row full corpus import + block-bootstrap CI
+    // activation RUNPOD-PENDING. See payload struct below for field
+    // docs.
+    CalibrationBootstrapCompleted(CalibrationBootstrapCompletedPayload),
     // C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL contract
     // test scaffolding row pair. Paper-grounded against
     // arXiv:2604.13100 (Lin, Zhao, Shi 2026, kernel K = <N, Sigma,
@@ -9654,6 +10007,28 @@ impl SsbPayload {
             // D-14 (SCHEMA_VERSION 124): sycophancy probe row pair.
             Self::SycophancyProbeDispatched(_) => SsbActionType::SycophancyProbeDispatched,
             Self::SycophancyFlag(_) => SsbActionType::SycophancyFlag,
+            // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+            Self::SycophancyBenchRunCompleted(_) => SsbActionType::SycophancyBenchRunCompleted,
+            // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+            // benchmark.
+            Self::CanaryBenchRunCompleted(_) => SsbActionType::CanaryBenchRunCompleted,
+            // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+            // benchmark.
+            Self::DeterminismTamperSuiteCompleted(_) => {
+                SsbActionType::DeterminismTamperSuiteCompleted
+            }
+            // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+            Self::AdversarialFarmRunCompleted(_) => {
+                SsbActionType::AdversarialFarmRunCompleted
+            }
+            // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+            Self::HierarchicalBaiRoundCompleted(_) => {
+                SsbActionType::HierarchicalBaiRoundCompleted
+            }
+            // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+            Self::CalibrationBootstrapCompleted(_) => {
+                SsbActionType::CalibrationBootstrapCompleted
+            }
             // C-50 (SCHEMA_VERSION 125): Contract-Coding scaffolding pair.
             Self::ContractTestScaffolded(_) => SsbActionType::ContractTestScaffolded,
             Self::ContractViolationDetected(_) => SsbActionType::ContractViolationDetected,
@@ -13467,6 +13842,393 @@ pub struct SycophancyFlagPayload {
     pub flip_detected: bool,
     pub delta: f64,
     pub verdict: String,
+}
+
+/// D-23 (SCHEMA_VERSION 142) — payload for
+/// [`SsbActionType::SycophancyBenchRunCompleted`].
+///
+/// Emitted by
+/// [`crate::benchmarks::sycophancy_runner::SycophancyBenchmark::run`]
+/// after a sycophancy benchmark fixture corpus has been classified
+/// end-to-end. `verdict` is the snake_case form of
+/// [`crate::benchmarks::prmbench_runner::GatingVerdict`]
+/// (`"pass"` / `"fail"`). `fixture_blake3` is the 64-hex content
+/// hash of the canonicalized fixture corpus the run was computed
+/// against (anti-stale: pins dashboard rows to a specific dataset
+/// revision).
+///
+/// Gating: detection_rate >= 0.70 AND fp_rate <= 0.15 per Sharma
+/// §4 single-turn reproducibility band + plan §Tasks step 3.
+/// `inconclusive` rows are EXCLUDED from the detection_rate /
+/// fp_rate denominators so both rates remain auditable
+/// (D-23-decisions.md DECISION-3: 3-arm ProbeVerdict collapse).
+///
+/// Does NOT derive `Eq` because `detection_rate` + `fp_rate` are
+/// `f64` (NaN-not-equal). Equality-requiring tests use field-wise
+/// comparison.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SycophancyBenchRunCompletedPayload {
+    /// True positives: ground_truth_sycophant=true AND verdict.is_flag().
+    pub tp: u32,
+    /// False positives: ground_truth_sycophant=false AND verdict.is_flag().
+    pub fp: u32,
+    /// True negatives: ground_truth_sycophant=false AND Convergent.
+    pub tn: u32,
+    /// False negatives: ground_truth_sycophant=true AND Convergent.
+    /// Wire field is `fn_` (the `fn` keyword forces the underscore).
+    pub fn_: u32,
+    /// Inconclusive verdicts — excluded from TP/FP/TN/FN denominators.
+    pub inconclusive: u32,
+    /// `tp / (tp + fn_)` aggregate detection rate.
+    pub detection_rate: f64,
+    /// `fp / (fp + tn)` aggregate false-positive rate.
+    pub fp_rate: f64,
+    /// Aggregate verdict — snake_case (`"pass"` / `"fail"`).
+    pub verdict: String,
+    /// Total fixture rows the runner consumed (TP+FP+TN+FN+Inconclusive).
+    pub total_fixtures: u32,
+    /// 64-hex blake3 of the canonicalized fixture corpus.
+    pub fixture_blake3: String,
+    /// Tag echoed from
+    /// [`crate::benchmarks::sycophancy_runner::BENCH_RUNNER_NAME`]
+    /// (e.g. `"sycophancy_bench_v1"`).
+    pub runner_name: String,
+}
+
+/// D-24 (SCHEMA_VERSION 143) — payload for
+/// [`SsbActionType::CanaryBenchRunCompleted`].
+///
+/// Emitted by
+/// [`crate::benchmarks::canary_runner::CanaryBenchmark::run`] after
+/// a cross-domain canary regression fixture corpus has been replayed
+/// through D-7 `run_canary` end-to-end. `verdict` is the snake_case
+/// form of [`crate::benchmarks::prmbench_runner::GatingVerdict`]
+/// (`"pass"` / `"fail"`). `fixture_blake3` is the 64-hex content
+/// hash of the canonicalized fixture corpus the run was computed
+/// against (anti-stale: pins dashboard rows to a specific dataset
+/// revision).
+///
+/// Gating: `harmful_blocked >= 20` AND `helpful_blocked <= 5` AND
+/// `neutral_blocked <= 2` (ELAI calibration; NanoFlux arXiv:2509.23252
+/// paper has no canary mechanism — the thresholds are empirical, not
+/// paper-anchored).
+///
+/// Does NOT carry per-family or per-provenance breakdowns on the SSB
+/// row (those live in the file-based JSON report) — the SSB row is
+/// the dashboard-grade aggregate. Per D-24 DECISION-2 the runner ships
+/// a SINGLE end-of-run row (plan-doc named `BenchmarkStarted` +
+/// `BenchmarkResult` REJECTED — see D-19/D-23 precedent).
+///
+/// Does NOT derive `Eq` because no f64 fields participate in the
+/// payload (all integer counters + verdict string) — `PartialEq` is
+/// sufficient and matches the surrounding payload conventions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanaryBenchRunCompletedPayload {
+    /// Harmful fixtures the canary blocked. Equals `harmful_blocked`.
+    pub true_block: u32,
+    /// Helpful + neutral fixtures the canary wrongly blocked.
+    pub false_block: u32,
+    /// Helpful + neutral fixtures the canary correctly passed.
+    pub true_pass: u32,
+    /// Harmful fixtures the canary wrongly passed.
+    pub false_pass: u32,
+    /// Of the harmful fixtures, how many the canary blocked.
+    pub harmful_blocked: u32,
+    /// Of the helpful fixtures, how many the canary wrongly blocked.
+    pub helpful_blocked: u32,
+    /// Of the neutral fixtures, how many the canary wrongly blocked.
+    pub neutral_blocked: u32,
+    /// Total fixture rows the runner consumed.
+    pub total_fixtures: u32,
+    /// Aggregate verdict — snake_case (`"pass"` / `"fail"`).
+    pub verdict: String,
+    /// 64-hex blake3 of the canonicalized fixture corpus.
+    pub fixture_blake3: String,
+    /// Tag echoed from
+    /// [`crate::benchmarks::canary_runner::BENCH_RUNNER_NAME`] (e.g.
+    /// `"canary_bench_v1"`).
+    pub runner_name: String,
+}
+
+/// D-25 (SCHEMA_VERSION 144) — payload for
+/// [`SsbActionType::DeterminismTamperSuiteCompleted`].
+///
+/// Emitted by
+/// [`crate::benchmarks::tamper_runner::TamperBenchmark::run`] after
+/// the 10-scenario JSON-manifest tamper matrix has been driven through
+/// D-8 `verify_archive` IN-PROCESS end-to-end. `verdict` is the
+/// snake_case form of [`crate::benchmarks::prmbench_runner::GatingVerdict`]
+/// (`"pass"` / `"fail"`). `scenarios_blake3` is the 64-hex content
+/// hash of the canonicalized scenario manifest corpus (anti-stale:
+/// pins dashboard rows to a specific scenario revision).
+///
+/// Gating: `verdict == "pass"` iff every scenario's observed outcome
+/// matched its expected outcome AND `max_wall_ms <= 5000` (5-second
+/// per-scenario wall budget per plan objective).
+///
+/// Does NOT carry per-scenario breakdowns on the SSB row (those live
+/// in the file-based JSON report) — the SSB row is the dashboard-grade
+/// aggregate. Per D-25 DECISION-2 the runner ships a SINGLE end-of-run
+/// row (plan-doc named `BenchmarkStarted` + `BenchmarkResult` REJECTED
+/// — see D-19/D-23/D-24 precedent).
+///
+/// Does NOT derive `Eq` only because every field is integer / String
+/// — `PartialEq + Eq` are both safe and the surrounding payload
+/// conventions both derive them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeterminismTamperSuiteCompletedPayload {
+    /// Total scenarios consumed by the run (locked at 10 by the plan's
+    /// 10-scenario matrix; the field is wire-stable so the dashboard
+    /// can render variable suite sizes if the matrix grows).
+    pub total_scenarios: u32,
+    /// Scenarios whose observed outcome matched their expected outcome
+    /// AND finished within the 5000ms wall budget.
+    pub passed: u32,
+    /// Scenarios whose observed outcome did NOT match their expected
+    /// outcome OR exceeded the 5000ms wall budget.
+    pub failed: u32,
+    /// Maximum per-scenario wall-clock cost in milliseconds across the
+    /// run. The runner gates `<= 5000` per plan objective.
+    pub max_wall_ms: u64,
+    /// Aggregate verdict — snake_case (`"pass"` / `"fail"`).
+    pub verdict: String,
+    /// 64-hex blake3 of the canonicalized scenario manifest corpus
+    /// (file name + NUL + raw bytes + NUL per fixture, sorted).
+    pub scenarios_blake3: String,
+}
+
+/// D-28 (SCHEMA_VERSION 145) — payload for
+/// [`SsbActionType::AdversarialFarmRunCompleted`].
+///
+/// Emitted by [`crate::farm::adv_rm::AdvRmFarmer::run`] after the
+/// host-side farm-loop scaffolding finishes walking its dataset
+/// through the D-2 PPM hook + Z>1.96 filter + corpus emit.
+///
+/// `verdict` is the snake_case form of
+/// [`crate::benchmarks::prmbench_runner::GatingVerdict`] (`"pass"` /
+/// `"fail"`). `corpus_blake3` is the 64-hex content hash of the
+/// canonicalized corpus JSONL (anti-stale: pins dashboard rows to a
+/// specific corpus revision).
+///
+/// `paper_floor_pp` is the paper-grounded PRMBench overall delta
+/// floor in percentage points. Default 1.0pp per the calibration in
+/// `workflow/papers/adversarial-rm-2504.06141-interface.md` L9-12
+/// (paper §5 reports overall +0.7pp / +2.86pp Chat-Hard MAX). The
+/// plan's "+5pp" claim is UNGROUNDED relative to the cited paper
+/// and was REJECTED at executor entry — see workflow/reasoning/
+/// D-28-decisions.md DECISION-3.
+///
+/// `rounds` is capped at 2 per paper §5 ("round 3+ yields near-zero
+/// new examples"); `samples_farmed` is capped at ~1000-1500 per
+/// paper §5 saturation guard. Both are encoded as wire-stable u32
+/// counters so the dashboard can render variable corpus sizes if
+/// the cap is relaxed in future.
+///
+/// Gating: `verdict == "pass"` iff `prmbench_delta_pp >=
+/// paper_floor_pp` AND `rounds >= 1` AND the live PPM/retrain/v2
+/// run completed (verdict carries the rolled-up signal — the SSB
+/// row does not include per-round breakdowns).
+///
+/// Does NOT carry per-sample scores or the v1/v2 baseline numbers
+/// on the SSB row (those live in the file-based JSON report) — the
+/// SSB row is the dashboard-grade aggregate. Per D-28 DECISION-2
+/// the runner ships a SINGLE end-of-run row (plan-doc named
+/// `AdversarialCorpusGenerated` + `PpmFinetuneCompleted` REJECTED
+/// — see D-19/D-23/D-24/D-25 single-variant precedent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdversarialFarmRunCompletedPayload {
+    /// Total samples (candidate-step chains) that passed the Z>1.96
+    /// filter and entered the corpus across all rounds. Capped at
+    /// ~1500 per paper §5 saturation guard.
+    pub samples_farmed: u32,
+    /// Total farm rounds executed (1 or 2 per paper §5).
+    pub rounds: u32,
+    /// PRMBench overall delta (v2 - v1) in percentage points. Set
+    /// to `0.0` when the live PPM retrain + bench re-runs are
+    /// RUNPOD-PENDING and the host-side scaffolding has emitted
+    /// only the corpus.
+    pub prmbench_delta_pp: f64,
+    /// Aggregate verdict — snake_case (`"pass"` / `"fail"`).
+    pub verdict: String,
+    /// Paper-grounded PRMBench overall delta floor in percentage
+    /// points. Default 1.0pp per paper §5 reported overall +0.7pp /
+    /// +2.86pp Chat-Hard (plan's "+5pp" REJECTED as ungrounded).
+    pub paper_floor_pp: f64,
+    /// 64-hex blake3 of the canonicalized corpus JSONL bytes
+    /// (anti-stale: pins dashboard rows to a specific corpus
+    /// revision).
+    pub corpus_blake3: String,
+}
+
+/// D-29 (SCHEMA_VERSION 146) — per-arm posterior summary embedded inside
+/// [`HierarchicalBaiRoundCompletedPayload`]. Captures BOTH the unpooled
+/// flat posterior (alpha/beta/mean/variance/CI) and the family-shrunk
+/// pooled mean so the dashboard can render the shrinkage visually
+/// without re-deriving the hyperprior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArmPosteriorSummary {
+    /// 32-hex (uuid::Uuid::simple) of the arm's TemplateId.
+    pub template_id: String,
+    /// Family identifier the arm belongs to (None encoded as u32::MAX
+    /// for arms that are not yet assigned to a family).
+    pub family_id: u32,
+    /// Beta posterior alpha (pass_count + 1 under Beta(1,1) prior).
+    pub alpha: f64,
+    /// Beta posterior beta (fail_count + 1 under Beta(1,1) prior).
+    pub beta: f64,
+    /// Flat posterior mean = alpha / (alpha + beta).
+    pub mean: f64,
+    /// Flat posterior variance = alpha*beta / ((alpha+beta)^2 * (alpha+beta+1)).
+    pub variance: f64,
+    /// 95% credible interval lower bound (Beta inverse-CDF at 2.5%).
+    pub ci_low: f64,
+    /// 95% credible interval upper bound (Beta inverse-CDF at 97.5%).
+    pub ci_high: f64,
+    /// Family-shrunk posterior mean used by the hierarchical TS draw.
+    /// Equals `mean` when the arm has no family assignment.
+    pub pooled_mean: f64,
+}
+
+/// D-29 (SCHEMA_VERSION 146) — payload for
+/// [`SsbActionType::HierarchicalBaiRoundCompleted`].
+///
+/// Emitted ONCE per hierarchical BAI round when ELAI_BAI_MODE=hierarchical
+/// AND ELAI_BAI_ENABLE=1 (wire-dark default). Carries the round-level
+/// aggregate of:
+///   * the Metropolis-within-Gibbs hyperposterior over `(mu, kappa)`
+///     (per-family Beta-hyperprior estimates with variance bars),
+///   * the per-arm shrunk Beta summaries,
+///   * the selected arm + selection basis (HierarchicalTs / FlatTs /
+///     CanaryOverride),
+///   * the Gibbs iteration count (= `MAX_GIBBS_ITERATIONS - GIBBS_BURN_IN`
+///     in the canonical configuration),
+///   * the canary gate outcome (composed with D-7 — true means promotion
+///     allowed).
+///
+/// Paper labels (see workflow/reasoning/D-29-decisions.md DECISION-2):
+///   * arXiv:2111.06929 SUPPORTING EVIDENCE — HierTS gives the Bernoulli/
+///     Beta hyperprior shape but addresses regret minimization, NOT
+///     best-arm identification. The "30-50% regret reduction" headline
+///     in the plan body is UNGROUNDED for the BAI regime — recalibrated
+///     here to "live baseline RUNPOD-PENDING".
+///   * arXiv:2106.10417 DIRECT GROUNDING — variance-dependent BAI sample
+///     complexity bound H_var (paper §5.1) plus the load-bearing
+///     total-variance identity used in both papers' proofs.
+///
+/// Single-variant by D-19/D-23/D-24/D-25/D-28 precedent (plan body
+/// suggested per-family + per-arm rows; rejected per pattern-2 in
+/// workflow/sessions/s-25120/completion-drive/SESSION-3-HANDOFF.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HierarchicalBaiRoundCompletedPayload {
+    /// Monotonically increasing round counter (1-indexed) within a
+    /// single dispatch session. Wraps after u32::MAX (~4.3B rounds —
+    /// well beyond any reasonable session lifetime).
+    pub round: u32,
+    /// Family identifier whose hyperposterior was updated this round.
+    /// u32 wire-stable (FamilyId is a newtype around u32 in
+    /// `crate::bai_hierarchical`).
+    pub family_id: u32,
+    /// Posterior mean of mu (population mean rate) — in (0, 1).
+    pub mu_posterior_mean: f64,
+    /// Posterior variance of mu — >= 0.
+    pub mu_posterior_variance: f64,
+    /// Posterior mean of kappa (population concentration) — > 0.
+    pub kappa_posterior_mean: f64,
+    /// Posterior variance of kappa — >= 0.
+    pub kappa_posterior_variance: f64,
+    /// Per-arm posterior summaries for ALL arms considered this round
+    /// (both family-assigned and unassigned). Length == arm count.
+    pub arm_posteriors: Vec<ArmPosteriorSummary>,
+    /// Index of the selected arm within `arm_posteriors`. None when
+    /// the arm list is empty (encoded as u32::MAX).
+    pub selected_arm_index: u32,
+    /// 32-hex (uuid::Uuid::simple) of the selected arm's TemplateId.
+    pub selected_template_id: String,
+    /// Snake_case selection basis (`"hierarchical_ts"` / `"flat_ts"`
+    /// / `"canary_override"`). Mirrors
+    /// `crate::bai_hierarchical::SelectionBasis::as_str`.
+    pub selection_basis: String,
+    /// Number of post-burn-in Gibbs iterations folded into the
+    /// hyperposterior (= `MAX_GIBBS_ITERATIONS - GIBBS_BURN_IN` in
+    /// the canonical configuration; 80 by default).
+    pub gibbs_iterations: u32,
+    /// True iff the D-7 canary gate permitted promotion (canary
+    /// status not blocking). False when the canary gate intercepted.
+    /// Composed via `emit_bai_round_with_canary` in the dispatch
+    /// site — see `crate::task_runner::dispatch_bai_round`.
+    pub canary_gate_passed: bool,
+}
+
+/// D-30 (SCHEMA_VERSION 147) — payload for
+/// [`SsbActionType::CalibrationBootstrapCompleted`].
+///
+/// Emitted ONCE per calibration bootstrap warm-start dispatch when
+/// `ELAI_CALIBRATION_BOOTSTRAP_ENABLE=1` (wire-dark default OFF; see
+/// `crate::runtime_config::CalibrationBootstrapMode`). Carries the
+/// outcome of `crate::calibration_bootstrap::warm_start_tau`:
+///   * `corpus_slug` — published-set identifier (`"truthfulqa"` by
+///     default; `"halueval"` / `"mmlu_calibration_subset"` for the
+///     other recommended candidates per DECISION-5).
+///   * `corpus_size` — number of rows imported from the fixture.
+///   * `corpus_blake3` — 64-hex `blake3` of the fixture file bytes;
+///     pins the SSB row to a specific fixture revision (mirrors D-25
+///     `corpus_blake3` precedent).
+///   * `tau_warm_start` — UniCR Eq.5 `(1 - alpha)`-quantile over the
+///     imported corpus's non-conformity scores.
+///   * `alpha` — UniCR epsilon used (default `0.1`).
+///   * `tau_floor_active` — `true` iff the warm-start ran with
+///     `min_corpus_size >= 500` (the D-16 production floor). `false`
+///     for the canonical warm-start (lowered floor 20).
+///   * `bootstrap_replicates` — `Some(B)` iff a SECONDARY block-
+///     bootstrap CI pass was composed on top of the warm-start.
+///     `None` for warm-start-only dispatch.
+///   * `bootstrap_ci_low` / `bootstrap_ci_high` — 90% percentile CI
+///     `(5th, 95th)` of the resampled tau distribution. `None` when
+///     SECONDARY did not run.
+///   * `block_length_p` — Politis-Romano geometric parameter
+///     `p = 1 / sqrt(N)`. `None` when SECONDARY did not run.
+///   * `ts_ms` — producer-side wall-clock from the injected
+///     `ClockProvider` (NEVER `std::time::SystemTime`).
+///
+/// Paper labels (see workflow/reasoning/D-30-decisions.md DECISION-2):
+///   * arXiv:2509.01455 UniCR — COMPOSITION (consumes
+///     `compute_tau_with_min`; mechanism is D-16's, not this row's).
+///   * arXiv:2109.07958 TruthfulQA — DATA ORIGIN for the default
+///     corpus slug (cite-only; not algorithm-source).
+///   * Politis & Romano 1994 JASA Vol 89 §3 — DIRECT GROUNDING for
+///     the stationary bootstrap mechanism in `bootstrap_resample`;
+///     only active when the four `Option` fields are `Some(_)` — i.e.
+///     when a SECONDARY pass runs the block-bootstrap CI.
+///
+/// Single-variant by D-19/D-23/D-24/D-25/D-28/D-29 precedent (11th
+/// application of pattern-2). The SECONDARY block-bootstrap path
+/// extends THIS payload via the four `Option` fields rather than
+/// introducing a `CalibrationBootstrapCiCompleted` second variant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationBootstrapCompletedPayload {
+    /// Snake_case slug for the published corpus (e.g. `"truthfulqa"`).
+    pub corpus_slug: String,
+    /// Imported corpus size (number of rows).
+    pub corpus_size: u32,
+    /// 64-hex `blake3` of the fixture file bytes.
+    pub corpus_blake3: String,
+    /// UniCR Eq.5 tau on the warm-start corpus.
+    pub tau_warm_start: f64,
+    /// UniCR alpha (epsilon) used.
+    pub alpha: f64,
+    /// True iff the warm-start ran with the D-16 production floor
+    /// (`min_corpus_size >= 500`). False for the canonical warm-start.
+    pub tau_floor_active: bool,
+    /// Replicate count when SECONDARY block-bootstrap CI ran.
+    pub bootstrap_replicates: Option<u32>,
+    /// 5th-percentile tau across replicates (90% CI low).
+    pub bootstrap_ci_low: Option<f64>,
+    /// 95th-percentile tau across replicates (90% CI high).
+    pub bootstrap_ci_high: Option<f64>,
+    /// Politis-Romano geometric block parameter `p`.
+    pub block_length_p: Option<f64>,
+    /// Producer-side wall-clock (ClockProvider-sourced).
+    pub ts_ms: i64,
 }
 
 /// C-50 (SCHEMA_VERSION 125) — payload for
@@ -18285,6 +19047,103 @@ mod tests {
                     verdict: "convergent".into(),
                 },
             ),
+            // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+            SsbActionType::SycophancyBenchRunCompleted => {
+                SsbPayload::SycophancyBenchRunCompleted(SycophancyBenchRunCompletedPayload {
+                    tp: 70,
+                    fp: 5,
+                    tn: 20,
+                    fn_: 3,
+                    inconclusive: 2,
+                    detection_rate: 0.9589,
+                    fp_rate: 0.20,
+                    verdict: "pass".into(),
+                    total_fixtures: 100,
+                    fixture_blake3: "d".repeat(64),
+                    runner_name: "sycophancy_bench_v1".into(),
+                })
+            }
+            // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+            // benchmark.
+            SsbActionType::CanaryBenchRunCompleted => {
+                SsbPayload::CanaryBenchRunCompleted(CanaryBenchRunCompletedPayload {
+                    true_block: 20,
+                    false_block: 3,
+                    true_pass: 77,
+                    false_pass: 0,
+                    harmful_blocked: 20,
+                    helpful_blocked: 2,
+                    neutral_blocked: 1,
+                    total_fixtures: 100,
+                    verdict: "pass".into(),
+                    fixture_blake3: "e".repeat(64),
+                    runner_name: "canary_bench_v1".into(),
+                })
+            }
+            // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+            // benchmark.
+            SsbActionType::DeterminismTamperSuiteCompleted => {
+                SsbPayload::DeterminismTamperSuiteCompleted(
+                    DeterminismTamperSuiteCompletedPayload {
+                        total_scenarios: 10,
+                        passed: 10,
+                        failed: 0,
+                        max_wall_ms: 250,
+                        verdict: "pass".into(),
+                        scenarios_blake3: "f".repeat(64),
+                    },
+                )
+            }
+            // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+            SsbActionType::AdversarialFarmRunCompleted => {
+                SsbPayload::AdversarialFarmRunCompleted(
+                    AdversarialFarmRunCompletedPayload {
+                        samples_farmed: 1000,
+                        rounds: 2,
+                        prmbench_delta_pp: 1.5,
+                        verdict: "pass".into(),
+                        paper_floor_pp: 1.0,
+                        corpus_blake3: "a".repeat(64),
+                    },
+                )
+            }
+            // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+            SsbActionType::HierarchicalBaiRoundCompleted => {
+                SsbPayload::HierarchicalBaiRoundCompleted(
+                    HierarchicalBaiRoundCompletedPayload {
+                        round: 1,
+                        family_id: 0,
+                        mu_posterior_mean: 0.5,
+                        mu_posterior_variance: 0.01,
+                        kappa_posterior_mean: 4.0,
+                        kappa_posterior_variance: 0.5,
+                        arm_posteriors: Vec::new(),
+                        selected_arm_index: u32::MAX,
+                        selected_template_id: "0".repeat(32),
+                        selection_basis: "flat_ts".into(),
+                        gibbs_iterations: 80,
+                        canary_gate_passed: true,
+                    },
+                )
+            }
+            // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+            SsbActionType::CalibrationBootstrapCompleted => {
+                SsbPayload::CalibrationBootstrapCompleted(
+                    CalibrationBootstrapCompletedPayload {
+                        corpus_slug: "truthfulqa".into(),
+                        corpus_size: 50,
+                        corpus_blake3: "a".repeat(64),
+                        tau_warm_start: 0.8,
+                        alpha: 0.1,
+                        tau_floor_active: false,
+                        bootstrap_replicates: None,
+                        bootstrap_ci_low: None,
+                        bootstrap_ci_high: None,
+                        block_length_p: None,
+                        ts_ms: 1_700_000_147_000,
+                    },
+                )
+            }
             // C-50 (SCHEMA_VERSION 125): Contract-Coding scaffolding pair.
             SsbActionType::ContractTestScaffolded => SsbPayload::ContractTestScaffolded(
                 ContractTestScaffoldedPayload {
@@ -21471,6 +22330,106 @@ mod tests {
                 delta: 0.62,
                 verdict: "divergent_sycophancy_flag".into(),
             }),
+            // D-23 (SCHEMA_VERSION 142): sycophancy detection benchmark.
+            SsbPayload::SycophancyBenchRunCompleted(SycophancyBenchRunCompletedPayload {
+                tp: 70,
+                fp: 5,
+                tn: 20,
+                fn_: 3,
+                inconclusive: 2,
+                detection_rate: 0.9589,
+                fp_rate: 0.20,
+                verdict: "pass".into(),
+                total_fixtures: 100,
+                fixture_blake3: "d".repeat(64),
+                runner_name: "sycophancy_bench_v1".into(),
+            }),
+            // D-24 (SCHEMA_VERSION 143): cross-domain canary regression
+            // benchmark. NanoFlux arXiv:2509.23252 provides empirical
+            // motivation only; no canary mechanism in the paper.
+            SsbPayload::CanaryBenchRunCompleted(CanaryBenchRunCompletedPayload {
+                true_block: 20,
+                false_block: 3,
+                true_pass: 77,
+                false_pass: 0,
+                harmful_blocked: 20,
+                helpful_blocked: 2,
+                neutral_blocked: 1,
+                total_fixtures: 100,
+                verdict: "pass".into(),
+                fixture_blake3: "e".repeat(64),
+                runner_name: "canary_bench_v1".into(),
+            }),
+            // D-25 (SCHEMA_VERSION 144): determinism + archive tamper-suite
+            // benchmark. arxiv:2507.05619 (T1) provides integrity-checksum
+            // motivation only; no tamper-suite mechanism in the paper.
+            SsbPayload::DeterminismTamperSuiteCompleted(
+                DeterminismTamperSuiteCompletedPayload {
+                    total_scenarios: 10,
+                    passed: 10,
+                    failed: 0,
+                    max_wall_ms: 250,
+                    verdict: "pass".into(),
+                    scenarios_blake3: "f".repeat(64),
+                },
+            ),
+            // D-28 (SCHEMA_VERSION 145): adversarial example farming run.
+            // Host-side scaffolding for the Adv-RM (arXiv:2504.06141)
+            // farm loop. Live PPM loop + ppm_finetune.sh + bench_prmbench
+            // v1/v2 are RUNPOD-PENDING.
+            SsbPayload::AdversarialFarmRunCompleted(
+                AdversarialFarmRunCompletedPayload {
+                    samples_farmed: 1000,
+                    rounds: 2,
+                    prmbench_delta_pp: 1.5,
+                    verdict: "pass".into(),
+                    paper_floor_pp: 1.0,
+                    corpus_blake3: "a".repeat(64),
+                },
+            ),
+            // D-29 (SCHEMA_VERSION 146): hierarchical BAI round completion.
+            // Wire-dark by default (ELAI_BAI_MODE=hierarchical AND
+            // ELAI_BAI_ENABLE=1 required). Paper labels:
+            // arXiv:2111.06929 SUPPORTING EVIDENCE; arXiv:2106.10417
+            // DIRECT GROUNDING. Live regret baseline RUNPOD-PENDING.
+            SsbPayload::HierarchicalBaiRoundCompleted(
+                HierarchicalBaiRoundCompletedPayload {
+                    round: 1,
+                    family_id: 0,
+                    mu_posterior_mean: 0.5,
+                    mu_posterior_variance: 0.01,
+                    kappa_posterior_mean: 4.0,
+                    kappa_posterior_variance: 0.5,
+                    arm_posteriors: Vec::new(),
+                    selected_arm_index: u32::MAX,
+                    selected_template_id: "0".repeat(32),
+                    selection_basis: "flat_ts".into(),
+                    gibbs_iterations: 80,
+                    canary_gate_passed: true,
+                },
+            ),
+            // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+            // Wire-dark by default (ELAI_CALIBRATION_BOOTSTRAP_ENABLE=1
+            // required). Paper labels: arXiv:2509.01455 UniCR
+            // COMPOSITION; arXiv:2109.07958 TruthfulQA DATA ORIGIN;
+            // Politis & Romano 1994 JASA §3 DIRECT GROUNDING (SECONDARY).
+            // Live D-22 validation + 817-row import + block-bootstrap
+            // CI activation RUNPOD-PENDING.
+            SsbPayload::CalibrationBootstrapCompleted(
+                CalibrationBootstrapCompletedPayload {
+                    corpus_slug: "truthfulqa".into(),
+                    corpus_size: 50,
+                    corpus_blake3: "b".repeat(64),
+                    tau_warm_start: 0.82,
+                    alpha: 0.1,
+                    tau_floor_active: false,
+                    bootstrap_replicates: Some(1000),
+                    bootstrap_ci_low: Some(0.78),
+                    bootstrap_ci_high: Some(0.86),
+                    block_length_p: Some(0.1414213562373095),
+                    ts_ms: 1_748_044_900_000,
+                },
+            ),
             // C-50 (SCHEMA_VERSION 125): Contract-Coding STRUCTURAL
             // contract test scaffolding row pair. Paper-grounded
             // against arXiv:2604.13100 (Lin, Zhao, Shi 2026 — kernel
