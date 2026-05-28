@@ -37,9 +37,15 @@
 //! Path-A vs Path-B status: this is the Path-A (productize behind
 //! ELAI_BAI_MODE=hierarchical) host-side scaffolding. The live
 //! flat-vs-hierarchical regret comparison on the synthetic 5x10
-//! benchmark is RUNPOD-PENDING (no GPU here; the math is CPU-bound but
-//! the cross-baseline measurement is logged in
-//! workflow/reasoning/D-29-decisions.md DECISION-7).
+//! benchmark was RUNPOD-COMPLETE 2026-05-29 via the CPU-only example
+//! `crates/orchestrator/examples/d29_flat_vs_hierarchical_baseline.rs`.
+//! Result (1000 rounds, seed 20260526, paired-difference design):
+//!   * flat mean_regret  = 0.1055  95% CI [0.0954, 0.1165]
+//!   * hier mean_regret  = 0.0828  95% CI [0.0737, 0.0925]
+//!   * paired diff mean  = 0.0227  95% CI [0.0098, 0.0373]
+//!   * hier/flat ratio   = 0.7848
+//! Both gates pass (absolute_dominates=true, relative_dominates >= 5%) =>
+//! VERDICT=PATH_A. See workflow/reasoning/D-29-decisions.md DECISION-7.
 
 use std::collections::BTreeMap;
 
@@ -114,6 +120,74 @@ impl FamilyId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+}
+
+// ---------------------------------------------------------------------------
+// Production family routing (D-29 RUNPOD-COMPLETE 2026-05-29)
+// ---------------------------------------------------------------------------
+
+/// Canonical FamilyId for `Domain::Code` (anti-stale: hand-rolled enum
+/// projection — no derive_more). Stable across runs; do NOT renumber.
+pub const FAMILY_ID_CODE: u32 = 0;
+/// Canonical FamilyId for `Domain::Math`.
+pub const FAMILY_ID_MATH: u32 = 1;
+/// Canonical FamilyId for `Domain::Prose`.
+pub const FAMILY_ID_PROSE: u32 = 2;
+/// Canonical FamilyId for `Domain::Mixed` — used as the safe fallback for
+/// any arm whose template cannot be resolved in the archive chain.
+pub const FAMILY_ID_MIXED: u32 = 3;
+/// Canonical FamilyId for `Domain::Planning` (D-7 additive variant).
+pub const FAMILY_ID_PLANNING: u32 = 4;
+/// Canonical FamilyId for `Domain::ToolUse` (D-7 additive variant).
+pub const FAMILY_ID_TOOL_USE: u32 = 5;
+
+/// Total family count (closed enum width). Tests pin this so a future
+/// Domain variant addition fails CI until the routing here is updated.
+pub const FAMILY_COUNT: u32 = 6;
+
+/// Production routing: map a `reasoning_template::Domain` to its canonical
+/// `FamilyId`. Closed-enum projection — every Domain variant lands in
+/// exactly one FamilyId. Stable wire format; do NOT renumber. Mirrors the
+/// 6-family split spec'd at companion-spec §3.7 Q3.
+///
+/// Used by `task_runner::dispatch_bai_round` (D-29 hierarchical mode) to
+/// resolve `arm.template_id` -> `Domain` -> `FamilyId` before populating
+/// `HierarchicalBaiState::assign_arm`. Arms whose template is not yet in
+/// the archive chain fall back to `FAMILY_ID_MIXED` at the caller (see
+/// `family_id_for_template_or_mixed` for the convenience wrapper).
+#[must_use]
+pub fn family_id_for_domain(domain: crate::reasoning_template::Domain) -> FamilyId {
+    use crate::reasoning_template::Domain;
+    let raw = match domain {
+        Domain::Code => FAMILY_ID_CODE,
+        Domain::Math => FAMILY_ID_MATH,
+        Domain::Prose => FAMILY_ID_PROSE,
+        Domain::Mixed => FAMILY_ID_MIXED,
+        Domain::Planning => FAMILY_ID_PLANNING,
+        Domain::ToolUse => FAMILY_ID_TOOL_USE,
+    };
+    FamilyId(raw)
+}
+
+/// Convenience: resolve `template_id -> Domain -> FamilyId` against the
+/// caller's archive chain. Falls back to `FAMILY_ID_MIXED` when the chain
+/// has no entry for `template_id` (cold-start before the first archive
+/// append, or a template the caller has not yet promoted to the chain).
+///
+/// The fallback is INTENTIONAL: `Mixed` carries the weakly-informative
+/// hyperprior (Beta(2, 2) implied by mu=0.5, kappa=4.0) which is the
+/// least-bad default when the domain is unknown — preferable to dropping
+/// the arm or routing it to a domain-specific family that would
+/// pollute that family's hyperposterior.
+#[must_use]
+pub fn family_id_for_template_or_mixed(
+    chain: &crate::archive_chain::ArchiveChain,
+    template_id: crate::reasoning_template::TemplateId,
+) -> FamilyId {
+    chain
+        .find_by_template_id(&template_id)
+        .map(|entry| family_id_for_domain(entry.template.domain))
+        .unwrap_or_else(|| FamilyId(FAMILY_ID_MIXED))
 }
 
 // ---------------------------------------------------------------------------
@@ -723,5 +797,50 @@ mod tests {
         let a = hierarchical_arm_select(&state, &arms, &mut rng_a);
         let b = hierarchical_arm_select(&state, &arms, &mut rng_b);
         assert_eq!(a, b);
+    }
+
+    // D-29 RUNPOD-COMPLETE 2026-05-29: production family routing tests.
+    // Each Domain variant projects to a stable FamilyId; the projection is
+    // closed-enum (FAMILY_COUNT counts the variants), and the helper
+    // `family_id_for_template_or_mixed` falls back to FAMILY_ID_MIXED when
+    // the archive chain has no entry.
+    #[test]
+    fn family_id_for_domain_closed_enum_projection() {
+        use crate::reasoning_template::Domain;
+        assert_eq!(family_id_for_domain(Domain::Code).as_u32(), FAMILY_ID_CODE);
+        assert_eq!(family_id_for_domain(Domain::Math).as_u32(), FAMILY_ID_MATH);
+        assert_eq!(
+            family_id_for_domain(Domain::Prose).as_u32(),
+            FAMILY_ID_PROSE
+        );
+        assert_eq!(
+            family_id_for_domain(Domain::Mixed).as_u32(),
+            FAMILY_ID_MIXED
+        );
+        assert_eq!(
+            family_id_for_domain(Domain::Planning).as_u32(),
+            FAMILY_ID_PLANNING
+        );
+        assert_eq!(
+            family_id_for_domain(Domain::ToolUse).as_u32(),
+            FAMILY_ID_TOOL_USE
+        );
+    }
+
+    #[test]
+    fn family_count_matches_domain_variant_width() {
+        // If a new Domain variant is added without updating
+        // family_id_for_domain, this test catches the drift (the match in
+        // family_id_for_domain is exhaustive, so the failure surfaces
+        // there at compile-time; this test pins the count separately so
+        // FAMILY_COUNT cannot silently fall behind).
+        assert_eq!(FAMILY_COUNT, 6);
+        // Round-trip: every FamilyId in [0, FAMILY_COUNT) is a valid
+        // routing target.
+        for f in 0..FAMILY_COUNT {
+            // Just exercise the constructor; the SSB payload encoder reads
+            // `family_id.as_u32()` so any value in range is wire-safe.
+            assert_eq!(FamilyId(f).as_u32(), f);
+        }
     }
 }

@@ -72,6 +72,14 @@ pub fn canonical_payload(link: &Ed25519SignedLink) -> [u8; 128] {
 /// Compute the BLAKE3-placeholder signature for a link payload.
 /// RUNPOD-PENDING: replace with `ed25519_dalek::SigningKey::sign` when
 /// the dep is approved per DECISION-15.
+/// Dep verification 2026-05-29 (offline batch s-25120):
+///   crates.io ed25519-dalek max_stable=2.2.0 max=3.0.0-pre.7
+///   recent_downloads=48,239,505 owner=dalek-cryptography updated=2026-05-06
+///   homepage=github.com/dalek-cryptography/curve25519-dalek
+///   lib.rs reports ~20.7M dl/mo. License (per crates.io): BSD-3-Clause
+///   (verify exact spdx in Cargo.toml when adding). Slopsquat check PASS.
+///   READY FOR USER APPROVAL: add `ed25519-dalek = "2.2"` to
+///   crates/orchestrator/Cargo.toml + replace this fn body.
 #[must_use]
 pub fn placeholder_sign(payload: &[u8]) -> [u8; ED25519_SIG_LEN] {
     let mut hasher = Hasher::new();

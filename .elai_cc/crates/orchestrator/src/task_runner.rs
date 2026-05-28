@@ -8759,17 +8759,29 @@ async fn dispatch_bai_round(
         // conjugate-adjacent posteriors per Gelman BDA3 §11.5).
         let mut hier_state =
             crate::bai_hierarchical::HierarchicalBaiState::new();
-        // All arms route to FamilyId(0) by default (the runtime does
-        // not yet ship a family-routing map; this is the
-        // RUNPOD-PENDING wiring stub — see D-29-decisions.md
-        // DECISION-7).
+        // D-29 RUNPOD-COMPLETE 2026-05-29: production family routing via
+        // `family_id_for_template_or_mixed` resolves arm -> archive entry
+        // -> Domain -> FamilyId (closed enum, 6 families). Arms whose
+        // template is not yet in the chain fall back to FAMILY_ID_MIXED
+        // — the least-bad default since the Mixed hyperprior is the
+        // weakly-informative Beta(2,2). See bai_hierarchical.rs
+        // `family_id_for_domain` doc + workflow/reasoning/D-29-decisions.md
+        // DECISION-7.
         for arm in arms.iter() {
-            hier_state.assign_arm(
-                arm.template_id,
-                crate::bai_hierarchical::FamilyId(0),
-            );
+            let fid =
+                crate::bai_hierarchical::family_id_for_template_or_mixed(
+                    &chain,
+                    arm.template_id,
+                );
+            hier_state.assign_arm(arm.template_id, fid);
         }
-        let family = crate::bai_hierarchical::FamilyId(0);
+        // Aggregate-row family: resolve via the in-flight template_id
+        // so the SSB payload's `family_id` field reflects the actual
+        // family the round was attributed to.
+        let family = crate::bai_hierarchical::family_id_for_template_or_mixed(
+            &chain,
+            template_id,
+        );
         let arm_refs: Vec<&crate::bai::ArmPosterior> = arms.iter().collect();
         let family_post = crate::bai_hierarchical::hierarchical_update(
             &mut hier_state,
@@ -8829,9 +8841,16 @@ async fn dispatch_bai_round(
                 } else {
                     mean
                 };
+                // D-29 RUNPOD-COMPLETE 2026-05-29: per-arm family stamp now
+                // derived from the production routing map (was hard-coded 0).
+                let arm_family =
+                    crate::bai_hierarchical::family_id_for_template_or_mixed(
+                        &chain,
+                        arm.template_id,
+                    );
                 crate::ssb::ArmPosteriorSummary {
                     template_id: arm.template_id.as_hex(),
-                    family_id: 0,
+                    family_id: arm_family.as_u32(),
                     alpha,
                     beta,
                     mean,

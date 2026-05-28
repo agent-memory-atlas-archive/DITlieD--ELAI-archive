@@ -18,7 +18,15 @@
 # Exit 1 = drift detected (kwarg NOT lossless; report to plan team).
 # Exit 2 = environment skip (no CUDA available).
 
-# RUNPOD-PENDING: ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prompt_lookup_lossless"'
+# RUNPOD-PENDING (live byte-equivalence on GPU): ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prompt_lookup_lossless"'
+#
+# RUNPOD-COMPLETE-OFFLINE (sidecar wiring contract for HF kwarg):
+#   pytest elai_inference/tests/test_prompt_lookup_lossless_offline.py -v
+#   Verifies that server.py passes prompt_lookup_num_tokens through to HF
+#   model.generate unchanged, with no sampling override and no logits
+#   processor wrapping. Losslessness is then by-construction of the HF
+#   verifier-rejection loop at temp=0 greedy. Live harness measures the
+#   empirical byte equivalence on a real model.
 
 from __future__ import annotations
 

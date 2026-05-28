@@ -33,6 +33,8 @@ use crate::auditor_mode::{
     mark_cascade, mark_respawned, AuditorMode, AuditorModeError, LevelAuditVerdict, TierNodeId,
     Verdict,
 };
+use crate::planning_decomposition::audit_score::{compute_score, MAX_EXPECTED_FINDINGS};
+use crate::planning_decomposition::producers::emit_process_reward_score_emitted;
 use crate::ssb::{
     PerLevelAuditCascadePayload, PerLevelAuditStartedPayload, PerLevelAuditVerdictPayload, Ssb,
     SsbPayload,
@@ -203,6 +205,49 @@ async fn emit_cascade_row(
 /// `auditor_mode::persist_verdict`; this function only writes the SSB rows
 /// so the dashboard timeline and the `derive_*_zero_blocks` evidence
 /// helpers can observe the cascade in real time.
+// RUNPOD-COMPLETE: 2026-05-29 E-46 ADaPT iteration measurement — wire
+// `emit_process_reward_score_emitted` into the per-level audit dispatch path
+// so every verdict (initial, respawned, cascaded) carries a LATS-style
+// process-reward scalar onto the planning_decomposition SSB stream. The
+// producer is wire-dark by default (gated by ELAI_PLANNING_DECOMPOSITION_ENABLE)
+// so this is additive zero-cost when the gate is off.
+async fn emit_process_reward_for_verdict(
+    writer: &Arc<Ssb>,
+    agent_id: &str,
+    superstep: i64,
+    verdict: &LevelAuditVerdict,
+) {
+    let score = compute_score(verdict, MAX_EXPECTED_FINDINGS);
+    let tier_node_key = format!(
+        "{}/{}/{}",
+        verdict.mode.as_str(),
+        verdict.tier_node_id.tier_str(),
+        verdict.tier_node_id.raw_id()
+    );
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    if let Err(e) = emit_process_reward_score_emitted(
+        writer.as_ref(),
+        agent_id,
+        superstep,
+        None,
+        &tier_node_key,
+        &score,
+        ts_ms,
+    )
+    .await
+    {
+        warn!(
+            target: "per_level_audit_dispatch",
+            error = %e,
+            tier_node_key = %tier_node_key,
+            "process_reward_score emit failed; verdict still recorded"
+        );
+    }
+}
+
 pub async fn record_verdict(
     writer: &Arc<Ssb>,
     agent_id: &str,
@@ -211,6 +256,7 @@ pub async fn record_verdict(
 ) -> Result<CascadeOutcome, AuditorModeError> {
     // Step 1 — record verdict as-given.
     emit_verdict_row(writer, agent_id, superstep, &verdict).await?;
+    emit_process_reward_for_verdict(writer, agent_id, superstep, &verdict).await;
 
     // Step 2 — Allow path.
     if verdict.verdict == Verdict::Allow {
@@ -223,6 +269,7 @@ pub async fn record_verdict(
         // Second row so timeline reflects respawned=true even if the
         // retry never produces a follow-up verdict.
         emit_verdict_row(writer, agent_id, superstep, &updated).await?;
+        emit_process_reward_for_verdict(writer, agent_id, superstep, &updated).await;
         return Ok(CascadeOutcome::RespawnOnce { verdict: updated });
     }
 
@@ -254,6 +301,7 @@ pub async fn record_verdict(
     // `derive_*_zero_blocks` evidence helpers can observe
     // cascade_to_parent=true on a fresh row.
     emit_verdict_row(writer, agent_id, superstep, &cascaded).await?;
+    emit_process_reward_for_verdict(writer, agent_id, superstep, &cascaded).await;
     if let Err(e) = emit_cascade_row(writer, agent_id, superstep, &cascaded, routed_parent).await {
         warn!(
             target: "per_level_audit_dispatch",

@@ -1,0 +1,62 @@
+{
+  "snapshot_ts_utc": "2026-05-29T00:30:00Z",
+  "scrape_method": "WebFetch via main-llm offline batch (RUNPOD short-circuit for live python scraper at benches/external/coding_model_leaderboard.py)",
+  "schema_version": 174,
+  "notes": "BigCodeBench / HumanEval+ / LiveCodeBench leaderboards are JS-rendered SPAs that return shells under WebFetch (no static HTML pass@1 table). Live scrape against those would need headless browser (playwright) on remote pod. SWE-Bench Pro public returned full table under WebFetch and is captured here as the canonical contamination-aware snapshot.",
+  "suites": [
+    {
+      "suite_name": "swe-bench-pro",
+      "suite_version": "public",
+      "leaderboard_url": "https://labs.scale.com/leaderboard/swe_bench_pro_public",
+      "fetch_status": "ok",
+      "arxiv_id": "2509.16941",
+      "models": [
+        {"rank": 1,  "model_name": "gpt-5-4-xhigh",                    "score_pct_bp": 5910},
+        {"rank": 2,  "model_name": "muse-spark",                        "score_pct_bp": 5500},
+        {"rank": 3,  "model_name": "claude-opus-4-6-thinking",          "score_pct_bp": 5190},
+        {"rank": 4,  "model_name": "gemini-3-1-pro-thinking",           "score_pct_bp": 4610},
+        {"rank": 5,  "model_name": "claude-opus-4-5-20251101",          "score_pct_bp": 4589},
+        {"rank": 6,  "model_name": "claude-4-5-sonnet",                 "score_pct_bp": 4360},
+        {"rank": 7,  "model_name": "gemini-3-pro-preview",              "score_pct_bp": 4330},
+        {"rank": 8,  "model_name": "claude-4-sonnet",                   "score_pct_bp": 4270},
+        {"rank": 9,  "model_name": "gpt-5-2025-08-07-high",             "score_pct_bp": 4178},
+        {"rank": 10, "model_name": "gpt-5-2-codex",                     "score_pct_bp": 4104},
+        {"rank": 11, "model_name": "claude-4-5-haiku",                  "score_pct_bp": 3945},
+        {"rank": 12, "model_name": "qwen3-coder-480b-a35b",             "score_pct_bp": 3870},
+        {"rank": 13, "model_name": "minimax-2-1",                       "score_pct_bp": 3681},
+        {"rank": 14, "model_name": "gemini-3-flash",                    "score_pct_bp": 3463},
+        {"rank": 15, "model_name": "gpt-5-2",                           "score_pct_bp": 2994}
+      ]
+    },
+    {
+      "suite_name": "bigcodebench",
+      "suite_version": "hard-set",
+      "leaderboard_url": "https://bigcode-bench.github.io",
+      "fetch_status": "js_rendered_shell",
+      "models": [],
+      "follow_up": "fetch via huggingface.co/spaces/bigcode/bigcodebench-leaderboard (HF spaces; may also be JS) OR use playwright on remote pod"
+    },
+    {
+      "suite_name": "humaneval-plus",
+      "suite_version": "evalplus-v0.3",
+      "leaderboard_url": "https://evalplus.github.io/leaderboard.html",
+      "fetch_status": "js_rendered_shell",
+      "models": [],
+      "follow_up": "data lives in evalplus repo's results JSON on github.com/evalplus/evalplus -- next pass should curl raw json"
+    },
+    {
+      "suite_name": "livecodebench",
+      "suite_version": "v6",
+      "leaderboard_url": "https://livecodebench.github.io/leaderboard.html",
+      "fetch_status": "js_rendered_shell",
+      "models": [],
+      "follow_up": "page returns Loading... shell under WebFetch; data is in livecodebench/livecodebench github repo"
+    }
+  ],
+  "elai_lane_observations": {
+    "claude_opus_4_7_pro": "not in this snapshot; previous orchestrator/src/ssb.rs and posture doc cite Pro 64.3% for opus-4-7. SWE-Bench Pro public table top entry is gpt-5.4 xHigh 59.10%, then Muse Spark 55.00%. Opus 4.6 thinking at 51.90% — that is what is publicly listed here, NOT 4.7. The posture doc's 64.3% Opus 4.7 Pro number is from morphllm.com/swe-bench-pro and may not yet appear on the labs.scale.com leaderboard. Reconfirm before quoting.",
+    "claude_sonnet_4_6_pro": "Not on the public leaderboard yet (sonnet-4-5 lists as claude-4-5-Sonnet 43.6% and sonnet-4 as 42.7%).",
+    "elai_local_qwen_lane": "Qwen2.5-Coder-7B/3B-abliterated NOT on this leaderboard (sub-7B coding lane). qwen3-coder-480b-a35b (MoE) is at 38.70% — confirms posture doc 'Qwen3-Coder-Next 80B-A3B MoE REJECTED for local' is the right call; 480B MoE doesn't even beat sonnet-4 on Pro.",
+    "deepseek_v4_flash_pro": "Not present in this top-15 table. Need separate query or DeepSeek's own publication."
+  }
+}

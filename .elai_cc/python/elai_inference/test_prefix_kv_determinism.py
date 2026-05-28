@@ -20,7 +20,13 @@
 # Exit 1 = drift detected (KEEP env-gate OFF).
 # Exit 2 = environment skip (no CUDA available; cannot run).
 
-# RUNPOD-PENDING: ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prefix_kv_determinism"'
+# RUNPOD-PENDING (live byte-equivalence on GPU): ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prefix_kv_determinism"'
+#
+# RUNPOD-COMPLETE-OFFLINE (key-stability + object-identity invariants):
+#   pytest elai_inference/tests/test_prefix_kv_determinism_offline.py -v
+#   The offline harness locks the cache-key invariant (same prefix -> same
+#   hash -> same key -> same cached object). The live harness adds the
+#   empirical byte-equivalent confirmation under live model load.
 
 from __future__ import annotations
 

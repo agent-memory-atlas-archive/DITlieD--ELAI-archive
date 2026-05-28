@@ -1710,6 +1710,17 @@ impl AgentSandbox for LinuxSandbox {
 // LinuxSandbox delegation gives us a working sandbox on Linux + KVM
 // hosts that *do* have the bin; the binary's actual microVM features
 // are not exercised but the AgentSandbox contract is satisfied.
+//
+// RUNPOD install ATTEMPTED 2026-05-29 (offline batch s-25120):
+//   Install command per github.com/microsandbox/microsandbox README:
+//     curl -fsSL https://install.microsandbox.dev | sh
+//   Status: NOT INSTALLED on offline-batch host (Windows + git bash);
+//   the install script targets Linux/macOS and requires sudo + KVM.
+//   Remote pythondev (Ubuntu 24.04 WSL2 + RTX 3090, ~/sidecar.pid box)
+//   is the correct install target. Action: defer to next RUNPOD pass
+//   that SSHes into pythondev and runs the curl|sh against ~/microsandbox-bin.
+//   `microsandbox --version` and `msb --version` both `command not found`
+//   on the offline-batch host.
 
 #[cfg(target_os = "linux")]
 pub struct MicrosandboxBackend {

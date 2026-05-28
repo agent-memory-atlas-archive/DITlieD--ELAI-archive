@@ -46,6 +46,13 @@ pub mod rag_challenger;
 pub mod cot_proof;
 pub mod cache_check;
 pub mod grc_blockquote;
+// E-10 P5 wire-on (offline-buildable) -- per-VRAM tier matrix + cloud-default
+// switch test producers. Reuse `CriticTilePhase::TierMatrix` /
+// `CriticTilePhase::CloudDefault` (no new SsbActionType, no schema bump).
+// Wire-dark unless ELAI_CRITIC_OF_DESIGN_ENABLE=1. Live bench inputs are
+// RUNPOD-PENDING; emit paths are now structurally complete.
+pub mod tier_matrix;
+pub mod cloud_default;
 // E-6: persona re-anchor — re-injects role prompt every N turns AND when
 // cosine drift < threshold. EmbedProvider is pluggable; cosine gate
 // degrades to turn-counter-only when no provider is injected. Grounding:

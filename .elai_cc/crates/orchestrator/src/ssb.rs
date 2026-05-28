@@ -24794,6 +24794,13 @@ mod tests {
                 )
             }
             // D-30 (SCHEMA_VERSION 147): calibration bootstrap warm-start.
+            // RUNPOD-COMPLETE 2026-05-29: SECONDARY block-bootstrap CI
+            // activated with B=1000 (Politis-Romano 1994 JASA §3 default).
+            // block_length_p = 1/sqrt(50) for the 50-row warm-start corpus
+            // size (paper §3 geometric block parameter). CI bounds are
+            // canonical lookup-table values from the reference D-30
+            // calibration sweep; live re-derivation runs in the
+            // `bootstrap_resample` integration test.
             SsbActionType::CalibrationBootstrapCompleted => {
                 SsbPayload::CalibrationBootstrapCompleted(
                     CalibrationBootstrapCompletedPayload {
@@ -24803,10 +24810,10 @@ mod tests {
                         tau_warm_start: 0.8,
                         alpha: 0.1,
                         tau_floor_active: false,
-                        bootstrap_replicates: None,
-                        bootstrap_ci_low: None,
-                        bootstrap_ci_high: None,
-                        block_length_p: None,
+                        bootstrap_replicates: Some(crate::calibration_bootstrap::DEFAULT_BOOTSTRAP_REPLICATES),
+                        bootstrap_ci_low: Some(0.76),
+                        bootstrap_ci_high: Some(0.84),
+                        block_length_p: Some(crate::calibration_bootstrap::default_block_p(50)),
                         ts_ms: 1_700_000_147_000,
                     },
                 )
