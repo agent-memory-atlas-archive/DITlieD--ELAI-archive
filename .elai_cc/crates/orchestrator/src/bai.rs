@@ -121,6 +121,28 @@ impl ArmPosterior {
         self.n_pulls = self.n_pulls.saturating_add(1);
     }
 
+    /// E-55 -- consume a fused PRM+ORM reward (per
+    /// `crate::rl::reward_fusion::FusedReward`) as a Bernoulli
+    /// observation by thresholding. Default threshold consumers should
+    /// use `crate::rl::reward_fusion::FUSION_BERNOULLI_THRESHOLD = 0.5`
+    /// (the as_default_bernoulli convenience exposes the same constant).
+    ///
+    /// This is the load-bearing wire that lets the E-55 reward-fusion
+    /// pipeline feed the D-5 BAI posterior. Thin delegate to
+    /// [`Self::update`] -- semantics are unchanged from the bool variant;
+    /// the only difference is that callers pass the f64 fused score +
+    /// threshold rather than the pre-binarised bool, so the threshold
+    /// lives at the call site (visible to auditors).
+    ///
+    /// Callers must gate the invocation behind
+    /// `crate::rl::agentic_rl_enabled()` so the BAI posterior continues
+    /// to update only on `passed: bool` from the consensus verdict
+    /// when the env gate is off (wire-dark default; E-55 RUNPOD-PENDING
+    /// live-judge integration).
+    pub fn update_with_fused(&mut self, fused: f64, threshold: f64) {
+        self.update(fused >= threshold);
+    }
+
     /// True when the arm has hit either pull-cap or has a tight posterior
     /// (variance below the confidence floor). Stopping-rule consumers query
     /// this before scheduling another pull.

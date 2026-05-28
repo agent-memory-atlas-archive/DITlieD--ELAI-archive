@@ -10,11 +10,33 @@
   const EFFORT_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
   const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
   import { Pulse } from '../ui/index';
-  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff } from '../api/stub';
-  import type { RecentTask } from '../api/types';
+  import { submit_intervention_response, submit_credential_response, logStub, continue_task, get_recent_tasks, load_handoff, get_context_state } from '../api/stub';
+  import type { RecentTask, ContextState } from '../api/types';
+  // E-4 chat UX critique surfaces. PinnedRulesPanel mounts as a sidebar
+  // strip above the stream; ClaimConfidenceChip / HonestCorrectionBlock /
+  // SycophancyGuardBadge are bubble-level inline components rendered
+  // when a card carries the matching ChatUxCritiqueEvent kind payload
+  // (wire-dark unless ELAI_CHAT_UX_CRITIQUE_ENABLE=1 on producer side).
+  import PinnedRulesPanel from '$lib/components/PinnedRulesPanel.svelte';
+  import ClaimConfidenceChip from '$lib/components/ClaimConfidenceChip.svelte';
+  import HonestCorrectionBlock from '$lib/components/HonestCorrectionBlock.svelte';
+  import SycophancyGuardBadge from '$lib/components/SycophancyGuardBadge.svelte';
 
   // Live recent-tasks list (was a mock import). Polled every 10s.
   let recentTasks = $state<RecentTask[]>([]);
+  // E-23 — context-state snapshot drives the runtime_choice_badge +
+  // prompt_injection_check_status row in the status strip. Polled every
+  // 5s alongside the recent-tasks refresh. Empty default keeps the UI
+  // stable when the Tauri command isn't reachable yet.
+  let contextSnapshot = $state<ContextState>({
+    fsm_state: 'IDLE',
+    substate: null,
+    token_budget_pct: 0,
+    mcp_think_topics: [],
+    last_precompact_thresholds: [],
+    prompt_injection_check_status: 'not_run',
+    runtime_choice_badge: '',
+  });
   onMount(() => {
     let alive = true;
     async function refresh() {
@@ -25,9 +47,37 @@
         console.debug('[CommandWindow] get_recent_tasks failed', err);
       }
     }
+    // E-23 — refresh runtime_choice_badge + prompt_injection_check_status.
+    // Pricing-transparency badge transitions when B-37 runtime_fallback
+    // emits a new "succeeded" backend; injection status row reflects the
+    // C-42 fuzzer's last verdict (when shipped — defaults to "not_run").
+    async function refreshContext() {
+      try {
+        const ctx = await get_context_state();
+        if (alive) contextSnapshot = ctx;
+      } catch (err) {
+        console.debug('[CommandWindow] get_context_state failed', err);
+      }
+    }
     void refresh();
+    void refreshContext();
     const t = setInterval(refresh, 10_000);
-    return () => { alive = false; clearInterval(t); };
+    const tCtx = setInterval(refreshContext, 5_000);
+    return () => { alive = false; clearInterval(t); clearInterval(tCtx); };
+  });
+
+  // E-23 — derived labels for the pricing-transparency + injection rows.
+  // Pure $derived so the badges re-render in lockstep with the snapshot.
+  const runtimeBadgeLabel = $derived.by(() => {
+    if (contextSnapshot.runtime_choice_badge === 'local') return 'local';
+    if (contextSnapshot.runtime_choice_badge === 'cloud_billed') return 'cloud - billed';
+    return '';
+  });
+  const injectionStatusLabel = $derived.by(() => {
+    // Mirrors orchestrator::ssb::PROMPT_INJECTION_CHECK_STALE_HOURS — when
+    // C-42 ships, the backend command will downgrade "passed" to a yellow
+    // advisory after 24h. Today the row reads "not_run" by default.
+    return contextSnapshot.prompt_injection_check_status;
   });
 
   // ----------------------------------------------------------------
@@ -428,14 +478,60 @@
 </script>
 
 <div class="command-window">
+  <!-- E-4 Task 3: pinned-rules visible panel. Sidebar strip above the
+       stream; collapsed by default. Wire-dark unless the producer is
+       running with ELAI_CHAT_UX_CRITIQUE_ENABLE=1 (still renders with
+       an empty list otherwise). -->
+  <div class="pinned-rules-strip">
+    <PinnedRulesPanel />
+  </div>
   <!-- Card stream -->
   <div class="stream" bind:this={streamEl}>
     <div class="stream-inner">
     {#if commands.cards.length === 0}
-      <!-- Empty state: breathing dot + slash hints + recent tasks -->
+      <!-- Empty state: breathing dot + first-run positioning block +
+           slash hints + recent tasks.
+
+           E-23 — 3-paragraph "does / does NOT / moats" block. maintainer voice
+           per .claude/rules/output-formatting.md: lowercase i, no em-
+           dashes, no robotic prefixes, contractions drop apostrophes.
+           Every claim links to its discourse-complaint source via <small>
+           citations (METR arXiv:2507.09089 + Stack Overflow 2025 +
+           JetBrains AI Pulse April 2026 + Anthropic issue #13171). -->
       <div class="empty-state">
         <Pulse mode="dot" size={12} />
         <span class="empty-label">no active task</span>
+
+        <div class="first-run-positioning" data-testid="first-run-positioning">
+          <p class="positioning-para">
+            <span class="positioning-tag mono">does</span>
+            ELAI runs FSM-gated, grounded, audited code work. it isnt a chat
+            assistant. every state transition writes an SSB row, every claim
+            cites its source, every audit cycle runs a real test pass.
+            <small class="positioning-cite">cf. METR arXiv:2507.09089 on the
+            felt-faster gap</small>
+          </p>
+          <p class="positioning-para">
+            <span class="positioning-tag mono">does NOT</span>
+            things ELAI does NOT do: no full autonomous YOLO mode. no
+            surprise pricing. no hidden third-party calls. no SDK
+            abstraction layer hiding the raw anthropic protocol. the
+            runtime_choice_badge below tells you local vs cloud-billed at
+            all times.
+            <small class="positioning-cite">cf. Cursor June 2025 backlash +
+            Stack Overflow 2025 (29% trust)</small>
+          </p>
+          <p class="positioning-para">
+            <span class="positioning-tag mono">moats</span>
+            where the moats are: rules-as-data not prompt-soup. per-level
+            auditor (matches
+            Cloudflare 7-reviewer pattern). local-first hybrid runtime.
+            cross-session FSM. grounded reasoning chain. open source.
+            <small class="positioning-cite">cf. JetBrains AI Pulse 2026 +
+            Cloudflare AI code review</small>
+          </p>
+        </div>
+
         <div class="empty-slash-row">
           <button class="mono-ghost-btn" onclick={() => executeSlash('/task')}>/task</button>
           <button class="mono-ghost-btn" onclick={() => executeSlash('/fix')}>/fix</button>
@@ -669,6 +765,45 @@
             </div>
 
           {/if}
+
+          <!-- E-4 chat UX critique inline overlays. Wire-dark unless
+               the producer attaches chat_ux_meta to the card payload
+               (gated by ELAI_CHAT_UX_CRITIQUE_ENABLE=1 on the
+               orchestrator side; the dashboard never synthesizes
+               these locally). -->
+          {#if card.chat_ux_meta}
+            {@const meta = card.chat_ux_meta}
+            {#if meta.claims && meta.claims.length > 0}
+              <div class="chat-ux-claims">
+                {#each meta.claims as claim, i (i + ':' + claim.text.slice(0, 16))}
+                  <ClaimConfidenceChip
+                    tier={claim.tier}
+                    evidence_ref={claim.evidence_ref}
+                  />
+                {/each}
+              </div>
+            {/if}
+            {#if meta.sycophancy}
+              <div class="chat-ux-sycophancy">
+                {#if meta.sycophancy.kind === 'hold_position'}
+                  <SycophancyGuardBadge
+                    verdict="hold_position"
+                    evidence_ref={meta.sycophancy.evidence_ref}
+                  />
+                {:else}
+                  <SycophancyGuardBadge verdict="no_evidence" />
+                {/if}
+              </div>
+            {/if}
+            {#if meta.correction}
+              <HonestCorrectionBlock
+                original_claim={meta.correction.original_claim}
+                correction_text={meta.correction.correction_text}
+                trigger={meta.correction.trigger}
+                original_claim_blake3_hex={meta.correction.original_claim_blake3_hex}
+              />
+            {/if}
+          {/if}
         </div>
       {/each}
     {/if}
@@ -748,9 +883,26 @@
       </div>
     {/if}
 
+    <!-- E-23 — pricing-transparency badge + prompt_injection_check_status
+         row. Wire-dark unless ELAI_DEVELOPER_DISCOURSE_ENABLE=1 on the
+         orchestrator side, but the badge renders regardless (empty label
+         when no runtime selected yet). Addresses report complaint #3
+         (surprise pricing / silent caps) and #9 (prompt-injection
+         visibility). -->
+    <div class="status-strip" data-testid="status-strip">
+      {#if runtimeBadgeLabel}
+        <span class="status-badge status-badge--runtime status-badge--{contextSnapshot.runtime_choice_badge}">
+          runtime: {runtimeBadgeLabel}
+        </span>
+      {/if}
+      <span class="status-badge status-badge--injection status-badge--injection-{injectionStatusLabel}">
+        injection: {injectionStatusLabel}
+      </span>
+    </div>
+
     <!-- B-39D: Thinking + Effort affordances. Compact ghost row above the
          shell. When thinkingEnabled, the next submit invokes the REFLECT
-         pipeline (TRIAGE → REASONER N → AUDITOR → SYNTHESIZE) instead of
+         pipeline (TRIAGE > REASONER N > AUDITOR > SYNTHESIZE) instead of
          streaming. Effort level maps to REASONER best-of-N width. -->
     <div class="reflect-controls">
       <button
@@ -858,6 +1010,29 @@
     /* Flat void — no starfield, no nebula. Pure minimal chrome. */
     background: var(--bg-void);
     position: relative;
+  }
+
+  /* E-4 Task 3: pinned-rules strip. Sits above the stream so the user
+     can see active rules without scrolling away from the bubble area.
+     Collapsed by default; expands on click. */
+  .pinned-rules-strip {
+    flex: 0 0 auto;
+    padding: 4px var(--s-3, 8px) 0 var(--s-3, 8px);
+    position: relative;
+    z-index: 2;
+  }
+
+  /* E-4 Tasks 1, 2, 12: bubble-level chat UX critique overlays. The
+     chips + badge sit on their own row beneath the card body so they
+     never collide with existing card chrome. The correction block
+     follows on its own block-level line. */
+  .chat-ux-claims,
+  .chat-ux-sycophancy {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+    padding: 0 var(--s-2, 4px);
   }
 
   /* ---- Stream ---- */
@@ -1723,5 +1898,84 @@
     text-align: center;
     color: var(--text-ghost);
     font-size: 12px;
+  }
+
+  /* ---- E-23 first-run positioning + status badges ---- */
+  .first-run-positioning {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 520px;
+    margin: var(--s-3) 0 var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    background: var(--bg-surface);
+  }
+  .positioning-para {
+    font-family: var(--font-sans);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+  .positioning-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-right: 6px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-xs);
+    font-size: 10px;
+    color: var(--teal);
+    text-transform: lowercase;
+    letter-spacing: 0.04em;
+  }
+  .positioning-cite {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    font-style: italic;
+  }
+
+  .status-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 0 var(--s-4) 2px;
+  }
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-pill);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+  }
+  .status-badge--local {
+    color: var(--teal);
+    border-color: var(--teal-line);
+    background: var(--teal-ghost);
+  }
+  .status-badge--cloud_billed {
+    color: #d4a017;
+    border-color: rgba(212, 160, 23, 0.4);
+    background: rgba(212, 160, 23, 0.06);
+  }
+  .status-badge--injection-passed {
+    color: var(--teal);
+    border-color: var(--teal-line);
+  }
+  .status-badge--injection-blocked {
+    color: var(--fail);
+    border-color: rgba(176, 69, 69, 0.4);
+  }
+  .status-badge--injection-not_run {
+    color: var(--text-ghost);
   }
 </style>

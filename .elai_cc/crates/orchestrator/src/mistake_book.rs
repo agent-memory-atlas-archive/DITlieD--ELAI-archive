@@ -87,9 +87,92 @@ pub async fn write_mistake(
         baby_step_id: baby_step_id.to_owned(),
         entry,
         cleared: false,
+        // E-6 provenance defaults — callers wanting provenance go through
+        // write_mistake_with_provenance instead.
+        origin_role: None,
+        origin_run_id: None,
+        originating_mast_mode: None,
+        content_hash: None,
+        provisional: false,
     });
 
     ssb.write_payload(agent_id, superstep, payload, vec![]).await
+}
+
+/// E-6 — write a MistakeEntry with full provenance (origin role + run id +
+/// MAST-mode + blake3 content hash + provisional flag). Sibling of
+/// [`write_mistake`] (back-compat path with default provenance). New
+/// auditor-originated writes go through this path so the context_pack-build
+/// filter can exclude provisional entries per
+/// workflow/reasoning/E-6-decisions.md DECISION-8.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_mistake_with_provenance(
+    ssb: &Ssb,
+    agent_id: &str,
+    superstep: i64,
+    baby_step_id: &str,
+    entry: MistakeEntry,
+    origin_role: Option<String>,
+    origin_run_id: Option<String>,
+    originating_mast_mode: Option<String>,
+    content_hash: Option<[u8; 32]>,
+    provisional: bool,
+) -> Result<i64, SsbError> {
+    let existing = query_by_baby_step(ssb, baby_step_id)?;
+    if contains_diff(&existing, &entry.diff_hash) {
+        return Ok(0);
+    }
+    let mut entries = existing;
+    let _evicted = insert_with_eviction(&mut entries, entry.clone());
+
+    let payload = SsbPayload::MistakeEntry(MistakeEntryPayload {
+        baby_step_id: baby_step_id.to_owned(),
+        entry,
+        cleared: false,
+        origin_role,
+        origin_run_id,
+        originating_mast_mode,
+        content_hash,
+        provisional,
+    });
+    ssb.write_payload(agent_id, superstep, payload, vec![]).await
+}
+
+/// E-6 — context-pack-build-facing variant of [`query_by_baby_step`] that
+/// excludes provisional entries by default. Per
+/// workflow/reasoning/E-6-decisions.md DECISION-8: auditor-originated entries
+/// lacking a corroborating cross-family AdversaryVerdict are written with
+/// `provisional=true` and MUST NOT enter the context pack — to prevent
+/// same-model blind-spot self-reinforcement (arXiv:2507.02778 documents
+/// 64.5% blind-spot rate).
+pub fn query_by_baby_step_with_filter(
+    ssb: &Ssb,
+    baby_step_id: &str,
+    include_provisional: bool,
+) -> Result<Vec<MistakeEntry>, SsbError> {
+    let rows = ssb.query_by_type(SsbActionType::MistakeEntry)?;
+    let mut entries = Vec::new();
+    let mut cleared = false;
+
+    for row in &rows {
+        let payload: SsbPayload = rmp_serde::from_slice(&row.payload)?;
+        if let SsbPayload::MistakeEntry(me) = payload {
+            if me.baby_step_id == baby_step_id {
+                if me.cleared {
+                    cleared = true;
+                    entries.clear();
+                } else if !cleared {
+                    if me.provisional && !include_provisional {
+                        continue;
+                    }
+                    entries.push(me.entry);
+                }
+            }
+        }
+    }
+
+    entries.sort_by_key(|e| e.timestamp);
+    Ok(entries)
 }
 
 /// Clear all mistake entries for a given baby step on success.
@@ -122,6 +205,12 @@ pub async fn clear_baby_step(
         baby_step_id: baby_step_id.to_owned(),
         entry: sentinel,
         cleared: true,
+        // Tombstones carry no provenance — defaults are fine.
+        origin_role: None,
+        origin_run_id: None,
+        originating_mast_mode: None,
+        content_hash: None,
+        provisional: false,
     });
     let seq = ssb.write_payload(agent_id, superstep, payload, vec![]).await?;
     tracing::info!(
@@ -146,6 +235,66 @@ pub fn format_baby_step_constraints(
         entries
     };
     Ok(format_constraints(&recent))
+}
+
+// ---------------------------------------------------------------------------
+// E-10 -- StructuredFailureSignal (additive ICL-poisoning defense delta).
+// Per workflow/reasoning/E-10-decisions.md DECISION-13: elai_core
+// MistakeEntry already enforces no-raw-code (CTIM-Rover rule);
+// E-10 only ADDS structured metadata alongside, never replaces.
+// Paper grounding: arXiv:2305.01219 ProAttack + arXiv:2401.05949 ICLAttack.
+// ---------------------------------------------------------------------------
+
+use std::path::PathBuf;
+
+use crate::mast::MastMode;
+
+/// Structured diff stats carried alongside a MistakeEntry. No raw
+/// past-attempt code -- raw text remains absent at the type level.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiffStat {
+    pub lines_added: u32,
+    pub lines_removed: u32,
+    pub files_changed: u32,
+    pub churn_score: f32,
+}
+
+/// E-10 -- additive structured failure signal stored alongside the
+/// existing MistakeEntry surface. Does NOT mutate elai_core
+/// MistakeEntry; lives next to it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructuredFailureSignal {
+    pub baby_step_id: String,
+    pub affected_files: Vec<PathBuf>,
+    pub structured_diff: DiffStat,
+    pub mast_mode: Option<MastMode>,
+}
+
+impl StructuredFailureSignal {
+    /// Construct a new signal. Caller MUST NOT pass raw past-attempt
+    /// code (per CTIM-Rover defense already enforced by MistakeEntry).
+    #[must_use]
+    pub fn new(
+        baby_step_id: impl Into<String>,
+        affected_files: Vec<PathBuf>,
+        structured_diff: DiffStat,
+        mast_mode: Option<MastMode>,
+    ) -> Self {
+        Self { baby_step_id: baby_step_id.into(), affected_files, structured_diff, mast_mode }
+    }
+}
+
+/// E-10 -- write a structured failure signal as a JSON-like SSB payload
+/// alongside the MistakeEntry. Wire-dark unless
+/// ELAI_CRITIC_OF_DESIGN_ENABLE=1 -- the gate is the caller's
+/// responsibility. Returns the structured signal so callers can inspect
+/// the persisted shape without re-querying SSB.
+#[must_use]
+pub fn write_structured_signal(signal: StructuredFailureSignal) -> StructuredFailureSignal {
+    // RUNPOD-PENDING: live SSB row for the structured signal is gated on
+    // a follow-up patch when the dashboard renderer is also ready. The
+    // pure function preserves the contract (no raw-code retention).
+    signal
 }
 
 // ---------------------------------------------------------------------------

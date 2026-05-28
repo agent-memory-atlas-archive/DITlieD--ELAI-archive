@@ -85,7 +85,14 @@ pub fn default_binary_for(backend: RuntimeBackend) -> &'static str {
         // E-40 — Lsp is a subprocess oracle dispatched via
         // elai_orchestrator::symbol_graph::lsp_oracle, not the generic CLI
         // subprocess shape.
-        | RuntimeBackend::Lsp => "<non-cli>",
+        | RuntimeBackend::Lsp
+        // E-26 — Sglang is HTTP /v1/chat/completions, not a CLI subprocess.
+        | RuntimeBackend::Sglang
+        // E-39 — DeepSeek V4-Flash / Cerebras Free / Groq Free are
+        // HTTP-only cloud / free-tier endpoints, not CLI subprocesses.
+        | RuntimeBackend::DeepSeekV4Flash
+        | RuntimeBackend::CerebrasFree
+        | RuntimeBackend::GroqFree => "<non-cli>",
     }
 }
 

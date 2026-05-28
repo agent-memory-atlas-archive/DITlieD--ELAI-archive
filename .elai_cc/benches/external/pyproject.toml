@@ -1,0 +1,47 @@
+# E-9 — external agent-eval benchmark suite Python runners.
+#
+# Lives at .elai_cc/benches/external/ next to the existing
+# model_capability/, context_window/, runtime_compat/ benches.
+#
+# Anti-slopsquatting (per CLAUDE.md): every dep was verified via
+# pypi.org/pypi/{pkg}/json. Last verified: 2026-05-27 (session s-25120).
+#
+# Live runs are RUNPOD-PENDING — these runners ship as scaffolding only.
+# The Rust CLI dispatcher at crates/cli/src/eval_cmd.rs shells out to the
+# per-suite Python file via std::process::Command. The orchestrator-side
+# emission of SsbActionType::BenchmarkRunObserved happens from the Rust
+# wrapper; this Python tree only emits structured JSON over stdout.
+
+[project]
+name = "elai-external-benches"
+version = "0.1.0"
+description = "E-9 external agent-eval benchmark suite runners (host-side scaffolding; live runs RUNPOD-PENDING)"
+requires-python = ">=3.11"
+license = { text = "proprietary" }
+
+dependencies = [
+    # HTTP cache TTL=24h for SWE-bench-Live monthly-refresh feed pulls.
+    # pypi.org/project/httpx/ verified — last release 0.27.x as of 2026-05-27.
+    "httpx>=0.27,<0.28",
+    # Fast JSON over stdlib json (per CLAUDE.md anti-stale rule).
+    # pypi.org/project/orjson/ verified — last release 3.10.x as of 2026-05-27.
+    "orjson>=3.10,<4.0",
+    # Bootstrap stats + ANOVA decomposition for ClawsBench split.
+    # pypi.org/project/scipy/ verified — last release 1.13.x as of 2026-05-27.
+    "scipy>=1.13,<2.0",
+    # Property-based fixtures for paired-bootstrap reproducibility tests.
+    # pypi.org/project/hypothesis/ verified — last release 6.x as of 2026-05-27.
+    "hypothesis>=6.100,<7.0",
+    # HuggingFace dataset loader for GSM8K-Platinum (madrylab/gsm8k-platinum)
+    # + MATH-500 + LiveCodeBench v6.
+    # pypi.org/project/datasets/ verified — last release 2.x as of 2026-05-27.
+    "datasets>=2.18,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

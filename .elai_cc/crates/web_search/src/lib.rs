@@ -7,6 +7,15 @@ pub mod rate_limiter;
 pub mod robots;
 pub mod source_quality;
 
+// E-48 (SCHEMA_VERSION 185) — web-research orchestrator hardening
+// substrate (cross-crate slice). Wire-dark unless
+// ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE=1; live client wiring for
+// crawl4ai / Jina / Brave / Mojeek / Cohere is RUNPOD-PENDING.
+// See workflow/reasoning/E-48-decisions.md.
+pub mod cross_encoder_rerank;
+pub mod extractor_pool;
+pub mod tiered_search_pool;
+
 // D4: ObscuraFetcher — headless-browser fetch via obscura subprocess.
 // Gated behind the "obscura" cargo feature so non-obscura builds have zero overhead.
 #[cfg(feature = "obscura")]

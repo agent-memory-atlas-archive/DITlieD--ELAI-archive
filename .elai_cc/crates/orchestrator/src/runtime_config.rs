@@ -36,6 +36,16 @@ pub const ELAI_PPM_ENABLE_ENV: &str = "ELAI_PPM_ENABLE";
 /// to a different tunnel / port without editing elai_cc.toml.
 pub const ELAI_PPM_ENDPOINT_ENV: &str = "ELAI_PPM_ENDPOINT";
 
+/// E-26 (inference-engines 2026 pack): env var that opts the SGLang HTTP
+/// runtime adapter into the default `PerRoleRuntime` routing. When this
+/// env var is set (non-empty value), `PerRoleRuntime::default()`
+/// promotes the planner-shape roles (`PromptEngineer`, `IdeaFramer`,
+/// `IdeaCritic`) from `Sidecar` to `Sglang`. When unset, all routing
+/// collapses to today's B-37 behaviour (no behaviour change in default
+/// deploy). The value of the env var is the SGLang base URL forwarded
+/// to `SglangRuntime::new`.
+pub const ELAI_SGLANG_BASE_URL_ENV: &str = "ELAI_SGLANG_BASE_URL";
+
 /// Default ordered chain consulted when a primary backend is unavailable.
 ///
 /// `Sidecar` first (locally hosted, fast, low marginal cost), then

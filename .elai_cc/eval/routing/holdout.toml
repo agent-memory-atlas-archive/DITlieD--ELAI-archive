@@ -1,0 +1,32 @@
+# E-20 task 10 -- 200-task holdout for L_HYBRID_THRESHOLD calibration.
+#
+# Schema:
+#   [[task]]
+#   id                = "<unique snake_case id>"
+#   prompt            = "<short prompt; redacted if real>"
+#   l_layer           = <1..=5>
+#   local_only_pass   = <bool; did Qwen 7B alone produce an
+#                       auditor-accepted output?>
+#   cloud_sonnet_pass = <bool; did cloud Sonnet produce an
+#                       auditor-accepted output?>
+#   difficulty        = "easy" | "medium" | "hard"
+#   confidence_score  = <f32 in [0,1]; first-token-entropy-derived;
+#                       optional, populated post-run>
+#
+# 200 paired entries (local-7B vs cloud-Sonnet runs) RUNPOD-PENDING.
+# Live runs require the remote 3090 sidecar boot per the canonical
+# REMOTE-SIDECAR.md procedure; substrate ships the schema + an empty
+# table so the calibration pipeline compiles + tests + ships without
+# hardware (Pattern-4 wire-dark + RUNPOD-PENDING precedent).
+#
+# Anchor: E-20 plan task 10 + workflow/reasoning/E-20-decisions.md
+# DECISION-10.
+
+schema_version = 1
+status         = "runpod_pending"
+expected_rows  = 200
+generated_at   = "1970-01-01T00:00:00Z"
+generator      = "elai eval routing-holdout"
+
+# Empty until RUNPOD pass populates 200 paired rows.
+task = []

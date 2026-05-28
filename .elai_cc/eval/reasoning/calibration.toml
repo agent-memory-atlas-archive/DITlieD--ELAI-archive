@@ -1,0 +1,39 @@
+# E-19 task 10 — pre-L2 self-certainty gate calibration record.
+#
+# This file is read by `elai_core::reasoning::self_certainty::ConfidenceGate`
+# at boot (via the umbrella env gate `ELAI_REASONING_QUALITY_PROBE_ENABLE`).
+# When absent OR when `calibrated_at` is missing, the initial seed threshold
+# `L2_CONFIDENCE_THRESHOLD = 0.80` from the const table is used and a
+# `tracing::warn!(target="elai::reasoning::calibration", ...)` row is
+# emitted so the dashboard surfaces an "uncalibrated" badge.
+#
+# Calibration protocol (manual; tooling = RUNPOD-PENDING):
+#   1. Replay 200 production traces from traces.toml via
+#      `elai eval reasoning --calibration` (the eval_cmd subcommand wires in
+#      a future patch; the scaffold is here).
+#   2. Sweep threshold values in `[0.50, 0.95]` step 0.025.
+#   3. Compute Youden's J = sensitivity + specificity - 1 against the
+#      `l2_needed` labels in traces.toml.
+#   4. Pin the threshold at argmax(J); record into `l2_threshold` below.
+#   5. Stamp `calibrated_at` with the ISO-8601 timestamp.
+#
+# Paper grounding:
+#   - arXiv:2502.18581 Self-Certainty (logit-margin gate origin)
+#   - arXiv:2510.08308 First Try Matters (confirmatory-reflection finding)
+#   - Youden, W.J. (1950) "Index for rating diagnostic tests" Cancer 3(1)
+#
+# RUNPOD-PENDING: the 200-trace replay loop runs against the remote sidecar
+# (pythondev RTX 3090 24GB, ANTHROPIC_BASE_URL=http://localhost:8100).
+# Host-side scaffolding ships in this commit; live calibration awaits the
+# `eval_cmd reasoning --calibration` wiring follow-up.
+
+schema_version = 1
+l2_threshold = 0.80
+l3_direct_threshold = 0.40
+youden_j_max = 0.0          # uncalibrated — RUNPOD-PENDING
+sensitivity = 0.0           # uncalibrated
+specificity = 0.0           # uncalibrated
+auc = 0.0                   # uncalibrated
+calibrated_at = ""          # populated on first calibration pass
+trace_count = 0             # populated on first calibration pass
+notes = "initial seed; live calibration RUNPOD-PENDING per workflow/reasoning/E-19-decisions.md DECISION-CALIBRATION"

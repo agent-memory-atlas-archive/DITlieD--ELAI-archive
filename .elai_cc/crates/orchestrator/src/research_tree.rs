@@ -446,6 +446,29 @@ pub struct Contradiction {
     pub claim_b: String,
     pub source_b: SourceCitation,
     pub resolution: Option<String>,
+    /// E-48 Task 7: never-silently-resolved contradiction surfaced by the
+    /// REFLECT-stage classifier. When this flag is `true` the
+    /// renderer MUST surface both sources verbatim (per arXiv:2511.06668
+    /// healthcare-RAG + arXiv:2510.03418 LegalWiz canon) and the
+    /// speculative pruner MUST refuse to drop the parent node. Set by
+    /// `web_orchestrator::contradiction_classifier::materialize`; absent
+    /// on legacy `find_contradictions` rows so defaults to `false`.
+    #[serde(default)]
+    pub prune_protected: bool,
+    /// E-48 Task 7: monotonic Unix millis the contradiction was surfaced.
+    /// Defaults to 0 for legacy rows so existing serialized state
+    /// deserializes without migration. The renderer prefers
+    /// `surfaced_at > 0` rows when both legacy and E-48 contradictions
+    /// reference the same source pair.
+    #[serde(default)]
+    pub surfaced_at_unix_ms: i64,
+    /// E-48 Task 7: LLM-classifier rationale string truncated to 200
+    /// chars. Empty string when the producer did not supply a reason
+    /// (legacy rows). The renderer surfaces this verbatim under the
+    /// "reconciliation: [unresolved]" line per the never-silently-
+    /// resolved rule.
+    #[serde(default)]
+    pub classification_reason: String,
 }
 
 /// Lenient deserializer for `Vec<Contradiction>` (and `Vec<Alternative>`).
@@ -736,6 +759,22 @@ where
                         reason: "unspecified".to_string(),
                     })
                 }
+                // E-48 Task 6: permissive parse for the conformal triple-
+                // threshold lower-bound variant. Unit-string form fills
+                // zero counters with the threshold_uncalibrated flag true
+                // so consumers know to surface the startup warning.
+                "preemptive_unsolvable" | "preemptively_unsolvable" => {
+                    warn!(
+                        raw = %s,
+                        "ConvergenceStatus unit-string lossy fill: PreemptiveUnsolvable{{counters=0, uncalibrated=true}}"
+                    );
+                    Ok(ConvergenceStatus::PreemptiveUnsolvable {
+                        rounds: 0,
+                        low_delta_streak: 0,
+                        final_confidence: 0.0,
+                        threshold_uncalibrated: true,
+                    })
+                }
                 other => Err(D::Error::custom(format!(
                     "unknown ConvergenceStatus string: {other:?}"
                 ))),
@@ -761,6 +800,24 @@ where
                     #[serde(default = "default_unspecified_reason")]
                     reason: String,
                 },
+                // E-48 Task 6: triple-threshold lower bound. All numeric
+                // fields default to 0 so partial LLM emissions parse cleanly;
+                // threshold_uncalibrated defaults to true (conservative).
+                #[serde(
+                    alias = "preemptive_unsolvable",
+                    alias = "PREEMPTIVE_UNSOLVABLE",
+                    alias = "preemptively_unsolvable"
+                )]
+                PreemptiveUnsolvable {
+                    #[serde(default)]
+                    rounds: u32,
+                    #[serde(default)]
+                    low_delta_streak: u32,
+                    #[serde(default)]
+                    final_confidence: f64,
+                    #[serde(default = "default_threshold_uncalibrated")]
+                    threshold_uncalibrated: bool,
+                },
             }
             let inner: Inner = serde_json::from_value(v)
                 .map_err(|e| D::Error::custom(format!("ConvergenceStatus object parse: {e}")))?;
@@ -770,6 +827,17 @@ where
                     ConvergenceStatus::Partial { converged_count, total_count }
                 }
                 Inner::Failed { reason } => ConvergenceStatus::Failed { reason },
+                Inner::PreemptiveUnsolvable {
+                    rounds,
+                    low_delta_streak,
+                    final_confidence,
+                    threshold_uncalibrated,
+                } => ConvergenceStatus::PreemptiveUnsolvable {
+                    rounds,
+                    low_delta_streak,
+                    final_confidence,
+                    threshold_uncalibrated,
+                },
             })
         }
         other => Err(D::Error::custom(format!(
@@ -780,6 +848,14 @@ where
 
 fn default_unspecified_reason() -> String {
     "unspecified".to_string()
+}
+
+/// E-48 Task 6: default `threshold_uncalibrated` flag for
+/// `PreemptiveUnsolvable` deserialization. Conservative true so consumers
+/// surface the startup warning when reading legacy or LLM-emitted rows
+/// that omit the flag.
+fn default_threshold_uncalibrated() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -793,6 +869,22 @@ pub enum ConvergenceStatus {
     },
     /// Failed to converge within budget.
     Failed { reason: String },
+    /// E-48 Task 6: conformal triple-threshold lower bound fired —
+    /// confidence stayed below the preemptive-unsolvable threshold for
+    /// `low_delta_streak` consecutive rounds while `evidence_delta`
+    /// stayed below the calibration floor. Mirrors the
+    /// dual-threshold-becomes-triple pattern from arXiv:2602.03814
+    /// Conformal Thinking. When `threshold_uncalibrated` is true the
+    /// runtime emitted a `preemptive_stop_threshold_uncalibrated`
+    /// warning at startup; the default threshold is conservative and
+    /// rarely fires until ELAI accumulates a tagged-unsolvable
+    /// calibration set (open question #5 in the E-48 plan).
+    PreemptiveUnsolvable {
+        rounds: u32,
+        low_delta_streak: u32,
+        final_confidence: f64,
+        threshold_uncalibrated: bool,
+    },
 }
 
 impl<'de> serde::Deserialize<'de> for ConvergenceStatus {
@@ -1511,6 +1603,14 @@ impl ResearchTree {
                     excerpt: "Claim B excerpt".into(),
                 },
                 resolution: None,
+                // E-48 Task 7: legacy find_contradictions stub path; the
+                // real ContradictionNode classifier lives in
+                // crate::research::web_orchestrator::contradiction_classifier.
+                // Legacy rows are NOT prune-protected so existing
+                // prune_speculative_children behaviour is unchanged.
+                prune_protected: false,
+                surfaced_at_unix_ms: 0,
+                classification_reason: String::new(),
             });
         }
         contradictions

@@ -116,6 +116,41 @@ pub enum RuntimeBackend {
     /// toolchain (rust-analyzer / pylsp / etc.). See
     /// workflow/reasoning/E-40-decisions.md.
     Lsp,
+    /// E-26 (inference-engines 2026 pack) — SGLang HTTP runtime adapter.
+    /// Speaks OpenAI `/v1/chat/completions` with `extra_body.backend`
+    /// selecting XGrammar / Outlines / LMFE for structured output. Default
+    /// base URL `http://localhost:30000` (sgl-project/sglang docs v0.4+).
+    /// Disambiguates from the media-validator `SglangConfig` (request-local
+    /// VLM path); this slot is the long-lived health-probed cloud
+    /// throughput adapter. See `crates/providers/src/runtime/sglang.rs`.
+    Sglang,
+    /// E-39 — DeepSeek V4-Flash cloud-floor backend. Cheapest serious-
+    /// throughput cloud model the cost-router can route to under the
+    /// `(hard + tight)` cell. Anti-slopsquatting verification + live
+    /// adapter wiring are gated on `RUNPOD-PENDING: deepseek_v4_flash`;
+    /// `create_runtime` currently returns `NotImplemented` so accidental
+    /// generation-path routing surfaces a typed sentinel rather than
+    /// panicking. Per `api-docs.deepseek.com/quick_start/pricing`
+    /// (verified May 2026): $0.30 / $0.50 per MTok with 90% cache
+    /// discount. See `workflow/reasoning/E-39-decisions.md`.
+    DeepSeekV4Flash,
+    /// E-39 — Cerebras free-tier slot (1M tokens / day since April 2026
+    /// per `getaiperks.com/en/ai/cerebras-free-tier-guide`, verified
+    /// May 2026). Daily-quota guard at
+    /// [`crate::cost::free_tier_guard::FreeTierGuard`] refuses dispatch
+    /// at >=95% of quota; warns at >=80%. Anti-slopsquatting verification
+    /// + live adapter wiring are gated on `RUNPOD-PENDING: cerebras_free`;
+    /// `create_runtime` returns `NotImplemented` until verification
+    /// completes. See `workflow/reasoning/E-39-decisions.md`.
+    CerebrasFree,
+    /// E-39 — Groq free-tier slot (14,400 req / day default per
+    /// `tokenmix.ai/blog/groq-free-tier-limits-2026`, verified May
+    /// 2026). Hosts Llama 4 Scout / Qwen3 32B / Kimi K2 on the free
+    /// path. Anti-slopsquatting verification + live adapter wiring are
+    /// gated on `RUNPOD-PENDING: groq_free`; `create_runtime` returns
+    /// `NotImplemented` until verification completes. See
+    /// `workflow/reasoning/E-39-decisions.md`.
+    GroqFree,
 }
 
 impl RuntimeBackend {
@@ -140,6 +175,14 @@ impl RuntimeBackend {
             Self::Ppm => "ppm",
             Self::Composer2 => "composer2",
             Self::Lsp => "lsp",
+            Self::Sglang => "sglang",
+            // E-39 -- 3 new backends, anti-slopsquatting verification
+            // RUNPOD-PENDING; create_runtime returns NotImplemented until
+            // live URLs + model IDs are confirmed (api-docs.deepseek.com /
+            // cloud.cerebras.ai / console.groq.com).
+            Self::DeepSeekV4Flash => "deepseek_v4_flash",
+            Self::CerebrasFree => "cerebras_free",
+            Self::GroqFree => "groq_free",
         }
     }
 
@@ -164,6 +207,11 @@ impl RuntimeBackend {
             Self::Ppm,
             Self::Composer2,
             Self::Lsp,
+            Self::Sglang,
+            // E-39 -- 3 new backends, anti-slopsquatting RUNPOD-PENDING.
+            Self::DeepSeekV4Flash,
+            Self::CerebrasFree,
+            Self::GroqFree,
         ]
     }
 }

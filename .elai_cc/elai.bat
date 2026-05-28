@@ -37,6 +37,11 @@ REM --- No-arg picker (double-click experience) ---
 
 IF NOT "%~1"=="" GOTO :default_launch
 
+REM E-23 first-run positioning line. Honest, cited, no marketing prose.
+echo.
+echo  ELAI: FSM-gated, grounded, audited code work. not a chat assistant.
+echo        runtime badge (local / cloud - billed) lives in the status strip.
+echo        positioning + sources documented in .elai_cc\README.md.
 echo.
 echo  ELAI launch mode:
 echo   [1] Local sidecar  (default - dashboard via local Python sidecar)

@@ -326,6 +326,27 @@ pub(crate) enum CliAction {
         action: CreditAction,
         output_format: CliOutputFormat,
     },
+    /// E-43 -- `elai skills-mgmt <list|eval|publish>` agent skill systems
+    /// surface (frontmatter + eval/ + publish dist). Sibling to the
+    /// existing slash-command `Skills` variant. Handler:
+    /// crate::skills_cmd. ABSORBs the E-22 SKILL.md export shim.
+    SkillsManagement {
+        action: SkillsAction,
+        output_format: CliOutputFormat,
+    },
+    /// E-39 -- `elai cloud override-cap <USD> --confirm <STRING>`.
+    /// Layered-cap manual override CLI surface. Requires a typed-
+    /// confirmation string (typically the override USD amount as a
+    /// word, e.g. "fifty-dollars") to prevent accidental override.
+    /// Emits a [`CostEventKind::LayeredCapManualOverride`] SSB row
+    /// carrying `user_session_id` + `override_amount_usd` +
+    /// `confirmation_string_hash` -- composes with E-38 EU AI Act
+    /// audit-trail liveness gate. Handler: `crate::cloud_cmd`. See
+    /// `workflow/reasoning/E-39-decisions.md`.
+    Cloud {
+        action: CloudAction,
+        output_format: CliOutputFormat,
+    },
     /// C-46: `elai routing <decisions|pilot|status|export>` —
     /// Uno-Orchestra selective-delegation routing surface driven by
     /// `crate::routing_cmd`. Paper-grounded against arXiv:2605.05007
@@ -520,6 +541,20 @@ pub(crate) enum CliAction {
     /// `feedback_no_gemma4`.
     FormalVerify {
         action: FormalVerifyAction,
+        output_format: CliOutputFormat,
+    },
+    /// E-8: `elai optimize template --target <agent_role> --train PATH
+    /// --val PATH [--reflection-model sonnet-4.6] [--budget-tokens N]`.
+    /// Self-evolving prompts driver. Spawns the Python
+    /// `elai_optimizer` service (GEPA primary per arXiv:2507.19457 +
+    /// DSPy MIPROv2 / OPRO surfaces); refuses local 7B as reflection
+    /// LM per arXiv:2405.10276 (Zhang et al.). Live LLM calls
+    /// RUNPOD-PENDING (CLI parses + dispatches; the Python side reads
+    /// the spec + emits OptimizedTemplate to disk; the orchestrator
+    /// admit path consumes the JSON). See
+    /// workflow/reasoning/E-8-decisions.md.
+    Optimize {
+        action: OptimizeAction,
         output_format: CliOutputFormat,
     },
     /// D-2: `elai ppm health [--endpoint URL] [--timeout SECS] [--json]`.
@@ -804,6 +839,41 @@ pub(crate) enum CliAction {
     /// run. Single new variant per workflow/reasoning/D-28-decisions.md
     /// DECISION-2.
     FarmAdvRm { sub: FarmAdvRmSub },
+    // E-10: hostile-critic structural simplifications -- bench ablation /
+    // tier eval / critic report CLI dispatchers. See
+    // workflow/reasoning/E-10-decisions.md.
+    BenchAblation { tile: String, fixtures: String, budget: u32 },
+    TierEval { suites: Vec<String>, budget: u32 },
+    CriticReport { output: Option<String> },
+    /// E-9: `elai eval run --benchmark=<NAME> [--harness-vary] [--p-target=0.05]
+    /// [--list] [--json]` — external agent-eval benchmark dispatcher.
+    /// Drives the host-side scaffolding for 11 external benchmark suites
+    /// (swe-bench-pro / swe-bench-live / livecodebench-v6 / tau2-bench /
+    /// bfcl-v3 / gaia-l1-l2 / clawsbench-split / refinebench /
+    /// sycophancy-probes / math-floors / deep-planning). Live model evals
+    /// RUNPOD-PENDING; the CLI surface ships the registry + power-
+    /// calibration refusal contract + SSB emission boundary. See
+    /// workflow/reasoning/E-9-decisions.md DECISION-8.
+    /// `p_target` carried as String (CliAction derives Eq; f64 does not).
+    EvalRun {
+        benchmark: Option<String>,
+        harness_vary: bool,
+        p_target: Option<String>,
+        list: bool,
+        json: bool,
+    },
+    /// E-55: `elai rl train --recipe=<name>` — agentic RL recipe runner
+    /// surface. Dispatches one of the deferred-ladder rungs by recipe
+    /// name (rlaif_judge / gepa_evolve / reward_fusion / mona_canary /
+    /// sft_rollout_collect / deferred_unlock_check). Substrate ships
+    /// fully; the actual cloud Sonnet rollouts + LoRA training are
+    /// RUNPOD-PENDING and gated behind `ELAI_AGENTIC_RL_ENABLE=1`.
+    /// See workflow/reasoning/E-55-decisions.md.
+    RlTrain {
+        recipe: Option<String>,
+        list: bool,
+        json: bool,
+    },
 }
 
 /// D-28 — `elai farm-adv-rm <sub>` carrier struct. Mirrors the
@@ -932,6 +1002,53 @@ pub(crate) enum FreezeAction {
     /// covering the default Phase 4H frozen set and emits a
     /// ScopeFreezeRatified SSB row.
     Ratify { ratifier: String },
+}
+
+/// E-39 -- `elai cloud override-cap` sub-verbs. The override-cap
+/// subcommand bumps the daily / monthly layered cap and requires a
+/// typed-confirmation string to prevent fat-finger overrides. Future
+/// sub-verbs (status, reset, history) land here as siblings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloudAction {
+    /// `elai cloud override-cap <usd-amount> --confirm <typed-string>`.
+    /// Records the override in SSB; the orchestrator's
+    /// `cloud_abort::LayeredCapsConfig` consumes it on next session
+    /// start.
+    OverrideCap {
+        amount_usd: u64,
+        confirmation: String,
+    },
+    /// `elai cloud status` -- print the current layered-cap config +
+    /// most recent SSB rows.
+    Status,
+}
+
+/// E-43 -- `elai skills <list|eval|publish|export>` sub-verb.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillsAction {
+    /// `elai skills list` -- enumerate SKILL.md files via the C-41
+    /// SkillRegistry walker.
+    List,
+    /// `elai skills eval [--skill <name>] [--dry-run]` -- run the
+    /// lexical-match precision/recall harness against each skill's
+    /// eval/positive.jsonl + eval/negative.jsonl.
+    Eval { skill: Option<String>, dry_run: bool },
+    /// `elai skills publish --target <claude|codex|gemini> [--dry-run]`
+    /// -- emit dist/<target>/skills/<name>/SKILL.md (and optional
+    /// agents/openai.yaml for Codex). ABSORBs the E-22 export shim.
+    Publish { target: String, dry_run: bool },
+    /// E-22 (SCHEMA_VERSION 170) -- `elai skills export
+    /// [--target <claude|codex|gemini>] [--dry-run]`. Writes a
+    /// normalised SKILL.md to dist/<target>/skills/<name>/SKILL.md
+    /// (frontmatter keys sorted; body preserved byte-for-byte) and
+    /// detects drift via a blake3 8-byte prefix diff against any prior
+    /// dist copy. Emits one `GithubTrendingEvent::SkillExportNormalized`
+    /// SSB row per skill processed (wire-dark unless
+    /// `ELAI_GITHUB_TRENDING_ENABLE=1`). Differs from `publish` in two
+    /// ways: (1) the frontmatter is normalized BEFORE write (publish
+    /// emits the body verbatim), and (2) drift detection runs
+    /// idempotently so re-runs report drift_count=0 on a clean tree.
+    Export { target: String, dry_run: bool },
 }
 
 /// C-45 — `elai credit <sub>` sub-verb. Paper-grounded against
@@ -1106,6 +1223,29 @@ pub(crate) enum FormalVerifyAction {
     /// `elai formal-verify status` — print the 4 verifier toolchains
     /// + each one's RUNPOD-PENDING posture + the substitute-models
     /// list inherited from C-52 (Gemma-4 BLOCKED per memory).
+    Status,
+}
+
+/// E-8 — `elai optimize <sub>` sub-verb. Drives the self-evolving
+/// prompts pipeline:
+///   * `template` -- run one optimization pass for a given
+///     `AgentRole` over train/val fixtures, dispatching the Python
+///     `elai_optimizer` service.
+///   * `status` -- print the optimizer's RUNPOD-PENDING posture +
+///     the gepa PyPI version + which roles have shipped templates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OptimizeAction {
+    /// `elai optimize template --target ROLE --train PATH --val PATH
+    /// [--reflection-model NAME] [--budget-tokens N] [--include-cross-domain]`
+    Template {
+        target: String,
+        train: String,
+        val: String,
+        reflection_model: String,
+        budget_tokens: u64,
+        include_cross_domain: bool,
+    },
+    /// `elai optimize status` — print optimizer status.
     Status,
 }
 
@@ -1384,6 +1524,26 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 tool_gate_off = true;
                 index += 1;
             }
+            "--otlp-endpoint" => {
+                // E-29 Tier-B: optional OTLP gRPC endpoint for the
+                // ssb-otel-export crate. When provided, sets the
+                // ELAI_OTLP_ENDPOINT env var the observability subtree
+                // reads via observability::ELAI_OTLP_ENDPOINT_VAR.
+                // Default: noop (no OTLP export). Live OTLP integration
+                // is RUNPOD-PENDING -- the exporter constructor sees
+                // the env var here but the live gRPC emit path needs
+                // a spun-up otelcol-contrib instance. See
+                // workflow/reasoning/E-29-decisions.md (Tier-B).
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --otlp-endpoint".to_string())?;
+                std::env::set_var("ELAI_OTLP_ENDPOINT", value);
+                index += 2;
+            }
+            flag if flag.starts_with("--otlp-endpoint=") => {
+                std::env::set_var("ELAI_OTLP_ENDPOINT", &flag[16..]);
+                index += 1;
+            }
             "--export-jsonl" => {
                 // B-9 cycle 2 (BLOCK-1 fix): opt-in legacy JSONL persistence.
                 // Default off — SessionDag is the authoritative store for
@@ -1584,6 +1744,15 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // arXiv:2605.13295 (Zehle 2026); see
         // workflow/papers/cantante-credit-attribution.md.
         "credit" => parse_credit_subcommand_args(&rest[1..], output_format),
+        // E-43 -- `elai skills-mgmt <list|eval|publish>`. Agent skill systems
+        // surface; handler at crates/cli/src/skills_cmd.rs. ABSORBs the
+        // E-22 SKILL.md export shim. Paper-grounded against
+        // agentskills.io/specification. Renamed from `skills` to
+        // avoid clash with the existing slash-command `Skills` variant.
+        "skills-mgmt" => parse_skills_subcommand_args(&rest[1..], output_format),
+        // E-39 -- `elai cloud <override-cap|status>`. Layered-cap
+        // manual-override CLI surface. Handler: crate::cloud_cmd.
+        "cloud" => parse_cloud_subcommand_args(&rest[1..], output_format),
         // C-46 — `elai routing decisions|pilot|status|export`. Uno-Orchestra
         // selective-delegation routing CLI surface; handler at
         // crates/cli/src/routing_cmd.rs. Paper-grounded against
@@ -1690,6 +1859,12 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "formal-verify" | "formal_verify" => {
             parse_formal_verify_subcommand_args(&rest[1..], output_format)
         }
+        // E-8 — `elai optimize template|status`. Self-evolving prompts
+        // driver. Spawns the Python `elai_optimizer` service. Live LLM
+        // calls RUNPOD-PENDING. Refuses local 7B as reflection LM per
+        // arXiv:2405.10276 (Zhang et al.) -- enforced at CLI parse
+        // time. See workflow/reasoning/E-8-decisions.md.
+        "optimize" => parse_optimize_subcommand_args(&rest[1..], output_format),
         // E-13 — `elai tdd run|status|mutation-score`. TDD verifier
         // agent CLI surface; handler at crates/cli/src/tdd_cmd.rs.
         // Composes with orchestrator::tdd_verifier (Red/Green/
@@ -1710,6 +1885,19 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // writes corpus.jsonl with `gold_verdict: "pending"`. Single
         // SsbActionType::AdversarialFarmRunCompleted row at end-of-run.
         "farm-adv-rm" | "farm_adv_rm" => parse_farm_adv_rm_args(&rest[1..]),
+        // E-10: hostile-critic structural simplifications.
+        "bench-ablation" | "bench_ablation" => parse_bench_ablation_args(&rest[1..]),
+        "tier-eval" | "tier_eval" => parse_tier_eval_args(&rest[1..]),
+        "critic-report" | "critic_report" => parse_critic_report_args(&rest[1..]),
+        // E-9: external agent-eval benchmark suite dispatcher. Top-level
+        // `elai eval run --benchmark=<NAME> ...` per
+        // workflow/reasoning/E-9-decisions.md DECISION-8 (kept separate
+        // from the existing `bench *` D-19..D-25 surfaces).
+        "eval" => parse_eval_subcommand_args(&rest[1..]),
+        // E-55: `elai rl train --recipe=<name>` — agentic RL recipe
+        // runner. Substrate ships fully; cloud Sonnet rollouts + LoRA
+        // training RUNPOD-PENDING.
+        "rl" => parse_rl_subcommand_args(&rest[1..]),
         // C-20: route `elai measure …` through the slash-command parser so
         // the grammar is a single source of truth (mirrors the `runtime`
         // routing immediately above).
@@ -3707,6 +3895,88 @@ pub(crate) fn parse_credit_subcommand_args(
     }
 }
 
+/// E-39 -- `elai cloud <override-cap|status>` parser.
+///
+/// `override-cap <USD> --confirm <typed-string>` requires both
+/// arguments. The confirmation string is hashed at emit time
+/// (blake3-prefix per CLAUDE.md HARD RULE) before being stored in
+/// the SSB row, so the audit trail does not leak the raw secret.
+pub(crate) fn parse_cloud_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| {
+            "missing `cloud` sub-action; expected one of: override-cap, status".to_string()
+        })?
+        .as_str();
+    match sub {
+        "override-cap" => {
+            let mut amount_usd: Option<u64> = None;
+            let mut confirmation: Option<String> = None;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--confirm" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--confirm`".to_string())?;
+                        confirmation = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--confirm=") => {
+                        confirmation = Some(flag[10..].to_string());
+                        i += 1;
+                    }
+                    bare if !bare.starts_with("--") => {
+                        let parsed: u64 = bare
+                            .parse()
+                            .map_err(|e| format!("override-cap amount must be u64 USD: {e}"))?;
+                        amount_usd = Some(parsed);
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `cloud override-cap` argument: {other}"
+                        ));
+                    }
+                }
+            }
+            let amount_usd = amount_usd.ok_or_else(|| {
+                "`cloud override-cap` requires a USD amount as the first positional argument"
+                    .to_string()
+            })?;
+            let confirmation = confirmation.ok_or_else(|| {
+                "`cloud override-cap` requires --confirm <typed-string> (typed confirmation to prevent accidental override)"
+                    .to_string()
+            })?;
+            Ok(CliAction::Cloud {
+                action: CloudAction::OverrideCap {
+                    amount_usd,
+                    confirmation,
+                },
+                output_format,
+            })
+        }
+        "status" => {
+            if rest.len() > 1 {
+                return Err(format!(
+                    "unexpected argument after `cloud status`: {}",
+                    rest[1]
+                ));
+            }
+            Ok(CliAction::Cloud {
+                action: CloudAction::Status,
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `cloud` sub-action `{other}`; expected one of: override-cap, status"
+        )),
+    }
+}
+
 /// C-46 — `elai routing <decisions|pilot|status|export>` parser.
 ///
 /// Paper-grounded against arXiv:2605.05007 (Cui et al 2026,
@@ -4998,6 +5268,169 @@ pub(crate) fn parse_formal_verify_subcommand_args(
         other => Err(format!(
             "unknown `formal-verify` sub-action `{other}`; \
              expected one of: run, status"
+        )),
+    }
+}
+
+/// E-8 — parse `elai optimize <sub>` arguments. Two sub-actions:
+///   * `template --target ROLE --train PATH --val PATH
+///       [--reflection-model NAME] [--budget-tokens N]
+///       [--include-cross-domain]`
+///   * `status`
+///
+/// Reflection model is REJECTED with a clear error if the caller
+/// passes `qwen` / `qwen2.5-coder` / `local` (per arXiv:2405.10276
+/// small-LMs-as-optimizers limitation). The CLI surface enforces the
+/// cloud-only refusal so an honest user cannot misconfigure the
+/// expensive optimization loop.
+pub(crate) fn parse_optimize_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| {
+            "missing `optimize` sub-action; expected one of: template, status".to_string()
+        })?
+        .as_str();
+    match sub {
+        "template" => {
+            let mut target: Option<String> = None;
+            let mut train: Option<String> = None;
+            let mut val: Option<String> = None;
+            let mut reflection_model: Option<String> = None;
+            let mut budget_tokens: Option<u64> = None;
+            let mut include_cross_domain = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--target" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--target`".to_string())?;
+                        target = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--target=") => {
+                        target = Some(flag["--target=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--train" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--train`".to_string())?;
+                        train = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--train=") => {
+                        train = Some(flag["--train=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--val" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--val`".to_string())?;
+                        val = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--val=") => {
+                        val = Some(flag["--val=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--reflection-model" => {
+                        let v = rest.get(i + 1).ok_or_else(|| {
+                            "missing value for `--reflection-model`".to_string()
+                        })?;
+                        reflection_model = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--reflection-model=") => {
+                        reflection_model =
+                            Some(flag["--reflection-model=".len()..].to_string());
+                        i += 1;
+                    }
+                    "--budget-tokens" => {
+                        let v = rest.get(i + 1).ok_or_else(|| {
+                            "missing value for `--budget-tokens`".to_string()
+                        })?;
+                        budget_tokens = Some(v.parse::<u64>().map_err(|e| {
+                            format!("--budget-tokens parse: {e}")
+                        })?);
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--budget-tokens=") => {
+                        let raw = &flag["--budget-tokens=".len()..];
+                        budget_tokens = Some(
+                            raw.parse::<u64>()
+                                .map_err(|e| format!("--budget-tokens parse: {e}"))?,
+                        );
+                        i += 1;
+                    }
+                    "--include-cross-domain" => {
+                        include_cross_domain = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown `optimize template` argument: {other}"
+                        ));
+                    }
+                }
+            }
+            let target = target.ok_or_else(|| {
+                "`optimize template` requires --target <agent_role>".to_string()
+            })?;
+            let train = train.ok_or_else(|| {
+                "`optimize template` requires --train <PATH>".to_string()
+            })?;
+            let val = val
+                .ok_or_else(|| "`optimize template` requires --val <PATH>".to_string())?;
+            let reflection_model =
+                reflection_model.unwrap_or_else(|| "sonnet-4.6".to_string());
+            // arXiv:2405.10276 -- small LLMs are ineffective as the OPRO
+            // optimizer. ELAI's local Qwen2.5-Coder-7B falls in that
+            // regime; the CLI hard-refuses it as the reflection LM. The
+            // exact match list mirrors the rejection messages from
+            // workflow/reasoning/E-8-decisions.md.
+            let lower = reflection_model.to_ascii_lowercase();
+            let is_local = lower.contains("qwen")
+                || lower.contains("local")
+                || lower == "7b"
+                || lower == "3b";
+            if is_local {
+                return Err(format!(
+                    "reflection-model must be cloud (sonnet / gpt / opus class); \
+                     refused `{reflection_model}` per arXiv:2405.10276 small-LMs-as-optimizers limitation"
+                ));
+            }
+            let budget_tokens = budget_tokens.unwrap_or(200_000);
+            Ok(CliAction::Optimize {
+                action: OptimizeAction::Template {
+                    target,
+                    train,
+                    val,
+                    reflection_model,
+                    budget_tokens,
+                    include_cross_domain,
+                },
+                output_format,
+            })
+        }
+        "status" => {
+            if rest.len() > 1 {
+                return Err(format!(
+                    "unexpected argument after `optimize status`: {}",
+                    rest[1]
+                ));
+            }
+            Ok(CliAction::Optimize {
+                action: OptimizeAction::Status,
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `optimize` sub-action `{other}`; \
+             expected one of: template, status"
         )),
     }
 }
@@ -6635,6 +7068,318 @@ pub(crate) fn parse_durability_subcommand_args(
             "unknown `durability` sub-action `{other}`; \
              expected one of: status, validate-checkpoint, migrate, \
              continue-as-new-preview, acquire-lock"
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-10 -- hostile-critic structural simplifications CLI parsers.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn parse_bench_ablation_args(rest: &[String]) -> Result<CliAction, String> {
+    let tile = rest.first().cloned().unwrap_or_else(|| "fsm".to_string());
+    let mut fixtures: String = "fixtures/critic_30.toml".to_string();
+    let mut budget: u32 = 5000;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--fixtures" => {
+                fixtures = rest.get(i + 1).ok_or_else(|| "missing value for --fixtures".to_string())?.clone();
+                i += 2;
+            }
+            "--budget" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --budget".to_string())?;
+                budget = v.parse().map_err(|e| format!("invalid --budget: {e}"))?;
+                i += 2;
+            }
+            other => return Err(format!("unknown flag for `bench-ablation`: {other}")),
+        }
+    }
+    Ok(CliAction::BenchAblation { tile, fixtures, budget })
+}
+
+pub(crate) fn parse_tier_eval_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut suites: Vec<String> = Vec::new();
+    let mut budget: u32 = 100_000;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--suites" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --suites".to_string())?;
+                suites = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                i += 2;
+            }
+            "--budget" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --budget".to_string())?;
+                budget = v.parse().map_err(|e| format!("invalid --budget: {e}"))?;
+                i += 2;
+            }
+            other => return Err(format!("unknown flag for `tier-eval`: {other}")),
+        }
+    }
+    Ok(CliAction::TierEval { suites, budget })
+}
+
+pub(crate) fn parse_critic_report_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut output: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--output" => {
+                output = Some(rest.get(i + 1).ok_or_else(|| "missing value for --output".to_string())?.clone());
+                i += 2;
+            }
+            other => return Err(format!("unknown flag for `critic-report`: {other}")),
+        }
+    }
+    Ok(CliAction::CriticReport { output })
+}
+
+/// E-9 — parse `elai eval <run|list> [--benchmark=NAME] [--harness-vary]
+/// [--p-target=0.05] [--list] [--json]`. The sub-verb is `run` (single
+/// suite) or `list` (enumerate registry). `--list` flag on `run` also
+/// enumerates without dispatching live. Numerical knobs carried as String
+/// because CliAction derives Eq; f64 does not.
+pub(crate) fn parse_eval_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub != "run" && sub != "list" {
+        return Err(format!(
+            "unknown `eval` sub-command: '{sub}' (expected 'run' or 'list')"
+        ));
+    }
+    let flag_start = if sub.is_empty() { 0 } else { 1 };
+    let mut benchmark: Option<String> = None;
+    let mut harness_vary: bool = false;
+    let mut p_target: Option<String> = None;
+    let mut list: bool = sub == "list";
+    let mut json: bool = false;
+    let mut i = flag_start;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--benchmark" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --benchmark".to_string())?;
+                benchmark = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--benchmark=") => {
+                benchmark = Some(flag["--benchmark=".len()..].to_string());
+                i += 1;
+            }
+            "--harness-vary" => {
+                harness_vary = true;
+                i += 1;
+            }
+            "--p-target" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --p-target".to_string())?;
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --p-target {value:?}: {e}"))?;
+                p_target = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--p-target=") => {
+                let value = &flag["--p-target=".len()..];
+                let _: f64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid --p-target {value:?}: {e}"))?;
+                p_target = Some(value.to_string());
+                i += 1;
+            }
+            "--list" => {
+                list = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `eval` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::EvalRun {
+        benchmark,
+        harness_vary,
+        p_target,
+        list,
+        json,
+    })
+}
+
+/// E-55 -- parse `elai rl <train|list> [--recipe=<name>] [--list] [--json]`.
+/// Recipe runner for the agentic RL substrate. Substrate ships fully;
+/// cloud Sonnet rollouts + LoRA training are RUNPOD-PENDING and gated by
+/// `ELAI_AGENTIC_RL_ENABLE=1`. Valid recipes are listed in
+/// `crates/cli/src/rl_train_cmd.rs::KNOWN_RECIPES`.
+pub(crate) fn parse_rl_subcommand_args(rest: &[String]) -> Result<CliAction, String> {
+    let sub = rest.first().map(String::as_str).unwrap_or("");
+    if sub != "train" && sub != "list" {
+        return Err(format!(
+            "unknown `rl` sub-command: '{sub}' (expected 'train' or 'list')"
+        ));
+    }
+    let flag_start = if sub.is_empty() { 0 } else { 1 };
+    let mut recipe: Option<String> = None;
+    let mut list: bool = sub == "list";
+    let mut json: bool = false;
+    let mut i = flag_start;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--recipe" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --recipe".to_string())?;
+                recipe = Some(value.clone());
+                i += 2;
+            }
+            flag if flag.starts_with("--recipe=") => {
+                recipe = Some(flag["--recipe=".len()..].to_string());
+                i += 1;
+            }
+            "--list" => {
+                list = true;
+                i += 1;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `rl` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::RlTrain { recipe, list, json })
+}
+
+
+/// E-43 -- parse `elai skills <sub>` arguments. Three sub-actions:
+///   `elai skills list`
+///   `elai skills eval [--skill <name>] [--dry-run]`
+///   `elai skills publish --target <claude|codex|gemini> [--dry-run]`
+pub(crate) fn parse_skills_subcommand_args(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let sub = rest
+        .first()
+        .ok_or_else(|| "missing `skills` sub-action; expected: list, eval, publish".to_string())?
+        .as_str();
+    match sub {
+        "list" => Ok(CliAction::SkillsManagement {
+            action: SkillsAction::List,
+            output_format,
+        }),
+        "eval" => {
+            let mut skill: Option<String> = None;
+            let mut dry_run = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--skill" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--skill`".to_string())?;
+                        skill = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--skill=") => {
+                        skill = Some(flag[8..].to_string());
+                        i += 1;
+                    }
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `skills eval` argument: {other}"));
+                    }
+                }
+            }
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::Eval { skill, dry_run },
+                output_format,
+            })
+        }
+        "publish" => {
+            let mut target: Option<String> = None;
+            let mut dry_run = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--target" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--target`".to_string())?;
+                        target = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--target=") => {
+                        target = Some(flag[9..].to_string());
+                        i += 1;
+                    }
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `skills publish` argument: {other}"));
+                    }
+                }
+            }
+            let target = target.ok_or_else(|| {
+                "`skills publish` requires --target <claude|codex|gemini>".to_string()
+            })?;
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::Publish { target, dry_run },
+                output_format,
+            })
+        }
+        // E-22 (SCHEMA_VERSION 170): export action -- writes a normalised
+        // SKILL.md to dist/<target>/skills/<name>/SKILL.md and detects
+        // drift via blake3.
+        "export" => {
+            let mut target: Option<String> = None;
+            let mut dry_run = false;
+            let mut i = 1;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--target" => {
+                        let v = rest
+                            .get(i + 1)
+                            .ok_or_else(|| "missing value for `--target`".to_string())?;
+                        target = Some(v.clone());
+                        i += 2;
+                    }
+                    flag if flag.starts_with("--target=") => {
+                        target = Some(flag[9..].to_string());
+                        i += 1;
+                    }
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    other => {
+                        return Err(format!("unknown `skills export` argument: {other}"));
+                    }
+                }
+            }
+            // Default target=claude per Anthropic identity-mapping (the
+            // SKILL.md spec is identity for Claude; non-Claude targets
+            // need explicit --target to flag the format choice).
+            let target = target.unwrap_or_else(|| "claude".to_string());
+            Ok(CliAction::SkillsManagement {
+                action: SkillsAction::Export { target, dry_run },
+                output_format,
+            })
+        }
+        other => Err(format!(
+            "unknown `skills` sub-action `{other}`; expected one of: list, eval, publish, export"
         )),
     }
 }

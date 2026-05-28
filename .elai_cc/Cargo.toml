@@ -18,6 +18,19 @@ members = [
     "crates/scaffold",
     "crates/web_validator",
     "crates/memory",
+    # E-54: eval-corpus crate. Repairs D-6's 9-gram filter with 13-gram +
+    # embedding-cosine + per-family directory shards + test-triplet schema +
+    # matched-pair sycophancy probes + KOR-orthogonality check on D-7.
+    # See workflow/reasoning/E-54-decisions.md.
+    "crates/eval-corpus",
+    # E-29 Tier-B: optional OTLP gRPC exporter for SSB rows. The 4 OTel
+    # deps (opentelemetry / opentelemetry_sdk / opentelemetry-otlp /
+    # tracing-opentelemetry) are GATED behind the `otlp-export` cargo
+    # feature so non-OTLP builds pay zero cost. Anti-slopsquatting
+    # verified May 2026 (apache/mit, open-telemetry GitHub org). Live
+    # gRPC integration test is RUNPOD-PENDING. See
+    # workflow/reasoning/E-29-decisions.md.
+    "crates/ssb-otel-export",
     # "crates/dashboard",  # disabled: directory missing (moved to crates/.bkp_old/dashboard); see workspace-manifest-fix in s-1430428
     "crates/dashboard-v2/src-tauri",
 ]

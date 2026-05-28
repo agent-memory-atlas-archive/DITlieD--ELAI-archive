@@ -3499,3 +3499,41 @@ export async function symbolGraphStatus(): Promise<SymbolGraphStatusReport> {
     lru_capacity: 1000,
   };
 }
+
+// ---------------------------------------------------------------------------
+// E-23 — developer-discourse positioning + UX-guard. Two wire-dark Tauri
+// commands the ContextStatePanel + TrustTelemetryPanel poll. Both return a
+// zeroed shape when the orchestrator gate ELAI_DEVELOPER_DISCOURSE_ENABLE is
+// unset (or the backend cannot reach SSB / FSM state) so the dashboard
+// always renders a sane grid rather than blocking on a Tauri rejection.
+// ---------------------------------------------------------------------------
+
+export async function get_context_state(): Promise<import('./types').ContextState> {
+  logStub('get_context_state');
+  const live = await tryInvoke<import('./types').ContextState>('get_context_state');
+  if (live) return live;
+  await delay(50, 120);
+  return {
+    fsm_state: 'IDLE',
+    substate: null,
+    token_budget_pct: 0,
+    mcp_think_topics: [],
+    last_precompact_thresholds: [],
+    prompt_injection_check_status: 'not_run',
+    runtime_choice_badge: '',
+  };
+}
+
+export async function get_trust_telemetry(): Promise<import('./types').TrustReport> {
+  logStub('get_trust_telemetry');
+  const live = await tryInvoke<import('./types').TrustReport>('get_trust_telemetry');
+  if (live) return live;
+  await delay(50, 120);
+  return {
+    tasks_per_hour: 0,
+    findings_per_task: 0,
+    revert_rate: 0,
+    ungrounded_count: 0,
+    stagnation_dist: {},
+  };
+}

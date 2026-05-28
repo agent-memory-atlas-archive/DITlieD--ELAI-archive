@@ -101,6 +101,23 @@ function parseArgs(argv) {
       await page.goto(url, { waitUntil: 'load', timeout: 15000 });
       const outPath = path.join(outDir, `web_${vp.width}x${vp.height}.png`);
       await page.screenshot({ path: outPath, fullPage: false });
+      // E-16 -- AXTree YAML capture via Playwright v1.59+
+      // page.ariaSnapshot(). Per-viewport; deterministic; <100ms
+      // budget. Failure is non-fatal: we log "AXTREE_ERR" and keep
+      // the frame so the screenshot path still succeeds even if the
+      // ariaSnapshot API is missing (older Playwright versions).
+      try {
+        if (typeof page.ariaSnapshot === 'function') {
+          const ax = await page.ariaSnapshot();
+          const axPath = path.join(outDir, `web_${vp.width}x${vp.height}.axtree.yaml`);
+          require('fs').writeFileSync(axPath, ax);
+          console.log(`AXTREE:${vp.width}:${vp.height}:${axPath}`);
+        } else {
+          console.log(`AXTREE_ERR:${vp.width}:${vp.height}:api_missing`);
+        }
+      } catch (axE) {
+        console.log(`AXTREE_ERR:${vp.width}:${vp.height}:` + (axE && axE.message ? axE.message : axE));
+      }
       await ctx.close();
       console.log(`FRAME:${vp.width}:${vp.height}:${outPath}`);
     }
@@ -143,6 +160,13 @@ pub struct WebRenderAdapter {
     /// assertions against a snapshot the `browser_e2e` runner produced.
     /// `None` preserves the original B-24 behavior (no E2E surface).
     pub e2e_assertions: Option<Vec<crate::browser_e2e::Assertion>>,
+    /// E-16 -- per-call AXTree YAML paths captured from the helper's
+    /// `AXTREE:w:h:path` stdout lines. Cleared at the start of every
+    /// `render()` so consumers fetch the latest set via
+    /// [`WebRenderAdapter::last_axtree_paths`]. Tuple is `(width,
+    /// height, yaml_path)`. `std::sync::Mutex` matches the existing
+    /// `tempdirs` discipline — no async contention.
+    last_axtree_paths: std::sync::Mutex<Vec<(u32, u32, PathBuf)>>,
 }
 
 impl std::fmt::Debug for WebRenderAdapter {
@@ -153,6 +177,10 @@ impl std::fmt::Debug for WebRenderAdapter {
             .field(
                 "tempdir_count",
                 &self.tempdirs.lock().map(|g| g.len()).unwrap_or(0),
+            )
+            .field(
+                "last_axtree_count",
+                &self.last_axtree_paths.lock().map(|g| g.len()).unwrap_or(0),
             )
             .finish()
     }
@@ -185,7 +213,23 @@ impl WebRenderAdapter {
             ],
             tempdirs: std::sync::Mutex::new(Vec::new()),
             e2e_assertions: None,
+            last_axtree_paths: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// E-16 -- accessor for the per-call AXTree YAML paths captured
+    /// during the most recent `render()` invocation. Tier-1
+    /// AXTreeAdapter consumers read this BEFORE the adapter drops
+    /// (the YAML files live in the tempdir which `Drop` removes).
+    /// Returns an empty Vec if no AXTree lines were emitted (older
+    /// Playwright, ariaSnapshot API missing) or if the lock is
+    /// poisoned.
+    #[must_use]
+    pub fn last_axtree_paths(&self) -> Vec<(u32, u32, PathBuf)> {
+        self.last_axtree_paths
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Constructor for tests that need to assert the binary path
@@ -200,6 +244,7 @@ impl WebRenderAdapter {
             ],
             tempdirs: std::sync::Mutex::new(Vec::new()),
             e2e_assertions: None,
+            last_axtree_paths: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -465,6 +510,36 @@ impl MediaRenderAdapter for WebRenderAdapter {
                 return Err(RenderAdapterError::MalformedOutput(format!(
                     "WebRenderAdapter produced 0 frames; stdout=`{stdout}`"
                 )));
+            }
+
+            // E-16 -- record any captured AXTree YAML paths the
+            // helper emitted as `AXTREE:w:h:path` lines so the
+            // Tier-1 AXTreeAdapter can read them per-viewport. Stored
+            // alongside the tempdir; consumers fetch via
+            // [`WebRenderAdapter::last_axtree_paths`] before the
+            // adapter drops the dir.
+            let mut axtree_paths_for_call: Vec<(u32, u32, PathBuf)> = Vec::new();
+            for line in stdout.lines() {
+                let Some(rest) = line.strip_prefix("AXTREE:") else {
+                    continue;
+                };
+                let parts: Vec<&str> = rest.splitn(3, ':').collect();
+                if parts.len() != 3 {
+                    continue;
+                }
+                let w: u32 = match parts[0].parse() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let h: u32 = match parts[1].parse() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                axtree_paths_for_call.push((w, h, PathBuf::from(parts[2])));
+            }
+            if let Ok(mut guard) = self.last_axtree_paths.lock() {
+                guard.clear();
+                guard.extend(axtree_paths_for_call.into_iter());
             }
 
             // Audit WARN 1 fix (decision 74): track the per-call tempdir

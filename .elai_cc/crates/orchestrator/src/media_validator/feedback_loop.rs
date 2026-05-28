@@ -57,6 +57,126 @@ use super::types::{
 };
 
 // ---------------------------------------------------------------------------
+// E-16 -- RCE convergence hard cap + LPIPS-delta detector (web-only).
+// ---------------------------------------------------------------------------
+
+/// E-16 -- absolute upper bound on iterations for the RCE feedback
+/// loop, distinct from [`DEFAULT_MAX_ITERATIONS`] (spec phase-4I.txt
+/// L451 anchors that const at 3 as the default-budget). This const
+/// is the HARD CAP that
+/// [`lpips_delta_converged`] / [`should_stop_for_rce_cap`] enforce
+/// independently of the per-call `max_iterations` field — production
+/// callers may pass a `max_iterations` between 1 and
+/// `MAX_RCE_ITERATIONS`; values above this cap are clamped down by
+/// [`clamp_iterations_to_rce_cap`].
+///
+/// 5 anchors to E-16 plan task 4. Reconciliation path-c (distinct
+/// semantics): the shipped default (3) is preserved; the hard cap
+/// (5) is the upper bound the loop will refuse to exceed. See
+/// workflow/reasoning/E-16-decisions.md.
+pub const MAX_RCE_ITERATIONS: u32 = 5;
+
+/// E-16 -- LPIPS-delta convergence threshold. When the visual delta
+/// between iteration N-1 and N falls below this floor AND the VLM
+/// critic returns no actionable diffs, the loop is considered
+/// converged and stops early.
+///
+/// 0.02 is a perceptual-similarity floor empirically motivated by
+/// the E-16 plan task 4 (arXiv:2604.05839 cited in plan body NOT
+/// VERIFIED on WebSearch; treated as supporting-only -- threshold
+/// remains as a deterministic surrogate not an academic claim).
+///
+/// NOTE: the orchestrator does NOT ship a LPIPS ONNX runner today
+/// (grep for "lpips" in tier1.rs returns 0 hits). Until the runner
+/// lands as a follow-up, callers are expected to pass an
+/// SSIM-derived surrogate delta = `1.0 - ssim` and the same
+/// threshold applies (SSIM exists at tier1.rs via
+/// `image_compare::MSSIMSimple`). The function name preserves the
+/// E-16 plan vocabulary so the deterministic-check grep
+/// (`MAX_RCE_ITERATIONS|lpips_delta_converged`) finds the surface.
+pub const LPIPS_DELTA_CONVERGED_FLOOR: f64 = 0.02;
+
+/// Convergence verdict returned by [`lpips_delta_converged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvergenceState {
+    /// The loop should stop because the (delta, critic) signal
+    /// indicates convergence. Reason carried for the SSB row +
+    /// dashboard sparkline.
+    Converged(ConvergenceReason),
+    /// The loop should continue (no convergence detected).
+    Iterate,
+    /// The loop hit the HARD CAP [`MAX_RCE_ITERATIONS`]; stop.
+    CappedAtMax,
+}
+
+/// Why the loop converged. Mirrors the E-16 plan task 4 vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvergenceReason {
+    /// `delta < LPIPS_DELTA_CONVERGED_FLOOR` -- visual stability
+    /// achieved.
+    LpipsDelta,
+    /// The VLM critic explicitly returned "no actionable diffs"
+    /// (mapped from the executor closure / Tier-2 verdict).
+    NoActionableDiffs,
+    /// `iteration + 1 >= MAX_RCE_ITERATIONS` -- hard cap hit.
+    IterationCap,
+}
+
+/// Determine the loop's convergence state for a given iteration.
+///
+/// Arguments:
+///   * `iteration`              -- current iteration index (0-based).
+///   * `delta_prev_curr`        -- perceptual / SSIM-derived delta in
+///     `[0.0, 1.0]` between iteration N-1 and N. `None` for the
+///     first iteration (no previous frame).
+///   * `critic_no_diffs`        -- `true` when the VLM critic returned
+///     no actionable diffs for the current iteration.
+///
+/// Returns the verdict. Producers stop the loop on any
+/// `Converged(_)` or `CappedAtMax`.
+#[must_use]
+pub fn lpips_delta_converged(
+    iteration: u32,
+    delta_prev_curr: Option<f64>,
+    critic_no_diffs: bool,
+) -> ConvergenceState {
+    // Hard cap first -- never iterate past MAX_RCE_ITERATIONS,
+    // regardless of per-call max_iterations.
+    if iteration + 1 >= MAX_RCE_ITERATIONS {
+        return ConvergenceState::CappedAtMax;
+    }
+    if critic_no_diffs {
+        return ConvergenceState::Converged(ConvergenceReason::NoActionableDiffs);
+    }
+    if let Some(d) = delta_prev_curr {
+        if d.is_finite() && d < LPIPS_DELTA_CONVERGED_FLOOR {
+            return ConvergenceState::Converged(ConvergenceReason::LpipsDelta);
+        }
+    }
+    ConvergenceState::Iterate
+}
+
+/// Clamp a caller-supplied `max_iterations` to
+/// [`MAX_RCE_ITERATIONS`]. The function is pure / deterministic and
+/// is used by callers building a [`VisualFeedbackLoop`] when they
+/// receive a user-supplied iteration budget that might exceed the
+/// hard cap.
+#[must_use]
+pub fn clamp_iterations_to_rce_cap(requested: u32) -> u32 {
+    requested.min(MAX_RCE_ITERATIONS)
+}
+
+/// Convenience: returns `true` when the loop should stop because the
+/// requested iteration index has reached the hard cap. Producers
+/// that wire a separate cap-check around the existing `for iter_idx
+/// in 0..self.max_iterations` loop can call this without unpacking
+/// [`ConvergenceState`].
+#[must_use]
+pub fn should_stop_for_rce_cap(iteration: u32) -> bool {
+    iteration + 1 >= MAX_RCE_ITERATIONS
+}
+
+// ---------------------------------------------------------------------------
 // Public types (spec L407-416).
 // ---------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ mod init;
 mod input;
 mod render;
 mod runtime_config;
+mod skills_cmd;
 mod repl;
 mod remote_sidecar;
 mod sidecar;
@@ -49,6 +50,11 @@ mod freeze_cmd;
 // rollouts NOT K^N, scalar c in [-1,+1], g=3 partition default). See
 // workflow/papers/cantante-credit-attribution.md.
 mod credit_cmd;
+// E-39: `elai cloud override-cap <USD> --confirm <typed-string>` /
+// `elai cloud status`. Layered-cap manual-override CLI driver.
+// Composes with E-38 EU AI Act audit-trail liveness gate. See
+// workflow/reasoning/E-39-decisions.md.
+mod cloud_cmd;
 // C-46: `elai routing decisions|pilot|status|export` — Uno-Orchestra
 // parsimonious agent routing (selective delegation) CLI driver. Wraps
 // elai_orchestrator::routing. Paper-grounded against arXiv:2605.05007
@@ -143,6 +149,12 @@ mod tdd_cmd;
 // feedback_no_gemma4 (substrate inheritance from C-52). See
 // workflow/reasoning/E-53-decisions.md.
 mod formal_verify_cmd;
+// E-8: `elai optimize <template|status>` — self-evolving prompts
+// driver. Spawns the Python `elai_optimizer` service. Live LLM
+// calls RUNPOD-PENDING. Refuses local 7B as reflection LM per
+// arXiv:2405.10276 (Zhang et al.). See
+// workflow/reasoning/E-8-decisions.md.
+mod optimize_cmd;
 // C-40: `elai pr <open|list|status|close>` — GitHub PR adapter CLI.
 // Shells out to gh via the orchestrator's github_pr::GhCliAdapter.
 mod github_pr_cmd;
@@ -189,6 +201,17 @@ mod bench_tamper;
 // D-28: `elai farm-adv-rm <run|verdict>` — adversarial example farming
 // runner CLI surface. See workflow/reasoning/D-28-decisions.md.
 mod farm_adv_rm;
+// E-10: hostile-critic structural simplifications -- 3 new CLI dispatchers.
+mod bench_ablation_cmd;
+mod tier_eval_cmd;
+mod critic_report;
+// E-9: external agent-eval benchmark suite (11 suites; SWE-Bench Pro
+// primary; RUNPOD-PENDING live runs). See workflow/reasoning/E-9-decisions.md.
+mod eval_cmd;
+// E-55: agentic RL + reward ladder recipe runner. Substrate ships fully
+// under elai_orchestrator::rl::*; live cloud Sonnet rollouts + LoRA
+// training RUNPOD-PENDING. See workflow/reasoning/E-55-decisions.md.
+mod rl_train_cmd;
 mod runtime_client;
 mod runtime_cmd;
 // D-2: `elai ppm health` — three-step PPM sidecar health probe
@@ -498,6 +521,20 @@ fn run() -> Result<(), anyhow::Error> {
         CliAction::Credit { action, output_format } => {
             credit_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
+        // E-43 -- `elai skills-mgmt list|eval|publish`. Agent skill systems
+        // surface (frontmatter + eval/ + publish dist). ABSORBs the
+        // E-22 SKILL.md export shim. Paper-grounded against
+        // agentskills.io/specification.
+        CliAction::SkillsManagement { action, output_format } => {
+            skills_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-39 -- `elai cloud override-cap|status`. Layered-cap
+        // manual-override CLI surface. Composes with E-38 EU AI Act
+        // audit-trail liveness gate. See
+        // workflow/reasoning/E-39-decisions.md.
+        CliAction::Cloud { action, output_format } => {
+            cloud_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
         // C-46 — `elai routing decisions|pilot|status|export`.
         // Uno-Orchestra parsimonious agent routing surface; paper-
         // grounded against arXiv:2605.05007. Synthetic-fixture path is
@@ -630,6 +667,16 @@ fn run() -> Result<(), anyhow::Error> {
         // memory feedback_no_gemma4 (substrate inheritance from C-52).
         CliAction::FormalVerify { action, output_format } => {
             formal_verify_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
+        }
+        // E-8 — `elai optimize template|status`. Self-evolving prompts
+        // driver. Spawns the Python `elai_optimizer` service (GEPA
+        // primary per arXiv:2507.19457 + DSPy MIPROv2 / OPRO
+        // supporting). Live LLM calls RUNPOD-PENDING. Refuses local 7B
+        // as reflection LM per arXiv:2405.10276 (Zhang et al.) -- the
+        // args parser enforces the refusal before this handler runs.
+        // See workflow/reasoning/E-8-decisions.md.
+        CliAction::Optimize { action, output_format } => {
+            optimize_cmd::run(action, output_format).map_err(|e| anyhow::anyhow!(e))?
         }
         CliAction::Init { output_format } => live_cli::run_init(output_format)?,
         CliAction::Repl { model, allowed_tools, permission_mode, export_jsonl } => {
@@ -856,6 +903,40 @@ fn run() -> Result<(), anyhow::Error> {
         // precedent). Exits 0 on Pass, 1 on Fail.
         CliAction::FarmAdvRm { sub } => {
             farm_adv_rm::run(crate::args::FarmAdvRmArgs { sub })?;
+        }
+        // E-10: hostile-critic structural simplifications dispatch.
+        CliAction::BenchAblation { tile, fixtures, budget } => {
+            bench_ablation_cmd::run(tile, fixtures, budget)?;
+        }
+        CliAction::TierEval { suites, budget } => {
+            tier_eval_cmd::run(suites, budget)?;
+        }
+        CliAction::CriticReport { output } => {
+            critic_report::run(output)?;
+        }
+        // E-9: `elai eval <run|list> --benchmark=<NAME> [--harness-vary]
+        // [--p-target=0.05] [--list] [--json]`. External agent-eval benchmark
+        // dispatcher across 11 suites (swe-bench-pro / swe-bench-live /
+        // livecodebench-v6 / tau2-bench / bfcl-v3 / gaia-l1-l2 /
+        // clawsbench-split / refinebench / sycophancy-probes / math-floors /
+        // deep-planning). Live evals RUNPOD-PENDING; host-side scaffolding
+        // ships fully + emits SsbActionType::BenchmarkRunObserved when env
+        // gate `ELAI_EVAL_BENCHMARK_ENABLE=1` is set. See
+        // workflow/reasoning/E-9-decisions.md.
+        CliAction::EvalRun {
+            benchmark,
+            harness_vary,
+            p_target,
+            list,
+            json,
+        } => {
+            eval_cmd::run(benchmark, harness_vary, p_target, list, json)?;
+        }
+        // E-55: agentic RL recipe runner. Live cloud Sonnet rollouts +
+        // LoRA training RUNPOD-PENDING (env-gated by
+        // ELAI_AGENTIC_RL_ENABLE=1). See workflow/reasoning/E-55-decisions.md.
+        CliAction::RlTrain { recipe, list, json } => {
+            rl_train_cmd::run(recipe, list, json)?;
         }
         // E-30: `elai incident record ...` — store an incident postmortem entry.
         CliAction::IncidentRecord {

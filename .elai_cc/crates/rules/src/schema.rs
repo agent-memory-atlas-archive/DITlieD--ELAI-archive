@@ -236,6 +236,31 @@ const DEPRECATED_PATTERNS_SEED: &[(&str, &str, &str, &str, Option<&str>, &str, &
      Some("2026-05"), "BLOCK", "CVE-2025-59536: hooks executed before trust dialog enabled RCE via .claude/settings.json; ensure_session_trust() must gate hook loading"),
     ("dp-untrusted-memory-write", "general", "untrusted TextSource writing memory", "TextSource trust check before memory write",
      Some("2026-05"), "BLOCK", "untrusted external tool output writing to memory enables indirect prompt injection memory poisoning; gate all writes on TextSource.is_trusted()"),
+    // E-26 (inference-engines 2026 pack): Ollama runtime deprecation.
+    // Adapter is NOT removed per CLAUDE.md no-removal rule; severity is
+    // WARN so existing operator workflows keep working. Replacement
+    // surface lists both the local tier (Sidecar) + cloud tier (Sglang).
+    // Reason cites the morphllm.com 19x peak-throughput gap (source
+    // report anchor; see workflow/papers/26-inference-engines-2026.md).
+    ("dp-rt-ollama", "general", "OllamaRuntime adapter", "Sidecar (local) or Sglang (cloud)",
+     Some("2026-05"), "WARN", "OllamaRuntime peak-throughput trails SGLang ~19x and the local Sidecar by ~7x per morphllm.com 2026-05 benchmark; prefer Sidecar locally or Sglang in the cloud (adapter remains live; not removed)"),
+    // E-28 (attention-kernels 2026 pack): 5 rule rows mirroring the
+    // sidecar runtime guards refuse_fa3_on_ampere + pin_sdpa_backend +
+    // apply_streaming_llm_mask + apply_yarn_rope_scaling_at_boot. IDs
+    // match workflow/reasoning/E-28-decisions.md DECISION 3/4 + OUT OF
+    // SCOPE list. Replacement surfaces point to the runtime-helper or
+    // the supported FA2-on-Ampere path. Severity follows the decisions
+    // doc (3 BLOCK / 2 WARN). Reasons cite arXiv/source anchors.
+    ("dp-pip-fa3-fa4-ampere", "pip", "FlashAttention-3 / FA4 / cuDNN-attention on Ampere", "FlashAttention-2 (FA2) on Ampere SM_80/SM_86",
+     Some("2026-05"), "BLOCK", "FA3 (arXiv:2407.08608) targets Hopper SM_90; FA4 targets Hopper+Blackwell SM_90/SM_100; Ampere RTX 3090/3060 have no optimized FA3 path; use FA2 per tridao.me/blog/2024/flash3 and refuse_fa3_on_ampere helper (opt-out via ELAI_REFUSE_FA3=0 for future cloud Hopper deploys)"),
+    ("dp-pip-mla-arch-swap", "pip", "MLA (Multi-head Latent Attention) architecture swap on Qwen2.5-Coder GQA weights", "keep GQA attention (no architecture swap)",
+     Some("2026-05"), "BLOCK", "MLA weight-architecture swap cannot be retrofitted to Qwen2.5-Coder GQA weights without retraining; the runtime guard refuses the swap at boot"),
+    ("dp-pip-sdpa-no-backend-pin", "pip", "torch.nn.functional.scaled_dot_product_attention without explicit backend pin", "torch.nn.attention.sdpa_kernel([SDPBackend.FLASH_ATTENTION]) context",
+     Some("2026-05"), "BLOCK", "pytorch#133780: SDPA silently falls back to MATH backend on shape errors when not pinned, hiding correctness regressions behind a much slower code path; pin via pin_sdpa_backend() helper (torch>=2.3); on older torch the helper returns nullcontext() with fallback_used=true so SSB records the degraded path"),
+    ("dp-pip-gemma-mixed-headdim", "pip", "Gemma-family models with mixed head_dim (256+512 across layers)", "uniform head_dim (Qwen2.5-Coder head_dim=128) on FA2",
+     Some("2026-05"), "WARN", "Gemma-family mixed head_dim layouts trigger FA2 mixed-layout bugs; the supported ELAI baseline is Qwen2.5-Coder head_dim=128 uniform (huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct config.json) on FA2 SM_80+"),
+    ("dp-pip-fa2-backward-nondeterm", "pip", "FA2 backward without deterministic=True (when on-device fine-tune is added)", "FA2 backward with deterministic=True",
+     Some("2026-05"), "WARN", "transformers#31787: FA2 backward uses atomicAdd which is non-deterministic; if on-device fine-tune / RLHF is added later, set deterministic=True at ~37.9% throughput cost to preserve reproducibility (ELAI is inference-only today so this is a future-guard rule)"),
 ];
 
 /// Return BLOCK-severity entries from the static seed data.

@@ -38,6 +38,12 @@ pub mod freshness;
 // dkg/mod.rs registration into per-tier helpers; see
 // workflow/reasoning/E-42-decisions.md.
 pub mod grammar_tier;
+// E-42 Tier-B: tree-sitter grammar health substrate (abi probe + svelte runes
+// health + large-file guard + per-tier registration helpers). Wire-dark unless
+// ELAI_TREE_SITTER_GRAMMARS_ENABLE=1. See workflow/reasoning/E-42-decisions.md.
+// Named `tree_sitter_health` (not `tree_sitter`) to avoid shadowing the
+// external `tree_sitter` crate inside this lib.
+pub mod tree_sitter_health;
 pub mod hyde;
 pub mod knowledge_ssb_sink;
 pub mod incremental_profile;

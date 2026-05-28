@@ -38,6 +38,12 @@ tree-sitter-astro-next = { version = "0.1", optional = true }
 # C-17 (DRIFT-H): Kotlin grammar from official tree-sitter-grammars org.
 # Anti-slopsquatting verified 2026-05-18 via `cargo search tree-sitter-kotlin`
 # (repository: github.com/tree-sitter-grammars/tree-sitter-kotlin).
+# E-42 Tier-B explicitly REJECTS the plan's `fwcd/tree-sitter-kotlin` fork
+# request: fwcd is abandoned and is locked out by `crate::grammar_tier::
+# BANNED_GRAMMAR_CRATES` + the `kotlin_uses_org_ng_variant_not_fwcd` contract
+# test. The plan's wording is a stale 2025 snapshot; the canonical org -ng
+# variant landed via C-17 anti-slopsquatting decision 2026-05-18. See
+# workflow/reasoning/E-42-decisions.md DRIFT-1.
 tree-sitter-kotlin-ng = "1.1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 blake3 = "1.8"
@@ -67,6 +73,17 @@ splade = []
 test-helpers = []
 # Phase B: opt-in Astro grammar (single-maintainer crate).
 web-astro = ["dep:tree-sitter-astro-next"]
+# E-42 Tier-B: opt-in registration helper for community-curated grammars
+# that may emit ERROR nodes on uncommon idioms. The Tier-A canonical set
+# remains the default-on registration; this feature simply exposes a named
+# seam (crate::tree_sitter::registration::register_tier_b_languages) so
+# audits + dashboard surfaces can discriminate Tier-A vs Tier-B loads.
+# Does NOT add new crate deps — the underlying grammars (scala / swift /
+# php / bash) are already pinned for the existing flat block. Anti-
+# slopsquatting + user authorization required before adding deps for
+# json / yaml / toml / markdown / vue at Tier-B (see
+# workflow/reasoning/E-42-decisions.md DRIFT-8).
+experimental_grammars = []
 
 [dev-dependencies]
 proptest = "1"

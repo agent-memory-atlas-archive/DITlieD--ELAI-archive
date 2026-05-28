@@ -193,6 +193,11 @@ impl SkillManifest {
 /// that returns this struct so the discovery walker can populate
 /// `SkillManifest` without re-reading the file. Kept as a separate type so
 /// the cli-side parser can stay backwards-compatible.
+///
+/// E-43 extension: adds `compatibility` + `license` + `metadata_version` +
+/// `metadata_author` for agentskills.io v1 SKILL.md compliance. All
+/// wrapped in `Option<>` so older SKILL.md frontmatter parses unchanged
+/// (defaults to None when the key is absent).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrontmatterFields {
     pub name: Option<String>,
@@ -202,6 +207,22 @@ pub struct FrontmatterFields {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub scope: Option<String>,
+    /// E-43 -- agentskills.io v1 `compatibility:` field. Honest
+    /// scope-creep refusal note: where the skill works (Claude Code,
+    /// Codex, Gemini) and what it requires (.elai_cc/ layout, MCP
+    /// servers, etc.). <=500 chars per spec when present.
+    pub compatibility: Option<String>,
+    /// E-43 -- agentskills.io v1 `license:` field. Free-form license
+    /// identifier; ELAI publishable skills use "MIT", internal skills
+    /// use "internal".
+    pub license: Option<String>,
+    /// E-43 -- agentskills.io v1 `metadata.version:` sub-key (parsed
+    /// from indented metadata: block). Semver-shape; ELAI skills ship
+    /// at 1.0.0 on first publication.
+    pub metadata_version: Option<String>,
+    /// E-43 -- agentskills.io v1 `metadata.author:` sub-key. ELAI
+    /// skills use "elai".
+    pub metadata_author: Option<String>,
 }
 
 #[cfg(test)]

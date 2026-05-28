@@ -1,0 +1,68 @@
+# E-19 task 10 — 200-trace holdout for pre-L2 confidence-gate calibration.
+#
+# Each `[[trace]]` row carries:
+#   - id: unique trace identifier (kebab-case)
+#   - l1_candidate_distribution: list of f32 in [0.0, 1.0] (caller-normalized)
+#   - l1_self_certainty: precomputed self-certainty score (top1 - top2 margin)
+#   - failure_taxonomy_category: snake_case taxonomy slug
+#   - retry_count: u32
+#   - l2_needed: bool label (true = L2 reflection was needed / changed the
+#     outcome; false = L1 candidate was already correct OR L3 was needed)
+#   - source: SSB row prefix (provenance hint)
+#
+# RUNPOD-PENDING: the live 200-trace harvest runs against the remote sidecar
+# (pythondev RTX 3090 24GB). Host-side scaffolding ships in this commit with
+# 5 seed rows; the eval_cmd reasoning --harvest subcommand fills in the
+# remaining 195 in a follow-up. The 5 seed rows below are HEURISTIC
+# placeholders pulled from the activeContext.md trace fragments — they
+# illustrate the schema but are NOT representative for threshold calibration.
+# See workflow/reasoning/E-19-decisions.md DECISION-CALIBRATION.
+
+schema_version = 1
+total_expected = 200
+seeded_rows = 5
+
+[[trace]]
+id = "trace-001"
+l1_candidate_distribution = [0.95, 0.03, 0.01, 0.01]
+l1_self_certainty = 0.92
+failure_taxonomy_category = "missing_import"
+retry_count = 0
+l2_needed = false
+source = "ssb_seq=42 baby_step=bs-001"
+
+[[trace]]
+id = "trace-002"
+l1_candidate_distribution = [0.55, 0.40, 0.03, 0.02]
+l1_self_certainty = 0.15
+failure_taxonomy_category = "silent_exception_swallow"
+retry_count = 1
+l2_needed = false  # L3 direct route — gate emits L3Direct, not Reflect
+source = "ssb_seq=44 baby_step=bs-002"
+
+[[trace]]
+id = "trace-003"
+l1_candidate_distribution = [0.70, 0.20, 0.07, 0.03]
+l1_self_certainty = 0.50
+failure_taxonomy_category = "concurrent_state_race"
+retry_count = 0
+l2_needed = true
+source = "ssb_seq=46 baby_step=bs-003"
+
+[[trace]]
+id = "trace-004"
+l1_candidate_distribution = [0.30, 0.28, 0.22, 0.20]
+l1_self_certainty = 0.02
+failure_taxonomy_category = "cross_lang_drift"
+retry_count = 2
+l2_needed = false  # L3 direct
+source = "ssb_seq=48 baby_step=bs-004"
+
+[[trace]]
+id = "trace-005"
+l1_candidate_distribution = [0.84, 0.12, 0.03, 0.01]
+l1_self_certainty = 0.72
+failure_taxonomy_category = "magic_number"
+retry_count = 0
+l2_needed = true   # in-band reflect
+source = "ssb_seq=50 baby_step=bs-005"

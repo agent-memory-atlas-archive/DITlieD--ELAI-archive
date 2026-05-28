@@ -248,6 +248,16 @@ impl Default for AgentGrcConfig {
                     artifact_name: String::new(),
                     query: String::new(),
                 },
+                // E-36: VisualArtifactCheck wildcard. Same discriminant-only
+                // gating pattern as ArtifactCheck; routing is by claim
+                // shape (visual_spatial claim_category) rather than per-
+                // artifact match. Wire-dark unless
+                // ELAI_DOCUMENT_VISION_RAG_ENABLE=1.
+                VerificationMethod::VisualArtifactCheck {
+                    artifact_name: String::new(),
+                    query: String::new(),
+                    claim_category: String::new(),
+                },
             ],
             transition_overrides: FxHashMap::default(),
             require_scope_enumeration: false,
@@ -286,6 +296,14 @@ impl Default for GrcDefaults {
                 VerificationMethod::ArtifactCheck {
                     artifact_name: String::new(),
                     query: String::new(),
+                },
+                // E-36: VisualArtifactCheck wildcard entry. Same
+                // discriminant-only gating. Wire-dark unless
+                // ELAI_DOCUMENT_VISION_RAG_ENABLE=1.
+                VerificationMethod::VisualArtifactCheck {
+                    artifact_name: String::new(),
+                    query: String::new(),
+                    claim_category: String::new(),
                 },
             ],
         }
@@ -377,6 +395,106 @@ pub enum VerificationMethod {
         source: String,
         event_type: String,
     },
+    /// Verify a visual-spatial claim against the vision-RAG index
+    /// (E-36 — document + vision RAG path; 10th VerificationMethod).
+    ///
+    /// Visual-spatial claims are statements about visually-rich content
+    /// that text retrieval alone cannot ground: "the auth flow has 3
+    /// redirects", "X sits between Y and Z in the ERD", "the dashboard
+    /// shows a histogram". The verifier composes:
+    ///   * the ColModernVBERT / ColQwen2.5-v0.2 page-image retriever
+    ///     (top-k page candidates by vision multi-vector similarity)
+    ///   * the sidecar VLM (Qwen2.5-VL) via PerRoleRuntime, returning a
+    ///     `VisualArtifactVerdict` + `ArtifactReliability` tier.
+    ///
+    /// HARD RULE per plan task 5 + the ELAI source-grounding rule:
+    /// verdicts whose reliability is `VlmCaption` carry LOW reliability
+    /// and downstream gates MUST downweight. Producers route claims via
+    /// the `claim_category` field — reusing the existing
+    /// `CosmosCheck::claim_category` taxonomy instead of introducing a
+    /// parallel `claim_class` field per workflow/reasoning/E-36-
+    /// decisions.md GAP-7.
+    ///
+    /// Wire-dark default: dispatch fires only when
+    /// `ELAI_DOCUMENT_VISION_RAG_ENABLE=1`.
+    VisualArtifactCheck {
+        artifact_name: String,
+        query: String,
+        claim_category: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// E-36 — visual-artifact verdict + reliability tier (used by
+// VerificationMethod::VisualArtifactCheck dispatch).
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single VisualArtifactCheck dispatch. Closed enum, 3 arms
+/// matching the existing CosmosCheck verdict shape (Confirm/Refute/
+/// Indeterminate).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualArtifactVerdict {
+    /// The visual claim is supported by at least one retrieved page.
+    Confirm,
+    /// The visual claim contradicts at least one retrieved page.
+    Refute,
+    /// Retrieval returned candidates but the VLM could not commit a
+    /// verdict — caller treats this as "no evidence" rather than refute.
+    Indeterminate,
+}
+
+impl VisualArtifactVerdict {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Confirm => "confirm",
+            Self::Refute => "refute",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+}
+
+/// HARD reliability tier for VisualArtifactCheck verdicts. The 3 arms
+/// correspond to the three retrieval modalities the verifier can route
+/// through; downstream gates MUST downweight `VlmCaption` per the
+/// ELAI source-grounding rule (decompiled / generated content = LOW
+/// reliability).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactReliability {
+    /// LOW — the verdict was sourced from a VLM-emitted caption only.
+    /// Downstream gates (auditor, scope-planner) MUST downweight.
+    VlmCaption,
+    /// MEDIUM — the verdict was sourced from OCR text extracted via
+    /// PaddleOCR-VL / Dolphin / MinerU. Higher trust than a free-form
+    /// caption but still derived from a parser pass.
+    OcrParse,
+    /// HIGH — the verdict was sourced from a diagram source file
+    /// (Mermaid / PlantUML / D2 / Excalidraw text). Ground-truth tier.
+    DiagramSource,
+}
+
+impl ArtifactReliability {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::VlmCaption => "vlm_caption",
+            Self::OcrParse => "ocr_parse",
+            Self::DiagramSource => "diagram_source",
+        }
+    }
+
+    /// True when the reliability tier is LOW and downstream gates MUST
+    /// downweight the carrying verdict.
+    #[must_use]
+    pub const fn is_low(&self) -> bool {
+        matches!(self, Self::VlmCaption)
+    }
 }
 
 impl VerificationMethod {
@@ -417,6 +535,15 @@ impl VerificationMethod {
     /// returns "no rows match" until the bridge starts writing them.
     pub fn requires_empire_bridge(&self) -> bool {
         matches!(self, VerificationMethod::EmpireEventCheck { .. })
+    }
+
+    /// E-36: methods requiring access to the document+vision RAG index.
+    /// `VisualArtifactCheck` resolves visual-spatial claims via the
+    /// ColModernVBERT / ColQwen2.5-v0.2 page-image retriever + the
+    /// sidecar VLM. Wire-dark default: dispatch fires only when
+    /// `ELAI_DOCUMENT_VISION_RAG_ENABLE=1`.
+    pub fn requires_vision_index(&self) -> bool {
+        matches!(self, VerificationMethod::VisualArtifactCheck { .. })
     }
 }
 

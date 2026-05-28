@@ -16,6 +16,13 @@ elai-plugins = { path = "../plugins", features = ["mcp"] }
 elai-knowledge = { path = "../knowledge", features = ["test-helpers"] }
 elai-reasoning = { path = "../reasoning" }
 elai-orchestrator = { path = "../orchestrator", features = ["sidecar", "test-support"] }
+# E-54: eval-corpus crate. Contract test e54_eval_corpus_ssb_contract.rs
+# asserts the IngestConfig defaults + schema validation + prod-traffic
+# defaults-off + generator-rotation distribution + CorpusEventPhase
+# 14-arm discriminator + SCHEMA_VERSION_PUBLIC == 167.
+elai-eval-corpus = { path = "../eval-corpus" }
+# E-54: chrono needed by the e54 contract test fixture (Task.created_at).
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 # Tier 2 Track B: dashboard contract test imports `elai_dashboard_lib::commands::*`
 # to assert the public surface of the 8 new tauri commands + DTOs.
 # DISABLED in s-1430428: crates/dashboard moved to crates/.bkp_old/dashboard.

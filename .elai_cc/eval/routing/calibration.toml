@@ -1,0 +1,46 @@
+# E-20 task 10 -- calibrated L_HYBRID_THRESHOLD per L-layer.
+#
+# Schema:
+#   [hybrid]
+#   threshold_default = <f32 in [0,1]>
+#   calibrated_at     = "<RFC-3339 ISO timestamp>"
+#   calibration_set   = "<path relative to .elai_cc/>"
+#   method            = "youdens_j_max"
+#   n_holdout_tasks   = <u32>
+#
+#   [hybrid.per_layer]
+#   l1 = <f32 in [0,1] or "default">
+#   l2 = <f32 in [0,1] or "default">
+#   l3 = <f32 in [0,1] or "default">
+#   l4 = <f32 in [0,1] or "default">
+#   l5 = <f32 in [0,1] or "default">
+#
+# Until the 200-task RUNPOD run completes the calibration values default
+# to L_HYBRID_THRESHOLD_DEFAULT (0.55) per arxiv:2310.12963 AutoMix
+# observed inflection point + arxiv:2511.07396 C3PO conformal-cost-
+# bounded cross-dataset average. See workflow/reasoning/E-20-decisions.md
+# DECISION-5 for the threshold rationale.
+
+schema_version = 1
+status         = "runpod_pending"
+
+[hybrid]
+threshold_default = 0.55
+calibrated_at     = "1970-01-01T00:00:00Z"
+calibration_set   = "eval/routing/holdout.toml"
+method            = "youdens_j_max"
+n_holdout_tasks   = 0
+
+[hybrid.per_layer]
+l1 = "default"
+l2 = "default"
+l3 = "default"
+l4 = "default"
+l5 = "default"
+
+# Notes
+# -----
+# Youden's J:    J = sensitivity + specificity - 1
+# Max J over the 200-task holdout per-L-layer picks the threshold that
+# minimises false-positive escalations + false-negative skips. RUNPOD-
+# PENDING.

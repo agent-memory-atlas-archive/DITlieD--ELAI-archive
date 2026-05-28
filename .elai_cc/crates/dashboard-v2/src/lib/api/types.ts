@@ -253,7 +253,11 @@ export type DrawerKey =
   // (composes ModeRouting + Novelty + ConformalCalibration +
   // RefusalRateGauge panels via the get_mode_routing_refusal_combined
   // composite read).
-  | 'mode-routing-dashboard';
+  | 'mode-routing-dashboard'
+  // E-29 — Failure modes drawer (agentic observability: tool-bypass,
+  // multi-step reasoning failures, attribution-loss, sycophantic-confirm,
+  // OTel span breakages emitted via AgenticObservabilityEvent SSB rows).
+  | 'failure-modes';
 
 // ------------------------------------------------------------------
 // Agent roles
@@ -787,6 +791,56 @@ export interface CommandCard {
   ts: number;
   kind: CardKind;
   payload: CardPayload;
+  // E-4 chat UX critique meta. Optional; attached when the producer
+  // emits a ChatUxCritiqueEvent SSB row tied to this card (wire-dark
+  // unless ELAI_CHAT_UX_CRITIQUE_ENABLE=1).
+  chat_ux_meta?: ChatUxCardMeta;
+}
+
+// ------------------------------------------------------------------
+// E-4 chat UX critique — bubble-level overlay types.
+// Mirrors crates::orchestrator::chat_ux module wire shapes
+// (ConfidenceTier / EvidenceRef / ClaimWithConfidence / HonestCorrection
+//  / SycophancyVerdict). The dashboard renders these inline as
+// ClaimConfidenceChip + HonestCorrectionBlock + SycophancyGuardBadge.
+// ------------------------------------------------------------------
+export type ChatUxConfidenceTier =
+  | 'verified'
+  | 'read_from_source'
+  | 'from_training'
+  | 'guessed';
+
+export type ChatUxEvidenceRef =
+  | { kind: 'file_ref'; value: string }
+  | { kind: 'ssb_seq'; value: number }
+  | { kind: 'det_check'; value: string };
+
+export interface ChatUxClaimWithConfidence {
+  text: string;
+  tier: ChatUxConfidenceTier;
+  evidence_ref: ChatUxEvidenceRef | null;
+}
+
+export type ChatUxHonestCorrectionTrigger =
+  | 'test_failed'
+  | 'doc_disagreed'
+  | 'user_corrected';
+
+export interface ChatUxHonestCorrection {
+  original_claim: string;
+  correction_text: string;
+  trigger: ChatUxHonestCorrectionTrigger;
+  original_claim_blake3_hex?: string;
+}
+
+export type ChatUxSycophancyVerdict =
+  | { kind: 'hold_position'; evidence_ref: ChatUxEvidenceRef }
+  | { kind: 'no_evidence' };
+
+export interface ChatUxCardMeta {
+  claims?: ChatUxClaimWithConfidence[];
+  correction?: ChatUxHonestCorrection;
+  sycophancy?: ChatUxSycophancyVerdict;
 }
 
 export type CardPayload =
@@ -1832,6 +1886,27 @@ export interface IterationSnapshot {
   issues: string[];
 }
 
+// E-16 -- AXTree YAML snapshot. Folded onto MediaValidationEntry when
+// the orchestrator emits a VlmImageValidationKind::AxtreeMismatch SSB
+// row. Mirrors state.rs AxtreeSnapshot.
+export interface AxtreeSnapshot {
+  yaml_diff_pct: number;
+  mismatch: boolean;
+  baseline_path: string | null;
+  current_path: string | null;
+  threshold_pct: number | null;
+}
+
+// E-16 -- Sycophancy probe snapshot. Folded onto MediaValidationEntry
+// when the orchestrator emits a (REUSED) SycophancyFlag SSB row from
+// the media_validator sycophancy_probe path. Verdict label vocab MUST
+// match SycophancyFlagPayload.verdict.
+export interface SycophancySnapshot {
+  flip_detected: boolean;
+  delta: number;
+  verdict: string;
+}
+
 export interface MediaValidationEntry {
   step_id: string;
   request_id: string;
@@ -1843,6 +1918,11 @@ export interface MediaValidationEntry {
   feedback_iterations: IterationSnapshot[];
   final_verdict: string | null;
   updated_at: number;
+  // E-16 fields (optional so old payloads decode cleanly).
+  axtree?: AxtreeSnapshot | null;
+  sycophancy?: SycophancySnapshot | null;
+  swap_order_disagreement?: boolean | null;
+  convergence_history?: number[];
 }
 
 // Payload of the Tauri `media_ssb` event re-broadcast by the SSB
@@ -2816,4 +2896,91 @@ export interface RecentCheckerResults {
   rows: CheckerResultRow[];
   counts_by_kind: Record<string, number>;
   total: number;
+}
+
+// ---------------------------------------------------------------------------
+// E-23 — developer-discourse positioning + UX-guard trust telemetry types.
+// Backed by orchestrator::trust_telemetry::TrustReport (Rust) plus the two
+// new commands get_context_state + get_trust_telemetry. Wire-dark unless
+// ELAI_DEVELOPER_DISCOURSE_ENABLE=1 on the orchestrator side; the dashboard
+// renders the panels regardless (empty zeroed shape when gate is off).
+// ---------------------------------------------------------------------------
+
+export interface TopicBudget {
+  topic: string;
+  remaining_calls: number;
+  remaining_chars: number;
+}
+
+export interface ContextState {
+  fsm_state: string;
+  substate: string | null;
+  token_budget_pct: number;
+  mcp_think_topics: TopicBudget[];
+  last_precompact_thresholds: number[];
+  /** "passed" | "blocked" | "not_run" — see C-42 follow-up. */
+  prompt_injection_check_status: string;
+  /** "local" | "cloud_billed" | "" — derived from B-37 runtime_fallback. */
+  runtime_choice_badge: string;
+}
+
+export interface TrustReport {
+  tasks_per_hour: number;
+  findings_per_task: number;
+  revert_rate: number;
+  ungrounded_count: number;
+  stagnation_dist: Record<string, number>;
+}
+
+// ------------------------------------------------------------------
+// E-39 -- cost + token economics dashboard DTOs (mirrors
+// crates/dashboard-v2/src-tauri/src/commands_e39.rs).
+// Wire-dark unless ELAI_COST_TOKEN_ECONOMICS_ENABLE=1 on the
+// orchestrator side.
+// ------------------------------------------------------------------
+
+export interface VelocityWindowSnapshot {
+  /** snake_case window label: one_min / ten_min / one_hour / twenty_four_hour */
+  window: string;
+  count: number;
+  limit: number;
+  /** "requests" | "usd_cents" */
+  kind: string;
+  ts_ms: number;
+}
+
+export interface VelocityCapStatus {
+  windows: VelocityWindowSnapshot[];
+  grand_total: number;
+}
+
+export interface CostRouterDecisionRow {
+  session_id: string | null;
+  task_id: string | null;
+  difficulty: number;
+  budget_remaining_usd: number;
+  /** "local" | "sonnet" | "haiku" | "deepseek_v4_flash" | "opus" */
+  chosen_backend: string;
+  /** "low" | "medium" | "high" */
+  criticality: string;
+  rationale: string;
+  ts_ms: number;
+}
+
+export interface AutomixVerdictRow {
+  session_id: string | null;
+  task_id: string | null;
+  /** "continue" | "retry" | "escalate" */
+  verdict: string;
+  reason: string;
+  ts_ms: number;
+}
+
+export interface FreeTierQuotaRow {
+  /** Snake-case backend label: "cerebras_free" | "groq_free" | "deepseek_v4_flash" */
+  backend: string;
+  /** "ok" | "approaching" | "exceeded" */
+  status: string;
+  remaining_pct: number;
+  ts_ms: number;
 }

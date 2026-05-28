@@ -53,6 +53,7 @@
     'archive-explorer':     'ARCHIVE EXPLORER',
     'discovery-queue':      'DISCOVERY QUEUE',
     'mode-routing-dashboard': 'MODE ROUTING DASHBOARD',
+    'failure-modes':        'FAILURE MODES (E-29)',
   };
 
   function handleBackdropClick(e: MouseEvent) {

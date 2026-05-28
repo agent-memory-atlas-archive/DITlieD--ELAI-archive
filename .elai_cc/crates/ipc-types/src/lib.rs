@@ -11,6 +11,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+// E-6: TypedAgentEnvelope — typed inter-agent payload wrapper.
+// Lives in ipc-types so both elai_cc_agent and elai-orchestrator can
+// construct + verify envelopes without taking a dep on the orchestrator
+// crate. See workflow/reasoning/E-6-decisions.md.
+pub mod envelope;
+pub use envelope::{
+    EnvelopeError, EnvelopePayload, MastTag, TypedAgentEnvelope, ENVELOPE_MAX_BYTES,
+    ENVELOPE_WIRE_VERSION,
+};
+
 // ---------------------------------------------------------------------------
 // AgentRole — the 10 agent roles
 // ---------------------------------------------------------------------------

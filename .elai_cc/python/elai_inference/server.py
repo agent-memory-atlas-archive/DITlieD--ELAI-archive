@@ -1228,6 +1228,259 @@ def activate_deep_mode(default_model: str) -> tuple[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# E-28: attention-kernels 2026 — FA2 mandatory on Ampere, FA3 refusal,
+# SDPA backend pinning, StreamingLLM attention-sink masking, and boot-time
+# YaRN rope_scaling injection gated behind ELAI_YARN_EVAL_GATE (the live
+# default still refuses YaRN per refuse_yarn_at_boot above; the boot-time
+# helper exists ONLY so the harness in test_yarn_eval_gate.py can build a
+# config object for the factor sweep — it never executes on a normal boot).
+#
+# References (grounded via workflow/papers/):
+#   * arXiv:2307.08691 FlashAttention-2 — SM_80+ supported (Ampere included).
+#   * arXiv:2309.17453 StreamingLLM — attention-sink masking; default sink=4.
+#     Position IDs MUST be re-indexed relative to cache slot, NOT original
+#     text position (critical implementation note per
+#     workflow/papers/streaming-llm-interface.md).
+#   * arXiv:2501.15383 Qwen2.5-1M — YaRN rope_scaling recipe for Qwen2.5
+#     family; base Coder-7B max_position_embeddings=32768, rope_theta=1e6.
+#   * tridao.me/blog/2024/flash3 — FA3 Hopper-only (no Ampere SM_86 path).
+#   * pytorch#133780 — SDPA silently falls back to MATH on shape errors when
+#     backend is not pinned; torch.nn.attention.sdpa_kernel pins explicitly.
+# ---------------------------------------------------------------------------
+
+# StreamingLLM default sink count (paper Sec 4.2; minimum viable is 4).
+STREAMING_LLM_DEFAULT_SINK_COUNT: int = 4
+# YaRN base context for Qwen2.5-Coder-7B (HF config.json verified).
+QWEN25_CODER_ORIGINAL_MAX_POSITION: int = 32_768
+
+
+def refuse_fa3_on_ampere(compute_capability: int) -> None:
+    """Raise SidecarBootError if FA3/FA4 import is attempted on Ampere.
+
+    FA3 targets H100/H200 Hopper (SM_90) and FA4 targets Hopper + Blackwell
+    (SM_90+/SM_100). RTX 3090 / 3060 are Ampere SM_86 / SM_80 — neither has
+    an optimized FA3 path. The 75% headline speedup cited in cuDNN
+    benchmarks is H100-measured. Loud refusal is preferable to silent
+    fallback to a slower or numerically different code path.
+
+    Args:
+        compute_capability: GPU compute capability as int (sm_86 = 86).
+            Use 0 to skip the GPU check (e.g., CPU-only smoke runs).
+
+    References: tridao.me/blog/2024/flash3, together.ai/blog/flashattention-4,
+        github.com/Dao-AILab/flash-attention SM_80 supported list.
+    """
+    if os.getenv("ELAI_REFUSE_FA3", "1") != "1":
+        # Explicit opt-out for cloud Hopper deployments (out-of-scope today).
+        return
+    if compute_capability == 0:
+        return
+    if compute_capability >= 90:
+        # Hopper / Blackwell — FA3 path is the optimized one, no refusal.
+        return
+    # Ampere or older: actively check no FA3 module was imported.
+    import sys
+    forbidden = (
+        "flash_attn_3",
+        "flash_attn_4",
+        "cudnn_attention",
+    )
+    for mod_name in list(sys.modules.keys()):
+        for forbidden_prefix in forbidden:
+            if mod_name.startswith(forbidden_prefix):
+                raise SidecarBootError(
+                    f"FA3/FA4/cuDNN-attention kernel '{mod_name}' is Hopper/"
+                    f"Blackwell only; this GPU has compute capability sm_"
+                    f"{compute_capability}. RTX 3090/3060 (Ampere) must use "
+                    f"FA2 (flash_attn 2.x). Reference: tridao.me/blog/2024/"
+                    f"flash3, together.ai/blog/flashattention-4. To override "
+                    f"(cloud Hopper deployments only), set ELAI_REFUSE_FA3=0."
+                )
+
+
+def pin_sdpa_backend() -> "tuple[Any, str, bool]":
+    """Pin SDPA backend to FLASH_ATTENTION; return (ctx_mgr, backend, fallback).
+
+    Returns a context manager that pins torch's SDPA dispatcher to the
+    FLASH_ATTENTION kernel for the duration of the with-block. This
+    prevents the documented silent MATH fallback on shape errors
+    (pytorch#133780). Caller wraps model.generate() with the returned
+    context manager.
+
+    The third return value indicates whether the SDPA backend pin was
+    actually applied (False on torch versions that lack sdpa_kernel; the
+    returned ctx_mgr is a nullcontext in that case so callers don't crash
+    on older toolchains).
+
+    References:
+        * pytorch#133780 — SDPA silent MATH fallback when backend not pinned.
+        * torch>=2.3 torch.nn.attention.sdpa_kernel + SDPBackend.FLASH_ATTENTION.
+    """
+    import contextlib
+    try:
+        from torch.nn.attention import sdpa_kernel, SDPBackend  # type: ignore
+    except ImportError:
+        # torch < 2.3 lacks the explicit backend pin; return a no-op so
+        # callers don't crash. The kernel-select code logs this once at
+        # boot so operators see the degraded path.
+        return contextlib.nullcontext(), "unknown", False
+    ctx_mgr = sdpa_kernel([SDPBackend.FLASH_ATTENTION])
+    return ctx_mgr, "flash_attention", True
+
+
+def apply_streaming_llm_mask(
+    attention_mask: "torch.Tensor",
+    sink_count: int,
+    window_size: int,
+    context_position: int,
+) -> "torch.Tensor":
+    """Apply StreamingLLM attention-sink masking to an attention mask.
+
+    Per arXiv:2309.17453 (Xiao et al., ICLR 2024), preserves the first
+    `sink_count` tokens (the attention sinks) PLUS a sliding window of
+    the most recent `window_size` tokens. All other positions are masked
+    out (set to 0 in the additive mask convention).
+
+    Critical implementation note (per
+    workflow/papers/streaming-llm-interface.md): when this mask is paired
+    with a KV-cache eviction policy, position_ids MUST be re-indexed
+    relative to the cache slot, NOT the original text position. This
+    function only manipulates the attention mask; the caller is
+    responsible for ensuring the model's position_ids are passed in
+    cache-relative form.
+
+    Args:
+        attention_mask: 2D or 4D attention mask tensor. Shape
+            (batch, seq_len) or (batch, 1, seq_len, seq_len).
+        sink_count: Number of initial tokens to keep as sinks. Paper
+            recommends >= 4; values < 4 do not preserve attention
+            distribution quality per paper Sec 4.2.
+        window_size: Size of the trailing sliding window.
+        context_position: Absolute position of the current token in the
+            untruncated text. Used to compute which tokens are in the
+            window vs. sink vs. evicted region.
+
+    Returns:
+        A new attention mask tensor with the same shape, with attention
+        masked to (sinks U window) only.
+
+    Raises:
+        ValueError: when sink_count < 1 or window_size < 1.
+    """
+    if sink_count < 1:
+        raise ValueError(
+            f"StreamingLLM sink_count must be >= 1 (paper recommends >= 4 "
+            f"per Sec 4.2); got {sink_count}"
+        )
+    if window_size < 1:
+        raise ValueError(
+            f"StreamingLLM window_size must be >= 1; got {window_size}"
+        )
+    seq_len = attention_mask.shape[-1]
+    if context_position < sink_count + window_size:
+        # Short context — no eviction needed; return the mask unchanged.
+        return attention_mask
+    # Build a boolean keep mask: positions [0, sink_count) and
+    # [context_position - window_size, context_position) are kept.
+    device = attention_mask.device
+    positions = torch.arange(seq_len, device=device)
+    is_sink = positions < sink_count
+    window_start = context_position - window_size
+    is_window = (positions >= window_start) & (positions < context_position)
+    keep = is_sink | is_window
+    # Broadcast the keep vector to the full mask rank by zeroing dropped
+    # positions. attention_mask is conventionally 1 for "attend" and 0
+    # for "do not attend" (HF convention).
+    if attention_mask.dim() == 2:
+        new_mask = attention_mask * keep.to(attention_mask.dtype).unsqueeze(0)
+    else:
+        # 4D: (batch, heads_or_1, q_len, k_len). Apply along the k_len axis.
+        shape = [1] * attention_mask.dim()
+        shape[-1] = seq_len
+        keep_b = keep.to(attention_mask.dtype).reshape(shape)
+        new_mask = attention_mask * keep_b
+    return new_mask
+
+
+def apply_yarn_rope_scaling_at_boot(
+    model_config: Any,
+    factor: float,
+    original_max_position: int = QWEN25_CODER_ORIGINAL_MAX_POSITION,
+) -> Any:
+    """Inject YaRN rope_scaling into a model config (boot-time helper).
+
+    Conflict reconciliation per workflow/reasoning/E-28-decisions.md:
+    the live-server default still refuses YaRN via refuse_yarn_at_boot
+    (E-32 policy unchanged). This helper is ONLY callable from the
+    factor-sweep harness (test_yarn_eval_gate.py) when both
+    ELAI_YARN_EVAL_GATE=1 AND ELAI_YARN_BOOT_FACTOR is set to a valid
+    factor. It mutates the in-memory config dict to inject
+    rope_scaling={"type":"yarn","factor":<f>,
+    "original_max_position_embeddings":<orig>}. The mutation happens at
+    config load before AutoModelForCausalLM.from_pretrained reads
+    config.rope_scaling. The live boot path NEVER invokes this helper.
+
+    References:
+        * arXiv:2309.00071 YaRN (Peng+, 2023) — base rope_scaling formula.
+        * arXiv:2501.15383 Qwen2.5-1M tech report — Qwen2.5 family
+          uses factor=4 to target 128K (orig=32768).
+        * E-32-decisions.md DECISION 1 — YaRN rejected by default; this
+          helper is harness-only.
+
+    Args:
+        model_config: HF AutoConfig (or dict) instance for the model.
+        factor: YaRN scaling factor (typical: 2.0, 4.0, 8.0). Validated
+            here to reject 0 / negative / NaN.
+        original_max_position: The pre-extension max position embeddings.
+            Defaults to 32768 (Qwen2.5-Coder-7B base context window).
+
+    Returns:
+        The same config object with rope_scaling injected.
+
+    Raises:
+        SidecarBootError: when the gate env var ELAI_YARN_EVAL_GATE is
+            not set, OR factor is invalid.
+    """
+    if os.getenv("ELAI_YARN_EVAL_GATE", "0") != "1":
+        raise SidecarBootError(
+            "apply_yarn_rope_scaling_at_boot is harness-only; set "
+            "ELAI_YARN_EVAL_GATE=1 to enable (live boot path uses "
+            "refuse_yarn_at_boot per E-32). See "
+            "workflow/reasoning/E-28-decisions.md."
+        )
+    if not (factor > 0.0) or factor != factor:  # also catches NaN
+        raise SidecarBootError(
+            f"YaRN factor must be positive finite; got {factor}"
+        )
+    if original_max_position < 1:
+        raise SidecarBootError(
+            f"YaRN original_max_position_embeddings must be >= 1; "
+            f"got {original_max_position}"
+        )
+    rope_scaling = {
+        "type": "yarn",
+        "factor": float(factor),
+        "original_max_position_embeddings": int(original_max_position),
+    }
+    if hasattr(model_config, "rope_scaling"):
+        model_config.rope_scaling = rope_scaling
+    elif isinstance(model_config, dict):
+        model_config["rope_scaling"] = rope_scaling
+    else:
+        raise SidecarBootError(
+            f"apply_yarn_rope_scaling_at_boot: unsupported config type "
+            f"{type(model_config).__name__}; expected AutoConfig or dict"
+        )
+    logger.info(
+        "yarn_rope_scaling_applied",
+        factor=float(factor),
+        original_max_position_embeddings=int(original_max_position),
+        gate="ELAI_YARN_EVAL_GATE=1 (harness-only path)",
+    )
+    return model_config
+
+
+# ---------------------------------------------------------------------------
 # E-32: FoundInTheMiddleCalibrator — training-free positional-prior subtraction
 # ---------------------------------------------------------------------------
 

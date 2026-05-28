@@ -45,6 +45,10 @@ fn vision_artifact_serde_round_trip() {
         kind: VisionArtifactKind::Page,
         content_hash_hex: VisionArtifact::hash_bytes(raw),
         byte_size: raw.len() as u64,
+        multi_vec: None,
+        pooled: None,
+        vlm_caption: None,
+        parser_confidence: None,
     };
     let json = serde_json::to_string(&artifact).expect("serialize ok");
     let back: VisionArtifact = serde_json::from_str(&json).expect("deserialize ok");
@@ -61,6 +65,10 @@ fn standalone_screenshot_has_no_page_index() {
         kind: VisionArtifactKind::Screenshot,
         content_hash_hex: VisionArtifact::hash_bytes(b""),
         byte_size: 0,
+        multi_vec: None,
+        pooled: None,
+        vlm_caption: None,
+        parser_confidence: None,
     };
     assert!(shot.page_index.is_none());
     assert_eq!(shot.kind, VisionArtifactKind::Screenshot);

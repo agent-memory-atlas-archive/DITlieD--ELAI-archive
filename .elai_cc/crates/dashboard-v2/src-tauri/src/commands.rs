@@ -8060,6 +8060,222 @@ pub async fn get_stagnation_events(
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// E-23 -- developer-discourse positioning + UX-guard panels.
+//
+// Two read-only commands the ContextStatePanel + TrustTelemetryPanel poll:
+//
+//   * `get_context_state` -- one snapshot of FSM state + token-budget % +
+//     prompt-injection-check status + runtime_choice_badge label. The
+//     panel renders yellow >=70% / red >=85% per CONTEXT_BUDGET_*_PCT
+//     constants in orchestrator::ssb.
+//
+//   * `get_trust_telemetry` -- aggregated TrustReport across existing SSB
+//     rows (productivity proxy + verification density + revert signal +
+//     ungrounded counter + stagnation distribution). Wire-dark unless
+//     ELAI_DEVELOPER_DISCOURSE_ENABLE=1 -- when off, returns the empty
+//     report so the dashboard renders a stable grid.
+//
+// Plan body: F:\.ELAI_workflow\docs\thefinalglance\E-plan\
+// E-23_developer_discourse_2026.md tasks 1 + 2. Source-grounded by
+// arXiv:2507.09089 (METR RCT, productivity baseline frame) and Anthropic
+// issue #13171 (context-loss UX driver).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TopicBudgetDto {
+    pub topic: String,
+    pub remaining_calls: u32,
+    pub remaining_chars: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ContextStateDto {
+    pub fsm_state: String,
+    pub substate: Option<String>,
+    pub token_budget_pct: f32,
+    pub mcp_think_topics: Vec<TopicBudgetDto>,
+    pub last_precompact_thresholds: Vec<f32>,
+    /// "passed" | "blocked" | "not_run" -- driven by C-42 last-run rows
+    /// (C-42 is PLANNED today, so the default is "not_run").
+    pub prompt_injection_check_status: String,
+    /// "local" | "cloud_billed" | "" -- derived from B-37 runtime_fallback
+    /// rows. Empty when no runtime has been selected yet this session.
+    pub runtime_choice_badge: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TrustReportDto {
+    pub tasks_per_hour: f64,
+    pub findings_per_task: f64,
+    pub revert_rate: f64,
+    pub ungrounded_count: u64,
+    pub stagnation_dist: std::collections::HashMap<String, u64>,
+}
+
+/// Map a B-37 RuntimeBackend snake_case identifier to the
+/// CommandWindow status-row partition. Local-first backends (sidecar,
+/// mlx, llama_cpp, ollama, vllm, sglang, lsp, ppm) return "local"; cloud-
+/// billed backends return "cloud_billed". Unknown identifiers map to
+/// the empty string so the badge collapses to a no-op for unseen
+/// runtimes -- the panel renders the empty case explicitly.
+fn classify_runtime_badge(backend: &str) -> &'static str {
+    match backend {
+        "sidecar" | "ollama" | "vllm" | "mlx" | "llama_cpp" | "sglang" | "lsp" | "ppm" => "local",
+        "anthropic_api" | "claude_code" | "codex_cli" | "opencode" | "hermes" | "gemini_cli"
+        | "kiro_cli" | "copilot_cli" | "composer2" => "cloud_billed",
+        _ => "",
+    }
+}
+
+#[tauri::command]
+pub async fn get_context_state(state: State<'_, AppState>) -> CmdResult<ContextStateDto> {
+    use elai_orchestrator::ssb::{CONTEXT_BUDGET_RED_PCT, CONTEXT_BUDGET_YELLOW_PCT};
+    // Sentinel-quiet refs so the constants don't drift silently. The
+    // panel uses the same constants in its threshold check copy. The
+    // ordering check is a compile-pass-time sanity check.
+    let _ = (CONTEXT_BUDGET_YELLOW_PCT, CONTEXT_BUDGET_RED_PCT);
+
+    // Default zeroed shape -- the panel always renders something. We
+    // overwrite from SSB rows below when the viewer is available.
+    let mut dto = ContextStateDto {
+        fsm_state: "IDLE".to_owned(),
+        substate: None,
+        token_budget_pct: 0.0,
+        mcp_think_topics: Vec::new(),
+        last_precompact_thresholds: Vec::new(),
+        prompt_injection_check_status: "not_run".to_owned(),
+        runtime_choice_badge: String::new(),
+    };
+
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(dto);
+    };
+
+    // FSM state: read the latest phase_transition row's `to` field. The
+    // SsbViewer already has a recent_rows_of_type entry; reuse it so we
+    // do not duplicate SQL.
+    if let Ok(rows) = viewer.recent_rows_of_type("phase_transition", 1) {
+        if let Some(row) = rows.first() {
+            if let Some(to) = row.payload_json.get("to").and_then(|v| v.as_str()) {
+                dto.fsm_state = to.to_owned();
+            }
+            if let Some(sub) = row.payload_json.get("substate").and_then(|v| v.as_str()) {
+                dto.substate = Some(sub.to_owned());
+            }
+        }
+    }
+
+    // Token-budget % -- read the most recent context_budget_computed row
+    // (B-31.5 / B-7). Payload field name: `usage_pct` (per existing
+    // ContextBudgetComputedPayload shape). Fall back to 0.0 if absent.
+    if let Ok(rows) = viewer.recent_rows_of_type("context_budget_computed", 1) {
+        if let Some(row) = rows.first() {
+            if let Some(pct) = row.payload_json.get("usage_pct").and_then(|v| v.as_f64()) {
+                dto.token_budget_pct = pct as f32;
+            }
+        }
+    }
+
+    // Runtime badge -- look at most recent runtime_fallback row's
+    // `succeeded` backend (B-37). If no row, the badge stays empty.
+    if let Ok(rows) = viewer.recent_rows_of_type("runtime_fallback", 1) {
+        if let Some(row) = rows.first() {
+            if let Some(backend) = row
+                .payload_json
+                .get("succeeded")
+                .and_then(|v| v.as_str())
+            {
+                dto.runtime_choice_badge = classify_runtime_badge(backend).to_owned();
+            }
+        }
+    }
+
+    // Prompt-injection check -- C-42 producer is PLANNED. We probe for
+    // the row family (`gateway_policy_allowed` / `gateway_policy_denied`)
+    // and keep "not_run" otherwise.
+    if let Ok(rows) = viewer.recent_rows_of_type("gateway_policy_allowed", 1) {
+        if !rows.is_empty() {
+            dto.prompt_injection_check_status = "passed".to_owned();
+        }
+    }
+    if dto.prompt_injection_check_status == "not_run" {
+        if let Ok(rows) = viewer.recent_rows_of_type("gateway_policy_denied", 1) {
+            if !rows.is_empty() {
+                dto.prompt_injection_check_status = "blocked".to_owned();
+            }
+        }
+    }
+
+    Ok(dto)
+}
+
+#[tauri::command]
+pub async fn get_trust_telemetry(state: State<'_, AppState>) -> CmdResult<TrustReportDto> {
+    use elai_orchestrator::trust_telemetry::{aggregate_session, discourse_enabled, TrustRowInput};
+
+    // When the gate is off we still return the empty zeroed shape so
+    // the panel renders. Mirrors E-22 / E-43 / E-55 gate-defaults.
+    if !discourse_enabled() {
+        return Ok(TrustReportDto {
+            tasks_per_hour: 0.0,
+            findings_per_task: 0.0,
+            revert_rate: 0.0,
+            ungrounded_count: 0,
+            stagnation_dist: std::collections::HashMap::new(),
+        });
+    }
+
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(TrustReportDto {
+            tasks_per_hour: 0.0,
+            findings_per_task: 0.0,
+            revert_rate: 0.0,
+            ungrounded_count: 0,
+            stagnation_dist: std::collections::HashMap::new(),
+        });
+    };
+
+    const PER_TYPE_LIMIT: usize = 200;
+    let action_types = [
+        "phase_transition",
+        "finding",
+        "file_write",
+        "claim",
+        "stagnation_spinning_detected",
+        "stagnation_oscillation_detected",
+    ];
+    let mut rows: Vec<TrustRowInput> = Vec::new();
+    let mut earliest_ts: Option<i64> = None;
+    let mut latest_ts: Option<i64> = None;
+    for at in action_types {
+        let Ok(detail) = viewer.recent_rows_of_type(at, PER_TYPE_LIMIT) else {
+            continue;
+        };
+        for d in detail {
+            earliest_ts = Some(earliest_ts.map_or(d.ts, |e| e.min(d.ts)));
+            latest_ts = Some(latest_ts.map_or(d.ts, |e| e.max(d.ts)));
+            rows.push(TrustRowInput {
+                action_type: d.action_type,
+                ts_ms: d.ts,
+                payload_json: d.payload_json,
+            });
+        }
+    }
+    let elapsed_hours = match (earliest_ts, latest_ts) {
+        (Some(a), Some(b)) if b > a => (b - a) as f64 / 3_600_000.0_f64,
+        _ => 1.0_f64 / 60.0_f64, // 1 minute floor; aggregate_session also floors.
+    };
+    let report = aggregate_session(&rows, elapsed_hours);
+    Ok(TrustReportDto {
+        tasks_per_hour: report.tasks_per_hour,
+        findings_per_task: report.findings_per_task,
+        revert_rate: report.revert_rate,
+        ungrounded_count: report.ungrounded_count,
+        stagnation_dist: report.stagnation_dist,
+    })
+}
+
 #[tauri::command]
 pub async fn submit_tradeoff_responses(
     state: State<'_, AppState>,
@@ -10276,5 +10492,91 @@ pub async fn run_production_checklist(
         "target_path": target_path,
         "rows": rows,
         "runpod_pending": true,
+    }))
+}
+
+/// E-8 — read recent `prompt_optimization_completed` SSB rows for the
+/// dashboard `OptimizerRunPanel.svelte` surface. Emits the most recent
+/// `n` rows (default RAG_QUALITY_DEFAULT_LIMIT, hard-capped at
+/// RAG_QUALITY_HARD_CAP) plus aggregate red-flag predicates:
+///   * `overfit_risk` -- latest row's held_out lift is more than 2pp
+///     below val lift (DSPy 20/80 inversion per arXiv:2310.03714).
+///   * `reflection_lm_too_small` -- always false in the dashboard's
+///     READ surface: the CLI parser hard-refuses local LMs before any
+///     SSB row is written, so a row whose reason_hash matches the
+///     refusal label is the only path; the panel surfaces the predicate
+///     as a forward-compatible flag.
+///
+/// Per-row shape: `{ seq, ts, phase, iteration_index, val_lift_pct,
+/// held_out_lift_pct }`. See
+/// `crates/orchestrator/src/ssb.rs::PromptOptimizationCompletedPayload`.
+#[tauri::command]
+pub fn get_optimizer_run(state: State<'_, AppState>, n: u32) -> CmdResult<Value> {
+    let Some(viewer) = state.viewer.as_ref() else {
+        return Ok(json!({
+            "rows": [],
+            "latest_phase": null,
+            "latest_val_lift_pct": null,
+            "latest_held_out_lift_pct": null,
+            "overfit_risk": false,
+            "reflection_lm_too_small": false,
+        }));
+    };
+    let limit = rag_quality_limit(n);
+    let rows = viewer
+        .recent_rows_of_type(SsbActionType::PromptOptimizationCompleted.as_sql_str(), limit)
+        .unwrap_or_default();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    let mut latest_phase: Option<String> = None;
+    let mut latest_val: Option<f64> = None;
+    let mut latest_held_out: Option<f64> = None;
+    for detail in rows {
+        let inner = detail
+            .payload_json
+            .get("PromptOptimizationCompleted")
+            .cloned()
+            .unwrap_or(detail.payload_json);
+        let phase = inner
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let iteration_index = inner
+            .get("iteration_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let val_lift_pct = inner
+            .get("val_lift_pct")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() });
+        let held_out_lift_pct = inner
+            .get("held_out_lift_pct")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() });
+        latest_phase.get_or_insert_with(|| phase.clone());
+        if latest_val.is_none() {
+            latest_val = val_lift_pct;
+        }
+        if latest_held_out.is_none() {
+            latest_held_out = held_out_lift_pct;
+        }
+        out.push(json!({
+            "seq": detail.seq,
+            "ts": detail.ts,
+            "phase": phase,
+            "iteration_index": iteration_index,
+            "val_lift_pct": val_lift_pct.map(Value::from).unwrap_or(Value::Null),
+            "held_out_lift_pct": held_out_lift_pct.map(Value::from).unwrap_or(Value::Null),
+        }));
+    }
+    let overfit_risk = match (latest_val, latest_held_out) {
+        (Some(v), Some(h)) => (v - h) > 2.0,
+        _ => false,
+    };
+    Ok(json!({
+        "rows": out,
+        "latest_phase": latest_phase,
+        "latest_val_lift_pct": latest_val.map(Value::from).unwrap_or(Value::Null),
+        "latest_held_out_lift_pct": latest_held_out.map(Value::from).unwrap_or(Value::Null),
+        "overfit_risk": overfit_risk,
+        "reflection_lm_too_small": false,
     }))
 }

@@ -55,6 +55,62 @@ use crate::tool_calibration::{
 /// CLI's --tool-gate-off flag (cli/src/args.rs:532 writes the same env var).
 pub const ELAI_TOOL_GATE_OFF_ENV: &str = "ELAI_TOOL_GATE_OFF";
 
+/// E-22 (SCHEMA_VERSION 170) -- env var read at DefaultMcpBridge
+/// construction. When set to "1" or "true" the bridge emits one
+/// `GithubTrendingEvent::LazySchemaSavings` SSB row (with pre_bytes /
+/// post_bytes / tool_count) for every `http_list_tools` call. The
+/// response shape is already lazy (returns `McpToolSummary` =
+/// {name, description}; the full input_schema is only fetched on
+/// demand via the C-35 [`LazySchemaCache`]). The env gate is the
+/// consumer-side telemetry switch, NOT a behaviour switch. Default-off
+/// so existing tests keep their expected SSB row counts. Mirrors the
+/// `ELAI_GITHUB_TRENDING_ENABLE` umbrella defined in
+/// `orchestrator::ssb::ELAI_GITHUB_TRENDING_ENABLE_ENV` -- both flags
+/// must be on for emission. Grounded by arXiv:2604.21816 "Tool Attention
+/// Is All You Need" (95% MCP-tax reduction on a 120-tool 6-server
+/// benchmark; VERIFIED 2026-05-27 per E-22 grounding triage).
+pub const ELAI_LAZY_MCP_SCHEMA_ENABLE_ENV: &str = "ELAI_LAZY_MCP_SCHEMA_ENABLE";
+
+/// E-22 -- SSB emitter trait for the
+/// `GithubTrendingEvent::LazySchemaSavings` row. Same dependency-
+/// inversion pattern the C-35 [`ToolGateSsbEmitter`] uses (defined in
+/// plugins to avoid a circular dep on the orchestrator crate). The
+/// orchestrator + dashboard-v2 bootstrap wire a real implementor when
+/// an Ssb writer is available; default construction uses the noop
+/// variant so plugins tests and the fuzz harness run without an
+/// orchestrator.
+pub trait LazySchemaSavingsEmitter: Send + Sync {
+    /// Emit one `github_trending_event` row with kind=
+    /// `lazy_schema_savings`. `pre_bytes` is the estimated full-schema
+    /// byte count (caller-side estimate; 0 acceptable when unknown);
+    /// `post_bytes` is the actual lazy summary byte count;
+    /// `tool_count` is the number of tools in the listing.
+    fn emit(&self, pre_bytes: u64, post_bytes: u64, tool_count: u32) -> Result<(), String>;
+}
+
+/// Default no-op emitter -- returns Ok(()) without touching anything.
+pub struct NoopLazySchemaSavingsEmitter;
+
+impl LazySchemaSavingsEmitter for NoopLazySchemaSavingsEmitter {
+    fn emit(&self, _pre_bytes: u64, _post_bytes: u64, _tool_count: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// E-22 -- read the lazy schema env gate. Returns true only when the
+/// env var is set to "1" or "true" (case-insensitive). Any other value
+/// (unset / "0" / "false" / "off" / random string) returns false.
+#[must_use]
+pub fn lazy_mcp_schema_enabled() -> bool {
+    match std::env::var(ELAI_LAZY_MCP_SCHEMA_ENABLE_ENV) {
+        Ok(v) => {
+            let lo = v.trim().to_ascii_lowercase();
+            lo == "1" || lo == "true"
+        }
+        Err(_) => false,
+    }
+}
+
 /// Default MCP server URL the dashboard connects to when
 /// `ELAI_MCP_SERVER_URL` is unset. Points at an HTTP JSON-RPC endpoint —
 /// not a stdio binary — because the dashboard wiring only supports HTTP.
@@ -341,6 +397,19 @@ pub struct DefaultMcpBridge {
     /// the same place it consults the C-47 case base (AFTER ToolGate /
     /// AuthzPolicy allow, BEFORE the actual `http_call_tool` round-trip).
     reliability_ssb_emitter: Arc<dyn ReliabilityGateSsbEmitter>,
+    /// E-22 (SCHEMA_VERSION 170): SSB emitter for the
+    /// `GithubTrendingEvent::LazySchemaSavings` row. Default is
+    /// `NoopLazySchemaSavingsEmitter` so existing constructors stay
+    /// back-compatible. Wire a real implementor via
+    /// `with_lazy_schema_savings_emitter`. The bridge consults the
+    /// emitter at the end of `http_list_tools` ONLY when
+    /// `lazy_mcp_schema_enabled()` returns true at the env-gate level.
+    lazy_schema_savings_emitter: Arc<dyn LazySchemaSavingsEmitter>,
+    /// E-22 (SCHEMA_VERSION 170): read at construction from
+    /// `ELAI_LAZY_MCP_SCHEMA_ENABLE`. When true, http_list_tools emits
+    /// one savings row per call. Default false so existing tests
+    /// keep their expected SSB row counts.
+    lazy_schema_enabled_by_env: bool,
 }
 
 impl Default for DefaultMcpBridge {
@@ -365,6 +434,8 @@ impl Default for DefaultMcpBridge {
             calibration_registry: None,
             calibration_ssb_emitter: Arc::new(NoopCaseBaseEmitter),
             reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
+            lazy_schema_savings_emitter: Arc::new(NoopLazySchemaSavingsEmitter),
+            lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
         }
     }
 }
@@ -403,7 +474,31 @@ impl DefaultMcpBridge {
             calibration_registry: None,
             calibration_ssb_emitter: Arc::new(NoopCaseBaseEmitter),
             reliability_ssb_emitter: Arc::new(NoopReliabilityEmitter),
+            lazy_schema_savings_emitter: Arc::new(NoopLazySchemaSavingsEmitter),
+            lazy_schema_enabled_by_env: lazy_mcp_schema_enabled(),
         }
+    }
+
+    /// E-22 (SCHEMA_VERSION 170): install the SSB emitter for the
+    /// `GithubTrendingEvent::LazySchemaSavings` row. Default is
+    /// `NoopLazySchemaSavingsEmitter`. Emission ONLY fires when
+    /// `ELAI_LAZY_MCP_SCHEMA_ENABLE` was set at construction (the
+    /// env gate is captured in `self.lazy_schema_enabled_by_env`).
+    pub fn with_lazy_schema_savings_emitter(
+        mut self,
+        emitter: Arc<dyn LazySchemaSavingsEmitter>,
+    ) -> Self {
+        self.lazy_schema_savings_emitter = emitter;
+        self
+    }
+
+    /// E-22 accessor -- returns true when the env gate was set at
+    /// bridge construction. Used by the contract test
+    /// (e22_github_trending_ssb_contract) and the dashboard
+    /// `lazy_schema_status` Tauri command.
+    #[must_use]
+    pub fn lazy_schema_enabled(&self) -> bool {
+        self.lazy_schema_enabled_by_env
     }
 
     /// C-42 (session 2): install a role-based authorization policy. The
@@ -1205,6 +1300,15 @@ impl DefaultMcpBridge {
     }
 
     /// List tools exposed by the MCP server.
+    ///
+    /// E-22 (SCHEMA_VERSION 170): when `ELAI_LAZY_MCP_SCHEMA_ENABLE` is
+    /// set at construction, this method emits one
+    /// `GithubTrendingEvent::LazySchemaSavings` SSB row carrying
+    /// pre_bytes (estimated full-schema bytes if `input_schema` had been
+    /// inlined) + post_bytes (actual lazy summary bytes) + tool_count.
+    /// The response shape is already lazy ({name, description} only)
+    /// because the full input_schema lives in
+    /// `crate::mcp::lazy::LazySchemaCache` and is fetched on demand.
     pub async fn http_list_tools(&self, url: &str) -> Result<Vec<McpToolSummary>, McpError> {
         let client = self.http_client()?;
         let env = Self::jsonrpc_envelope("tools/list", serde_json::json!({}), 2);
@@ -1218,6 +1322,18 @@ impl DefaultMcpBridge {
             .as_array()
             .cloned()
             .unwrap_or_default();
+        // E-22: capture pre_bytes (full-schema sizing) BEFORE we drop
+        // the input_schema field. The estimate uses serde_json's
+        // re-serialization length of each tool entry so the saving is
+        // truthful against the wire-shape we WOULD have returned.
+        let mut pre_bytes: u64 = 0;
+        if self.lazy_schema_enabled_by_env {
+            for t in &arr {
+                if let Ok(s) = serde_json::to_string(t) {
+                    pre_bytes = pre_bytes.saturating_add(s.len() as u64);
+                }
+            }
+        }
         let mut out = Vec::with_capacity(arr.len());
         for t in arr {
             let name = t
@@ -1234,6 +1350,25 @@ impl DefaultMcpBridge {
                 continue;
             }
             out.push(McpToolSummary { name, description });
+        }
+        // E-22: emit savings row when env gate set.
+        if self.lazy_schema_enabled_by_env {
+            let mut post_bytes: u64 = 0;
+            for summary in &out {
+                if let Ok(s) = serde_json::to_string(summary) {
+                    post_bytes = post_bytes.saturating_add(s.len() as u64);
+                }
+            }
+            let tool_count = u32::try_from(out.len()).unwrap_or(u32::MAX);
+            if let Err(e) = self
+                .lazy_schema_savings_emitter
+                .emit(pre_bytes, post_bytes, tool_count)
+            {
+                tracing::warn!(
+                    error = %e,
+                    "E-22: lazy schema savings emit failed (continuing)"
+                );
+            }
         }
         Ok(out)
     }

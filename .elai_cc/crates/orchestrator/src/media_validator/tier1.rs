@@ -26,6 +26,19 @@ use super::types::{
     SILENCE_RMS_THRESHOLD,
 };
 
+// E-16 -- AXTreeAdapter re-export. Web-only Tier-1 deterministic
+// adapter that runs alongside the existing image/audio/3D/UI
+// validators. Producers in the `render_adapters::web` path emit a
+// captured `ariaSnapshot()` YAML which AXTreeAdapter compares against
+// a stored baseline; mismatches emit `VlmImageValidationKind::
+// AxtreeMismatch` SSB rows. The adapter itself is gate-free; the SSB
+// emission is wire-dark behind `ELAI_VLM_IMAGE_VALIDATION_ENABLE=1`.
+// See workflow/reasoning/E-16-decisions.md.
+pub use super::axtree::{
+    AxTreeAdapter, AxTreeResult, AxtreeError, AXTREE_DRIFT_THRESHOLD_PCT,
+    MAX_AXTREE_YAML_BYTES,
+};
+
 /// Tier-1 deterministic validator. Async because the real impl spawns
 /// subprocesses (tokio::process::Command). Object-safety preserved via
 /// boxed-Future return — callers store `Arc<dyn Tier1Validator>`.

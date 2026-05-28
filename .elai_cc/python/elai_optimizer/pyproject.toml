@@ -1,0 +1,28 @@
+[project]
+name = "elai-optimizer"
+version = "0.1.0"
+description = "ELAI self-evolving prompts service (E-8): GEPA-class reflective prompt evolution with cloud-Sonnet reflection / local-Qwen target split"
+requires-python = ">=3.10"
+
+# Anti-slopsquatting verification (per workflow/reasoning/E-8-decisions.md
+# DECISION-5):
+#   gepa     -- pypi.org/project/gepa/ 0.1.1 MIT 2026-03-16
+#               maintainer Lakshya A Agrawal (matches arXiv:2507.19457
+#               GEPA paper first-author identity). VERIFIED via WebFetch
+#               by paper-triager 2026-05-27.
+#   orjson   -- stable since 2020, MIT, canonical JSON for ELAI Python.
+#   pydantic -- v2.x stable; bounded type validation for OptimizedTemplate.
+dependencies = [
+    "gepa>=0.1.1,<0.2",
+    "orjson>=3.10.0",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+# Module entrypoint for `python -m elai_optimizer.optimizer`
+elai-optimize = "elai_optimizer.optimizer:main"

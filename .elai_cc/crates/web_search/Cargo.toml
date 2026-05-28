@@ -17,6 +17,11 @@ tokio = { workspace = true }
 toml.workspace = true
 tracing.workspace = true
 url = "2"
+# E-48 Task 2: blake3 used to canonicalize URLs for the
+# TieredSearchPool dedup hash. CLAUDE.md anti-stale-training HARD RULE:
+# blake3 ONLY; no blake2 / sha2. workspace declaration so the version
+# tracks the rest of the codebase.
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util", "macros", "rt"] }

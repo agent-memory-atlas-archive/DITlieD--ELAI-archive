@@ -13,14 +13,17 @@
 //! re-export below pre-binds the public surface so downstream callers
 //! (`task_runner`, `dashboard-v2`) need only `use elai_orchestrator::media_validator::*`.
 
+pub mod axtree;
 pub mod clap;
 pub mod external_tools;
 pub mod feedback_loop;
 pub mod mock_vlm;
 pub mod render_adapters;
+pub mod sycophancy;
 pub mod tier1;
 pub mod tier2;
 pub mod types;
+pub mod vlm_validator;
 
 // Public re-exports so callers don't have to walk the submodule tree for
 // the everyday surface. The ordering matches the dependency direction

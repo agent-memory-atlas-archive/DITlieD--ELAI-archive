@@ -6,6 +6,51 @@ pub mod agent_template;
 // Producer side of the adversarial-verification pass; consumed by
 // `agent_pool::run_adversarial_pass`. Grounding: arxiv:2403.07974 (T1).
 pub mod adversary;
+// E-6: MAST 14-mode failure taxonomy (Cemri et al. 2025 arXiv:2503.13657).
+// Citation correction from plan's bad cite 2406.12624 (ID_COLLISION)
+// documented in workflow/reasoning/E-6-decisions.md DECISION-1 +
+// gotchas.md E6_CITATION_2406_12624_ID_COLLISION.
+pub mod mast;
+// E-29 Tier-B: agentic-observability subtree.
+//   * mast_classify -- post-run MAST classifier reusing
+//     crate::mast::{MastMode, finding_to_mast_mode}.
+//   * replay -- ssb_resume_from() validator that consumes the C-44/D-9
+//     locked_keys_auditor predicate FAIL-CLOSED.
+//   * signal_match -- candidate-row sweep primitive (Laminar Signals).
+//   * dataset_promote -- traces-to-eval-dataset promotion primitive.
+//   * pricing_rollup -- per-phase/agent/tool cost helper REUSING C-14
+//     providers::pricing::ModelPricing.
+// All four SSB fire-points hang off a single Pattern-2 variant
+// `SsbActionType::AgenticObservabilityEvent` with a 4-arm kind
+// discriminator gated by ELAI_AGENTIC_OBSERVABILITY_ENABLE. See
+// workflow/reasoning/E-29-decisions.md (Tier-B section).
+pub mod observability;
+// E-6: PhaseKind enum used to gate cross-family-adversary requirement
+// at the AUDITING -> MEMORIZING transition. 6 variants {Code,
+// Architecture, Security, Docs, Test, Other}. See E-6-decisions.md
+// DECISION-3 + GAP-1 in the integration-explorer report.
+pub mod phase_kind;
+// E-6: iso-budget ablation harness — compares full 8-role ELAI pipeline
+// against single-agent + "Wait" reflection baseline at equal thinking-token
+// budget. Host-side scaffolding ONLY; live multi-agent runs RUNPOD-PENDING.
+// Grounding: arXiv:2604.02460 + arXiv:2507.02778 + arXiv:2502.00674.
+pub mod iso_budget_harness;
+// E-10: hostile-critic structural simplifications -- 7 new modules + 1
+// StructuredFailureSignal delta in mistake_book.rs. Substrate-only,
+// wire-dark unless ELAI_CRITIC_OF_DESIGN_ENABLE=1. See
+// workflow/reasoning/E-10-decisions.md.
+pub mod critic_stats;
+pub mod fsm_ablation;
+pub mod role_ablation;
+pub mod rag_challenger;
+pub mod cot_proof;
+pub mod cache_check;
+pub mod grc_blockquote;
+// E-6: persona re-anchor — re-injects role prompt every N turns AND when
+// cosine drift < threshold. EmbedProvider is pluggable; cosine gate
+// degrades to turn-counter-only when no provider is injected. Grounding:
+// arXiv:2511.09710 + arXiv:2412.00804 + arXiv:2601.04170.
+pub mod persona_anchor;
 // Phase B4 — Artifacts Pipeline (library skeleton). Filesystem-only write
 // helper for context artifacts + JSON manifests. SSB `ArtifactPublished`
 // row emission is INTENTIONALLY deferred to a follow-up patch (see
@@ -33,6 +78,22 @@ pub mod anti_spiral;
 // 4-pattern detector + 5-persona switch + GoalDriftCanary + Watchdog +
 // AdaptiveFutilityTracker. See workflow/reasoning/C-10-decisions.md.
 pub mod anti_spiral_extended;
+// E-4 chat UX critique substrate: SycophancyGuard + ClaimWithConfidence
+// + ConfidenceTier + OneShotClarifier + CompletionClaimCheck +
+// DoomLoopDetector (thin facade over anti_spiral). All emit via the
+// SsbActionType::ChatUxCritiqueEvent Pattern-2 envelope when the
+// ELAI_CHAT_UX_CRITIQUE_ENABLE env var is set to "1". See
+// workflow/reasoning/E-4-decisions.md.
+pub mod chat_ux;
+// E-11 catalog+recommender slice: 5-archetype SaaS taxonomy + per-
+// archetype catalog (auth scheme + multi-tenancy + framework profile
+// stem + production-checklist subset + scope-clarity profile) +
+// ProjectClass-aware recommender (RecommendationConfidence 3-arm enum,
+// no f32) + 2024-2026 prior-art registry (15 entries: 9 tools + 6
+// reports). Wire-dark SSB emission gated by
+// `ELAI_SAAS_PRIOR_ART_ENABLE=1`. See workflow/reasoning/
+// E-11-decisions.md.
+pub mod architecture;
 pub mod autonomous_gate;
 pub mod sandbox;
 // Phase B1 — Tier C Sandbox policy layer. Sibling of `sandbox` (the
@@ -58,9 +119,18 @@ pub mod codeact_sandbox;
 pub mod durability;
 pub mod dst;
 pub mod cloud_mode;
+// E-39 -- cost + token economics substrate. HARD ceiling mid-task
+// cooperative abort + velocity caps + AutoMix self-verify gate +
+// difficulty-x-budget cost router + free-tier quota guard +
+// layered caps. Pattern-2 (28th application) single CostTokenEvent
+// + 8-arm CostEventKind discriminator. Wire-dark unless
+// ELAI_COST_TOKEN_ECONOMICS_ENABLE=1. See
+// workflow/reasoning/E-39-decisions.md.
+pub mod cost;
 pub mod context_budget;
 pub mod dispatch;
 pub mod dispatcher;
+pub mod privacy;
 pub mod privacy_redactor;
 pub mod branch_lock;
 mod compact;
@@ -118,6 +188,16 @@ pub mod recovery_recipes;
 pub mod grounding_client;
 pub mod research_budget;
 pub mod research_pipeline;
+// E-48 (SCHEMA_VERSION 185): web-research orchestrator hardening
+// substrate. Sits alongside the future E-22 + E-23 research add-ons
+// the session-prompt anticipates. Wire-dark default; emission gated by
+// ELAI_WEB_RESEARCH_ORCHESTRATOR_ENABLE. See
+// workflow/reasoning/E-48-decisions.md.
+pub mod research;
+// E-38 (SCHEMA_VERSION 175): 2026 AI roadmap signals + EU AI Act
+// compliance pre-gate substrate. See workflow/reasoning/E-38-decisions.md.
+pub mod compliance;
+pub mod roadmap_signals;
 pub mod searx_search_backend;
 pub mod research_tier;
 pub mod research_tree;
@@ -146,6 +226,25 @@ pub mod workload_profiling;
 // AcceptAndComplete + deterministic bridge templates.
 pub mod skeleton_generator;
 pub mod mini_critic;
+// E-21 (SCHEMA_VERSION 181): peer-systems harness substrate -- inference-
+// time critic rerank + SBFL Ochiai compute + repo-as-state-store +
+// ACI tool-shape audit emitter. Wire-dark unless
+// `ELAI_PEER_SYSTEMS_ENABLE=1`. Distinct from `mini_critic` (role-time
+// signature linter); see crate-doc on `peer_systems::critic_rerank`.
+// Plan: docs/thefinalglance/E-plan/E-21_peer_systems_llm_as_worker.md
+// Decisions: workflow/reasoning/E-21-decisions.md.
+pub mod peer_systems;
+// E-36 (SCHEMA_VERSION 182): document + vision RAG substrate.
+// Visual artifact verifier (10th VerificationMethod variant
+// dispatch surface) + policy gate (per-project enable + cloud-mode
+// blocker). Producer for the single-variant Pattern-2
+// DocumentVisionRagEvent (34th application). Wire-dark unless
+// `ELAI_DOCUMENT_VISION_RAG_ENABLE=1`. Composes with
+// `knowledge::chunking::image_artifact::ImageArtifactChunker` +
+// `knowledge::chunking::pdf_structured::PdfStructuredChunker`.
+// Plan: docs/thefinalglance/E-plan/E-36_document_vision_rag.md.
+// Decisions: workflow/reasoning/E-36-decisions.md.
+pub mod document_vision_rag;
 pub mod structural_retry;
 pub mod bridge_template;
 // C-32 close-out (audit-C32 W1): per-blank dispatch wiring that drives
@@ -232,6 +331,7 @@ pub mod scope_freeze;
 // arXiv:2604.21910 (S0 -> S3 full-match accuracy 44.0% -> 83.3% on Claude
 // Opus 4.6, Section 5.1 Table 2). See workflow/papers/scientific-workflow-interface.md.
 pub mod skill_registry;
+pub mod skill_telemetry;
 pub mod ssb;
 // C-45: CANTANTE contrastive credit attribution. Paper-grounded against
 // arXiv:2605.13295 (Zehle 2026, Section 3.2 — K rollouts NOT K^N, scalar
@@ -322,6 +422,49 @@ pub mod benchmarks;
 // Sibling of `benchmarks` — distinguishes data-producing runners
 // (`farm/*`) from data-evaluating runners (`benchmarks/*`).
 pub mod farm;
+// E-9: external agent-eval benchmark substrate. Compiles unconditionally
+// (host-side scaffolding); live eval emission gated by
+// `ELAI_EVAL_BENCHMARK_ENABLE=1`. The 11 external benchmark suites
+// (swe-bench-pro, swe-bench-live, livecodebench-v6, tau2-bench, bfcl-v3,
+// gaia-l1-l2, clawsbench-split, refinebench, sycophancy-probes,
+// math-floors, deep-planning) are registered in `external_benches::list_suites`.
+// See workflow/reasoning/E-9-decisions.md.
+pub mod bench_significance;
+pub mod ds_cp_validator;
+pub mod external_benches;
+// E-7: darwinian self-improvement substrate (wire-dark). Feature-gated
+// behind `darwinian-evolve`; all live evolution loops gated additionally
+// behind `ELAI_DARWINIAN_LOOP_ENABLE=1`. See workflow/reasoning/E-7-decisions.md.
+// Paper grounding: arXiv:2510.04399 (Statistical Limits / Two-Gate) +
+// arXiv:2305.10718 (Discounted Thompson Sampling) + arXiv:2506.13131
+// (AlphaEvolve MAP-Elites) + arXiv:2507.05619 (EST). REMOVED:
+// arXiv:2602.12413 (wrong paper per DECISION-3). Krakovna spec-gaming
+// spreadsheet seeds the trap_tasks pattern enum.
+#[cfg(feature = "darwinian-evolve")]
+pub mod template_archive;
+#[cfg(feature = "darwinian-evolve")]
+pub mod promotion_gate;
+#[cfg(feature = "darwinian-evolve")]
+pub mod est_probe;
+#[cfg(feature = "darwinian-evolve")]
+pub mod cross_domain_canary;
+#[cfg(feature = "darwinian-evolve")]
+pub mod trap_tasks;
+#[cfg(feature = "darwinian-evolve")]
+pub mod archive_crypto;
+#[cfg(feature = "darwinian-evolve")]
+pub mod l3_lock;
+#[cfg(feature = "darwinian-evolve")]
+pub mod darwinian_bai;
+// E-8: self-evolving prompts substrate. The LPO span guard
+// + structured-auditor-feedback exporter + gotchas-injection helper
+// are unconditional (no E-7 surface required); they support the
+// optimizer admit path AND the default-features build's LPO contract
+// tests. See workflow/reasoning/E-8-decisions.md.
+pub mod baby_step_spec_lpo;
+pub mod auditor_feedback_export;
+pub mod gotchas_inject;
+pub mod optimizer_admit;
 // D-3: VerificationResult aggregator + closed-enum ConsensusRule. Heterogeneous
 // verifier substrate composed into a single AggregateVerdict consumed by the
 // pre-promotion chain gate. See workflow/reasoning/D-3-decisions.md.
@@ -384,6 +527,14 @@ pub mod bai;
 // labels: arXiv:2111.06929 SUPPORTING EVIDENCE (regret minimization,
 // not BAI); arXiv:2106.10417 DIRECT GROUNDING (variance-dependent BAI).
 pub mod bai_hierarchical;
+// E-55: Agentic RL + reward ladder substrate -- RLAIF judge (cloud Sonnet
+// on local-Qwen rollouts) + GEPA reflective prompt evolution + hybrid
+// PRM+ORM reward fusion + MONA composite-reward hacking guards +
+// SFT-on-rollouts collection surface + 3-condition unlock gate for
+// DPO/PPO/GRPO/KTO weight-update modules (which DO NOT exist by design).
+// Wire-dark unless ELAI_AGENTIC_RL_ENABLE=1. Live training runs RUNPOD-
+// PENDING. See workflow/reasoning/E-55-decisions.md.
+pub mod rl;
 // D-30: Calibration corpus bootstrap warm-start. Loads a published
 // calibration corpus subset (TruthfulQA arXiv:2109.07958 fixture by
 // default), projects to D-16 CalibrationTuple rows, runs UniCR
@@ -432,6 +583,14 @@ pub mod locked_keys_auditor;
 pub mod dual_ledger;
 pub mod agentless_shortcut;
 pub mod goal_drift_canary;
+// E-46 (SCHEMA_VERSION 184) — planning-decomposition substrate. Layered
+// additively atop the shipped dual_ledger / agentless_shortcut /
+// goal_drift_canary modules so the existing 4 downstream consumers (incl
+// the BAI promotion-gate seam) keep compiling unchanged. Wire-dark unless
+// ELAI_PLANNING_DECOMPOSITION_ENABLE=1. See
+// docs/thefinalglance/E-plan/E-46_planning_decomposition.md +
+// workflow/reasoning/E-46-decisions.md.
+pub mod planning_decomposition;
 // D-10: mode-routing predicate (orchestrator picks the grounding
 // mode for every novel claim — the policy model has no input). The
 // three modules are pure data + pure logic; D-9 LockedKeysRegistry
@@ -605,10 +764,18 @@ pub mod production_agent_rpc;
 // challenge per §3.2; does NOT auto-correct (PM does not reliably fix
 // sycophancy per §4 — 75% PM residual, 25% oracle floor).
 pub mod sycophancy;
+// E-19 — reasoning quality probe wrappers (pre-L2 confidence gate, PRM-lite
+// L4 scoring, LToT lateral split, L6 verifier diversity). Wire-dark unless
+// ELAI_REASONING_QUALITY_PROBE_ENABLE=1. See workflow/reasoning/E-19-decisions.md.
+pub mod reasoning;
 pub mod supervision;
 pub mod task_packet;
 pub mod task_registry;
 pub mod team_cron_registry;
+// E-23 -- 2026 developer-discourse positioning + UX-guard trust telemetry
+// plane. Wire-dark unless ELAI_DEVELOPER_DISCOURSE_ENABLE=1. Reads existing
+// SSB rows only; the producer side is the dashboard-v2 Tauri command.
+pub mod trust_telemetry;
 pub mod worker_boot;
 // Phase 4J / B-25 — Empire integration (host-side scaffolding only). Gated
 // behind cfg(feature = "empire") so non-empire builds pay zero compile-time
@@ -1111,6 +1278,11 @@ pub use ssb::{
     MemoryEvolutionRunPayload, MemoryNoteInsertedPayload,
     MemoryNoteEvolvedPayload, MemoryConflictDetectedPayload,
     CoreBlockReplacedPayload,
+    // E-16 (SCHEMA_VERSION 179): VLM image-validation Pattern-2.
+    // Re-exported so dashboard-v2 media_validation.rs fold path +
+    // contract crate tests can decode rows without `::ssb::*` paths.
+    VlmImageValidationEventPayload, VlmImageValidationKind,
+    ELAI_VLM_IMAGE_VALIDATION_ENABLE_ENV,
 };
 // D-2: PPM client + sidecar hook public surface.
 pub use ppm_client::{

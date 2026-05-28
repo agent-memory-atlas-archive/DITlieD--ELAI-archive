@@ -10,3 +10,6 @@ serde.workspace = true
 postcard.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
+# E-6: TypedAgentEnvelope content-hash uses blake3 per CLAUDE.md anti-stale
+# rule. workspace dep at .elai_cc/Cargo.toml L43 (blake3 = "1.8").
+blake3 = { workspace = true }

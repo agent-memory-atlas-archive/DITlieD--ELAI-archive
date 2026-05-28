@@ -1,0 +1,64 @@
+[package]
+name = "ssb-otel-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# E-29 Tier-B -- OTLP gRPC exporter that translates SSB rows into OTel
+# GenAI semconv 1.40.0 spans. The four OTel deps are OPTIONAL behind
+# the `otlp-export` feature so the crate compiles into the workspace
+# without forcing the dependency surface on non-OTLP builds.
+#
+# Anti-slopsquatting verification (May 2026 per integration-explorer):
+#   * opentelemetry 0.31.0
+#       crates.io/crates/opentelemetry
+#       docs.rs/opentelemetry/0.31.0 (last published Apr 2026)
+#       Apache-2.0
+#   * opentelemetry_sdk 0.31.0
+#       crates.io/crates/opentelemetry_sdk
+#       Apache-2.0
+#   * opentelemetry-otlp 0.32.0
+#       crates.io/crates/opentelemetry-otlp
+#       MSRV 1.75.0 (verify on ELAI bump)
+#       Apache-2.0
+#   * tracing-opentelemetry 0.32.x
+#       crates.io/crates/tracing-opentelemetry
+#       MIT
+#
+# All four are published under apache/mit OSS licenses by the
+# `open-telemetry` GitHub org (verified via repo URL chain). No
+# slopsquatting risk identified.
+#
+# Live OTLP gRPC integration testing is RUNPOD-PENDING (requires a
+# spun-up `otelcol-contrib` instance; deferred to follow-up plan).
+# See workflow/reasoning/E-29-decisions.md Tier-B section.
+
+[features]
+default = []
+otlp-export = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Optional OTLP exporter deps -- only pulled in when the `otlp-export`
+# cargo feature is enabled. The default build is dep-free apart from
+# the workspace baseline so non-OTLP downstreams pay zero cost.
+#
+# Versions aligned at 0.32 (opentelemetry-otlp 0.32 transitively pulls
+# opentelemetry 0.32 + opentelemetry_sdk 0.32; mismatch with 0.31
+# would cause two parallel SpanContext types to coexist in the build
+# graph). See Cargo.lock lines 4049-4130 for the resolved versions.
+opentelemetry = { version = "0.32", optional = true, default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", optional = true, default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", optional = true, default-features = false, features = ["trace", "grpc-tonic"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

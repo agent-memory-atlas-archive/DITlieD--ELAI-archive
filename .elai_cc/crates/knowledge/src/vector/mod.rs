@@ -132,6 +132,78 @@ impl VectorModule for OrtVectorModule {
 }
 
 // ---------------------------------------------------------------------------
+// E-36 — 4-list RRF fusion helper.
+//
+// The existing `knowledge::pipeline::rrf_rerank_with_tier` already
+// accumulates over a `Vec<PipelineStage>`, so a 4th `vision_vec` stage
+// composes naturally when callers push it. This public helper ships
+// the per-stage weighted RRF formula so the
+// `rrf_4list_fusion_contract.rs` test has a stable surface to assert
+// against without reaching into pipeline internals.
+//
+// Formula: sum_over_stages( weight_s / (k + rank_s) ) where k = 60
+// (Cormack et al. SIGIR'09). Default weights per plan task 6:
+// bm25 = 1.0, code_vec = 1.0, text_vec = 0.8, vision_vec = 0.6
+// (vision is weighted lower because REAL-MM-RAG arXiv:2502.12342
+// reports it as brittle on text-heavy / table queries).
+// ---------------------------------------------------------------------------
+
+/// Cormack et al. SIGIR'09 RRF constant. Pinned at 60 across the
+/// pipeline. Exported so callers can reproduce the formula without
+/// re-importing the constant from the private pipeline module.
+pub const RRF_K: f32 = 60.0;
+
+/// Default RRF weights for the 4-list vision-RAG fusion. Producer
+/// reads these from `[knowledge.rrf] weights` in `elai_cc.toml` when
+/// the operator overrides; the defaults here are the documented
+/// shipping shape per E-36 plan task 6.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RrfWeights4 {
+    pub bm25: f32,
+    pub code_vec: f32,
+    pub text_vec: f32,
+    pub vision_vec: f32,
+}
+
+impl Default for RrfWeights4 {
+    fn default() -> Self {
+        Self {
+            bm25: 1.0,
+            code_vec: 1.0,
+            text_vec: 0.8,
+            vision_vec: 0.6,
+        }
+    }
+}
+
+/// Compute the weighted 4-list RRF score for a candidate that appears
+/// in each list at the given 1-based rank. Pass `None` for any list
+/// the candidate is absent from (the absent-list term contributes 0).
+///
+/// Determinism: same inputs always yield the same f32 (no rand / no
+/// platform-dependent fma rearrangement; arithmetic stays in a single
+/// associativity order).
+#[must_use]
+pub fn rrf_score_4_weighted(
+    bm25_rank: Option<usize>,
+    code_rank: Option<usize>,
+    text_rank: Option<usize>,
+    vision_rank: Option<usize>,
+    weights: &RrfWeights4,
+) -> f32 {
+    let term = |rank: Option<usize>, w: f32| -> f32 {
+        match rank {
+            Some(r) => w / (RRF_K + r as f32),
+            None => 0.0,
+        }
+    };
+    term(bm25_rank, weights.bm25)
+        + term(code_rank, weights.code_vec)
+        + term(text_rank, weights.text_vec)
+        + term(vision_rank, weights.vision_vec)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

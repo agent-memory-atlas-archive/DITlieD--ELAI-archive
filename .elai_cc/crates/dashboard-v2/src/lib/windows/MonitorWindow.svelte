@@ -36,6 +36,26 @@
   import MsiPanel from '$lib/components/MsiPanel.svelte';
   // B-24 Phase 4I Group C8 — media validator pipeline + RCE feedback loop.
   import MediaValidationPanel from '$lib/components/MediaValidationPanel.svelte';
+  // E-6 — MAST multi-agent failure-mode tracker panel (arXiv:2503.13657).
+  // Live via SSB subscription on AuditMastTagged + IsoBudgetMeasured.
+  // Self-polling (5s interval) onMount; no parent prop required.
+  import MastFailurePanel from '$lib/components/MastFailurePanel.svelte';
+  // E-10: hostile-critic structural simplifications decision panel.
+  import CriticDecisionPanel from '$lib/components/CriticDecisionPanel.svelte';
+  // E-38: 2026 AI roadmap signals + EU AI Act compliance panel.
+  // Wire-dark unless ELAI_AI_ROADMAP_SIGNALS_ENABLE=1 on the orchestrator side.
+  import RoadmapPanel from '$lib/components/RoadmapPanel.svelte';
+  // E-39: cost + token economics panel. Surfaces velocity caps,
+  // cost-router decisions, AutoMix verifier verdicts, free-tier
+  // remaining quotas. Wire-dark unless
+  // ELAI_COST_TOKEN_ECONOMICS_ENABLE=1 on the orchestrator side.
+  import CostPanel from '$lib/components/CostPanel.svelte';
+  // E-54: eval-corpus repair pre-deploy panels. Two distinct surfaces:
+  //   - EvalCorpusPanel: per-family task count + decontam + thresholds.
+  //   - SycophancyMatchedPairPanel: D-23 matched-pair framing probes
+  //     (separate from D-14 SycophancyFlagStrip; not a rename).
+  import EvalCorpusPanel from '$lib/components/EvalCorpusPanel.svelte';
+  import SycophancyMatchedPairPanel from '$lib/components/SycophancyMatchedPairPanel.svelte';
   // B-28 follow-up — Focus tunnel surface moved to inline chips on the
   // PlanWindow baby-step detail card. No sibling panel is mounted here.
 
@@ -365,6 +385,65 @@
        visible when the gate stops the run. -->
   <section class="monitor-section media-validation" aria-label="Media validation">
     <MediaValidationPanel />
+  </section>
+
+  <!-- E-6 — MAST multi-agent failure-mode tracker. Renders a 3-column
+       (Specification / InterAgent / Verification) breakdown of MAST mode
+       counts plus the IsoBudgetMeasured trail. Self-polling via onMount.
+       Mounted in MonitorWindow alongside the other observability panels
+       (MSI / Proposals / MediaValidation) per E-6-decisions.md. -->
+  <section class="monitor-section mast-failure" aria-label="MAST failure-mode tracker">
+    <MastFailurePanel />
+  </section>
+
+  <!-- E-10 hostile-critic structural simplifications decision panel.
+       6-tile renderer over critic_decision_event SSB rows. See
+       workflow/reasoning/E-10-decisions.md. -->
+  <section class="monitor-section critic-decision" aria-label="Critic decisions">
+    <CriticDecisionPanel />
+  </section>
+
+  <!-- E-38 2026 AI roadmap signals + EU AI Act compliance pre-gate.
+       Renders ai_roadmap_signal_event SSB rows (5-arm RoadmapSignalKind:
+       compliance_blocked / compliance_verified /
+       mcp_transport_version_logged / mrcr_unverified / posture_doc_stale).
+       Wire-dark unless ELAI_AI_ROADMAP_SIGNALS_ENABLE=1 on the
+       orchestrator side. See workflow/reasoning/E-38-decisions.md. -->
+  <section class="monitor-section roadmap-signals" aria-label="2026 roadmap signals">
+    <RoadmapPanel />
+  </section>
+
+  <!-- E-39 cost + token economics panel. Renders cost_token_event SSB
+       rows (8-arm CostEventKind: task_aborted_by_spend_cap /
+       velocity_cap_breached / automix_verifier_verdict /
+       cost_router_decision / cost_estimate_inaccurate /
+       free_tier_quota_approaching / free_tier_quota_exceeded /
+       layered_cap_manual_override). Wire-dark unless
+       ELAI_COST_TOKEN_ECONOMICS_ENABLE=1 on the orchestrator side.
+       See workflow/reasoning/E-39-decisions.md. -->
+  <section class="monitor-section cost-economics" aria-label="Cost + token economics">
+    <CostPanel />
+  </section>
+
+  <!-- E-54 eval-corpus repair pre-deploy. Per-family task count, decontam
+       counters (ngram-reject / cosine-reject / no-tests / fail-ref /
+       useless / gen-rot / perf-delta), and the configured 13-gram / 0.85
+       cosine thresholds. Reads eval_corpus_event SSB rows. Wire-dark
+       unless ELAI_EVAL_CORPUS_ENABLE=1 on the orchestrator side. See
+       workflow/reasoning/E-54-decisions.md. -->
+  <section class="monitor-section eval-corpus" aria-label="Eval corpus">
+    <EvalCorpusPanel />
+  </section>
+
+  <!-- E-54 matched-pair sycophancy probes (D-23 surface). Eval-vs-deploy
+       framing gap + sandbagging-anomaly flags per arXiv:2510.20487 +
+       arXiv:2508.00943. Separate from the D-14 SycophancyFlagStrip;
+       different probe regime. -->
+  <section
+    class="monitor-section sycophancy-matched-pair"
+    aria-label="Matched-pair sycophancy"
+  >
+    <SycophancyMatchedPairPanel />
   </section>
 
   <!-- B-28 follow-up — Focus tunnel signals moved inline onto the PlanWindow

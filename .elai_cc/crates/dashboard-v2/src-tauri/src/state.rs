@@ -103,6 +103,36 @@ pub struct IterationSnapshot {
     pub issues: Vec<String>,
 }
 
+/// E-16 -- per-entry AXTree YAML snapshot. Folded onto a
+/// `MediaValidationEntry` when the orchestrator emits a
+/// `VlmImageValidationKind::AxtreeMismatch` SSB row. `yaml_diff_pct`
+/// is the line-granularity drift versus the stored baseline;
+/// `mismatch` mirrors the producer flag (drift > threshold).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AxtreeSnapshot {
+    pub yaml_diff_pct: f64,
+    pub mismatch: bool,
+    #[serde(default)]
+    pub baseline_path: Option<String>,
+    #[serde(default)]
+    pub current_path: Option<String>,
+    #[serde(default)]
+    pub threshold_pct: Option<f64>,
+}
+
+/// E-16 -- per-entry sycophancy_probe snapshot. Folded onto a
+/// `MediaValidationEntry` when the orchestrator emits a (REUSED)
+/// `SycophancyFlag` SSB row from the media_validator
+/// sycophancy_probe path. Verdict label vocab MUST match
+/// SycophancyFlagPayload.verdict (E-4 / D-14): "convergent" |
+/// "divergent_sycophancy_flag" | "inconclusive".
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SycophancySnapshot {
+    pub flip_detected: bool,
+    pub delta: f64,
+    pub verdict: String,
+}
+
 /// Top-level entry surfaced by `get_media_validations`. One per `step_id`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaValidationEntry {
@@ -130,6 +160,29 @@ pub struct MediaValidationEntry {
     /// Last SSB row timestamp (ms since epoch) for this entry. Used by the
     /// dashboard to display "last updated".
     pub updated_at: u64,
+    // -----------------------------------------------------------------
+    // E-16 fields (default None / empty so old rows decode cleanly).
+    // -----------------------------------------------------------------
+    /// E-16 -- AXTree YAML snapshot folded from
+    /// `VlmImageValidationKind::AxtreeMismatch`. None until at least
+    /// one such row lands for the step_id.
+    #[serde(default)]
+    pub axtree: Option<AxtreeSnapshot>,
+    /// E-16 -- sycophancy_probe snapshot folded from the REUSED
+    /// `SycophancyFlag` SSB row. None until at least one such row
+    /// lands for the step_id.
+    #[serde(default)]
+    pub sycophancy: Option<SycophancySnapshot>,
+    /// E-16 -- swap-order pairwise disagreement folded from
+    /// `VlmImageValidationKind::SwapOrderDisagreement`. None until at
+    /// least one such row lands; `Some(true)` -> red badge.
+    #[serde(default)]
+    pub swap_order_disagreement: Option<bool>,
+    /// E-16 -- monotonic LPIPS-delta (or SSIM-derived surrogate)
+    /// history across the RCE iteration loop. One entry per
+    /// iteration. Empty until iterations begin.
+    #[serde(default)]
+    pub convergence_history: Vec<f64>,
 }
 
 impl MediaValidationEntry {
@@ -145,6 +198,11 @@ impl MediaValidationEntry {
             feedback_iterations: Vec::new(),
             final_verdict: None,
             updated_at,
+            // E-16 fields default to None / empty until producers emit.
+            axtree: None,
+            sycophancy: None,
+            swap_order_disagreement: None,
+            convergence_history: Vec::new(),
         }
     }
 }

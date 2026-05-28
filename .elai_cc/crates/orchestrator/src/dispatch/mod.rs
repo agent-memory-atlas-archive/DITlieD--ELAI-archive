@@ -14,6 +14,11 @@ mod mcp;
 
 pub use in_process::{InProcessDispatch, InProcessToolRunner};
 pub use mcp::McpClientDispatch;
+// E-38 (SCHEMA_VERSION 175): re-export the MCP transport-version log
+// constants so contract tests + future external consumers can verify the
+// current vs roadmap-target strings without poking into the private
+// dispatch::mcp module.
+pub use mcp::{MCP_TRANSPORT_CURRENT_DEFAULT, MCP_TRANSPORT_ROADMAP_TARGET};
 
 // B-15 HashMap ban: prior unused std::collections imports removed.
 // (52-line file, no map type appears.) If a future edit adds a real

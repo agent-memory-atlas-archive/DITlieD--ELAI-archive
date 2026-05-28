@@ -254,6 +254,196 @@ pub struct CosmosArtifact {
 }
 
 // ---------------------------------------------------------------------------
+// E-36 — vision-side artifact taxonomy.
+//
+// The B-42 cosmos worker shipped a text-only artifact path. E-36 adds 4
+// vision-side artifact kinds (Diagram / ArchImage / Screenshot / ScannedDoc)
+// that the cosmos refresh loop can register alongside the existing
+// CosmosArtifact rows.
+//
+// Stale-check policy (plan task 4):
+//   * Diagram     — fires on source_text change OR rendered_png_blake3 change
+//   * ArchImage   — fires on image_blake3 mismatch
+//   * Screenshot  — fires on image_blake3 mismatch
+//   * ScannedDoc  — fires on pdf_path-blake3 mismatch
+//
+// Producer wiring (registering instances in the cosmos refresh loop) is
+// the orchestrator's job — `CosmosWorker::refresh_one` does not consume
+// these enums yet; the enums lock the wire shape so future producers
+// cannot diverge.
+// ---------------------------------------------------------------------------
+
+/// Diagram source-language taxonomy. The cosmos worker can re-render
+/// from source on change, so the source-text path is recorded alongside
+/// the rendered-PNG blake3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagramSourceLang {
+    Mermaid,
+    PlantUml,
+    D2,
+    Excalidraw,
+}
+
+impl DiagramSourceLang {
+    /// Snake-case wire label.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mermaid => "mermaid",
+            Self::PlantUml => "plantuml",
+            Self::D2 => "d2",
+            Self::Excalidraw => "excalidraw",
+        }
+    }
+}
+
+/// Parser-backend taxonomy used by `ArtifactType::ScannedDoc`. Mirrors
+/// `knowledge::chunking::pdf_structured::ParserBackend` (same 6 arms);
+/// kept separate so the cosmos surface does not pull in the chunking
+/// module just for the type alias. Cloud arms are gated by the
+/// `--mode local` policy in
+/// `orchestrator::document_vision_rag::policy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParserBackend {
+    PaddleOcrVl,
+    MinerU,
+    Dolphin,
+    MistralCloud,
+    ReductoCloud,
+    LlamaParseCloud,
+}
+
+impl ParserBackend {
+    /// Snake-case wire label.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::PaddleOcrVl => "paddleocr_vl",
+            Self::MinerU => "mineru",
+            Self::Dolphin => "dolphin",
+            Self::MistralCloud => "mistral_cloud",
+            Self::ReductoCloud => "reducto_cloud",
+            Self::LlamaParseCloud => "llamaparse_cloud",
+        }
+    }
+
+    /// True when this backend requires the cloud-mode gate.
+    #[must_use]
+    pub const fn is_cloud(&self) -> bool {
+        matches!(
+            self,
+            Self::MistralCloud | Self::ReductoCloud | Self::LlamaParseCloud
+        )
+    }
+}
+
+/// E-36 vision-side artifact taxonomy. Net-new — the B-42 cosmos worker
+/// shipped without a discriminated ArtifactType (only the structural
+/// `CosmosArtifact` row), so this enum is the first vision-shape
+/// classifier in the codebase. Plan-side drift was that this enum
+/// already existed; per workflow/reasoning/E-36-decisions.md DRIFT-3 it
+/// is in fact net-new.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ArtifactType {
+    /// Source-text-backed diagram (Mermaid / PlantUML / D2 / Excalidraw).
+    /// Stale-check fires on source_text change OR rendered_png_blake3
+    /// change.
+    Diagram {
+        source_lang: DiagramSourceLang,
+        source_text: String,
+        /// Optional — set once the diagram has been rendered to PNG by
+        /// the cosmos refresh loop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rendered_png_blake3: Option<String>,
+    },
+    /// Architecture image (PNG / JPEG with no separately-tracked source).
+    /// Stale-check fires on image_blake3 mismatch.
+    ArchImage {
+        image_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vlm_caption: Option<String>,
+        image_blake3: String,
+    },
+    /// UI screenshot. Stale-check fires on image_blake3 mismatch.
+    Screenshot {
+        image_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        captured_url: Option<String>,
+        image_blake3: String,
+    },
+    /// Scanned PDF (multi-page). Stale-check fires on pdf_blake3
+    /// mismatch; parser_confidence drives the cloud-fallback gate.
+    ScannedDoc {
+        pdf_path: String,
+        parser: ParserBackend,
+        parser_confidence: f32,
+        page_count: u32,
+        pdf_blake3: String,
+    },
+}
+
+impl ArtifactType {
+    /// Pure-compute staleness predicate. Compares the artifact's
+    /// declared blake3 hash(es) against the current on-disk values
+    /// passed by the caller. Returns `true` when the artifact should
+    /// be refreshed.
+    ///
+    /// Wire shape:
+    ///   * `Diagram` — pass `current_source_blake3` (mandatory) +
+    ///     `current_rendered_png_blake3` (mandatory if the diagram has
+    ///     been rendered).
+    ///   * `ArchImage`/`Screenshot`/`ScannedDoc` — pass the canonical
+    ///     blake3 of the underlying file as `current_source_blake3`;
+    ///     the other arg is ignored.
+    ///
+    /// The producer caller computes both blake3 hashes via
+    /// `blake3::hash` directly — this helper does no I/O.
+    #[must_use]
+    pub fn is_stale(
+        &self,
+        current_source_blake3: &str,
+        current_rendered_png_blake3: Option<&str>,
+    ) -> bool {
+        match self {
+            ArtifactType::Diagram {
+                source_text,
+                rendered_png_blake3,
+                ..
+            } => {
+                let declared_source = blake3::hash(source_text.as_bytes()).to_hex().to_string();
+                if declared_source != current_source_blake3 {
+                    return true;
+                }
+                match (rendered_png_blake3.as_deref(), current_rendered_png_blake3) {
+                    (Some(declared), Some(current)) => declared != current,
+                    // Rendered-PNG not tracked yet OR not provided —
+                    // treat as fresh on the rendered-PNG axis.
+                    _ => false,
+                }
+            }
+            ArtifactType::ArchImage { image_blake3, .. }
+            | ArtifactType::Screenshot { image_blake3, .. } => image_blake3 != current_source_blake3,
+            ArtifactType::ScannedDoc { pdf_blake3, .. } => pdf_blake3 != current_source_blake3,
+        }
+    }
+
+    /// Snake-case discriminator string useful for SQL CHECK constraints +
+    /// dashboard rendering.
+    #[must_use]
+    pub const fn type_tag(&self) -> &'static str {
+        match self {
+            ArtifactType::Diagram { .. } => "diagram",
+            ArtifactType::ArchImage { .. } => "arch_image",
+            ArtifactType::Screenshot { .. } => "screenshot",
+            ArtifactType::ScannedDoc { .. } => "scanned_doc",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ pub mod json;
 pub mod paths;
 pub mod project_id;
 pub mod project_profile;
+pub mod reasoning;
 pub mod sandbox;
 pub mod telescope;
 mod usage;

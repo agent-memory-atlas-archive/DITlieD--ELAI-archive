@@ -148,6 +148,27 @@ pub enum FsmSubstate {
     /// tool access on (state, substate) — under Tdd the agent is
     /// restricted to test-file writes + cargo-mutants invocation.
     Tdd,
+    /// E-7: Darwinian self-improvement generation evaluation substate
+    /// under top-level `FsmState::Auditing`. Named
+    /// `DarwinianGenerationEvaluating` (NOT `Promoting`, NOT plain
+    /// `Auditing`) to avoid collision with the top-level
+    /// `FsmState::Auditing` — per workflow/reasoning/E-7-decisions.md
+    /// DECISION-8. Wire-dark unless `ELAI_DARWINIAN_LOOP_ENABLE=1` AND
+    /// `cfg(feature = "darwinian-evolve")`. Paper grounding:
+    /// arXiv:2510.04399 §Theorem 2 Two-Gate finite-sample safety.
+    DarwinianGenerationEvaluating,
+    /// E-6: Adversary substate — cross-family heterogeneous-verifier
+    /// probe window under AUDITING. Entered when the primary auditor
+    /// emits a verdict that requires cross-family confirmation per
+    /// [`crate::phase_kind::PhaseKind::requires_cross_family_adversary`].
+    /// Exited when [`crate::adversary::AdversaryVerdict::cross_family_confirmed`]
+    /// is true (proceeds to MEMORIZING) or when cross-family is unavailable
+    /// AND `ELAI_ALLOW_CLOUD_ADVERSARY=0` (emits
+    /// `SsbActionType::CrossFamilyUnavailable` + refuses AUDITING ->
+    /// MEMORIZING). PreToolUse hooks restrict the agent to verifier
+    /// invocation only — no Edit/Write/Bash. Grounding: arXiv:2507.02778
+    /// (64.5% blind-spot rate) + arXiv:2503.13657 MAST FC3.
+    Adversary,
 }
 
 impl FsmSubstate {
@@ -156,6 +177,10 @@ impl FsmSubstate {
             FsmSubstate::Framing => "framing",
             FsmSubstate::SleepCompute => "sleep_compute",
             FsmSubstate::Tdd => "tdd",
+            // E-7: darwinian self-improvement substrate -- DECISION-8.
+            FsmSubstate::DarwinianGenerationEvaluating => "darwinian_generation_evaluating",
+            // E-6: cross-family adversary probe substate.
+            FsmSubstate::Adversary => "adversary",
         }
     }
 }
@@ -163,6 +188,101 @@ impl FsmSubstate {
 impl std::fmt::Display for FsmSubstate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E-6 — audit_clear_for_memorize guard
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`audit_clear_for_memorize`] when the verdict does
+/// NOT clear AUDITING for transition to MEMORIZING.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AdversaryGateError {
+    /// The phase kind requires cross-family adversary confirmation but
+    /// no AdversaryVerdict was attached.
+    #[error("phase {phase} requires cross-family adversary but verdict was not supplied")]
+    AdversaryMissing { phase: String },
+    /// AdversaryVerdict supplied but `cross_family_confirmed` is false.
+    #[error(
+        "phase {phase} requires cross-family confirmation but verdict reports cross_family_confirmed=false"
+    )]
+    NotCrossFamilyConfirmed { phase: String },
+}
+
+/// E-6 — verify AUDITING -> MEMORIZING is cleared per cross-family
+/// adversary requirements. See workflow/reasoning/E-6-decisions.md
+/// DECISION-7 for the placement rationale (plan task 9 originally
+/// targeted AUDITING -> COMPLETE which is impossible under the
+/// transition matrix — the actual choke point is AUDITING -> MEMORIZING).
+///
+/// Returns `Ok(())` when phase does not require adversary OR a verdict
+/// with `cross_family_confirmed=true` is supplied. `Err` otherwise;
+/// caller should emit `CrossFamilyUnavailable` SSB row before refusing.
+pub fn audit_clear_for_memorize(
+    phase: &crate::phase_kind::PhaseKind,
+    adversary_verdict: Option<&crate::adversary::AdversaryVerdict>,
+) -> Result<(), AdversaryGateError> {
+    if !phase.requires_cross_family_adversary() {
+        return Ok(());
+    }
+    let verdict = match adversary_verdict {
+        Some(v) => v,
+        None => {
+            return Err(AdversaryGateError::AdversaryMissing {
+                phase: phase.as_str().to_owned(),
+            });
+        }
+    };
+    if !verdict.cross_family_confirmed {
+        return Err(AdversaryGateError::NotCrossFamilyConfirmed {
+            phase: phase.as_str().to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod e6_audit_clear_tests {
+    use super::*;
+    use crate::adversary::AdversaryVerdict;
+    use crate::phase_kind::PhaseKind;
+
+    #[test]
+    fn docs_phase_never_requires_adversary() {
+        audit_clear_for_memorize(&PhaseKind::Docs, None).expect("docs must clear");
+        audit_clear_for_memorize(&PhaseKind::Test, None).expect("test must clear");
+        audit_clear_for_memorize(&PhaseKind::Other, None).expect("other must clear");
+    }
+
+    #[test]
+    fn code_phase_without_verdict_blocks() {
+        let err = audit_clear_for_memorize(&PhaseKind::Code, None)
+            .expect_err("code phase MUST require verdict");
+        assert!(matches!(err, AdversaryGateError::AdversaryMissing { .. }));
+    }
+
+    #[test]
+    fn architecture_phase_with_unconfirmed_verdict_blocks() {
+        let v = AdversaryVerdict::robust("c-1", false);
+        let err = audit_clear_for_memorize(&PhaseKind::Architecture, Some(&v))
+            .expect_err("architecture + unconfirmed must block");
+        assert!(matches!(
+            err,
+            AdversaryGateError::NotCrossFamilyConfirmed { .. }
+        ));
+    }
+
+    #[test]
+    fn security_phase_with_confirmed_verdict_clears() {
+        let v = AdversaryVerdict::robust("c-1", true);
+        audit_clear_for_memorize(&PhaseKind::Security, Some(&v))
+            .expect("security + confirmed must clear");
+    }
+
+    #[test]
+    fn fsm_substate_adversary_as_str_stable() {
+        assert_eq!(FsmSubstate::Adversary.as_str(), "adversary");
     }
 }
 
@@ -296,6 +416,16 @@ pub enum FsmError {
     AuditingBlocked {
         block_count: usize,
     },
+    /// E-38 (SCHEMA_VERSION 175): the
+    /// `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` transition was
+    /// refused by the EU AI Act compliance pre-gate. The agent must
+    /// fix the cited assertion before re-attempting the transition.
+    ComplianceBlocked {
+        /// Snake_case assertion label (e.g. `clock_provider_intact`).
+        assertion_label: String,
+        /// Static remediation hint.
+        hint: String,
+    },
 }
 
 impl std::fmt::Display for FsmError {
@@ -336,6 +466,12 @@ impl std::fmt::Display for FsmError {
                 write!(
                     f,
                     "AUDITING -> MEMORIZING rejected: deterministic auditor reported {block_count} BLOCK finding(s); resolve and re-enter AUDITING"
+                )
+            }
+            FsmError::ComplianceBlocked { assertion_label, hint } => {
+                write!(
+                    f,
+                    "PLANNING -> TESTING_FIRST refused: EU AI Act assertion {assertion_label} failed; {hint}; see docs/strategy/ELAI-2026-POSTURE.md"
                 )
             }
         }
@@ -420,6 +556,34 @@ pub struct Fsm {
     /// already arc-shared). Write failures are non-fatal — a tracing::warn is
     /// emitted but the FSM transition always completes.
     ssb_writer: OnceLock<Arc<crate::ssb::Ssb>>,
+    /// E-38 (SCHEMA_VERSION 175): optional EU AI Act compliance pre-gate
+    /// provider. When `Some`, the closure is consulted at every
+    /// `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` transition to produce a
+    /// [`crate::compliance::ComplianceVerdict`]. A `Block` verdict refuses
+    /// the transition with [`FsmError::ComplianceBlocked`] and emits an
+    /// `AiRoadmapSignalEvent::ComplianceBlocked` SSB row (when the
+    /// `ELAI_AI_ROADMAP_SIGNALS_ENABLE` env-gate is on); a `Pass` verdict
+    /// emits a `ComplianceVerified` row and proceeds. `None` means the
+    /// pre-gate is disabled (legacy callers + tests that don't ship a
+    /// PlanContext yet).
+    compliance_provider: Option<Arc<dyn ComplianceProvider>>,
+}
+
+/// E-38 -- pluggable producer of [`crate::compliance::ComplianceVerdict`]
+/// for the FSM `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` pre-gate.
+/// Implementations build a [`crate::compliance::PlanContext`] from the
+/// orchestrator's planning state + clock + D-1 archive presence flag, then
+/// call [`crate::compliance::pre_gate_planning_to_testing_first`].
+pub trait ComplianceProvider: Send + Sync {
+    /// Build a verdict for the upcoming transition. Called with the
+    /// current FSM source state so the provider can distinguish the
+    /// direct PLANNING -> TESTING_FIRST edge from the
+    /// FEASIBILITY_PROBE -> TESTING_FIRST edge.
+    fn verdict(
+        &self,
+        source: FsmState,
+        target: FsmState,
+    ) -> crate::compliance::ComplianceVerdict;
 }
 
 impl std::fmt::Debug for Fsm {
@@ -468,6 +632,7 @@ impl Fsm {
             model_pool: None,
             deterministic_audit_gate: None,
             ssb_writer: OnceLock::new(),
+            compliance_provider: None,
         }
     }
 
@@ -493,6 +658,27 @@ impl Fsm {
     ) -> Self {
         self.deterministic_audit_gate = Some(gate);
         self
+    }
+
+    /// E-38 (SCHEMA_VERSION 175): install an EU AI Act compliance
+    /// [`ComplianceProvider`]. When set, every
+    /// `PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST` transition consults
+    /// the provider; a `Block` verdict refuses the transition with
+    /// [`FsmError::ComplianceBlocked`] and emits an
+    /// `AiRoadmapSignalEvent::ComplianceBlocked` SSB row (wire-dark
+    /// unless `ELAI_AI_ROADMAP_SIGNALS_ENABLE=1`); a `Pass` verdict
+    /// emits a `ComplianceVerified` row and proceeds.
+    pub fn with_compliance_provider(
+        mut self,
+        provider: Arc<dyn ComplianceProvider>,
+    ) -> Self {
+        self.compliance_provider = Some(provider);
+        self
+    }
+
+    /// Mutable setter companion to [`Self::with_compliance_provider`].
+    pub fn set_compliance_provider(&mut self, provider: Arc<dyn ComplianceProvider>) {
+        self.compliance_provider = Some(provider);
     }
 
     /// Mutable setter companion to [`Self::with_deterministic_audit_gate`].
@@ -560,6 +746,7 @@ impl Fsm {
             model_pool: None,
             deterministic_audit_gate: None,
             ssb_writer: OnceLock::new(),
+            compliance_provider: None,
         })
     }
 
@@ -650,6 +837,96 @@ impl Fsm {
                 let block_count = result.block_count();
                 if block_count > 0 {
                     return Err(FsmError::AuditingBlocked { block_count });
+                }
+            }
+        }
+
+        // E-38 (SCHEMA_VERSION 175): EU AI Act compliance pre-gate at
+        // PLANNING|FEASIBILITY_PROBE -> TESTING_FIRST. Block on any of
+        // the 4 assertions failing; emit AiRoadmapSignalEvent SSB row
+        // (wire-dark unless ELAI_AI_ROADMAP_SIGNALS_ENABLE=1). The gate
+        // ITSELF runs whenever a provider is installed; the env-gate
+        // controls observability only. See compliance.rs +
+        // workflow/reasoning/E-38-decisions.md.
+        if target == FsmState::TestingFirst
+            && (source == FsmState::Planning || source == FsmState::FeasibilityProbe)
+        {
+            if let Some(ref provider) = self.compliance_provider {
+                let verdict = provider.verdict(source, target);
+                match &verdict {
+                    crate::compliance::ComplianceVerdict::Block { assertion, hint } => {
+                        // Emit the SSB row before returning the error so
+                        // the dashboard tile reflects the block.
+                        if crate::roadmap_signals::roadmap_signals_enabled() {
+                            if let Some(writer) = self.ssb_writer.get() {
+                                let ts_ms = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+                                let ctx = crate::compliance::PlanContext {
+                                    plan_session_id: guard.phase_label.clone(),
+                                    has_clock_provider: false,
+                                    has_deterministic_seed: false,
+                                    template_hash_chain_verified: false,
+                                    template_archive_present: false,
+                                    ssb_row_count_in_planning_phase: 0,
+                                };
+                                let payload = crate::ssb::SsbPayload::AiRoadmapSignalEvent(
+                                    crate::compliance::build_block_payload(
+                                        &ctx,
+                                        *assertion,
+                                        hint,
+                                        ts_ms,
+                                    ),
+                                );
+                                if let Err(e) = writer
+                                    .write_payload("fsm", 0, payload, Vec::new())
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        assertion = assertion.as_str(),
+                                        error = %e,
+                                        "fsm: ai_roadmap_signal_event compliance_blocked SSB write failed (non-fatal)"
+                                    );
+                                }
+                            }
+                        }
+                        return Err(FsmError::ComplianceBlocked {
+                            assertion_label: assertion.as_str().to_string(),
+                            hint: hint.clone(),
+                        });
+                    }
+                    crate::compliance::ComplianceVerdict::Pass { assertions_checked } => {
+                        if crate::roadmap_signals::roadmap_signals_enabled() {
+                            if let Some(writer) = self.ssb_writer.get() {
+                                let ts_ms = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+                                let ctx = crate::compliance::PlanContext {
+                                    plan_session_id: guard.phase_label.clone(),
+                                    has_clock_provider: true,
+                                    has_deterministic_seed: true,
+                                    template_hash_chain_verified: true,
+                                    template_archive_present: false,
+                                    ssb_row_count_in_planning_phase:
+                                        crate::compliance::AUDIT_TRAIL_MIN_SSB_ROWS,
+                                };
+                                let payload = crate::ssb::SsbPayload::AiRoadmapSignalEvent(
+                                    crate::compliance::build_verified_payload(
+                                        &ctx,
+                                        *assertions_checked,
+                                        ts_ms,
+                                    ),
+                                );
+                                if let Err(e) = writer
+                                    .write_payload("fsm", 0, payload, Vec::new())
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        assertions_checked = assertions_checked,
+                                        error = %e,
+                                        "fsm: ai_roadmap_signal_event compliance_verified SSB write failed (non-fatal)"
+                                    );
+                                }
+                            }
+                        }
+                        // Fall through to standard transition path.
+                    }
                 }
             }
         }

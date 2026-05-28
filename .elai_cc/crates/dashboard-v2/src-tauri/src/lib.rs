@@ -139,6 +139,45 @@ mod commands_d27;
 // writer of `adversary_generated` + `consensus_reevaluated_with_counter`
 // rows; this module only reads.
 mod commands_d13;
+// E-6: MAST-grounded multi-agent failure-mode dashboard surface. Two
+// read-only commands feed MastFailurePanel.svelte. Producer side is the
+// orchestrator's per_level_audit_dispatch follow-up wiring (E-6.b) +
+// iso_budget_harness::run_ablation. Citation: arXiv:2503.13657 MAST
+// (Cemri et al. 2025); see workflow/reasoning/E-6-decisions.md.
+mod commands_e6;
+// E-29 Tier-B: agentic-observability Tauri command surface. Four
+// commands feed the new FailureModesDrawer.svelte (sibling of
+// MastFailurePanel) + extend the Tier-A TranscriptDrawer. Producers:
+// observability::mast_classify::classify_closed_run +
+// observability::replay::ssb_resume_from (FAIL-CLOSED on C-44/D-9
+// locked_keys_auditor). Wire-dark unless
+// ELAI_AGENTIC_OBSERVABILITY_ENABLE=1. See
+// workflow/reasoning/E-29-decisions.md (Tier-B section).
+mod commands_e29;
+// E-10: hostile-critic structural simplifications -- read-only command
+// surface for the CriticDecisionPanel. Producer side is the orchestrator's
+// fsm_ablation / role_ablation / rag_challenger / cot_proof / cache_check /
+// grc_blockquote modules. See workflow/reasoning/E-10-decisions.md.
+mod commands_e10;
+// E-38: 2026 AI roadmap signals + EU AI Act compliance -- read-only
+// command surface for the RoadmapPanel. Producer side is the
+// orchestrator's compliance + roadmap_signals + dispatch::mcp modules.
+// Wire-dark unless ELAI_AI_ROADMAP_SIGNALS_ENABLE=1.
+// See workflow/reasoning/E-38-decisions.md.
+mod commands_e38;
+// E-39: cost + token economics dashboard surface. 4 read-only
+// commands feed the CostPanel (velocity-cap counters, cost-router
+// decisions, AutoMix verdicts, free-tier remaining quotas). Producer
+// side is the orchestrator's `cost` module (velocity_cap +
+// automix_gate + cost_router + free_tier_guard + cloud_abort).
+// Wire-dark unless ELAI_COST_TOKEN_ECONOMICS_ENABLE=1.
+// See workflow/reasoning/E-39-decisions.md.
+mod commands_e39;
+// E-54: eval-corpus repair pre-deploy panel surface. Sibling of
+// commands_e10 (CriticDecisionPanel). Reads eval_corpus_event SSB rows;
+// the producer is the new eval-corpus crate. Wire-dark unless
+// ELAI_EVAL_CORPUS_ENABLE=1 on the orchestrator side.
+mod commands_e54;
 // D-16: UniCR conformal-refusal calibration read-only command surface.
 // Sibling of commands_d10 / commands_d11 / commands_d13. The
 // orchestrator producers
@@ -379,6 +418,12 @@ pub fn run() {
             commands::get_rrf_quality_gate_recent,
             commands::get_hyde_skipped_code_query_recent,
             commands::get_rrf_component_weights_recent,
+            // E-8: self-evolving prompts dashboard surface. Reads the
+            // prompt_optimization_completed SSB stream + surfaces
+            // val/held-out lift + overfit-risk + reflection-LM-too-
+            // small red flags. Wire-dark unless
+            // ELAI_PROMPT_OPTIMIZER_ENABLE=1 + cfg darwinian-evolve.
+            commands::get_optimizer_run,
             // REASONING / GRC
             commands::get_grc_budgets,
             commands::get_grounding_sweep,
@@ -406,6 +451,14 @@ pub fn run() {
             commands::get_anti_spiral_counter,
             // C-10 — anti-spiral StagnationSection event feed.
             commands::get_stagnation_events,
+            // E-23 — developer-discourse positioning + UX-guard panels.
+            // ContextStatePanel polls get_context_state; TrustTelemetryPanel
+            // polls get_trust_telemetry. Wire-dark unless
+            // ELAI_DEVELOPER_DISCOURSE_ENABLE=1 on the orchestrator side
+            // (commands return empty zeroed shape when off so the panel
+            // renders regardless).
+            commands::get_context_state,
+            commands::get_trust_telemetry,
             commands::get_heartbeats,
             // PIPELINE / DECOMPOSITION
             commands::get_decomposition_tree,
@@ -736,6 +789,21 @@ pub fn run() {
             // this surface only reads.
             commands_d13::get_adversarial_runs_recent,
             commands_d13::get_adversary_config,
+            // E-6 — MAST-grounded multi-agent failure-mode read surface.
+            // audit_mast_tagged + iso_budget_measured rows are written by
+            // the orchestrator's per_level_audit_dispatch follow-up wiring
+            // + iso_budget_harness::run_ablation; this surface only reads.
+            commands_e6::get_mast_breakdown,
+            commands_e6::get_iso_budget_recent,
+            // E-29 Tier-B -- agentic-observability surface. 4 commands
+            // feed FailureModesDrawer + TranscriptDrawer. Producers are
+            // the orchestrator::observability mast_classify + replay
+            // modules; this surface validates + dispatches. ssb_resume_from
+            // is FAIL-CLOSED on C-44/D-9 locked_keys_auditor.
+            commands_e29::ssb_transcript,
+            commands_e29::ssb_resume_from,
+            commands_e29::ssb_promote_to_dataset,
+            commands_e29::ssb_backfill_signals,
             // D-16 — UniCR conformal-refusal calibration read surface.
             // Rows are written by the orchestrator producers
             // (`elai_orchestrator::conformal_calibration::compute_tau_and_emit`
@@ -895,6 +963,24 @@ pub fn run() {
             // PATH miss. cross-lang-pair: dashboard/tauri/api
             commands::get_framework_profile,
             commands::run_production_checklist,
+            // E-10: hostile-critic structural simplifications panel surface.
+            commands_e10::get_critic_decision_state,
+            // E-38: 2026 AI roadmap signals + EU AI Act compliance panel.
+            // Wire-dark unless ELAI_AI_ROADMAP_SIGNALS_ENABLE=1.
+            commands_e38::get_roadmap_signals_state,
+            // E-39: cost + token economics panel surface (4 commands).
+            // Reads cost_token_event SSB rows; wire-dark unless
+            // ELAI_COST_TOKEN_ECONOMICS_ENABLE=1 on the orchestrator side.
+            commands_e39::get_velocity_cap_status,
+            commands_e39::get_cost_router_recent,
+            commands_e39::get_automix_verdicts_recent,
+            commands_e39::get_free_tier_quotas,
+            // E-54: eval-corpus repair pre-deploy panel surface.
+            // Reads eval_corpus_event SSB rows; wire-dark unless
+            // ELAI_EVAL_CORPUS_ENABLE=1 on the orchestrator side.
+            commands_e54::get_eval_corpus_status,
+            commands_e54::get_sycophancy_matched_pair_results,
+            commands_e54::get_kor_orthogonality_status,
         ])
         .setup(|app| {
             // B-24 Phase 4I Group C8: spawn the SSB subscriber that taps the

@@ -256,6 +256,58 @@
 
           {#if isOpen}
             <div class="mvp-body" id={`mvp-body-${entry.step_id}`}>
+              <!--
+                E-16 -- VLM image-validation hardening surface. Renders
+                AXTree drift + sycophancy verdict + swap-order
+                disagreement + convergence sparkline when the
+                orchestrator emits VlmImageValidationEvent rows. All
+                four columns are optional + #[serde(default)] so old
+                MediaValidationEntry payloads render unchanged.
+              -->
+              {#if entry.axtree || entry.sycophancy || entry.swap_order_disagreement != null || (entry.convergence_history && entry.convergence_history.length > 0)}
+                <section class="mvp-section mvp-e16-section" aria-label="E-16 VLM hardening">
+                  <div class="mvp-section-label mono">vlm hardening</div>
+                  <div class="mvp-e16-row mono">
+                    {#if entry.axtree}
+                      <span
+                        class="mvp-chip mvp-chip--{entry.axtree.mismatch ? 'fail' : 'pass'}"
+                        title={`axtree drift ${entry.axtree.yaml_diff_pct.toFixed(2)}% (threshold ${entry.axtree.threshold_pct ?? 1.0}%)`}
+                      >
+                        <span class="mvp-chip-name">axtree</span>
+                        <span class="mvp-chip-detail">{entry.axtree.yaml_diff_pct.toFixed(2)}%</span>
+                      </span>
+                    {/if}
+                    {#if entry.sycophancy}
+                      <span
+                        class="mvp-chip mvp-chip--{entry.sycophancy.verdict === 'convergent' ? 'pass' : (entry.sycophancy.verdict === 'divergent_sycophancy_flag' ? 'fail' : 'warn')}"
+                        title={`sycophancy verdict ${entry.sycophancy.verdict}; delta ${entry.sycophancy.delta.toFixed(2)}`}
+                      >
+                        <span class="mvp-chip-name">sycophancy</span>
+                        <span class="mvp-chip-detail">{entry.sycophancy.verdict}</span>
+                      </span>
+                    {/if}
+                    {#if entry.swap_order_disagreement === true}
+                      <span
+                        class="mvp-chip mvp-chip--fail"
+                        title="position-bias disagreement; arXiv:2406.07791"
+                      >
+                        <span class="mvp-chip-name">swap-order</span>
+                        <span class="mvp-chip-detail">disagree</span>
+                      </span>
+                    {/if}
+                    {#if entry.convergence_history && entry.convergence_history.length > 0}
+                      <span
+                        class="mvp-chip mvp-chip--pass mvp-chip--sparkline"
+                        title={`convergence history (${entry.convergence_history.length} samples)`}
+                      >
+                        <span class="mvp-chip-name">rce</span>
+                        <span class="mvp-chip-detail">{entry.convergence_history.map((v: number) => v.toFixed(2)).join(' → ')}</span>
+                      </span>
+                    {/if}
+                  </div>
+                </section>
+              {/if}
+
               <!-- Tier 1 -->
               <section class="mvp-section">
                 <div class="mvp-section-label mono">tier 1 (deterministic)</div>

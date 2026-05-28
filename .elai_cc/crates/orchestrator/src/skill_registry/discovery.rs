@@ -239,10 +239,20 @@ pub fn parse_skill_frontmatter_extended(contents: &str) -> FrontmatterFields {
     }
 
     let mut fields = FrontmatterFields::default();
+    // E-43 -- track when we are inside an indented `metadata:` block so
+    // `metadata.version:` / `metadata.author:` sub-keys can be parsed.
+    let mut in_metadata_block = false;
     for line in lines {
-        let trimmed = line.trim();
-        if trimmed == "---" {
+        // Preserve leading whitespace for indentation detection but also
+        // build a trimmed view for key/value parsing.
+        if line.trim() == "---" {
             break;
+        }
+        // Detect indented sub-key (2+ spaces of indent) inside metadata.
+        let is_indented = line.starts_with("  ") || line.starts_with("	");
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
         let Some((raw_key, raw_value)) = trimmed.split_once(':') else {
             continue;
@@ -250,6 +260,54 @@ pub fn parse_skill_frontmatter_extended(contents: &str) -> FrontmatterFields {
         let key = raw_key.trim();
         let value = raw_value.trim();
         let unquoted = unquote(value);
+
+        // Inline JSON-flow object form: `metadata: { version: "1.0.0", author: "elai" }`
+        if !is_indented && key == "metadata" && value.starts_with('{') && value.ends_with('}') {
+            let inner = &value[1..value.len() - 1];
+            for segment in inner.split(',') {
+                if let Some((k, v)) = segment.split_once(':') {
+                    let k = k.trim();
+                    let v = unquote(v.trim());
+                    match k {
+                        "version" => fields.metadata_version = Some(v),
+                        "author" => fields.metadata_author = Some(v),
+                        _ => {}
+                    }
+                }
+            }
+            in_metadata_block = false;
+            continue;
+        }
+
+        // Top-level `metadata:` introducing an indented block.
+        if !is_indented && key == "metadata" && value.is_empty() {
+            in_metadata_block = true;
+            continue;
+        }
+
+        // Indented sub-key (only meaningful inside an active metadata block).
+        if is_indented && in_metadata_block {
+            match key {
+                "version" => {
+                    if !unquoted.is_empty() {
+                        fields.metadata_version = Some(unquoted);
+                    }
+                }
+                "author" => {
+                    if !unquoted.is_empty() {
+                        fields.metadata_author = Some(unquoted);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Non-indented key terminates an active metadata block.
+        if !is_indented {
+            in_metadata_block = false;
+        }
+
         match key {
             "name" => {
                 if !unquoted.is_empty() {
@@ -279,6 +337,17 @@ pub fn parse_skill_frontmatter_extended(contents: &str) -> FrontmatterFields {
             }
             "outputs" => {
                 fields.outputs = parse_string_list(value);
+            }
+            // E-43 agentskills.io v1 additions.
+            "compatibility" => {
+                if !unquoted.is_empty() {
+                    fields.compatibility = Some(unquoted);
+                }
+            }
+            "license" => {
+                if !unquoted.is_empty() {
+                    fields.license = Some(unquoted);
+                }
             }
             _ => {}
         }

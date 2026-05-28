@@ -28,12 +28,46 @@ pub use pyodide_bridge::PyodideBridge;
 // ---------------------------------------------------------------------------
 
 /// Sandbox backend selected at runtime based on platform capabilities.
+///
+/// E-22 (SCHEMA_VERSION 170) added the `Microsandbox` variant for the
+/// may-2026 trending sweep adoption of microsandbox/libkrun microVMs
+/// (github.com/superradcompany/microsandbox, YC X26, sub-200 ms boot).
+/// Microsandbox requires linux + /dev/kvm + a microsandbox CLI binary
+/// pointed to by the `MICROSANDBOX_BIN` env var. Any precondition
+/// failure causes `select_backend` to degrade to the next-best variant
+/// (Firecracker if KVM present, Gvisor otherwise, AppContainer on
+/// Windows) and emit one `GithubTrendingEvent::MicroVmFallback` SSB
+/// row (wire-dark unless `ELAI_GITHUB_TRENDING_ENABLE=1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SandboxBackend {
     Firecracker,
     Gvisor,
     AppContainer,
+    /// E-22 (SCHEMA_VERSION 170) -- microsandbox / libkrun microVM
+    /// backend. Linux + KVM only; degrades to `Firecracker` /
+    /// `Gvisor` / `AppContainer` when MICROSANDBOX_BIN is unset or
+    /// KVM is absent.
+    Microsandbox,
 }
+
+impl SandboxBackend {
+    /// Snake-case wire label used by SSB rows + dashboard labels.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Firecracker => "firecracker",
+            Self::Gvisor => "gvisor",
+            Self::AppContainer => "app_container",
+            Self::Microsandbox => "microsandbox",
+        }
+    }
+}
+
+/// E-22 -- env var that points at the microsandbox CLI binary. When
+/// unset (or the value does not name an existing file), the Microsandbox
+/// backend is unavailable and `select_backend` degrades. Mirrors the
+/// MICROSANDBOX_BIN convention in the microsandbox README.
+pub const MICROSANDBOX_BIN_ENV: &str = "MICROSANDBOX_BIN";
 
 /// Detect KVM availability by probing /dev/kvm.
 /// Returns false on Windows and on Linux systems without KVM support.
@@ -45,16 +79,187 @@ pub fn kvm_available() -> bool {
 #[cfg(not(target_os = "linux"))]
 pub fn kvm_available() -> bool { false }
 
+/// E-22 -- detect microsandbox CLI availability via the
+/// `MICROSANDBOX_BIN` env var. Returns `Some(path)` when the env var
+/// names an existing file; `None` otherwise. This is a precondition
+/// check, NOT a process spawn. Live invocation is the
+/// `MicrosandboxBackend` impl's responsibility.
+#[must_use]
+pub fn microsandbox_bin_available() -> Option<std::path::PathBuf> {
+    let raw = std::env::var(MICROSANDBOX_BIN_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    if path.exists() { Some(path) } else { None }
+}
+
+/// E-22 -- snake_case reason label for `GithubTrendingEvent::MicroVmFallback`.
+/// Pure data: the SSB emitter is wired by the orchestrator bootstrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicroVmFallbackReason {
+    /// Linux but /dev/kvm not present (no virtualization extensions).
+    NoKvm,
+    /// MICROSANDBOX_BIN unset or points at a missing file.
+    MissingBin,
+    /// Native windows (no libkrun support).
+    WindowsNative,
+    /// Compiled for a non-linux non-windows platform.
+    UnsupportedPlatform,
+}
+
+impl MicroVmFallbackReason {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoKvm => "no_kvm",
+            Self::MissingBin => "missing_bin",
+            Self::WindowsNative => "windows_native",
+            Self::UnsupportedPlatform => "unsupported_platform",
+        }
+    }
+}
+
+/// E-22 -- select_backend return shape extended with the fallback
+/// reason when applicable. Callers that just need the backend can use
+/// [`select_backend`]; callers wiring telemetry (orchestrator boot)
+/// should use this variant and consume the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SandboxBackendSelection {
+    pub backend: SandboxBackend,
+    /// Some(reason) when Microsandbox was requested but unavailable;
+    /// None when the selection succeeded as the host's primary
+    /// (including non-Microsandbox primaries on hosts where the
+    /// trending env var was never set).
+    pub microvm_fallback_reason: Option<MicroVmFallbackReason>,
+}
+
+/// E-22 -- producer-side emitter for the
+/// `GithubTrendingEvent::MicroVmFallback` SSB row. Lives in the
+/// sandbox module to avoid a circular dep on `crate::ssb` from
+/// callers that only need the trait shape. Mirrors the
+/// [`crate::plugins::mcp_bridge::LazySchemaSavingsEmitter`] dep-
+/// inversion pattern; the orchestrator bootstrap wires a real
+/// implementor when an SSB writer is available; default callers
+/// use `NoopMicroVmFallbackEmitter` so the sandbox module's
+/// existing tests stay sink-free.
+pub trait MicroVmFallbackEmitter: Send + Sync {
+    /// Emit one `github_trending_event` row with kind=
+    /// `microvm_fallback`. `reason_label` is the snake_case
+    /// `MicroVmFallbackReason::as_str()` value; `fallback_backend`
+    /// is the snake_case `SandboxBackend::as_str()` of the backend
+    /// that was actually selected instead.
+    fn emit(&self, reason_label: &str, fallback_backend: &str) -> Result<(), String>;
+}
+
+/// Default no-op emitter -- returns Ok(()) without touching anything.
+/// Used by `emit_microvm_fallback_if_any` when the orchestrator
+/// boot has not wired a live SSB writer.
+pub struct NoopMicroVmFallbackEmitter;
+
+impl MicroVmFallbackEmitter for NoopMicroVmFallbackEmitter {
+    fn emit(&self, _reason_label: &str, _fallback_backend: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// E-22 -- emit one `MicroVmFallback` row through the supplied
+/// emitter when the selection carries a fallback reason. This is the
+/// canonical caller-side helper so the orchestrator bootstrap does
+/// not need to redo the if-let on `microvm_fallback_reason`. Returns
+/// `Ok(true)` when a row was emitted, `Ok(false)` when the selection
+/// had no fallback reason (no-op).
+pub fn emit_microvm_fallback_if_any(
+    selection: &SandboxBackendSelection,
+    emitter: &dyn MicroVmFallbackEmitter,
+) -> Result<bool, String> {
+    match selection.microvm_fallback_reason {
+        Some(reason) => {
+            emitter.emit(reason.as_str(), selection.backend.as_str())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Select the appropriate sandbox backend for the current host.
+///
+/// E-22 (SCHEMA_VERSION 170): when `ELAI_GITHUB_TRENDING_ENABLE=1` is
+/// set AND the host can satisfy Microsandbox preconditions
+/// (linux + /dev/kvm + MICROSANDBOX_BIN points at an existing file),
+/// returns `SandboxBackend::Microsandbox`. Otherwise degrades through
+/// Firecracker (linux+KVM) -> Gvisor (linux no KVM) -> AppContainer
+/// (windows / other). Backwards-compatible: when the trending env var
+/// is unset, the legacy 3-variant selection runs unchanged.
 pub fn select_backend() -> SandboxBackend {
+    select_backend_detailed().backend
+}
+
+/// E-22 -- detailed selection that surfaces the
+/// [`MicroVmFallbackReason`] so the caller can emit one
+/// `GithubTrendingEvent::MicroVmFallback` SSB row. The legacy
+/// [`select_backend`] is a thin wrapper that drops the reason.
+pub fn select_backend_detailed() -> SandboxBackendSelection {
+    let trending_enabled = match std::env::var("ELAI_GITHUB_TRENDING_ENABLE") {
+        Ok(v) => {
+            let lo = v.trim().to_ascii_lowercase();
+            lo == "1" || lo == "true"
+        }
+        Err(_) => false,
+    };
+
     #[cfg(target_os = "windows")]
-    return SandboxBackend::AppContainer;
+    {
+        return SandboxBackendSelection {
+            backend: SandboxBackend::AppContainer,
+            microvm_fallback_reason: if trending_enabled {
+                Some(MicroVmFallbackReason::WindowsNative)
+            } else {
+                None
+            },
+        };
+    }
+
     #[cfg(target_os = "linux")]
     {
-        if kvm_available() { SandboxBackend::Firecracker } else { SandboxBackend::Gvisor }
+        let kvm = kvm_available();
+        let bin = microsandbox_bin_available();
+        if trending_enabled && kvm && bin.is_some() {
+            return SandboxBackendSelection {
+                backend: SandboxBackend::Microsandbox,
+                microvm_fallback_reason: None,
+            };
+        }
+        let reason = if !kvm {
+            Some(MicroVmFallbackReason::NoKvm)
+        } else if bin.is_none() {
+            Some(MicroVmFallbackReason::MissingBin)
+        } else {
+            None
+        };
+        // When trending is disabled the legacy 3-variant selection runs
+        // without surfacing any fallback reason -- the caller has not
+        // opted in to microVM telemetry.
+        let reported_reason = if trending_enabled { reason } else { None };
+        let backend = if kvm { SandboxBackend::Firecracker } else { SandboxBackend::Gvisor };
+        return SandboxBackendSelection {
+            backend,
+            microvm_fallback_reason: reported_reason,
+        };
     }
+
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    return SandboxBackend::AppContainer;
+    {
+        SandboxBackendSelection {
+            backend: SandboxBackend::AppContainer,
+            microvm_fallback_reason: if trending_enabled {
+                Some(MicroVmFallbackReason::UnsupportedPlatform)
+            } else {
+                None
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1471,6 +1676,196 @@ impl AgentSandbox for LinuxSandbox {
 }
 
 // ---------------------------------------------------------------------------
+// E-22 (SCHEMA_VERSION 170) -- MicrosandboxBackend
+// ---------------------------------------------------------------------------
+//
+// 4th `AgentSandbox` impl matching the `SandboxBackend::Microsandbox`
+// enum variant. The actual microsandbox / libkrun microVM subprocess
+// wiring is RUNPOD-PENDING (microsandbox_linux_smoke per
+// workflow/reasoning/E-22-decisions.md "deferred to follow-up"); this
+// impl ships the AgentSandbox-trait-shaped surface so `AgentPool`
+// dispatch keyed on `SandboxBackend::Microsandbox` does not fall
+// through to a missing impl.
+//
+// Routing:
+//   - On Linux with `MICROSANDBOX_BIN` pointing at an existing file +
+//     /dev/kvm available, delegate to a held `LinuxSandbox` so the
+//     existing seccomp + clone3 + capability-drop pipeline runs. This
+//     mirrors the "degrades gracefully" plan ACCEPTANCE check #2; the
+//     microsandbox-specific snapshot reuse path is a follow-up.
+//   - When `MICROSANDBOX_BIN` is absent OR /dev/kvm is missing, every
+//     trait method returns `SandboxError::ConfigError` with a stable
+//     diagnostic string so the orchestrator AgentPool can degrade to
+//     `SandboxBackend::Firecracker` via `select_backend_detailed`.
+//   - On non-Linux platforms the impl returns
+//     `SandboxError::PlatformNotSupported`; callers must use
+//     `select_backend_detailed` first to fall through to
+//     `AppContainer` (Windows) or `Gvisor` / `AppContainer` on
+//     unsupported platforms.
+//
+// E-22-decisions.md DECISION (this commit): the MicrosandboxBackend
+// AgentSandbox impl ships as a "wired-trait-shape, defer-live-shellout"
+// pattern. The live microsandbox CLI subprocess (and the snapshot
+// reuse path) is RUNPOD-PENDING `microsandbox_linux_smoke`. The
+// LinuxSandbox delegation gives us a working sandbox on Linux + KVM
+// hosts that *do* have the bin; the binary's actual microVM features
+// are not exercised but the AgentSandbox contract is satisfied.
+
+#[cfg(target_os = "linux")]
+pub struct MicrosandboxBackend {
+    /// Held LinuxSandbox delegate. Used when MICROSANDBOX_BIN is
+    /// present + KVM available; remains live for the process lifetime
+    /// so kill_agent / wait_agent can route to the same `processes`
+    /// map.
+    inner: LinuxSandbox,
+}
+
+#[cfg(target_os = "linux")]
+impl MicrosandboxBackend {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: LinuxSandbox::new(),
+        }
+    }
+
+    /// Returns Ok(()) when both preconditions hold (KVM + MICROSANDBOX_BIN
+    /// names an existing file). Otherwise returns a stable
+    /// ConfigError so the caller can degrade.
+    fn precondition_check(&self) -> Result<std::path::PathBuf, SandboxError> {
+        if !kvm_available() {
+            return Err(SandboxError::ConfigError(
+                "microsandbox: /dev/kvm not available (no virtualization extensions)".to_string()
+            ));
+        }
+        match microsandbox_bin_available() {
+            Some(path) => Ok(path),
+            None => Err(SandboxError::ConfigError(
+                "microsandbox: MICROSANDBOX_BIN unset or names a missing file".to_string()
+            )),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Default for MicrosandboxBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl AgentSandbox for MicrosandboxBackend {
+    fn create(&self, config: &AppContainerConfig) -> Result<SandboxHandle, SandboxError> {
+        // Precondition: requires KVM + MICROSANDBOX_BIN. Caller should
+        // have already used select_backend_detailed() to verify; we
+        // re-check defensively because impls must satisfy the trait
+        // contract regardless of how they were dispatched.
+        let _bin = self.precondition_check()?;
+        // RUNPOD-PENDING microsandbox_linux_smoke: snapshot reuse via
+        // microsandbox CLI lives here. For now we delegate the
+        // create() lifecycle to LinuxSandbox so the AgentSandbox
+        // contract is satisfied on hosts that *do* have the bin.
+        self.inner.create(config)
+    }
+
+    fn launch_agent(
+        &self,
+        handle: &SandboxHandle,
+        command: &str,
+        args: &[String],
+        scratch_dir: &Path,
+    ) -> Result<AgentProcess, SandboxError> {
+        let _bin = self.precondition_check()?;
+        // RUNPOD-PENDING microsandbox_linux_smoke: the live shellout
+        // path (`microsandbox run --snapshot ... -- <cmd> <args>`) is
+        // wired in the follow-up. The current delegate runs the agent
+        // under the LinuxSandbox seccomp + clone3 pipeline so we do
+        // not regress isolation on the falling-back hosts.
+        self.inner.launch_agent(handle, command, args, scratch_dir)
+    }
+
+    fn kill_agent(&self, agent_id: Uuid) -> Result<(), SandboxError> {
+        // No precondition re-check on teardown -- if create() succeeded
+        // earlier, the inner handle table owns the agent_id even if
+        // the bin has since been removed.
+        self.inner.kill_agent(agent_id)
+    }
+
+    fn wait_agent(&self, agent_id: Uuid) -> Result<std::process::ExitStatus, SandboxError> {
+        self.inner.wait_agent(agent_id)
+    }
+
+    fn cleanup(&self, handle: &SandboxHandle) -> Result<(), SandboxError> {
+        self.inner.cleanup(handle)
+    }
+}
+
+/// Non-Linux MicrosandboxBackend stub. Returns `PlatformNotSupported`
+/// on every trait method so any caller that mis-dispatches through
+/// `SandboxBackend::Microsandbox` on a non-Linux host fails loudly
+/// rather than silently. The canonical degradation path is
+/// `select_backend_detailed` which returns `AppContainer` on Windows
+/// + `Gvisor` / `AppContainer` on other-OS with a
+/// `MicroVmFallbackReason`.
+#[cfg(not(target_os = "linux"))]
+pub struct MicrosandboxBackend;
+
+#[cfg(not(target_os = "linux"))]
+impl MicrosandboxBackend {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Default for MicrosandboxBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl AgentSandbox for MicrosandboxBackend {
+    fn create(&self, _config: &AppContainerConfig) -> Result<SandboxHandle, SandboxError> {
+        Err(SandboxError::PlatformNotSupported(
+            "microsandbox: linux + KVM only; use select_backend_detailed for degradation".to_string()
+        ))
+    }
+
+    fn launch_agent(
+        &self,
+        _handle: &SandboxHandle,
+        _command: &str,
+        _args: &[String],
+        _scratch_dir: &Path,
+    ) -> Result<AgentProcess, SandboxError> {
+        Err(SandboxError::PlatformNotSupported(
+            "microsandbox: linux + KVM only".to_string()
+        ))
+    }
+
+    fn kill_agent(&self, _agent_id: Uuid) -> Result<(), SandboxError> {
+        Err(SandboxError::PlatformNotSupported(
+            "microsandbox: linux + KVM only".to_string()
+        ))
+    }
+
+    fn wait_agent(&self, _agent_id: Uuid) -> Result<std::process::ExitStatus, SandboxError> {
+        Err(SandboxError::PlatformNotSupported(
+            "microsandbox: linux + KVM only".to_string()
+        ))
+    }
+
+    fn cleanup(&self, _handle: &SandboxHandle) -> Result<(), SandboxError> {
+        Err(SandboxError::PlatformNotSupported(
+            "microsandbox: linux + KVM only".to_string()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // create_sandbox: platform-specific factory
 // ---------------------------------------------------------------------------
 
@@ -1479,12 +1874,12 @@ pub fn create_sandbox() -> Result<Box<dyn AgentSandbox>, SandboxError> {
     {
         Ok(Box::new(WindowsAppContainerSandbox::new()))
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         Ok(Box::new(LinuxSandbox::new()))
     }
-    
+
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         Err(SandboxError::PlatformNotSupported(

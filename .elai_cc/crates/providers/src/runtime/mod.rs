@@ -16,6 +16,14 @@
 pub mod anthropic_api;
 pub mod cli_common;
 pub mod claude_code;
+/// E-20 -- `BackendDifficultyAdapter`: pre-inference difficulty
+/// classifier exposed as a [`RuntimeAdapter`]. Returns
+/// `RuntimeAdapterError::NotImplemented` from `complete()` / `stream()`
+/// until the live RouteLLM weights ship via E-20.B. Use
+/// [`cloud_route_difficulty::classify_difficulty`] or
+/// [`cloud_route_difficulty::BackendDifficultyAdapter::classify`] for
+/// the actual difficulty verdict.
+pub mod cloud_route_difficulty;
 pub mod codex_cli;
 /// C-44 — Cursor Composer 2 cloud-API adapter. Paid HTTP backend
 /// gated behind `[runtime.composer2].enabled = true` in elai_cc.toml.
@@ -29,12 +37,28 @@ pub mod copilot_cli;
 pub mod cost;
 pub mod event_sink;
 pub mod gemini_cli;
+/// E-34 — `GenAiAdapter` scaffold. RuntimeAdapter slot reserved for the
+/// genai 0.6 multi-provider client (github.com/jeremychone/rust-genai).
+/// All methods surface `RuntimeAdapterError::NotImplemented` until E-34.B
+/// completes the anti-slopsquatting verification + Cargo.toml dep add +
+/// per-provider wiring. See `workflow/reasoning/E-34-decisions.md` +
+/// `.elai_cc/outdated-tech-audit.md` "Anti-slopsquatting verification log
+/// (E-34)" for the deferral rationale. `RuntimeBackend` enum intentionally
+/// NOT extended in E-34 (would break the canonical-name assertion at
+/// mod.rs:216).
+pub mod genai_adapter;
 pub mod hermes;
 pub mod isolation;
 pub mod kiro_cli;
 pub mod ollama;
 pub mod opencode;
 pub mod secret;
+/// E-26 (inference-engines 2026 pack) — SGLang HTTP runtime adapter.
+/// Speaks OpenAI `/v1/chat/completions` with `extra_body.backend` selecting
+/// XGrammar / Outlines / LMFE for structured output. Default base URL
+/// `http://localhost:30000`. Long-lived health-probed cloud throughput
+/// adapter; disambiguated from the media-validator `SglangConfig`.
+pub mod sglang;
 pub mod sidecar;
 /// E-35: typed Rust-side hook for the sidecar's XGrammarLogitsProcessor.
 /// See `sidecar_xgrammar_hook.rs` for the wire-format contract + the
@@ -49,6 +73,10 @@ pub mod platform_detect;
 
 pub use anthropic_api::AnthropicApiRuntime;
 pub use claude_code::ClaudeCodeRuntime;
+pub use cloud_route_difficulty::{
+    classifier_unavailable_reason, classify_difficulty, BackendDifficultyAdapter,
+    DifficultyBin as BackendDifficultyBin, DifficultyVerdict as BackendDifficultyVerdict,
+};
 pub use codex_cli::CodexCliRuntime;
 pub use composer2::{Composer2Error, Composer2RuntimeAdapter};
 pub use copilot_cli::CopilotCliRuntime;
@@ -60,11 +88,13 @@ pub use event_sink::{
     RuntimeEvent, RuntimeEventSink,
 };
 pub use gemini_cli::GeminiCliRuntime;
+pub use genai_adapter::{GenAiAdapter, GenAiProvider, GENAI_NOT_IMPLEMENTED_HINT};
 pub use hermes::HermesRuntime;
 pub use kiro_cli::KiroCliRuntime;
 pub use ollama::OllamaRuntime;
 pub use opencode::OpenCodeRuntime;
 pub use secret::SecretString;
+pub use sglang::{SglangRuntime, SglangRuntimeConfig, StructuredOutputBackend};
 pub use sidecar::SidecarRuntime;
 pub use sidecar_xgrammar_hook::{
     build_xgrammar_request, verify_response_contract, xgrammar_cache_key, xgrammar_schema_id,
@@ -114,6 +144,19 @@ pub fn resolve_backend(candidate: &str) -> Result<RuntimeBackend, ResolveBackend
         // NotImplemented (no /v1/messages surface); orchestrator dispatches
         // via symbol_graph::lsp_oracle::oracle_lookup directly.
         "lsp" | "lsp_oracle" | "language_server" => Some(RuntimeBackend::Lsp),
+        // E-26 — SGLang HTTP runtime adapter. Canonical id + two operator
+        // aliases. See `crates/providers/src/runtime/sglang.rs`.
+        "sglang" | "sgl" | "sglang_runtime" => Some(RuntimeBackend::Sglang),
+        // E-39 -- 3 cloud-floor / free-tier slots. RuntimeAdapter
+        // wiring RUNPOD-PENDING per anti-slopsquatting verification of
+        // api-docs.deepseek.com / cloud.cerebras.ai / console.groq.com
+        // base URLs + model identifiers. See
+        // workflow/reasoning/E-39-decisions.md.
+        "deepseek_v4_flash" | "deepseek_flash" | "deepseek" => {
+            Some(RuntimeBackend::DeepSeekV4Flash)
+        }
+        "cerebras_free" | "cerebras" => Some(RuntimeBackend::CerebrasFree),
+        "groq_free" | "groq" => Some(RuntimeBackend::GroqFree),
         _ => None,
     };
     match resolved {
@@ -184,6 +227,35 @@ pub fn create_runtime(
             backend: RuntimeBackend::Lsp,
             hint: "Lsp is on-demand oracle only; dispatch via elai_orchestrator::symbol_graph::lsp_oracle::oracle_lookup",
         }),
+        // E-26 — SGLang HTTP runtime adapter (inference-engines 2026
+        // pack). Constructs via `SglangRuntime::new`; base URL resolved
+        // from cfg.base_url > ELAI_SGLANG_BASE_URL > DEFAULT_BASE_URL.
+        RuntimeBackend::Sglang => Ok(Box::new(SglangRuntime::new(cfg))),
+        // E-39 -- DeepSeek V4-Flash cloud-floor backend. Anti-
+        // slopsquatting verification of api-docs.deepseek.com base URL
+        // + model identifier + last-published date is RUNPOD-PENDING.
+        // Until verified, surface NotImplemented so accidental routing
+        // returns a typed sentinel rather than slopsquatting risk. The
+        // cost-router still ships the variant in the
+        // `(hard + tight)` cell; live wiring lands once the verification
+        // row is recorded in E-39-decisions.md.
+        RuntimeBackend::DeepSeekV4Flash => Err(RuntimeAdapterError::NotImplemented {
+            backend: RuntimeBackend::DeepSeekV4Flash,
+            hint: "DeepSeek V4-Flash RuntimeAdapter wiring RUNPOD-PENDING; verify api-docs.deepseek.com URL + model id + last-published date before live dispatch",
+        }),
+        // E-39 -- Cerebras free-tier backend. Same RUNPOD-PENDING
+        // discipline as DeepSeek. The free-tier guard at
+        // `crate::cost::free_tier_guard` already tracks daily quota.
+        RuntimeBackend::CerebrasFree => Err(RuntimeAdapterError::NotImplemented {
+            backend: RuntimeBackend::CerebrasFree,
+            hint: "Cerebras free-tier RuntimeAdapter wiring RUNPOD-PENDING; verify cloud.cerebras.ai free-tier model list + base URL + last-published date before live dispatch",
+        }),
+        // E-39 -- Groq free-tier backend. Same RUNPOD-PENDING
+        // discipline.
+        RuntimeBackend::GroqFree => Err(RuntimeAdapterError::NotImplemented {
+            backend: RuntimeBackend::GroqFree,
+            hint: "Groq free-tier RuntimeAdapter wiring RUNPOD-PENDING; verify console.groq.com Llama 4 Scout / Qwen3 32B / Kimi K2 IDs + base URL + last-published date before live dispatch",
+        }),
     }
 }
 
@@ -199,7 +271,7 @@ mod tests {
             assert!(seen.insert(name), "duplicate canonical name {name}");
             assert_eq!(name, name.to_ascii_lowercase(), "{name} must be lowercase");
         }
-        assert_eq!(seen.len(), 16);
+        assert_eq!(seen.len(), 20);
     }
 
     #[test]
@@ -214,7 +286,7 @@ mod tests {
     #[test]
     fn resolve_backend_miss_returns_full_supported_list() {
         let err = resolve_backend("not-a-backend").expect_err("must miss");
-        assert_eq!(err.supported.len(), 16);
+        assert_eq!(err.supported.len(), 20);
         assert_eq!(err.candidate, "not-a-backend");
     }
 

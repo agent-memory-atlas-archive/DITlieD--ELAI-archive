@@ -189,6 +189,16 @@ empire = []
 # build with a pointer back to the ratification doc. Pure stable Rust —
 # no custom clippy lint, no nightly toolchain. Off by default.
 phase_4h_freeze_violated = []
+# E-7: darwinian self-improvement substrate. Marker feature that compiles
+# the new modules (template_archive, promotion_gate, est_probe,
+# cross_domain_canary, trap_tasks, archive_crypto, l3_lock,
+# darwinian_bai). Off by default; entire substrate is wire-dark until both
+# this feature AND the `ELAI_DARWINIAN_LOOP_ENABLE` env var are set. Live
+# model evolution loops RUNPOD-PENDING. See
+# workflow/reasoning/E-7-decisions.md. ed25519-dalek dep deferred per
+# anti-slopsquatting `cargo info` verification rule -- blake3 placeholder
+# used in archive_crypto.rs scaffold.
+darwinian-evolve = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

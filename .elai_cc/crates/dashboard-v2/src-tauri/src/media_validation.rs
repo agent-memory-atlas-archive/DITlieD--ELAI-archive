@@ -47,8 +47,8 @@ use elai_orchestrator::{
 };
 
 use crate::state::{
-    AppState, CapturedFrameSnapshot, IterationSnapshot, MediaValidationEntry, ReviewDecision,
-    Tier1Snapshot, Tier2Snapshot,
+    AppState, AxtreeSnapshot, CapturedFrameSnapshot, IterationSnapshot, MediaValidationEntry,
+    ReviewDecision, Tier1Snapshot, Tier2Snapshot,
 };
 
 /// Tauri event name emitted on every media_* SSB row. The Svelte side
@@ -117,7 +117,13 @@ pub fn spawn_subscriber(
     });
 }
 
-/// Returns `true` when `t` is one of the 6 media_* action types.
+/// Returns `true` when `t` is one of the 7 media_* action types.
+/// E-16 added VlmImageValidationEvent (Pattern-2 SINGLE-VARIANT with
+/// 3-arm Kind covering swap_order_disagreement / axtree_mismatch /
+/// vlm_schema_unconstrained). SycophancyFlag is REUSED for the
+/// sycophancy_probe path but is NOT a media action -- it folds via
+/// the E-4 dashboard surfaces (SycophancyFlagStrip etc) not the
+/// media validator panel.
 fn is_media_action(t: &SsbActionType) -> bool {
     matches!(
         t,
@@ -127,6 +133,7 @@ fn is_media_action(t: &SsbActionType) -> bool {
             | SsbActionType::RenderComplete
             | SsbActionType::VisualFeedbackIteration
             | SsbActionType::MediaHumanReviewRequired
+            | SsbActionType::VlmImageValidationEvent
     )
 }
 
@@ -327,11 +334,75 @@ async fn fold_media_row_into_state(
             row.updated_at = ts_ms;
             p.step_id
         }
+        // E-16 -- VLM image validation Pattern-2 fold path. 3-arm Kind
+        // discriminator routes to per-arm row mutations:
+        //   * SwapOrderDisagreement -> set swap_order_disagreement
+        //   * AxtreeMismatch        -> populate axtree snapshot +
+        //                              push diff_pct onto
+        //                              convergence_history
+        //   * VlmSchemaUnconstrained -> set final_verdict to
+        //                              "Degraded" (matches the
+        //                              Tier-2 schema-invalid veto
+        //                              branch from B-24 Group C3
+        //                              veto-table branch 6)
+        SsbPayload::VlmImageValidationEvent(p) => {
+            use elai_orchestrator::VlmImageValidationKind;
+            let mut guard = media_state.write().await;
+            let row = guard
+                .entry(p.step_id.clone())
+                .or_insert_with(|| {
+                    MediaValidationEntry::new(
+                        p.step_id.clone(),
+                        "unknown".to_owned(),
+                        "".to_owned(),
+                        ts_ms,
+                    )
+                });
+            match p.kind {
+                VlmImageValidationKind::SwapOrderDisagreement => {
+                    row.swap_order_disagreement = Some(true);
+                }
+                VlmImageValidationKind::AxtreeMismatch => {
+                    let diff_pct = p
+                        .details_json
+                        .get("yaml_diff_pct")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let baseline_path = p
+                        .details_json
+                        .get("baseline_path")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                    let current_path = p
+                        .details_json
+                        .get("current_path")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                    let threshold_pct = p
+                        .details_json
+                        .get("threshold_pct")
+                        .and_then(|v| v.as_f64());
+                    row.axtree = Some(AxtreeSnapshot {
+                        yaml_diff_pct: diff_pct,
+                        mismatch: diff_pct > threshold_pct.unwrap_or(1.0),
+                        baseline_path,
+                        current_path,
+                        threshold_pct,
+                    });
+                    row.convergence_history.push(diff_pct);
+                }
+                VlmImageValidationKind::VlmSchemaUnconstrained => {
+                    row.final_verdict = Some("Degraded".to_owned());
+                }
+            }
+            row.updated_at = ts_ms;
+            p.step_id
+        }
         // Non-media variants filtered upstream by is_media_action; reaching
-        // this arm means the filter has drifted out of sync with the 6
+        // this arm means the filter has drifted out of sync with the 7
         // media_* variants — panic so the invariant break is loud, not silent.
         _ => unreachable!(
-            "non-media SsbPayload variant reached handle_media_row; is_media_action filter must enumerate exactly the 6 media_* variants"
+            "non-media SsbPayload variant reached handle_media_row; is_media_action filter must enumerate exactly the 7 media_* variants"
         ),
     };
 
@@ -543,10 +614,15 @@ mod tests {
         assert!(is_media_action(&SsbActionType::RenderComplete));
         assert!(is_media_action(&SsbActionType::VisualFeedbackIteration));
         assert!(is_media_action(&SsbActionType::MediaHumanReviewRequired));
+        // E-16 -- VlmImageValidationEvent is the 7th media action.
+        assert!(is_media_action(&SsbActionType::VlmImageValidationEvent));
         // Negative — non-media types must NOT be picked up by the subscriber.
         assert!(!is_media_action(&SsbActionType::FileWrite));
         assert!(!is_media_action(&SsbActionType::ChatMessage));
         assert!(!is_media_action(&SsbActionType::Finding));
+        // SycophancyFlag is REUSED by E-16 sycophancy_probe but is
+        // routed through the E-4 chat-UX surfaces; NOT a media action.
+        assert!(!is_media_action(&SsbActionType::SycophancyFlag));
     }
 
     /// ReviewDecision serializes as PascalCase so the TS contract matches

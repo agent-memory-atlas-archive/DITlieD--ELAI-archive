@@ -11,6 +11,11 @@
   import { plan } from '$lib/state/plan.svelte';
   import { decompNodeToOrbitFixture } from '$lib/orbit/decompose-converter';
   import type { OrbitFixture, OrbitMode } from '$lib/orbit/types';
+  // E-4 Task 13: InterventionControlBar overlay. Visible during
+  // EXECUTING / AUDITING / RESEARCHING; auto-hidden otherwise via the
+  // component's own visibility guard. Wires the /pause /redirect
+  // /cancel verbs to the FSM through commands_e4 (wire-dark today).
+  import InterventionControlBar from '$lib/components/InterventionControlBar.svelte';
 
   type FixtureKey = 'live' | 'small' | 'constellation' | 'plan' | 'map' | 'research';
 
@@ -112,6 +117,13 @@
 
   <!-- main orbit canvas -->
   <OrbitCanvas fixture={liveFixture} mode={explicitMode} />
+
+  <!-- E-4 Task 13: bottom-centered intervention control bar. Self-hides
+       outside EXECUTING / AUDITING / RESEARCHING via its own visibility
+       guard, so this slot is empty most of the time. -->
+  <div class="intervention-slot">
+    <InterventionControlBar />
+  </div>
 </div>
 
 <style>
@@ -121,6 +133,21 @@
     height: 100%;
     background: var(--bg-base);
     overflow: hidden;
+  }
+
+  /* E-4 Task 13: control-bar slot. Centered bottom; pointer-events
+     none on the wrapper so the orbit canvas underneath stays
+     interactive when the bar is hidden. */
+  .intervention-slot {
+    position: absolute;
+    bottom: var(--s-4, 16px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    pointer-events: none;
+  }
+  .intervention-slot :global(.icb) {
+    pointer-events: auto;
   }
 
   .mode-toggle {
