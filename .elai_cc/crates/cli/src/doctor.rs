@@ -144,6 +144,11 @@ pub(crate) fn render_doctor_report() -> Result<DoctorReport, anyhow::Error> {
         check_workspace_health(&context),
         check_sandbox_health(&context.sandbox_status),
         check_system_health(&cwd, config.as_ref().ok()),
+        // B-43 Phase 7 — host-install diagnostics.
+        check_runtime_assets(),
+        check_sidecar_health(),
+        check_vram_tier(),
+        check_model_staging(&cwd),
     ];
 
     // A5.2: include obscura binary check when the feature is compiled in.
@@ -151,6 +156,259 @@ pub(crate) fn render_doctor_report() -> Result<DoctorReport, anyhow::Error> {
     checks.push(check_obscura_health());
 
     Ok(DoctorReport { checks })
+}
+
+// ----- B-43 Phase 7: host-install diagnostics --------------------------------
+//
+// The 4 checks below probe the B-43 install state (per-step JSON files at
+// ~/.elai/install-state/ + ~/.elai/elai_cc.toml + ${models_root}/CHECKSUMS.blake3)
+// and surface DiagnosticCheck rows composed into render_doctor_report.
+//
+// LOCK-5: these checks PROBE state only; they NEVER spawn the sidecar or any
+// other heavy process. check_sidecar_health uses a 1-second TCP-level probe;
+// failure surfaces as Warn (not Fail) so `elai doctor` is safe to run as the
+// final install step on a cloud-only-mode host that has no local sidecar.
+
+fn elai_home_dir() -> Option<PathBuf> {
+    env::var_os("ELAI_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .or_else(|| env::var_os("USERPROFILE"))
+                .map(|h| PathBuf::from(h).join(".elai"))
+        })
+}
+
+fn install_state_dir() -> Option<PathBuf> {
+    elai_home_dir().map(|h| h.join("install-state"))
+}
+
+fn read_step_status(state_dir: &Path, step: &str) -> Option<String> {
+    let path = state_dir.join(format!("{step}.json"));
+    let contents = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    parsed
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+pub(crate) fn check_runtime_assets() -> DiagnosticCheck {
+    let Some(home) = elai_home_dir() else {
+        return DiagnosticCheck::new(
+            "Runtime assets",
+            DiagnosticLevel::Warn,
+            "ELAI home directory not resolvable (no HOME / USERPROFILE / ELAI_CONFIG_HOME)",
+        );
+    };
+    let Some(state_dir) = install_state_dir() else {
+        return DiagnosticCheck::new(
+            "Runtime assets",
+            DiagnosticLevel::Warn,
+            "install-state dir not resolvable",
+        );
+    };
+    if !state_dir.is_dir() {
+        return DiagnosticCheck::new(
+            "Runtime assets",
+            DiagnosticLevel::Warn,
+            "no install-state directory found; run `elai install` to bootstrap",
+        )
+        .with_details(vec![format!("expected: {}", state_dir.display())]);
+    }
+    let steps = ["env_probe", "arch_gate", "fetch_binary", "render_config"];
+    let mut details = Vec::new();
+    let mut any_failed = false;
+    let mut all_done = true;
+    for step in steps {
+        let status = read_step_status(&state_dir, step).unwrap_or_else(|| "missing".to_string());
+        if status == "failed" {
+            any_failed = true;
+            all_done = false;
+        } else if status != "done" {
+            all_done = false;
+        }
+        details.push(format!("{step}: {status}"));
+    }
+    let toml_path = home.join("elai_cc.toml");
+    details.push(format!(
+        "elai_cc.toml: {}",
+        if toml_path.is_file() { "present" } else { "absent" }
+    ));
+    let level = if any_failed {
+        DiagnosticLevel::Fail
+    } else if all_done && toml_path.is_file() {
+        DiagnosticLevel::Ok
+    } else {
+        DiagnosticLevel::Warn
+    };
+    let summary = match level {
+        DiagnosticLevel::Ok => "install state complete".to_string(),
+        DiagnosticLevel::Warn => "install state partial; re-run `elai install`".to_string(),
+        DiagnosticLevel::Fail => "install state shows failed step; investigate before re-run".to_string(),
+    };
+    DiagnosticCheck::new("Runtime assets", level, summary).with_details(details)
+}
+
+pub(crate) fn check_sidecar_health() -> DiagnosticCheck {
+    let url = env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:8100".to_string());
+    let ok = crate::sidecar::sidecar_probe_ok(&url);
+    if ok {
+        DiagnosticCheck::new(
+            "Sidecar health",
+            DiagnosticLevel::Ok,
+            format!("sidecar reachable at {url}"),
+        )
+    } else {
+        DiagnosticCheck::new(
+            "Sidecar health",
+            DiagnosticLevel::Warn,
+            format!("sidecar unreachable at {url}"),
+        )
+        .with_details(vec![
+            "run `elai sidecar boot --local` to start the local model, or set ANTHROPIC_BASE_URL to a remote tunnel"
+                .to_string(),
+        ])
+    }
+}
+
+pub(crate) fn check_vram_tier() -> DiagnosticCheck {
+    let Some(home) = elai_home_dir() else {
+        return DiagnosticCheck::new(
+            "VRAM tier",
+            DiagnosticLevel::Warn,
+            "no ELAI home dir; cannot read elai_cc.toml",
+        );
+    };
+    let toml_path = home.join("elai_cc.toml");
+    let toml_tier = std::fs::read_to_string(&toml_path)
+        .ok()
+        .and_then(|contents| parse_toml_value(&contents, "vram", "tier"));
+    let live_tier = elai_providers::vram_tier::detect_vram_tier()
+        .ok()
+        .map(|t| vram_tier_label(t));
+    match (toml_tier.as_deref(), live_tier.as_deref()) {
+        (Some(cfg), Some(live)) if cfg == live => DiagnosticCheck::new(
+            "VRAM tier",
+            DiagnosticLevel::Ok,
+            format!("elai_cc.toml [vram] tier={cfg} matches live detection"),
+        ),
+        (Some(cfg), Some(live)) => DiagnosticCheck::new(
+            "VRAM tier",
+            DiagnosticLevel::Warn,
+            format!("config tier={cfg} differs from live detect={live}"),
+        )
+        .with_details(vec![
+            "re-run `elai install --reset-config` to regenerate, or set ELAI_VRAM_OVERRIDE"
+                .to_string(),
+        ]),
+        (None, _) => DiagnosticCheck::new(
+            "VRAM tier",
+            DiagnosticLevel::Warn,
+            format!("no [vram] tier in {}", toml_path.display()),
+        ),
+        (_, None) => DiagnosticCheck::new(
+            "VRAM tier",
+            DiagnosticLevel::Warn,
+            "live detect_vram_tier failed".to_string(),
+        ),
+    }
+}
+
+pub(crate) fn check_model_staging(project_root: &Path) -> DiagnosticCheck {
+    let models_dir = core_models_dir_path(project_root);
+    let manifest_path = models_dir.join("CHECKSUMS.blake3");
+    if !manifest_path.is_file() {
+        return DiagnosticCheck::new(
+            "Model staging",
+            DiagnosticLevel::Warn,
+            "no per-host model manifest; run `elai install` (or `elai install --skip-models` for cloud-only)",
+        )
+        .with_details(vec![format!("expected: {}", manifest_path.display())]);
+    }
+    let Ok(contents) = std::fs::read_to_string(&manifest_path) else {
+        return DiagnosticCheck::new(
+            "Model staging",
+            DiagnosticLevel::Fail,
+            format!("cannot read {}", manifest_path.display()),
+        );
+    };
+    let mut row_count = 0_usize;
+    let mut missing: Vec<String> = Vec::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.splitn(2, "  ");
+        let _hash = parts.next();
+        let Some(name) = parts.next() else { continue };
+        row_count += 1;
+        let asset_path = models_dir.join(name);
+        if !asset_path.exists() {
+            missing.push(name.to_string());
+        }
+    }
+    if row_count == 0 {
+        return DiagnosticCheck::new(
+            "Model staging",
+            DiagnosticLevel::Warn,
+            "manifest present but has no data rows",
+        );
+    }
+    if missing.is_empty() {
+        DiagnosticCheck::new(
+            "Model staging",
+            DiagnosticLevel::Ok,
+            format!("{row_count} manifest rows; all assets present"),
+        )
+    } else {
+        let mut details = vec![format!("missing {} of {} assets", missing.len(), row_count)];
+        details.extend(missing.iter().take(8).cloned());
+        DiagnosticCheck::new(
+            "Model staging",
+            DiagnosticLevel::Fail,
+            format!("manifest references {} missing assets", missing.len()),
+        )
+        .with_details(details)
+    }
+}
+
+fn parse_toml_value(contents: &str, section: &str, key: &str) -> Option<String> {
+    let mut current = String::new();
+    let section_header = format!("[{section}]");
+    for raw in contents.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            current = line[1..line.len() - 1].to_string();
+            continue;
+        }
+        if current != section {
+            // Allow exact section match only (skip subtables).
+            let _ = &section_header;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(&format!("{key} = ")) {
+            let value = rest.trim().trim_matches('"').to_string();
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn vram_tier_label(tier: elai_core::VramTier) -> String {
+    use elai_core::VramTier;
+    match tier {
+        VramTier::Vram8Gb => "8".to_string(),
+        VramTier::Vram12Gb => "12".to_string(),
+        VramTier::Vram16Gb => "16".to_string(),
+        VramTier::Vram24Gb => "24".to_string(),
+        VramTier::Vram48Gb => "48".to_string(),
+        VramTier::Cloud => "cloud".to_string(),
+    }
 }
 
 pub(crate) fn run_dep_audit_command(

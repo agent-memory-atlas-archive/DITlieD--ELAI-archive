@@ -273,6 +273,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "install",
+        aliases: &[],
+        summary: "Re-run the host installer (idempotent state-machine over scripts/install)",
+        argument_hint: Some("[--skip-models] [--reset-config]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "login",
         aliases: &[],
         summary: "Log in to the service",
@@ -2701,7 +2708,7 @@ fn slash_command_category(name: &str) -> &'static str {
             "Workspace & git"
         }
         "agents" | "skills" | "teleport" | "debug-tool-call" | "mcp" | "context" | "tasks"
-        | "doctor" | "ide" | "desktop" | "profile" => "Discovery & debugging",
+        | "doctor" | "install" | "ide" | "desktop" | "profile" => "Discovery & debugging",
         "bughunter" | "ultraplan" | "review" | "security-review" | "advisor" | "insights" => {
             "Analysis & automation"
         }

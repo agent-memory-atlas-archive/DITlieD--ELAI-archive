@@ -153,6 +153,15 @@ pub(crate) enum CliAction {
         project_root: PathBuf,
         output_format: CliOutputFormat,
     },
+    /// B-43 Phase 7 — `elai install [--skip-models] [--reset-config]`.
+    /// Re-entry from the already-installed CLI; spawns scripts/install/install.{sh,ps1}
+    /// with forwarded flags. Flag-bearing forms route through `parse_install_subcommand`.
+    Install {
+        skip_models: bool,
+        reset_config: bool,
+        project_root: Option<PathBuf>,
+        output_format: CliOutputFormat,
+    },
     Init {
         output_format: CliOutputFormat,
     },
@@ -1733,6 +1742,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // existing CliAction::Doctor variant for byte-for-byte
         // backwards compatibility with the bare-slash entry point.
         "doctor" => parse_doctor_subcommand_args(&rest[1..], output_format),
+        // B-43 Phase 7 — `elai install [--skip-models] [--reset-config]
+        // [--project-root PATH] [--output-format text|json]`. Bare `elai install`
+        // is also reachable via parse_single_word_command_alias.
+        "install" => parse_install_subcommand(&rest[1..], output_format),
         // C-43 — `elai freeze status|verify|ratify --ratifier <id>`.
         // Phase 4H scope-freeze CLI surface; handler at
         // crates/cli/src/freeze_cmd.rs. ELAI design hypothesis — no
@@ -2271,6 +2284,68 @@ pub(crate) fn parse_doctor_subcommand_args(
         })?,
     };
     Ok(CliAction::DoctorKnowledgeModels {
+        project_root,
+        output_format: output_format_override.unwrap_or(output_format),
+    })
+}
+
+/// Parse `elai install [--skip-models] [--reset-config] [--project-root PATH]
+/// [--output-format text|json|toml]`. Mirrors the structural pattern of
+/// `parse_doctor_subcommand_args` (flag-loop with `--foo value` and `--foo=value`
+/// shapes; unknown-flag rejection; `--json` alias).
+pub(crate) fn parse_install_subcommand(
+    rest: &[String],
+    output_format: CliOutputFormat,
+) -> Result<CliAction, String> {
+    let mut skip_models = false;
+    let mut reset_config = false;
+    let mut project_root: Option<PathBuf> = None;
+    let mut output_format_override: Option<CliOutputFormat> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--skip-models" => {
+                skip_models = true;
+                i += 1;
+            }
+            "--reset-config" => {
+                reset_config = true;
+                i += 1;
+            }
+            "--project-root" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --project-root".to_string())?;
+                project_root = Some(PathBuf::from(value));
+                i += 2;
+            }
+            flag if flag.starts_with("--project-root=") => {
+                project_root = Some(PathBuf::from(&flag[15..]));
+                i += 1;
+            }
+            "--output-format" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --output-format".to_string())?;
+                output_format_override = Some(parse_output_format_value(value)?);
+                i += 2;
+            }
+            flag if flag.starts_with("--output-format=") => {
+                output_format_override = Some(parse_output_format_value(&flag[16..])?);
+                i += 1;
+            }
+            "--json" => {
+                output_format_override = Some(CliOutputFormat::Json);
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown `install` argument: {other}"));
+            }
+        }
+    }
+    Ok(CliAction::Install {
+        skip_models,
+        reset_config,
         project_root,
         output_format: output_format_override.unwrap_or(output_format),
     })
@@ -5572,6 +5647,12 @@ pub(crate) fn parse_single_word_command_alias(
         })),
         "sandbox" => Some(Ok(CliAction::Sandbox { output_format })),
         "doctor" => Some(Ok(CliAction::Doctor { output_format })),
+        "install" => Some(Ok(CliAction::Install {
+            skip_models: false,
+            reset_config: false,
+            project_root: None,
+            output_format,
+        })),
         other => bare_slash_command_guidance(other).map(Err),
     }
 }

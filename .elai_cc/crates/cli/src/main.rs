@@ -15,6 +15,7 @@ mod handoff;
 mod indexing;
 mod init;
 mod input;
+mod install;
 mod render;
 mod runtime_config;
 mod skills_cmd;
@@ -507,6 +508,22 @@ fn run() -> Result<(), anyhow::Error> {
             project_root,
             output_format,
         } => doctor::run_knowledge_models_probe(&project_root, output_format)?,
+        // B-43 Phase 7 — `elai install [--skip-models] [--reset-config]`.
+        // Re-entry from the already-installed CLI; spawns scripts/install/install.{sh,ps1}
+        // with forwarded flags and reads per-step state files for the report.
+        CliAction::Install {
+            skip_models,
+            reset_config,
+            project_root,
+            output_format,
+        } => install::run_install(
+            install::InstallArgs {
+                skip_models,
+                reset_config,
+                project_root,
+            },
+            output_format,
+        )?,
         // C-43 — `elai freeze status|verify|ratify`. Phase 4H scope-freeze
         // CLI surface. ELAI design hypothesis (see
         // workflow/sessions/s-25120/mistakes.md for the bad-cite

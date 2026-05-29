@@ -2,20 +2,26 @@
 
 Usage: python stage_onnx_models.py [--force] [--only MODEL,...] [--models-root PATH]
                                     [--skip-graphcodebert-export]
-Models: graphcodebert, granite, cross-encoder-l12, cross-encoder-l6, splade
+                                    [--skip-models] [--vram-tier {8,12,16,24,48,cloud}]
+                                    [--manifest-out PATH]
+Models: graphcodebert, granite, cross-encoder-l12, cross-encoder-l6, splade,
+        bge-reranker-v2-m3, sidecar-3b, sidecar-7b
 """
 import argparse
 import os
+import random
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent  # scripts/ -> .elai_cc/
 MIN_ONNX_BYTES = 1 * 1024 * 1024    # 1 MB — ONNX files below this are corrupt/truncated
 MIN_TOK_BYTES  = 1 * 1024            # 1 kB — tokenizer.json below this is corrupt
+MIN_SIDECAR_BYTES = 500 * 1024 * 1024  # 500 MB — sidecar safetensor shards are GB-scale
 
 # recipe keys: method, hf_repo, onnx_file, tok_file, task, optional, expected_last_dim
 # onnx/tok are callables root -> Path
@@ -69,8 +75,28 @@ MODELS: dict = {
         method="download", hf_repo="prithivida/Splade_PP_en_v1",
         onnx_file="onnx/model.onnx", tok_file="tokenizer.json",
         expected_last_dim=30522, optional=False),
+    # Sidecar recipes (Phase 4) — staged via snapshot_download (full HF snapshot)
+    # because the sidecar loads safetensors via AutoModelForCausalLM.from_pretrained
+    # (requires config.json + tokenizer + multi-shard safetensors). NF4 4-bit
+    # quantization happens at LOAD time via --load-in-4bit (bitsandbytes), NOT
+    # at staging time. Boot command locked to REMOTE-SIDECAR.md:69-76.
+    "sidecar-3b": dict(
+        onnx=None, tok=None,
+        method="hf_snapshot", hf_repo="huihui-ai/Qwen2.5-Coder-3B-Instruct-abliterated",
+        local_subdir="Qwen2.5-Coder-3B-Instruct-abliterated",
+        onnx_file=None, tok_file=None,
+        expected_last_dim=None, optional=False,
+        sidecar_tiers=("8", "12", "16", "24", "48")),
+    "sidecar-7b": dict(
+        onnx=None, tok=None,
+        method="hf_snapshot", hf_repo="huihui-ai/Qwen2.5-Coder-7B-Instruct-abliterated",
+        local_subdir="Qwen2.5-Coder-7B-Instruct-abliterated",
+        onnx_file=None, tok_file=None,
+        expected_last_dim=None, optional=True,
+        sidecar_tiers=("16", "24", "48")),
 }
 ALL = list(MODELS)
+SIDECAR_RECIPES = {"sidecar-3b", "sidecar-7b"}
 
 
 @dataclass
@@ -82,6 +108,11 @@ class StageResult:
     onnx_inputs: list = field(default_factory=list)
     onnx_outputs: list = field(default_factory=list)
     reason: str = ""
+    asset_path: Path | None = None
+    blake3_hex: str = ""
+
+
+VRAM_TIERS = ("8", "12", "16", "24", "48", "cloud")
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,7 +121,69 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--only", default="")
     p.add_argument("--models-root", default="")
     p.add_argument("--skip-graphcodebert-export", action="store_true")
+    p.add_argument("--skip-models", action="store_true",
+                   help="bypass all recipe execution + manifest authoring "
+                        "(CI / corp-firewall / docker-build mode)")
+    p.add_argument("--vram-tier", choices=VRAM_TIERS, default="",
+                   help="restrict sidecar recipes: 8/12 -> sidecar-3b only; "
+                        "16/24/48 -> sidecar-3b + sidecar-7b; cloud -> neither.")
+    p.add_argument("--manifest-out", default="",
+                   help="path to author per-host CHECKSUMS.blake3 manifest "
+                        "(default: <models_root>/CHECKSUMS.blake3)")
     return p.parse_args()
+
+
+def _blake3_hash_file(p: Path) -> str:
+    """Streaming 1 MiB-chunked blake3 hash; safe for multi-GB sidecar shards."""
+    from blake3 import blake3
+    h = blake3()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _blake3_hash_dir(d: Path) -> str:
+    """Deterministic dir-hash: sorted (filename + per-file-hash) pairs."""
+    from blake3 import blake3
+    h = blake3()
+    for name in sorted(os.listdir(d)):
+        f = d / name
+        if f.is_file():
+            h.update(name.encode("utf-8"))
+            h.update(_blake3_hash_file(f).encode("ascii"))
+    return h.hexdigest()
+
+
+def _with_hf_backoff(call, *args, **kwargs):
+    """Wrap an HF download call with 3-attempt exponential backoff on HTTP 429.
+
+    Plan ADVERSARIAL bullet 1 (Phase 4): HF rate-limit responses are retried
+    with backoff (max 3), NOT silently swallowed. 4th failure raises with the
+    HF status-page URL surfaced to the operator.
+    """
+    try:
+        from huggingface_hub.utils import HfHubHTTPError
+    except ImportError:
+        from huggingface_hub.errors import HfHubHTTPError  # type: ignore[attr-defined]
+    for attempt in range(3):
+        try:
+            return call(*args, **kwargs)
+        except HfHubHTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 and attempt < 2:
+                delay = (2 ** (attempt + 1)) + random.uniform(0.0, 1.0)
+                print(f"  [WARN] HF 429 rate-limit, sleeping {delay:.1f}s "
+                      f"(attempt {attempt + 1}/3)", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            if status == 429:
+                raise RuntimeError(
+                    f"HF rate-limit exhausted after 3 retries; "
+                    f"see https://status.huggingface.co"
+                ) from e
+            raise
+    raise RuntimeError("unreachable: _with_hf_backoff exhausted loop without raising")
 
 
 def resolve_models_root(arg: str) -> Path:
@@ -110,8 +203,40 @@ def _hf_download_to(repo_id: str, filename: str,
     """Download a single file from HF to target_path (always copies from HF cache)."""
     from huggingface_hub import hf_hub_download
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    cached = hf_hub_download(repo_id=repo_id, filename=filename, token=hf_token)
+    cached = _with_hf_backoff(
+        hf_hub_download, repo_id=repo_id, filename=filename, token=hf_token,
+    )
     shutil.copy2(cached, target_path)
+
+
+def _hf_snapshot_to(repo_id: str, target_dir: Path,
+                     hf_token: str | None) -> Path:
+    """Snapshot-download an HF repo into target_dir; mirror for sidecar recipes.
+
+    Uses HF_HOME-honoring cache via huggingface_hub.snapshot_download default
+    behavior; allow_patterns restricts to inference-relevant files (no .git,
+    no .gitattributes, no README artifacts that bloat the on-disk footprint).
+    """
+    from huggingface_hub import snapshot_download
+    target_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = _with_hf_backoff(
+        snapshot_download,
+        repo_id=repo_id,
+        cache_dir=os.environ.get("HF_HOME") or None,
+        allow_patterns=[
+            "*.safetensors", "*.safetensors.index.json",
+            "config.json", "generation_config.json",
+            "tokenizer.json", "tokenizer_config.json",
+            "special_tokens_map.json", "vocab.json", "merges.txt",
+        ],
+        token=hf_token,
+    )
+    for name in os.listdir(snapshot_dir):
+        src = Path(snapshot_dir) / name
+        dst = target_dir / name
+        if src.is_file():
+            shutil.copy2(src, dst)
+    return target_dir
 
 
 def download_pretrained_onnx(repo_id: str, file_subpath: str,
@@ -177,9 +302,41 @@ def verify_onnx_loadable(onnx_path: Path,
         return False, {"error": str(e), "inputs": [], "outputs": [], "opset": None}
 
 
+def stage_sidecar(name: str, models_root: Path, force: bool,
+                   hf_token: str | None) -> StageResult:
+    cfg = MODELS[name]
+    target_dir = models_root / cfg["local_subdir"]
+    # Idempotent skip: target_dir non-empty + total >= MIN_SIDECAR_BYTES.
+    if not force and target_dir.exists():
+        total = sum(f.stat().st_size for f in target_dir.iterdir() if f.is_file())
+        if total >= MIN_SIDECAR_BYTES:
+            mb = total / 1e6
+            print(f"  SKIP: {name} already staged ({mb:.1f} MB)")
+            try:
+                hex_ = _blake3_hash_dir(target_dir)
+            except Exception as e:
+                return StageResult(name, "FAIL", mb, reason=f"blake3: {e}",
+                                   asset_path=target_dir)
+            return StageResult(name, "SKIP", mb, asset_path=target_dir, blake3_hex=hex_)
+    try:
+        _hf_snapshot_to(cfg["hf_repo"], target_dir, hf_token)
+        total = sum(f.stat().st_size for f in target_dir.iterdir() if f.is_file())
+        if total < MIN_SIDECAR_BYTES:
+            return StageResult(name, "FAIL",
+                               reason=f"sidecar total bytes {total} below MIN_SIDECAR_BYTES",
+                               asset_path=target_dir)
+        hex_ = _blake3_hash_dir(target_dir)
+        mb = total / 1e6
+        return StageResult(name, "PASS", mb, asset_path=target_dir, blake3_hex=hex_)
+    except Exception as e:
+        return StageResult(name, "FAIL", reason=str(e), asset_path=target_dir)
+
+
 def stage_model(name: str, models_root: Path, force: bool,
                 hf_token: str | None, skip_gcb_export: bool) -> StageResult:
     cfg = MODELS[name]
+    if cfg.get("method") == "hf_snapshot":
+        return stage_sidecar(name, models_root, force, hf_token)
     onnx_p = cfg["onnx"](models_root)
     tok_p  = cfg["tok"](models_root)
     onnx_p.parent.mkdir(parents=True, exist_ok=True)
@@ -224,9 +381,66 @@ def stage_model(name: str, models_root: Path, force: bool,
         ok, info = verify_onnx_loadable(onnx_p, cfg["expected_last_dim"])
         if not ok:
             return StageResult(name, "FAIL", mb, reason=f"ort: {info.get('error')}")
-        return StageResult(name, "PASS", mb, info.get("opset"), info.get("inputs", []), info.get("outputs", []))
+        try:
+            hex_ = _blake3_hash_file(onnx_p)
+        except Exception as e:
+            return StageResult(name, "FAIL", mb, reason=f"blake3: {e}",
+                               asset_path=onnx_p)
+        return StageResult(name, "PASS", mb, info.get("opset"),
+                           info.get("inputs", []), info.get("outputs", []),
+                           asset_path=onnx_p, blake3_hex=hex_)
     except Exception as e:
         return StageResult(name, "FAIL", reason=str(e))
+
+
+def author_manifest(results: list, manifest_path: Path) -> int:
+    """Write per-host CHECKSUMS.blake3 with one row per PASS/SKIP staged asset.
+
+    Format: `<blake3-hex-64><2-space><asset-relative-name>\\n` matching the
+    b3sum CLI shape Phase 1 release.yml produces and Phase 3 verify_blake3
+    awk parser at scripts/install/elai_install_lib.sh:286.
+    Atomic write via tmp + os.replace.
+    """
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[str] = []
+    for r in results:
+        if r.status in ("PASS", "SKIP") and r.blake3_hex and r.asset_path:
+            asset_rel = r.asset_path.name
+            rows.append(f"{r.blake3_hex}  {asset_rel}\n")
+    iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    header = (
+        "# CHECKSUMS.blake3 — per-host runtime manifest authored by\n"
+        "# .elai_cc/scripts/stage_onnx_models.py at install-time.\n"
+        f"# generated: {iso}\n"
+        "# format: <blake3-hex-64><2-space><asset-filename>\n"
+        "#\n"
+    )
+    tmp = manifest_path.with_suffix(manifest_path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(header + "".join(rows), encoding="utf-8")
+    os.replace(tmp, manifest_path)
+    print(f"\n[INFO] author_manifest: wrote {len(rows)} rows to {manifest_path}")
+    return len(rows)
+
+
+def _filter_by_vram_tier(selected: list[str], vram_tier: str) -> list[str]:
+    """Drop sidecar recipes whose sidecar_tiers do not include vram_tier.
+
+    Empty vram_tier ("") means no tier-based filtering — keep all selected.
+    `cloud` tier drops both sidecar recipes (cloud-mode uses remote tunnel).
+    """
+    if not vram_tier:
+        return selected
+    if vram_tier == "cloud":
+        return [n for n in selected if n not in SIDECAR_RECIPES]
+    out = []
+    for name in selected:
+        cfg = MODELS[name]
+        sidecar_tiers = cfg.get("sidecar_tiers")
+        if sidecar_tiers is None or vram_tier in sidecar_tiers:
+            out.append(name)
+        else:
+            print(f"  [WARN] vram_tier={vram_tier} skipping {name} per LOCK-2", file=sys.stderr)
+    return out
 
 
 def main() -> int:
@@ -234,6 +448,10 @@ def main() -> int:
     hf_token: str | None = os.environ.get("HF_TOKEN") or None
     models_root = resolve_models_root(args.models_root)
     print(f"Models root: {models_root}")
+
+    if args.skip_models:
+        print("[SKIP] --skip-models in effect; recipe execution + manifest authoring bypassed")
+        return 0
 
     if args.only:
         selected = [m.strip() for m in args.only.split(",") if m.strip()]
@@ -243,6 +461,7 @@ def main() -> int:
             return 1
     else:
         selected = list(ALL)
+    selected = _filter_by_vram_tier(selected, args.vram_tier)
 
     results: list[StageResult] = []
     for name in selected:
@@ -261,6 +480,14 @@ def main() -> int:
     for r in results:
         print(f"  {r.status:<5} {r.name:<25} {r.onnx_size_mb:>8.1f} MB  {r.reason or ''}")
     print(f"\nPASS={len(passes)} SKIP={len(skips)} FAIL={len(fails)}")
+
+    manifest_path = (Path(args.manifest_out) if args.manifest_out
+                      else models_root / "CHECKSUMS.blake3")
+    try:
+        author_manifest(results, manifest_path)
+    except Exception as e:
+        print(f"[WARN] author_manifest failed: {e}", file=sys.stderr)
+
     mandatory_fails = [r for r in fails if not MODELS[r.name]["optional"]]
     return 0 if not mandatory_fails else 1
 
