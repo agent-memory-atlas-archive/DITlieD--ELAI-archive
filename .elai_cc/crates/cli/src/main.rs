@@ -206,6 +206,9 @@ mod farm_adv_rm;
 mod bench_ablation_cmd;
 mod tier_eval_cmd;
 mod critic_report;
+// E-7: darwinian-evolve substrate exerciser. See E-7-decisions.md DECISION-13.
+#[cfg(feature = "darwinian-evolve")]
+mod darwin_loop_cmd;
 // E-9: external agent-eval benchmark suite (11 suites; SWE-Bench Pro
 // primary; RUNPOD-PENDING live runs). See workflow/reasoning/E-9-decisions.md.
 mod eval_cmd;
@@ -924,6 +927,24 @@ fn run() -> Result<(), anyhow::Error> {
         // E-10: hostile-critic structural simplifications dispatch.
         CliAction::BenchAblation { tile, fixtures, budget } => {
             bench_ablation_cmd::run(tile, fixtures, budget)?;
+        }
+        // E-7: darwinian-evolve substrate exerciser. Feature-gated;
+        // when the feature is off the verb returns "DISABLED" so the
+        // surface is documented but never compiles the gated module.
+        #[cfg(feature = "darwinian-evolve")]
+        CliAction::DarwinLoop { generations, mutants, seed, traps, gamma } => {
+            let gamma_f: f64 = if gamma.is_empty() {
+                elai_orchestrator::darwinian_bai::DEFAULT_DISCOUNT_FACTOR
+            } else {
+                gamma.parse().map_err(|e| anyhow::anyhow!("invalid --gamma `{gamma}`: {e}"))?
+            };
+            darwin_loop_cmd::run(generations, mutants, seed, traps, gamma_f)?;
+        }
+        #[cfg(not(feature = "darwinian-evolve"))]
+        CliAction::DarwinLoop { generations, mutants, seed, traps, gamma } => {
+            println!(
+                "darwin-loop DISABLED (rebuild with --features darwinian-evolve) requested generations={generations} mutants={mutants} seed={seed} traps={traps} gamma={gamma}"
+            );
         }
         CliAction::TierEval { suites, budget } => {
             tier_eval_cmd::run(suites, budget)?;

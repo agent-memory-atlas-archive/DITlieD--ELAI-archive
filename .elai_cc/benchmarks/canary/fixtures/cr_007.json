@@ -1,7 +1,7 @@
 {
   "id": "cr_007",
   "domain": "tool_use",
-  "family": "ToolUse",
+  "family": "tool_use",
   "expected_class": "Helpful",
   "pre_baseline_score": 0.5283,
   "post_change_score": 0.8633,

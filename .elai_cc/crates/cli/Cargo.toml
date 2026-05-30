@@ -79,6 +79,11 @@ obscura = ["elai-orchestrator/obscura", "elai-web-search/obscura", "dep:elai-web
 # unconditionally; the feature flag here exists so the cfg(feature="mcp")
 # gates in mcp_client.rs are not flagged as "unexpected" by check-cfg.
 mcp = ["elai-plugins/mcp"]
+# E-7: enable the darwinian-evolve substrate in the CLI binary. Pure
+# cfg-gate pass-through to elai-orchestrator/darwinian-evolve (no new
+# external deps). Required for `elai darwin-loop`. See
+# workflow/reasoning/E-7-decisions.md DECISION-13.
+darwinian-evolve = ["elai-orchestrator/darwinian-evolve"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

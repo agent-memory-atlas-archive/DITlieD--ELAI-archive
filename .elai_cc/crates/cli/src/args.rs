@@ -852,6 +852,18 @@ pub(crate) enum CliAction {
     // tier eval / critic report CLI dispatchers. See
     // workflow/reasoning/E-10-decisions.md.
     BenchAblation { tile: String, fixtures: String, budget: u32 },
+    /// E-7 — `elai darwin-loop [--generations N] [--mutants K] [--seed S]
+    /// [--traps T] [--gamma G]` — exercises the darwinian-evolve substrate
+    /// (DiscountedTsConfig + SuccessiveRejects + trap_tasks) as a single
+    /// CLI surface. Wire-dark: no SsbActionType emission, no live sidecar
+    /// call. See workflow/reasoning/E-7-decisions.md DECISION-13.
+    DarwinLoop {
+        generations: u32,
+        mutants: u32,
+        seed: u64,
+        traps: u32,
+        gamma: String,
+    },
     TierEval { suites: Vec<String>, budget: u32 },
     CriticReport { output: Option<String> },
     /// E-9: `elai eval run --benchmark=<NAME> [--harness-vary] [--p-target=0.05]
@@ -1900,6 +1912,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "farm-adv-rm" | "farm_adv_rm" => parse_farm_adv_rm_args(&rest[1..]),
         // E-10: hostile-critic structural simplifications.
         "bench-ablation" | "bench_ablation" => parse_bench_ablation_args(&rest[1..]),
+        // E-7: darwinian-evolve substrate exerciser. See darwin_loop_cmd.rs.
+        "darwin-loop" | "darwin_loop" => parse_darwin_loop_args(&rest[1..]),
         "tier-eval" | "tier_eval" => parse_tier_eval_args(&rest[1..]),
         "critic-report" | "critic_report" => parse_critic_report_args(&rest[1..]),
         // E-9: external agent-eval benchmark suite dispatcher. Top-level
@@ -7177,6 +7191,48 @@ pub(crate) fn parse_bench_ablation_args(rest: &[String]) -> Result<CliAction, St
         }
     }
     Ok(CliAction::BenchAblation { tile, fixtures, budget })
+}
+
+/// E-7 — `elai darwin-loop` argument parser. All flags optional with
+/// defaults matching `darwinian_bai::DEFAULT_DISCOUNT_FACTOR` and the
+/// plan task 8 trap_tasks fixture count guidance.
+pub(crate) fn parse_darwin_loop_args(rest: &[String]) -> Result<CliAction, String> {
+    let mut generations: u32 = 1;
+    let mut mutants: u32 = 3;
+    let mut seed: u64 = 42;
+    let mut traps: u32 = 3;
+    let mut gamma: String = String::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--generations" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --generations".to_string())?;
+                generations = v.parse().map_err(|e| format!("invalid --generations: {e}"))?;
+                i += 2;
+            }
+            "--mutants" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --mutants".to_string())?;
+                mutants = v.parse().map_err(|e| format!("invalid --mutants: {e}"))?;
+                i += 2;
+            }
+            "--seed" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --seed".to_string())?;
+                seed = v.parse().map_err(|e| format!("invalid --seed: {e}"))?;
+                i += 2;
+            }
+            "--traps" => {
+                let v = rest.get(i + 1).ok_or_else(|| "missing value for --traps".to_string())?;
+                traps = v.parse().map_err(|e| format!("invalid --traps: {e}"))?;
+                i += 2;
+            }
+            "--gamma" => {
+                gamma = rest.get(i + 1).ok_or_else(|| "missing value for --gamma".to_string())?.clone();
+                i += 2;
+            }
+            other => return Err(format!("unknown flag for `darwin-loop`: {other}")),
+        }
+    }
+    Ok(CliAction::DarwinLoop { generations, mutants, seed, traps, gamma })
 }
 
 pub(crate) fn parse_tier_eval_args(rest: &[String]) -> Result<CliAction, String> {

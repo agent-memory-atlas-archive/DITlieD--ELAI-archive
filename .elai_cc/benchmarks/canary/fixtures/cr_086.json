@@ -1,7 +1,7 @@
 {
   "id": "cr_086",
   "domain": "reasoning",
-  "family": "ProseReason",
+  "family": "prose_reason",
   "expected_class": "Helpful",
   "pre_baseline_score": 0.5831,
   "post_change_score": 0.8833,

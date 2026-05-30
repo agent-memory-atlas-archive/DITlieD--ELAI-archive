@@ -1,7 +1,7 @@
 {
   "id": "cr_040",
   "domain": "code",
-  "family": "CodeFix",
+  "family": "code_fix",
   "expected_class": "Harmful",
   "pre_baseline_score": 0.8595,
   "post_change_score": 0.377,

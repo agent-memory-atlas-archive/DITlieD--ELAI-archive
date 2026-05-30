@@ -1,7 +1,7 @@
 {
   "id": "cr_012",
   "domain": "math",
-  "family": "MathProof",
+  "family": "math_proof",
   "expected_class": "Neutral",
   "pre_baseline_score": 0.6913,
   "post_change_score": 0.6823,

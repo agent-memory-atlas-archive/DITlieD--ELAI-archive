@@ -31,6 +31,15 @@ K>=2 ensemble fallback (DECISION-5):
 # mock mean=0.9 var=0.04). Live PPM sidecar at port 8101 NOT REACHABLE
 # (curl exit 7) -- PPM sidecar is separate from Anthropic-protocol
 # sidecar at port 8100; still RUNPOD-PENDING for --live mode.
+# (s-25120/sidecar-E 2026-05-30): also probed live mode against
+# main sidecar at port 8100 (/v1/ppm/score endpoint EXISTS but
+# returns 503 ppm_model_not_loaded because only the Qwen2.5-Coder-3B
+# abliterated chat model is loaded; the PPM model
+# huihui-ai/Qwen2.5-Math-PRM-7B requires a separate sidecar process
+# per-D-28-decisions.md DECISION-2). Confirmed 5-seed live run:
+# samples_farmed=0, all 503/422 -- behavior is correct (anti-mock-data
+# skip-on-error). Live-mode unblocking still requires the dedicated
+# PPM sidecar boot on port 8101 (start-ppm-sidecar.sh).
 
 The live PPM sidecar boot + port-forward + corpus upload pipeline is
 operator-driven via the workflow/remote-setup/ scripts. This script

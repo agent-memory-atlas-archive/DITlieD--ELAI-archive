@@ -1,7 +1,7 @@
 {
   "id": "cr_035",
   "domain": "planning",
-  "family": "PlanningDecomposition",
+  "family": "planning_decomposition",
   "expected_class": "Helpful",
   "pre_baseline_score": 0.533,
   "post_change_score": 0.9252,
