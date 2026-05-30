@@ -22,6 +22,16 @@
 
 # RUNPOD-PENDING (live byte-equivalence on GPU): ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prefix_kv_determinism"'
 #
+# RUNPOD-MEASURED-PARTIAL 2026-05-30 (s-25120 sidecar-B): e2e p50 streaming
+# numbers measured against the live sidecar:
+#   p50 TTFT = 822ms / p50 inter-chunk = 61ms / p95 inter-chunk = 176ms
+#   non-streaming p50 = 2.4s for 32 tokens (~13.3 tok/sec)
+#   prefix-KV cache hit rate (cache_read_input_tokens / input_tokens) = 76.6%
+# Byte-equivalence determinism (HF StaticCache vs custom path) STILL requires
+# in-process model.generate side-by-side comparison; this file's harness
+# remains the canonical evidence path for promotion-gate G1.
+# See tests/E-2-RUNPOD-MEASURED.md.
+#
 # RUNPOD-COMPLETE-OFFLINE (key-stability + object-identity invariants):
 #   pytest elai_inference/tests/test_prefix_kv_determinism_offline.py -v
 #   The offline harness locks the cache-key invariant (same prefix -> same

@@ -25,7 +25,12 @@ K>=2 ensemble fallback (DECISION-5):
   stand-in for K>=2 inter-model std -- a grounded hypothesis from D-4's
   rm-overoptimization proxy>>gold gap pattern, not a paper-direct claim.
 
-# RUNPOD-PENDING: bash workflow/remote-setup/start-ppm-sidecar.sh
+# RUNPOD-PARTIAL: bash workflow/remote-setup/start-ppm-sidecar.sh
+# (s-25120/sidecar-A 2026-05-30): mock-mode farm loop end-to-end PROVEN
+# (5-seed tiny fixture, 1 round, 5/5 samples_farmed, Z>1.96 pass on
+# mock mean=0.9 var=0.04). Live PPM sidecar at port 8101 NOT REACHABLE
+# (curl exit 7) -- PPM sidecar is separate from Anthropic-protocol
+# sidecar at port 8100; still RUNPOD-PENDING for --live mode.
 
 The live PPM sidecar boot + port-forward + corpus upload pipeline is
 operator-driven via the workflow/remote-setup/ scripts. This script

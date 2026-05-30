@@ -20,6 +20,13 @@
 
 # RUNPOD-PENDING (live byte-equivalence on GPU): ssh -i ~/.ssh/elai_remote -p 6465 maintainer@192.0.2.10 'bash -lc "source ~/.venvs/elai-sidecar/bin/activate && cd ~/elai_inference && python -m elai_inference.test_prompt_lookup_lossless"'
 #
+# RUNPOD-MEASURED-PARTIAL 2026-05-30 (s-25120 sidecar-B): e2e prefix-KV
+# cache-hit acceptance rate measured via cache_read_input_tokens at 76.6%
+# across 30 sidecar calls (target >=30%, PASS). This is the EXISTING custom
+# PrefixKVCache hit-rate, not the HF prompt-lookup speculative-decoding
+# acceptance which still needs in-process model.generate hook (still
+# RUNPOD-PENDING). See tests/E-2-RUNPOD-MEASURED.md for full numbers.
+#
 # RUNPOD-COMPLETE-OFFLINE (sidecar wiring contract for HF kwarg):
 #   pytest elai_inference/tests/test_prompt_lookup_lossless_offline.py -v
 #   Verifies that server.py passes prompt_lookup_num_tokens through to HF
